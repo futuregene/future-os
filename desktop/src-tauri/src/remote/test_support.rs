@@ -1197,12 +1197,19 @@ impl MockPlatform {
 
     /// Script a successful pair-code issuance pointing at `nats_url`.
     pub(crate) fn respond_pair_code(&self, nats_url: &str) -> String {
+        self.respond_pair_code_for(&format!("pair_{}", unique("mock")), nats_url)
+    }
+
+    /// Script a pair-code issuance that reuses an existing `pair_id`, as the
+    /// platform does when a desktop that is already known asks for another
+    /// invitation (the previous one expired or was never scanned).
+    pub(crate) fn respond_pair_code_for(&self, pair_id: &str, nats_url: &str) -> String {
         let code = pairing_code(now_secs() + 600);
         self.push(
             "/client/v1/remote/pair/code",
             200,
             json!({
-                "pair_id": format!("pair_{}", unique("mock")),
+                "pair_id": pair_id,
                 "pairing_code": code,
                 "user_jwt": jwt(now_secs() + 3600),
                 "nats_url": nats_url,

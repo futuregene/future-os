@@ -979,6 +979,76 @@ mod runtime_tests {
         assert!(!health.is_terminal());
     }
 
+    /// The platform hands out the SAME `pair_id` again when a desktop that is
+    /// already known asks for a second invitation, and any generation rebuild
+    /// before the phone pairs re-runs `establish()` — which mints a fresh
+    /// invitation (new NKey, new secure identity, new PSK) because the first
+    /// one was never confirmed. The QR the desktop displays must always be the
+    /// invitation the running bridge can authenticate: scanning it is the only
+    /// pairing path the user has.
+    #[tokio::test]
+    async fn a_reissued_pair_code_for_the_same_pair_id_still_pairs() {
+        let _home = HomeGuard::new("remote-reissue");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let pair_id = format!("pair_{}", unique("reissue"));
+        platform.respond_pair_code_for(&pair_id, nats.url());
+
+        let first = start(RemoteStartInput {}).await.expect("first start");
+        assert!(matches!(first.phase, RemotePhase::Ready));
+        assert_eq!(first.pair_id, pair_id);
+        assert!(first.pairing_code.is_some());
+
+        // Nobody scanned the first invitation; the bridge is rebuilt (the
+        // supervisor's `GenerationWatch` does exactly this, via
+        // `spawn_runtime_reconnect`) and mints a replacement for the same pair.
+        let second_code = platform.respond_pair_code_for(&pair_id, nats.url());
+        let second = super::start_once(true).await.expect("rebuilt generation");
+        assert!(matches!(second.phase, RemotePhase::Ready));
+        assert_eq!(second.pair_id, pair_id);
+        let shown = second.pairing_code.clone().expect("an invitation is shown");
+        assert!(
+            shown.contains(&second_code),
+            "the desktop must display the invitation it just minted: {shown}"
+        );
+
+        // The phone scans exactly what the desktop is showing.
+        let mobile = nats_connect(&nats).await;
+        let _channel = super::test_support::secure_pair(&mobile, &shown, &second.pair_id).await;
+
+        stop();
+        wait_for_web_port_free().await;
+    }
+
+    /// Control for the test above: when the rebuild gets a NEW pair_id the
+    /// identity is rebuilt with it, so the displayed invitation pairs. This
+    /// isolates "the same pair_id came back" as the trigger.
+    #[tokio::test]
+    async fn a_reissued_pair_code_for_a_new_pair_id_still_pairs() {
+        let _home = HomeGuard::new("remote-reissue-new-pair");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        platform.respond_pair_code(nats.url());
+
+        let first = start(RemoteStartInput {}).await.expect("first start");
+        assert!(matches!(first.phase, RemotePhase::Ready));
+
+        platform.respond_pair_code(nats.url());
+        let second = super::start_once(true).await.expect("rebuilt generation");
+        assert!(matches!(second.phase, RemotePhase::Ready));
+        let shown = second.pairing_code.clone().expect("an invitation is shown");
+
+        let mobile = nats_connect(&nats).await;
+        let _channel = super::test_support::secure_pair(&mobile, &shown, &second.pair_id).await;
+
+        stop();
+        wait_for_web_port_free().await;
+    }
+
     #[tokio::test]
     async fn start_runs_the_full_bridge_and_stop_winds_it_down() {
         let _home = HomeGuard::new("remote-start");
@@ -1336,8 +1406,9 @@ mod runtime_tests {
     fn bridge_shared_state_survives_generation_swaps_but_rotates_epoch() {
         let _home = HomeGuard::new("remote-shared-generation");
         *SUPERVISOR.bridge_shared.lock().unwrap() = None;
-        let first = shared_runtime("pair_shared", true, false);
-        let same_credential_epoch = shared_runtime("pair_shared", true, false);
+        let creds = test_creds("pair_shared", "nats://127.0.0.1:4222", 3600);
+        let first = shared_runtime(&creds, true, false);
+        let same_credential_epoch = shared_runtime(&creds, true, false);
         assert!(Arc::ptr_eq(
             &first.reply_slots,
             &same_credential_epoch.reply_slots
@@ -1351,13 +1422,29 @@ mod runtime_tests {
             same_credential_epoch.bridge_instance_id
         );
 
-        let rebuilt = shared_runtime("pair_shared", true, true);
+        let rebuilt = shared_runtime(&creds, true, true);
         assert!(Arc::ptr_eq(&first.reply_slots, &rebuilt.reply_slots));
         assert!(Arc::ptr_eq(
             &first.pairing_confirmed,
             &rebuilt.pairing_confirmed
         ));
         assert_ne!(first.bridge_instance_id, rebuilt.bridge_instance_id);
+
+        // A re-minted invitation for the same pair_id describes keys the cached
+        // runtime cannot prove, so it must not inherit any of it — least of all
+        // a `pairing_confirmed` that a previous, unrelated pairing set.
+        let reissued = shared_runtime(
+            &test_creds("pair_shared", "nats://127.0.0.1:4222", 3600),
+            false,
+            false,
+        );
+        assert!(!Arc::ptr_eq(&first.reply_slots, &reissued.reply_slots));
+        assert!(!Arc::ptr_eq(
+            &first.pairing_confirmed,
+            &reissued.pairing_confirmed
+        ));
+        assert!(!reissued.pairing_confirmed.load(Ordering::Acquire));
+        assert_ne!(first.bridge_instance_id, reissued.bridge_instance_id);
         *SUPERVISOR.bridge_shared.lock().unwrap() = None;
     }
 
@@ -2187,7 +2274,7 @@ mod runtime_tests {
         let _home = HomeGuard::new("remote-resume");
         let nats = FakeNats::start().await;
         install_state(fake_state(&nats, "pair_resume").await);
-        let _shared = shared_runtime("pair_resume", true, false);
+        let _shared = shared_runtime(&test_creds("pair_resume", nats.url(), 3600), true, false);
         SUPERVISOR.start_requested.store(true, Ordering::Release);
 
         handle_system_resume();
