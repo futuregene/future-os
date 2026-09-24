@@ -112,13 +112,15 @@ impl SkillManager {
     /// A file lock covers both Agent RPC and one-shot CLI processes. Operations
     /// also hold it while publishing their refreshed discovery snapshot.
     fn locked<T>(&self, action: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
-        fs::create_dir_all(&self.agent_dir)?;
+        fs::create_dir_all(&self.agent_dir).context("create Agent state directory")?;
         let lock = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(false)
-            .open(self.agent_dir.join(".skills.lock"))?;
-        lock.lock_exclusive()?;
+            .open(self.agent_dir.join(".skills.lock"))
+            .context("open skill installation lock")?;
+        lock.lock_exclusive()
+            .context("acquire skill installation lock")?;
         let mut db = registry::open_registry(&self.db_path())?;
         let result = action(&mut db);
         let _ = lock.unlock();
@@ -216,13 +218,17 @@ impl SkillManager {
         validate_component(id)?;
         validate_component(version)?;
         self.locked(|db| {
-            self.recover(db)?;
-            self.reconcile(db)?;
+            self.recover(db)
+                .context("recover pending skill operation")?;
+            self.reconcile(db)
+                .context("scan installed skills before install")?;
             if let Err(error) = self.install_locked(db, id, version) {
-                self.recover(db)?;
+                self.recover(db)
+                    .context("recover failed skill installation")?;
                 return Err(error);
             }
-            self.reconcile(db)?;
+            self.reconcile(db)
+                .context("scan installed skills after install")?;
             super::invalidate_skills_cache();
             Ok(())
         })
@@ -333,13 +339,16 @@ impl SkillManager {
     }
 
     fn install_locked(&self, db: &mut Connection, id: &str, version: &str) -> Result<()> {
-        let bytes = self.download(id, version)?;
+        let bytes = self
+            .download(id, version)
+            .context("download skill archive")?;
         let package_sha256 = format!("{:x}", Sha256::digest(&bytes));
         let staging = tempfile::Builder::new()
             .prefix(".skill-install-")
-            .tempdir_in(&self.agent_dir)?;
+            .tempdir_in(&self.agent_dir)
+            .context("create skill staging directory")?;
         let candidate = staging.path().join("candidate");
-        fs::create_dir(&candidate)?;
+        fs::create_dir(&candidate).context("create skill staging candidate")?;
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes))?;
         let mut extracted_bytes = 0u64;
         if archive.len() > 4096 {
@@ -361,8 +370,10 @@ impl SkillManager {
                 bail!("skill archive exceeds 256 MiB uncompressed");
             }
         }
-        archive.extract(&candidate)?;
-        flatten(&candidate)?;
+        archive
+            .extract(&candidate)
+            .context("extract skill archive")?;
+        flatten(&candidate).context("flatten skill archive")?;
         let content = fs::read_to_string(candidate.join("SKILL.md"))
             .context("skill archive has no SKILL.md")?;
         let actual_id = super::extract_frontmatter_field(&content, "name");
@@ -375,12 +386,12 @@ impl SkillManager {
             version: version.to_owned(),
             package_sha256,
         };
-        let mut file = File::create(candidate.join(RECEIPT))?;
+        let mut file = File::create(candidate.join(RECEIPT)).context("create skill receipt")?;
         serde_json::to_writer(&mut file, &receipt)?;
-        file.sync_all()?;
+        file.sync_all().context("sync skill receipt")?;
 
         let app = self.app_dir();
-        fs::create_dir_all(&app)?;
+        fs::create_dir_all(&app).context("create installed skills directory")?;
         let dest = app.join(id);
         let backup = self.agent_dir.join(format!(".skill-{id}.previous"));
         db.execute(
@@ -389,17 +400,18 @@ impl SkillManager {
             params![id,version,now_ms()],
         )?;
         if backup.exists() {
-            fs::remove_dir_all(&backup)?;
+            fs::remove_dir_all(&backup).context("remove previous skill backup")?;
         }
         if dest.exists() {
-            fs::rename(&dest, &backup)?;
+            fs::rename(&dest, &backup).context("back up existing skill")?;
         }
         if let Err(error) = fs::rename(&candidate, &dest) {
             if backup.exists() {
-                fs::rename(&backup, &dest)?;
+                fs::rename(&backup, &dest)
+                    .context("restore existing skill after install failure")?;
             }
             db.execute("DELETE FROM skill_operations WHERE name=?1", [id])?;
-            return Err(error.into());
+            return Err(error).context("publish staged skill");
         }
         let finalize = db
             .execute(
@@ -411,10 +423,11 @@ impl SkillManager {
             .and_then(|_| self.finish_install(db, &receipt, &dest));
         if let Err(error) = finalize {
             if dest.exists() {
-                fs::remove_dir_all(&dest)?;
+                fs::remove_dir_all(&dest).context("remove failed skill installation")?;
             }
             if backup.exists() {
-                fs::rename(&backup, &dest)?;
+                fs::rename(&backup, &dest)
+                    .context("restore existing skill after finalization failure")?;
             }
             let _ = db.execute("DELETE FROM skill_operations WHERE name=?1", [id]);
             return Err(error);
