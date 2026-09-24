@@ -501,6 +501,13 @@ pub enum UiCmd {
     /// catalogue (`SkillsCli::list`), which carries the versions an install
     /// pins and the ones an upgrade compares against.
     SkillsCatalogueLoaded(Result<SkillCatalogue, String>),
+    /// The recommender's own `future skills list --json` answer — the same
+    /// catalogue, asked for before the user sent anything (see
+    /// [`App::prefetch_skill_catalogue`]). Its own variant because nothing on
+    /// screen asked for it: it fills the cache and is *silent* on failure (a
+    /// panel error or a transcript line here would report a call the user never
+    /// made).
+    SkillsCataloguePrefetched(Result<SkillCatalogue, String>),
     /// `/skills` `r` — a `refresh_skills` re-scan finished.
     SkillsRefreshed(Result<Value, String>),
     /// `/skills` `ctrl+o` — show the highlighted skill's preview in the pager.
@@ -1553,6 +1560,12 @@ pub struct App<T: TerminalIo> {
     /// `/skills` — the `future skills …` plumbing, or `None` when this host has
     /// no `future` executable to run (see [`skills_cli_for_host`]).
     skills_cli: Option<Arc<SkillsCli>>,
+    /// The recommender's one quiet `future skills list --json` attempt has been
+    /// made — see [`App::prefetch_skill_catalogue`]. One attempt per session is
+    /// deliberate: it is a background call nobody asked for, so a failure is not
+    /// retried on every keystroke (the `/skills` panel is where a catalogue
+    /// failure is *reported*, and opening it — or `r` — retries).
+    skills_catalogue_prefetch_started: bool,
     /// `/skills` — the set `U` named on its first press. The second press runs
     /// the upgrade only while the set is unchanged, so a catalogue that moved
     /// under the confirmation cannot upgrade more than the prompt listed.
@@ -1702,6 +1715,7 @@ impl<T: TerminalIo> App<T> {
             sandbox: None,
             skills_catalogue: None,
             skills_cli: skills_cli_for_host(),
+            skills_catalogue_prefetch_started: false,
             skills_upgrade_armed: None,
             skills_op_running: false,
             skill_reco: SkillRecoState::Idle,
@@ -2973,6 +2987,18 @@ impl<T: TerminalIo> App<T> {
                     self.request_render(false);
                 }
             },
+            UiCmd::SkillsCataloguePrefetched(result) => {
+                // The recommender's own quiet load (see
+                // [`App::prefetch_skill_catalogue`]). Success fills the same
+                // cache the panel fills. A failure is dropped in silence — the
+                // user never asked for this call, and the panel is where a
+                // catalogue problem is reported (opening it, or `r`, retries):
+                // `skills_catalogue_prefetch_started` keeps it from being
+                // retried behind their back.
+                if let Ok(catalogue) = result {
+                    self.skills_catalogue = Some(catalogue);
+                }
+            }
             UiCmd::SkillsRefreshRequested => self.request_skills_rescan(),
             UiCmd::SkillsRefreshed(result) => match result {
                 Ok(_) => {
@@ -4362,6 +4388,12 @@ impl<T: TerminalIo> App<T> {
     // ─── Autocomplete ─────────────────────────────────────────────────
 
     fn handle_input_changed(&mut self, value: &str) {
+        // The recommender's catalogue is the one thing it cannot fetch when the
+        // message is submitted (it picks from the platform catalogue, which the
+        // panel alone used to load) — so it is fetched while the draft is still
+        // being typed. Cheap and idempotent: it returns immediately once the
+        // cache is filled, and at most once per session otherwise.
+        self.prefetch_skill_catalogue(value);
         // TS: the AutocompleteManager debounces 20 ms internally; the sync
         // port defers the debounce to the app loop.
         // History browsing skips autocomplete entirely: recalling a `/…`
@@ -5113,10 +5145,30 @@ impl<T: TerminalIo> App<T> {
     /// not already asked about. The candidate set must be loaded, because
     /// asking with no candidates would recommend from nothing.
     fn recommendation_gates_pass(&self, draft: &str) -> bool {
+        if !self.draft_could_be_recommended(draft) {
+            return false;
+        }
         let trimmed = draft.trim();
+        let day = crate::skill_reco::load_at(&self.skill_reco_path);
+        if day.exhausted() || day.already_evaluated(&crate::skill_reco::message_hash(trimmed)) {
+            return false;
+        }
+        !self.skill_reco_candidates().is_empty()
+    }
+
+    /// The gates that depend on the draft alone: the feature is on, this is a
+    /// message rather than a slash command, its length is in the window, and it
+    /// does not already pick a skill.
+    ///
+    /// Split out from [`App::recommendation_gates_pass`] because the catalogue
+    /// prefetch has to ask exactly the same question — "could this draft ever
+    /// produce a card?" — and a second copy of these four rules would drift
+    /// from the first.
+    fn draft_could_be_recommended(&self, draft: &str) -> bool {
         if !self.tui_settings.skill_recommend_enabled() {
             return false;
         }
+        let trimmed = draft.trim();
         // A slash command is a local action, not a message to recommend for.
         if trimmed.starts_with('/') {
             return false;
@@ -5129,19 +5181,58 @@ impl<T: TerminalIo> App<T> {
             return false;
         }
         // The user already chose a skill for this message.
-        if draft_picks_skill(trimmed) {
-            return false;
+        !draft_picks_skill(trimmed)
+    }
+
+    /// Load the platform catalogue quietly, once, as soon as a draft could
+    /// actually be recommended.
+    ///
+    /// The recommender chooses from `catalogue − installed`, and the catalogue
+    /// came only from the `/skills` panel — so in a fresh session the candidate
+    /// set was empty, `recommendation_gates_pass` refused every message, and the
+    /// feature silently did nothing until the panel had been opened once. The
+    /// desktop client has no such gap: it loads the catalogue when it mounts,
+    /// i.e. long before a 30-byte draft exists.
+    ///
+    /// The same effect here, but keyed off the *draft* rather than the startup:
+    /// a session that never writes a recommendable message never pays for a
+    /// `future skills list` child (which reaches the platform over HTTP), and
+    /// by the time such a draft is submitted the answer has almost always
+    /// arrived (the call is ~0.15 s against a live platform). Called from
+    /// [`App::handle_input_changed`], so the load runs while the user is still
+    /// typing.
+    ///
+    /// One attempt per session: a failure leaves the cache empty and is not
+    /// retried (`skills_catalogue_prefetch_started`), because nobody asked for
+    /// this call — the panel is where a catalogue failure is reported, and
+    /// opening it (or `r`) retries.
+    fn prefetch_skill_catalogue(&mut self, draft: &str) {
+        if self.skills_catalogue.is_some() || self.skills_catalogue_prefetch_started {
+            return;
         }
-        let day = crate::skill_reco::load_at(&self.skill_reco_path);
-        if day.exhausted() || day.already_evaluated(&crate::skill_reco::message_hash(trimmed)) {
-            return false;
+        if !self.draft_could_be_recommended(draft) {
+            return;
         }
-        !self.skill_reco_candidates().is_empty()
+        // Marked before the spawn: the flag is what stops a keystroke burst from
+        // starting a second child, and it is never cleared.
+        self.skills_catalogue_prefetch_started = true;
+        // No `future` on this host: nothing to run, and nothing to say about it
+        // here (the panel reports that separately, and `i`/`u` refuse with a
+        // sentence rather than a failed spawn).
+        let Some(cli) = self.skills_cli.clone() else {
+            return;
+        };
+        let tx = self.op_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(UiCmd::SkillsCataloguePrefetched(cli.list()));
+        });
     }
 
     /// The uninstalled skills offered to the recommender: the catalogue minus
-    /// what the agent already loads. `None` when the catalogue has not been
-    /// fetched yet (the panel fetches it), in which case there is nothing to
+    /// what the agent already loads. Empty when the catalogue has not been
+    /// fetched yet — the panel fetches it, and the recommender prefetches it as
+    /// soon as a draft could be recommended for (see
+    /// [`App::prefetch_skill_catalogue`]) — in which case there is nothing to
     /// recommend from and the message is sent normally.
     fn skill_reco_candidates(&self) -> Vec<(String, String)> {
         let Some(catalogue) = self.skills_catalogue.as_ref() else {
@@ -5169,6 +5260,11 @@ impl<T: TerminalIo> App<T> {
     /// Returns true when the submission is held (the answer arrives as
     /// [`UiCmd::SkillRecoSuggested`]); false lets `handle_submit` continue.
     fn maybe_recommend_skill(&mut self, draft: &str) -> bool {
+        // The catalogue may still be missing (the prefetch has not answered yet,
+        // or this draft never went through the input's change callback): start
+        // it here too, so the *next* message can be recommended for even when
+        // this one cannot. Never awaited — a send is not held for a catalogue.
+        self.prefetch_skill_catalogue(draft);
         // The held draft is re-submitted through this same path; stand down for
         // that one pass so the send is not intercepted again.
         if self.skill_reco_send_through {
@@ -16584,6 +16680,150 @@ mod tests {
         app.skill_reco_path =
             std::env::temp_dir().join(format!("tui-test-skill-reco-{}.json", random_id()));
         app
+    }
+
+    /// A *fresh session's* app: no `/skills` panel has ever been opened, so no
+    /// catalogue has been fetched, and `future skills list --json` is an
+    /// injected fake answering from `answer`. Recommendation used to be dead in
+    /// exactly this state (see [`App::prefetch_skill_catalogue`]), which is what
+    /// these tests pin.
+    fn reco_app_without_catalogue<F>(
+        answer: F,
+    ) -> (
+        App<FakeTerminal>,
+        mpsc::UnboundedReceiver<UiCmd>,
+        std::sync::Arc<std::sync::Mutex<Vec<SkillCall>>>,
+    )
+    where
+        F: Fn(&[String]) -> Result<(i32, String, String), String> + Send + Sync + 'static,
+    {
+        let (mut app, rx) = make_app_at("127.0.0.1:1", &CliOptions::default());
+        app.skill_reco_path =
+            std::env::temp_dir().join(format!("tui-test-skill-reco-{}.json", random_id()));
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        app.skills_cli = Some(fake_skills_cli(&calls, answer));
+        assert!(app.skills_catalogue.is_none(), "a fresh session has none");
+        (app, rx, calls)
+    }
+
+    /// The catalogue the recommender picks from used to come only from the
+    /// `/skills` panel, so a fresh session had an empty candidate set: every
+    /// message was refused, silently, until the panel had been opened once.
+    /// Now the draft itself starts the fetch — while it is still being typed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_catalogue_is_prefetched_once_a_draft_could_be_recommended() {
+        let (mut app, mut rx, calls) = reco_app_without_catalogue(|_| {
+            Ok((0, SKILLS_CATALOGUE_JSON.to_string(), String::new()))
+        });
+        // The reported state: no catalogue, no card, whatever the user writes.
+        assert!(!app.recommendation_gates_pass(RECO_DRAFT));
+
+        // One keystroke that reaches the length window is enough.
+        app.handle_cmd(UiCmd::InputChanged(RECO_DRAFT.to_string()));
+        pump(&mut app, &mut rx).await;
+
+        assert_eq!(skill_list_count(&skill_args(&calls)), 1);
+        assert!(app.skills_catalogue.is_some(), "the answer fills the cache");
+        assert!(
+            app.recommendation_gates_pass(RECO_DRAFT),
+            "the message that started the prefetch can be recommended for"
+        );
+        assert!(
+            app.chat.last_message().is_none(),
+            "the user is typing, not asking: the prefetch says nothing"
+        );
+
+        // Every later keystroke (and a whole second draft) reuses the cache
+        // instead of starting another child.
+        app.handle_cmd(UiCmd::InputChanged(format!("{RECO_DRAFT}，顺便找一下")));
+        app.handle_cmd(UiCmd::InputChanged(format!(
+            "{RECO_DRAFT}，顺便找一下更多资料"
+        )));
+        pump(&mut app, &mut rx).await;
+        assert_eq!(skill_list_count(&skill_args(&calls)), 1);
+    }
+
+    /// The prefetch is a background call the user never asked for, so a failure
+    /// is dropped in silence and *not* retried on every keystroke. The panel is
+    /// where a catalogue failure is reported, and it retries.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_prefetch_is_silent_and_not_retried() {
+        let (mut app, mut rx, calls) =
+            reco_app_without_catalogue(|_| Err("the platform is unreachable".to_string()));
+
+        app.handle_cmd(UiCmd::InputChanged(RECO_DRAFT.to_string()));
+        pump(&mut app, &mut rx).await;
+
+        assert!(app.skills_catalogue.is_none());
+        assert!(
+            app.chat.last_message().is_none(),
+            "nothing was asked for, so nothing is reported: the panel reports it"
+        );
+        assert_eq!(skill_list_count(&skill_args(&calls)), 1);
+
+        // Typing on must not turn a failed background call into a child per
+        // keystroke.
+        app.handle_cmd(UiCmd::InputChanged(
+            "再换一句更长的问话看看效果如何".to_string(),
+        ));
+        pump(&mut app, &mut rx).await;
+        assert_eq!(skill_list_count(&skill_args(&calls)), 1);
+    }
+
+    /// Only a draft that could actually produce a card is worth the fetch: the
+    /// prefetch asks the same question as the gate, not a looser one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_prefetch_waits_for_a_draft_that_could_be_recommended() {
+        let (mut app, mut rx, calls) = reco_app_without_catalogue(|_| {
+            Ok((0, SKILLS_CATALOGUE_JSON.to_string(), String::new()))
+        });
+
+        // Too short to ask about (9 汉字), a local slash command, and a draft
+        // that already picks its own skill.
+        app.handle_cmd(UiCmd::InputChanged("单细胞测序如何分析".to_string()));
+        app.handle_cmd(UiCmd::InputChanged("/skills".to_string()));
+        app.handle_cmd(UiCmd::InputChanged(
+            "帮我查一下 /alpha 这个基因".to_string(),
+        ));
+        pump(&mut app, &mut rx).await;
+        assert_eq!(skill_list_count(&skill_args(&calls)), 0);
+
+        // A real message does fetch it.
+        app.handle_cmd(UiCmd::InputChanged(RECO_DRAFT.to_string()));
+        pump(&mut app, &mut rx).await;
+        assert_eq!(skill_list_count(&skill_args(&calls)), 1);
+
+        // The toggle is the user's opt-out: no fetch, no call.
+        let (mut off, mut off_rx, off_calls) = reco_app_without_catalogue(|_| {
+            Ok((0, SKILLS_CATALOGUE_JSON.to_string(), String::new()))
+        });
+        off.tui_settings.skill_recommend = Some(false);
+        off.handle_cmd(UiCmd::InputChanged(RECO_DRAFT.to_string()));
+        off.handle_submit(RECO_DRAFT);
+        pump(&mut off, &mut off_rx).await;
+        assert_eq!(skill_list_count(&skill_args(&off_calls)), 0);
+    }
+
+    /// A send whose draft never went through the input's change callback (`-p`,
+    /// a scripted submit, a paste that arrives with the Enter) still starts the
+    /// prefetch — for the *next* message. It must never hold this one: a send is
+    /// not delayed for a catalogue.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_submitted_draft_prefetches_without_holding_the_send() {
+        let (mut app, mut rx, calls) = reco_app_without_catalogue(|_| {
+            Ok((0, SKILLS_CATALOGUE_JSON.to_string(), String::new()))
+        });
+
+        assert!(
+            !app.maybe_recommend_skill(RECO_DRAFT),
+            "nothing can be recommended for yet, so the message goes out"
+        );
+        pump(&mut app, &mut rx).await;
+        assert_eq!(skill_list_count(&skill_args(&calls)), 1);
+        assert!(
+            app.recommendation_gates_pass(RECO_DRAFT),
+            "the message after it can be recommended for"
+        );
     }
 
     #[tokio::test]
