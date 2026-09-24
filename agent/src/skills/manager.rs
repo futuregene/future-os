@@ -366,7 +366,7 @@ impl SkillManager {
         let content = fs::read_to_string(candidate.join("SKILL.md"))
             .context("skill archive has no SKILL.md")?;
         let actual_id = super::extract_frontmatter_field(&content, "name");
-        let actual_version = super::extract_frontmatter_field(&content, "version");
+        let actual_version = super::extract_package_version(&content);
         if actual_id.as_deref() != Some(id) || actual_version.as_deref() != Some(version) {
             bail!("skill package identity/version differs from requested {id}@{version}");
         }
@@ -527,7 +527,7 @@ impl SkillManager {
                 let content = fs::read_to_string(md)?;
                 let id = super::extract_frontmatter_field(&content, "name")
                     .unwrap_or_else(|| entry.file_name().to_string_lossy().into_owned());
-                let declared = super::extract_frontmatter_field(&content, "version");
+                let declared = super::extract_package_version(&content);
                 let receipt = read_receipt(path)
                     .filter(|r| r.id == id && Some(&r.version) == declared.as_ref());
                 let prior_managed = previous
@@ -698,6 +698,21 @@ mod tests {
         cursor.into_inner()
     }
 
+    fn package_with_frontmatter(frontmatter: &str) -> Vec<u8> {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut archive = zip::ZipWriter::new(&mut cursor);
+            archive
+                .start_file("SKILL.md", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            archive
+                .write_all(format!("---\n{frontmatter}---\n# Skill\n").as_bytes())
+                .unwrap();
+            archive.finish().unwrap();
+        }
+        cursor.into_inner()
+    }
+
     fn server(catalogue: &str, bytes: Vec<u8>, requests: usize) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
@@ -764,6 +779,33 @@ mod tests {
             .query_row("SELECT count(*) FROM skills", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn install_accepts_metadata_version_when_top_level_version_is_missing_or_invalid() {
+        for frontmatter in [
+            "name: aeon\nmetadata: {\"version\": \"1.0\"}\n",
+            "name: aeon\nversion: \"\"\nmetadata:\n  version: 1.0\n",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let url = server("{}", package_with_frontmatter(frontmatter), 1);
+            let manager = manager(root.path(), url);
+            manager.install("aeon", "1.0").unwrap();
+        }
+    }
+
+    #[test]
+    fn install_does_not_fall_back_when_top_level_version_is_valid_but_mismatched() {
+        let root = tempfile::tempdir().unwrap();
+        let url = server(
+            "{}",
+            package_with_frontmatter(
+                "name: aeon\nversion: 2.0\nmetadata: {\"version\": \"1.0\"}\n",
+            ),
+            1,
+        );
+        let manager = manager(root.path(), url);
+        assert!(manager.install("aeon", "1.0").is_err());
     }
 
     #[test]
