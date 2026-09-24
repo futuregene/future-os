@@ -862,6 +862,77 @@
           }
         ]
       },
+      "qn-nav-variants": {
+        "variantsTitle": "提问导航 · 已采用样式（A）与两个仍然开放的加法",
+        "url": "http://localhost:8099/?multiTurn=1",
+        "variants": [
+          { "label": "A · 右缘竖排两枚圆形按钮（已实现）", "inject": "injects/qn-nav-a-stacked.js" },
+          { "label": "B · 备选：第三枚接口「回到最新」（真机上它会与输入框上方胶囊共存）", "inject": "injects/qn-nav-b-latest.js" },
+          { "label": "C · 备选：加一个提问序号读数", "inject": "injects/qn-nav-c-counter.js" }
+        ],
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tap": "工作区" },
+          { "wait": 1200 },
+          { "tapText": "整理两篇文献的结论对比表" },
+          { "wait": 2500 },
+          { "scroll": [0, -600] },
+          { "wait": 800 },
+          { "eval": "if (!document.querySelector('[aria-label=\"上一个提问\"]')) throw new Error('the question control is not on screen after scrolling away from the tail');" },
+          { "inject": "{variantInject}" },
+          { "wait": 600 },
+          { "eval": "(() => { const stack = document.querySelector('[aria-label=\"下一个提问\"]').parentElement; return [...stack.children].map(el => { const r = el.getBoundingClientRect(); return [(el.getAttribute('aria-label') || el.textContent || '').slice(0, 4), Math.round(r.left), Math.round(r.right), Math.round(r.width), Math.round(r.height)]; }); })()" },
+          { "shot": "m-qn-nav.png" }
+        ]
+      },
+      "qn-jump-states": {
+        "_comment": "一个场景跑三遍，只有注入不同：不动 / 按 ↑ / 按 ↓。'how it is aligned' 的数值断言在 qn-align-check，这里只出画面。",
+        "variantsTitle": "提问导航：滚动后出现 · 按 ↑ 之后 · 按 ↓ 之后（内容对齐方式相同）",
+        "url": "http://localhost:8099/?multiTurn=1",
+        "variants": [
+          { "label": "① 滚动离开最新：控件出现", "inject": "injects/qn-state-idle.js" },
+          { "label": "② 按 ↑：正在读的这一轮，提问顶部对齐", "inject": "injects/qn-state-up.js" },
+          { "label": "③ 按 ↓：下一个提问，同样是顶部对齐", "inject": "injects/qn-state-down.js" }
+        ],
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tap": "工作区" },
+          { "wait": 1200 },
+          { "tapText": "整理两篇文献的结论对比表" },
+          { "wait": 2500 },
+          { "scroll": [0, -600] },
+          { "wait": 800 },
+          { "eval": "if (!document.querySelector('[aria-label=\"上一个提问\"]')) throw new Error('the question control is not on screen after scrolling away from the tail');" },
+          { "inject": "{variantInject}" },
+          { "wait": 1000 },
+          { "eval": "(() => { const read = label => { const el = document.querySelector(`[aria-label=\"${label}\"]`); return el ? (el.getAttribute('aria-disabled') === 'true' ? 'disabled' : 'enabled') : 'missing'; }; const stack = document.querySelector('[aria-label=\"下一个提问\"]'); return { up: read('上一个提问'), down: read('下一个提问'), buttons: stack ? stack.parentElement.children.length : 0 }; })()" },
+          { "shot": "m-qn-jump.png" }
+        ]
+      },
+      "qn-align-check": {
+        "_comment": "把「内容是怎么对齐的」变成可失败的断言：↑ 之后，落点那一行的顶边距列表视口顶边 12px（±2），且视口里出现的就是正在读的那一轮提问。数字口径是 CSS 像素，和设计稿一致。",
+        "url": "http://localhost:8099/?multiTurn=1",
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tap": "工作区" },
+          { "wait": 1200 },
+          { "tapText": "整理两篇文献的结论对比表" },
+          { "wait": 2500 },
+          { "scroll": [0, -600] },
+          { "wait": 800 },
+          { "eval": "document.querySelector('[aria-label=\"上一个提问\"]').click()" },
+          { "wait": 900 },
+          { "eval": "(() => { const inView = el => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.top < 800 && r.width > 0 && r.height > 0; }; const scrollers = [...document.querySelectorAll('div')].filter(el => el.scrollHeight > el.clientHeight + 10 && el.clientHeight > 400); const scroller = scrollers.sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height)[0]; const viewport = scroller.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - viewport.top); const marked = [...document.querySelectorAll('div')].filter(el => getComputedStyle(el).backgroundColor === 'rgb(232, 240, 255)').filter(el => [...el.querySelectorAll('div')].some(child => getComputedStyle(child).backgroundColor === 'rgb(37, 99, 235)')).filter(inView); if (marked.length !== 1) throw new Error(`expected one marked question row, found ${marked.length}`); const inset = rel(marked[0]); const question = (marked[0].innerText || '').trim().slice(0, 8); if (Math.abs(inset - 12) > 2) throw new Error(`the landed question sits ${inset}px below the list viewport, expected 12`); if (!question.startsWith('把 Dreher')) throw new Error(`landed on the wrong question: ${question}`); return { inset, question }; })()" },
+          { "eval": "(() => { const scrollers = [...document.querySelectorAll('div')].filter(el => el.scrollHeight > el.clientHeight + 10 && el.clientHeight > 400); const viewport = scrollers.sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height)[0].getBoundingClientRect(); const inView = el => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.top < 800 && r.width > 0 && r.height > 0; }; const marked = [...document.querySelectorAll('div')].filter(el => getComputedStyle(el).backgroundColor === 'rgb(232, 240, 255)').filter(el => [...el.querySelectorAll('div')].some(child => getComputedStyle(child).backgroundColor === 'rgb(37, 99, 235)')).filter(inView)[0]; const inset = Math.round(marked.getBoundingClientRect().top - viewport.top); const edge = document.createElement('div'); edge.style.cssText = `position:fixed;left:0;right:0;top:${Math.round(viewport.top)}px;border-top:1px dashed rgba(37,99,235,.85);z-index:9999`; const span = document.createElement('div'); span.style.cssText = `position:fixed;left:22px;top:${Math.round(viewport.top + inset)}px;height:${inset}px;border-left:2px solid #2563eb;z-index:9999`; const tag = document.createElement('div'); tag.textContent = `${inset}px`; tag.style.cssText = `position:fixed;left:28px;top:${Math.round(viewport.top + 1)}px;background:#2563eb;color:#fff;font:600 12px/16px system-ui,sans-serif;padding:1px 5px;border-radius:4px;z-index:9999`; document.body.append(edge, span, tag); return `drew the ${inset}px gap under the list top edge`; })()" },
+          { "shot": "m-qn-align.png" }
+        ]
+      },
       "usage-icon-variants": {
         "variantsTitle": "会话花费入口 · 图标候选（手机端顶栏右侧）",
         "variants": [

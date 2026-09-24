@@ -298,6 +298,249 @@ export const compactResumeEntries = [
   },
 ];
 
+/**
+ * A conversation with several turns, for the controls that navigate between
+ * questions: with one exchange there is nothing to jump to. Selected with
+ * `?multiTurn=1`, so the single-turn demo stays the default.
+ *
+ * Every answer runs longer than the viewport, so "jump to the start of this
+ * question" is a real distance rather than a one-line nudge.
+ */
+const MULTI_TABLE = `| 维度 | Frank 等 (2024) | Dreher 等 (2025) |
+| --- | --- | --- |
+| 被试 | 42 名健康成年人 | 68 名健康成年人 |
+| 任务 | 轮盘赌（收益不确定） | 二选一（收益已知） |
+| 主要结论 | 多巴胺越高，越倾向于冒险 | 多巴胺越高，越倾向于规避风险 |
+| 效应量 | r = 0.41 | r = −0.33 |
+| 测量方式 | PET，[¹¹C]raclopride 结合潜能 | 瞳孔直径 + 停药挑战 |`;
+
+const MULTI_PROCESS = `## Dreher 2025 的实验流程
+
+1. **筛选（D-14 ~ D-0）**：68 名被试，排除精神科用药与药物滥用史；随机分配到安慰剂组（n = 34）与多巴胺前体耗竭组（n = 34）。
+2. **基线（D-0，上午 9:00）**：静息瞳孔直径、风险态度量表、一次 40 试次的二选一练习。
+3. **耗竭（D-0，上午 10:00 ~ 下午 2:00）**：耗竭组口服 AMPT，安慰剂组服安慰剂，双盲；4 小时后采血确认酪氨酸羟化酶抑制程度。
+4. **正式任务（D-0，下午 2:30）**：120 试次的二选一，每个试次给出确定收益（如"必得 5 元"）与随机收益（如"60% 得 12 元"）。
+5. **收尾（D-0，下午 4:00）**：再次测量瞳孔与主观唤醒度，核对盲态。
+
+> 关键设计：收益的**取值范围**在正式任务里始终已知，而这正是两篇文献结论相反的原因。`;
+
+export const multiTurnEntries = [
+  {
+    id: "m1",
+    kind: "message",
+    role: "user",
+    createdAtMs: now - 46 * minute,
+    runId: "run_m1",
+    blocks: [{
+      kind: "text",
+      text: "我把这两篇讲多巴胺和风险决策的文章放进工作区了，帮我把它们的结论整理成一张对比表。Frank 2024 和 Dreher 2025。",
+    }],
+    metadata: {
+      attachments: [
+        { path: "/Users/lixin/Research/dopamine-decision/papers/frank-2024.pdf", name: "frank-2024.pdf", kind: "file" },
+        { path: "/Users/lixin/Research/dopamine-decision/papers/dreher-2025.pdf", name: "dreher-2025.pdf", kind: "file" },
+      ],
+    },
+  },
+  {
+    id: "m2",
+    kind: "message",
+    role: "assistant",
+    createdAtMs: now - 45 * minute,
+    runId: "run_m1",
+    usage: { inputTokens: 18_420, outputTokens: 1_260 },
+    run: { status: "completed", durationMs: 74_300 },
+    blocks: [
+      {
+        kind: "reasoning",
+        text: "用户给了两份 PDF，要求做结论对比表。先把正文抽出来，确认两篇文章各自报的效应量方向和数值。",
+      },
+      { kind: "tool_call", toolCallId: "mt_1", name: "read", arguments: { path: "papers/frank-2024.pdf" } },
+      { kind: "tool_call", toolCallId: "mt_2", name: "read", arguments: { path: "papers/dreher-2025.pdf" } },
+      { kind: "tool_call", toolCallId: "mt_3", name: "shell", arguments: { command: "wc -l data/subjects.csv" } },
+      {
+        kind: "text",
+        text: `两篇文献结论并不冲突，只是结论的**适用条件**不同。
+
+## 结论对比
+
+${MULTI_TABLE}
+
+当结果范围未知时，多巴胺提升的是"去探索"的动机；当结果已经明确时，多巴胺提升的是对损失的敏感度。
+
+需要我把这两篇的**实验流程**也画成流程图吗？`,
+      },
+    ],
+  },
+  {
+    id: "m2t",
+    kind: "tool",
+    role: "tool",
+    createdAtMs: now - 44.9 * minute,
+    runId: "run_m1",
+    blocks: [
+      { kind: "tool_result", toolCallId: "mt_1" },
+      { kind: "tool_result", toolCallId: "mt_2" },
+      { kind: "tool_result", toolCallId: "mt_3" },
+    ],
+  },
+  {
+    id: "m3",
+    kind: "message",
+    role: "user",
+    createdAtMs: now - 32 * minute,
+    runId: "run_m2",
+    blocks: [{
+      kind: "text",
+      text: "Frank 那篇报的 r = 0.41 是怎么算出来的？他们的样本量够支撑这个效应量吗？",
+    }],
+  },
+  {
+    id: "m4",
+    kind: "message",
+    role: "assistant",
+    createdAtMs: now - 31 * minute,
+    runId: "run_m2",
+    usage: { inputTokens: 21_880, outputTokens: 1_640 },
+    run: { status: "completed", durationMs: 96_500 },
+    blocks: [
+      {
+        kind: "reasoning",
+        text: "用户问的是效应量的算法和样本量，先看方法部分报的是 Pearson r 还是偏相关，再核对他们的检验力说明。",
+      },
+      { kind: "tool_call", toolCallId: "mt_4", name: "read", arguments: { path: "papers/frank-2024.pdf", pages: "4-6" } },
+      { kind: "tool_call", toolCallId: "mt_5", name: "shell", arguments: { command: "python tools/power.py --r 0.41 --n 42" } },
+      {
+        kind: "text",
+        text: `## 那个 r = 0.41 的来源
+
+Frank 等报的是**结合潜能与冒险比例之间的 Pearson 相关**，不是回归系数，也不是组间差异的效应量：
+
+- 自变量：11 名被试因为 PET 数据质量被剔除后剩 **n = 42**；
+- 因变量：轮盘赌任务里选择"高方差选项"的试次比例（每人 60 试次）；
+- 相关系数 r = 0.41，对应 r² ≈ 0.168，即解释了约 17% 的个体差异。
+
+## 样本量够不够
+
+| 判据 | 数值 | 结论 |
+| --- | --- | --- |
+| 检验力（α = .05，双侧） | 0.81 | 勉强够 |
+| 该效应量达到 0.80 检验力所需 n | 40 | 刚好越过 |
+| 95% 置信区间 | [0.12, 0.63] | 下限离 0 不远 |
+
+所以：**方向上可信，量级别当真**。置信区间下沿只有 0.12，说明真实相关完全可能是弱相关；报告里说"中等偏强"是偏乐观的读法。
+
+如果要把这个数字写进综述，建议同时给出区间，并注明 PET 样本小、被试间基线差异未完全控制。`,
+      },
+    ],
+  },
+  {
+    id: "m4t",
+    kind: "tool",
+    role: "tool",
+    createdAtMs: now - 30.9 * minute,
+    runId: "run_m2",
+    blocks: [
+      { kind: "tool_result", toolCallId: "mt_4" },
+      { kind: "tool_result", toolCallId: "mt_5" },
+    ],
+  },
+  {
+    id: "m5",
+    kind: "message",
+    role: "user",
+    createdAtMs: now - 18 * minute,
+    runId: "run_m3",
+    blocks: [{
+      kind: "text",
+      text: "把 Dreher 的实验流程画成流程图，每一步标上时间窗。",
+    }],
+  },
+  {
+    id: "m6",
+    kind: "message",
+    role: "assistant",
+    createdAtMs: now - 17 * minute,
+    runId: "run_m3",
+    usage: { inputTokens: 24_310, outputTokens: 1_430 },
+    run: { status: "completed", durationMs: 88_100 },
+    blocks: [
+      {
+        kind: "reasoning",
+        text: "流程图用步骤列表加时间窗比真画图更清楚，先确认方法部分每一步的时间点。",
+      },
+      { kind: "tool_call", toolCallId: "mt_6", name: "read", arguments: { path: "papers/dreher-2025.pdf" } },
+      { kind: "text", text: MULTI_PROCESS },
+    ],
+  },
+  {
+    id: "m6t",
+    kind: "tool",
+    role: "tool",
+    createdAtMs: now - 16.9 * minute,
+    runId: "run_m3",
+    blocks: [{ kind: "tool_result", toolCallId: "mt_6" }],
+  },
+  {
+    id: "m7",
+    kind: "message",
+    role: "user",
+    createdAtMs: now - 6 * minute,
+    runId: "run_m4",
+    blocks: [{
+      kind: "text",
+      text: "最后把这两个结论写成一页中文摘要，说清楚什么条件下两篇会给出相反的建议。",
+    }],
+  },
+  {
+    id: "m8",
+    kind: "message",
+    role: "assistant",
+    createdAtMs: now - 4.5 * minute,
+    runId: "run_m4",
+    usage: { inputTokens: 27_640, outputTokens: 1_820 },
+    run: { status: "completed", durationMs: 102_400 },
+    blocks: [
+      {
+        kind: "reasoning",
+        text: "摘要要落到条件差异上，先按“结果范围是否已知”把两篇的结论摆在一起，再给实验设计的建议。",
+      },
+      { kind: "tool_call", toolCallId: "mt_7", name: "write", arguments: { path: "notes/dopamine-summary.md" } },
+      {
+        kind: "text",
+        text: `## 摘要
+
+多巴胺与风险决策的关系在两篇文献里方向相反，但这不是数据冲突，而是**任务把"风险"定义成了两件事**。
+
+### 一句话结论
+
+- 结果范围**未知**时，多巴胺升高 → 更愿意**探索**（Frank 2024，轮盘赌，r = 0.41）；
+- 结果范围**已知**时，多巴胺升高 → 更**规避损失**（Dreher 2025，二选一，r = −0.33）。
+
+### 为什么会相反
+
+1. 轮盘赌里，被试不知道收益的上限，选择高方差选项被解读为"去试试看"；二选一里，两个结果都写明了，选择高方差选项变成"接受一个明确的坏结果的风险"。
+2. 两篇的操纵方向也不同：Frank 用 PET 测基线多巴胺水平，Dreher 用耗竭法把多巴胺压低。**降下来**的动作更容易放大损失敏感度。
+3. 被试量都偏小（42 与 68），两个效应量的置信区间都碰到 0 附近，把它们读成"方向相反"比读成"强度相反"更稳妥。
+
+### 写进综述时怎么措辞
+
+> 多巴胺对风险选择的作用取决于收益分布是否已知：在未知分布下促进探索，在已知分布下提升损失敏感度。
+
+这句话两边都能引用，也不需要在正文里判谁对。`,
+      },
+    ],
+  },
+  {
+    id: "m8t",
+    kind: "tool",
+    role: "tool",
+    createdAtMs: now - 4.4 * minute,
+    runId: "run_m4",
+    blocks: [{ kind: "tool_result", toolCallId: "mt_7" }],
+  },
+];
+
 export const demoFiles = {
   rootPath: "/Users/lixin/Research/dopamine-decision",
   path: "/Users/lixin/Research/dopamine-decision",

@@ -45,6 +45,7 @@ import {
   demoSkills,
   demoUnpricedSessionUsage,
   demoWorkspaces,
+  multiTurnEntries,
   sessions,
 } from "./data";
 
@@ -101,10 +102,15 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const baseTimeline = useMemo(() => {
     // `?compactHistory=1` swaps in the history of a run that compacted
     // mid-turn, so a capture can assert the reply after the divider survives
-    // the durable projection (the schemaVersion 3 path).
-    const historyEntries = new URLSearchParams(window.location.search).get("compactHistory") === "1"
+    // the durable projection (the schemaVersion 3 path). `?multiTurn=1` swaps in
+    // a several-turn conversation, which is what the controls that jump between
+    // questions need in order to have somewhere to jump.
+    const search = new URLSearchParams(window.location.search);
+    const historyEntries = search.get("compactHistory") === "1"
       ? compactResumeEntries
-      : demoEntries;
+      : search.get("multiTurn") === "1"
+        ? multiTurnEntries
+        : demoEntries;
     const history = timelineFromEntries(historyEntries as unknown as HistoryEntry[]);
     if (!scriptedCompaction) return history;
     const manualRun = "run_1";
