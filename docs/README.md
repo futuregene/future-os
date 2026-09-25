@@ -6,8 +6,8 @@
 >
 > Every document under `docs/` ships in two languages (`name.md` = en,
 > `name.zh-CN.md` = zh); `scripts/docs/check-docs.py` enforces directory placement,
-> bilingual pairing, links and fences. Historical archives under
-> `archives/` keep their original dates and commit boundaries.
+> bilingual pairing, links, script-path references and fences. Historical
+> archives under `archives/` keep their original dates and commit boundaries.
 
 ## Guides (`guide/`)
 
@@ -100,7 +100,7 @@ to match today's code.
   [Markdown rendering audit](archives/verification/markdown-rendering-audit.md),
   [browser sync measurement](archives/verification/streaming-sync-browser-measurement.md),
   [cached-reopen measurement](archives/verification/streaming-sync-warm-measurement.md),
-  plus performance/issue reports
+  plus performance/issue reports and the de-identified measurement JSONs
 
 ## Maintainers (`maintainers/`)
 
@@ -126,7 +126,10 @@ archived under `archives/verification/` (e.g. the 2026-09-16
   Historical verification notes retain original evidence, not a permanent PASS.
 - [Documentation check](../scripts/docs/check-docs.py): `make check-docs` (or
   `python3 scripts/docs/check-docs.py`) enforces placement, bilingual pairing, local
-  links, wiki targets and fences. Two modes:
+  links, wiki targets, fences and that every repo-internal `scripts/` path named
+  in a current doc exists (Windows separators are normalised; a documented glob
+  must match at least one file; `docs/archives/**` is exempt as frozen history).
+  Two modes:
   - default — findings are errors; entries in `BILINGUAL_PENDING` are allowed
     and reported as a count, so a mid-migration tree can still be checked.
   - `--strict-pending` — final-acceptance mode: the debt list must be empty, so

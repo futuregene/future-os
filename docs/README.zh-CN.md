@@ -4,7 +4,7 @@
 > [docs/wiki/zh/Home.md](wiki/zh/Home.md)（zh）。
 >
 > `docs/` 下每篇文档均为双语（`name.md`=英文，`name.zh-CN.md`=中文）；
-> `scripts/docs/check-docs.py` 强制校验目录归属、双语配对、链接与代码围栏。
+> `scripts/docs/check-docs.py` 强制校验目录归属、双语配对、链接、脚本路径引用与代码围栏。
 > `archives/` 下的历史审计文档保留原始时间与 commit 边界。
 
 ## 指南（`guide/`）
@@ -93,7 +93,7 @@ DMG、Windows 便携 zip 与 Linux 便携 tarball。它们是**活文档**——
   [文档↔代码不符审计](archives/verification/doc-code-mismatches.zh-CN.md)、
   沙箱/E2EE/延迟审计，以及移动端快照：[Markdown 展示审计](archives/verification/markdown-rendering-audit.zh-CN.md)、
   [浏览器同步测量](archives/verification/streaming-sync-browser-measurement.zh-CN.md)、
-  [缓存重开测量](archives/verification/streaming-sync-warm-measurement.zh-CN.md) 与性能/问题报告
+  [缓存重开测量](archives/verification/streaming-sync-warm-measurement.zh-CN.md) 与性能/问题报告、去身份测量 JSON
 
 ## 维护者文档（`maintainers/`）
 
@@ -117,7 +117,9 @@ DMG、Windows 便携 zip 与 Linux 便携 tarball。它们是**活文档**——
   历史核验记录保留原始证据，而非永久 PASS。
 - [文档检查](../scripts/docs/check-docs.py)：`make check-docs`（或
   `python3 scripts/docs/check-docs.py`）强制校验目录归属、双语配对、本地链接、
-  wiki 目标与代码围栏。两种模式：
+  wiki 目标、代码围栏，以及现行文档中每个仓库内 `scripts/` 路径都真实存在
+  （Windows 分隔符先归一化处理；文档中的 glob 必须至少匹配一个文件；
+  `docs/archives/**` 作为冻结历史豁免）。两种模式：
   - 默认——问题即错误；`BILINGUAL_PENDING` 中的条目允许存在并只报告数量，
     因此迁移途中的文档树仍可校验。
   - `--strict-pending`——终验模式：债务清单必须为空，即每篇文档确实都有两种语言。
