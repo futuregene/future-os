@@ -10,7 +10,10 @@ import type { ActiveDownload, FileAction, FileOperation } from "../utils";
 import type { PreviewState } from "../useFileDownload";
 
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+jest.mock("react-native-safe-area-context", () => ({
+  SafeAreaView: "SafeAreaView",
+  useSafeAreaInsets: () => ({ top: 24, bottom: 34, left: 0, right: 0 }),
+}));
 jest.mock("lucide-react-native", () => ({ ChevronLeft: "ChevronLeft", Download: "Download", Ellipsis: "Ellipsis", ExternalLink: "ExternalLink", Share2: "Share2", X: "X" }));
 jest.mock("../../../components/MarkdownText", () => ({ MarkdownText: "MarkdownText" }));
 jest.mock("../../../components/JsonPreview", () => ({ JsonPreview: "JsonPreview" }));
@@ -206,6 +209,7 @@ describe("preview stack", () => {
   };
   let tree!: ReactTestRenderer;
   const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0]!;
+  const surface = () => tree.root.findAllByType(View).find(node => node.props.testID === "preview-surface")!;
   // One layer per open document, bottom first. `findAllByType` counts the
   // element we wrote, not the host view it renders.
   const layers = () => tree.root.findAllByType(View).filter(node => node.props.testID === "preview-layer");
@@ -229,6 +233,23 @@ describe("preview stack", () => {
     // transparent, so an unpainted layer lets the covered document's header and
     // every line of its body draw over the top document's.
     expect(layers().map(layer => StyleSheet.flatten(layer.props.style).backgroundColor)).toEqual([colors.surface, colors.surface]);
+  });
+
+  test("the reader's surface clears the Android status bar", () => {
+    // The reader draws under the status bar on purpose, so its header — and with
+    // it the overflow button's hit area — has to be inset back out of the
+    // system bar's reach. A SafeAreaView cannot do that inside a Modal, where
+    // there is no provider to resolve insets against.
+    Platform.OS = "android";
+    act(() => { tree = create(createElement(PreviewModal, { ...props, previews: [doc("/root/publishing.md")] })); });
+    expect(tree.root.findByType(Modal).props.statusBarTranslucent).toBe(true);
+    expect(StyleSheet.flatten(surface().props.style)).toMatchObject({ paddingTop: 24 });
+  });
+
+  test("an iOS page sheet takes no top inset: the system already clears the status bar for it", () => {
+    Platform.OS = "ios";
+    act(() => { tree = create(createElement(PreviewModal, { ...props, previews: [doc("/root/publishing.md")] })); });
+    expect(StyleSheet.flatten(surface().props.style).paddingTop).toBeUndefined();
   });
 
   test("the outermost document has no back control: there is nothing under it", () => {
