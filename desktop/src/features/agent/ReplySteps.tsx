@@ -14,10 +14,16 @@ export function ReplySteps({ segments, workspaceId, workspacePath, runId }: {
 }) {
   const { t } = useTranslation("agent");
   const [expanded, setExpanded] = useState(false);
-  // Mobile counts projected step rows, not the children of an already grouped
-  // same-kind burst. That burst retains its own count and detail when opened.
-  const tools = segments.filter(segment => segment.kind === "activity").length;
-  const thoughts = segments.length - tools;
+  // Work, not rows: a projected step may itself be a folded same-kind burst,
+  // and it stands for every call behind it — its `count`, the same number its
+  // own label prints when the run is opened. Counting rows made this summary
+  // contradict the list it reveals (a burst of 2 plus two singles read ×3 over
+  // four calls).
+  const tools = segments.reduce(
+    (total, segment) => segment.kind === "activity" ? total + (segment.item.count ?? 1) : total,
+    0,
+  );
+  const thoughts = segments.filter(segment => segment.kind === "thinking").length;
   const failed = segments.filter(segment => segment.kind === "activity" && segment.item.status === "failed").length;
   const summary = [
     tools ? t("activity.stepTools", { count: tools }) : null,

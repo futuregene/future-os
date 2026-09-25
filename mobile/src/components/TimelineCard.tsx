@@ -668,10 +668,18 @@ function buildReplyBlocks(segments: TimelineSegment[], streaming?: boolean): Rep
  * summary paints these as a glyph per part, so the caller renders the icon and
  * the localized wording is spent on the accessibility label — an "×5" next to a
  * glyph reads instantly, and five words of it do not fit on a phone line.
+ *
+ * A run counts work, not rows: one of its slices may itself be a folded burst of
+ * same-kind calls (the projection's own collapse), and that slice stands for
+ * every call behind it — its `count`, the same number its row prints when the
+ * run is opened. Counting rows instead made the badge contradict the list it
+ * reveals: "运行 2 次" + 已写入 + 已运行 read ×3 over four calls.
  */
 function stepRunCounts(segments: StepSegment[]): { kind: StepRunKind; count: number }[] {
   const counts: Record<StepRunKind, number> = { tool: 0, thinking: 0 };
-  for (const segment of segments) counts[stepRunKind(segment)] += 1;
+  for (const segment of segments) {
+    counts[stepRunKind(segment)] += segment.kind === "tool" ? segment.tool.count ?? 1 : 1;
+  }
   return STEP_RUN_ORDER
     .filter(kind => counts[kind] > 0)
     .map(kind => ({ kind, count: counts[kind] }));

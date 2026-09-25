@@ -126,7 +126,7 @@ it("keeps live reasoning outside the group, collapsed but expandable", async () 
   expect(thinkingButton.classList.contains("self-start")).toBe(true);
 });
 
-it("keeps a same-kind burst as one projected step with its nested count and original targets", async () => {
+it("keeps a same-kind burst as one projected step and counts every call behind it", async () => {
   const burst: MessageSegment = { id: "burst", kind: "activity", item: {
     id: "burst",
     kind: "read",
@@ -138,7 +138,9 @@ it("keeps a same-kind burst as one projected step with its nested count and orig
     ],
   } };
   await render([burst, thought]);
-  expect(summary().textContent).toBe("×1·×1");
+  // The burst is one row, but it stands for its two calls: the summary has to
+  // agree with the "Read 2 files" row it reveals, not with the row count.
+  expect(summary().textContent).toBe("×2·×1");
   await click(summary());
   const burstButton = summary().nextElementSibling!.querySelector("button")!;
   expect(burstButton.textContent).toBe(i18n.t("agent:activity.readFiles", { count: 2 }));
