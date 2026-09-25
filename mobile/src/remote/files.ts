@@ -3,8 +3,9 @@ import sha256 from "sha256-universal";
 import { hashFile as nativeFileSha256 } from "future-file-handler";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
+import * as IntentLauncher from "expo-intent-launcher";
 import * as Crypto from "expo-crypto";
-import { Image } from "react-native";
+import { Image, Platform } from "react-native";
 import { withNativePresentation } from "./nativePresentation";
 import type { RemoteClient } from "./client";
 import type { DownloadInfo, HistoryAttachment, MobileAttachment, RpcResponse } from "./types";
@@ -388,14 +389,96 @@ async function prepareImagePickerAssets(
   return combined;
 }
 
+// The gallery intent: MediaStore's image collection as its data URI, image/* as
+// its type, and no CATEGORY_OPENABLE. That last part matters — Android's own
+// document picker only advertises ACTION_PICK for openable documents, so
+// leaving the category out keeps this call on gallery apps instead of landing
+// in the file browser.
+const GALLERY_PICK_ACTION = "android.intent.action.PICK";
+const GALLERY_IMAGE_COLLECTION = "content://media/external/images/media";
+
+/**
+ * Whether `ImagePicker`'s photo contract can present an actual picker here.
+ *
+ * Android's system photo picker ships with API 33; API 30-32 reaches it through
+ * the Play-services/R-extension backport. Where neither exists, AndroidX's
+ * `PickVisualMedia` "fallback" silently degrades to `ACTION_OPEN_DOCUMENT` — the
+ * document picker, not an album. That is what a Huawei/EMUI phone without Play
+ * services did: "相册" opened the file browser. The backport cannot be probed
+ * from JS, so gate on the API level — the part of AndroidX's own availability
+ * check that JS can see.
+ */
+function hasSystemPhotoPicker(): boolean {
+  return Platform.OS !== "android" || Number(Platform.Version) >= 33;
+}
+
+type GalleryPick = { uri: string } | "cancelled" | "unavailable";
+
+/** Ask the phone's own gallery for one image. */
+async function pickFromSystemGallery(): Promise<GalleryPick> {
+  try {
+    const result = await withNativePresentation(() =>
+      IntentLauncher.startActivityAsync(GALLERY_PICK_ACTION, {
+        data: GALLERY_IMAGE_COLLECTION,
+        type: "image/*",
+      }),
+    );
+    if (result.resultCode !== IntentLauncher.ResultCode.Success || !result.data) {
+      return "cancelled";
+    }
+    return { uri: result.data };
+  } catch {
+    // No gallery app in this runtime (e.g. a compatibility container that only
+    // exposes the document picker). The caller falls back to the contract.
+    return "unavailable";
+  }
+}
+
+/**
+ * ACTION_PICK grants read access to one library photo, not a durable file, so
+ * copy it into the cache before the shared attachment pipeline sees it: a draft
+ * restored after the process is recreated still has to render and upload.
+ */
+async function prepareGalleryPick(
+  existing: MobileAttachment[],
+  uri: string,
+): Promise<MobileAttachment[]> {
+  const source = new File(uri);
+  const mimeType = source.type || mimeFor(source.name);
+  validateRawSelection(existing, [{ file: source, mimeType }]);
+  const format = imageFormat(source, mimeType);
+  if (!format) throw new Error("attachment_image_format");
+  const cached = new File(Paths.cache, `photo-${Crypto.randomUUID()}.${format}`);
+  try {
+    await source.copy(cached);
+    const [prepared] = await prepareFiles([{ file: cached, mimeType }]);
+    if (!prepared) throw new Error("attachment_failed");
+    // The generated cache name is not what the photo is called; the gallery
+    // reports the real one.
+    const combined = [...existing, { ...prepared, name: source.name || prepared.name, temporary: true }];
+    validateBatch(combined);
+    return combined;
+  } catch (error) {
+    if (cached.exists) cached.delete();
+    throw error;
+  }
+}
+
 export async function pickFromAlbum(existing: MobileAttachment[]): Promise<MobileAttachment[]> {
   const remaining = Math.min(
     MAX_IMAGES - existing.filter(item => item.kind === "image").length,
     MAX_ATTACHMENTS - existing.length,
   );
   if (remaining <= 0) throw new Error("attachment_image_count");
+  if (!hasSystemPhotoPicker()) {
+    // Older/non-GMS Android: the contract below would show the document picker,
+    // so open the gallery first and only fall back when no gallery answers.
+    const gallery = await pickFromSystemGallery();
+    if (gallery === "cancelled") return existing;
+    if (gallery !== "unavailable") return prepareGalleryPick(existing, gallery.uri);
+  }
   // Use PHPicker on iOS and Android's PickVisualMedia contract (including
-  // its system backport/fallback), not ACTION_PICK's arbitrary app resolver.
+  // its system backport/fallback) where a system photo picker exists.
   // System photo pickers grant access to selected images, not the whole library.
   // Do not block them behind READ_MEDIA_IMAGES / full-album permission.
   const result = await withNativePresentation(() =>
