@@ -23,6 +23,15 @@ export interface AgentActivityItem {
    * preview and its expandable sub-list.
    */
   children?: AgentActivityItem[];
+  /**
+   * The tool call's own identity and the run it belongs to, set when the item
+   * is projected from a persisted entry. A lean history page drops a shell
+   * call's arguments, so this is what lets the row fetch its command back when
+   * it is opened (`get_tool_call_args`) and cache it. Absent on live-lane
+   * items, which carry their target from the streamed `tool_start` already.
+   */
+  toolCallId?: string;
+  runId?: string;
 }
 
 /**

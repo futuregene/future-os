@@ -163,21 +163,27 @@ pub(crate) fn lean_replay_page(page: &mut Value, lean: bool) {
 /// Trim one history page's `entries` array for the lean feed.
 ///
 /// A history page has a different shape from the live lane — entries holding
-/// blocks rather than per-token events — but the same three payloads dominate
-/// it, measured on the three heaviest sessions:
+/// blocks rather than per-token events — but the same payloads dominate it,
+/// measured on the three heaviest sessions:
 ///
 /// | Trim | Share of the page |
 /// | --- | --- |
 /// | reasoning body | 25.6-32.2% |
 /// | tool-result body | 22.0-26.5% |
-/// | tool-call arguments beyond the four the client reads | 12.3-17.8% |
+/// | tool-call arguments | 12.3-17.8% (of which shell commands are most) |
 ///
-/// Together they are 64.4-70.7% of a page. Each is unread rather than merely
-/// unrendered, which is what makes this a removal:
+/// Each is unread rather than merely unrendered, which is what makes this a
+/// removal:
 ///
-/// - `targetFromArgs` derives a tool row's text from `command`/`path`/
-///   `file_path`/`filePath` and **never** reads any other argument key, for any
-///   tool name, so keeping exactly those four is behaviour-preserving.
+/// - `targetFromArgs` derives a **file** row's text from `path`/`file_path`/
+///   `filePath` and never reads any other argument key, so keeping exactly
+///   those three is behaviour-preserving for read/write/edit.
+/// - A **shell** row's text is its `command`, and the row shows no text until
+///   it is opened — a tap fetches the arguments back by identity
+///   (`get_tool_call_args`) and caches them, so the whole `arguments` object
+///   goes. The page carries the call's `toolCallId` (and its entry's `runId`),
+///   which is all the fetch needs; no marker field is added, because "no
+///   `arguments`" is exactly the state that means "ask for them".
 /// - `foldToolEntry` reads a result block's `toolCallId` and `isError` and
 ///   nothing else.
 /// - A reasoning block's body is only ever rendered when the row is expanded.
@@ -207,11 +213,25 @@ pub(crate) fn lean_entries(entries: &mut Value) {
                     }
                 }
                 "tool_call" => {
-                    let Some(arguments) = block.get_mut("arguments") else {
+                    // The file kinds keep only what their row label reads; every
+                    // other name (shell, and any tool this client has never
+                    // heard of — it renders those as shell) loses the whole key.
+                    let keeps_path =
+                        matches!(block["name"].as_str(), Some("read" | "write" | "edit"));
+                    let Some(fields) = block.as_object_mut() else {
                         continue;
                     };
-                    if let Some(fields) = arguments.as_object_mut() {
-                        fields.retain(|key, _| TARGET_ARGUMENT_KEYS.contains(&key.as_str()));
+                    if !keeps_path {
+                        fields.remove("arguments");
+                        continue;
+                    }
+                    let Some(arguments) = fields.get_mut("arguments") else {
+                        continue;
+                    };
+                    // A non-object argument list (a model that emitted the call
+                    // as JSON text) is not ours to reshape.
+                    if let Some(arguments) = arguments.as_object_mut() {
+                        arguments.retain(|key, _| PATH_ARGUMENT_KEYS.contains(&key.as_str()));
                     }
                 }
                 // Every other block kind is forwarded verbatim, so a future
@@ -222,9 +242,9 @@ pub(crate) fn lean_entries(entries: &mut Value) {
     }
 }
 
-/// The argument keys `targetFromArgs` reads. Anything else in `arguments`
-/// cannot affect what the client displays.
-const TARGET_ARGUMENT_KEYS: [&str; 4] = ["command", "path", "file_path", "filePath"];
+/// The argument keys a file row's target (`path`) is derived from. A shell
+/// row's `command` is fetched on demand instead — see `lean_entries`.
+const PATH_ARGUMENT_KEYS: [&str; 3] = ["path", "file_path", "filePath"];
 
 #[cfg(test)]
 mod tests {
@@ -403,6 +423,8 @@ mod tests {
                     {"kind": "text", "text": "visible answer"},
                     {"kind": "tool_call", "name": "write", "toolCallId": "c1",
                      "arguments": {"path": "/tmp/a", "content": "x".repeat(2000)}},
+                    {"kind": "tool_call", "name": "shell", "toolCallId": "c2",
+                     "arguments": {"command": "rm -rf build", "timeout": 30}},
                 ],
             },
             {
@@ -423,9 +445,17 @@ mod tests {
         assert!(blocks[0].get("text").is_none(), "reasoning body is dropped");
         // Visible text is untouched.
         assert_eq!(blocks[1]["text"], json!("visible answer"));
-        // Only the keys the target derivation can read survive.
+        // A file row keeps exactly the keys its target can be read from.
         assert_eq!(blocks[2]["arguments"], json!({"path": "/tmp/a"}));
         assert_eq!(blocks[2]["toolCallId"], json!("c1"));
+        // A shell row keeps its identity and loses the whole argument object:
+        // the command is fetched when the row is opened, and the row's absence
+        // of arguments is exactly the signal that it can be.
+        assert_eq!(blocks[3]["toolCallId"], json!("c2"));
+        assert!(
+            blocks[3].get("arguments").is_none(),
+            "a shell call's arguments ride the lazy fetch, not the page"
+        );
         // The result block keeps its identity and loses its body.
         let result = &entries[1]["blocks"][0];
         assert_eq!(result["toolCallId"], json!("c1"));
@@ -485,10 +515,10 @@ mod tests {
             lean_entries(&mut entries);
             assert_eq!(entries, before, "{kind} must be forwarded verbatim");
         }
-        // A string argument list (a model that emitted the call as JSON text) is
-        // not ours to reshape.
+        // A string argument list on a file tool (a model that emitted the call
+        // as JSON text) is not ours to reshape.
         let mut entries = json!([{"id": "e", "kind": "assistant",
-            "blocks": [{"kind": "tool_call", "arguments": "{\"content\":\"x\"}"}]}]);
+            "blocks": [{"kind": "tool_call", "name": "read", "arguments": "{\"path\":\"/a\"}"}]}]);
         let before = entries.clone();
         lean_entries(&mut entries);
         assert_eq!(entries, before);
@@ -499,44 +529,205 @@ mod tests {
         assert_eq!(not_entries, before);
     }
 
-    /// Unknown tool names are treated as `shell` by the client and read only
-    /// `command`, so trimming cannot strand a target the client would have shown.
+    /// The two rules split by tool name, and the client reads a file row's path
+    /// from the page while a shell row fetches its command on demand — so a trim
+    /// can never strand a target the client could have shown directly.
     #[test]
-    fn a_trimmed_argument_list_still_yields_every_target_the_client_can_read() {
-        let cases = [
-            ("shell", json!({"command": "ls -la", "timeout": 30})),
-            ("read", json!({"path": "/a/b", "offset": 5, "limit": 10})),
-            ("write", json!({"path": "/a/b", "content": "body"})),
-            ("edit", json!({"path": "/a/b", "edits": [{"oldText": "x"}]})),
-            // A tool name the client has never seen: `asToolKind` calls it shell
-            // and reads `command`, which survives if it was there.
-            ("future_tool", json!({"command": "do", "secret": "s"})),
-            ("future_query_tool", json!({"query": "s"})),
-        ];
-        for (name, arguments) in cases {
-            let expected = trimmed(arguments.clone());
+    fn a_trimmed_argument_list_keeps_only_what_each_row_label_reads() {
+        // File kinds: the path keys survive, every other argument goes.
+        for (name, arguments, expected) in [
+            (
+                "read",
+                json!({"path": "/a/b", "offset": 5, "limit": 10}),
+                json!({"path": "/a/b"}),
+            ),
+            (
+                "write",
+                json!({"file_path": "/a/b", "content": "body"}),
+                json!({"file_path": "/a/b"}),
+            ),
+            (
+                "edit",
+                json!({"filePath": "/a/b", "command": "not read", "edits": []}),
+                json!({"filePath": "/a/b"}),
+            ),
+        ] {
             let mut entries = json!([{"id": "e", "kind": "assistant", "blocks": [
                 {"kind": "tool_call", "name": name, "toolCallId": "c", "arguments": arguments},
             ]}]);
             lean_entries(&mut entries);
             assert_eq!(
                 entries[0]["blocks"][0]["arguments"], expected,
-                "{name} must keep exactly the keys a target can come from"
+                "{name} must keep exactly the path a target can come from"
             );
         }
-    }
-
-    fn trimmed(arguments: Value) -> Value {
+        // Shell, and any name the client has never seen (it renders those as
+        // shell too): the whole key goes, identity stays for the lazy fetch.
+        for (name, arguments) in [
+            ("shell", json!({"command": "ls -la", "timeout": 30})),
+            ("future_tool", json!({"command": "do", "secret": "s"})),
+            ("future_query_tool", json!({"query": "s"})),
+        ] {
+            let mut entries = json!([{"id": "e", "kind": "assistant", "blocks": [
+                {"kind": "tool_call", "name": name, "toolCallId": "c", "arguments": arguments},
+            ]}]);
+            lean_entries(&mut entries);
+            let block = &entries[0]["blocks"][0];
+            assert!(
+                block.get("arguments").is_none(),
+                "{name} must lose its arguments; the row fetches them on open"
+            );
+            assert_eq!(block["toolCallId"], json!("c"));
+        }
+        // A tool name the agent reports but the client's `asToolKind` has no
+        // file kind for keeps the same rule even with no name at all.
         let mut entries = json!([{"id": "e", "kind": "assistant", "blocks": [
-            {"kind": "tool_call", "arguments": arguments},
+            {"kind": "tool_call", "toolCallId": "c", "arguments": {"command": "x"}},
         ]}]);
         lean_entries(&mut entries);
-        entries[0]["blocks"][0]["arguments"].clone()
+        assert!(entries[0]["blocks"][0].get("arguments").is_none());
+    }
+
+    /// Derive the mobile render fixtures' lean pages from their full-feed
+    /// counterparts **through the shipping trims**.
+    ///
+    /// Driven by `scripts/screenshots/gen-lean-render-fixtures.mjs`, which writes
+    /// the full-feed fixture files (the wire shapes `rpc/prompt_helpers.rs` and
+    /// the history relay produce) and then runs this test. The lean files are the
+    /// output of [`lean_event_data`] / [`lean_entries`] themselves, so a render
+    /// capture cannot quietly test a hand-trimmed paraphrase of the wire: if a
+    /// trim changes, regenerating the fixtures changes what the phone is fed.
+    ///
+    /// The assertions below are the point of that claim — a generation run that
+    /// silently produced an untrimmed file would make every render check vacuous.
+    #[test]
+    #[ignore = "fixture generation: needs LEAN_RENDER_FIXTURES"]
+    fn generate_render_fixtures() {
+        let dir = std::env::var("LEAN_RENDER_FIXTURES").expect("LEAN_RENDER_FIXTURES");
+        let dir = std::path::Path::new(&dir);
+
+        for (input, output) in [
+            (
+                "render-full-lane-events.json",
+                "render-lean-lane-events.json",
+            ),
+            (
+                "render-full-lane-mid-events.json",
+                "render-lean-lane-mid-events.json",
+            ),
+        ] {
+            // The live lane: one event at a time, exactly like `publish_event`.
+            let raw = std::fs::read_to_string(dir.join(input)).expect("full lane events readable");
+            let full: Value = serde_json::from_str(&raw).expect("full lane events json");
+            let mut lean_events = Vec::new();
+            for event in full.as_array().expect("events array") {
+                let event_type = event["type"].as_str().unwrap_or_default().to_string();
+                let data = event["data"].as_str().unwrap_or_default().to_string();
+                let Some(rewritten) = lean_event_data(&event_type, &data) else {
+                    continue;
+                };
+                let mut copy = event.clone();
+                if let Cow::Owned(trimmed) = rewritten {
+                    copy["data"] = Value::String(trimmed);
+                }
+                lean_events.push(copy);
+            }
+            assert!(
+                !lean_events.is_empty(),
+                "{input} produced an empty lean lane"
+            );
+            for event in &lean_events {
+                let event_type = event["type"].as_str().unwrap_or_default();
+                assert!(
+                    !is_dropped(event_type),
+                    "{event_type} is streamed-only content and must not survive {input}"
+                );
+            }
+            std::fs::write(
+                dir.join(output),
+                serde_json::to_string_pretty(&Value::Array(lean_events)).expect("serializes"),
+            )
+            .expect("lean lane events writable");
+        }
+
+        let raw = std::fs::read_to_string(dir.join("render-lean-lane-events.json"))
+            .expect("lean lane events readable");
+        let lean_lane: Value = serde_json::from_str(&raw).expect("lean lane events json");
+        let lean_events = lean_lane.as_array().expect("events array");
+
+        // The history page: an in-place trim of the entries array, exactly like
+        // `history.rs` does for a page it is about to relay.
+        let raw = std::fs::read_to_string(dir.join("render-full-history-entries.json"))
+            .expect("full history entries readable");
+        let mut lean_entries_value: Value =
+            serde_json::from_str(&raw).expect("full history entries json");
+        lean_entries(&mut lean_entries_value);
+
+        // Self-checks: the generated lean files must actually be lean, and must
+        // still carry what the phone reads instead.
+        for event in lean_events {
+            let event_type = event["type"].as_str().unwrap_or_default();
+            if event_type == "tool_end" || event_type == "tool_result" {
+                let data: Value = serde_json::from_str(event["data"].as_str().unwrap_or("{}"))
+                    .expect("tool event data json");
+                assert!(
+                    data.get("text").is_none(),
+                    "tool_end output must be dropped"
+                );
+            }
+        }
+        for entry in lean_entries_value.as_array().expect("entries array") {
+            for block in entry["blocks"].as_array().into_iter().flatten() {
+                match block["kind"].as_str().unwrap_or_default() {
+                    "reasoning" => assert!(
+                        block.get("text").is_none(),
+                        "a lean reasoning block carries no body"
+                    ),
+                    "tool_result" => assert!(
+                        block.get("text").is_none(),
+                        "a lean tool_result carries no body"
+                    ),
+                    "tool_call" => {
+                        let kept = block["arguments"].as_object();
+                        if matches!(block["name"].as_str(), Some("read" | "write" | "edit")) {
+                            // A file row keeps exactly the keys its target is
+                            // derived from.
+                            for key in kept.into_iter().flatten() {
+                                assert!(
+                                    PATH_ARGUMENT_KEYS.contains(&key.0.as_str()),
+                                    "argument {key:?} is not one the target derivation reads"
+                                );
+                            }
+                        } else {
+                            // A shell row keeps none: the command is what the
+                            // on-open fetch returns, so a fixture that still
+                            // carried it would render a page the phone never sees.
+                            assert!(
+                                kept.is_none(),
+                                "a shell row's arguments are fetched on open, not in the page"
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(
+            lean_events.iter().any(|event| event["type"] == "tool_end"),
+            "the settled lane fixture has to keep at least one tool_end for the render checks"
+        );
+
+        std::fs::write(
+            dir.join("render-lean-history-entries.json"),
+            serde_json::to_string_pretty(&lean_entries_value).expect("serializes"),
+        )
+        .expect("lean history entries writable");
+        println!("LEAN_RENDER_FIXTURES written to {}", dir.display());
     }
 
     /// Measure the trim against real history, through the shipping code.
     ///
-    /// Driven by `scripts/measure-lean-history.py`, which dumps one session's
+    /// Driven by `scripts/measure/measure-lean-history.py`, which dumps one session's
     /// `get_session_entries` reply to a file and supplies its path. Runs against
     /// the live (read-only) agent, so the numbers describe real sessions rather
     /// than a synthetic payload.
@@ -568,6 +759,14 @@ mod tests {
 
         lean_entries(&mut entries);
         let after = sized(&entries);
+
+        // When asked, keep the trimmed page so the trim can be audited on real
+        // data (which keys a shell row kept, which it lost) instead of only
+        // trusted as a size.
+        if let Ok(path) = std::env::var("LEAN_HISTORY_OUT") {
+            std::fs::write(path, serde_json::to_vec(&entries).expect("serializes"))
+                .expect("trimmed entries writable");
+        }
 
         println!(
             "LEAN_HISTORY {}",

@@ -164,7 +164,7 @@ history search/get, never by replaying old tool side effects.
 ```sh
 cargo test -p future-agent
 cargo build -p future-cli --bin future
-python3 scripts/test_s2_compaction.py --binary target/debug/future --report target/c-smoke.json
+python3 scripts/tests/test_s2_compaction.py --binary target/debug/future --report target/c-smoke.json
 ```
 
 Use `future.exe` on Windows and respect `CARGO_TARGET_DIR`. The synthetic smoke uses its own

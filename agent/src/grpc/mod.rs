@@ -176,6 +176,7 @@ const BACKGROUND_COMMANDS: &[&str] = &[
     "get_commands",
     "get_session_entries",
     "get_state",
+    "get_tool_call_args",
     "get_tool_output",
     "list_models",
     "list_providers",

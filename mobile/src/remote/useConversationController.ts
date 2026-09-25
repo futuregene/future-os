@@ -10,6 +10,7 @@ import {
 } from "./files";
 import type { SyncEngine } from "./syncEngine";
 import { requestReadPage } from "./readPages";
+import { asToolKind, normalizeArgs, targetFromArgs } from "@future-os/thread-projection";
 import { loadLastModel, loadLastThinking, saveLastModel, saveLastThinking } from "./storage";
 import { markApprovalDecision } from "./timeline";
 import { modelProviderFromReference, modelReference } from "./types";
@@ -91,6 +92,12 @@ export function useConversationController({
   const [sessionUsage, setSessionUsage] = useState<RemoteSessionUsage | null>(null);
   const [openingSession, setOpeningSession] = useState(false);
   const settingsRevision = useRef(0);
+  /**
+   * Targets already fetched for lean history rows, keyed by
+   * `session\u0000run\u0000call`. One conversation's worth of user-opened rows,
+   * so it is bounded by taps rather than by history size.
+   */
+  const toolTargetsRef = useRef(new Map<string, string | null>());
 
   const applySessionSettings = useCallback((sessionId: string, state: Pick<RemoteSessionState, "model" | "thinkingLevel" | "usage">) => {
     if (!sessionId || sessionId !== selectedRef.current) return;
@@ -248,6 +255,37 @@ export function useConversationController({
       };
     });
   }, [clientRef, conversationEpochRef]);
+
+  /**
+   * Fetch the display target of one tool call whose arguments a lean history
+   * page omitted, and remember it for the rest of this conversation.
+   *
+   * The page carries the call's identity but not its arguments, so the row asks
+   * for them when the user opens it. A hit is answered from the cache — a
+   * remounted row (the list virtualizes) must not re-ask for the same command —
+   * and a call whose arguments yield no target is remembered as such, so a tap
+   * on a miss cannot turn into a request per render. Keyed by session too: the
+   * same call id in another conversation must never answer here.
+   */
+  const resolveToolCallTarget = useCallback(async (toolCallId: string, runId: string) => {
+    const client = clientRef.current;
+    const sessionId = selectedRef.current;
+    if (!client || !sessionId) throw new Error("not_connected");
+    const key = `${sessionId}\u0000${runId}\u0000${toolCallId}`;
+    const cached = toolTargetsRef.current.get(key);
+    if (cached !== undefined) return cached;
+    const response = await client.requestRetry<{
+      toolCallId?: string;
+      name?: string;
+      arguments?: unknown;
+    }>({ type: "get_tool_call_args", sessionId, runId, toolCallId }, sessionId);
+    const target = targetFromArgs(
+      asToolKind(response.data?.name ?? ""),
+      normalizeArgs(response.data?.arguments ?? null),
+    );
+    toolTargetsRef.current.set(key, target ?? null);
+    return target ?? null;
+  }, [clientRef, selectedRef]);
 
   const listSessionFiles = useCallback(async (path = "") => {
     const client = clientRef.current;
@@ -437,6 +475,7 @@ export function useConversationController({
     newConversation,
     listSessionFiles,
     listSkills,
+    resolveToolCallTarget,
     prepareAttachment,
     cachedAttachment,
     downloadAttachment,

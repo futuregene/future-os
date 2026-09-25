@@ -4,7 +4,7 @@ import importlib.util
 from pathlib import Path
 import unittest
 
-spec = importlib.util.spec_from_file_location("profiles", Path(__file__).resolve().parents[1] / "validate-ios-share-profiles.py")
+spec = importlib.util.spec_from_file_location("profiles", Path(__file__).resolve().parents[0] / "validate-ios-share-profiles.py")
 profiles = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(profiles)
 

@@ -191,11 +191,11 @@ bwrap/inner 没有 completion 且非信号终止时 helper 返回 infrastructure
 在候选仓库根目录、原生Linux普通环境执行（VM可，容器/WSL不能替代）：
 
 ```bash
-./scripts/test-linux-sandbox-real-machine.sh
+./scripts/tests/test-linux-sandbox-real-machine.sh
 # 可选完整 Rust workspace 测试
-./scripts/test-linux-sandbox-real-machine.sh --full
+./scripts/tests/test-linux-sandbox-real-machine.sh --full
 # GUI 开发启动
-./scripts/start-desktop-linux.sh
+./scripts/dev/start-desktop-linux.sh
 ```
 
 脚本收集环境、构建probe、Linux单测、大于十万项夹具、stderr捕获回归、所有ignored smoke、fmt/clippy，输出 `linux-sandbox-evidence-*.tar.gz`。不安装软件/改变系统策略；出现 `skipping Linux sandbox smoke` 必须失败。**不要固定写“7个测试”**，以候选源码实际套件为准。
