@@ -4,6 +4,7 @@ import * as FS from "expo-file-system";
 import { hashFile as nativeFileSha256 } from "future-file-handler";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
+import * as IntentLauncher from "expo-intent-launcher";
 import { Image, Platform } from "react-native";
 import type { RemoteClient } from "../client";
 import type { DownloadInfo, HistoryAttachment, MobileAttachment } from "../types";
@@ -167,6 +168,12 @@ jest.mock("expo-image-picker", () => ({
 }));
 
 
+jest.mock("expo-intent-launcher", () => ({
+  __esModule: true,
+  ResultCode: { Success: -1, Canceled: 0 },
+  startActivityAsync: jest.fn(),
+}));
+
 jest.mock("expo-crypto", () => ({
   __esModule: true,
   CryptoDigestAlgorithm: { SHA256: "SHA-256" },
@@ -218,6 +225,7 @@ const mockedLaunchCamera = ImagePicker.launchCameraAsync as jest.Mock;
 const mockedRequestLibrary = ImagePicker.requestMediaLibraryPermissionsAsync as jest.Mock;
 const mockedLaunchLibrary = ImagePicker.launchImageLibraryAsync as jest.Mock;
 const mockedPendingResult = ImagePicker.getPendingResultAsync as jest.Mock;
+const mockedStartActivity = IntentLauncher.startActivityAsync as jest.Mock;
 const mockedDigest = Crypto.digest as jest.Mock;
 const mockedGetSize = Image.getSize as jest.Mock;
 
@@ -678,12 +686,26 @@ describe("takePhoto", () => {
 describe("pickFromAlbum", () => {
   afterEach(() => {
     Platform.OS = "ios";
+    Object.assign(Platform, { Version: 0 });
   });
+
+  /** API 33+ always has the system photo picker; older versions may not. */
+  function useSystemPhotoPickerDevice(): void {
+    Platform.OS = "android";
+    Object.assign(Platform, { Version: 33 });
+  }
+
+  /** An Android device whose contract degrades to the document picker. */
+  function useGalleryOnlyDevice(): void {
+    Platform.OS = "android";
+    Object.assign(Platform, { Version: 31 });
+  }
 
   test.each(["ios", "android"] as const)(
     "%s opens the system album without requesting full-library access",
     async os => {
-      Platform.OS = os;
+      if (os === "android") useSystemPhotoPickerDevice();
+      else Platform.OS = os;
       mockedRequestLibrary.mockResolvedValue({ granted: false });
       mockedLaunchLibrary.mockResolvedValue({ canceled: true, assets: [] });
       await pickFromAlbum([]);
@@ -695,7 +717,7 @@ describe("pickFromAlbum", () => {
   );
 
   test("Android delegates backport/fallback selection to the native photo contract, never an app resolver", async () => {
-    Platform.OS = "android";
+    useSystemPhotoPickerDevice();
     mockedLaunchLibrary.mockResolvedValue({ canceled: false, assets: [
       { uri: "file:///album/one.png", mimeType: "image/png" },
       { uri: "file:///album/two.png", mimeType: "image/png" },
@@ -706,6 +728,52 @@ describe("pickFromAlbum", () => {
     expect(mockedLaunchLibrary).toHaveBeenCalledWith(expect.objectContaining({ allowsMultipleSelection: true, allowsEditing: false, legacy: false }));
     expect(mockFS.File.pickFileAsync).not.toHaveBeenCalled();
     expect(mockedRequestLibrary).not.toHaveBeenCalled();
+  });
+
+  test("Android below 33 opens the phone's gallery instead of the document picker", async () => {
+    useGalleryOnlyDevice();
+    mockedStartActivity.mockResolvedValue({
+      resultCode: -1,
+      data: "content://media/external/images/media/42",
+    });
+    mockFS.__set("content://media/external/images/media/42", {
+      bytes: new Uint8Array(10),
+      type: "image/png",
+    });
+
+    const result = await pickFromAlbum([]);
+
+    expect(mockedStartActivity).toHaveBeenCalledWith("android.intent.action.PICK", {
+      data: "content://media/external/images/media",
+      type: "image/*",
+    });
+    expect(mockedLaunchLibrary).not.toHaveBeenCalled();
+    expect(mockedRequestLibrary).not.toHaveBeenCalled();
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      kind: "image",
+      mimeType: "image/png",
+      temporary: true,
+      name: "42",
+    });
+  });
+
+  test("Android below 33 returns existing attachments when the gallery is cancelled", async () => {
+    useGalleryOnlyDevice();
+    mockedStartActivity.mockResolvedValue({ resultCode: 0 });
+    const existing = [attachment()];
+    expect(await pickFromAlbum(existing)).toBe(existing);
+    expect(mockedLaunchLibrary).not.toHaveBeenCalled();
+  });
+
+  test("Android below 33 falls back to the photo contract when no gallery answers", async () => {
+    useGalleryOnlyDevice();
+    mockedStartActivity.mockRejectedValue(new Error("No activity found to handle Intent"));
+    mockedLaunchLibrary.mockResolvedValue({ canceled: true, assets: [] });
+    await pickFromAlbum([]);
+    expect(mockedLaunchLibrary).toHaveBeenCalledWith(
+      expect.objectContaining({ legacy: false, defaultTab: "albums" }),
+    );
   });
 
   test("propagates native picker errors without trying a different app", async () => {

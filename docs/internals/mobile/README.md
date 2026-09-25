@@ -146,10 +146,15 @@ offline push.
   prefetch.
 - Attachment sources and file open/save/share menus reuse `ActionMenu`; after
   choosing a source, wait for the menu to close before invoking the system
-  camera, photo, or file picker. The Android gallery uses `PickVisualMedia`
-  (system-chosen compatibility fallback), no longer preferring `ACTION_PICK`
-  into arbitrary third-party galleries. System permission dialogs and system
-  pickers are still drawn by the OS.
+  camera, photo, or file picker. On Android 13+ the gallery uses
+  `PickVisualMedia` (the system photo picker). Below API 33 AndroidX resolves
+  that contract to `ACTION_OPEN_DOCUMENT` whenever the Play-services photo
+  picker backport is absent — the document picker, not an album — which is what
+  a Huawei phone without Play services showed. Those devices open the gallery
+  with `ACTION_PICK` on MediaStore's image collection instead, and fall back to
+  the contract only when no gallery app answers. Neither route needs a
+  full-album permission: both grant access to the chosen photos alone. System
+  permission dialogs and system pickers are still drawn by the OS.
 - Returning to the list from a session keeps the list instance and scroll
   position; the list's reverse enter animation is not replayed. In the
   workspace and conversation lists, independent sessions keep compact spacing
