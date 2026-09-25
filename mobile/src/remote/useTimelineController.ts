@@ -17,7 +17,7 @@ import {
   timelineFromEntries,
   type TimelineState,
 } from "./timeline";
-import type { EntriesData, RemoteSessionState, StreamEvent, CompactionOutcome } from "./types";
+import type { EntriesData, HistoryEntry, RemoteSessionState, StreamEvent, CompactionOutcome } from "./types";
 
 const TIMELINE_LOAD_TIMEOUT_MS = 15_000;
 /** Manual compaction waits for its terminal event, not for the summary itself. */
@@ -443,6 +443,42 @@ export function useTimelineController({
       let entries = response.entries ?? [];
       let nextBefore = response.nextOffset ?? 0;
       let hasMore = response.hasMore === true && nextBefore > 0;
+      // A byte-trimmed tail page sheds whole oldest exchanges to fit the
+      // bridge's reply budget, so it can come back holding fewer exchanges
+      // than the window is meant to show (the tool-dense session that surfaced
+      // this returned a single exchange). The shed exchanges are still durable
+      // and still paged (hasMore stays true) — without backfilling them here
+      // they only ever reappear if the user manually pages up, which reads as
+      // "older messages were eaten". Backfill whole older exchanges until the
+      // window holds its full exchange count or the journal runs out. Only a
+      // page the bridge explicitly marked trimmed is short by construction; a
+      // genuinely short session must not trigger these extra reads. The
+      // backward byte budget only trims the newest page, so these gap reads
+      // return complete exchanges.
+      const countUsers = (rows: HistoryEntry[]) =>
+        rows.reduce((n, row) => n + (row.role === "user" ? 1 : 0), 0);
+      let tailTrimmed = response.trimmed === true;
+      while (
+        tailTrimmed &&
+        hasMore &&
+        countUsers(entries) < HISTORY_PAGE_USER_EXCHANGES &&
+        nextBefore > 0
+      ) {
+        const older = await readHistoryPage(client, sessionId, nextBefore, isCurrent);
+        const olderEntries = older.entries ?? [];
+        const start = older.nextOffset ?? 0;
+        if (
+          !Number.isSafeInteger(start) || start < 0 || start >= nextBefore ||
+          start + olderEntries.length !== nextBefore
+        ) {
+          throw new Error("history_tail_backfill_cursor_invalid");
+        }
+        entries = [...olderEntries, ...entries];
+        nextBefore = start;
+        hasMore = older.hasMore === true && start > 0;
+        tailTrimmed = older.trimmed === true;
+        if (olderEntries.length === 0) break;
+      }
       const endOffset = nextBefore + entries.length;
       // A newer durable window supersedes any page still waiting to commit.
       if (olderRequestRef.current?.sessionId === sessionId)

@@ -93,6 +93,10 @@ pub(crate) fn prepare_backward_entries_page_with_cap(
         "offset": next_offset,
         "nextOffset": next_offset,
         "hasMore": agent_has_more || removed > 0,
+        // The page shed whole oldest exchanges to fit the byte budget. A
+        // chunked reader (mobile) uses this to backfill the missing exchanges
+        // instead of showing a window that silently starts mid-history.
+        "trimmed": removed > 0,
         "entries": entries,
     })
 }
