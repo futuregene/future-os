@@ -3,6 +3,7 @@ import { AppState, StyleSheet, type AppStateStatus } from "react-native";
 import { colors } from "../../theme/tokens";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { TimelineCard } from "../TimelineCard";
+import type { TimelineCardProps } from "../TimelineCard";
 import type { TimelineItem, TimelineSegment, TimelineToolRow } from "../../remote/types";
 
 jest.mock("../MarkdownText", () => ({ MarkdownText: "MarkdownText" }));
@@ -46,8 +47,8 @@ afterEach(() => { if (tree) act(() => tree.unmount()); });
 const reply = (fields: Partial<Extract<TimelineItem, { kind: "message" }>>): TimelineItem => ({
   kind: "message", role: "assistant", id: "a", text: "reply", ...fields,
 });
-function render(item: TimelineItem) {
-  act(() => { tree = create(createElement(TimelineCard, { item })); });
+function render(item: TimelineItem, props: Partial<TimelineCardProps> = {}) {
+  act(() => { tree = create(createElement(TimelineCard, { item, ...props })); });
 }
 function hasText(text: string) {
   return tree.root.findAll(node => node.props.children === text).length > 0;
@@ -498,4 +499,74 @@ test("a manual compaction divider reports both counts too", () => {
     segments: [compaction({ tokensBefore: 33_064, tokensAfter: 9_250, trigger: "manual" })],
   }));
   expect(hasText("Manually compacted · 33,064 → 9,250 tokens (estimated)")).toBe(true);
+});
+
+/**
+ * A lean history page omits a shell call's arguments, so the row arrives with
+ * no target. Tapping it must fetch the command by the call's identity and show
+ * it; a fetch that fails (offline, or a desktop without the command) must
+ * leave the row exactly as it was — never block the list, never reject.
+ */
+describe("a tool row whose target the lean page omitted", () => {
+  const trimmedShell = (fields: Partial<TimelineToolRow> = {}): TimelineSegment =>
+    tool("c1", {
+      detail: undefined,
+      toolCallId: "call_1",
+      runId: "run_1",
+      ...fields,
+    });
+
+  test("fetches the command when opened, shows it, and never asks twice", async () => {
+    const resolveToolTarget = jest.fn(async () => "ls -la /tmp");
+    render(reply({ segments: [trimmedShell()] }), { onResolveToolTarget: resolveToolTarget });
+    // Nothing is shown up front: the command is not in the page.
+    expect(hasText("ls -la /tmp")).toBe(false);
+    const row = rowButton("chat.runCompleted");
+    expect(row.props.disabled).toBe(false);
+    await act(async () => { row.props.onPress(); });
+    expect(resolveToolTarget).toHaveBeenCalledWith("call_1", "run_1");
+    expect(hasText("ls -la /tmp")).toBe(true);
+    // Collapse and re-open: the row already holds the command, so the resolver
+    // is not asked again.
+    act(() => rowButton("chat.runCompleted").props.onPress());
+    act(() => rowButton("chat.runCompleted").props.onPress());
+    expect(resolveToolTarget).toHaveBeenCalledTimes(1);
+    expect(hasText("ls -la /tmp")).toBe(true);
+  });
+
+  test("a failed fetch leaves the row untouched and never blocks the reply", async () => {
+    const resolveToolTarget = jest.fn(async () => {
+      throw new Error("Unsupported command: get_tool_call_args");
+    });
+    // One step row beside prose (a second step row would fold into a run
+    // summary, which is not what this test is about).
+    render(reply({ segments: [trimmedShell(), prose("t1", "answer")] }), {
+      onResolveToolTarget: resolveToolTarget,
+    });
+    await act(async () => { rowButton("chat.runCompleted").props.onPress(); });
+    expect(resolveToolTarget).toHaveBeenCalledTimes(1);
+    // The row is still the collapsed badge it was, with no invented target, and
+    // the rest of the reply rendered regardless.
+    const row = rowButton("chat.runCompleted");
+    expect(railOf(row)).toBe("flex-end");
+    // The prose beside it still rendered (MarkdownText is a host stub here).
+    expect(
+      tree.root
+        .findAll(node => (node.type as unknown) === "MarkdownText")
+        .some(node => node.props.text === "answer"),
+    ).toBe(true);
+    expect(hasText("Unsupported command: get_tool_call_args")).toBe(false);
+    // It stays tappable: a later attempt (reconnected, newer desktop) may work.
+    expect(row.props.disabled).toBe(false);
+  });
+
+  test("a row with no call identity is not tappable and never resolves", () => {
+    const resolveToolTarget = jest.fn(async () => "should not be asked for");
+    render(reply({ segments: [tool("c1", { detail: undefined })] }), {
+      onResolveToolTarget: resolveToolTarget,
+    });
+    const row = rowButton("chat.runCompleted");
+    expect(row.props.disabled).toBe(true);
+    expect(resolveToolTarget).not.toHaveBeenCalled();
+  });
 });

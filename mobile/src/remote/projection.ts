@@ -900,6 +900,8 @@ function segmentToTimeline(segment: MessageSegment): TimelineSegment {
           ...(activity.children?.length
             ? { children: activity.children.map(activityToToolRow) }
             : {}),
+          ...(activity.toolCallId ? { toolCallId: activity.toolCallId } : {}),
+          ...(activity.runId ? { runId: activity.runId } : {}),
         },
       };
     }
@@ -923,6 +925,8 @@ function activityToToolRow(activity: AgentActivityItem): TimelineToolRow {
     complete: activity.status !== "running",
     status: activity.status,
     ...(activity.detail ? { detail: activity.detail } : {}),
+    ...(activity.toolCallId ? { toolCallId: activity.toolCallId } : {}),
+    ...(activity.runId ? { runId: activity.runId } : {}),
   };
 }
 

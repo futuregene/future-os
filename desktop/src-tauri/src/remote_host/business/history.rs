@@ -156,6 +156,43 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
             }
         }
+        // A lean client's way back to the arguments its page omitted. Gated on
+        // the declaration that asked for the trim: an undeclared client's page
+        // still carries every argument, so it has no use for this command and
+        // must not find a path to it (the reply is the same "unsupported" a
+        // client of an older bridge would get).
+        "get_tool_call_args" => {
+            if !crate::remote_host::lean::enabled() {
+                reply(
+                    sink,
+                    false,
+                    Value::Null,
+                    Some("Unsupported command: get_tool_call_args"),
+                )
+                .await;
+                return;
+            }
+            if cmd.session_id.is_empty() || cmd.run_id.is_empty() || cmd.tool_call_id.is_empty() {
+                reply(
+                    sink,
+                    false,
+                    Value::Null,
+                    Some("sessionId, runId and toolCallId are required"),
+                )
+                .await;
+                return;
+            }
+            match crate::agent_bridge::get_tool_call_args(
+                cmd.session_id.clone(),
+                cmd.run_id.clone(),
+                cmd.tool_call_id.clone(),
+            )
+            .await
+            {
+                Ok(data) => reply(sink, true, data, None).await,
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            }
+        }
         "get_events_since" => {
             if cmd.prefer_snapshot
                 && cmd.chunked_read

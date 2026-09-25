@@ -62,6 +62,8 @@ Coverage, profiling and performance measurement tooling.
 - `measure-live-lane.py` — real-traffic lane measurement driven against the desktop publisher.
 - `measure-lean-history.py` — measures the lean history page (reasoning bodies, tool output,
   unused call arguments) against real sessions, replayed through the shipping Rust trim.
+  `--pages N` measures the actual backward pages of N user exchanges the phone reads,
+  newest first, instead of whole sessions.
 - `measure-mobile-performance.mjs` — builds an offline browser A/B probe (baseline ref vs working tree).
 - `measure-mobile-performance.ts` — probe entry that imports the production mobile sync code.
 - `serve-mobile-performance.py` — read-only loopback playback server for the probe.

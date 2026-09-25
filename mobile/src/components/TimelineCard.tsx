@@ -43,13 +43,22 @@ import { chatTypography, colors, radius, spacing } from "../theme/tokens";
 import { Button } from "./Button";
 import { approvalDecisionDisabled } from "./approvalState";
 
-interface TimelineCardProps {
+/**
+ * Fetch one tool call's display target after the fact. A lean history page
+ * omits a shell call's arguments (the command is the page's largest unread
+ * payload), so a row with no target asks for it when it is opened. Implemented
+ * by the screen — the row itself stays free of transport.
+ */
+export type ToolTargetResolver = (toolCallId: string, runId: string) => Promise<string | null>;
+
+export interface TimelineCardProps {
   item: TimelineItem;
   isLatestAssistant?: boolean;
   onOpenAttachment?(attachment: HistoryAttachment): void;
   onOpenFile?(path: string): void;
   onRetry?(item: TimelineItem): void;
   onContinue?(item: TimelineItem): void;
+  onResolveToolTarget?: ToolTargetResolver;
 }
 
 // Same shape as the desktop footer (desktop/src/lib/date.ts formatDuration): "5s"
@@ -462,15 +471,49 @@ function StatusDivider({ label, failed = false }: { label: string; failed?: bool
  * Below, the target gets the full width, wraps instead of being clipped, and
  * carries the header's own indent so it reads as that row's detail.
  */
-function ToolRow({ tool, opened }: { tool: TimelineToolRow; opened: boolean }) {
+function ToolRow({
+  tool,
+  opened,
+  resolveTarget,
+}: {
+  tool: TimelineToolRow;
+  opened: boolean;
+  resolveTarget?: ToolTargetResolver;
+}) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  // A command the page omitted, fetched when the row is opened. Kept for this
+  // row's lifetime, so collapsing and re-opening never asks again.
+  const [fetchedTarget, setFetchedTarget] = useState<string | null>(null);
+  const [fetching, setFetching] = useState(false);
   const open = opened || expanded;
   const kind = toolKind(tool.name);
   const failed = tool.status === "failed";
-  const detail = tool.detail?.trim() ? toolDetail(kind, tool.detail.trim()) : null;
+  const rawDetail = tool.detail ?? fetchedTarget ?? undefined;
+  const detail = rawDetail?.trim() ? toolDetail(kind, rawDetail.trim()) : null;
   const children = tool.children && tool.children.length > 0 ? tool.children : null;
-  const expandable = Boolean(detail || children);
+  // A row the page carried without a target can ask for it back — but only
+  // with the call's identity, which is what a lean page still carries.
+  const fetchable =
+    !detail && !children && Boolean(tool.toolCallId && tool.runId && resolveTarget);
+  const expandable = Boolean(detail || children || fetchable);
+  const reveal = () => {
+    if (!fetchable || fetching) return;
+    setFetching(true);
+    // The fetch is a convenience, never a dependency: a failure (offline, or a
+    // desktop that predates this command) leaves the row exactly as it was and
+    // must not surface as an unhandled rejection.
+    Promise.resolve()
+      .then(() => resolveTarget!(tool.toolCallId!, tool.runId!))
+      .then(target => {
+        if (target && target.trim()) {
+          setFetchedTarget(target);
+          setExpanded(true);
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => setFetching(false));
+  };
   const label = failed
     ? failedToolLabel(t, kind)
     : tool.count != null && tool.count > 1
@@ -483,9 +526,16 @@ function ToolRow({ tool, opened }: { tool: TimelineToolRow; opened: boolean }) {
     <View style={[styles.inlineTool, !open && styles.railBlock]}>
       <Pressable
         accessibilityRole="button"
+        accessibilityState={{ expanded }}
         disabled={!expandable}
         hitSlop={expandable ? ROW_HIT_SLOP : undefined}
-        onPress={() => setExpanded(value => !value)}
+        onPress={() => {
+          // A row with something to show opens and closes as before; a row
+          // that only has a target to fetch triggers the fetch (it opens when
+          // the target arrives, so a failed fetch leaves it untouched).
+          if (detail || children) setExpanded(value => !value);
+          else reveal();
+        }}
         style={[styles.toolHeader, !open && styles.railRow]}
       >
         <ToolGlyph failed={failed} kind={kind} />
@@ -721,7 +771,13 @@ function stepRunSummary(
  * it is the only way into the run behind it, and a target the size of the text
  * is not enough on a phone.
  */
-function StepRunBlock({ segments }: { segments: StepSegment[] }) {
+function StepRunBlock({
+  segments,
+  onResolveToolTarget,
+}: {
+  segments: StepSegment[];
+  onResolveToolTarget?: ToolTargetResolver;
+}) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const counts = stepRunCounts(segments);
@@ -771,7 +827,12 @@ function StepRunBlock({ segments }: { segments: StepSegment[] }) {
               // slice after it, so none of them is still streaming.
               <ThinkingRow key={segment.id} opened text={segment.text} />
             ) : (
-              <ToolRow key={segment.id} opened tool={segment.tool} />
+              <ToolRow
+                key={segment.id}
+                opened
+                tool={segment.tool}
+                resolveTarget={onResolveToolTarget}
+              />
             ),
           )}
         </View>
@@ -785,10 +846,12 @@ function SegmentBlock({
   segment,
   streaming,
   onOpenFile,
+  onResolveToolTarget,
 }: {
   segment: TimelineSegment;
   streaming?: boolean;
   onOpenFile?(path: string): void;
+  onResolveToolTarget?: ToolTargetResolver;
 }) {
   if (segment.kind === "text") {
     return <MarkdownText text={segment.text} onOpenFile={onOpenFile} streaming={streaming} />;
@@ -797,7 +860,7 @@ function SegmentBlock({
     return <ThinkingRow opened={false} streaming={streaming} text={segment.text} />;
   }
   if (segment.kind === "tool") {
-    return <ToolRow opened={false} tool={segment.tool} />;
+    return <ToolRow opened={false} tool={segment.tool} resolveTarget={onResolveToolTarget} />;
   }
   // compaction
   return (
@@ -862,6 +925,7 @@ function TimelineCardView({
   onOpenFile,
   onRetry,
   onContinue,
+  onResolveToolTarget,
 }: TimelineCardProps) {
   const { t, i18n } = useTranslation();
   const { copied, copy } = useCopyState();
@@ -899,13 +963,18 @@ function TimelineCardView({
             <View style={styles.segmentList}>
               {buildReplyBlocks(item.segments, item.streaming).map(block =>
                 block.kind === "steps" ? (
-                  <StepRunBlock key={block.segments[0]!.id} segments={block.segments} />
+                  <StepRunBlock
+                    key={block.segments[0]!.id}
+                    segments={block.segments}
+                    onResolveToolTarget={onResolveToolTarget}
+                  />
                 ) : (
                   <SegmentBlock
                     key={block.segment.id}
                     segment={block.segment}
                     streaming={item.streaming && block.segment === item.segments?.at(-1)}
                     onOpenFile={onOpenFile}
+                    onResolveToolTarget={onResolveToolTarget}
                   />
                 ),
               )}
