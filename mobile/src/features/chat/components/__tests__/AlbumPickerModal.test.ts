@@ -31,6 +31,15 @@ interface Options {
   limit?: number;
 }
 
+// Every tree is unmounted after its test: a live FlatList keeps a batching
+// timer that outlives the run and makes jest exit non-zero ("did not exit one
+// second after the test run").
+const mounted: ReactTestRenderer[] = [];
+
+afterEach(() => {
+  for (const tree of mounted.splice(0)) act(() => tree.unmount());
+});
+
 function modal({ images = IMAGES, error = null, limit = 4 }: Options = {}) {
   const onCancel = jest.fn();
   const onConfirm = jest.fn();
@@ -48,6 +57,7 @@ function modal({ images = IMAGES, error = null, limit = 4 }: Options = {}) {
       }),
     );
   });
+  mounted.push(tree);
   return { tree, onCancel, onConfirm };
 }
 
