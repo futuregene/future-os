@@ -536,6 +536,33 @@ fn default_answer(
                 .unwrap_or_else(|| json!({ "entries": [] }));
             ok(entries)
         }
+        // The lean phone's way back to a shell call's dropped `arguments`.
+        // Answered from the same recorded entries `get_session_entries` serves,
+        // and scoped by run as well as id, so a mock cannot answer an identity
+        // the real agent would refuse.
+        "get_tool_call_args" => {
+            let requested = cmd.tool_call_id.clone().unwrap_or_default();
+            let found = state
+                .session_entries
+                .get(&cmd.session_id)
+                .and_then(|entries| entries.get("entries"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|entry| entry.get("runId").and_then(Value::as_str) == Some(&cmd.run_id))
+                .flat_map(|entry| entry["blocks"].as_array().into_iter().flatten())
+                .find(|block| block.get("toolCallId").and_then(Value::as_str) == Some(&requested))
+                .map(|block| (block.get("name"), block.get("arguments")));
+            let (name, arguments) = match found {
+                Some((name, arguments)) => (name.cloned(), arguments.cloned()),
+                None => (None, None),
+            };
+            ok(json!({
+                "toolCallId": requested,
+                "name": name.unwrap_or(Value::Null),
+                "arguments": arguments.unwrap_or(Value::Null),
+            }))
+        }
         "get_events_since" => ok(json!({ "events": [], "hasMore": false })),
         "get_state" => ok(json!({
             "sessionId": cmd.session_id,
