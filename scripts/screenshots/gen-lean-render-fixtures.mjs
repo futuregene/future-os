@@ -22,6 +22,13 @@
  * `agent/src/rpc/prompt_helpers.rs` (RunEvent/ModelStreamEvent -> SSE), the
  * `[exit: N]` footer from `agent/src/tools/mod.rs`, and the history relay's
  * entry shape (blocks with `arguments`, `isError`).
+ *
+ * The history page's outcome flag is the canonical post-#848/#849 shape: a
+ * recorded failure says `isError: true` (`tools::outcome_is_error`), and a
+ * success — or a judged soft failure — sends no flag at all, because #849
+ * stops writing the uninformative `false`. A page that still carried the old
+ * `isError: false` shape would let the render checks pass against a payload
+ * the phone never receives.
  */
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -324,9 +331,8 @@ const fullHistoryEntries = [
       },
       { kind: "text", text: "对比表写好了。" },
       {
-        // The probe row: `isError` is the only outcome a history page carries.
-        // The agent never writes it true (see the report), so this row is what
-        // the *client* does when it one day does.
+        // The soft-fail call: a bare `grep` exiting 1 is its no-match signal,
+        // and the agent does not record it as an error.
         kind: "tool_call",
         toolCallId: "htc_4",
         name: "shell",
@@ -342,27 +348,29 @@ const fullHistoryEntries = [
     runId: RUN_HISTORY,
     blocks: [
       {
+        // The run's one recorded failure: the agent's verdict (`is_error`
+        // from exit 127, not a soft-fail command) is the only outcome signal
+        // a trimmed history row still carries.
         kind: "tool_result",
         toolCallId: "htc_1",
-        isError: false,
+        isError: true,
         text: "bash: future: command not found\n\n[exit: 127]",
       },
       {
         kind: "tool_result",
         toolCallId: "htc_2",
-        isError: false,
         text: "# Frank 2024\n\n- 效应量 d = 0.42（95% CI 0.21–0.63）\n- N = 148",
       },
       {
         kind: "tool_result",
         toolCallId: "htc_3",
-        isError: false,
         text: "已写入 notes/compare-table.md（812 字节）",
       },
       {
+        // Not an error to the agent (soft-fail grep), so no flag — and a
+        // success would send no `isError: false` either (#849 omits it).
         kind: "tool_result",
         toolCallId: "htc_4",
-        isError: true,
         text: "0\n\n[exit: 1]",
       },
     ],

@@ -9,7 +9,7 @@
 
 ## Runner
 
-在本目录下运行：
+测试套件位于 `tests/provider-protocol/`，在该目录下运行：
 
 ```bash
 cargo run --bin rig-cassette

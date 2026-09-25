@@ -10,7 +10,7 @@
 
 - **Rust** 1.97+（由 `rust-toolchain.toml` 固定版本）
 - **Node.js** 24+（见 `.nvmrc`）—— 用于 GUI 前端
-- 可选：**Python 3** —— 仅用于 `make generate-models` 与 CLI golden 差分测试（`make test-cli-diff`）
+- 可选：**Python 3** —— 用于手动/文档类目标（`make generate-models`、`make check-docs` / `make test-docs-check`、`make test-cli-diff` / `make test-tui-tmux` 差分装置）以及 profiling 目标（`make profile-agent` / `profile-quick` / `profile-heap`）
 - 可选：**protoc**（Protocol Buffers 编译器）—— 仅用于 `make generate-proto`；生成代码已入库，正常构建不需要
 
 TUI 与 CLI 均为 Rust（`cargo build`），不再需要 Bun 或 Node。

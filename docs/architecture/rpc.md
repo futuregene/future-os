@@ -65,8 +65,10 @@ freshness gate that regenerates and fails on any diff.
   field stays dual-written for events; typed command responses leave it empty.
 - proto3 fields whose JSON form distinguishes null/absent from a default are
   declared `optional` so the typed path preserves the JSON semantics.
-- `transport.rs` owns shared per-user IPC discovery and explicit TCP fallback;
-  its dependencies include async/network and platform IPC support (see Cargo.toml).
+- `transport.rs` owns shared per-user IPC discovery plus the explicit-TCP
+  alternative (an explicit address is authoritative and never falls back to
+  local IPC); its dependencies include async/network and platform IPC support
+  (see Cargo.toml).
   All
   consumers (`future-agent`, `future-channel`, the desktop Tauri backend via a
   path dependency) depend on it — never the other way around. The desktop backend

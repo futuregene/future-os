@@ -1,6 +1,6 @@
 # 已有缓存重开：真实历史 trace 对照（2026-09-16）
 
-后续快照优化已完成，见 [快照 + 增量及 A/B 实测](streaming-sync-snapshot-optimization.zh-CN.md)。本报告的受控截止点实验保留原始事件 bootstrap（测量入口显式关闭 `preferSnapshot`），用来复现缓存是否复用；本报告约 12.7 秒的恢复耗时不是新默认路径的耗时。
+后续快照优化已完成，见 [快照 + 增量及 A/B 实测](../../internals/mobile/streaming-sync-snapshot-optimization.zh-CN.md)。本报告的受控截止点实验保留原始事件 bootstrap（测量入口显式关闭 `preferSnapshot`），用来复现缓存是否复用；本报告约 12.7 秒的恢复耗时不是新默认路径的耗时。
 
 ## 要回答的问题
 
@@ -88,7 +88,7 @@
 - 增加字段后再跑一轮五种浏览器场景：正常增量为 `reused`；初次为 `no-cache`；显式失效与仅展示缓存为 `baseline-untrusted`。事件数量、请求起点、恢复后显示内容仍全部一致。这轮用于功能验证，不混进前三轮性能范围。
 - Mobile 类型检查、lint、94 个测试套件 / 1,306 个测试通过；浏览器测量脚本单独通过 TypeScript 检查。
 
-原始去身份指标见 `streaming-sync-warm-measurement-2026-09-16.json`。
+原始去身份指标已归档在 [`streaming-sync-warm-measurement-2026-09-16.json`](streaming-sync-warm-measurement-2026-09-16.json)。
 
 ## 复现
 

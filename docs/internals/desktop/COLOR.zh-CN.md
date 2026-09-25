@@ -6,7 +6,7 @@ GUI 的颜色全部走 [`tailwind.config.js`](../../../desktop/tailwind.config.j
 
 - **语义优先**:按用途选 token(强调?状态?中性表面?),不按色相。
 - **状态徽章统一用 `<Badge tone>` 组件**,不手写 `status → color` 的 className 映射。
-- **例外——分类色**:用颜色**区分并列种类**(而非状态)的地方,可保留原生色板。语义 token 只有有限几个、不足以表达 N 种并列分类。当前例外:`eventCategoryClass`(仅 `artifact`/`review` 两类无语义 token 等价、保留原生紫/橙;approval/error/tool/default 已收敛到 `warning`/`danger`/`info`/`neutral`)、`formatErrorType`(错误子类型 5 种,另有 icon 辅助区分)。
+- **例外——分类色**:用颜色**区分并列种类**(而非状态)的地方,可保留原生色板。语义 token 只有有限几个、不足以表达 N 种并列分类。当前(也是唯一)的例外是 `features/runs/runErrorMeta.ts` 里的 `errorTypeMeta`:六个运行错误子类型(`stream_disconnected`、`command_failed`、`model_failed`、`abort_requested`、`timeout`、`unknown`)各自保留原生 `text-*` 色,并另有 icon 辅助区分。运行事件行及其它一切使用语义 token。
 
 ## Token 清单
 
@@ -111,7 +111,7 @@ GUI 的颜色全部走 [`tailwind.config.js`](../../../desktop/tailwind.config.j
 - ❌ 直接写 `bg-blue-50` / `text-green-700` / `focus:ring-blue-100` 等 Tailwind 原生色
 - ❌ 手写 `function xxxStatusClass(): string` 返回状态色类 —— 改用 `<Badge tone>`
 - ❌ 在组件里另写遮罩色(`bg-black/…` / `bg-*/…`)—— 用 `overlay` token,经共享 `Overlay`
-- ✅ 唯一例外:**分类色**(事件类别 / 错误子类型)用原生色板区分并列种类,见上方「原则」
+- ✅ 唯一例外:运行错误子类型的**分类色**用原生色板区分并列种类,见上方「原则」
 
 ## 来源
 

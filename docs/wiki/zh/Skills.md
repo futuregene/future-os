@@ -23,7 +23,7 @@ Skills 页有两个标签:
 
 | 技能 | 用途 |
 |---|---|
-| **Account** | 你的 FutureOS 账户:资料、余额与充值。 |
+| **Account** | 你的 FutureOS 账户:资料与余额。 |
 | **Browser** | 驱动本地网页浏览器:开页、点击、输入、截图。 |
 | **Database lookup** | 查询公共数据库(PubChem、UniProt、Ensembl、PDB、NCBI 等),可复现地检索。 |
 | **Deep research** | 端到端研究:多源收集并交叉核对,产出带引用的报告。 |
@@ -31,11 +31,11 @@ Skills 页有两个标签:
 | **Experimental design** | 在数据收集前设计实验与研究方案。 |
 | **Image** | 生成、编辑和分析图像——包括读取图中文字。 |
 | **Loop** | 把长程目标变成持久、可验证的计划——目标、任务、门禁、监控与验证式收尾（`/future-loop`）。 |
-| **Paper** | 检索文献(PubMed / ArXiv / DOI)并获取全文。 |
+| **Paper** | 按 PubMed / DOI 检索文献并获取全文。 |
 | **Peer review** | 基于清单的结构化稿件/基金评审。 |
 | **Scientific writing** | 以完整段落撰写科学论文(IMRAD 结构、引用)。 |
 | **Skill creator** | 帮你制作新的自定义技能。 |
-| **Slides** | 根据 Markdown 报告生成演示幻灯片。 |
+| **Slides** | 把报告或提纲转成幻灯片图片（PNG，可选 PDF）。 |
 | **Software install** | 安装或更新轻量软件与命令行工具。 |
 | **Web** | 搜索公网并读取全文。 |
 

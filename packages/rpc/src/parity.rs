@@ -34,6 +34,11 @@ fn assert_command_parity(command: &str, fixture: Value) {
 /// semantics on the interrupted run, an object source_meta, a full approval
 /// card and a completed run_terminal.
 ///
+/// The requested run's `usage` carries only the members the run set:
+/// `MessageUsage` omits an unset member rather than spelling it as `null`, and
+/// an explicit-null peer payload still decodes to the same value (pinned in
+/// `message.rs`).
+///
 /// Parsed from a raw string: the fixture is too nested for the `json!`
 /// macro's default recursion limit.
 fn get_state_fixture() -> Value {
@@ -93,7 +98,7 @@ fn get_state_fixture() -> Value {
             "requestedRun": {
                 "runId": "r0",
                 "status": "completed",
-                "usage": {"inputTokens":null,"outputTokens":123,"cacheReadTokens":null,"cacheWriteTokens":null},
+                "usage": {"outputTokens":123},
                 "durationMs": 4567,
                 "error":null
             },

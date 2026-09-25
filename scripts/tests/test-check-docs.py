@@ -1,6 +1,7 @@
 """Offline regression tests for scripts/docs/check-docs.py.
 
-Covers the three defects fixed after the documentation reorg landed:
+Covers the defects fixed after the documentation reorg landed, plus the
+script-path rule added by the final acceptance pass:
 
 1. `--scope` filtered findings by their printed text, so a bilingual-pairing
    finding (whose text starts with "bilingual pair missing:", not with a path)
@@ -10,6 +11,10 @@ Covers the three defects fixed after the documentation reorg landed:
 3. Pair scope was an allowlist of known directories, so a new docs/
    subdirectory (docs/verification/ was the real case) escaped the bilingual
    requirement entirely.
+4. Repo-internal `scripts/` paths named in current docs must exist: the
+   scripts reorg left `scripts/generate_models.py` in the generated wiki
+   header and a glob in a sandbox page. `ScriptsPathTests` covers the rule
+   (Windows separators, documented globs, docs/archives/ exemption).
 
 The end-to-end cases run the real script in a throwaway git repository so exit
 codes, not just return values, are asserted.
@@ -203,6 +208,61 @@ class PairScopeTests(unittest.TestCase):
         result = run(root)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("docs/verification/report.md", result.stderr)
+
+
+class ScriptsPathTests(unittest.TestCase):
+    """Rule 4: repo-internal scripts/ paths named in current docs must exist."""
+
+    def test_missing_scripts_path_fails(self):
+        result = run(build_tree({
+            "docs/guide/a.md": "# a\n\nrun `scripts/gone/tool.py`.\n",
+            "docs/guide/a.zh-CN.md": "# a\n",
+        }))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("missing scripts path scripts/gone/tool.py", result.stderr)
+
+    def test_existing_scripts_path_passes(self):
+        result = run(build_tree({
+            "docs/guide/a.md": "# a\n\nrun `scripts/docs/check-docs.py`.\n",
+            "docs/guide/a.zh-CN.md": "# a\n",
+        }))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_documented_glob_must_match_at_least_one_file(self):
+        payload = {
+            "docs/guide/a.md": "# a\n\nsee `scripts/dev/test-windows-*.ps1`.\n",
+            "docs/guide/a.zh-CN.md": "# a\n",
+        }
+        missing = run(build_tree(payload))
+        self.assertEqual(missing.returncode, 1, missing.stdout + missing.stderr)
+        self.assertIn(
+            "missing scripts path scripts/dev/test-windows-*.ps1", missing.stderr
+        )
+        payload["scripts/dev/test-windows-one.ps1"] = ""
+        present = run(build_tree(payload))
+        self.assertEqual(present.returncode, 0, present.stdout + present.stderr)
+
+    def test_windows_separators_are_normalised(self):
+        result = run(build_tree({
+            "docs/guide/a.md": "# a\n\npowershell -File .\\scripts\\dev\\gone.ps1\n",
+            "docs/guide/a.zh-CN.md": "# a\n",
+        }))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("missing scripts path scripts/dev/gone.ps1", result.stderr)
+
+    def test_sentence_punctuation_is_not_part_of_the_path(self):
+        result = run(build_tree({
+            "docs/guide/a.md": "# a\n\nThe entry point is scripts/docs/check-docs.py.\n",
+            "docs/guide/a.zh-CN.md": "# a\n",
+        }))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_archived_docs_are_exempt(self):
+        result = run(build_tree({
+            "docs/archives/old.md": "# old\n\nrun `scripts/gone/tool.py`.\n",
+            "docs/archives/old.zh-CN.md": "# old\n",
+        }))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class NegativeControlTests(unittest.TestCase):

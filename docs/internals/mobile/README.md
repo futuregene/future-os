@@ -39,18 +39,18 @@ development and distribution maintenance.
   event backfill via `get_events_since` after reconnection.
 - Pick images from the system photo library or shoot with the system camera;
   add file attachments through the system file picker; a message carries at most
-  10 attachments including images (non-image files are not count-limited);
-  download session
-  attachments and preview images, Markdown, text, and JSON in the app — other
-  supported types go to the system app to open, save, or share. The preview
-  page can also share the original file or open it in another app; a missing
-  reader does not block saving and sharing.
+  10 attachments in total, images included; download session attachments and
+  preview images, Markdown, text, and JSON in the app — other supported types go
+  to the system app to open, save, or share. Text, Markdown, and JSON previews
+  render only the first 2 MiB. The preview page can also share the original file
+  or open it in another app; a missing reader does not block saving and sharing.
 - The folder button atop a session shows the session's directory on the
   desktop; enter subdirectories, go back up, refresh the list, or toggle hidden
   files; tapping a file reuses the phone preview/system-open flow.
 - Android supports **sharing** text/images/files from other apps; iOS adds a
-  native Share Extension that, after saving, opens FutureOS to import
-  text/links/images/files. You can create a normal/workspace session or pick an
+  native Share Extension that saves shared content; the next time FutureOS
+  opens it imports text/links/images/files. You can create a normal/workspace
+  session or pick an
   existing one; content appends to the target session's draft, preserving
   existing text and attachments — nothing uploads or auto-sends before
   confirmation. iOS save/external-open also integrate the native document
@@ -81,8 +81,9 @@ development and distribution maintenance.
 
 - The input area keeps two rows: one for text input, one shared by the model,
   thinking mode, `/` skills, attachments, and the send/stop buttons. Below
-  360pt or with large font sizes, model and thinking merge into a "model
-  settings" entry; action buttons keep a 44pt touch target.
+  380pt or with large font sizes the toolbar tightens its gaps while keeping
+  both the model and thinking selectors visible; action buttons keep a 44pt
+  touch target.
 - Typing `/` at the start of a message or after whitespace, or tapping the `/`
   left of attachments, expands the skill candidates above the input. Keywords
   filter by skill name, description, and available Chinese metadata; selecting
@@ -200,8 +201,8 @@ offline push.
   off while the toolbar is searching or selecting (the tab bar is hidden then,
   so the swipe would change mode unseen); the tabs themselves still switch on
   tap.
-- The input area stays two rows (text + toolbar); narrow screens merge model
-  settings without shrinking action-button touch targets.
+- The input area stays two rows (text + toolbar); narrow screens tighten the
+  toolbar without shrinking action-button touch targets.
 - Skill regressions: typed and button-inserted `/`, Chinese search, mid-body
   replacement, close/back key, load-failure retry, late skill results when
   switching desktops, and narrow/large-font layouts after keyboard popup.

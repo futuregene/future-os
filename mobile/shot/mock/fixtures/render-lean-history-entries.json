@@ -77,22 +77,19 @@
   {
     "blocks": [
       {
-        "isError": false,
+        "isError": true,
         "kind": "tool_result",
         "toolCallId": "htc_1"
       },
       {
-        "isError": false,
         "kind": "tool_result",
         "toolCallId": "htc_2"
       },
       {
-        "isError": false,
         "kind": "tool_result",
         "toolCallId": "htc_3"
       },
       {
-        "isError": true,
         "kind": "tool_result",
         "toolCallId": "htc_4"
       }
