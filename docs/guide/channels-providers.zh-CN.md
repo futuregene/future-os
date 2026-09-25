@@ -76,7 +76,7 @@
   `require_mention` 决定。纯私聊通道——WhatsApp、iMessage、Email、Terminal——为「否」，
   因为它们收到的消息在语义上都已经指向机器人。
 - **单条上限**：平台限制，单位就是平台计数的单位：除 Slack（UTF-16 单元，一个 emoji 算两个）
-  与 IRC/Email（字节）外都是字符。
+  与 IRC/Email/WeCom（字节）外都是字符。
 
 | 通道 | id | 成熟度 | 接入方式 | 编辑 | 线程 | typing | reactions | 收媒体 | 提及门 | 单条上限 | 外部依赖 |
 |---|---|---|---|---|---|---|---|---|---|---|---|

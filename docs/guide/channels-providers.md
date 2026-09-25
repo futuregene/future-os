@@ -97,7 +97,7 @@ rely on:
   addressed to it by construction.
 - **Max message** is the platform limit in the unit the platform counts:
   characters everywhere except Slack (UTF-16 code units, so an emoji costs two)
-  and IRC/Email (bytes).
+  and IRC/Email/WeCom (bytes).
 
 | Channel | Id | Maturity | Inbound | Edit | Threads | Typing | Reactions | Media in | Mention gate | Max message | Requires |
 |---|---|---|---|---|---|---|---|---|---|---|---|
