@@ -176,6 +176,9 @@ impl LaneCapture {
 struct ReplyCapture {
     wire_bytes: usize,
     plaintext_bytes: usize,
+    /// Sealed bytes of the request that produced this reply, so a fetch can be
+    /// costed as the round trip the phone actually pays.
+    request_wire_bytes: usize,
     body: Value,
 }
 
@@ -488,6 +491,7 @@ impl E2e {
         ReplyCapture {
             wire_bytes: reply.payload.len(),
             plaintext_bytes: plaintext.len(),
+            request_wire_bytes: wire.len(),
             body,
         }
     }
@@ -595,6 +599,28 @@ impl E2e {
             )
             .await;
         HistoryCapture { full, paged }
+    }
+
+    /// What one lean shell row costs to open: the same envelope the other
+    /// commands use, sealed on the real channel.
+    async fn fetch_tool_call_args(
+        &mut self,
+        session: &str,
+        run: &str,
+        tool_call_id: &str,
+    ) -> ReplyCapture {
+        let subject = format!("p.{}.cmd.rpc", self.pair_id);
+        self.sealed_command(
+            &subject,
+            &json!({
+                "id": unique("args"),
+                "type": "get_tool_call_args",
+                "sessionId": session,
+                "runId": run,
+                "toolCallId": tool_call_id,
+            }),
+        )
+        .await
     }
 
     /// Serve one session's entries from the scripted agent, exactly as the
@@ -993,6 +1019,31 @@ async fn measure_real_broker_bytes() {
     run_real_traffic(Broker::real_from_env()).await;
 }
 
+/// Every shell tool call in a served page: its identity plus the command bytes
+/// that page carries for it (zero once the trim drops `arguments`).
+fn shell_calls_in(capture: &ReplyCapture) -> Vec<(String, String, usize)> {
+    capture.body["data"]["entries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|entry| {
+            let run = entry["runId"].as_str().unwrap_or_default().to_string();
+            entry["blocks"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(move |block| {
+                    if block["kind"] != json!("tool_call") || block["name"] != json!("shell") {
+                        return None;
+                    }
+                    let id = block["toolCallId"].as_str().unwrap_or_default().to_string();
+                    let command = block["arguments"]["command"].as_str();
+                    Some((run.clone(), id, command.map_or(0, str::len)))
+                })
+        })
+        .collect()
+}
+
 async fn run_real_traffic(broker: Broker) {
     let journal_path = std::env::var("VERIFY_E2E_JOURNAL").expect("VERIFY_E2E_JOURNAL");
     let session = std::env::var("VERIFY_E2E_SESSION").expect("VERIFY_E2E_SESSION");
@@ -1147,4 +1198,101 @@ async fn run_real_traffic(broker: Broker) {
             })
         );
     }
+
+    // ── The way back: what one opened shell row costs ──
+    //
+    // The trim drops a shell call's `arguments` whole and the phone asks the
+    // command back when the row is opened, so the page is smaller either way
+    // and the open question is whether the fetch gives the saving back:
+    //
+    //   lazy total = (page without the commands) + Σ(fetched) + k · overhead
+    //   carried    = the same page with them
+    //
+    // measured here as real sealed bytes on the real channel: `overhead` is the
+    // round trip minus the command it returns, and the tap count at which lazy
+    // stops paying for itself is `carried bytes / (mean command + overhead)`.
+    // The comparison runs on the *full* page, because that is the one page both
+    // sides hold the same entries of (the 100-entry limit is the same). The
+    // paged pages deliberately differ in entry count — that is the trim's other
+    // effect — so their shell sets are not identity-comparable.
+    let carried = shell_calls_in(&history_full.full);
+    let trimmed = shell_calls_in(&history_lean.full);
+    let command_bytes: usize = carried.iter().map(|(_, _, bytes)| bytes).sum();
+    assert!(
+        !carried.is_empty() && carried.iter().all(|(_, _, bytes)| *bytes > 0),
+        "the undeclared page must carry the shell commands this measurement costs"
+    );
+    assert!(
+        trimmed.iter().all(|(_, _, bytes)| *bytes == 0),
+        "the lean page must carry none of them, or there is nothing to fetch back"
+    );
+    assert_eq!(
+        carried
+            .iter()
+            .map(|(run, id, _)| (run, id))
+            .collect::<Vec<_>>(),
+        trimmed
+            .iter()
+            .map(|(run, id, _)| (run, id))
+            .collect::<Vec<_>>(),
+        "both pages must describe the same shell calls"
+    );
+
+    let (row_run, row_id, largest) = carried
+        .iter()
+        .max_by_key(|(_, _, bytes)| *bytes)
+        .expect("carried is not empty")
+        .clone();
+    let fetched = e2e.fetch_tool_call_args(&session, &row_run, &row_id).await;
+    assert_eq!(
+        fetched.body["success"],
+        json!(true),
+        "the lean fetch must succeed: {}",
+        fetched.body
+    );
+    let returned = fetched.body["data"]["arguments"]["command"]
+        .as_str()
+        .map(str::len)
+        .unwrap_or(0);
+    assert_eq!(
+        returned, largest,
+        "the fetch must return the command the page dropped, whole"
+    );
+    let overhead = fetched.request_wire_bytes + fetched.wire_bytes - returned;
+    let mean_command = command_bytes / carried.len();
+    // The phone requests the *paged* page, and its commands are the ones the
+    // saving is really about (they run longer than the newest 100 entries').
+    // Its entry set differs by design, so only the properties that do not need
+    // identity matching are asserted here: it carries commands, the lean page of
+    // the same budget carries none.
+    let paged_carried = shell_calls_in(&history_full.paged);
+    let paged_commands: usize = paged_carried.iter().map(|(_, _, bytes)| bytes).sum();
+    assert!(
+        !paged_carried.is_empty() && paged_carried.iter().all(|(_, _, bytes)| *bytes > 0),
+        "the undeclared paged page must carry the commands the phone would save"
+    );
+    assert!(
+        shell_calls_in(&history_lean.paged)
+            .iter()
+            .all(|(_, _, bytes)| *bytes == 0),
+        "the lean paged page must carry none of them"
+    );
+    println!(
+        "VERIFY_E2E_LAZY_FETCH {}",
+        json!({
+            "session": session,
+            "shellRows": carried.len(),
+            "carriedCommandBytes": command_bytes,
+            "largestCommandBytes": largest,
+            "fetchRequestWireBytes": fetched.request_wire_bytes,
+            "fetchReplyWireBytes": fetched.wire_bytes,
+            "fetchOverheadBytes": overhead,
+            "pagedShellRows": paged_carried.len(),
+            "pagedCarriedCommandBytes": paged_commands,
+            "pagedMeanCommandBytes": paged_commands / paged_carried.len(),
+            "fullBreakEvenTaps": command_bytes / (mean_command + overhead),
+            "pagedBreakEvenTaps": paged_commands
+                / (paged_commands / paged_carried.len() + overhead),
+        })
+    );
 }
