@@ -98,6 +98,37 @@ test("prose previews keep the proportional font and stay uncolored", () => {
   } finally { act(() => tree.unmount()); }
 });
 
+test("a code file with no grammar still gets the monospace metrics", () => {
+  // `Makefile`, `Cargo.lock` and `.csv` are code, config or tabular data — the
+  // columns only line up monospace, and Prism ships no grammar for some of them.
+  for (const [name, source] of [
+    ["Cargo.lock", "[[package]]\nname = \"serde\"\nversion = \"1.0.0\"\n"],
+    ["rows.csv", "sample,value\na,1\n"],
+    ["meson.build", "project('demo', 'c')\n"],
+  ] as const) {
+    const tree = renderTextPreview(name, source);
+    try {
+      const { chunks, spans, style } = body(tree);
+      expect(chunks.join("")).toBe(source);
+      expect(spans).toHaveLength(0);
+      expect([name, style.fontFamily]).toEqual([name, monospace]);
+    } finally { act(() => tree.unmount()); }
+  }
+});
+
+test("a Makefile is highlighted with the grammar for its name", () => {
+  const makefile = "# build\nall:\n\tcc -o app main.c\n";
+  const tree = renderTextPreview("Makefile", makefile);
+  try {
+    const { chunks, rendered, paintedChunks, spans, style } = body(tree);
+    expect(chunks.join("")).toBe(makefile);
+    expect(rendered).toBe(paintedChunks.join(""));
+    expect(spans.length).toBeGreaterThan(0);
+    expect(spans.some(node => StyleSheet.flatten(node.props.style)?.color === codeColors.comment)).toBe(true);
+    expect(style.fontFamily).toBe(monospace);
+  } finally { act(() => tree.unmount()); }
+});
+
 test("a long code file mounts only its visible rows, not every token", () => {
   // 28 KB of dense source is what highlighting turns into thousands of spans;
   // mounting them all in one Text is what made opening a code file slow.

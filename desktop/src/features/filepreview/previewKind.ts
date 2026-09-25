@@ -1,4 +1,4 @@
-import { pathExtension } from "../../lib/workspacePath";
+import { pathBasename, pathExtension } from "../../lib/workspacePath";
 
 /**
  * File-type detection for the local-file preview overlay. Detection is purely by
@@ -10,7 +10,8 @@ export type PreviewKind = "image" | "json" | "markdown" | "text";
 
 const IMAGE_RE = /\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/i;
 const MARKDOWN_RE = /\.(?:md|markdown)$/i;
-const JSON_RE = /\.json$/i;
+// A notebook is one JSON document, so the JSON reader can show it.
+const JSON_RE = /\.(?:ipynb|json)$/i;
 
 /**
  * Code / config / script files read as plain monospace text. Deliberately a
@@ -21,7 +22,70 @@ const JSON_RE = /\.json$/i;
  * budget and reads whatever the OS can hand it.
  */
 const TEXT_RE
-  = /\.(?:[cfhmr]|asm|bash|bat|cc|cfg|clj|cljs|cmd|conf|cpp|cs|csh|css|csv|cxx|dart|diff|edn|el|elm|env|erl|ex|exs|f90|f95|fish|go|gradle|graphql|groovy|hh|hpp|hs|htm|html|hxx|ini|java|jl|js|jsonl|jsx|kt|kts|less|lisp|lua|mm|ndjson|nim|pas|patch|php|pl|pm|properties|ps1|py|pyi|rb|rs|sass|scala|scm|scss|sh|sol|sql|svelte|swift|tf|toml|ts|tsv|tsx|vb|vue|xhtml|xml|yaml|yml|zig|zsh)$/i;
+  = /\.(?:[cfhmr]|asm|bash|bat|cc|cfg|clj|cljs|cmake|cmd|conf|cpp|cs|csh|csproj|css|csv|cts|cxx|dart|diff|edn|el|elm|env|erl|ex|exs|f90|f95|fish|go|gradle|graphql|groovy|hcl|hh|hpp|hs|htm|html|hxx|ini|java|jl|js|jsonl|jsx|kt|kts|less|lisp|lock|lua|mk|mm|mts|ndjson|nim|pas|patch|php|pl|plist|pm|properties|proto|ps1|py|pyi|rb|rs|sass|scala|scm|scss|sh|sln|sol|sql|svelte|swift|tf|tfvars|toml|ts|tsv|tsx|vb|vue|xcconfig|xhtml|xml|yaml|yml|zig|zsh)$/i;
+
+/**
+ * Suffix-less files the overlay reads as text — build entry points, lockfiles,
+ * dependency manifests, editor / shell dotfiles. A suffix table can never see
+ * them, and the phone's own list (`mobile/src/remote/fileTypes.ts`,
+ * `MOBILE_FILE_NAMES`) carries the same names, minus the extra ones the
+ * overlay can afford.
+ */
+const TEXT_NAMES = new Set([
+  ".babelrc",
+  ".bashrc",
+  ".bazelrc",
+  ".condarc",
+  ".dockerignore",
+  ".editorconfig",
+  ".envrc",
+  ".eslintrc",
+  ".gitattributes",
+  ".gitignore",
+  ".gitmodules",
+  ".npmrc",
+  ".nvmrc",
+  ".prettierrc",
+  ".profile",
+  ".rprofile",
+  ".vimrc",
+  ".yamllint",
+  ".zshrc",
+  "authors",
+  "brewfile",
+  "build.bazel",
+  "caddyfile",
+  "changelog",
+  "codeowners",
+  "contributing",
+  "copying",
+  "gemfile",
+  "go.mod",
+  "go.sum",
+  "justfile",
+  "license",
+  "meson.build",
+  "notice",
+  "podfile",
+  "procfile",
+  "rakefile",
+  "readme",
+  "vagrantfile",
+  "workspace",
+]);
+
+/**
+ * Names that qualify themselves with a suffix (`Dockerfile.dev`, `Makefile.am`,
+ * `.env.local`): the prefix alone, or the prefix followed by `.`.
+ */
+const TEXT_NAME_PREFIXES = ["makefile", "gnumakefile", "dockerfile", "containerfile", "jenkinsfile", ".env"];
+
+function isTextName(path: string): boolean {
+  const base = pathBasename(path).toLowerCase();
+  if (TEXT_NAMES.has(base))
+    return true;
+  return TEXT_NAME_PREFIXES.some(prefix => base === prefix || base.startsWith(`${prefix}.`));
+}
 
 export function previewKindForPath(path: string): PreviewKind | null {
   if (IMAGE_RE.test(path))
@@ -30,7 +94,7 @@ export function previewKindForPath(path: string): PreviewKind | null {
     return "markdown";
   if (JSON_RE.test(path))
     return "json";
-  if (TEXT_RE.test(path))
+  if (TEXT_RE.test(path) || isTextName(path))
     return "text";
   return null;
 }
@@ -43,7 +107,7 @@ export function previewKindForPath(path: string): PreviewKind | null {
  * {@link PreviewKind}.
  */
 export function isTextReadablePath(path: string): boolean {
-  return MARKDOWN_RE.test(path) || JSON_RE.test(path) || TEXT_RE.test(path);
+  return MARKDOWN_RE.test(path) || JSON_RE.test(path) || TEXT_RE.test(path) || isTextName(path);
 }
 
 /**
@@ -143,12 +207,15 @@ export const LANGUAGE_BY_EXTENSION: Record<string, string> = {
 
   sql: "sql",
   json: "json",
+  ipynb: "json",
   jsonl: "jsonl",
   ndjson: "jsonl",
   yaml: "yaml",
   yml: "yaml",
   toml: "toml",
   tf: "hcl",
+  hcl: "hcl",
+  tfvars: "hcl",
   ini: "ini",
   cfg: "ini",
   conf: "ini",
@@ -160,13 +227,61 @@ export const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   elm: "elm",
   diff: "diff",
   patch: "diff",
+  mk: "make",
+  cmake: "cmake",
+  proto: "protobuf",
+  mts: "typescript",
+  cts: "typescript",
+  plist: "xml",
+  csproj: "xml",
 };
+
+/**
+ * Shiki language per bare file name, for the suffix-less files
+ * {@link isTextName} accepts and the two whose extension hides their language
+ * (`CMakeLists.txt`, `.env.local`). Same contract as
+ * {@link LANGUAGE_BY_EXTENSION}: an id Shiki does not ship stays unlisted (the
+ * preview then shows plain monospace text), and a prefix entry also matches
+ * `name.…`.
+ */
+export const LANGUAGE_BY_NAME: Record<string, string> = {
+  "makefile": "make",
+  "gnumakefile": "make",
+  "dockerfile": "dockerfile",
+  "containerfile": "dockerfile",
+  "jenkinsfile": "groovy",
+  "justfile": "just",
+  "gemfile": "ruby",
+  "rakefile": "ruby",
+  "podfile": "ruby",
+  "vagrantfile": "ruby",
+  "brewfile": "ruby",
+  "cmakelists.txt": "cmake",
+  ".env": "ini",
+  ".bashrc": "shellscript",
+  ".zshrc": "shellscript",
+  ".profile": "shellscript",
+  ".envrc": "shellscript",
+  ".npmrc": "ini",
+  ".editorconfig": "ini",
+  ".condarc": "yaml",
+  ".yamllint": "yaml",
+};
+
+const LANGUAGE_NAME_PREFIXES = ["makefile", "gnumakefile", "dockerfile", "containerfile", "jenkinsfile", ".env"];
 
 /**
  * Shiki language for a path, or null when it has no syntax grammar — the
  * caller then shows the file as plain monospace text.
  */
 export function codeLanguageForPath(path: string): string | null {
+  const base = pathBasename(path).toLowerCase();
+  const named = LANGUAGE_BY_NAME[base];
+  if (named)
+    return named;
+  const prefix = LANGUAGE_NAME_PREFIXES.find(candidate => base.startsWith(`${candidate}.`));
+  if (prefix)
+    return LANGUAGE_BY_NAME[prefix]!;
   return LANGUAGE_BY_EXTENSION[pathExtension(path)] ?? null;
 }
 
