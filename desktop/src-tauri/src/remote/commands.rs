@@ -495,9 +495,10 @@ async fn handle_command(
         "pair_handshake_confirm" => {
             handle_pair_handshake_confirm(client, &msg, &cmd, &handshake).await;
         }
-        // Presence is normally pushed every 20 seconds. A client that subscribes
-        // after the latest heartbeat would otherwise look offline until the next
-        // tick because core NATS subscriptions do not replay old messages.
+        // Presence is normally pushed on every heartbeat. A client that
+        // subscribes after the latest heartbeat would otherwise look offline
+        // until the next tick because core NATS subscriptions do not replay old
+        // messages.
         "get_presence" => {
             let pair_id = msg
                 .subject

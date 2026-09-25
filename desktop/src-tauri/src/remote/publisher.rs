@@ -323,7 +323,11 @@ async fn publish_batch(
         }
         .await;
         match sent {
-            Ok(()) => {
+            // `Ok(false)` is a payload the secure channel could not seal yet
+            // (pre-handshake, or just after a credential refresh). The event lane
+            // keeps its existing contract: the client recovers the gap through
+            // `get_events_since` backfill.
+            Ok(_) => {
                 if let Some(line) = EVENT_PUBLISH_EPISODE.recovered() {
                     eprintln!("{line}");
                 }
@@ -339,10 +343,27 @@ async fn publish_batch(
     Ok(())
 }
 
-/// Heartbeat cadence. Tests shrink it to milliseconds so the publish pattern
-/// (baseline → signature change → self-heal) can be observed without a
-/// multi-second wall-clock wait.
+/// Heartbeat cadence for the liveness packet (`p.{pair}.presence`).
+///
+/// This is deliberately slower than the catalog tick. Liveness needs only to
+/// beat inside the client's receipt window (15s) to keep the link readable, so
+/// 3s keeps a 5x margin while cutting the idle packet rate to a third. Tests
+/// shrink it to milliseconds so publish patterns can be observed without a
+/// wall-clock wait.
 pub(super) fn presence_tick() -> std::time::Duration {
+    #[cfg(test)]
+    const TICK: std::time::Duration = std::time::Duration::from_millis(10);
+    #[cfg(not(test))]
+    const TICK: std::time::Duration = std::time::Duration::from_secs(3);
+    TICK
+}
+
+/// Catalog change-detection cadence. Kept at one second so a session created by
+/// another surface (TUI, `future` CLI, loop) reaches the phone as fast as it
+/// did before — only the presence packet got slower. Each tick recomputes the
+/// snapshot signature from the store, so this cadence is the detection latency
+/// for any change; the snapshots themselves are published only on a change.
+pub(super) fn catalog_tick() -> std::time::Duration {
     #[cfg(test)]
     const TICK: std::time::Duration = std::time::Duration::from_millis(10);
     #[cfg(not(test))]
@@ -393,8 +414,9 @@ pub(super) fn spawn_secure_presence_heartbeat(
                 _ = &mut catalog => return,
                 _ = interval.tick() => {}
             }
-            let bytes = serde_json::to_vec(&light_presence_payload(&pair_id, &bridge_instance_id))
-                .expect("a presence Value always serializes");
+            let bytes =
+                serde_json::to_vec(&presence_heartbeat_payload(&pair_id, &bridge_instance_id))
+                    .expect("a presence Value always serializes");
             if let Err(error) =
                 secure::publish(&client, &security, format!("p.{pair_id}.presence"), bytes).await
             {
@@ -416,19 +438,19 @@ pub(super) fn spawn_catalog_publisher(
     security: secure::Transport,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        // Three independent publish channels:
-        //   p.{pair}.presence          — liveness micro-packet every 1s
-        //   p.{pair}.state.sessions    — session list on signature change + 20s self-heal
-        //   p.{pair}.state.workspaces  — workspace list on dirty + 20s self-heal
-        let mut interval = tokio::time::interval(presence_tick());
+        // Two independent publish channels, both change-driven. There is no
+        // periodic re-send: a dropped snapshot is reported through the
+        // presence packet's catalog revision (the heartbeat task owns that),
+        // which heals in one heartbeat instead of a 20s timer.
+        //   p.{pair}.state.sessions    — session list on signature change
+        //   p.{pair}.state.workspaces  — workspace list on dirty or signature change
+        let mut interval = tokio::time::interval(catalog_tick());
         let mut last_sessions_sig = String::new();
         let mut last_workspaces_sig = String::new();
-        let mut secs_since_sessions: u8 = 20; // first tick publishes a baseline
-        let mut secs_since_workspaces: u8 = 20;
         loop {
             interval.tick().await;
 
-            // 2. Sessions snapshot (signature change or 20s self-heal).
+            // 2. Sessions snapshot (signature change only).
             let snapshot_pair = pair_id.clone();
             let Ok((dirty, sessions, workspaces)) = tokio::task::spawn_blocking(move || {
                 (
@@ -441,16 +463,14 @@ pub(super) fn spawn_catalog_publisher(
             else {
                 return;
             };
-            // A prolonged store read failure must not overflow and panic the
-            // heartbeat task in debug/dev builds; the task supervisor would
-            // reconnect it, but the deterministic panic would simply repeat.
-            secs_since_sessions = secs_since_sessions.saturating_add(1);
-            secs_since_workspaces = secs_since_workspaces.saturating_add(1);
+            // A store read that fails returns None and this tick is skipped; the
+            // next tick recomputes the signature from the store, so a transient
+            // failure delays a change by one tick rather than losing it.
             if let Some((sessions_payload, sessions_sig)) = sessions {
-                if sessions_sig != last_sessions_sig || secs_since_sessions >= 20 {
+                if sessions_sig != last_sessions_sig {
                     let bytes = serde_json::to_vec(&sessions_payload)
                         .expect("a sessions Value always serializes");
-                    if let Err(e) = secure::publish(
+                    match secure::publish(
                         &client,
                         &security,
                         format!("p.{pair_id}.state.sessions"),
@@ -458,24 +478,33 @@ pub(super) fn spawn_catalog_publisher(
                     )
                     .await
                     {
-                        if let Some(line) = HEARTBEAT_PUBLISH_EPISODE.record("state_publish", e) {
-                            eprintln!("{line}");
+                        // Record the signature only once the snapshot actually
+                        // left the endpoint. `Ok(false)` means the secure channel
+                        // had no key yet, so the payload was dropped — the next
+                        // tick retries, which is what makes this a "retry until
+                        // delivered" publisher instead of a "send once and hope"
+                        // one.
+                        Ok(true) => last_sessions_sig = sessions_sig,
+                        Ok(false) => {}
+                        Err(e) => {
+                            if let Some(line) = HEARTBEAT_PUBLISH_EPISODE.record("state_publish", e)
+                            {
+                                eprintln!("{line}");
+                            }
+                            return;
                         }
-                        return;
                     }
-                    last_sessions_sig = sessions_sig;
-                    secs_since_sessions = 0;
                 }
             }
 
-            // 3. Workspaces snapshot (dirty flag or 20s self-heal).
+            // 3. Workspaces snapshot (dirty flag or signature change).
             let Some((workspaces_payload, workspaces_sig)) = workspaces else {
                 continue;
             };
-            if dirty || workspaces_sig != last_workspaces_sig || secs_since_workspaces >= 20 {
+            if dirty || workspaces_sig != last_workspaces_sig {
                 let bytes = serde_json::to_vec(&workspaces_payload)
                     .expect("a workspaces Value always serializes");
-                if let Err(e) = secure::publish(
+                match secure::publish(
                     &client,
                     &security,
                     format!("p.{pair_id}.state.workspaces"),
@@ -483,13 +512,15 @@ pub(super) fn spawn_catalog_publisher(
                 )
                 .await
                 {
-                    if let Some(line) = HEARTBEAT_PUBLISH_EPISODE.record("state_publish", e) {
-                        eprintln!("{line}");
+                    Ok(true) => last_workspaces_sig = workspaces_sig,
+                    Ok(false) => {}
+                    Err(e) => {
+                        if let Some(line) = HEARTBEAT_PUBLISH_EPISODE.record("state_publish", e) {
+                            eprintln!("{line}");
+                        }
+                        return;
                     }
-                    return;
                 }
-                last_workspaces_sig = workspaces_sig;
-                secs_since_workspaces = 0;
             }
         }
     })

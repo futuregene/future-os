@@ -1105,6 +1105,24 @@ mod runtime_tests {
             serde_json::from_slice(&channel.open(&reply_context, &reply.payload).unwrap()).unwrap();
         assert_eq!(reply["success"], true);
         // The presence heartbeat and both catalog snapshots now flow encrypted.
+        //
+        // Read the snapshots first. Each is published exactly once, on the tick
+        // that detects it (there is no periodic re-send any more), while the
+        // heartbeat repeats — and the await helpers *discard* what they drain
+        // past. Waiting on the repeating subject first can therefore swallow the
+        // one-shot snapshot and then wait for a second that never comes.
+        await_publish(
+            &mut tap,
+            &format!("p.{}.state.sessions", started.pair_id),
+            Duration::from_secs(5),
+        )
+        .await;
+        await_publish(
+            &mut tap,
+            &format!("p.{}.state.workspaces", started.pair_id),
+            Duration::from_secs(5),
+        )
+        .await;
         let mut presence_data = serde_json::Value::Null;
         await_publish_matching(
             &mut tap,
@@ -1122,18 +1140,13 @@ mod runtime_tests {
         )
         .await;
         assert_eq!(presence_data["online"], json!(true));
-        await_publish(
-            &mut tap,
-            &format!("p.{}.state.sessions", started.pair_id),
-            Duration::from_secs(5),
-        )
-        .await;
-        await_publish(
-            &mut tap,
-            &format!("p.{}.state.workspaces", started.pair_id),
-            Duration::from_secs(5),
-        )
-        .await;
+        // An idle directory advertises its revision instead of re-sending.
+        assert!(
+            presence_data["catalogVersion"]["sessions"]
+                .as_u64()
+                .is_some_and(|revision| revision > 0),
+            "the heartbeat must carry the catalog revision: {presence_data}"
+        );
 
         // The event mirror is live.
         publish_event(
@@ -1901,6 +1914,122 @@ mod runtime_tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         handle.abort();
         std::fs::remove_dir_all(&workspace_dir).ok();
+    }
+
+    /// The idle-directory contract, which replaced the "re-send every unchanged
+    /// snapshot every 20s" self-heal with a revision advertised on the presence
+    /// heartbeat. Both halves are load-bearing: without the first an idle link
+    /// still pays for a full snapshot, and without the second a dropped push is
+    /// never noticed. A regression in either half breaks exactly one assertion
+    /// here.
+    #[tokio::test]
+    async fn idle_catalog_advertises_a_revision_instead_of_resending() {
+        let _home = HomeGuard::new("remote-idle-catalog");
+        init_store();
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        let pair = unique("pairidle");
+        let session = unique("sessidle");
+        // Exactly one thread and no runs: the snapshot signature is stable, so
+        // any republication below is the timer this test exists to forbid.
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Idle thread".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(session.clone()),
+        })
+        .unwrap();
+
+        let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_idle".into());
+        let mut tap = nats.tap();
+        await_publish(
+            &mut tap,
+            &format!("p.{pair}.state.sessions"),
+            Duration::from_secs(5),
+        )
+        .await;
+
+        // The heartbeat must carry the revision of the snapshot just published.
+        // Draining until it appears makes the quiet window below a steady-state
+        // measurement rather than a race with the first tick.
+        let revision = await_publish_matching(
+            &mut tap,
+            &format!("p.{pair}.presence"),
+            Duration::from_secs(5),
+            |published| {
+                published.json()["catalogVersion"]["sessions"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    > 0
+            },
+        )
+        .await;
+        let baseline = revision.json()["catalogVersion"]["sessions"]
+            .as_u64()
+            .unwrap();
+        // The heartbeat is the *only* traffic an idle link now carries, so its
+        // size is part of what this change promises. A regression that ships the
+        // directory inside it would show up here rather than as a silent cost.
+        let heartbeat_bytes = serde_json::to_vec(&revision.json()).unwrap().len();
+        assert!(
+            heartbeat_bytes < 512,
+            "an idle heartbeat must stay small, got {heartbeat_bytes} B"
+        );
+        assert!(
+            revision.json()["catalogVersion"]["workspaces"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0,
+            "both domains share one revision envelope"
+        );
+
+        // Steady state: hundreds of catalog ticks (10ms in tests) with no change
+        // must produce no second snapshot. The old timer's 20s tick had long
+        // since fired by this point, so a reintroduced resend fails here.
+        let quiet_until = std::time::Instant::now() + Duration::from_millis(400);
+        loop {
+            let remaining = quiet_until.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, tap.recv()).await {
+                Ok(Ok(published)) => assert_ne!(
+                    published.subject,
+                    format!("p.{pair}.state.sessions"),
+                    "an unchanged catalog must not be re-sent on a timer"
+                ),
+                // Closed tap or the quiet window elapsing ends the measurement.
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+
+        // ...while a real change still moves the advertised revision, which is
+        // the only thing a client needs to know it must pull.
+        crate::store::rename_thread(crate::store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "Renamed idle".to_string(),
+        })
+        .unwrap();
+        let moved = await_publish_matching(
+            &mut tap,
+            &format!("p.{pair}.presence"),
+            Duration::from_secs(5),
+            |published| {
+                published.json()["catalogVersion"]["sessions"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    > baseline
+            },
+        )
+        .await;
+        assert!(
+            moved.json()["catalogVersion"]["sessions"].as_u64().unwrap() > baseline,
+            "a catalog change must advance the advertised revision"
+        );
+
+        handle.abort();
     }
 
     #[tokio::test]

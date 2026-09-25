@@ -87,6 +87,9 @@ impl StateHost for DesktopHost {
     fn workspaces(&self) -> Option<(Value, String)> {
         catalog::workspaces()
     }
+    fn catalog_revisions(&self) -> (String, u64, u64) {
+        catalog::revisions()
+    }
     fn catalog_dirty(&self) -> bool {
         crate::store::take_catalog_dirty()
     }

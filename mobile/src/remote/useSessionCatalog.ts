@@ -1,6 +1,7 @@
 import { CatalogVersionGate } from "./catalogVersion";
 import type {
   SnapshotVersion,
+  CatalogRevisions,
   StreamEvent,
   ModelsData,
   RemoteModel,
@@ -355,10 +356,50 @@ export function useSessionCatalog(
         revisions.current.workspaces === revision
       )
         markSync("workspaces", "failed");
-      // Keep the last snapshot. The desktop also pushes a 20-second baseline,
-      // so a transient read failure must not flash the catalogue empty.
+      // Keep the last snapshot on a failed read. Not flashing the catalogue
+      // empty is the point: the desktop no longer re-sends a baseline on a timer,
+      // so the recovery path is the next presence heartbeat's revision asking for
+      // a fresh pull — not a retry loop that would blank the list in the meantime.
     }
   }, [clientRef, markSync]);
+
+  /**
+   * Reconcile a presence heartbeat's catalog revisions against what this client
+   * has actually applied.
+   *
+   * This is the replacement for the desktop's old "re-send every unchanged
+   * snapshot every 20s" self-heal: a heartbeated revision newer than the applied
+   * one proves the pushed snapshot was lost on the at-most-once event lane, so
+   * the client pulls the catalogue itself.
+   *
+   * Applied immediately rather than debounced. The heartbeat and the snapshot
+   * are published by different desktop tasks, so whichever arrives first wins
+   * and the loser is rejected by the version gate — at most one fetch per
+   * change, never a duplicate. A failed pull needs no retry timer either: the
+   * next heartbeat still advertises a newer revision and asks again.
+   */
+  const noteCatalogRevisions = useCallback(
+    (version: CatalogRevisions | undefined) => {
+      if (!version) return;
+      // A revision from another epoch describes a desktop generation this client
+      // has not authenticated; reconnect recovery owns that transition.
+      const epoch = authenticatedEpoch.current;
+      if (!epoch || version.epoch !== epoch) return;
+      if (
+        typeof version.sessions === "number" &&
+        version.sessions > versionGate.current.revision("sessions")
+      ) {
+        void refreshSessions();
+      }
+      if (
+        typeof version.workspaces === "number" &&
+        version.workspaces > versionGate.current.revision("workspaces")
+      ) {
+        void refreshWorkspaces();
+      }
+    },
+    [refreshSessions, refreshWorkspaces],
+  );
 
   /** Drop catalogue state (unpair / credentials cleared). */
   const applyWorkspaces = useCallback(
@@ -550,6 +591,7 @@ export function useSessionCatalog(
     applySessionSnapshot,
     observeRunEvent,
     refreshSessions,
+    noteCatalogRevisions,
     refreshModels,
     refreshSettings,
     refreshWorkspaces,

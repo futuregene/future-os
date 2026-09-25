@@ -26,6 +26,21 @@ fn version(payload: &mut Value, epoch: &str, previous: &mut (u64, String), key: 
 pub(crate) fn epoch() -> String {
     CATALOG.lock().unwrap().epoch.clone()
 }
+
+/// The revisions last observed for each catalog domain, with the epoch they
+/// belong to. Deliberately O(1): it reads the revision cached by the last
+/// [`sessions`]/[`workspaces`] call instead of re-reading the store, so the
+/// presence heartbeat can advertise this recovery signal on every tick for
+/// free. A client that sees a revision newer than the one it last applied
+/// knows a pushed snapshot was lost and pulls the catalogue itself — which is
+/// what lets the desktop stop re-sending unchanged snapshots on a timer.
+///
+/// `0` means "no snapshot computed in this process yet"; the client's version
+/// gate starts below that, so an unread domain never triggers a pull.
+pub(crate) fn revisions() -> (String, u64, u64) {
+    let state = CATALOG.lock().unwrap();
+    (state.epoch.clone(), state.sessions.0, state.workspaces.0)
+}
 pub(crate) fn sessions(pair_id: &str) -> Option<(Value, String)> {
     let mut state = CATALOG.lock().unwrap();
     let mut payload = read_sessions(pair_id)?;

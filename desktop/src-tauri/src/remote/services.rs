@@ -26,6 +26,9 @@ pub(crate) trait StateHost: Send + Sync {
     fn catalog_epoch(&self) -> String;
     fn sessions(&self, pair: &str) -> Option<(Value, String)>;
     fn workspaces(&self) -> Option<(Value, String)>;
+    /// `(epoch, sessions revision, workspaces revision)` as last computed.
+    /// Must not touch the store: the presence heartbeat calls it every tick.
+    fn catalog_revisions(&self) -> (String, u64, u64);
     fn catalog_dirty(&self) -> bool;
     fn agent_available(&self) -> bool;
     fn monitor_agent(&self) -> BoxFuture<'_, ()>;
