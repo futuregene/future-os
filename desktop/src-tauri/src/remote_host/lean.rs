@@ -553,7 +553,10 @@ mod tests {
         let dir = std::path::Path::new(&dir);
 
         for (input, output) in [
-            ("render-full-lane-events.json", "render-lean-lane-events.json"),
+            (
+                "render-full-lane-events.json",
+                "render-lean-lane-events.json",
+            ),
             (
                 "render-full-lane-mid-events.json",
                 "render-lean-lane-mid-events.json",
@@ -575,7 +578,10 @@ mod tests {
                 }
                 lean_events.push(copy);
             }
-            assert!(!lean_events.is_empty(), "{input} produced an empty lean lane");
+            assert!(
+                !lean_events.is_empty(),
+                "{input} produced an empty lean lane"
+            );
             for event in &lean_events {
                 let event_type = event["type"].as_str().unwrap_or_default();
                 assert!(
@@ -610,7 +616,10 @@ mod tests {
             if event_type == "tool_end" || event_type == "tool_result" {
                 let data: Value = serde_json::from_str(event["data"].as_str().unwrap_or("{}"))
                     .expect("tool event data json");
-                assert!(data.get("text").is_none(), "tool_end output must be dropped");
+                assert!(
+                    data.get("text").is_none(),
+                    "tool_end output must be dropped"
+                );
             }
         }
         for entry in lean_entries_value.as_array().expect("entries array") {
