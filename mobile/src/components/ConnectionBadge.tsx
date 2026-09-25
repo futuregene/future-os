@@ -48,10 +48,15 @@ export function ConnectionBadge({
   };
   const color = presentation.level === "connected" ? colors.success :
     presentation.level === "connecting" ? colors.warning : colors.danger;
+  // A connection the app still reports as healthy (or still trying) is where a
+  // silently dead transport hides: those states keep the same manual reconnect
+  // the failure states get, so recovering never requires unpairing first.
   const reconnectable = !!onReconnect && (
     presentation.action === "reconnect" ||
     presentation.action === "retry" ||
-    presentation.action === "checkNetwork"
+    presentation.action === "checkNetwork" ||
+    presentation.action === "none" ||
+    presentation.action === "wait"
   );
   const unpairable = !!onUnpair && presentation.action === "pairAgain";
   const disconnected = presentation.level === "disconnected";
@@ -122,6 +127,7 @@ export function ConnectionBadge({
               {(reconnectable || unpairable) && (
                 <Button
                   compact
+                  variant={presentation.level === "disconnected" ? "primary" : "secondary"}
                   label={t(unpairable ? "sessions.unpair" : "connection.reconnect")}
                   onPress={() => {
                     close();

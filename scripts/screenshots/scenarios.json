@@ -1508,6 +1508,32 @@
           }
         ]
       },
+      "connection-popover": {
+        "_comment": "A badge that reads 已连接 must still offer a manual reconnect. Opened by a programmatic click on the trigger (an emulated tap lands ~58px lower in this harness), and the assertion reads the popover's button labels, so a missing action fails the capture instead of quietly shipping an empty bubble.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "document.querySelector('[role=button][aria-label=\"桌面端连接状态: 已连接\"]').click()"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const sheet = document.querySelector('[aria-modal=true]') || document.body; const labels = [...sheet.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label')); if (!labels.includes('重新连接')) throw new Error('the connected popover offers no manual reconnect: ' + labels.join(' / ')); return labels.join(' / '); })()"
+          },
+          {
+            "shot": "m-connection-popover.png"
+          }
+        ]
+      },
       "share-intake": {
         "steps": [
           {
