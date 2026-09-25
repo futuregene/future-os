@@ -24,7 +24,10 @@ pub const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_JSON_RICH_PREVIEW_BYTES: u64 = 1024 * 1024;
 pub const MAX_MESSAGE_BYTES: u64 = 20 * 1024 * 1024;
 pub const MAX_ATTACHMENTS: usize = 10;
-pub const MAX_IMAGES: usize = 4;
+// The per-message image cap for a remote (phone) send. It matches the attachment
+// cap, so a message may be filled with images; a batch over either limit is
+// rejected. Desktop-side selection keeps its own, smaller rule.
+pub const MAX_IMAGES: usize = 10;
 const MOBILE_PREVIEW_MAX_EDGE: u32 = 1600;
 const PREVIEW_CACHE_VERSION: &[u8] = b"futureos-mobile-preview-v1";
 const MAX_PREVIEW_CACHE_BYTES: u64 = 100 * 1024 * 1024;
@@ -1755,10 +1758,17 @@ mod flow_tests {
             UploadReference { upload_id: id }
         };
 
-        // Five images exceed the four-image cap.
-        let five: Vec<UploadReference> = (0..5).map(|_| make_image()).collect();
-        let error = claim_uploads(&five, "thread-img").unwrap_err();
-        assert!(error.to_string().contains("at most 4 images"));
+        // Eleven images exceed the ten-image cap (and the ten-attachment one).
+        let eleven: Vec<UploadReference> = (0..MAX_IMAGES + 1).map(|_| make_image()).collect();
+        let error = claim_uploads(&eleven, "thread-img").unwrap_err();
+        assert!(error.to_string().contains("at most 10 attachments"));
+
+        // The same batch up to the cap is accepted.
+        let ten: Vec<UploadReference> = (0..MAX_IMAGES).map(|_| make_image()).collect();
+        assert_eq!(
+            claim_uploads(&ten, "thread-img-10").unwrap().len(),
+            MAX_IMAGES
+        );
 
         // A non-image payload claiming to be an image fails validation.
         let bogus = init_upload("pic.png", "", "image/png", "image", 4, 4)

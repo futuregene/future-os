@@ -16,7 +16,10 @@ import { createAsyncOperationQueue } from "./asyncOperationQueue";
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const MAX_MESSAGE_BYTES = 20 * 1024 * 1024;
 export const MAX_ATTACHMENTS = 10;
-export const MAX_IMAGES = 4;
+// The per-message image cap: one rule across the clients, so the phone may fill
+// a message with images up to the attachment cap. The desktop backend
+// (remote_host::files) validates a remote send against the same number.
+export const MAX_IMAGES = 10;
 // Longest-edge cap for image attachments. Images over this are downsampled
 // (never rejected) so every source — camera, album, screenshot — behaves the
 // same. 1600px keeps documents/screenshots readable and the transfer small
@@ -162,11 +165,14 @@ function validateRawSelection(
   existing: MobileAttachment[],
   files: { file: File; mimeType?: string | null }[],
 ): void {
-  if (existing.length + files.length > MAX_ATTACHMENTS) throw new Error("attachment_count");
+  // The image rule is checked first because it is the more specific one: the
+  // per-message image cap equals the attachment cap, so an image-heavy batch
+  // would otherwise always report the generic limit.
   const imageCount =
     existing.filter(item => item.kind === "image").length +
     files.filter(item => isImage(item.file, item.mimeType)).length;
   if (imageCount > MAX_IMAGES) throw new Error("attachment_image_count");
+  if (existing.length + files.length > MAX_ATTACHMENTS) throw new Error("attachment_count");
   let total = existing.reduce((sum, item) => sum + item.originalSize, 0);
   for (const { file } of files) {
     if (file.size <= 0 || file.size > MAX_FILE_BYTES) {
@@ -290,10 +296,11 @@ async function prepareFiles(selected: { file: File; mimeType?: string | null }[]
 }
 
 function validateBatch(items: MobileAttachment[]): void {
-  if (items.length > MAX_ATTACHMENTS) throw new Error("attachment_count");
+  // Image rule first: see validateRawSelection.
   if (items.filter(item => item.kind === "image").length > MAX_IMAGES) {
     throw new Error("attachment_image_count");
   }
+  if (items.length > MAX_ATTACHMENTS) throw new Error("attachment_count");
   const total = items.reduce((sum, item) => sum + item.originalSize, 0);
   if (total > MAX_MESSAGE_BYTES) throw new Error("attachment_total_size");
 }
