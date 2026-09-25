@@ -161,6 +161,102 @@ describe("entry reducer", () => {
     });
   });
 
+  /**
+   * A lean history page carries reasoning blocks with no body (the desktop trims
+   * them for a client that declared `lean_events_v1`). The row still has to
+   * appear — it is the only indication that the model reasoned — so the segment
+   * is produced from the block's presence, not from its text. The full-feed case
+   * in the same assertion is what keeps the rendered body working.
+   */
+  test("a reasoning block produces a thinking row with or without a body", () => {
+    const user: HistoryEntry = {
+      id: "u1", kind: "user", role: "user", createdAtMs: 0,
+      blocks: [{ kind: "text", text: "question" }],
+    };
+    const withText = timelineFromEntries([
+      user,
+      {
+        id: "a1",
+        kind: "assistant",
+        role: "assistant",
+        createdAtMs: 1,
+        blocks: [
+          { kind: "reasoning", text: "considered the options" },
+          { kind: "text", text: "answer" },
+        ],
+      },
+    ]);
+    const full = withText.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!full || full.kind !== "message") throw new Error("reply bubble missing");
+    expect(full.segments?.map(segment => segment.kind)).toEqual(["thinking", "text"]);
+    expect(full.segments?.[0]).toMatchObject({ kind: "thinking", text: "considered the options" });
+
+    // The same entry as a lean page delivers it: the block is there, the body is
+    // not. Both an absent key and an empty string count as "no body".
+    for (const block of [{ kind: "reasoning" }, { kind: "reasoning", text: "" }]) {
+      const lean = timelineFromEntries([
+        user,
+        {
+          id: "a1",
+          kind: "assistant",
+          role: "assistant",
+          createdAtMs: 1,
+          blocks: [block, { kind: "text", text: "answer" }],
+        },
+      ]);
+      const reply = lean.items.find(item => item.kind === "message" && item.role === "assistant");
+      if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+      expect(reply.segments?.map(segment => segment.kind)).toEqual(["thinking", "text"]);
+      expect(reply.segments?.[0]).toMatchObject({ kind: "thinking", text: "" });
+      // And the visible answer is unaffected either way.
+      expect(reply.segments?.[1]).toMatchObject({ kind: "text", text: "answer" });
+    }
+  });
+
+  /**
+   * The argument list a lean page delivers holds only the keys a tool target can
+   * come from, so the row must still render its label. This is the client half of
+   * the desktop's `TARGET_ARGUMENT_KEYS`; if the two ever disagree, tool rows go
+   * blank on a real phone with nothing failing here.
+   */
+  test("a trimmed argument list still renders the tool row's label", () => {
+    // Every key the desktop keeps (`TARGET_ARGUMENT_KEYS`) has to be one this
+    // derivation can actually use, or the trim silently strands it and a real
+    // phone shows a blank row. All four are listed on purpose: an alias that only
+    // one side knows about is exactly the drift this test exists to catch.
+    const cases: { name: string; arguments: Record<string, unknown>; target: string }[] = [
+      { name: "shell", arguments: { command: "ls -la /tmp" }, target: "ls -la /tmp" },
+      { name: "read", arguments: { path: "/a/b.txt" }, target: "/a/b.txt" },
+      { name: "read", arguments: { file_path: "/a/b.txt" }, target: "/a/b.txt" },
+      { name: "read", arguments: { filePath: "/a/b.txt" }, target: "/a/b.txt" },
+      // A tool name the client does not know is treated as shell, exactly as the
+      // desktop's trim assumes when it keeps `command`.
+      { name: "future_tool", arguments: { command: "do the thing" }, target: "do the thing" },
+    ];
+    for (const { name, arguments: args, target } of cases) {
+      const timeline = timelineFromEntries([
+        {
+          id: "u1", kind: "user", role: "user", createdAtMs: 0,
+          blocks: [{ kind: "text", text: "go" }],
+        },
+        {
+          id: "a1",
+          kind: "assistant",
+          role: "assistant",
+          createdAtMs: 1,
+          blocks: [
+            { kind: "tool_call", name, toolCallId: "c1", arguments: args },
+          ],
+        },
+      ]);
+      const reply = timeline.items.find(item => item.kind === "message" && item.role === "assistant");
+      if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+      const tool = reply.segments?.find(segment => segment.kind === "tool");
+      if (!tool || tool.kind !== "tool") throw new Error(`tool row missing for ${name}`);
+      expect(tool.tool.detail).toBe(target);
+    }
+  });
+
   test("projects a durable checkpoint from reloaded history", () => {
     const state = timelineFromEntries([
       {
