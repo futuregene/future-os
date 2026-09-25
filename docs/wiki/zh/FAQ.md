@@ -50,7 +50,7 @@
 
 ### 怎么卸载 / 清除数据?
 
-删除应用（macOS：删除 `FutureOS.app`；Windows：卸载或删除便携文件夹；Linux：deb 安装用 `sudo apt remove futureos`，便携版删除文件）。如需一并清除数据,再删除 `.future` 文件夹。在应用内,**设置 → 重置(Reset)**也能清除本地数据。
+删除应用（macOS：删除 `FutureOS.app`；Windows：卸载或删除便携文件夹；Linux：deb 安装用 `sudo apt remove future-os`，便携版删除文件）。如需一并清除数据,再删除 `.future` 文件夹。在应用内,**设置 → 重置(Reset)**也能清除本地数据。
 
 ### 支持哪些平台?
 

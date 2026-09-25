@@ -37,8 +37,9 @@ Read streaming replies, thinking and tool activity; send prompts and attachments
 choose the model/thinking level; rename conversations; stop runs; and respond to
 approval requests. Image/file previews and downloads are available for supported
 formats. Conversations can be pinned, renamed or deleted individually — or in
-bulk from multi-select — and a workspace can be deleted with everything in it.
-Workspace groups remember whether you folded them. Attachments come from the
+bulk from multi-select — and a workspace can be deleted together with its
+conversations; the files in the workspace folder are not deleted. Workspace
+groups remember whether you folded them. Attachments come from the
 system camera, the system photo picker or the system file picker, and text,
 images or files can be **shared** into FutureOS from another app: choose a new
 conversation (or one of your workspaces) or an existing one — grouped by

@@ -95,7 +95,7 @@ portable 用户可能需要 `sudo apt install libwebkit2gtk-4.1-0` 或
 或重新运行安装脚本更新。用户数据单独保存。
 
 卸载时，macOS 删除应用；Windows 用系统设置卸载或删除便携目录；Linux deb 使用
-`sudo apt remove futureos`，手动安装则删除 portable/CLI 文件。不需要卸载系统 Bubblewrap。
+`sudo apt remove future-os`，手动安装则删除 portable/CLI 文件。不需要卸载系统 Bubblewrap。
 仅当确实要删除会话、凭据和设置时再删除 `.future`；先备份需要保留的内容。
 
 另见 [[常见问题|FAQ]]、[[命令行工具|CLI]]、[[审批与沙箱|Sandbox]] 和 [[手机远程|Remote]]。

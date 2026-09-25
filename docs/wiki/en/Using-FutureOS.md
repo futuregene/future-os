@@ -70,7 +70,7 @@ Open the context panel on the right and pick a view from the dropdown at its top
 
 ### Runs
 
-Every background program the agent runs shows up as a card with the **real command**, its status, and a running/finished count. You can:
+Every command the agent runs gets its own row — the **real command** for a shell call, the target file for a write or edit — with that command's own status. The header above the list counts how many are running and finished. You can:
 
 - **Inspect** a run to see its details.
 - **Terminate** a running program.

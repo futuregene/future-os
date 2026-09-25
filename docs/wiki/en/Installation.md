@@ -110,7 +110,7 @@ install an update in place, while portable and CLI-only builds update by replaci
 the extracted files or rerunning the installer. User data is kept separately.
 
 To uninstall, delete the macOS app, use Windows Settings (or delete its portable
-folder), or run `sudo apt remove futureos` for Linux deb installs (delete the
+folder), or run `sudo apt remove future-os` for Linux deb installs (delete the
 portable/CLI files for manual installs). This does not require uninstalling system
 Bubblewrap. Remove `.future` separately only if you intend to delete conversations,
 credentials and settings; back up anything you need first.
