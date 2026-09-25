@@ -3,7 +3,7 @@
 //!
 //! The dump is one session's `get_session_entries` reply in the payload shape
 //! the phone receives, reconstructed from the live agent's protojson answer the
-//! way `scripts/measure-lean-history.py` does it: parse the `…Json` string
+//! way `scripts/measure/measure-lean-history.py` does it: parse the `…Json` string
 //! fields into values, drop the absent ones, and convert protojson's
 //! int64-as-string back to JSON numbers (prost hands the client an i64, so the
 //! number spelling is the client-side shape).

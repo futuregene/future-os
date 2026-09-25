@@ -90,7 +90,7 @@ fn journal_event(event_type: &str, data: Value, idx: i64) -> JournalEvent {
 
 /// Parse a `run_events` dump: one JSON object per line, with the event's own
 /// `data` as an (embedded, stringified) JSON document — the shape
-/// `scripts/verify-e2e-bytes.py` writes.
+/// `scripts/measure/verify-e2e-bytes.py` writes.
 fn parse_journal(text: &str) -> Vec<JournalEvent> {
     text.lines()
         .filter(|line| !line.trim().is_empty())
