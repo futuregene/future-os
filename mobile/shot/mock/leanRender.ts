@@ -27,6 +27,7 @@ import {
   timelineFromEntries,
   type TimelineState,
 } from "../../src/remote/projection";
+import { asToolKind, normalizeArgs, targetFromArgs } from "@future-os/thread-projection";
 import fullHistoryEntries from "./fixtures/render-full-history-entries.json";
 import fullLaneEvents from "./fixtures/render-full-lane-events.json";
 import leanHistoryEntries from "./fixtures/render-lean-history-entries.json";
@@ -34,6 +35,26 @@ import leanLaneEvents from "./fixtures/render-lean-lane-events.json";
 import leanLaneMidEvents from "./fixtures/render-lean-lane-mid-events.json";
 
 export type LeanRenderMode = "live" | "live-mid" | "full-live" | "history" | "full-history";
+
+/**
+ * The command (or path) the FULL-feed history fixture carries for one call.
+ *
+ * A lean page drops a shell call's arguments, so the row fetches them when it
+ * is opened: in the app that is the `get_tool_call_args` bridge round trip, and
+ * the harness answers from the full page instead — the derivation is the
+ * shipping one (`targetFromArgs`), so a capture shows the command the phone
+ * would show after the same tap. Null for a call the full page does not know
+ * (a live-lane id), which is the app's "leave the row as it was".
+ */
+export function leanTargetForToolCall(toolCallId: string): string | null {
+  for (const entry of fullHistoryEntries as unknown as HistoryEntry[]) {
+    for (const block of entry.blocks ?? []) {
+      if (block.kind !== "tool_call" || block.toolCallId !== toolCallId) continue;
+      return targetFromArgs(asToolKind(block.name ?? ""), normalizeArgs(block.arguments)) ?? null;
+    }
+  }
+  return null;
+}
 
 const MODES: LeanRenderMode[] = ["live", "live-mid", "full-live", "history", "full-history"];
 

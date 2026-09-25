@@ -688,10 +688,23 @@ mod tests {
                         "a lean tool_result carries no body"
                     ),
                     "tool_call" => {
-                        for key in block["arguments"].as_object().into_iter().flatten() {
+                        let kept = block["arguments"].as_object();
+                        if matches!(block["name"].as_str(), Some("read" | "write" | "edit")) {
+                            // A file row keeps exactly the keys its target is
+                            // derived from.
+                            for key in kept.into_iter().flatten() {
+                                assert!(
+                                    PATH_ARGUMENT_KEYS.contains(&key.0.as_str()),
+                                    "argument {key:?} is not one the target derivation reads"
+                                );
+                            }
+                        } else {
+                            // A shell row keeps none: the command is what the
+                            // on-open fetch returns, so a fixture that still
+                            // carried it would render a page the phone never sees.
                             assert!(
-                                TARGET_ARGUMENT_KEYS.contains(&key.0.as_str()),
-                                "argument {key:?} is not one the target derivation reads"
+                                kept.is_none(),
+                                "a shell row's arguments are fetched on open, not in the page"
                             );
                         }
                     }
