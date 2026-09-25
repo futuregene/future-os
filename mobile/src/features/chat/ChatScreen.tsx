@@ -396,10 +396,7 @@ export function ChatScreen() {
 
   const renderTimelineItem = useCallback(
     ({ item }: { item: TimelineItem }) => (
-      <View
-        onLayout={onRowLayout}
-        style={item.id === questionNav.landedId ? styles.landedRow : undefined}
-      >
+      <View onLayout={onRowLayout}>
         <TimelineCard
           item={item}
           isLatestAssistant={item.id === latestAssistantId}
@@ -417,7 +414,6 @@ export function ChatScreen() {
       handleTimelineRetry,
       latestAssistantId,
       onRowLayout,
-      questionNav.landedId,
     ],
   );
 
@@ -851,14 +847,6 @@ const styles = StyleSheet.create({
   // The question control sits above the composer's edge, clear of the message
   // column and of the load-older/sync notices that own the viewport's top.
   questionNav: { right: layout.gutter, bottom: spacing.lg },
-  // A jump marks where it landed. The row band cancels its own inset so the
-  // messages do not shift while it is up.
-  landedRow: {
-    marginHorizontal: -spacing.sm,
-    paddingHorizontal: spacing.sm,
-    borderRadius: radius.md,
-    backgroundColor: colors.accentSoft,
-  },
   loadOlder: { top: spacing.sm },
   syncNoticeBelowHistory: { top: spacing.sm + layout.touchTarget + spacing.sm },
   transferTrack: {

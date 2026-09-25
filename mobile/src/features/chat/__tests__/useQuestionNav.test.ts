@@ -138,8 +138,6 @@ describe("useQuestionNav", () => {
       viewOffset: JUMP_VIEW_OFFSET,
       animated: false,
     });
-    // The landed row is marked for the reader to find.
-    expect(result.current.landedId).toBe("question-1");
   });
 
   test("a jump out of the measured window is approximated, then re-issued", async () => {
