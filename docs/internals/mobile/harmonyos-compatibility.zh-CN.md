@@ -47,16 +47,19 @@
   （AndroidX `PickVisualMedia` / `PickMultipleVisualMedia`，`legacy: false`）。**API 33 以下且缺少 Play 服务的照片选择器回退时，
   AndroidX 会把这个契约解析成 `ACTION_OPEN_DOCUMENT`**，也就是文件选择器——2026-09-25 在无 Play 服务的
   华为手机上点「相册」弹出的正是文件浏览器。现在在启动任何界面之前先用原生探针
-  （`future-file-handler` 的 `resolveImagePickRoutes`）解析候选：有响应 `ACTION_PICK` +
-  `content://media/external/images/media` 的图库就显式定向启动它；只响应 `ACTION_GET_CONTENT`
-  的图库同样定向启动；只有真正的照片选择器（框架版 `android.provider.action.PICK_IMAGES`、AOSP 回退版
+  （`future-file-handler` 的 `resolveImagePickRoutes`）解析候选：图库只在它应答**实际要启动的**
+  图片 `ACTION_GET_CONTENT`（expo-image-picker 的 legacy 契约）时才优先使用——契约无法指定组件，
+  所以只声明 `ACTION_PICK` + `content://media/external/images/media` 的图库会落到后续路由；
+  只有真正的照片选择器（框架版 `android.provider.action.PICK_IMAGES`、AOSP 回退版
   `androidx.activity.result.contract.action.PICK_IMAGES`、或 Play 服务版 `com.google.android.gms.provider.action.PICK_IMAGES`）
-  才走契约。
+  才走 `PickVisualMedia` 契约。
   **两者都没有时应用自绘相册网格**（`listAlbumImages`：MediaStore 优先，再用 DCIM/Pictures/Download 等常见目录扫描兜底），
   并为此申请媒体读取权限（拒绝时在网格内说明），不再降级到文件选择器。
   各条系统路由都不申请全相册读取权限，只能拿到被选中的照片。
-  若某环境的 `ACTION_PICK` 只由文件管理响应（探针会看到 `com.huawei.hidisk` 一类包名，不当图库），
+  若某环境的 `ACTION_PICK`/`ACTION_GET_CONTENT` 只由文件管理响应（探针会看到 `com.huawei.hidisk` 一类包名，不当图库），
   则走自绘网格；若自绘网格也读不到任何图片（容器未映射媒体库与共享存储），相册才真正不可用。
+  另：不要用 `expo-intent-launcher` 发起选择器——它把结果 `data` 解析成 *Intent 的*字符串而不是 URI
+  （`"Intent { dat=content://… }"`），这也是 #823/#829 系统图库路线一直打不开真实选中项的原因。
 - 手机文件：`expo-file-system` 的 `FilePickerContract` 使用 `ACTION_OPEN_DOCUMENT`。
 - `NativeFileActionSheet` 明确分开“用其他应用打开 / 保存 / 分享”。
 - Android 外部打开沿用 `future-file-handler` 的 `ACTION_VIEW`、FileProvider 与只读授权；

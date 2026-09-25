@@ -89,11 +89,13 @@ APNs／Android 推送配置；当前没有这条链路。不能把通知权限�
 - 附件来源和文件打开/保存/分享菜单复用 `ActionMenu`；选择来源后等待菜单关闭，再调用系统
   相机、照片或文件选择器。Android 的「相册」在启动任何界面之前先向原生探针
   （`resolveImagePickRoutes`，`future-file-handler`）要路由：Android 13+ 在系统照片选择器
-  确实响应时用 `PickVisualMedia`（多选）；API 33 以下优先用 `ACTION_PICK` +
-  MediaStore 图片集合，并显式指向图库组件，使同样声明了该 intent 的文件管理无法替它应答；
-  只声明了 `ACTION_GET_CONTENT` 的图库同样按这个方式定向启动；真正的照片选择器
-  （框架版、AOSP 回退版 `androidx.activity.result.contract.action.PICK_IMAGES`、或 Play 服务版）
-  优先级高于自绘界面。探针的 `<queries>` 同时声明 scheme 与 MIME type：只写 type 的话，
+  确实响应时用 `PickVisualMedia`（多选）；API 33 以下优先走图库，但只在该图库应答**实际要启动的**
+  intent（图片 `ACTION_GET_CONTENT`，由 expo-image-picker 的 legacy 契约发起）时成立——契约无法指定
+  组件，所以只声明 `ACTION_PICK`（MediaStore 图片集合）的图库会落到后续路由，而不是冒着弹文件管理的风险。
+  **不要用 expo-intent-launcher 发起选择**：它把结果的 `data` 解析成 *Intent 的*字符串
+  （`"Intent { dat=content://… }"`）而不是 URI，真实的选中项永远打不开。
+  真正的照片选择器（框架版、AOSP 回退版 `androidx.activity.result.contract.action.PICK_IMAGES`、
+  或 Play 服务版）优先级高于自绘界面。探针的 `<queries>` 同时声明 scheme 与 MIME type：只写 type 的话，
   声明了 `android:scheme="content"` 的图库会因为包可见性被隐藏。
   当没有任何应用能提供相册时（例如 HarmonyOS 上的卓易通容器，APK 看不到图库也看不到照片选择器），
   应用自己画一个网格（`AlbumPickerModal`，数据来自 `listAlbumImages`：先查 MediaStore，
