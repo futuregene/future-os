@@ -377,6 +377,36 @@ test("the pull spinner belongs to the pull, not to the lane", () => {
   expect(refreshControl().props.refreshing).toBe(false);
 });
 
+test("the pull's spinner is the only report of the wait it restarts", () => {
+  // The pull restarts the same lane the notice above the transcript reports, so
+  // both come up at once and say the same thing twice. The spinner is at the
+  // finger; the pill stands down for the state it would duplicate.
+  const notice = (key: string) =>
+    tree.root.findAll(node => node.props.children === key).length > 0;
+  act(() => refreshControl().props.onRefresh());
+  mockRemote.timelineSyncStatus = "syncing";
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(refreshControl().props.refreshing).toBe(true);
+  expect(notice("chat.syncingLatest")).toBe(false);
+  act(() => jest.advanceTimersByTime(2000));
+  expect(notice("chat.syncingLatest")).toBe(false);
+
+  // The two richer states stay: the spinner cannot say "retrying" or "waiting
+  // for the connection", so the pill is no longer a repeat of it.
+  mockRemote.timelineSyncStatus = "retrying";
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(notice("chat.syncRetrying")).toBe(true);
+  mockRemote.desktopOnline = false;
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(notice("chat.syncWaitingNetwork")).toBe(true);
+  // Waiting for the connection is not work in flight: the notice drops its own
+  // spinner (the lane cannot make progress on its own here).
+  const waiting = tree.root.find(
+    node => node.props.accessibilityLiveRegion === "polite",
+  );
+  expect(waiting.findAllByType(ActivityIndicator)).toHaveLength(0);
+});
+
 test("text selection cannot trigger Android focus-driven transcript scrolling", () => {
   const list = tree.root.findByType(FlatList);
   expect(list.props.inverted).toBe(true);
