@@ -641,6 +641,90 @@ mod tests {
         assert_eq!(assistant.tool_calls.len(), 1);
     }
 
+    /// The real outcome must survive the storage round-trip: the history page
+    /// the phone renders reads the block's `is_error`, and a reloaded session
+    /// hands the same flag back to the model.
+    #[test]
+    fn stored_tool_result_is_error_round_trips_to_history_and_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().to_path_buf());
+        let mut session = Session::new("/tmp/test", "claude");
+        let assistant = crate::types::AgentMessage {
+            role: "assistant".into(),
+            content: vec![
+                crate::types::ContentBlock::tool_call(
+                    "call-1",
+                    "shell",
+                    serde_json::json!({"command": "cargo build"}),
+                    Default::default(),
+                ),
+                crate::types::ContentBlock::tool_call(
+                    "call-2",
+                    "shell",
+                    serde_json::json!({"command": "ls"}),
+                    Default::default(),
+                ),
+            ],
+            ..Default::default()
+        };
+        let failed = crate::types::AgentMessage {
+            role: "tool".into(),
+            content: vec![crate::types::ContentBlock::tool_result(
+                "call-1",
+                "error[E0308]: mismatched types\n[exit: 101]",
+                true,
+            )],
+            name: "shell".into(),
+            ..Default::default()
+        };
+        let succeeded = crate::types::AgentMessage {
+            role: "tool".into(),
+            content: vec![crate::types::ContentBlock::tool_result(
+                "call-2", "file.txt", false,
+            )],
+            name: "shell".into(),
+            ..Default::default()
+        };
+        session.entries.push(agent_message_to_entry(&assistant));
+        session.entries.push(agent_message_to_entry(&failed));
+        session.entries.push(agent_message_to_entry(&succeeded));
+        manager.save(&session).unwrap();
+
+        let disk = raw_lines(&manager, &session.id);
+        let entries: Vec<serde_json::Value> = disk
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let tool = |id: &str| {
+            entries
+                .iter()
+                .find(|value| value["type"] == "tool" && value["content"][0]["tool_call_id"] == id)
+                .unwrap_or_else(|| panic!("no stored tool entry for {id}"))
+        };
+        assert_eq!(
+            tool("call-1")["content"][0]["is_error"],
+            serde_json::json!(true)
+        );
+        // A success stays unflagged (same reading as `false`).
+        assert!(tool("call-2")["content"][0].get("is_error").is_none());
+
+        let loaded = manager.load(&session.id).unwrap();
+        let messages = entries_to_agent_messages(&loaded.entries, false);
+        let flags: Vec<(&str, bool)> = messages
+            .iter()
+            .filter(|message| message.role == "tool")
+            .map(|message| match &message.content[0] {
+                crate::types::ContentBlock::ToolResult {
+                    tool_call_id,
+                    is_error,
+                    ..
+                } => (tool_call_id.as_str(), *is_error),
+                other => panic!("tool message without a tool_result block: {other:?}"),
+            })
+            .collect();
+        assert_eq!(flags, vec![("call-1", true), ("call-2", false)]);
+    }
+
     /// Regression test for the HTTP 400 "Messages with role 'tool' must be a
     /// response to a preceding message with 'tool_calls'" failure seen when
     /// resuming a session: a load-time repair previously PERSISTED a "tool
