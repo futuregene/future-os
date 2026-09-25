@@ -7,6 +7,15 @@ and runs the shipping Rust trim over it, so the numbers come from the code that
 serves the phone rather than from a model of it.
 
   python3 scripts/measure/measure-lean-history.py [--sessions 3]
+  python3 scripts/measure/measure-lean-history.py --pages 3   # per phone page
+
+With `--pages N` each session is cut into the backward pages the phone actually
+requests (`N` user exchanges each, mirroring `history_index::read_page`'s
+backward rule) and every page is measured separately — the whole-session row is
+not what a phone pays, since it never reads the session in one go.
+
+Paging is data selection only: the trim and the byte counts always come from the
+shipping Rust code (`remote_host::lean`), never from a Python reimplementation.
 """
 import argparse
 import json
@@ -93,9 +102,30 @@ def dump(session: str, path: Path) -> None:
         raise SystemExit("the dump carries no blocks; the shape conversion is wrong")
 
 
+def cut_pages(entries: list, exchanges: int) -> list[tuple[int, int]]:
+    """The backward pages the phone reads, as `history_index::read_page` cuts
+    them: a page ends at the previous page's first user entry and starts at the
+    `exchanges`-th user entry before that (0 when fewer remain).
+
+    Page 1 is the newest — the first screen the phone asks for — and the last
+    page is the oldest, so page numbers match the order they arrive in."""
+    pages: list[tuple[int, int]] = []
+    end = len(entries)
+    while end > 0:
+        users = [i for i, entry in enumerate(entries[:end]) if entry.get("role") == "user"]
+        start = users[-exchanges] if len(users) > exchanges else 0
+        pages.append((start, end))
+        if start == 0:
+            break
+        end = start
+    return pages
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sessions", type=int, default=3)
+    parser.add_argument("--pages", type=int, default=0,
+                        help="measure in pages of this many user exchanges instead of whole sessions")
     args = parser.parse_args()
 
     source = Path.home() / ".future" / "agent" / "agent.db"
@@ -106,34 +136,58 @@ def main() -> int:
     if not rows:
         raise SystemExit("no sessions in the agent database")
 
-    binary = next((path for path in sorted(
-        (ROOT / "desktop" / "src-tauri" / "target" / "debug" / "deps").glob("futureos_lib-*"))
-        if path.is_file() and os.access(path, os.X_OK)), None)
+    # The newest test binary: a worktree can hold several (one per toolchain),
+    # and measuring with a stale one reports the previous revision's trim.
+    candidates = sorted(
+        (path for path in
+         (ROOT / "desktop" / "src-tauri" / "target" / "debug" / "deps").glob("futureos_lib-*")
+         if path.is_file() and os.access(path, os.X_OK)),
+        key=lambda path: path.stat().st_mtime, reverse=True)
+    binary = candidates[0] if candidates else None
     if binary is None:
         raise SystemExit("build the desktop test binary first "
                          "(cd desktop/src-tauri && cargo test --lib lean --no-run)")
 
-    print(f"{'session':7}{'entries':>9}{'before MiB':>12}{'after MiB':>11}{'saved':>8}"
+    print(f"{'session':<9}{'entries':>9}{'before MiB':>12}{'after MiB':>11}{'saved':>8}"
           f"   blocks (count)")
     for index, (session, _count) in enumerate(rows, 1):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             entries_path = Path(handle.name)
         try:
             dump(session, entries_path)
-            result = subprocess.run(
-                [str(binary), "remote_host::lean::tests::measure_real_entries",
-                 "--exact", "--ignored", "--nocapture", "--test-threads=1"],
-                env={**os.environ, "LEAN_HISTORY_ENTRIES": str(entries_path)},
-                capture_output=True, text=True, check=True)
-            line = next((row for row in result.stdout.splitlines() if "LEAN_HISTORY " in row), None)
-            if line is None:
-                print(f"top{index}: no measurement\n{result.stdout[-1500:]}")
-                continue
-            data = json.loads(line[line.index("LEAN_HISTORY ") + len("LEAN_HISTORY "):])
-            counts = data["blockCounts"]
-            print(f"top{index:<4}{data['entries']:>9}"
-                  f"{data['beforeBytes']/2**20:>12.2f}{data['afterBytes']/2**20:>11.2f}"
-                  f"{data['saved']*100:>7.1f}%   {counts}")
+            entries = json.loads(entries_path.read_text())
+            # One measurement per page (the phone never reads a session whole);
+            # without --pages the whole session is one "page".
+            spans = cut_pages(entries, args.pages) if args.pages else [(0, len(entries))]
+            if args.pages and sum(end - start for start, end in spans) != len(entries):
+                raise SystemExit(
+                    f"page cutting lost entries: {sum(e - s for s, e in spans)} of {len(entries)}")
+            for page, (start, end) in enumerate(spans, 1):
+                label = f"top{index}" if not args.pages else f"top{index}p{page}"
+                # Only the *selection* is Python's; the trim and byte counts are
+                # the shipping Rust code's (measure_real_entries).
+                with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as page_handle:
+                    page_path = Path(page_handle.name)
+                page_path.write_text(json.dumps(entries[start:end], separators=(",", ":")))
+                try:
+                    result = subprocess.run(
+                        [str(binary), "remote_host::lean::tests::measure_real_entries",
+                         "--exact", "--ignored", "--nocapture", "--test-threads=1"],
+                        env={**os.environ, "LEAN_HISTORY_ENTRIES": str(page_path)},
+                        capture_output=True, text=True, check=True)
+                finally:
+                    page_path.unlink(missing_ok=True)
+                line = next(
+                    (row for row in result.stdout.splitlines()
+                     if "LEAN_HISTORY " in row), None)
+                if line is None:
+                    print(f"{label}: no measurement\n{result.stdout[-1500:]}")
+                    continue
+                data = json.loads(
+                    line[line.index("LEAN_HISTORY ") + len("LEAN_HISTORY "):])
+                print(f"{label:<9}{data['entries']:>9}"
+                      f"{data['beforeBytes']/2**20:>12.2f}{data['afterBytes']/2**20:>11.2f}"
+                      f"{data['saved']*100:>7.1f}%   {data['blockCounts']}")
         finally:
             entries_path.unlink(missing_ok=True)
     return 0

@@ -61,7 +61,8 @@ pub use self::queries::{
     SyncFutureModelsResult, WindowsSandboxProbeResult,
 };
 pub(crate) use self::queries::{
-    get_events_since_page, get_run_snapshot, provision_agent_session, query_tools,
+    get_events_since_page, get_run_snapshot, get_tool_call_args, provision_agent_session,
+    query_tools,
 };
 pub use self::reconciliation::{
     attach_remote_stream, reconcile_interrupted_runs, reconcile_thread_workspace,

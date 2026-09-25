@@ -18,7 +18,7 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
         "list_sessions" | "list_workspaces" => {
             catalog::execute(&cmd, sink).await;
         }
-        "get_messages" | "get_session_entries" | "get_events_since" => {
+        "get_messages" | "get_session_entries" | "get_events_since" | "get_tool_call_args" => {
             history::execute(&cmd, sink).await;
         }
         "upload_init" | "upload_complete" | "upload_cancel" | "list_session_files"

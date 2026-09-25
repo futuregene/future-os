@@ -892,6 +892,48 @@ fn get_session_entries_covers_compaction_billed_deltas_and_empty_info() {
 }
 
 #[test]
+fn get_session_entries_marks_failed_tool_result_is_error() {
+    let state = make_app_state();
+    let info = crate::session::SessionEntry::session_info(
+        serde_json::json!({"cwd": "ws", "model": "mock", "session_name": "failed tool"}),
+        "mock".to_string(),
+        "low".to_string(),
+    );
+    let assistant = crate::session::agent_message_to_entry(&crate::types::AgentMessage {
+        role: "assistant".into(),
+        content: vec![crate::types::ContentBlock::tool_call(
+            "call-1",
+            "shell",
+            serde_json::json!({"command": "cargo build"}),
+            Default::default(),
+        )],
+        ..Default::default()
+    });
+    let failed = crate::session::agent_message_to_entry(&crate::types::AgentMessage {
+        role: "tool".into(),
+        content: vec![crate::types::ContentBlock::tool_result(
+            "call-1",
+            "error[E0308]: mismatched types\n[exit: 101]",
+            true,
+        )],
+        name: "shell".into(),
+        ..Default::default()
+    });
+    save_via(&state, "default", "mock", vec![info, assistant, failed]);
+
+    let resp = parse_response(&handle_command_internal(
+        &state,
+        make_cmd("get_session_entries"),
+    ));
+    assert_eq!(resp["success"], true);
+    let entries = resp["data"]["entries"].as_array().unwrap();
+    let tool = entries.iter().find(|e| e["kind"] == "tool").unwrap();
+    assert_eq!(tool["blocks"][0]["kind"], "tool_result");
+    assert_eq!(tool["blocks"][0]["toolCallId"], "call-1");
+    assert_eq!(tool["blocks"][0]["isError"], true);
+}
+
+#[test]
 fn get_session_entries_paginates_only_when_offset_is_explicit() {
     let state = make_app_state();
     let entries = (0..5)
