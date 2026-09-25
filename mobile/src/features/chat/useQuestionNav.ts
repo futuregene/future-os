@@ -50,8 +50,6 @@ export const JUMP_VIEW_OFFSET = ROW_GAP - QUESTION_TOP_INSET;
 const REALIGN_MS = 320;
 /** Bounded so a target that never enters the render window cannot loop. */
 const MAX_JUMP_ATTEMPTS = 4;
-/** How long the landed question stays marked, so a jump has a visible target. */
-const LANDED_MS = 1_400;
 
 const PARTLY_VISIBLE: ViewabilityConfig = { itemVisiblePercentThreshold: 1 };
 const FULLY_VISIBLE: ViewabilityConfig = { itemVisiblePercentThreshold: 100 };
@@ -63,8 +61,6 @@ export interface QuestionNavApi {
   next: number | null;
   /** Whether the control has anything to offer. */
   visible: boolean;
-  /** Row that just received a jump: marked for a moment so it can be found. */
-  landedId: string | null;
   goToPrevious: () => void;
   goToNext: () => void;
   onScroll: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
@@ -115,10 +111,7 @@ export function useQuestionNav({
     previous: number | null;
     next: number | null;
   }>({ sessionId, previous: null, next: null });
-  const [landedId, setLandedId] = useState<string | null>(null);
-
   const sessionIdRef = useRef(sessionId);
-  const itemsRef = useRef(items);
   const questionsRef = useRef(questions);
   const atLatestRef = useRef(atLatest);
   const rowsRef = useRef<ViewportRows>(EMPTY_ROWS);
@@ -127,7 +120,6 @@ export function useQuestionNav({
   const offsetRef = useRef(0);
   const jumpRef = useRef<{ index: number; attempts: number } | null>(null);
   const realignTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const landedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refreshRows = useCallback(() => {
     rowsRef.current = viewportRows({
@@ -158,7 +150,6 @@ export function useQuestionNav({
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
-    itemsRef.current = items;
     questionsRef.current = questions;
     atLatestRef.current = atLatest;
   });
@@ -182,7 +173,6 @@ export function useQuestionNav({
   useEffect(
     () => () => {
       if (realignTimerRef.current !== null) clearTimeout(realignTimerRef.current);
-      if (landedTimerRef.current !== null) clearTimeout(landedTimerRef.current);
     },
     [],
   );
@@ -232,11 +222,6 @@ export function useQuestionNav({
   const jumpTo = useCallback(
     (index: number | null) => {
       if (index === null || listRef.current === null) return;
-      // Mark before scrolling: the row that is about to move is the one the
-      // reader has to find again.
-      setLandedId(itemsRef.current[index]?.id ?? null);
-      if (landedTimerRef.current !== null) clearTimeout(landedTimerRef.current);
-      landedTimerRef.current = setTimeout(() => setLandedId(null), LANDED_MS);
       if (realignTimerRef.current !== null) clearTimeout(realignTimerRef.current);
       jumpRef.current = { index, attempts: 0 };
       align(index);
@@ -291,7 +276,6 @@ export function useQuestionNav({
     previous: current.previous,
     next: current.next,
     visible: current.previous !== null || current.next !== null,
-    landedId,
     goToPrevious,
     goToNext,
     onScroll,
