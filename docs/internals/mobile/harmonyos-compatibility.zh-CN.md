@@ -43,13 +43,17 @@
 ## 当前 APK 源码核查及改动
 
 - 拍照：`expo-image-picker` 的 `CameraContract` 使用 Android 相机 Intent。
-- 相册：Android 13+ 用 `expo-image-picker` 的 `ImageLibraryContract`（AndroidX `PickVisualMedia` /
-  `PickMultipleVisualMedia`，`legacy: false`）。**API 33 以下且缺少 Play 服务的照片选择器回退时，
+- 相册：Android 13+ 在系统照片选择器确实响应时用 `expo-image-picker` 的 `ImageLibraryContract`
+  （AndroidX `PickVisualMedia` / `PickMultipleVisualMedia`，`legacy: false`）。**API 33 以下且缺少 Play 服务的照片选择器回退时，
   AndroidX 会把这个契约解析成 `ACTION_OPEN_DOCUMENT`**，也就是文件选择器——2026-09-25 在无 Play 服务的
-  华为手机上点「相册」弹出的正是文件浏览器。因此 API 33 以下改为 `ACTION_PICK` +
-  `content://media/external/images/media` 打开系统图库，没有图库应用响应时才回退到上面的契约。
-  两条路都不申请全相册读取权限，只能拿到被选中的照片。若某环境连 `ACTION_PICK` 都没有处理者
-  （例如只暴露文件选择器的兼容容器），仍会落到文件选择器，属本文档所述边界。
+  华为手机上点「相册」弹出的正是文件浏览器。因此现在在启动任何界面之前先用原生探针
+  （`future-file-handler` 的 `resolveImagePickRoutes`）解析候选：有响应 `ACTION_PICK` +
+  `content://media/external/images/media` 的图库就显式定向启动它；只有真正的照片选择器
+  （框架版 `android.provider.action.PICK_IMAGES` 或 AOSP 回退版
+  `androidx.activity.result.contract.action.PICK_IMAGES`）才走契约；两者都没有时「相册」直接报
+  「系统相册不可用」，不再降级到文件选择器。各条路由都不申请全相册读取权限，只能拿到被选中的照片。
+  若某环境的 `ACTION_PICK` 只由文件管理响应（探针会看到 `com.huawei.hidisk` 一类包名，不当图库），
+  或没有任何处理者（例如只暴露文件选择器的兼容容器），则相册不可用，属本文档所述边界。
 - 手机文件：`expo-file-system` 的 `FilePickerContract` 使用 `ACTION_OPEN_DOCUMENT`。
 - `NativeFileActionSheet` 明确分开“用其他应用打开 / 保存 / 分享”。
 - Android 外部打开沿用 `future-file-handler` 的 `ACTION_VIEW`、FileProvider 与只读授权；
@@ -68,9 +72,9 @@
 
 1. 记录卓易通版本；检查鸿蒙侧授予卓易通的相机、媒体和文件权限，以及 APK 内部权限。
 2. 分别打开、完成和取消相机、相册、文件选择；记录实际页面属于鸿蒙系统还是兼容环境。
-   能选择文件只证明数据访问可用，不证明界面是鸿蒙原生。相册若仍打开文件浏览器，说明该环境
-   没有响应 `ACTION_PICK` + MediaStore 图片集合的图库应用（兼容容器只暴露了文件选择器），
-   不是 APK 内可修的缺陷。
+   能选择文件只证明数据访问可用，不证明界面是鸿蒙原生。相册若报「系统相册不可用」，说明该环境
+   没有图库应用响应 `ACTION_PICK` + MediaStore 图片集合，也没有系统照片选择器；若仍出现文件浏览器，
+   则说明探针把某个文件管理包当成了未知应用（包名未命中图库/文件管理特征），需记录包名补进规则。
 3. PDF 没有匹配阅读器时，文件菜单仍提供保存、分享；外部打开提示当前运行环境无处理应用。
 4. 分享中文文件名 PDF、图片、文本，确认目标应用收到真实文件、名称和 MIME 正确。
    分别核查卓易通内应用与鸿蒙原生微信是否出现、能否读取；未出现时记录兼容限制。

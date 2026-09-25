@@ -1,7 +1,8 @@
 import { createHash } from "crypto";
 import * as Crypto from "expo-crypto";
 import * as FS from "expo-file-system";
-import { hashFile as nativeFileSha256 } from "future-file-handler";
+import { hashFile as nativeFileSha256, resolveImagePickRoutes } from "future-file-handler";
+import type { ImagePickRoutes } from "future-file-handler";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import * as IntentLauncher from "expo-intent-launcher";
@@ -25,7 +26,10 @@ import {
   uploadAttachments,
 } from "../files";
 
-jest.mock("future-file-handler", () => ({ hashFile: jest.fn(async () => null) }));
+jest.mock("future-file-handler", () => ({
+  hashFile: jest.fn(async () => null),
+  resolveImagePickRoutes: jest.fn(async () => null),
+}));
 
 jest.mock("expo-file-system", () => {
   const store = new Map<
@@ -226,6 +230,7 @@ const mockedRequestLibrary = ImagePicker.requestMediaLibraryPermissionsAsync as 
 const mockedLaunchLibrary = ImagePicker.launchImageLibraryAsync as jest.Mock;
 const mockedPendingResult = ImagePicker.getPendingResultAsync as jest.Mock;
 const mockedStartActivity = IntentLauncher.startActivityAsync as jest.Mock;
+const mockedResolveRoutes = resolveImagePickRoutes as jest.Mock;
 const mockedDigest = Crypto.digest as jest.Mock;
 const mockedGetSize = Image.getSize as jest.Mock;
 
@@ -687,6 +692,7 @@ describe("pickFromAlbum", () => {
   afterEach(() => {
     Platform.OS = "ios";
     Object.assign(Platform, { Version: 0 });
+    mockedResolveRoutes.mockResolvedValue(null);
   });
 
   /** API 33+ always has the system photo picker; older versions may not. */
@@ -695,10 +701,26 @@ describe("pickFromAlbum", () => {
     Object.assign(Platform, { Version: 33 });
   }
 
-  /** An Android device whose contract degrades to the document picker. */
-  function useGalleryOnlyDevice(): void {
+  /** A phone that cannot host a real photo picker (the Huawei report). */
+  function useAlbumOnlyDevice(): void {
     Platform.OS = "android";
     Object.assign(Platform, { Version: 31 });
+  }
+
+  /** What the native probe reports for this device's pick handlers. */
+  function deviceResolves(overrides: Partial<ImagePickRoutes> = {}): void {
+    mockedResolveRoutes.mockResolvedValue({
+      sdkInt: Number(Platform.Version),
+      album: [],
+      photoPicker: [],
+      photoPickerFallback: [],
+      document: [],
+      ...overrides,
+    });
+  }
+
+  function handler(name: string): { package: string; activity: string } {
+    return { package: name, activity: `${name}.PickerActivity` };
   }
 
   test.each(["ios", "android"] as const)(
@@ -731,7 +753,7 @@ describe("pickFromAlbum", () => {
   });
 
   test("Android below 33 opens the phone's gallery instead of the document picker", async () => {
-    useGalleryOnlyDevice();
+    useAlbumOnlyDevice();
     mockedStartActivity.mockResolvedValue({
       resultCode: -1,
       data: "content://media/external/images/media/42",
@@ -758,22 +780,123 @@ describe("pickFromAlbum", () => {
     });
   });
 
+  test("resolved routes target the gallery so a file manager cannot answer for it", async () => {
+    useAlbumOnlyDevice();
+    deviceResolves({
+      album: [handler("com.huawei.hidisk"), handler("com.huawei.photos")],
+      document: [handler("com.huawei.hidisk")],
+    });
+    mockedStartActivity.mockResolvedValue({
+      resultCode: -1,
+      data: "content://media/external/images/media/7",
+    });
+    mockFS.__set("content://media/external/images/media/7", {
+      bytes: new Uint8Array(10),
+      type: "image/png",
+    });
+
+    await pickFromAlbum([]);
+
+    expect(mockedStartActivity).toHaveBeenCalledWith("android.intent.action.PICK", {
+      data: "content://media/external/images/media",
+      type: "image/*",
+      packageName: "com.huawei.photos",
+      className: "com.huawei.photos.PickerActivity",
+    });
+    expect(mockedLaunchLibrary).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["a file manager that advertises the pick", ["com.huawei.hidisk"]],
+    ["no handler at all", []],
+  ])("reports the album as unavailable when only %s answers on Android", async (_label, album) => {
+    useAlbumOnlyDevice();
+    deviceResolves({ album: album.map(handler), document: [handler("com.huawei.hidisk")] });
+
+    await expect(pickFromAlbum([])).rejects.toThrow("attachment_album_unavailable");
+
+    // Never a document picker under the album label — that is "Choose files".
+    expect(mockedStartActivity).not.toHaveBeenCalled();
+    expect(mockedLaunchLibrary).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["com.huawei.photos", true],
+    ["com.android.gallery3d", true],
+    ["com.miui.gallery", true],
+    ["com.google.android.apps.photos", true],
+    ["com.sec.android.gallery3d", true],
+    ["com.android.documentsui", false],
+    ["com.google.android.documentsui", false],
+    ["com.coloros.filemanager", false],
+    ["com.android.fileexplorer", false],
+    ["com.huawei.hidisk", false],
+  ])("classifies %s as an album app: %s", async (app, isAlbum) => {
+    useAlbumOnlyDevice();
+    deviceResolves({ album: [handler(app)] });
+    mockedStartActivity.mockResolvedValue({ resultCode: 0 });
+
+    const attempt = pickFromAlbum([]);
+
+    if (isAlbum) {
+      await attempt;
+      expect(mockedStartActivity).toHaveBeenCalledWith(
+        "android.intent.action.PICK",
+        expect.objectContaining({ packageName: app }),
+      );
+    } else {
+      await expect(attempt).rejects.toThrow("attachment_album_unavailable");
+      expect(mockedStartActivity).not.toHaveBeenCalled();
+    }
+  });
+
+  test("Android 13 keeps the system photo picker when the device has it", async () => {
+    useSystemPhotoPickerDevice();
+    deviceResolves({
+      photoPicker: [handler("com.google.android.providers.media.module")],
+      album: [handler("com.google.android.apps.photos")],
+    });
+    mockedLaunchLibrary.mockResolvedValue({ canceled: true, assets: [] });
+
+    await pickFromAlbum([]);
+
+    expect(mockedLaunchLibrary).toHaveBeenCalledWith(
+      expect.objectContaining({ allowsMultipleSelection: true, legacy: false }),
+    );
+    expect(mockedStartActivity).not.toHaveBeenCalled();
+  });
+
+  test("falls back to the photo-picker backport, not the document picker", async () => {
+    useAlbumOnlyDevice();
+    deviceResolves({
+      photoPickerFallback: [handler("com.android.providers.media.module")],
+      album: [handler("com.huawei.hidisk")],
+      document: [handler("com.huawei.hidisk")],
+    });
+    mockedLaunchLibrary.mockResolvedValue({ canceled: true, assets: [] });
+
+    await pickFromAlbum([]);
+
+    expect(mockedLaunchLibrary).toHaveBeenCalledWith(
+      expect.objectContaining({ legacy: false, defaultTab: "albums" }),
+    );
+    expect(mockedStartActivity).not.toHaveBeenCalled();
+  });
+
   test("Android below 33 returns existing attachments when the gallery is cancelled", async () => {
-    useGalleryOnlyDevice();
+    useAlbumOnlyDevice();
     mockedStartActivity.mockResolvedValue({ resultCode: 0 });
     const existing = [attachment()];
     expect(await pickFromAlbum(existing)).toBe(existing);
     expect(mockedLaunchLibrary).not.toHaveBeenCalled();
   });
 
-  test("Android below 33 falls back to the photo contract when no gallery answers", async () => {
-    useGalleryOnlyDevice();
+  test("reports the album as unavailable when nothing can present it", async () => {
+    useAlbumOnlyDevice();
     mockedStartActivity.mockRejectedValue(new Error("No activity found to handle Intent"));
-    mockedLaunchLibrary.mockResolvedValue({ canceled: true, assets: [] });
-    await pickFromAlbum([]);
-    expect(mockedLaunchLibrary).toHaveBeenCalledWith(
-      expect.objectContaining({ legacy: false, defaultTab: "albums" }),
-    );
+
+    await expect(pickFromAlbum([])).rejects.toThrow("attachment_album_unavailable");
+    expect(mockedLaunchLibrary).not.toHaveBeenCalled();
   });
 
   test("propagates native picker errors without trying a different app", async () => {

@@ -1186,7 +1186,7 @@ export const resources = {
           attachment_camera_permission: "拍照需要相机权限。",
           attachment_album_permission: "选择图片需要相册权限。",
           attachment_album_unavailable:
-            "系统相册不可用，请启用相册应用，或使用「选择文件」。",
+            "系统相册不可用，请启用相册应用，或使用「选择手机文件」。",
           attachment_failed: "无法添加附件。",
         },
       },

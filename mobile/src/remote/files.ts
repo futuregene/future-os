@@ -1,6 +1,6 @@
 import { File, FileMode, Directory, Paths } from "expo-file-system";
 import sha256 from "sha256-universal";
-import { hashFile as nativeFileSha256 } from "future-file-handler";
+import { hashFile as nativeFileSha256, resolveImagePickRoutes, type IntentHandler } from "future-file-handler";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import * as IntentLauncher from "expo-intent-launcher";
@@ -389,47 +389,99 @@ async function prepareImagePickerAssets(
   return combined;
 }
 
-// The gallery intent: MediaStore's image collection as its data URI, image/* as
+// The album intent: MediaStore's image collection as its data URI, image/* as
 // its type, and no CATEGORY_OPENABLE. That last part matters — Android's own
 // document picker only advertises ACTION_PICK for openable documents, so
 // leaving the category out keeps this call on gallery apps instead of landing
 // in the file browser.
-const GALLERY_PICK_ACTION = "android.intent.action.PICK";
-const GALLERY_IMAGE_COLLECTION = "content://media/external/images/media";
+const ALBUM_PICK_ACTION = "android.intent.action.PICK";
+const ALBUM_IMAGE_COLLECTION = "content://media/external/images/media";
 
-/**
- * Whether `ImagePicker`'s photo contract can present an actual picker here.
- *
- * Android's system photo picker ships with API 33; API 30-32 reaches it through
- * the Play-services/R-extension backport. Where neither exists, AndroidX's
- * `PickVisualMedia` "fallback" silently degrades to `ACTION_OPEN_DOCUMENT` — the
- * document picker, not an album. That is what a Huawei/EMUI phone without Play
- * services did: "相册" opened the file browser. The backport cannot be probed
- * from JS, so gate on the API level — the part of AndroidX's own availability
- * check that JS can see.
- */
-function hasSystemPhotoPicker(): boolean {
-  return Platform.OS !== "android" || Number(Platform.Version) >= 33;
+// Package-name hints. Android exposes no "is this a gallery" flag, and both
+// kinds of app answer a pick, so the only signal is what the app calls itself.
+// An unknown package is not a gallery: showing a file browser under the album
+// label is the failure this guards against, so a missed gallery degrades to the
+// honest "album unavailable" message instead.
+const GALLERY_PACKAGE_HINTS = ["gallery", "photos", "album", "picture"];
+const FILE_BROWSER_PACKAGE_HINTS = [
+  "files",
+  "documents",
+  "hidisk",
+  "filemanager",
+  "file-manager",
+  "explorer",
+  "docpicker",
+];
+
+function isFileBrowserPackage(name: string): boolean {
+  const lower = name.toLowerCase();
+  return FILE_BROWSER_PACKAGE_HINTS.some(hint => lower.includes(hint));
 }
 
-type GalleryPick = { uri: string } | "cancelled" | "unavailable";
+function isGalleryPackage(name: string): boolean {
+  const lower = name.toLowerCase();
+  return !isFileBrowserPackage(lower) && GALLERY_PACKAGE_HINTS.some(hint => lower.includes(hint));
+}
+
+/**
+ * How "相册" can be presented on this Android device.
+ *
+ * Android's photo surface is OEM-specific. AndroidX's `PickVisualMedia`
+ * silently degrades to `ACTION_OPEN_DOCUMENT` — the document picker — wherever
+ * no system photo picker exists (API 33+, or the AOSP backport that resolves as
+ * `androidx.activity.result.contract.action.PICK_IMAGES`), and some phones hand
+ * the classic gallery intent to a file manager. So the candidates are resolved
+ * before anything is launched, and a route is only taken when it leads to a real
+ * picker. Without the native probe (an older app binary) the historical order is
+ * kept: gallery below API 33, the photo-picker contract above it.
+ */
+type AlbumRoute =
+  | { kind: "contract" }
+  | { kind: "album"; target?: IntentHandler }
+  | { kind: "unavailable" };
+
+async function resolveAlbumRoute(): Promise<AlbumRoute> {
+  const apiLevel = Number(Platform.Version);
+  const routes = await resolveImagePickRoutes();
+  if (!routes) return apiLevel >= 33 ? { kind: "contract" } : { kind: "album" };
+  const photoPickers = routes.photoPicker.filter(route => !isFileBrowserPackage(route.package));
+  // Android 13's photo picker is the multi-select default; keep using it there.
+  if (apiLevel >= 33 && photoPickers.length > 0) return { kind: "contract" };
+  // Below 33 the album is what the user asked for, so prefer a gallery when one
+  // answers, and target it explicitly so a file manager that also advertises the
+  // pick cannot stand in for it.
+  const gallery = routes.album.find(route => isGalleryPackage(route.package));
+  if (gallery) return { kind: "album", target: gallery };
+  if (photoPickers.length > 0) return { kind: "contract" };
+  if (routes.photoPickerFallback.some(route => !isFileBrowserPackage(route.package))) {
+    return { kind: "contract" };
+  }
+  // Keep the resolution in the log: a device report has to distinguish "no
+  // album app at all" from "only a file manager advertises the pick".
+  console.warn("album routes", JSON.stringify(routes));
+  return { kind: "unavailable" };
+}
+
+type AlbumPick = { uri: string } | "cancelled" | "unavailable";
 
 /** Ask the phone's own gallery for one image. */
-async function pickFromSystemGallery(): Promise<GalleryPick> {
+async function pickFromSystemGallery(target?: IntentHandler): Promise<AlbumPick> {
   try {
     const result = await withNativePresentation(() =>
-      IntentLauncher.startActivityAsync(GALLERY_PICK_ACTION, {
-        data: GALLERY_IMAGE_COLLECTION,
+      IntentLauncher.startActivityAsync(ALBUM_PICK_ACTION, {
+        data: ALBUM_IMAGE_COLLECTION,
         type: "image/*",
+        ...(target ? { packageName: target.package, className: target.activity } : {}),
       }),
     );
     if (result.resultCode !== IntentLauncher.ResultCode.Success || !result.data) {
       return "cancelled";
     }
     return { uri: result.data };
-  } catch {
-    // No gallery app in this runtime (e.g. a compatibility container that only
-    // exposes the document picker). The caller falls back to the contract.
+  } catch (error) {
+    // The resolved gallery is gone (or not launchable). The caller reports the
+    // album as unavailable rather than opening a document picker under it.
+    console.warn("album pick failed", error);
     return "unavailable";
   }
 }
@@ -470,17 +522,20 @@ export async function pickFromAlbum(existing: MobileAttachment[]): Promise<Mobil
     MAX_ATTACHMENTS - existing.length,
   );
   if (remaining <= 0) throw new Error("attachment_image_count");
-  if (!hasSystemPhotoPicker()) {
-    // Older/non-GMS Android: the contract below would show the document picker,
-    // so open the gallery first and only fall back when no gallery answers.
-    const gallery = await pickFromSystemGallery();
-    if (gallery === "cancelled") return existing;
-    if (gallery !== "unavailable") return prepareGalleryPick(existing, gallery.uri);
+  if (Platform.OS === "android") {
+    const route = await resolveAlbumRoute();
+    if (route.kind === "unavailable") throw new Error("attachment_album_unavailable");
+    if (route.kind === "album") {
+      const album = await pickFromSystemGallery(route.target);
+      if (album === "cancelled") return existing;
+      if (album === "unavailable") throw new Error("attachment_album_unavailable");
+      return prepareGalleryPick(existing, album.uri);
+    }
   }
   // Use PHPicker on iOS and Android's PickVisualMedia contract (including
-  // its system backport/fallback) where a system photo picker exists.
-  // System photo pickers grant access to selected images, not the whole library.
-  // Do not block them behind READ_MEDIA_IMAGES / full-album permission.
+  // its system backport) where a real photo picker exists. System photo pickers
+  // grant access to selected images, not the whole library. Do not block them
+  // behind READ_MEDIA_IMAGES / full-album permission.
   const result = await withNativePresentation(() =>
     ImagePicker.launchImageLibraryAsync({
       mediaTypes: ["images"],

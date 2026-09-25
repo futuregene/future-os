@@ -1,11 +1,31 @@
 import { requireOptionalNativeModule } from "expo-modules-core";
 
+/** One activity that would answer an intent. */
+export interface IntentHandler {
+  package: string;
+  activity: string;
+}
+
+/** Which apps answer each album/photo-picker intent on this Android device. */
+export interface ImagePickRoutes {
+  sdkInt: number;
+  /** The classic gallery intent (ACTION_PICK on MediaStore's image collection). */
+  album: IntentHandler[];
+  /** Android 13's system photo picker. */
+  photoPicker: IntentHandler[];
+  /** The photo picker backport AOSP ships to Android 11/12 devices. */
+  photoPickerFallback: IntentHandler[];
+  /** The document picker, which an album must never open. Diagnostics only. */
+  document: IntentHandler[];
+}
+
 interface FileHandlerNativeModule {
   hashFile?(fileUrl: string): Promise<string>;
   findSupportedMimeType(fileName: string, mimeTypes: string[]): Promise<string | null>;
   openFile(fileUrl: string, mimeType: string): Promise<void>;
   saveFile?(fileUrl: string): Promise<void>;
   shareFile?(fileUrl: string, mimeType: string, title: string): Promise<void>;
+  resolveImagePickRoutes?(): Promise<ImagePickRoutes>;
 }
 
 const nativeModule = requireOptionalNativeModule<FileHandlerNativeModule>("FutureFileHandler");
@@ -30,6 +50,11 @@ export function supportsNativeFileActions(): boolean {
 export async function saveFile(fileUrl: string): Promise<void> {
   if (!nativeModule?.saveFile) throw new Error("Native document export is unavailable");
   await nativeModule.saveFile(fileUrl);
+}
+
+/** `null` on iOS and on app binaries that predate the probe. */
+export async function resolveImagePickRoutes(): Promise<ImagePickRoutes | null> {
+  return (await nativeModule?.resolveImagePickRoutes?.()) ?? null;
 }
 
 export async function findSupportedMimeType(
