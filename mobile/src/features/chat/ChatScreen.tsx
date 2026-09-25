@@ -240,14 +240,33 @@ export function ChatScreen() {
   );
   // Pull-to-refresh rebuilds the visible window from durable history — the
   // manual escape hatch when the automatic sync left the conversation wrong.
-  // The inverted list renders the spinner at the visual top while the active
-  // sync/reconcile runs.
-  const pullRefreshActive =
+  // Its spinner belongs to the pull, not to the lane: an automatic sync already
+  // says so in the notice above the transcript, and spinning here as well would
+  // report the same wait twice, at the one spot a finger has to be able to tell
+  // apart (the inverted list draws the indicator at the visual bottom).
+  const laneAtWork =
     !remote.draft &&
     !remote.timelinePending &&
     !remote.timelineError &&
     remote.timelineSyncStatus !== "idle";
+  const [refreshingByPull, setRefreshingByPull] = useState(false);
+  // The pull is over when the lane it restarted settles; `laneAtWork` is that
+  // lane's own signal, so a pull that restarts nothing (offline, no session)
+  // cannot leave the spinner up.
+  useEffect(() => {
+    if (!laneAtWork) {
+      // The flag is owned by a signal that lives outside React, and retracting
+      // it one commit after the lane settles is what this effect is for.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setRefreshingByPull(false);
+    }
+  }, [laneAtWork]);
+  const pullRefreshActive = refreshingByPull && laneAtWork;
   const pullRefresh = useCallback(() => {
+    // `reloadTimeline` runs the lane's restart synchronously, so the status is
+    // already "syncing" in the render this state update rides in — the spinner
+    // is up by the time the finger leaves and the effect above leaves it alone.
+    setRefreshingByPull(true);
     remote.reloadTimeline();
   }, [remote]);
 
@@ -271,13 +290,15 @@ export function ChatScreen() {
     transcriptItems.length,
   );
   const { listRef, atLatest, scrollToLatest, onScroll } = scroll;
-  // Jumping between questions is offered by the same reading state that offers
-  // "back to latest": neither is useful while the tail is on screen.
+  // A jump leaves the tail behind, and `useChatScroll` owns that handover: it
+  // is what keeps the list from pinning the viewport back to the bottom on the
+  // next streaming commit.
   const questionNav = useQuestionNav({
     sessionId: remote.selectedSessionId,
     items: invertedTranscriptItems,
     listRef,
     atLatest,
+    onTakeOver: scroll.onScrollBeginDrag,
   });
 
   // Skill recommendation (PRD v1.6): the desktop's toggle decides whether the
