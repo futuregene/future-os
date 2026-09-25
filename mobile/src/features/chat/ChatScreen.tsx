@@ -748,12 +748,14 @@ export function ChatScreen() {
           />
 
           <PreviewModal
-            preview={fileDownload.preview}
             activeDownload={fileDownload.activeDownload}
             closePreview={fileDownload.closePreview}
             dismissPreviewThen={fileDownload.dismissPreviewThen}
             downloadOriginal={fileDownload.downloadOriginal}
             flushPendingPreviewAction={fileDownload.flushPendingPreviewAction}
+            openLinkedFile={fileDownload.openLinkedFile}
+            popPreview={fileDownload.popPreview}
+            previews={fileDownload.previews}
             t={t}
           />
 

@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { Image, Text } from "react-native";
 import { MarkdownText } from "../MarkdownText";
-import { MarkdownImageLoaderContext, markdownImagePath, type MarkdownImageLoader } from "../MarkdownImage";
+import { MarkdownImageLoaderContext, resolveMarkdownPath, type MarkdownImageLoader } from "../MarkdownImage";
 
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 
@@ -23,7 +23,7 @@ test.each([
   ["https://example.com/a.png", "/docs/a.md", null],
   ["javascript:alert(1)", "/docs/a.md", null],
 ])("image path %s relative to %s", (src, base, expected) => {
-  expect(markdownImagePath(src!, base)).toBe(expected);
+  expect(resolveMarkdownPath(src!, base)).toBe(expected);
 });
 
 test("uncached images in a reply body load themselves", async () => {
