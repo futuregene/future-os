@@ -3,7 +3,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRemote } from "../../../remote/RemoteContext";
 import { draftPicksSkill, utf8Length, useSkillRecommendation, type SkillRecommendationApi } from "../useSkillRecommendation";
-import { messageHash } from "../skillRecoBudget";
+import { messageHash, today } from "../skillRecoBudget";
 
 jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
 jest.mock("@react-native-async-storage/async-storage", () => {
@@ -234,7 +234,11 @@ describe("showing a recommendation", () => {
     store.set(
       STORAGE_KEY,
       JSON.stringify({
-        day: new Date().toISOString().slice(0, 10),
+        // The same day the hook reads. `toISOString` is UTC here, while the
+        // budget uses the local calendar day, so seeding it with the UTC date
+        // silently wrote "yesterday" for the first hours of every local day and
+        // the record was discarded as stale.
+        day: today(),
         skills: ["future-web"],
         messages: [],
       }),
