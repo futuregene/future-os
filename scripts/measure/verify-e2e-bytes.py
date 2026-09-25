@@ -19,7 +19,7 @@ this script:
 Everything is measured by the Rust test as it runs; this script only supplies
 real inputs and prints the raw numbers. It never models the code under test.
 
-  python3 scripts/verify-e2e-bytes.py [--samples 3]
+  python3 scripts/measure/verify-e2e-bytes.py [--samples 3]
 """
 import argparse
 import json
@@ -30,7 +30,7 @@ import subprocess
 import sys
 import tempfile
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DESKTOP = ROOT / "desktop" / "src-tauri"
 PROTO = ROOT / "packages" / "rpc" / "proto"
 SOCKET = Path.home() / ".future" / "run" / "agent.sock"

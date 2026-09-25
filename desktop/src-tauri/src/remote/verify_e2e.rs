@@ -20,7 +20,7 @@
 //! actually uses.
 //!
 //! The real-traffic measurement lives in [`measure_real_e2ee_bytes`], ignored
-//! by default and driven by `scripts/verify-e2e-bytes.py`, which dumps one real
+//! by default and driven by `scripts/measure/verify-e2e-bytes.py`, which dumps one real
 //! run's journal and that session's real history page from the live agent.
 
 // `mock_agent_lock` is deliberately held across awaits for the whole bridge
@@ -79,7 +79,7 @@ fn journal_event(event_type: &str, data: Value, idx: i64) -> JournalEvent {
 
 /// Parse a `run_events` dump: one JSON object per line, with the event's own
 /// `data` as an (embedded, stringified) JSON document — the shape
-/// `scripts/verify-e2e-bytes.py` writes.
+/// `scripts/measure/verify-e2e-bytes.py` writes.
 fn parse_journal(text: &str) -> Vec<JournalEvent> {
     text.lines()
         .filter(|line| !line.trim().is_empty())
@@ -797,11 +797,11 @@ async fn verify_e2e_lean_lane_real_crypto_round_trip() {
 }
 
 /// The real-traffic measurement: one real run's journal and one real session's
-/// history page, dumped by `scripts/verify-e2e-bytes.py` and replayed through
+/// history page, dumped by `scripts/measure/verify-e2e-bytes.py` and replayed through
 /// the same harness as the fixture test. Prints one `VERIFY_E2E_*` line per
 /// measured lane with raw received/decrypted byte counts.
 #[tokio::test]
-#[ignore = "measurement: needs VERIFY_E2E_JOURNAL/SESSION/RUN/ENTRIES from scripts/verify-e2e-bytes.py"]
+#[ignore = "measurement: needs VERIFY_E2E_JOURNAL/SESSION/RUN/ENTRIES from scripts/measure/verify-e2e-bytes.py"]
 async fn measure_real_e2ee_bytes() {
     let journal_path = std::env::var("VERIFY_E2E_JOURNAL").expect("VERIFY_E2E_JOURNAL");
     let session = std::env::var("VERIFY_E2E_SESSION").expect("VERIFY_E2E_SESSION");
