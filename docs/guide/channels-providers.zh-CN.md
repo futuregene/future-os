@@ -141,8 +141,8 @@ Mattermost 的 `future channel list` 示例中，但不被读取。
 
 长轮询只需出网 HTTPS，并会把 offset 持久化（`<通道>/offset.json`），因此重启既不丢已排队的
 更新，也不会重放已经回答过的消息。webhook 模式需要一个指向 `webhook.addr` 的公网地址
-（请放在反代之后以启用 TLS）以及 `secret_token`，通道会校验 Telegram 回显在请求头里的值，
-再解析请求体。
+（请放在反代之后以启用 TLS）；配置 `secret_token` 后，通道会在解析请求体前校验 Telegram
+回显在请求头里的值，留空则该闸门敞开。
 
 只有普通的 `message` 更新会变成提示：编辑消息、频道帖子与服务事件都被忽略。群消息在机器人的
 用户名出现在 mention 实体中、或该消息回复了机器人自己的消息时，才算被指向。回复会被转义成
@@ -322,11 +322,13 @@ Cloud API 一次只和一个客户对话，所以每条消息都是私聊会话�
 ```jsonc
 {
   "enabled": true,
-  "app_id": "",
-  "app_secret": "",
+  "app_id": "",                           // 必填：开放平台控制台里的应用 ID
+  "app_secret": "",                       // 必填：与 app_id 一起用于换取 token
   "sandbox": false,
   "group_allowlist": [],
-  "require_mention": true
+  "require_mention": true,
+  "api_base": "",                         // 测试口：替换 API 源（生产或沙箱）
+  "gateway_url": ""                       // 测试口：替换通过 GET /gateway 发现的地址
 }
 ```
 
@@ -341,7 +343,7 @@ Cloud API 一次只和一个客户对话，所以每条消息都是私聊会话�
 ```jsonc
 {
   "enabled": true,
-  "recipients": [],
+  "recipients": [],                       // 已声明但本构建不读取
   "sender_allowlist": [],
   "poll_seconds": 5,
   "db_path": ""
@@ -351,7 +353,8 @@ Cloud API 一次只和一个客户对话，所以每条消息都是私聊会话�
 发送通过 `osascript` 驱动 Messages.app；接收只读读取本地 Messages 数据库，并把 Apple 纪元
 （2001-01-01，纳秒）换算成 Unix 毫秒。`db_path` 默认指向标准位置，存在的意义是让测试指向
 夹具。运行桥的进程需要「完全磁盘访问权限」，且该通道只在 macOS 存在——其他平台上每个入口都
-报 `unsupported`，不会假装可用。访问规则是 `sender_allowlist`；这里的 iMessage 会话都是私聊，
+报 `unsupported`，不会假装可用。`sender_allowlist` 在 provider 层先过滤发送者
+（留空表示全部接受），共享私聊策略随后还会再判一次；这里的 iMessage 会话都是私聊，
 因此没有提及门。
 
 ### Email
@@ -373,7 +376,10 @@ Cloud API 一次只和一个客户对话，所以每条消息都是私聊会话�
 `multipart/alternative` 与 `mixed`，支持 quoted-printable、base64 与 RFC 2047 头，优先
 `text/plain`，回退到去标签的 `text/html`。回复通过 `In-Reply-To`/`References` 串线程，
 因此能力里 `threads` 为是。附件只被**列出**而不下载，桥也绝不回复邮箱自身的地址。
-`security` 取 `implicit`（连上即 TLS，993/465 端口）或 `starttls`（587/25 端口）；
+`sender_allowlist` 与 `subject_prefix` 是额外的闸门——留空表示接受所有发送者、所有主题。
+`security` 取 `implicit`（连上即 TLS，993/465 端口）、`starttls`（587/25 端口）或
+`plain`（不加密，仅适用于回环或内网中继）；`imap.host`、`imap.username`、`imap.password`、
+`smtp.host` 与 `smtp.from` 必填，`smtp.username`/`smtp.password` 要么都填、要么都不填；
 `timeout_seconds` 限制每一次协议读取，因此「接受连接后不再应答」的服务器会被判为可重试错误，
 而不是把轮询循环挂死。不支持 OAuth——请用密码或应用专用密码。
 
@@ -385,11 +391,11 @@ Cloud API 一次只和一个客户对话，所以每条消息都是私聊会话�
 ```jsonc
 {
   "enabled": true,
-  "corp_id": "",                         // 企业 ID，ww…；回调的接收方 ID 要与它一致
-  "agent_id": 0,                         // 自建应用 AgentId；每次发送都要带上
-  "secret": "",                          // 应用 Secret，用于换取 access_token
-  "token": "",                           // 回调 Token
-  "encoding_aes_key": "",                 // 回调 EncodingAESKey，43 个字符
+  "corp_id": "",                         // 必填：企业 ID，ww…；回调的接收方 ID 要与它一致
+  "agent_id": 0,                         // 必填：自建应用 AgentId；每次发送都要带上
+  "secret": "",                          // 必填：应用 Secret，用于换取 access_token
+  "token": "",                           // 接收必填：回调 Token
+  "encoding_aes_key": "",                 // 接收必填：回调 EncodingAESKey，43 个字符
   "webhook": { "addr": "127.0.0.1:8790", "path": "/webhooks/wecom" },
   "dm_policy": "allowlist", "dm_allowlist": [],
   "api_base": ""                         // 测试接缝：替换应用 API 的源
