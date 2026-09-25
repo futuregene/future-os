@@ -981,7 +981,7 @@ mod tests {
     /// [`crate::remote_host::lean::lean_event_data`], exactly as
     /// `remote::publisher::publish_event` rewrites it, and then coalesced.
     ///
-    /// Run it through `scripts/measure-live-lane.py`, which supplies the three
+    /// Run it through `scripts/measure/measure-live-lane.py`, which supplies the three
     /// environment variables.
     ///
     /// Unlike the full-lane measurement it cannot assert "every source event is
