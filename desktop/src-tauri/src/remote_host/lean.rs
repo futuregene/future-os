@@ -588,6 +588,36 @@ mod tests {
         assert!(entries[0]["blocks"][0].get("arguments").is_none());
     }
 
+    /// The outcome shape the agent writes today, which a render history
+    /// fixture has to carry: a recorded failure says `isError: true` (the only
+    /// failure signal a trimmed history row keeps) and nothing says the
+    /// uninformative `false` (#849 stops emitting it). `lean_entries` forwards
+    /// the flag untouched, so the full page and the derived lean page are both
+    /// checked — a fixture that regressed to the pre-#848/#849 shape would
+    /// make the render scenario pass against a payload the phone never gets.
+    fn assert_recorded_tool_outcomes(entries: &Value) {
+        let mut failures = 0;
+        for block in entries
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|entry| entry["blocks"].as_array().into_iter().flatten())
+        {
+            if block["kind"] != "tool_result" {
+                continue;
+            }
+            match block.get("isError").and_then(Value::as_bool) {
+                Some(true) => failures += 1,
+                Some(false) => panic!("a history result must not send isError: false: {block}"),
+                None => {}
+            }
+        }
+        assert!(
+            failures > 0,
+            "the render fixture must keep a recorded failure for the render checks"
+        );
+    }
+
     /// Derive the mobile render fixtures' lean pages from their full-feed
     /// counterparts **through the shipping trims**.
     ///
@@ -661,7 +691,9 @@ mod tests {
             .expect("full history entries readable");
         let mut lean_entries_value: Value =
             serde_json::from_str(&raw).expect("full history entries json");
+        assert_recorded_tool_outcomes(&lean_entries_value);
         lean_entries(&mut lean_entries_value);
+        assert_recorded_tool_outcomes(&lean_entries_value);
 
         // Self-checks: the generated lean files must actually be lean, and must
         // still carry what the phone reads instead.

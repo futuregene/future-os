@@ -97,25 +97,22 @@
       {
         "kind": "tool_result",
         "toolCallId": "htc_1",
-        "isError": false,
+        "isError": true,
         "text": "bash: future: command not found\n\n[exit: 127]"
       },
       {
         "kind": "tool_result",
         "toolCallId": "htc_2",
-        "isError": false,
         "text": "# Frank 2024\n\n- 效应量 d = 0.42（95% CI 0.21–0.63）\n- N = 148"
       },
       {
         "kind": "tool_result",
         "toolCallId": "htc_3",
-        "isError": false,
         "text": "已写入 notes/compare-table.md（812 字节）"
       },
       {
         "kind": "tool_result",
         "toolCallId": "htc_4",
-        "isError": true,
         "text": "0\n\n[exit: 1]"
       }
     ]
