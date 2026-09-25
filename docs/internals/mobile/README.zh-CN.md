@@ -89,12 +89,17 @@ APNs／Android 推送配置；当前没有这条链路。不能把通知权限�
   相机、照片或文件选择器。Android 的「相册」在启动任何界面之前先向原生探针
   （`resolveImagePickRoutes`，`future-file-handler`）要路由：Android 13+ 在系统照片选择器
   确实响应时用 `PickVisualMedia`（多选）；API 33 以下优先用 `ACTION_PICK` +
-  MediaStore 图片集合，并显式指向图库组件，使同样声明了该 intent 的文件管理无法替它应答。
-  探针既没找到图库、也没有真正的照片选择器（AOSP 回退版解析为
-  `androidx.activity.result.contract.action.PICK_IMAGES`）时，「相册」直接报「系统相册不可用」，
-  不再让 AndroidX 降级到 `ACTION_OPEN_DOCUMENT`——那是「选择手机文件」已经覆盖的文件选择器。
-  路由由解析结果决定；是否图库按应用包名判断，未知包名不当图库（在「相册」标签下弹出文件列表
-  正是要避免的失败）。各条路由都不申请整库权限，只授权被选中的照片。
+  MediaStore 图片集合，并显式指向图库组件，使同样声明了该 intent 的文件管理无法替它应答；
+  只声明了 `ACTION_GET_CONTENT` 的图库同样按这个方式定向启动；真正的照片选择器
+  （框架版、AOSP 回退版 `androidx.activity.result.contract.action.PICK_IMAGES`、或 Play 服务版）
+  优先级高于自绘界面。探针的 `<queries>` 同时声明 scheme 与 MIME type：只写 type 的话，
+  声明了 `android:scheme="content"` 的图库会因为包可见性被隐藏。
+  当没有任何应用能提供相册时（例如 HarmonyOS 上的卓易通容器，APK 看不到图库也看不到照片选择器），
+  应用自己画一个网格（`AlbumPickerModal`，数据来自 `listAlbumImages`：先查 MediaStore，
+  再用常见照片目录扫描兜底），不再让 AndroidX 降级到 `ACTION_OPEN_DOCUMENT`——
+  那是「选择手机文件」已经覆盖的文件选择器。只有这条路由申请媒体权限，被拒绝时在网格里说明
+  原因；系统选择器路径不需要该权限。「是否图库」按应用包名判断，未知包名不当图库
+  （在「相册」标签下弹出文件列表正是要避免的失败）。
   系统权限窗和系统选择器仍由 OS 绘制。
 - 会话返回列表时保留列表实例和滚动位置，不再重新播放列表的反向进入动画。
   工作区与对话列表中，独立会话保持紧凑留白，不随其他会话出现或展开子会话而加宽；

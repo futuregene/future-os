@@ -152,16 +152,25 @@ offline push.
   multi-select) when that picker answers; below 33 the album intent `ACTION_PICK`
   on MediaStore's image collection is preferred and targeted at the gallery
   component, so a file manager that also advertises the pick cannot stand in for
-  it. When the probe found neither a gallery nor a real photo picker — the photo
-  picker's AOSP backport resolves as
-  `androidx.activity.result.contract.action.PICK_IMAGES` — the album reports
-  itself unavailable instead of letting AndroidX degrade to
-  `ACTION_OPEN_DOCUMENT`, the document picker that "选择手机文件" already covers.
-  Resolved intents decide the route; "album" is recognized from the app's
-  package name, and an unknown package is not treated as a gallery (showing a
-  file list under an album label is the failure being prevented). No route asks
-  for a full-album permission: each grants access to the chosen photos alone.
-  System permission dialogs and system pickers are still drawn by the OS.
+  it. A gallery that only answers `ACTION_GET_CONTENT` is used the same way, and a
+  real photo picker (framework, AOSP backport
+  `androidx.activity.result.contract.action.PICK_IMAGES`, or its Play-services
+  build) still wins over any hand-drawn UI. The probe's `<queries>` entries name
+  the scheme as well as the MIME type, because package visibility hides a
+  gallery whose filter declares `android:scheme="content"` from a rule that only
+  names a type.
+  When no app can present the album at all — an Android compatibility container
+  such as 卓易通 on HarmonyOS, which exposes neither a gallery nor a photo picker
+  to the APK — the app draws the grid itself (`AlbumPickerModal`, fed by
+  `listAlbumImages`: MediaStore first, then the usual photo directories) instead
+  of letting AndroidX degrade to `ACTION_OPEN_DOCUMENT`, the document picker that
+  "选择手机文件" already covers. Only that route asks for the media permission,
+  and it says so in the grid when it is refused; the system pickers keep working
+  without it. "Album" is recognized from the app's package name, and an unknown
+  package is not treated as a gallery (showing a file list under an album label is
+  the failure being prevented). No route asks for a full-album permission beyond
+  that grid case. System permission dialogs and system pickers are still drawn by
+  the OS.
 - Returning to the list from a session keeps the list instance and scroll
   position; the list's reverse enter animation is not replayed. In the
   workspace and conversation lists, independent sessions keep compact spacing
