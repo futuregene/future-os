@@ -381,6 +381,28 @@ page byte budget rather than after: the budget sheds whole oldest exchanges to f
 a reply, so measuring the trimmed page is what lets it hold more of them per
 round trip.
 
+**What bounds one reply (2026-09-26):** the budget is `BACKWARD_HISTORY_PAGE_BYTES`
+(512 KiB) and it exists to stay under NATS's 1 MiB payload limit with envelope
+headroom — but it is a *soft* bound, and the layers that make it safe are worth
+knowing before touching any of them:
+
+- The budget sheds **whole oldest exchanges** and stops when only the newest one
+  is left, so a single exchange larger than 512 KiB is not deferred. Measured on
+  real sessions: a non-chunked newest page came within **15.6 KB of the 1 MiB
+  limit** (1,032,942 wire bytes) and was relayed intact — the budget bounded the
+  other two samples at ~0.5 MB. A page can therefore approach the limit, and the
+  trim is what keeps it away: that same page is 114,222 bytes for a lean client.
+- A lean page *does* fill the budget (511,841 of 524,288 observed), because
+  fitting more entries is the point of trimming before the budget.
+- Oversize is an explicit error, never a silent drop: `encode_reply_payload`
+  compares against `future_remote_crypto::MAX_PLAINTEXT` (1 MiB − header − tag,
+  chosen so a sealed record is exactly ≤ 1 MiB) and answers
+  `remote_reply_too_large` instead of handing NATS something it would drop and
+  leave the client timing out.
+- The phone never leans on any of this for large pages: history/replay reads go
+  through `requestReadPage` (`chunkedRead: true`), which reassembles a logical
+  page from ≤192 KiB chunks, so no single record is near the limit.
+
 It is the same declaration as the lean event lane because it is the same client
 generation: the reasoning row, the tool target and the tool outcome are exactly
 the three things that client reads differently. It is cleared on every new
