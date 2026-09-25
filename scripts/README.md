@@ -64,6 +64,8 @@ Coverage, profiling and performance measurement tooling.
   unused call arguments) against real sessions, replayed through the shipping Rust trim.
   `--pages N` measures the actual backward pages of N user exchanges the phone reads,
   newest first, instead of whole sessions.
+- `audit-lean-page.py` — audits one real page's trim shape (which argument keys a shell row
+  keeps versus loses, and that `toolCallId`/`runId` survive for the on-open fetch).
 - `measure-mobile-performance.mjs` — builds an offline browser A/B probe (baseline ref vs working tree).
 - `measure-mobile-performance.ts` — probe entry that imports the production mobile sync code.
 - `serve-mobile-performance.py` — read-only loopback playback server for the probe.
