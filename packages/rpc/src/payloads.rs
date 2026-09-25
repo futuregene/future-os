@@ -306,6 +306,61 @@ mod tests {
         }
     }
 
+    /// A history page is mostly absent optionals, so an entry that leaves its
+    /// six optional fields unset must not spend a `null` on each of them.
+    /// Every consumer reads them through an optional accessor, so omitting and
+    /// `null` are the same to it — but only if the omission actually happens,
+    /// which is what this pins (the sibling test above covers legacy aliases,
+    /// not these).
+    #[test]
+    fn session_entry_payload_omits_unset_optionals_instead_of_nulling_them() {
+        let payload = SessionEntryPayload {
+            id: "e1".into(),
+            kind: "assistant".into(),
+            role: "assistant".into(),
+            created_at_ms: 1_785_931_200_000,
+            blocks: Vec::new(),
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        // The required identity of the entry is always present...
+        for key in ["id", "kind", "role", "createdAtMs", "blocks"] {
+            assert!(value.get(key).is_some(), "{key} must exist");
+        }
+        // ...while none of the optional payload survives as an explicit null.
+        for key in ["runId", "metadata", "usage", "run", "session", "checkpoint"] {
+            assert!(value.get(key).is_none(), "{key} must be omitted, not null");
+            assert_ne!(value.get(key), Some(&json!(null)), "{key} must not be null");
+        }
+    }
+
+    /// The omission must be a serialization concern only: a client that talks to
+    /// an older agent (or a cached page) still has to deserialize a payload that
+    /// spells the optionals out as `null`.
+    #[test]
+    fn session_entry_payload_still_reads_explicit_nulls() {
+        let raw = json!({
+            "id": "e1",
+            "kind": "tool",
+            "role": "tool",
+            "createdAtMs": 1_785_931_200_000_i64,
+            "runId": null,
+            "blocks": [],
+            "metadata": null,
+            "usage": null,
+            "run": null,
+            "session": null,
+            "checkpoint": null,
+        });
+        let payload: SessionEntryPayload = serde_json::from_value(raw).unwrap();
+        assert!(payload.run_id.is_none());
+        assert!(payload.metadata.is_none());
+        assert!(payload.usage.is_none());
+        assert!(payload.run.is_none());
+        assert!(payload.session.is_none());
+        assert!(payload.checkpoint.is_none());
+    }
+
     #[test]
     fn terminal_ack_camel_case_keys() {
         let ack = TerminalAck {
