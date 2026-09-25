@@ -51,6 +51,14 @@ import { newestFirst } from "./timelineListModel";
 
 const SYNC_NOTICE_MIN_MS = 750;
 
+type SyncNoticeState = "syncing" | "retrying" | "waitingNetwork";
+
+const SYNC_NOTICE_KEYS: Record<SyncNoticeState, string> = {
+  syncing: "chat.syncingLatest",
+  retrying: "chat.syncRetrying",
+  waitingNetwork: "chat.syncWaitingNetwork",
+};
+
 function useMinimumVisible(active: boolean, minimumMs: number, key: string) {
   const [presentation, setPresentation] = useState({ key, visible: active });
   const shownAtRef = useRef(0);
@@ -228,16 +236,6 @@ export function ChatScreen() {
     !remote.draft &&
     (remote.busy || remote.timelinePending) &&
     timelineItems.length === 0;
-  const syncNoticeActive =
-    !remote.draft &&
-    timelineItems.length > 0 &&
-    (remote.timelineSyncStatus === "syncing" ||
-      remote.timelineSyncStatus === "retrying");
-  const showSyncNotice = useMinimumVisible(
-    syncNoticeActive,
-    SYNC_NOTICE_MIN_MS,
-    conversationKey,
-  );
   // Pull-to-refresh rebuilds the visible window from durable history — the
   // manual escape hatch when the automatic sync left the conversation wrong.
   // Its spinner belongs to the pull, not to the lane: an automatic sync already
@@ -269,6 +267,32 @@ export function ChatScreen() {
     setRefreshingByPull(true);
     remote.reloadTimeline();
   }, [remote]);
+
+  // One place decides which wait the notice reports, so the gate below reads the
+  // same decision the wording does.
+  const syncNoticeState: SyncNoticeState | null =
+    remote.timelineSyncStatus === "syncing" ||
+    remote.timelineSyncStatus === "retrying"
+      ? remote.desktopOnline
+        ? remote.timelineSyncStatus
+        : "waitingNetwork"
+      : null;
+  // A pull restarts the very lane the notice reports, so its native spinner at
+  // the visual bottom and the notice above the transcript come up together and
+  // say the same sentence twice. The pull wins that overlap: the finger is still
+  // there. The two richer states stay, because the spinner cannot say them.
+  const pullOwnsTheWait = pullRefreshActive && syncNoticeState === "syncing";
+  const showSyncNotice = useMinimumVisible(
+    !remote.draft &&
+      timelineItems.length > 0 &&
+      syncNoticeState !== null &&
+      !pullOwnsTheWait,
+    SYNC_NOTICE_MIN_MS,
+    conversationKey,
+  );
+  // The pill outlives its status by the minimum-visible window, and that tail
+  // has no status of its own: it goes on saying the plain one.
+  const noticeState: SyncNoticeState = syncNoticeState ?? "syncing";
 
   const decideApproval = useCallback(
     async (id: string, decision: "approved" | "rejected") => {
@@ -697,17 +721,11 @@ export function ChatScreen() {
                       ]}
                       accessibilityLiveRegion="polite"
                     >
-                      {remote.desktopOnline && (
+                      {noticeState !== "waitingNetwork" && (
                         <ActivityIndicator color={colors.accent} size="small" />
                       )}
                       <Text style={styles.syncNoticeText}>
-                        {t(
-                          !remote.desktopOnline
-                            ? "chat.syncWaitingNetwork"
-                            : remote.timelineSyncStatus === "retrying"
-                              ? "chat.syncRetrying"
-                              : "chat.syncingLatest",
-                        )}
+                        {t(SYNC_NOTICE_KEYS[noticeState])}
                       </Text>
                     </View>
                   )}
