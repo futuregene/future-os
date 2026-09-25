@@ -269,8 +269,8 @@ make run-mobile-ios
 或者使用一键启动脚本（自动创建/启动模拟器、装依赖、prebuild 并运行）：
 
 ```bash
-scripts/start-mobile-ios.sh          # dev 模式（Metro + debug 构建）
-scripts/start-mobile-ios.sh release  # release 模式（独立运行，无需 Metro）
+scripts/dev/start-mobile-ios.sh          # dev 模式（Metro + debug 构建）
+scripts/dev/start-mobile-ios.sh release  # release 模式（独立运行，无需 Metro）
 ```
 
 ### 手工运行 iOS（真机）

@@ -12,7 +12,7 @@
 走明文 `ws://` 连接的指引。桌面端直连配置的 NATS 端点；该链路上的 TLS 由部署控制，
 客户端并不无条件强制。请显式保护好这条链路。不要把每一跳都描述为已加密，也不要向
 现有移动端客户端推荐明文 WebSocket URL。测试中继部署中只使用测试数据。用户配对
-指引：[Remote](../../docs/wiki/en/Remote.md)。
+指引：[Remote](../wiki/zh/Remote.md)。
 
 生产环境的规范模板与运维手册在 `../future-server`：
 

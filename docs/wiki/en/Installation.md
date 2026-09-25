@@ -105,9 +105,9 @@ Persistent data lives under `~/.future` on macOS/Linux or
 requests to their services; local storage does not mean offline-only processing.
 
 Installer builds support **Settings → Check for updates** with signature-verified
-updates. Linux `.deb` updates use the system package manager after verification.
-Portable builds can be updated by replacing the extracted files. User data is
-kept separately.
+artifacts: macOS, Windows (NSIS installer) and Debian-family `.deb` installs can
+install an update in place, while portable and CLI-only builds update by replacing
+the extracted files or rerunning the installer. User data is kept separately.
 
 To uninstall, delete the macOS app, use Windows Settings (or delete its portable
 folder), or run `sudo apt remove futureos` for Linux deb installs (delete the

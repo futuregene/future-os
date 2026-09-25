@@ -8,7 +8,7 @@ This is a tour of the app: the three-panel layout, Chat vs. Workspace, talking t
 
 FutureOS is organized into three columns:
 
-- **Left — navigation.** From top to bottom you'll find: **New Chat**, **Models** (a shortcut into settings), **Skills**, your **Workspaces** (each expands to its conversations), your **Chats**, and **Settings** at the bottom. You can collapse the left panel to give the conversation more room.
+- **Left — navigation.** From top to bottom you'll find: **New Chat**, **Models** (a shortcut into settings), **Skills**, **Phone Control** (when signed in), your **Workspaces** (each expands to its conversations), your **Chats**, and Settings (the gear, or the account menu) at the bottom. You can collapse the left panel to give the conversation more room.
 - **Center — the conversation.** Your messages, the streaming reply, plans, tool activity, command previews, errors, and approval cards. The input box is fixed at the bottom.
 - **Right — the context panel.** See what the agent is doing (Files / Runs / Review). It's collapsible — open it when you want to check the work, hide it when you don't.
 
@@ -74,11 +74,11 @@ Every background program the agent runs shows up as a card with the **real comma
 
 - **Inspect** a run to see its details.
 - **Terminate** a running program.
-- **Clear finished** to tidy up.
+- **Archive finished** to tidy up.
 
 ### Review (Workspace)
 
-For a Workspace, the **Review** view shows the file changes made in the project: the list of changed files, change types (added / modified / deleted / renamed), and per-file diffs. When the folder is under version control, you can also switch to a **"Last run changes"** view to see just what the most recent run changed.
+For a Workspace, the **Review** view shows the file changes made in the project: the list of changed files, change types (added / modified / deleted / renamed), and per-file diffs. When the folder is under version control, you can also switch to a **Last run** tab to see just what the most recent run changed.
 
 ### Files
 

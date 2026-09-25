@@ -14,8 +14,9 @@ current controls and limitations, and vulnerability reporting.
   FutureOS services; other providers/tools use their respective endpoints.
 - **Optional remote surfaces.** Enabling Remote sends commands, conversation events
   and requested files through the configured NATS relay. Mobile requires TLS
-  WebSocket (`wss://`); desktop-to-NATS transport follows deployment configuration
-  and is not unconditionally TLS-enforced. Feishu/DingTalk messages and replies
+  WebSocket (`wss://`), and the desktop's NATS client requires verified TLS too —
+  outside unit tests there is no runtime switch that allows a plaintext
+  downgrade. Feishu/DingTalk messages and replies
   also pass through those platforms. Local storage does not imply end-to-end
   encryption or that no data leaves the device.
 - **Per-user local backend.** The agent defaults to Unix-domain sockets on

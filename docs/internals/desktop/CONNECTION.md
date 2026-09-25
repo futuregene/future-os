@@ -838,6 +838,12 @@ Support codes are used uniformly for logs and user-understandable error hints;
 | Known local fault (`local`) | `LC001` |
 | Unknown local fault | `LC999` |
 
+> One known collision: the desktop's log line for replacing pre-v2 credentials
+> reuses the tag `[PA003]` (`desktop/src-tauri/src/remote/supervisor/start.rs:505`),
+> while this table reserves `PA003` for the mobile "untrusted pairing claim
+> address" hint. The codes above are the contract; the desktop log tag is a
+> local debugging label, not a user-facing code.
+
 ### 7.1 Customer wording and colors
 
 The connection page, sidebar, and phone Badge share one meaning; low-level
@@ -964,14 +970,15 @@ Acceptance is based on observable invariants, covering at least:
   Agent; real-device fault injection and source/simulation test results are
   reported separately.
 
-### 8.1 Client development progress (2026-09-14)
+### 8.1 Client implementation status (2026-09-14; code re-checked 2026-09-26)
 
-This round's client development is complete and has entered concentrated
-simulator and real-device acceptance; future-server remains unchanged.
-"Pending acceptance" in the table below is running verification, not an
-unimplemented development phase.
+The client refactor described in this section has landed in the repository —
+the table below maps each domain to its code. The "verification focus" column
+records what the round planned to exercise on simulators and real devices; this
+document does not track that acceptance run's results. future-server remains
+unchanged.
 
-| Domain | Implemented | Concentrated acceptance focus |
+| Domain | Implemented | Verification focus |
 | --- | --- | --- |
 | Host boundary | `remote/services.rs` defines the business/state/pairing/file four interfaces, `protocol.rs` carries DTOs; `remote_host/` implements the Desktop business/catalog/file/platform adapters; `agent_events.rs` outputs events, wired into Remote by the integration layer; protocol commands can inject a substitute host | original session, approval, workspace, attachment business semantics and permissions stay consistent |
 | Desktop lifecycle | a single `Supervisor` owns user intent, access generations, the active runtime, retry budgets, and the background task group; stop/sleep cancel uniformly; initial connection and renewal share candidate build and readiness install; wake recovery reports yellow only while tasks run | stop vs readiness interleaving, sleep-wake, brief offline, gateway restart, both ends' renewal |
@@ -1019,16 +1026,11 @@ re-open local remote access; it ends with the Desktop process.
   reads all stay in the host adapter layer. The architecture separation does
   not change file-access authorization.
 
-Historical local verification (2026-09-11): the Tauri backend's full 1140 tests
-passed, plus 1 new supervisor-cancellation test passed separately; Desktop
-frontend 92 groups, 846 items passed; Mobile full 48 groups, 678 items passed.
-Those results only match that baseline and do not mean the 2026-09-14 candidate
-completed equivalent running verification. The current candidate runs
-Desktop/Mobile TypeScript and ESLint, Tauri `cargo fmt --check`/Clippy, and
-`git diff --check` per the submission flow; the local test suites are not run —
-GitHub Actions runs them. Simulator/real-device lifecycle, real gateway faults,
-and Desktop sidecar exit still need concentrated acceptance; static checks and
-automated tests do not substitute for those results.
+Verification runs in CI (GitHub Actions): Desktop/Mobile TypeScript and ESLint,
+Tauri `cargo fmt --check`/Clippy, `git diff --check`, and the test suites.
+Simulator/real-device lifecycle, real gateway faults, and Desktop sidecar exit
+still need concentrated acceptance; static checks and automated tests do not
+substitute for those results.
 
 ### 8.2 Mobile unified recovery coordination
 

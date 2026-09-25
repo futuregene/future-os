@@ -28,7 +28,8 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   └── feishu/                # the Feishu bridge's data (session file, received files)
 ├── tui/                       # the terminal UI (future-tui)
 │   ├── settings.json          # defaultModel, defaultThinkingLevel, … (see tui.md)
-│   ├── keybindings.json       # optional keybinding overrides
+│   ├── keybindings.json       # key-binding overrides (/keymap writes it, read at startup)
+│   ├── skill_reco.json        # skill-recommendation budget for the current local day
 │   ├── debug.log              # TUI runtime log
 │   ├── write.log              # raw screen-write log (PI_TUI_WRITE_LOG=1 only)
 │   └── crash.log              # panic backtrace appended on crash
@@ -163,7 +164,11 @@ directory, which also keeps the files it received from the platform.
 
 Owned by `future-tui`. `settings.json` persists client-side settings
 (`defaultModel`, `defaultThinkingLevel`, `defaultPermissionLevel`,
-`enabledModelIds`); optional keybinding overrides go in `keybindings.json`;
+`enabledModelIds`, `themeId`, `skillRecommend`); key-binding overrides live in
+`keybindings.json` (`/keymap` writes the non-default bindings, and the file is
+read at startup); `skill_reco.json` holds the current local day's
+skill-recommendation budget (which skills were already offered and which
+drafts were already evaluated — rolled over, never read across days);
 `debug.log` is written when `PI_DEBUG_REDRAW=1`, and `write.log` records raw
 screen writes when `PI_TUI_WRITE_LOG=1`; `crash.log` receives the panic
 backtrace when the TUI crashes. See [tui.md](tui.md).

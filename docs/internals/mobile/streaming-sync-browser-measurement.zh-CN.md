@@ -73,11 +73,11 @@ Chrome 153 / V8
 
 测量文件：
 
-- `scripts/measure-sync-browser.ts`：导入真实移动端生产同步代码。
-- `scripts/measure-sync-browser.html`：只显示指标的浏览器外壳。
-- `scripts/measure-sync-browser.py`：SQLite backup、隔离 agent、只读 loopback probe 的启动与清理。
+- `scripts/measure/measure-sync-browser.ts`：导入真实移动端生产同步代码。
+- `scripts/measure/measure-sync-browser.html`：只显示指标的浏览器外壳。
+- `scripts/measure/measure-sync-browser.py`：SQLite backup、隔离 agent、只读 loopback probe 的启动与清理。
 - `desktop/src-tauri/src/remote_host/sync_measurement.rs`：默认 ignored 的浏览器测试入口，不加入生产行为。
-- 同目录 `streaming-sync-browser-measurement-2026-09-16.json`：去除会话/run 身份与正文后的九次测量记录。
+- `streaming-sync-browser-measurement-2026-09-16.json`（[已归档](../../archives/verification/streaming-sync-browser-measurement-2026-09-16.json)）：去除会话/run 身份与正文后的九次测量记录。
 
 在隔离 worktree 中、已有项目依赖时：
 
@@ -88,8 +88,8 @@ cargo test --no-default-features --lib serve_real_snapshot --no-run
 cd ../..
 
 # 可复用已安装的 esbuild；不需要 react-native-web 或新装依赖。
-node_modules/.bin/esbuild scripts/measure-sync-browser.ts --bundle --platform=browser --outfile=target/sync-browser-measurement/bundle.js
-python3 scripts/measure-sync-browser.py --test-binary <上一步打印的测试可执行文件绝对路径>
+node_modules/.bin/esbuild scripts/measure/measure-sync-browser.ts --bundle --platform=browser --outfile=target/sync-browser-measurement/bundle.js
+python3 scripts/measure/measure-sync-browser.py --test-binary <上一步打印的测试可执行文件绝对路径>
 ```
 
 等待 `target/sync-browser-measurement/ready.json` 出现，打开其中 URL，点击测量按钮。脚本打印的 `runnerPid` 是本次创建的专用进程；测量后向它发送 SIGTERM，脚本会停止自己的两个子进程并删除私有数据库快照。也有 30 分钟服务生存时间上限。不要停止任何既有 agent。指标另存后删除本次 `target/sync-browser-measurement` 临时文件。

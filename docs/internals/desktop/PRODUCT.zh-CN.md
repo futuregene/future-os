@@ -334,7 +334,7 @@ Runs 面板明确不做以下事情：
 
 ### 5.6 配色与设计 token
 
-GUI 的颜色统一走 `desktop/tailwind.config.js` 里定义的**语义 token**（中性/表面、强调/交互、状态三件套、diff、阴影），组件里不直接写 Tailwind 原生具名色。状态徽章统一用 `<Badge tone>` 组件；用颜色区分**并列种类**（事件类别、错误子类型）的地方是有意的例外。
+GUI 的颜色统一走 `desktop/tailwind.config.js` 里定义的**语义 token**（中性/表面、强调/交互、状态三件套、diff、阴影），组件里不直接写 Tailwind 原生具名色。状态徽章统一用 `<Badge tone>` 组件；用颜色区分**并列种类**（运行错误子类型）的地方是有意的例外。
 
 配色清单、用法速查与反模式见 [`desktop/COLOR.zh-CN.md`](COLOR.zh-CN.md)——新写或改组件选色时以它为准。
 

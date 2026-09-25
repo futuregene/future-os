@@ -404,8 +404,8 @@ Or use the one-shot launch script (creates/starts a simulator, installs deps,
 prebuilds, and runs automatically):
 
 ```bash
-scripts/start-mobile-ios.sh          # dev mode (Metro + debug build)
-scripts/start-mobile-ios.sh release  # release mode (standalone, no Metro)
+scripts/dev/start-mobile-ios.sh          # dev mode (Metro + debug build)
+scripts/dev/start-mobile-ios.sh release  # release mode (standalone, no Metro)
 ```
 
 ### Manual iOS run (device)

@@ -73,14 +73,14 @@ future session compact --help
 
 确定性压缩**不发起任何摘要调用**；默认策略每次压缩增加一次摘要请求，按普通请求计费。普通用量与费用计数保持原样，后续请求仍需为证据索引与召回文本的输入付费，本地扫描也消耗时间与内存。
 
-运行时不向模型附加任何[历史召回说明](../../guide/session-history.zh-CN.md)：该说明已删除，因为它没有改变行为。检索入口是普通 shell 工具背后的 history search/get；缺少精确旧事实时模型需自行查原文，且不得重放历史副作用。
+运行时不向模型附加任何[历史召回说明](../../guide/session-history.zh-CN.md)：该说明已删除，因为它没有改变行为（度量见 [compaction-open-book-experiment.zh-CN.md](compaction-open-book-experiment.zh-CN.md)）。保留的检索入口是普通 shell 工具背后的 `future session history search`/`get`，以及日志已在检索/读取结果中给出的 entry id；缺少精确旧事实时读取原文，不得重放历史副作用。
 
 ## 验证
 
 ```sh
 cargo test -p future-agent
 cargo build -p future-cli --bin future
-python3 scripts/test_s2_compaction.py --binary target/debug/future --report target/c-smoke.json
+python3 scripts/tests/test_s2_compaction.py --binary target/debug/future --report target/c-smoke.json
 ```
 
 Windows 使用 `future.exe`；设置了 `CARGO_TARGET_DIR` 时相应调整路径。合成 smoke 使用隔离 HOME、新端口与本地模型桩，验证 80% 窗口触发、标识、原文、普通用量、字节分页与重启，并验证被拒的摘要会回退且不产生第二次计费调用。不要停止用户正在运行的 Agent。

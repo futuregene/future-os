@@ -118,6 +118,7 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 | `readonly` | 是否只读 |
 | `agent_session_id` | GUI Thread ↔ Agent SQLite session 映射；非空值全局唯一，一个 Agent session 只能绑定一个 Desktop Thread；通过 RPC 查询，不跨数据库建立外键（`store/schema.rs`） |
 | `parent_session_id` | 父 Agent session ID 的本地投影；为空表示根对话。由启动同步、运行时发现和分叉写入；不设外键，允许父会话晚于子会话导入或已删除。Agent 仍是关系真源。 |
+| `asset_root_id` | 共享附件原件/缩略图的稳定归属；分叉继承它，删除祖先不会使子会话历史失效（已发布迁移 `v1.1.9-thread-asset-root`） |
 | `last_message_at` | 最近消息时间 |
 | `last_opened_at` | 最近打开时间 |
 | `created_at` | 创建时间 |
@@ -185,6 +186,7 @@ Run 表示一次 Agent 执行，通常由用户消息触发。
 | `ended_at` | 结束时间 |
 | `error_message` | 错误信息 |
 | `error_type` | 结构化错误分类（`stream_interrupted`、`command_failed`、`model_failed`、`abort_requested`、`timeout`、`interrupted`、`unknown` 等；配套 `run_error.rs`，未失败时为 NULL） |
+| `remote_accepted_at` | Agent 持久接受远程（手机）prompt 的时间点；只有越过该边界，远程回执才可见或可恢复（`store/runs.rs` 的 `mark_remote_prompt_accepted`，索引 `idx_runs_remote_prompt_receipt`） |
 | `archived_at` | 归档时间；非空时不在右侧「运行」列表展示，但保留记录和 Agent 事件，供中间信息流的命令详情跳转使用 |
 | `created_at` | 创建时间 |
 | `updated_at` | 更新时间 |
@@ -599,8 +601,9 @@ Object Reference 表示某个对象引用了另一个对象。
 - `workspace_files`
 - `reference_targets`
 - `object_references`
-- `app_settings`（应用级设置，键值表：`approval_tier`（`manual`/`sandbox`/`off`）、`hidden_models`、`remote_pair_id`，见 `store/app_settings.rs`；已退役的 `show_thinking` 键允许留在旧数据库中，但不再读取、写入或通过设置 API 返回，无需破坏性迁移；旧 `remote_enabled` / `remote_nats_url` 键不再读取，运行状态驻内存、地址由平台环境派生）
+- `app_settings`（应用级设置键值表；缺键时取以下默认值，见 `store/app_settings.rs:64-77,212-262`）：`approval_tier`（默认 `off`，另可 `manual`/`sandbox`；未知值收敛为 `off`）、`hidden_models`、`title_language`（`en`/`zh`，默认 `en`，由 Desktop UI 镜像给后台标题生成）、`auto_compact_first_turn`（保留的存储键名，用于「首个回答后生成标题」；默认 true，从不触发压缩）、`auto_upgrade_skills`（true）、`auto_connect_remote`（false，仅非 release 构建消费）、`bell_on_complete`（true）、`skill_recommend`（true）、`skill_guide_dismissed` / `skill_intro_dismissed`（false）、`community_edition`（false，仅呈现层）以及内部 `device_id`。全部走既有键值表与缺键默认，无需结构性迁移。已退役的 `show_thinking` 键允许留在旧数据库中，但不再读取、写入或通过设置 API 返回，无需破坏性迁移；旧 `remote_enabled` / `remote_nats_url` 键同样不再读取，运行状态驻内存、地址由平台环境派生。
 - `agent_delete_outbox`（删除 Thread 时登记的 Agent 会话删除投递队列，后台重试直至 Agent 确认，见 `store/deletions.rs`）
+- `skill_reco_events`（每次真正展示给用户的技能推荐一行：`day`、`skill_id`、`message_hash`——回答「今天推荐了几次 / 该技能今天是否展示过 / 该消息是否已产生过推荐」；没有可推荐项的调用不写行，见 `store/skill_reco.rs` 与 `store/schema.rs:249-254` 的 DDL）
 
 > `messages`、`run_events`、`tool_calls`、`tool_outputs` 已从 GUI schema 删除（`DROPPED_TABLES` 在旧库清除）；其数据由独立 Agent SQLite 持久化，详见 §4.3、§4.5–4.7、§7。
 >
@@ -731,6 +734,9 @@ erDiagram
 | `history_display` | PK `(session_id,ordinal)`；`source_position/is_user/payload` | 外键级联到 session；`history_users(session_id,is_user,ordinal)` 支持倒序整轮分页。source_position 可空，表示合成占位；不是第二份正文 |
 | `legacy_imports` | PK `session_id`；`status/fingerprint/error_file/error_line/error_kind/warnings` | status 限 imported/skipped/deleted；每会话导入结果及防复活墓碑，无正文 |
 | `storage_meta` | PK `key`；`value` | 库级控制标记，例如一次性导入完成状态 |
+| `compaction_operations` | PK `(session_id,input_key)`；`input_digest/operation_id/state/result_json` | 外键级联到 session；state 限 started/completed/failed。让手动与自动压缩跨重启幂等：同 key 成功直接复用已记录结果，不重新计算；摘要正文不存这里 |
+| `fork_operations` | PK `request_id`；`request_fingerprint/parent_session_id/child_session_id/created_at_ms` | `child_session_id` 唯一且级联；`fork_operations_parent` 服务父会话查找。记录已完成的 fork，重试请求复用子会话而非再建一个 |
+| `skills`、`skills_meta`、`skill_installations`、`skill_operations` | `skills` PK `name`（`version/deleted/installed_at_ms/updated_at_ms`）；`skills_meta` PK `key`；`skill_installations` PK `location`（`name/scope/source/version/package_sha256/observed_at_ms`；scope `app`/`global`，source `managed`/`external`）；`skill_operations` PK `name`（`kind` install/uninstall，`phase` prepared/replaced） | Agent 的已安装技能注册表（`agent/src/skills/registry.rs`，随同一 schema 批次创建，使先于 Agent 启动的 mutator 也能留下 Agent 接受的文件）。`skill_installations_name` 服务按名查找；`~/.future/agent/skills` 下的文件仍是事实来源 |
 
 JSON 的保留边界：
 
@@ -754,6 +760,6 @@ Delta 按 100 ms / 128 条 / 64 KiB 微批写入；非 delta 语义事件、读�
 
 Agent 与 Desktop/Mobile/TUI/CLI 同步发布，不支持新旧 RPC 混搭。现有历史/消息/分叉接口统一使用 `id/kind/role/runId/createdAtMs/blocks/metadata/usage/run`；状态接口集中返回 `usage`、`requestedRun`，列表使用 `updatedAtMs`；缺少父会话用 null。原始实时事件的恢复协议独立保留，不新增旧字段别名或双格式响应。Desktop 内部 Tauri UI 记录仍按其职责映射，不冒充 Agent 公共 RPC。
 
-Agent 当前 `application_id` 为 `0x46555452`，`user_version=2` 只是本库 schema 标识，不是 RPC 版本，也不代表存在需要支持的已发布 v1。开发布局不保留升级链，未知库/不支持布局明确拒绝，绝不自动重建。正式发布后必须维护 schema 迁移；Desktop 已发布的 migrations 继续遵守 §1 的不可修改边界。
+Agent 当前 `application_id` 为 `0x46555452`，`user_version=4` 只是本库 schema 标识，不是 RPC 版本，也不代表存在需要支持的已发布 v1。`user_version` 2 和 3 是更早的布局；2 只在列形状与当前一致时才被接受，否则启动即拒绝（`agent/src/session/database.rs:285-319`）。开发布局不保留升级链，未知库/不支持布局明确拒绝，绝不自动重建。正式发布后必须维护 schema 迁移；Desktop 已发布的 migrations 继续遵守 §1 的不可修改边界。
 
 旧 JSONL 仅由一次性导入器读取、原文件保留；损坏会话隔离跳过，全局存储错误阻止启动。运维、隐私及备份边界见 [SQLite 迁移](../../architecture/sqlite-migration.zh-CN.md)。

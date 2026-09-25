@@ -39,8 +39,8 @@ LoopX 用 Python 编写；`future-loop` 是其控制面的原生 Rust 重实现�
 FutureGene 对其修改与新增原创部分持有版权，包括：
 
 - Rust 原生实现本身（类型系统、存储、并发、含 Windows 的跨平台支持）；
-- 面向 FutureOS agent 的 gRPC 执行桥接与 typed-RPC 线上契约（`future-rpc` 双写
-  payload）；
+- 面向 FutureOS agent 的 gRPC 执行桥接与 typed-RPC 线上契约（`future-rpc`
+  类型化 payload）；
 - 统一的 `future loop` CLI 及与 FutureOS TUI、桌面端应用、技能的集成；
 - 上游没有对应物的特性（canary smoke、automation liveness、read-model 自愈、
   pid lockfile / 僵尸接管）；

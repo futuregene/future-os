@@ -214,12 +214,13 @@ Return shape:
 
 ## Reproduction and artifacts
 
-- `scripts/measure-sync-snapshot.ts`: A/B browser entry.
-- `scripts/measure-sync-browser.py`: isolated launcher, new `--agent-binary`
+- `scripts/measure/measure-sync-snapshot.ts`: A/B browser entry.
+- `scripts/measure/measure-sync-browser.py`: isolated launcher, new `--agent-binary`
   option to specify the newly built independent Agent; it does not replace the
   system install or stop the user's agent.
-- `streaming-sync-snapshot-ab-2026-09-16.json`: 18 de-identified metrics plus
-  binary info.
+- `streaming-sync-snapshot-ab-2026-09-16.json`
+  ([archived](../../archives/verification/streaming-sync-snapshot-ab-2026-09-16.json)):
+  18 de-identified metrics plus binary info.
 
 ```sh
 # In this branch's worktree, build with the pinned toolchain
@@ -227,8 +228,8 @@ cargo build -p future-agent --release
 cd desktop/src-tauri
 cargo test --no-default-features --lib serve_real_snapshot --no-run
 cd ../..
-node_modules/.bin/esbuild scripts/measure-sync-snapshot.ts --bundle --platform=browser --outfile=target/sync-browser-measurement/bundle.js
-python3 scripts/measure-sync-browser.py --test-binary <absolute path of the test executable above> --agent-binary <absolute path of the new future-agent>
+node_modules/.bin/esbuild scripts/measure/measure-sync-snapshot.ts --bundle --platform=browser --outfile=target/sync-browser-measurement/bundle.js
+python3 scripts/measure/measure-sync-browser.py --test-binary <absolute path of the test executable above> --agent-binary <absolute path of the new future-agent>
 ```
 
 Open the ready.json URL in the browser and click the A/B button. Afterwards

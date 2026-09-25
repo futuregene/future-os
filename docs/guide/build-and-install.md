@@ -13,7 +13,7 @@ Required on every platform for a full build (agent + TUI + CLI + GUI):
 
 - **Rust** 1.97+ (pinned via `rust-toolchain.toml`)
 - **Node.js** 24+ (see `.nvmrc`) — for the GUI frontend
-- Optional: **Python 3** — only for `make generate-models` and the CLI golden-diff harness (`make test-cli-diff`)
+- Optional: **Python 3** — for the manual/documentation targets (`make generate-models`, `make check-docs` / `make test-docs-check`, the `make test-cli-diff` / `make test-tui-tmux` harnesses) and the profiling targets (`make profile-agent` / `profile-quick` / `profile-heap`)
 - Optional: **protoc** (Protocol Buffers compiler) — only for `make generate-proto`; generated code is checked in so normal builds don't need it
 
 The TUI and CLI are Rust (`cargo build`) and no longer need Bun or Node.

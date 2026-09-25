@@ -18,7 +18,7 @@ git clone --recurse-submodules https://github.com/futuregene/future-os.git
 # 2) Start it — the credential comes from the Future account
 #    (~/.future/agent/auth.json); no arguments needed
 cd scripts/skill_reco
-node server.mjs                                   # defaults to http://127.0.0.1:8791
+node server.mjs                                   # defaults to http://127.0.0.1:8787
 ```
 
 This line must appear in the startup log. If it does not, step 2 did not take effect and the
@@ -242,7 +242,7 @@ real credential and a live gateway, so it costs money):
 
 ```bash
 future agent --home /tmp/reco-test --verbose --log-file    # isolated; never the agent you use
-python3 suggest-skill-tests.py              # 43 checks, 5 suites; ~33 calls ≈¥0.04
+python3 suggest-skill-tests.py              # 35 checks, 5 suites; ~33 calls ≈¥0.04
 python3 suggest-skill-tests.py --only A,B,D # the three free suites (no network)
 python3 order-sensitivity.py --runs 8       # order sensitivity vs run-to-run noise
 ```
@@ -262,7 +262,7 @@ The product implements recommendation in the agent, in Rust (`agent/src/skill_re
 three clients (desktop / TUI / mobile) call it. This demo is a **second implementation** (JS), so it
 is worth being explicit about who owns what.
 
-**The experiment scripts have to stay in JS — that is the design, not laziness.** The 37 scripts under
+**The experiment scripts have to stay in JS — that is the design, not laziness.** The 38 scripts under
 `bench/` exist to **change the very things production fixes**: prompt wording (loose vs strict),
 payload shape (description 220 vs 256, with or without the Chinese line), chunk size, gate threshold,
 option sets. If they ran the production code they would have no knobs at all — and then today's

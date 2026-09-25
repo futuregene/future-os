@@ -255,12 +255,10 @@ three tables and `approval_config.rs` were cleaned up on 2026-07-05.
 
 ## 5. Progress, decisions, and follow-up plans
 
-2026-07-04 v2 R1/R2/R3 complete: file rules, read up-front approval, Seatbelt
-compilation, sensitive guards, GUI saving and same-turn injection. Historical
-results: R1 Agent 55 lib + 10 rules + 9 smoke; R2 GUI/frontend 39; R3 Agent 58
-lib + 9 smoke, GUI 72, frontend 39, lint/check-desktop pass. The early v1's
-Agent 67, GUI 69, frontend 39, smoke 9 are only the old architecture baseline,
-not the current total test count.
+v2 file rules, read up-front approval, Seatbelt compilation, sensitive guards,
+GUI saving and same-turn injection are implemented. Historical per-round test
+counts from the v1/v2 work are neither the current total nor a current
+acceptance pass, so they are not reproduced here.
 
 Retained decisions: V1–V9 (2026-07) established pure path rules, open network,
 per-lane fallback, file source of truth, three tiers, and project allows; V10's

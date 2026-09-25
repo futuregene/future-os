@@ -5,7 +5,7 @@
 > [docs/wiki/zh/Home.md](wiki/zh/Home.md) (zh).
 >
 > Every document under `docs/` ships in two languages (`name.md` = en,
-> `name.zh-CN.md` = zh); `scripts/check-docs.py` enforces directory placement,
+> `name.zh-CN.md` = zh); `scripts/docs/check-docs.py` enforces directory placement,
 > bilingual pairing, links and fences. Historical archives under
 > `archives/` keep their original dates and commit boundaries.
 
@@ -33,22 +33,24 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 |---|---|
 | [Loop Control Plane](architecture/loop-control-plane.md) ([中文](architecture/loop-control-plane.zh-CN.md)) | `future-loop` — goals/todos/gates/monitors, should-run kernel, quota, event sourcing, delivery closure, multi-agent, supervisor/worker messaging, web dashboard |
 | [Long-Run Evidence Ledger](architecture/long-run-evidence-ledger.md) ([中文](architecture/long-run-evidence-ledger.zh-CN.md)) | Accountability record for long-range loop goals — wall clock, spend, validation results, explicit boundaries per closed goal |
-| [SQLite migration](architecture/sqlite-migration.zh-CN.md) | Agent/desktop SQLite storage layout and migration policy (zh only for now) |
-| [Response outcomes](architecture/response-outcomes.zh-CN.md) | End-of-response outcome semantics (stop / refusal / filter / pause) (zh only for now) |
+| [SQLite migration](architecture/sqlite-migration.md) ([中文](architecture/sqlite-migration.zh-CN.md)) | Agent/desktop SQLite storage layout and migration policy |
+| [Response outcomes](architecture/response-outcomes.md) ([中文](architecture/response-outcomes.zh-CN.md)) | End-of-response outcome semantics (stop / refusal / filter / pause) |
 | [loop/](architecture/loop/README.md) | The `future-loop` crate: [architecture](architecture/loop/ARCHITECTURE.md) (en/zh), [upstream attribution](../orchestration/loop/UPSTREAM.md), [decision-kernel snapshot](architecture/loop/snapshots.md) |
-| [Shared packages](architecture/packages.md) | `packages/` conventions: npm/workspace packages and crate boundaries |
+| [Shared packages](architecture/packages.md) ([中文](architecture/packages.zh-CN.md)) | `packages/` conventions: npm/workspace packages and crate boundaries |
 | [Channel test coverage](architecture/channels-test-coverage.md) ([中文](architecture/channels-test-coverage.zh-CN.md)) | What the channel framework's tests promise, and the 22 lines that are deliberately not covered, with the reason for each |
-| [RPC crate](architecture/rpc.md) | `packages/rpc` — the protobuf wire contract (single source of truth) |
+| [RPC crate](architecture/rpc.md) ([中文](architecture/rpc.zh-CN.md)) | `packages/rpc` — the protobuf wire contract (single source of truth) |
 
 ## Internals (`internals/`)
 
 Per-module working docs, previously scattered under `desktop/DEV_MD/`,
-`mobile/docs/`, `tui/`, `packages/`, `orchestration/loop/` and `tests/`.
+`desktop/nats/`, `desktop/src-tauri/windows/`, `mobile/`, `tui/tests/` and
+`tests/`.
 
 - [desktop/](internals/desktop/PRODUCT.md) — product semantics, data model (`ER.md`), colors, sandbox (macOS/Windows/Linux), connection & remote, embedded terminal, compaction (formerly `desktop/DEV_MD/`; see `desktop/CLAUDE.md` for the document map)
 - [compaction/](internals/compaction/compaction.md) — runtime context compaction: the two strategies and their parameters, the production request shape, the developer map (`compaction-development.md`), retrieval interfaces, and the two experiments — closed book (`compaction-closed-book-experiment.md`) and open book (`compaction-open-book-experiment.md`)
 - [mobile/](internals/mobile/README.md) — mobile build/TestFlight, iOS platform parity, streaming-sync performance/audits, harmonyOS compatibility (formerly `mobile/README.md` + `mobile/docs/`)
 - [tui/](internals/tui/tests.md) — TUI test harness conventions (formerly `tui/tests/README.md`)
+- [skill_reco/](internals/skill_reco/harness.md) — skill recommendation: the Jev recommender's [evaluation](internals/skill_reco/evaluation.md), its [harness](internals/skill_reco/harness.md) and the [integration plan](internals/skill_reco/integration-plan.md) (a historical design record)
 - [Desktop NATS bridge](internals/desktop-nats.md) (formerly `desktop/nats/README.md`)
 - [Windows installer/update](internals/desktop-windows.md) (formerly `desktop/src-tauri/windows/README.md`)
 - [Provider protocol tests](internals/provider-protocol.md) (formerly `tests/provider-protocol/README.md`)
@@ -68,13 +70,16 @@ Per-module working docs, previously scattered under `desktop/DEV_MD/`,
   [飞书](wiki/zh/Feishu.md), [钉钉](wiki/zh/DingTalk.md),
   [模型目录](wiki/zh/Models.md) *(自动生成)*
 
+Both language trees also carry the `_Sidebar.md` / `_Footer.md` navigation pages.
+
 ## Packaging readmes (`dist/`)
 
-These files are copied verbatim into the release packages as `Readme.txt`
-(macOS / Windows / Linux portable). They are **live artifacts** — edit them
-only together with the packaging pipelines, and note that the release workflows
-reference this exact path, so the directory cannot be renamed without updating
-`.github/workflows/build-{macos-signed,windows-signed,linux}.y*ml`.
+These files are copied verbatim into the release packages as `Readme.txt`: the
+unsigned macOS test DMG, the Windows portable zip and the Linux portable
+tarball. They are **live artifacts** — edit them only together with the
+packaging pipelines, and note that the release workflows and the `scripts/build/`
+scripts reference this exact path, so the directory cannot be renamed without
+updating `.github/workflows/build-{macos-signed,windows-signed,linux}.y*ml`.
 
 - [readme-macos.txt](dist/readme-macos.txt) / [en](dist/readme-macos-en.txt)
 - [readme-windows.txt](dist/readme-windows.txt) / [en](dist/readme-windows-en.txt)
@@ -88,9 +93,10 @@ to match today's code.
 
 - [bughunt/](archives/bughunt/README.md) — bug-hunt evidence and fix records
   (agent / apps / cli / loop-tui), incl. model-output provenance JSONs
-- [verification/](archives/verification/errors-outdated-missing.md) —
-  doc↔source verification snapshots (fact inventory, error/outdated/missing
-  lists, sandbox/e2ee/latency audits)
+- [verification/](archives/verification/errors-outdated-missing.md) — dated
+  doc↔source verification snapshots: fact inventory, error/outdated/missing
+  lists, [doc↔code mismatch audit](archives/verification/doc-code-mismatches.md),
+  sandbox/E2EE/latency audits and mobile performance/issue snapshots
 
 ## Maintainers (`maintainers/`)
 
@@ -100,20 +106,22 @@ to match today's code.
 
 ## Audits (`audits/`)
 
-Reserved for future doc↔code audit reports.
+Reserved for in-progress doc↔code audit reports; completed dated reports are
+archived under `archives/verification/` (e.g. the 2026-09-16
+[doc↔code mismatch audit](archives/verification/doc-code-mismatches.md)).
 
 ## How the docs stay correct
 
 - `docs/wiki/{en,zh}/Models.md` are generated by
-  `make generate-models` (scripts/generate_models.py) — never hand-edit.
+  `make generate-models` (`scripts/docs/generate_models.py`) — never hand-edit.
 - The wiki pages are authored to the scope in
   [wiki-prompt.md](maintainers/wiki-prompt.md): macOS/Windows/Linux desktop, Android/iOS
   Remote, platform-specific sandboxing, no separate TUI page, CLI named `future`.
   Transport details belong in troubleshooting/CLI and the repository guides.
 - Verify changed claims against current source and update both languages.
   Historical verification notes retain original evidence, not a permanent PASS.
-- [Documentation check](../scripts/check-docs.py): `make check-docs` (or
-  `python3 scripts/check-docs.py`) enforces placement, bilingual pairing, local
+- **Documentation check** (`scripts/docs/check-docs.py`): `make check-docs` (or
+  `python3 scripts/docs/check-docs.py`) enforces placement, bilingual pairing, local
   links, wiki targets and fences. Two modes:
   - default — findings are errors; entries in `BILINGUAL_PENDING` are allowed
     and reported as a count, so a mid-migration tree can still be checked.
@@ -124,7 +132,10 @@ Reserved for future doc↔code audit reports.
     file they are about, not by their wording.
 - Every `.md` under `docs/` needs both languages (any new `docs/` subdirectory
   inherits this; `docs/wiki/` pairs by `en/`+`zh/` and `docs/dist/` by the `-en`
-  suffix). Exceptions are the files listed in `WHITELIST`/`EXTRA_PAIR_SCOPED`.
+  suffix). The only exception is the `BILINGUAL_PENDING` debt list, which must be
+  empty. Markdown outside `docs/` is allowed only for the paths in `WHITELIST`,
+  and `EXTRA_PAIR_SCOPED` requires a pair for a few of them
+  (`SECURITY*`, `THIRD_PARTY_NOTICES*`, `orchestration/loop/UPSTREAM*`).
 - `make test-docs-check` runs the gate's own regression tests, including
   negative controls (they fail if the checker stops detecting violations).
 - Nothing runs the checker automatically: it is not wired into CI or

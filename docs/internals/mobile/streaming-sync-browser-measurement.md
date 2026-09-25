@@ -127,14 +127,15 @@ presentation path, and all three current history windows were under 512 KiB.
 
 Measurement files:
 
-- `scripts/measure-sync-browser.ts`: imports the real mobile production sync
-  code.
-- `scripts/measure-sync-browser.html`: metrics-only browser shell.
-- `scripts/measure-sync-browser.py`: SQLite backup, isolated agent, and
+- `scripts/measure/measure-sync-browser.ts`: imports the real mobile production
+  sync code.
+- `scripts/measure/measure-sync-browser.html`: metrics-only browser shell.
+- `scripts/measure/measure-sync-browser.py`: SQLite backup, isolated agent, and
   read-only loopback probe startup and cleanup.
 - `desktop/src-tauri/src/remote_host/sync_measurement.rs`: a default-ignored
   browser test entry, not added to production behavior.
-- `streaming-sync-browser-measurement-2026-09-16.json` in the same directory:
+- `streaming-sync-browser-measurement-2026-09-16.json`
+  ([archived](../../archives/verification/streaming-sync-browser-measurement-2026-09-16.json)):
   the nine measurement records with session/run identity and bodies removed.
 
 In an isolated worktree with existing project dependencies:
@@ -146,8 +147,8 @@ cargo test --no-default-features --lib serve_real_snapshot --no-run
 cd ../..
 
 # Can reuse the installed esbuild; no react-native-web or new dependencies needed.
-node_modules/.bin/esbuild scripts/measure-sync-browser.ts --bundle --platform=browser --outfile=target/sync-browser-measurement/bundle.js
-python3 scripts/measure-sync-browser.py --test-binary <absolute path of the test executable printed above>
+node_modules/.bin/esbuild scripts/measure/measure-sync-browser.ts --bundle --platform=browser --outfile=target/sync-browser-measurement/bundle.js
+python3 scripts/measure/measure-sync-browser.py --test-binary <absolute path of the test executable printed above>
 ```
 
 Wait for `target/sync-browser-measurement/ready.json` to appear, open the URL

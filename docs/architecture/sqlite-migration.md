@@ -3,7 +3,7 @@
 > ([中文](sqlite-migration.zh-CN.md)) The Agent's only runtime store is
 > `~/.future/agent/agent.db`; Desktop keeps using its independent
 > `~/.future/app/app.db`. The database model is in
-> [ER](../internals/desktop/ER.md#7-agent-sqlite-存储), the user experience in
+> [ER](../internals/desktop/ER.md#7-agent-sqlite-storage), the user experience in
 > [PRODUCT](../internals/desktop/PRODUCT.md). Agent and all clients must upgrade
 > in sync; no old/new RPC mixing is supported.
 

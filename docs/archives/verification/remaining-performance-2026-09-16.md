@@ -34,7 +34,7 @@ Tables beyond a small initial row window scroll inside their own viewport instea
 
 `selective_events_v1` allows supporting phones to subscribe to detailed events only for the selected session. Background/list views retain low-rate run/approval/configuration notices on the existing `state.>` namespace. Intentional unsubscription is not treated as a network failure. Legacy desktops retain wildcard behavior; legacy phones retain the original full-event feed. No pairing reset or broader authorization is introduced.
 
-The maintained protocol specification is [CONNECTION.md](../../docs/internals/desktop/CONNECTION.md#23-messages-transport-and-permissions). Detailed Desktop-to-broker publication remains for compatibility; the saving is irrelevant detailed delivery to supporting phones. This feature requires the updated Desktop as well as updated mobile JS.
+The maintained protocol specification is [CONNECTION.md](../../internals/desktop/CONNECTION.md#23-messages-transport-and-permissions). Detailed Desktop-to-broker publication remains for compatibility; the saving is irrelevant detailed delivery to supporting phones. This feature requires the updated Desktop as well as updated mobile JS.
 
 ## Real JSON experiment and rejected candidate
 

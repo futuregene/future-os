@@ -807,7 +807,7 @@ GUI colors uniformly use the **semantic tokens** defined in
 `desktop/tailwind.config.js` (neutral/surface, accent/interaction, the status
 triple, diff, shadows) — no raw Tailwind named colors written in components.
 Status badges uniformly use the `<Badge tone>` component; colors
-distinguishing **sibling categories** (event categories, error subtypes) are an
+distinguishing **sibling categories** (run error subtypes) are an
 intentional exception.
 
 The color list, usage quick reference, and anti-patterns are in

@@ -154,17 +154,20 @@ request per compaction, charged like any other request. Ordinary usage and cost 
 preserved, and ordinary requests still pay for evidence and retrieved text in their input.
 Local scans also cost time and memory.
 
-A [history recall guide](../../guide/session-history.md) is added once a valid checkpoint
-exists in a persisted session where shell is enabled and permitted. It is request-only —
-never accumulated as chat history. Missing exact facts are recovered through existing
-history search/get, never by replaying old tool side effects.
+A [history recall guide](../../guide/session-history.md) exists, but the runtime does not
+append it to the model: the post-checkpoint guidance was removed because it did not change
+behaviour (the measurement is in
+[compaction-open-book-experiment.md](compaction-open-book-experiment.md)). The retained
+affordance is `future session history search`/`get` behind the ordinary shell tool, plus the
+entry ids the journal already puts in search/read results. Missing exact facts are recovered
+by reading the originals, never by replaying old tool side effects.
 
 ## Validation
 
 ```sh
 cargo test -p future-agent
 cargo build -p future-cli --bin future
-python3 scripts/test_s2_compaction.py --binary target/debug/future --report target/c-smoke.json
+python3 scripts/tests/test_s2_compaction.py --binary target/debug/future --report target/c-smoke.json
 ```
 
 Use `future.exe` on Windows and respect `CARGO_TARGET_DIR`. The synthetic smoke uses its own

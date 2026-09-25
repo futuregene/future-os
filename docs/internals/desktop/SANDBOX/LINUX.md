@@ -1,15 +1,12 @@
 # Linux: Bubblewrap sandbox
 
-> ([中文](LINUX.zh-CN.md)) Implemented, merged into main in #496. The progress and
-> test evidence below is recorded as of 2026-09-04; merging does not
-> automatically upgrade it to a latest-candidate acceptance pass. L0–L4 and L6
-> product integration are implemented; users have reported native Linux works,
-> and the previous round has a 7/7 smoke record with bwrap 0.11.1. **The latest
-> private-report/resource hardening has not been natively re-verified; the L5
-> distro, architecture, installer, and independent security review are still
-> incomplete.** This page unifies design, implementation, installation,
-> anomalies, verification, and plans; shared rules and references are in
-> [COMMON.md](COMMON.md).
+> ([中文](LINUX.zh-CN.md)) Implemented, merged into main in #496. L0–L4 and L6
+> product integration are implemented. Release-level acceptance (L5: native
+> distro/arch, artifacts, independent security review) is not complete; the
+> open items are tracked in [§8](#8-follow-up-priorities), and dated historical
+> evidence cannot be upgraded into a latest-candidate acceptance pass. This
+> page unifies design, implementation, installation, anomalies, verification,
+> and plans; shared rules and references are in [COMMON.md](COMMON.md).
 
 ## 1. Confirmed scope
 
@@ -157,7 +154,7 @@ descendants are left.
 | Resource | Current limit / semantics |
 |---|---|
 | helper JSON request | v3, 8 MiB; production outer/inner both use anonymous file FDs, argv carries a short `fd:3` reference |
-| mount / shell argv | 16,384 mounts; shell argv combined 96 KiB, still subject to system environment-size limits |
+| mount / shell argv | 2,242 mounts (from the 9000-argument ceiling: `(9000 − 32) / 4`); shell argv combined 96 KiB, still subject to system environment-size limits |
 | bwrap OPTIONS file | NUL-separated, 16 MiB; together with real argv at most 9000 arguments |
 | FD | reads `/proc/self/fd` and RLIMIT_NOFILE before opening mounts; 16 slots reserved internally |
 | report | 64 KiB, version 1, at most 4 digest-matching detection-only events |
@@ -345,29 +342,14 @@ executed**; never auto-replay on the exit code alone.
   `claude/linux-bwrap-sandbox`; on 2026-09-03 `origin/main@15d7df79`
   (`0867b0fd`) was merged. These are historical anchors, not current-latest
   main claims.
-- 2026-09-03 Ubuntu 26.04/Linux 7.0/x86_64, `/usr/bin/bwrap` 0.11.1, initial
-  5/5 ignored smoke, basic probe PASS; not full target-distro certification.
-- Same-day historical cross-platform record: sandbox 115 tests, Rust workspace
-  tests pass; Tauri 1095 items with one first-run remote runtime timing
-  failure, targeted re-run passed. Old Desktop 687/Mobile 551, availability 12
-  PASSes kept as historical; some later hosts lacked Node and were not re-run —
-  they cannot be combined into one all-green candidate.
-- 2026-09-04 large-repo macOS fixture: Linux modules 40 PASS/1 ignored;
-  explicit large fixture 1 PASS, 100,013 items first/repeat ≈777/783ms, a
-  single `.env.*` access 3 items. OS cache uncontrolled — not Linux
-  cold-cache/bwrap performance.
-- First-round `.aws` fix on macOS: 45 PASS/1 ignored; Linux-only/helper not run.
-- `01b7e413` second-round committer record: Linux 53 PASS/1 ignored, 7/7 bwrap
-  smoke, Linux Clippy/fmt pass. Full Agent 1651 PASS/2 FAIL
-  (`models::future::cache_save_and_concurrent_load_never_torn`,
-  `models::tests::registry_injects_future_models_from_disk_cache`);
-  independent re-runs passed — recorded as suspected shared-cache parallel
-  flakiness, **not a first-run all-green**.
-- Latest explicit items/private-report hardening: macOS fmt, Agent all-targets
-  Clippy, diff check pass; new tests not executed. The Linux cross-check was
-  blocked in the ring build by missing `x86_64-linux-gnu-gcc`; no claim that
-  the Linux helper compiles. User feedback that real machines work does not
-  cover all the latest anomaly branches.
+- Earlier rounds produced dated smoke/unit counts — Ubuntu 26.04 with bwrap
+  0.11.1 (5/5, later 7/7 ignored smoke), macOS large-repo fixtures, the `.aws`
+  root-cause fixes, and the `01b7e413` run (Linux 53 PASS/1 ignored, one
+  suspected shared-cache flake). They prove their own commits and hosts only;
+  they are not certification of the latest candidate, and per-run logs are not
+  reproduced here.
+- The private-report/resource hardening still needs a fresh native Linux run
+  before any release claim; open items are tracked in §8 (P0).
 
 | Phase | Current status |
 |---|---|
@@ -382,11 +364,11 @@ Run at the candidate repo root in a native Linux ordinary environment (VM ok;
 container/WSL is not a substitute):
 
 ```bash
-./scripts/test-linux-sandbox-real-machine.sh
+./scripts/tests/test-linux-sandbox-real-machine.sh
 # optional full Rust workspace tests
-./scripts/test-linux-sandbox-real-machine.sh --full
+./scripts/tests/test-linux-sandbox-real-machine.sh --full
 # GUI development launch
-./scripts/start-desktop-linux.sh
+./scripts/dev/start-desktop-linux.sh
 ```
 
 The script collects the environment, builds the probe, Linux unit tests, the

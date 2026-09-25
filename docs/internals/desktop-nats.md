@@ -15,7 +15,7 @@ are deployment listener details, not instructions to connect mobile over plainte
 that hop is deployment-controlled, not unconditionally enforced by the client.
 Secure that path explicitly. Do not describe all hops as encrypted or recommend
 plaintext WebSocket URLs to current mobile clients. Only use test data in test
-relay deployments. User pairing instructions: [Remote](../../docs/wiki/en/Remote.md).
+relay deployments. User pairing instructions: [Remote](../wiki/en/Remote.md).
 
 The canonical production template and operator runbook live in
 `../future-server`:

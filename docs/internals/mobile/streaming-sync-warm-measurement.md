@@ -29,7 +29,7 @@ DesktopHost, Chrome, and loopback HTTP measurement tooling. The desktop adapter
 is still a debug test build; NATS/E2EE, phone networks, Hermes, and native UI
 are outside the measurement scope.
 
-The new entry `scripts/measure-sync-warm.ts` reuses the production Mobile
+The new entry `scripts/measure/measure-sync-warm.ts` reuses the production Mobile
 SyncEngine, paging, cursor, and projector. The data comes from the same
 111,395-event completed historical run. This database snapshot had 231
 completed runs in total.
@@ -158,7 +158,8 @@ lifecycle trace:
 - Mobile type-check, lint, 94 test suites / 1,306 tests pass; the browser
   measurement scripts pass TypeScript checks separately.
 
-Raw de-identified metrics are in `streaming-sync-warm-measurement-2026-09-16.json`.
+Raw de-identified metrics are archived in
+[`streaming-sync-warm-measurement-2026-09-16.json`](../../archives/verification/streaming-sync-warm-measurement-2026-09-16.json).
 
 ## Reproduction
 
@@ -166,8 +167,8 @@ Use the isolated-launch steps from the previous report, replacing only the
 browser bundle entry:
 
 ```sh
-node_modules/.bin/esbuild scripts/measure-sync-warm.ts --bundle --platform=browser --outfile=target/sync-browser-measurement/bundle.js
-python3 scripts/measure-sync-browser.py --test-binary <built ignored test executable>
+node_modules/.bin/esbuild scripts/measure/measure-sync-warm.ts --bundle --platform=browser --outfile=target/sync-browser-measurement/bundle.js
+python3 scripts/measure/measure-sync-browser.py --test-binary <built ignored test executable>
 ```
 
 Open the ready.json URL and click the button; three rounds by default; add

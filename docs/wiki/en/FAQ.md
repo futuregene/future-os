@@ -27,7 +27,7 @@ That's **SmartScreen**; a reputation warning can occur even for signed software.
 
 ### I can't use any model / I'm not signed in
 
-Open **Settings → Providers → FutureGene → Sign in** to sign in, or add your own provider. See [[Settings]].
+Open **Settings → Providers → Built-in → Future → Sign in** to sign in, or add your own provider. See [[Settings]].
 
 ### How do I switch models?
 

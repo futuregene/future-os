@@ -200,12 +200,22 @@ non-interactive commands never perform it.
 | `/model [name]` | Select / switch model |
 | `/new` | Start a new session |
 | `/sessions` | Browse and switch sessions |
+| `/tree` | Session tree with fork/clone hierarchy |
+| `/fork` | Fork from a chosen message |
+| `/clone` | Clone the current session |
+| `/name <name>` | Set the session name |
+| `/scoped-models` | Configure the model enable/disable list |
 | `/compact` | Compress conversation context |
 | `/status` | Session state, token usage, cost |
 | `/stop` | Abort current generation |
-| `/providers` | Configure providers and models |
+| `/cancel <run-id>` | Cancel a queued run |
+| `/cwd <dir>` | Change the working directory |
+| `/approve <request-id>` | Approve a pending tool execution |
+| `/reject <request-id>` | Reject a pending tool execution |
+| `/reload` | Reload skills and context files |
 | `/skills` | Browse, install and manage skills |
-| `/theme` | Switch the color theme |
+| `/providers` | Configure providers and models |
+| `/theme [id]` | Switch the color theme |
 
 Run `/help` in the TUI for the full list (40+ commands).
 
@@ -214,15 +224,20 @@ Run `/help` in the TUI for the full list (40+ commands).
 | Key | Action |
 |---|---|
 | `ctrl+c` | Interrupt / exit |
+| `ctrl+l` | Clear screen / redraw |
 | `ctrl+p` | Cycle model |
-| `ctrl+r` | Browse sessions |
 | `ctrl+t` | Cycle thinking level |
+| `shift+tab` | Cycle thinking |
 | `ctrl+o` | Expand / collapse thinking |
 | `ctrl+g` | Expand / collapse tool output |
+| `ctrl+d` | Compact view: fold runs of tool calls and thinking |
 | `ctrl+x` | Copy the last answer |
+| `ctrl+r` | Browse sessions |
 | `ctrl+v` | Paste clipboard (image or text) |
 | `tab` | Autocomplete |
 | `↑↓` | Scroll / navigate lists |
+| `page up` / `page down` | Scroll the chat |
+| `ctrl+↑` / `ctrl+↓` | Scroll the chat line by line |
 | `enter` | Submit / accept |
 | `escape` | Close popup |
 
