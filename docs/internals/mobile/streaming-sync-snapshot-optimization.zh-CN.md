@@ -113,8 +113,8 @@
 
 ## 复现与产物
 
-- `scripts/measure-sync-snapshot.ts`：A/B 浏览器入口。
-- `scripts/measure-sync-browser.py`：隔离启动器，新增 `--agent-binary` 可指定新构建的独立 Agent；不会替换系统安装或停止用户的 agent。
+- `scripts/measure/measure-sync-snapshot.ts`：A/B 浏览器入口。
+- `scripts/measure/measure-sync-browser.py`：隔离启动器，新增 `--agent-binary` 可指定新构建的独立 Agent；不会替换系统安装或停止用户的 agent。
 - `streaming-sync-snapshot-ab-2026-09-16.json`：18 次去身份指标及二进制信息。
 
 ```sh
@@ -123,8 +123,8 @@ cargo build -p future-agent --release
 cd desktop/src-tauri
 cargo test --no-default-features --lib serve_real_snapshot --no-run
 cd ../..
-node_modules/.bin/esbuild scripts/measure-sync-snapshot.ts --bundle --platform=browser --outfile=target/sync-browser-measurement/bundle.js
-python3 scripts/measure-sync-browser.py --test-binary <上一步test executable绝对路径> --agent-binary <新future-agent绝对路径>
+node_modules/.bin/esbuild scripts/measure/measure-sync-snapshot.ts --bundle --platform=browser --outfile=target/sync-browser-measurement/bundle.js
+python3 scripts/measure/measure-sync-browser.py --test-binary <上一步test executable绝对路径> --agent-binary <新future-agent绝对路径>
 ```
 
 浏览器打开 ready.json 的 URL，点击 A/B 按钮。结束后停止本次 runner，确认其两个子进程停止及私有 SQLite 副本删除；保留去身份指标，清理临时日志与 bundle。

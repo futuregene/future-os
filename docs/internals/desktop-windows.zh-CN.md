@@ -35,7 +35,7 @@ Tauri 默认的 NSIS 运行中应用检查只覆盖主程序。捆绑的 `future
 - 关闭失败时提供"重试/取消"并附任务管理器与重启指引。写入/检查失败时提供
   "重试/取消"并附权限、磁盘空间、安全软件与默认目录指引。没有"忽略"通道。
 - 通用静默（`/S`）与被动（`/P`）安装从不关闭程序，也不显示阻塞对话框：文件被占用
-  退出 **32**，写入/检查失败退出 **5**。`scripts/install.ps1` 把这些码转成恢复指引，
+  退出 **32**，写入/检查失败退出 **5**。`scripts/release/install.ps1` 把这些码转成恢复指引，
   而不是继续初始化。
 - 显式的应用内更新（`/UPDATE`）会自动关闭精确路径匹配的可执行文件。这样新安装器能
   修复那些启动 NSIS 前没有先停掉自己 Agent 的旧版本；无关安装永不受影响。
@@ -69,8 +69,8 @@ Capability 元数据留在 `$INSTDIR` 之外，供后续安装/修复重试。
 在装有 NSIS 的 Windows 上（也会检测 Tauri NSIS 缓存）：
 
 ```powershell
-& ./scripts/test-windows-installer-preflight.ps1
-& ./scripts/test-install.ps1
+& ./scripts/tests/test-windows-installer-preflight.ps1
+& ./scripts/tests/test-install.ps1
 ```
 
 测试用 NSIS `/WX` 编译真实的 hooks，创建无害的临时可执行文件，只按 PID 驱动测试

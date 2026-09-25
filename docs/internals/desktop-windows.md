@@ -44,7 +44,7 @@ and before the new uninstaller runs sandbox permission cleanup.
   security-software and default-directory guidance. There is no Ignore path.
 - Generic silent (`/S`) and passive (`/P`) installs never close programs or
   display blocking dialogs: exit **32** for busy files, **5** for write/check
-  failures. `scripts/install.ps1` translates these into recovery instructions
+  failures. `scripts/release/install.ps1` translates these into recovery instructions
   rather than continuing to initialization.
 - Explicit in-app updates (`/UPDATE`) close exact-path executables automatically.
   This lets a new installer repair older releases that launched NSIS without
@@ -90,8 +90,8 @@ Capability metadata stays outside `$INSTDIR` for a later install/repair retry.
 On Windows with NSIS installed (the Tauri NSIS cache is also detected):
 
 ```powershell
-& ./scripts/test-windows-installer-preflight.ps1
-& ./scripts/test-install.ps1
+& ./scripts/tests/test-windows-installer-preflight.ps1
+& ./scripts/tests/test-install.ps1
 ```
 
 The test compiles the actual hooks with NSIS `/WX`, creates harmless temporary

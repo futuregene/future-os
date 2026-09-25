@@ -264,7 +264,7 @@ enforcement, no ACEs without reclaim.
 | `agent/src/sandbox/windows/{process,runner}.rs` | private desktop, Job, shell, lease, persistence/GC/probe/reset |
 | `agent/src/tools/mod.rs`, `agent/src/rpc/approval.rs` | additional_permissions pre-check, receipt and execution |
 | Desktop supervisor/shutdown, NSIS hooks | bundled ownership, reset-before-terminate, currentUser uninstall |
-| `scripts/test-windows-sandbox*.ps1` | native and installer lifecycle acceptance, not in CI |
+| `scripts/tests/test-windows-sandbox*.ps1` | native and installer lifecycle acceptance, not in CI |
 
 Key conclusions from 2026-08-21~24 native troubleshooting:
 
@@ -306,7 +306,7 @@ $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 rustc -Vv
 cargo -V
-powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-sandbox.ps1 -IncludeClippy
+powershell -ExecutionPolicy Bypass -File .\scripts\tests\test-windows-sandbox.ps1 -IncludeClippy
 ```
 
 IsInRole must be False; the script rejects admins/non-NTFS TEMP;
@@ -332,9 +332,9 @@ ACL edits first. Do not read only the last line.
 Using the same candidate portable and NSIS:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build-desktop-windows-portable.ps1 -SkipDeps
-powershell -ExecutionPolicy Bypass -File .\scripts\build-desktop-windows-installer.ps1 -SkipDeps
-powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-sandbox-lifecycle.ps1 -Action Snapshot
+powershell -ExecutionPolicy Bypass -File .\scripts\build\build-desktop-windows-portable.ps1 -SkipDeps
+powershell -ExecutionPolicy Bypass -File .\scripts\build\build-desktop-windows-installer.ps1 -SkipDeps
+powershell -ExecutionPolicy Bypass -File .\scripts\tests\test-windows-sandbox-lifecycle.ps1 -Action Snapshot
 ```
 
 Portable is the root-level `FutureOS-portable-windows.zip`, keeping

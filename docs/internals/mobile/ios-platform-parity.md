@@ -78,7 +78,7 @@ Configure under the same Apple Developer team:
    that overrides every target. The IPA export's `provisioningProfiles`
    dictionary must contain profiles for both bundle IDs.
 5. You can first decode both profiles with `security cms -D -i <profile>`, then
-   run `python3 scripts/validate-ios-share-profiles.py <host.plist>
+   run `python3 scripts/tests/validate-ios-share-profiles.py <host.plist>
    <share.plist>` to check App IDs, team, validity, distribution type, and App
    Group.
 
@@ -95,11 +95,11 @@ TestFlight".
 - `npm run check` (in `mobile/`): types, lint, Jest; covering standalone file
   operations, legacy-bundle fallback, presenting UIKit only after the download
   dialog really closes, and cancel/failure paths.
-- `python3 scripts/test-mobile-ios-share.py`: the real Swift inbox's atomic
+- `python3 scripts/tests/test-mobile-ios-share.py`: the real Swift inbox's atomic
   consumption, failure retry, byte limits, Unicode, corrupt manifests, path
   escape, directory/symlink rejection, and queue capacity.
 - After explicitly enabling the extension and prebuilding, run
-  `node scripts/test-mobile-ios-project.cjs`: verifies the generated project's
+  `node scripts/tests/test-mobile-ios-project.cjs`: verifies the generated project's
   sources, embedding relationships, entitlements, repeated runs, version sync,
   and per-target signing settings.
 - On macOS with Xcode/iOS SDK, after installing Pods in `mobile/ios/`:

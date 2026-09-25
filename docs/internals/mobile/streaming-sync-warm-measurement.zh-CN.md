@@ -15,7 +15,7 @@
 
 沿用 `streaming-sync-browser-measurement.md` 的隔离 Agent、真实 DesktopHost、Chrome 和 loopback HTTP 测量工具。桌面适配器仍是 debug 测试构建，NATS/E2EE、手机网络、Hermes 与原生 UI 不在测量范围内。
 
-新入口 `scripts/measure-sync-warm.ts` 复用生产 Mobile SyncEngine、分页、游标和 projector。数据来自同一条 111,395 事件的已完成历史 run。该次数据库快照共有 231 个 completed run。
+新入口 `scripts/measure/measure-sync-warm.ts` 复用生产 Mobile SyncEngine、分页、游标和 projector。数据来自同一条 111,395 事件的已完成历史 run。该次数据库快照共有 231 个 completed run。
 
 与上一轮只指定历史目标不同，本轮**明确加入以下场景控制**，不能称为正在 streaming 的真实会话抓包：
 
@@ -95,8 +95,8 @@
 使用上一份报告中的隔离启动步骤，只替换浏览器 bundle 的入口：
 
 ```sh
-node_modules/.bin/esbuild scripts/measure-sync-warm.ts --bundle --platform=browser --outfile=target/sync-browser-measurement/bundle.js
-python3 scripts/measure-sync-browser.py --test-binary <已构建的ignored测试可执行文件>
+node_modules/.bin/esbuild scripts/measure/measure-sync-warm.ts --bundle --platform=browser --outfile=target/sync-browser-measurement/bundle.js
+python3 scripts/measure/measure-sync-browser.py --test-binary <已构建的ignored测试可执行文件>
 ```
 
 打开 ready.json 中的 URL 后点击按钮，默认三轮；在 URL 加 `#rounds=1` 可做一次五场景诊断验证。样本必须有足够长的真实前缀、连续游标和末尾 `agent_end`；测试不满足这些条件会失败，不会伪造成功。

@@ -134,7 +134,7 @@ W0契约冻结，W1纯计划、W2token/ACL/capability、W3restricted driver、W4
 | `agent/src/sandbox/windows/{process,runner}.rs` | private desktop、Job、shell、lease、持久化/GC/probe/reset |
 | `agent/src/tools/mod.rs`、`agent/src/rpc/approval.rs` | additional_permissions预检、receipt和执行 |
 | Desktop supervisor/shutdown、NSIS hooks | bundled归属、先reset后终止、currentUser卸载 |
-| `scripts/test-windows-sandbox*.ps1` | 原生与安装包生命周期验收，不进入CI |
+| `scripts/tests/test-windows-sandbox*.ps1` | 原生与安装包生命周期验收，不进入CI |
 
 2026-08-21～24原生排障的重要结论：
 
@@ -171,7 +171,7 @@ $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 rustc -Vv
 cargo -V
-powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-sandbox.ps1 -IncludeClippy
+powershell -ExecutionPolicy Bypass -File .\scripts\tests\test-windows-sandbox.ps1 -IncludeClippy
 ```
 
 IsInRole必须False；脚本拒绝管理员/非NTFS TEMP，`-AllowElevated`仅诊断，不算产品验收。原生测试强制单线程，不含UI自动化，不接CI；保存 `target\windows-sandbox-results\windows-sandbox-<时间>.log` 完整日志。
@@ -185,9 +185,9 @@ PASS必须所有命令exit0，末尾同时有 `Remaining persisted Windows capab
 使用同一候选portable与NSIS：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build-desktop-windows-portable.ps1 -SkipDeps
-powershell -ExecutionPolicy Bypass -File .\scripts\build-desktop-windows-installer.ps1 -SkipDeps
-powershell -ExecutionPolicy Bypass -File .\scripts\test-windows-sandbox-lifecycle.ps1 -Action Snapshot
+powershell -ExecutionPolicy Bypass -File .\scripts\build\build-desktop-windows-portable.ps1 -SkipDeps
+powershell -ExecutionPolicy Bypass -File .\scripts\build\build-desktop-windows-installer.ps1 -SkipDeps
+powershell -ExecutionPolicy Bypass -File .\scripts\tests\test-windows-sandbox-lifecycle.ps1 -Action Snapshot
 ```
 
 portable为根目录`FutureOS-portable-windows.zip`，保持FutureOS.exe/future.exe同目录；NSIS在`desktop\src-tauri\target\release\bundle\nsis\`。每次生命周期调用留独立时间戳日志，不记录完整命令行。

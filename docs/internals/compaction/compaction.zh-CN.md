@@ -80,7 +80,7 @@ future session compact --help
 ```sh
 cargo test -p future-agent
 cargo build -p future-cli --bin future
-python3 scripts/test_s2_compaction.py --binary target/debug/future --report target/c-smoke.json
+python3 scripts/tests/test_s2_compaction.py --binary target/debug/future --report target/c-smoke.json
 ```
 
 Windows 使用 `future.exe`；设置了 `CARGO_TARGET_DIR` 时相应调整路径。合成 smoke 使用隔离 HOME、新端口与本地模型桩，验证 80% 窗口触发、标识、原文、普通用量、字节分页与重启，并验证被拒的摘要会回退且不产生第二次计费调用。不要停止用户正在运行的 Agent。
