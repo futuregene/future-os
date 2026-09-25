@@ -83,7 +83,7 @@ jobs:
 
       - name: Setup ossutil
         if: github.event_name == 'workflow_dispatch' && !inputs.coordinated
-        run: bash scripts/setup-ossutil.sh
+        run: bash scripts/release/setup-ossutil.sh
 
       - name: Restore keystore
         env:

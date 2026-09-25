@@ -382,11 +382,11 @@ Run at the candidate repo root in a native Linux ordinary environment (VM ok;
 container/WSL is not a substitute):
 
 ```bash
-./scripts/test-linux-sandbox-real-machine.sh
+./scripts/tests/test-linux-sandbox-real-machine.sh
 # optional full Rust workspace tests
-./scripts/test-linux-sandbox-real-machine.sh --full
+./scripts/tests/test-linux-sandbox-real-machine.sh --full
 # GUI development launch
-./scripts/start-desktop-linux.sh
+./scripts/dev/start-desktop-linux.sh
 ```
 
 The script collects the environment, builds the probe, Linux unit tests, the

@@ -160,9 +160,9 @@ let outcome = ctx.handle(inbound, sender.clone()).await;
 新增 provider 代码要求逐行覆盖，而不是只看汇总百分比：
 
 ```bash
-bash scripts/chan-cov.sh                     # 全 crate：报告 + 未覆盖行
-bash scripts/chan-cov.sh --check channels/src/providers/my-channel.rs
-python3 scripts/chan-missed.py providers/my-channel   # 单文件的未覆盖行号
+bash scripts/measure/chan-cov.sh                     # 全 crate：报告 + 未覆盖行
+bash scripts/measure/chan-cov.sh --check channels/src/providers/my-channel.rs
+python3 scripts/measure/chan-missed.py providers/my-channel   # 单文件的未覆盖行号
 ```
 
 `--check` 只判定你列出的文件，因此同侪在途文件不会判你失败。目标是未覆盖行为 0；确实

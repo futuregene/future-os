@@ -2,7 +2,7 @@ name: Publish Installers
 
 # Syncs the one-line installer scripts to the OSS bucket root so they are
 # served from https://dl.future-os.cn/install.sh and /install.ps1. Manual
-# dispatch only — run it after changing scripts/install.sh or install.ps1.
+# dispatch only — run it after changing scripts/release/install.sh or install.ps1.
 
 on:
   workflow_dispatch:
@@ -23,7 +23,7 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Setup ossutil
-        run: bash scripts/setup-ossutil.sh
+        run: bash scripts/release/setup-ossutil.sh
 
       - name: Upload artifacts to OSS
         run: |
@@ -32,7 +32,7 @@ jobs:
             # text/plain so browsers and curl treat the file as a script;
             # no-cache so CDN edge nodes revalidate and updates go live
             # immediately (installers must never serve stale content).
-            ossutil cp -f "scripts/$f" "oss://$OSS_BUCKET/$f" \
+            ossutil cp -f "scripts/release/$f" "oss://$OSS_BUCKET/$f" \
               --content-type "text/plain; charset=utf-8" \
               --cache-control "no-cache"
             ossutil stat "oss://$OSS_BUCKET/$f"
