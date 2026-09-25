@@ -5,6 +5,7 @@ import type { TFunction } from "i18next";
 import { NativeFileActionSheet } from "../components/NativeFileActionSheet";
 import { PreviewModal, previewLayerKey } from "../components/PreviewModal";
 import { MarkdownText } from "../../../components/MarkdownText";
+import { colors } from "../../../theme/tokens";
 import type { ActiveDownload, FileAction, FileOperation } from "../utils";
 import type { PreviewState } from "../useFileDownload";
 
@@ -220,6 +221,14 @@ describe("preview stack", () => {
     act(() => button("common.back").props.onPress());
     expect(props.popPreview).toHaveBeenCalledTimes(1);
     expect(props.closePreview).not.toHaveBeenCalled();
+  });
+
+  test("a covered document never shows through the one above it", () => {
+    act(() => { tree = create(createElement(PreviewModal, { ...props, previews: [doc("/root/publishing.md"), doc("/root/SOURCES.md")] })); });
+    // The layers are absolutely positioned siblings, and the documents' text is
+    // transparent, so an unpainted layer lets the covered document's header and
+    // every line of its body draw over the top document's.
+    expect(layers().map(layer => StyleSheet.flatten(layer.props.style).backgroundColor)).toEqual([colors.surface, colors.surface]);
   });
 
   test("the outermost document has no back control: there is nothing under it", () => {
