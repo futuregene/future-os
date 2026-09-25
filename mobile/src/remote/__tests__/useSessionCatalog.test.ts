@@ -869,4 +869,57 @@ describe("useSessionCatalog", () => {
     });
     expect(result.current.catalogSync.sessions).toBe("ready");
   });
+
+  /**
+   * The presence heartbeat is the only recovery signal left for a catalog push
+   * that the at-most-once event lane dropped: the desktop no longer re-sends an
+   * unchanged snapshot on a timer. Both directions matter — missing the pull
+   * leaves the phone permanently stale, and pulling on a revision that already
+   * arrived turns every heartbeat into a redundant round trip.
+   */
+  test("a presence revision newer than the applied snapshot pulls, a current one does not", async () => {
+    render();
+    act(() => { result.current.setCatalogEpoch("E"); });
+    // Both domains applied, so the heartbeat below is exactly current.
+    act(() => {
+      result.current.applySessionSnapshot([session("s1")], { epoch: "E", revision: 4 });
+      result.current.setWorkspaces([], { epoch: "E", revision: 2 });
+    });
+    // The heartbeat agrees with what was applied: the push arrived, nothing to do.
+    act(() => { result.current.noteCatalogRevisions({ epoch: "E", sessions: 4, workspaces: 2 }); });
+    expect(request).not.toHaveBeenCalled();
+
+    // Newer than applied proves the pushed snapshot was lost, so pull.
+    request.mockResolvedValue({
+      data: { sessions: [session("s1")], version: { epoch: "E", revision: 5 } },
+    });
+    await act(async () => {
+      result.current.noteCatalogRevisions({ epoch: "E", sessions: 5, workspaces: 2 });
+    });
+    expect(request).toHaveBeenCalledWith({ type: "list_sessions" }, "list");
+  });
+
+  test("presence revisions are ignored across epochs and drive each domain separately", async () => {
+    render();
+    act(() => { result.current.setCatalogEpoch("E"); });
+    // Another desktop generation: the reconnect path owns that transition.
+    act(() => { result.current.noteCatalogRevisions({ epoch: "OTHER", sessions: 9, workspaces: 9 }); });
+    expect(request).not.toHaveBeenCalled();
+
+    // Pre-handshake presence carries no authenticated epoch to compare against.
+    act(() => { result.current.setCatalogEpoch(undefined); });
+    act(() => { result.current.noteCatalogRevisions({ epoch: "E", sessions: 9, workspaces: 9 }); });
+    expect(request).not.toHaveBeenCalled();
+
+    // A workspaces-only advance pulls only workspaces.
+    act(() => { result.current.setCatalogEpoch("E"); });
+    request.mockResolvedValue({
+      data: { workspaces: [], version: { epoch: "E", revision: 1 } },
+    });
+    await act(async () => {
+      result.current.noteCatalogRevisions({ epoch: "E", workspaces: 1 });
+    });
+    expect(request).toHaveBeenCalledWith({ type: "list_workspaces" }, "list");
+    expect(request).not.toHaveBeenCalledWith({ type: "list_sessions" }, "list");
+  });
 });

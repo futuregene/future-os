@@ -31,6 +31,7 @@ import type {
   ConnectionPhase,
   PairedDesktop,
   SnapshotVersion,
+  CatalogRevisions,
   Presence,
   RemoteCredentials,
   RemoteSession,
@@ -58,6 +59,11 @@ interface RemoteConnectionOptions {
   refreshSessions(): Promise<void>;
   refreshSettings(): Promise<void>;
   refreshWorkspaces(): Promise<void>;
+  /**
+   * Presence carries the desktop's catalog revisions; a newer one than this
+   * client applied means a pushed snapshot was lost.
+   */
+  noteCatalogRevisions?(version: CatalogRevisions | undefined): void;
   closeConversation(): void;
   resetConversation(): void;
   resetCatalog(): void;
@@ -79,6 +85,7 @@ export function useRemoteConnection({
   refreshSessions,
   refreshSettings,
   refreshWorkspaces,
+  noteCatalogRevisions,
   closeConversation,
   resetConversation,
   resetCatalog,
@@ -300,6 +307,9 @@ export function useRemoteConnection({
           latestPresenceRef.current = nextPresence;
           setPresence(nextPresence);
           if (connectionReadyRef.current) {
+            // Only past the ready barrier: a pull issued against a
+            // half-built connection would race the handshake it depends on.
+            noteCatalogRevisions?.(nextPresence.catalogVersion);
             updateDesktopOnline(nextPresence, lastPresenceReceiptRef.current);
           } else {
             setDesktopOnline(false);
@@ -382,6 +392,7 @@ export function useRemoteConnection({
       closeConversation,
       credentialsRef,
       handleEvent,
+      noteCatalogRevisions,
       reconcileSession,
       recordError,
       recoverState,

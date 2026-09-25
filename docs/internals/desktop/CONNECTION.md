@@ -305,8 +305,8 @@ subjects.
 | `cmd.{sessionId}` | phone sends commands to the Desktop; the Desktop subscribes via a pairing-level queue |
 | `rep.{deviceId}.…` | device-scoped request replies |
 | `evt.{sessionId}` | the Desktop publishes session events |
-| `presence` | the Desktop publishes online status and bridge instance identity |
-| `state.sessions` / `state.workspaces` | the Desktop publishes catalog snapshots |
+| `presence` | the Desktop publishes online status, bridge instance identity and the current catalog revision |
+| `state.sessions` / `state.workspaces` | the Desktop publishes catalog snapshots on change |
 | `state.events` | negotiated low-rate run/approval/configuration notices (`selective_events_v1`) |
 | `xfer.up.>` | phone upload chunks and download-pull initiation |
 | `xfer.down.>` | the Desktop sends file chunks down |
@@ -327,6 +327,22 @@ intentional unsubscribe on navigation is not a transport failure. Reopening
 still fills missing details from the durable journal. The platform API, JWT
 scope and Agent authority are unchanged; Desktop-to-broker legacy publication
 is retained, while irrelevant detailed delivery to the phone is avoided.
+
+**Idle catalog traffic (2026-09-25):** catalog snapshots are published only when
+content changes. There is no periodic re-send: the presence heartbeat carries
+`catalogVersion` (`{epoch, sessions, workspaces}`), and a client whose applied
+revision is older pulls the catalog itself (`list_sessions` /
+`list_workspaces`). Because the revision is recomputed from the store on every
+catalog tick and only advances when the visible content changes, a *stale*
+advertised revision is impossible — a missed push is therefore always
+observable, and heals in one heartbeat instead of a timer.
+
+The publisher records a snapshot's signature only once `secure::publish`
+reports the payload actually left the endpoint. Sealing yields no message while
+the secure channel has no established key yet (before the client's handshake,
+and again after a credential refresh cleared it), so a change during that window
+is retried on the next tick rather than lost — which a change-driven publisher,
+unlike the periodic one this replaced, cannot paper over.
 
 NATS Core is at-most-once delivery. Existing real-time events must be
 hole-filled by authoritative-log replay, and catalog notices calibrated by

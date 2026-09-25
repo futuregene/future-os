@@ -442,14 +442,21 @@ pub(super) async fn publish(
     transport: &Transport,
     subject: String,
     bytes: Vec<u8>,
-) -> Result<(), crate::AppError> {
-    if let Some(wire) = transport.seal(&subject, &bytes)? {
-        client
-            .publish(subject, wire.into())
-            .await
-            .map_err(|e| crate::AppError::RemoteTransport(e.to_string()))?;
-    }
-    Ok(())
+) -> Result<bool, crate::AppError> {
+    // `seal` yields `None` while the channel has no established key yet: before
+    // the client's handshake completes, and again after a credential refresh
+    // cleared it. The payload is dropped on the floor. Reporting that instead of
+    // a silent `Ok(())` is what lets a *change-driven* publisher retry — a
+    // periodic one would never notice, which is exactly how the old catalog
+    // self-heal timer hid this.
+    let Some(wire) = transport.seal(&subject, &bytes)? else {
+        return Ok(false);
+    };
+    client
+        .publish(subject, wire.into())
+        .await
+        .map_err(|e| crate::AppError::RemoteTransport(e.to_string()))?;
+    Ok(true)
 }
 
 #[cfg(test)]

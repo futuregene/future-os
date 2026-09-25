@@ -84,10 +84,25 @@ export interface SnapshotVersion {
   revision: number;
 }
 
+/** Per-domain catalog revisions advertised on a presence heartbeat. */
+export interface CatalogRevisions {
+  epoch?: string;
+  sessions?: number;
+  workspaces?: number;
+}
+
 export interface Presence {
   catalogEpoch?: string;
   sessionsVersion?: SnapshotVersion;
   workspacesVersion?: SnapshotVersion;
+  /**
+   * Catalog revisions as of this heartbeat. A revision newer than the one this
+   * client applied proves a pushed snapshot was lost (core NATS is
+   * at-most-once), so the client pulls the catalogue itself. The desktop no
+   * longer re-sends an unchanged snapshot on a timer, which is what makes an
+   * idle directory cost only this packet.
+   */
+  catalogVersion?: CatalogRevisions;
   agentAvailable?: boolean;
   online: boolean;
   /** An intentional desktop disconnect; `online: false` is authoritative. */
