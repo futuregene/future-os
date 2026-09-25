@@ -26,6 +26,8 @@ mod tests;
 pub(crate) mod transfer;
 mod transport;
 mod types;
+#[cfg(test)]
+mod verify_e2e;
 mod web_server;
 
 use self::diagnostics::*;
