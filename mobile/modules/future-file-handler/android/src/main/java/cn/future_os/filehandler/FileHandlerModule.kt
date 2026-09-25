@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import androidx.core.content.FileProvider
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -37,6 +38,54 @@ class FileHandlerModule : Module() {
     AsyncFunction("findSupportedMimeType") { fileName: String, mimeTypes: List<String> ->
       mimeTypes.firstOrNull { canHandle(fileName, it) }
     }
+
+    // Which apps would answer the album and photo-picker intents on this device.
+    // Android's photo surface is OEM-specific: AndroidX's photo-picker contract
+    // silently degrades to the document picker wherever no system photo picker
+    // exists, and some phones hand the classic gallery intent to a file manager.
+    // Resolving the candidates first lets JS open a real gallery, fall back to a
+    // real photo picker, or report the album as unavailable — instead of showing
+    // a file browser under an album label.
+    AsyncFunction("resolveImagePickRoutes") {
+      val context = appContext.reactContext ?: error("React context is unavailable")
+      val packageManager = context.packageManager
+
+      fun handlers(action: String, data: String?, type: String?): List<Map<String, String>> {
+        val intent = Intent(action).apply {
+          if (data != null) {
+            setDataAndType(Uri.parse(data), type)
+          } else {
+            this.type = type
+          }
+        }
+        // MATCH_DEFAULT_ONLY mirrors how the system resolves an implicit
+        // startActivity, so the answer matches what launching would do.
+        return packageManager
+          .queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+          .map { info ->
+            mapOf(
+              "package" to info.activityInfo.packageName,
+              "activity" to info.activityInfo.name
+            )
+          }
+      }
+
+      mapOf<String, Any>(
+        "sdkInt" to Build.VERSION.SDK_INT,
+        // The album intent: MediaStore's image collection with the image type.
+        "album" to handlers(Intent.ACTION_PICK, "content://media/external/images/media", "image/*"),
+        // Android 13's system photo picker.
+        "photoPicker" to handlers("android.provider.action.PICK_IMAGES", null, "image/*"),
+        // The photo picker backport AOSP ships to Android 11/12 devices.
+        "photoPickerFallback" to handlers(
+          "androidx.activity.result.contract.action.PICK_IMAGES",
+          null,
+          "image/*"
+        ),
+        // Diagnostics only: the document picker an album must never open.
+        "document" to handlers(Intent.ACTION_OPEN_DOCUMENT, null, "image/*")
+      )
+    }.runOnQueue(Queues.DEFAULT)
 
     // Sharing only needs a successful handoff, not an activity result (which
     // compatibility runtimes may never deliver). Do not keep ExpoSharing's
