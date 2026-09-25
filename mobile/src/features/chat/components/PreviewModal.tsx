@@ -327,8 +327,11 @@ const monospace = Platform.select({ ios: "Menlo", default: "monospace" });
 const styles = StyleSheet.create({
   previewSafe: { flex: 1, backgroundColor: colors.surface },
   // A layer fills the reader so the layers below stay laid out, and therefore
-  // keep their scroll offsets. Later siblings paint on top.
-  previewLayer: { ...StyleSheet.absoluteFill },
+  // keep their scroll offsets. Later siblings paint on top — which only hides
+  // them because every layer paints the surface color: the text of the document
+  // underneath is transparent, so without this the two documents' lines and
+  // headers draw over each other.
+  previewLayer: { ...StyleSheet.absoluteFill, backgroundColor: colors.surface },
   previewBody: { flex: 1, minHeight: 0 },
   previewHeader: {
     minHeight: 60,
