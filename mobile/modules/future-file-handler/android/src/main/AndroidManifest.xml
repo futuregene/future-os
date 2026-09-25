@@ -17,5 +17,25 @@
       <data android:scheme="content" />
       <data android:mimeType="*/*" />
     </intent>
+    <!-- The album and photo-picker intents are resolved by
+         resolveImagePickRoutes before anything is launched. Package visibility
+         would otherwise hide user-installed galleries from that query, which
+         the router would read as "no album app". -->
+    <intent>
+      <action android:name="android.intent.action.PICK" />
+      <data android:mimeType="image/*" />
+    </intent>
+    <intent>
+      <action android:name="android.provider.action.PICK_IMAGES" />
+      <data android:mimeType="image/*" />
+    </intent>
+    <intent>
+      <action android:name="androidx.activity.result.contract.action.PICK_IMAGES" />
+      <data android:mimeType="image/*" />
+    </intent>
+    <intent>
+      <action android:name="android.intent.action.OPEN_DOCUMENT" />
+      <data android:mimeType="image/*" />
+    </intent>
   </queries>
 </manifest>

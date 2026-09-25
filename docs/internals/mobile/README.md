@@ -146,15 +146,22 @@ offline push.
   prefetch.
 - Attachment sources and file open/save/share menus reuse `ActionMenu`; after
   choosing a source, wait for the menu to close before invoking the system
-  camera, photo, or file picker. On Android 13+ the gallery uses
-  `PickVisualMedia` (the system photo picker). Below API 33 AndroidX resolves
-  that contract to `ACTION_OPEN_DOCUMENT` whenever the Play-services photo
-  picker backport is absent — the document picker, not an album — which is what
-  a Huawei phone without Play services showed. Those devices open the gallery
-  with `ACTION_PICK` on MediaStore's image collection instead, and fall back to
-  the contract only when no gallery app answers. Neither route needs a
-  full-album permission: both grant access to the chosen photos alone. System
-  permission dialogs and system pickers are still drawn by the OS.
+  camera, photo, or file picker. Android's album resolves its route through the
+  native probe (`resolveImagePickRoutes`, `future-file-handler`) before anything
+  launches: Android 13+ uses `PickVisualMedia` (the system photo picker, with
+  multi-select) when that picker answers; below 33 the album intent `ACTION_PICK`
+  on MediaStore's image collection is preferred and targeted at the gallery
+  component, so a file manager that also advertises the pick cannot stand in for
+  it. When the probe found neither a gallery nor a real photo picker — the photo
+  picker's AOSP backport resolves as
+  `androidx.activity.result.contract.action.PICK_IMAGES` — the album reports
+  itself unavailable instead of letting AndroidX degrade to
+  `ACTION_OPEN_DOCUMENT`, the document picker that "选择手机文件" already covers.
+  Resolved intents decide the route; "album" is recognized from the app's
+  package name, and an unknown package is not treated as a gallery (showing a
+  file list under an album label is the failure being prevented). No route asks
+  for a full-album permission: each grants access to the chosen photos alone.
+  System permission dialogs and system pickers are still drawn by the OS.
 - Returning to the list from a session keeps the list instance and scroll
   position; the list's reverse enter animation is not replayed. In the
   workspace and conversation lists, independent sessions keep compact spacing
