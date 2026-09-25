@@ -12,7 +12,7 @@ import {
   View,
 } from "react-native";
 import type { TFunction } from "i18next";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { useSafeAreaInsets, type EdgeInsets } from "react-native-safe-area-context";
 import { CodeTokens } from "../../../components/CodeTokens";
 import { codePreviewRows, codeRowText } from "../../../components/codePreviewRows";
 import { codeLanguageForFile, codeStyleForFile, codeTokenRows, highlightCode } from "../../../components/codeHighlight";
@@ -40,6 +40,32 @@ export function previewLayerKey(previews: PreviewState[], index: number): string
   return `${path}#${visit}`;
 }
 
+/**
+ * Insets for the reader's own surface, read from the app's `SafeAreaProvider`
+ * context rather than from a `SafeAreaView`.
+ *
+ * The reader covers the status bar on purpose (`statusBarTranslucent` below): its
+ * header stands in for that strip of the screen while the system keeps drawing
+ * its status bar over it. A `SafeAreaView` cannot help here — a Modal is its own
+ * native window, so nothing inside it is a native descendant of the app's
+ * provider, which is the only thing a `SafeAreaView` resolves insets through. It
+ * therefore applied nothing: the header started at the top of the screen, and
+ * the status bar's own hit area swallowed the taps aimed at the overflow button.
+ * The context insets describe the window the app is drawn in, which is where
+ * that status bar is.
+ *
+ * Only the top edge is ours to apply: `statusBarTranslucent` extends the reader
+ * under the status bar alone, the other edges stay laid out by the window.
+ *
+ * iOS takes nothing: its reader is a `pageSheet`, which the system already
+ * places below the status bar, so the context's window inset for the top edge
+ * would only open a gap above the header.
+ */
+export function previewSurfaceInsets(insets: EdgeInsets) {
+  if (Platform.OS !== "android") return null;
+  return { paddingTop: insets.top };
+}
+
 export function PreviewModal({
   previews,
   activeDownload,
@@ -62,6 +88,7 @@ export function PreviewModal({
   t: TFunction;
 }) {
   const top = previews.length - 1;
+  const insets = useSafeAreaInsets();
   // The expanded menu is owned here rather than inside the layer that opened
   // it: every event that has to close it (a download, the stack changing, the
   // reader being dismissed natively) lands on this component, and none of them
@@ -87,9 +114,14 @@ export function PreviewModal({
         else closePreview();
       }}
       presentationStyle="pageSheet"
+      // Draw the header under the status bar deliberately: that is how the
+      // reader already looked wherever the system laid its window out that way,
+      // and the surface insets itself back out of the bar (see
+      // `previewSurfaceInsets`) instead of leaving the top edge to the window.
+      statusBarTranslucent
       visible={previews.length > 0}
     >
-      <SafeAreaView style={styles.previewSafe}>
+      <View style={[styles.previewSafe, previewSurfaceInsets(insets)]} testID="preview-surface">
         {previews.map((preview, index) => {
           const key = previewLayerKey(previews, index);
           return (
@@ -111,7 +143,7 @@ export function PreviewModal({
             />
           );
         })}
-      </SafeAreaView>
+      </View>
     </Modal>
   );
 }

@@ -8,7 +8,10 @@ import { codeRowText } from "../../../components/codePreviewRows";
 import { codeColors } from "../../../theme/tokens";
 
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+jest.mock("react-native-safe-area-context", () => ({
+  SafeAreaView: "SafeAreaView",
+  useSafeAreaInsets: () => ({ top: 24, bottom: 34, left: 0, right: 0 }),
+}));
 jest.mock("lucide-react-native", () => ({ ChevronLeft: "ChevronLeft", Download: "Download", Ellipsis: "Ellipsis", ExternalLink: "ExternalLink", Share2: "Share2", X: "X" }));
 jest.mock("../../../components/MarkdownText", () => ({ MarkdownText: "MarkdownText" }));
 jest.mock("../../../components/JsonPreview", () => ({ JsonPreview: "JsonPreview" }));
