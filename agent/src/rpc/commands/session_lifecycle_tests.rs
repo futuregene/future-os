@@ -721,7 +721,15 @@ fn get_session_entries_renders_roles_and_run_stats() {
         &state,
         "default",
         "mock",
-        vec![info_old, user, assistant, tool, failing_tool, terminal, info_new],
+        vec![
+            info_old,
+            user,
+            assistant,
+            tool,
+            failing_tool,
+            terminal,
+            info_new,
+        ],
     );
 
     let resp = parse_response(&handle_command_internal(
