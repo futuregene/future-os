@@ -63,7 +63,16 @@ mod tests {
         );
         assert!(!error.contains("os error"), "{error}");
         drop(guard);
-        assert!(InstanceGuard::at(directory.path()).is_ok());
+        // Report the reason rather than a bare `is_ok()`: this line has failed
+        // intermittently under full-suite load (3 times in ~20 runs) with no way
+        // to tell a lock that was not released from an unrelated `open` failure,
+        // which is the difference between a product bug and a test-environment
+        // one. It has never reproduced in isolation (150 single runs, 320
+        // concurrent runs of this test, and several full-suite runs all pass),
+        // so the message is the point: the next failure has to be diagnosable.
+        if let Err(error) = InstanceGuard::at(directory.path()) {
+            panic!("re-acquiring the lock after release failed: {error}");
+        }
     }
 
     #[test]
