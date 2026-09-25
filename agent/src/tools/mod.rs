@@ -909,6 +909,26 @@ pub fn is_soft_fail_command(command: &str) -> bool {
     )
 }
 
+/// The failure verdict for one finished tool call: the single definition of
+/// "this tool call failed" shared by the persisted transcript (`is_error` on
+/// the `tool_result` block, which the phone renders and the model reads back)
+/// and the live model context.
+///
+/// Failure means the agent raised an error for the call, or a shell command
+/// exited non-zero for a reason other than the grep/diff "no match" signal
+/// ([`is_soft_fail_command`]). Everything else is not a failure — including a
+/// signal-killed run without a numeric exit code, which only reaches this
+/// verdict as a success if the shell tool reported `Ok` (timeouts are `Err`).
+pub fn outcome_is_error(error: Option<&str>, semantics: &ToolEndSemantics) -> bool {
+    if error.is_some() {
+        return true;
+    }
+    match semantics.exit_code {
+        Some(code) => code != 0 && semantics.is_soft_fail != Some(true),
+        None => false,
+    }
+}
+
 /// Structured `tool_end` semantics for a tool result, so consumers (GUI Runs
 /// panel, artifact persistence, other clients) stop re-parsing the output
 /// prose. Empty object when the tool has nothing structured to report:
@@ -2535,6 +2555,55 @@ mod tests {
             "1c1\n[exit: 1]",
         );
         assert_eq!(semantics.is_soft_fail, Some(true));
+    }
+
+    // ─── outcome_is_error ──────────────────────────────────────────────────
+
+    #[test]
+    fn tool_outcome_is_error_records_real_failures_and_soft_fails() {
+        // An agent-side error is a failure even without an exit code.
+        assert!(outcome_is_error(
+            Some("file not found"),
+            &ToolEndSemantics::default()
+        ));
+
+        // Bare grep exiting 1 is its normal no-match signal, not a failure.
+        let grep = tool_end_semantics(
+            "shell",
+            &serde_json::json!({"command": "grep -r pattern src"}),
+            "no matches\n[exit: 1]",
+        );
+        assert!(!outcome_is_error(None, &grep));
+
+        // Exit 2 from grep is a real error (only exit 1 is "no match").
+        let grep_denied = tool_end_semantics(
+            "shell",
+            &serde_json::json!({"command": "grep -r pattern src"}),
+            "grep: src: Permission denied\n[exit: 2]",
+        );
+        assert!(outcome_is_error(None, &grep_denied));
+
+        // A pipeline removes the soft-fail reading: exit 1 is a failure.
+        let piped = tool_end_semantics(
+            "shell",
+            &serde_json::json!({"command": "grep -r pattern src | head"}),
+            "[exit: 1]",
+        );
+        assert!(outcome_is_error(None, &piped));
+
+        // Any other non-zero exit is a failure.
+        let build = tool_end_semantics(
+            "shell",
+            &serde_json::json!({"command": "cargo build"}),
+            "error[E0308]: mismatched types\n[exit: 101]",
+        );
+        assert!(outcome_is_error(None, &build));
+
+        // Success, non-shell tools without an error, and signal-killed runs
+        // carry no failure verdict.
+        let ok = tool_end_semantics("shell", &serde_json::json!({"command": "ls"}), "[exit: 0]");
+        assert!(!outcome_is_error(None, &ok));
+        assert!(!outcome_is_error(None, &ToolEndSemantics::default()));
     }
 
     #[test]
