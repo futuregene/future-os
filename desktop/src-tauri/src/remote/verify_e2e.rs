@@ -239,10 +239,15 @@ impl Broker {
     /// Return only once `client`'s subscription to `pattern` is live on the
     /// broker, so the replay cannot publish into the gap between SUB and
     /// registration.
-    async fn await_subscription(&self, client: &async_nats::Client, pattern: &str) {
+    /// Returns the number of payload bytes the probe put on the connection, so
+    /// the caller can subtract harness traffic from the broker's accounting.
+    async fn await_subscription(&self, client: &async_nats::Client, pattern: &str) -> u64 {
         match self {
             // The fake exposes its subscription table directly.
-            Broker::Fake(nats) => nats.wait_for_sub(pattern, Duration::from_secs(5)).await,
+            Broker::Fake(nats) => {
+                nats.wait_for_sub(pattern, Duration::from_secs(5)).await;
+                0
+            }
             // `Client::flush` only proves the bytes left this process, not that
             // the server processed them — and a publish that overtakes the SUB
             // is dropped, never retried. A publish/subscribe echo on the same
@@ -253,12 +258,13 @@ impl Broker {
             // it replaced the flush.)
             Broker::Real { .. } => {
                 let probe_subject = format!("{pattern}.verify-sub-probe");
+                let payload = "verify-sub-probe";
                 let mut probe = client
                     .subscribe(probe_subject.clone())
                     .await
                     .expect("probe subscribe");
                 client
-                    .publish(probe_subject.clone(), "verify-sub-probe".into())
+                    .publish(probe_subject.clone(), payload.into())
                     .await
                     .expect("probe publish");
                 let echo = tokio::time::timeout(Duration::from_secs(5), probe.next())
@@ -267,6 +273,7 @@ impl Broker {
                     .expect("probe subscription ended");
                 assert_eq!(echo.subject.as_str(), probe_subject);
                 probe.unsubscribe().await.expect("probe unsubscribe");
+                payload.len() as u64
             }
         }
     }
@@ -297,6 +304,12 @@ struct E2e {
     /// the message count — the harness's own side of the broker accounting.
     phone_rx_bytes: usize,
     phone_rx_messages: usize,
+    /// Traffic this *harness* put on the phone connection that is not lane
+    /// traffic: the subscription-readiness probe. It is counted by the broker
+    /// and must be subtracted before comparing, or the comparison is off by
+    /// exactly the probe's size (measured: 2 probes x 1 message x 16 bytes).
+    probe_bytes: u64,
+    probe_messages: u64,
 }
 
 impl Drop for E2e {
@@ -403,6 +416,8 @@ impl E2e {
             channel,
             phone_rx_bytes: 0,
             phone_rx_messages: 0,
+            probe_bytes: 0,
+            probe_messages: 0,
         }
     }
 
@@ -507,7 +522,8 @@ impl E2e {
             .expect("subscribe to the live lane");
         // `subscribe` flushes the SUB, but the broker must have registered it
         // before the first publish or that publish would race the subscription.
-        self.broker.await_subscription(&self.phone, &subject).await;
+        self.probe_bytes += self.broker.await_subscription(&self.phone, &subject).await;
+        self.probe_messages += 1;
 
         let lean_on = lean::enabled();
         let mut capture = LaneCapture::default();
@@ -1091,17 +1107,28 @@ async fn run_real_traffic(broker: Broker) {
             .await
             .expect("phone connection after the measurement");
         // The broker's own count of what it relayed to the phone (`out_*`),
-        // against what the harness received and decrypted: equal means the NATS
-        // layer neither adds nor drops payload bytes on this leg.
+        // against what the harness received and decrypted.
+        //
+        // The comparison subtracts the harness's own probe traffic rather than
+        // allowing slack, so it stays an exact equality: the probe subscription
+        // is registered on the phone connection and the broker counts its echo,
+        // but the probe is not lane traffic and the harness does not count it.
+        // (`replay_live_lane` runs twice per measurement, so this is exactly
+        // 2 messages and 2 x `"verify-sub-probe".len()` = 32 bytes.)
+        let relayed = after.out_bytes - before.out_bytes - e2e.probe_bytes;
+        let decrypted = e2e.phone_rx_bytes as u64;
         assert_eq!(
-            after.out_bytes - before.out_bytes,
-            e2e.phone_rx_bytes as u64,
-            "the broker must relay exactly the bytes the phone decrypted"
+            relayed, decrypted,
+            "the broker must relay exactly the bytes the phone decrypted, \
+             once its own probe traffic ({} B) is excluded",
+            e2e.probe_bytes
         );
+        let relayed_messages = after.out_messages - before.out_messages - e2e.probe_messages;
         assert_eq!(
-            after.out_messages - before.out_messages,
-            e2e.phone_rx_messages as u64,
-            "the broker must relay exactly the messages the phone received"
+            relayed_messages, e2e.phone_rx_messages as u64,
+            "the broker must relay exactly the messages the phone received, \
+             once its own probe traffic ({} msgs) is excluded",
+            e2e.probe_messages
         );
         // The event subject is what every per-message protocol frame carries,
         // so its length is what the framing arithmetic in the report needs.
