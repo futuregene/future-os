@@ -9,6 +9,7 @@ import type { DesktopSettings, RemoteBuiltinProvider, RemoteCustomProvider } fro
 import { VERSION } from "../../version.generated";
 import { colors, layout, radius, spacing } from "../../theme/tokens";
 import { CustomProviderPage } from "./CustomProviderPage";
+import { FollowAccountPage } from "./FollowAccountPage";
 import { ModelsSettingsPage } from "./ModelsSettingsPage";
 import { ProviderKeyPage } from "./ProviderKeyPage";
 import { ProvidersSettingsPage } from "./ProvidersSettingsPage";
@@ -24,7 +25,7 @@ export type SettingsScreenHandle = { goBack(): void };
  * desktop dialog's single-level tabs cannot express.
  */
 type SettingsRoute =
-  | { name: "home" | "preferences" | "models" | "skills" | "language" | "providers" }
+  | { name: "home" | "preferences" | "models" | "skills" | "language" | "providers" | "followAccount" }
   | { name: "providerKey"; provider: RemoteBuiltinProvider }
   | { name: "providerForm"; provider: RemoteCustomProvider | null };
 
@@ -116,6 +117,10 @@ export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, ref }: 
         return <ScrollView contentContainerStyle={settingsStyles.content}>
           <SettingsSection title={t("desktopSettings.thisPhone")}><View style={settingsStyles.card}><LanguageSettings /></View></SettingsSection>
         </ScrollView>;
+      // Not scoped to the paired desktop: following the account needs no
+      // connection, so this level stays usable while the desktop is offline.
+      case "followAccount":
+        return <FollowAccountPage />;
       case "preferences":
         return <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
           <SettingsSection title={t("desktopSettings.automation")}>
@@ -155,6 +160,9 @@ export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, ref }: 
           </SettingsSection>
           <SettingsSection title={t("desktopSettings.thisPhone")}>
             <SettingsLink label={t("language.title")} onPress={() => push({ name: "language" })} />
+            {/* Deliberately never disabled: following the official account needs no
+                desktop connection, unlike every other row on this screen. */}
+            <SettingsLink label={t("desktopSettings.followAccount")} onPress={() => push({ name: "followAccount" })} />
             <SettingsLink label={t("update.check")} disabled={checkingUpdate} loading={checkingUpdate} onPress={onCheckUpdate} />
           </SettingsSection>
           <Text style={styles.version}>{t("common.version", { version: VERSION })}</Text>
