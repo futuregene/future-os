@@ -1415,6 +1415,55 @@ describe("shared-projection semantic flags", () => {
     expect(thinking && thinking.kind === "thinking" && thinking.text).toBe("");
   });
 
+  /**
+   * A lean feed opens a reasoning block *after* work has already started: the
+   * tool calls streamed first, then the model thinks again. The block carries no
+   * body (its deltas are not published), so its boundary is the only thing that
+   * can render the row — the tool run's "hop over whitespace-only text" must not
+   * mistake the empty reasoning slot for that whitespace and swallow it, nor may
+   * it glue the tools on either side into one burst.
+   */
+  test("a reasoning row after a tool call survives with no body (lean feed)", () => {
+    const leanRow = (events: [string, Record<string, unknown>][]) => {
+      let state = applyStreamEvent(emptyTimeline(), {
+        type: "agent_start",
+        data: "{}",
+        runId: "run-1",
+        idx: 0,
+      });
+      events.forEach(([type, data], index) => {
+        state = applyStreamEvent(state, {
+          type,
+          data: JSON.stringify(data),
+          runId: "run-1",
+          idx: index + 1,
+        });
+      });
+      const reply = state.items.find(item => item.kind === "message" && item.role === "assistant");
+      if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+      return reply.segments?.map(segment => segment.kind);
+    };
+    const read = (id: string) => ([
+      "tool_start",
+      { tool_id: id, tool_name: "read", tool_args: { path: "/tmp/a" } },
+    ] as [string, Record<string, unknown>]);
+    const readEnd = (id: string) => ([
+      "tool_end",
+      { tool_id: id, tool_name: "read", exit_code: 0 },
+    ] as [string, Record<string, unknown>]);
+    const thinking = (blockId: string) => ([
+      "thinking_start",
+      { type: "thinking_start", block_id: blockId },
+    ] as [string, Record<string, unknown>]);
+
+    // Tool, then a fresh reasoning block, then nothing else yet (the live tail).
+    expect(leanRow([read("t1"), readEnd("t1"), thinking("b2")])).toEqual(["tool", "thinking"]);
+    // The reasoning boundary also separates two tool calls into their own rows.
+    expect(leanRow([
+      read("t1"), readEnd("t1"), thinking("b2"), read("t2"), readEnd("t2"),
+    ])).toEqual(["tool", "thinking", "tool"]);
+  });
+
   test("a tool target comes from tool_start, with no argument stream", () => {
     let state = applyStreamEvent(emptyTimeline(), {
       type: "tool_start",
