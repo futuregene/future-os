@@ -75,14 +75,61 @@ pub(crate) fn lean_event_data<'a>(event_type: &str, data: &'a str) -> Option<Cow
     match event_type {
         // Outcome fields (`exit_code`, `is_soft_fail`, `target_path`, `error`)
         // stay; only the captured output goes. The client reads those instead of
-        // parsing an `[exit: N]` footer out of the text.
-        "tool_end" | "tool_result" => Some(without(data, &["text", "result"])),
+        // parsing an `[exit: N]` footer out of the text -- except for the legacy
+        // shape, where there is no outcome to read and that footer is the only
+        // signal there is.
+        "tool_end" | "tool_result" => {
+            if keeps_legacy_exit_footer(data) {
+                Some(Cow::Borrowed(data))
+            } else {
+                Some(without(data, &["text", "result"]))
+            }
+        }
         // The folded events are the same reasoning and argument fragments again.
         // The client treats this event as a "resync me" signal and never reads
         // them, so the whole array goes.
         "run_snapshot" => Some(without(data, &["snapshotEvents"])),
         _ => Some(Cow::Borrowed(data)),
     }
+}
+
+/// Whether a tool result's captured output has to survive the lean trim.
+///
+/// An agent older than `tool_end_semantics` reports a failed shell command as a
+/// *successful* result whose only outcome signal is the `[exit: N]` footer in
+/// the output. Dropping that output would leave the phone nothing to read, so
+/// the row would show as completed -- a failure the lean feed invented. Keep
+/// the output in exactly that case: a failing shell result is short, and a
+/// successful one still loses it.
+fn keeps_legacy_exit_footer(data: &str) -> bool {
+    let Ok(Value::Object(fields)) = serde_json::from_str::<Value>(data) else {
+        return false;
+    };
+    if fields.contains_key("exit_code") || fields.contains_key("exitCode") {
+        return false;
+    }
+    if fields.get("tool_name").and_then(Value::as_str) != Some("shell") {
+        return false;
+    }
+    // `result` is the other spelling the client accepts for the same output.
+    ["text", "result"]
+        .iter()
+        .filter_map(|key| fields.get(*key).and_then(Value::as_str))
+        .any(has_non_zero_exit_footer)
+}
+
+/// The non-zero `[exit: N]` footer the shell tool appends, parsed the way the
+/// client parses it (`nonZeroExitCode` in `thread-projection`): the last line of
+/// the trimmed output, matching in full.
+fn has_non_zero_exit_footer(output: &str) -> bool {
+    let line = output.trim_end().rsplit('\n').next().unwrap_or_default();
+    let Some(code) = line
+        .strip_prefix("[exit: ")
+        .and_then(|rest| rest.strip_suffix(']'))
+    else {
+        return false;
+    };
+    matches!(code.parse::<i64>(), Ok(code) if code != 0)
 }
 
 /// Remove `keys` from a JSON object, leaving anything unparsable untouched.
@@ -326,6 +373,78 @@ mod tests {
             serde_json::from_str(&lean_event_data("tool_result", &alt).unwrap()).unwrap();
         assert!(lean.get("result").is_none(), "the output field is dropped");
         assert_eq!(lean["exit_code"], json!(1));
+    }
+
+    /// The legacy shape: an agent older than `tool_end_semantics` leaves only
+    /// the `[exit: N]` footer in the output. Keeping it is what stops a failed
+    /// command from reading as completed on the lean feed.
+    #[test]
+    fn legacy_shell_outcome_keeps_the_footer_that_is_its_only_signal() {
+        let failing = json!({
+            "type": "tool_end",
+            "tool_id": "call_1",
+            "tool_name": "shell",
+            "text": "ls: cannot access '/nope': No such file\n\n[exit: 2]",
+        })
+        .to_string();
+        let lean = lean_event_data("tool_end", &failing).unwrap();
+        assert!(
+            lean.contains("[exit: 2]"),
+            "the only failure signal must survive: {lean}"
+        );
+
+        // A soft failure keeps it too: the client needs the code to apply its own
+        // exemption (`grep` exit 1 is a no-match, not an error).
+        let soft = json!({
+            "type": "tool_end",
+            "tool_name": "shell",
+            "text": "0\n[exit: 1]",
+        })
+        .to_string();
+        assert!(lean_event_data("tool_end", &soft)
+            .unwrap()
+            .contains("[exit: 1]"));
+
+        // `result` is the other spelling the client reads the same way.
+        let aliased = json!({
+            "type": "tool_result",
+            "tool_name": "shell",
+            "result": "x\n[exit: 4]",
+        })
+        .to_string();
+        assert!(lean_event_data("tool_result", &aliased)
+            .unwrap()
+            .contains("[exit: 4]"));
+
+        // A successful legacy result has nothing to report, so its output goes.
+        let succeeded = json!({
+            "type": "tool_end",
+            "tool_name": "shell",
+            "text": "hi\n[exit: 0]",
+        })
+        .to_string();
+        assert!(
+            !lean_event_data("tool_end", &succeeded)
+                .unwrap()
+                .contains("[exit: 0]"),
+            "a successful legacy result still drops its output"
+        );
+
+        // Every other shape drops the output: a structured outcome replaces the
+        // footer, and a non-shell tool cannot report an outcome this way.
+        for shape in [
+            json!({"type": "tool_end", "tool_name": "shell", "text": "x\n[exit: 2]", "exit_code": 2}),
+            json!({"type": "tool_end", "tool_name": "shell", "text": "x\n[exit: 2]", "exitCode": 2}),
+            json!({"type": "tool_result", "tool_name": "read", "text": "body\n[exit: 2]"}),
+            json!({"type": "tool_end", "tool_name": "shell", "text": "[exit: 2]\nmore"}),
+        ] {
+            let data = shape.to_string();
+            let lean = lean_event_data("tool_end", &data).unwrap();
+            assert!(
+                !lean.contains("[exit: 2]") && !lean.contains("body"),
+                "this shape keeps its structured outcome, not the text: {lean}"
+            );
+        }
     }
 
     #[test]
@@ -702,10 +821,29 @@ mod tests {
             if event_type == "tool_end" || event_type == "tool_result" {
                 let data: Value = serde_json::from_str(event["data"].as_str().unwrap_or("{}"))
                     .expect("tool event data json");
-                assert!(
-                    data.get("text").is_none(),
-                    "tool_end output must be dropped"
-                );
+                // The output is dropped everywhere except the legacy shell shape,
+                // where the `[exit: N]` footer is the client's only outcome. So a
+                // fixture that still has one has to be that shape, and has to
+                // justify it by carrying the footer it exists for.
+                let kept: Vec<&str> = ["text", "result"]
+                    .iter()
+                    .filter_map(|key| data.get(*key).and_then(Value::as_str))
+                    .collect();
+                if !kept.is_empty() {
+                    assert_eq!(
+                        data.get("tool_name").and_then(Value::as_str),
+                        Some("shell"),
+                        "tool output may only survive as a legacy shell result"
+                    );
+                    assert!(
+                        data.get("exit_code").is_none() && data.get("exitCode").is_none(),
+                        "a surviving output has no structured outcome to read instead"
+                    );
+                    assert!(
+                        kept.iter().any(|output| has_non_zero_exit_footer(output)),
+                        "a surviving output must end with the non-zero exit footer"
+                    );
+                }
             }
         }
         for entry in lean_entries_value.as_array().expect("entries array") {
