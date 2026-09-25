@@ -61,7 +61,7 @@
 
 | # | 开始（+08:00） | 状态 | 内容 | 输入 token | 输出 token | 费用（USD） | 工具 |
 |---|---|---|---|---|---|---|---|
-| 1 | 08-09 23:05 | completed | `scripts/coverage.sh` 工具 + workspace 基线（PR #138） | 2,076,302 | 31,272 | 4.39 | 94 |
+| 1 | 08-09 23:05 | completed | `scripts/measure/coverage.sh` 工具 + workspace 基线（PR #138） | 2,076,302 | 31,272 | 4.39 | 94 |
 | 2 | 08-10 00:06 | completed | future-rpc → 100%（PR #139） | 20,874,338 | 192,220 | 32.56 | 214 |
 | 3 | 08-10 07:21 | error | future-tui 推进，未遂（turn 4 重做） | 837,524,085 | 1,121,310 | 880.04 | 1,824 |
 | 4 | 08-10 13:03 | completed | future-tui → 100%（PR #140、#141） | 33,663,407 | 152,044 | 44.66 | 270 |
@@ -75,7 +75,7 @@
 ### 验证结果
 
 官方测量：2026-08-12 在 `main@b24d5501` 上单次全量运行
-`scripts/coverage.sh`——**regions 98.26% / functions 98.03% /
+`scripts/measure/coverage.sh`——**regions 98.26% / functions 98.03% /
 lines 98.80%**，**3,864 个测试，0 失败**。
 
 | Crate | 基线 @4d3dd2fc（lines） | 最终（summary Lines； missed 数） | PR |
@@ -122,7 +122,7 @@ panic、monitor 无变化轮询追加伪 `TodoCompleted`、`try_claim_todo`
 - **424 行幻影 summary 行无法被任何 per-line 工具打印**（已验证测试
   无法移动）；per-line 真相 = lcov DA 零命中 / HTML uncovered-line。
 - **交付物仅本地**：`coverage/`（lcov.info、html/、summary.txt、
-  missed-lines.txt、acceptance-waivers.md）按 `scripts/coverage.sh`
+  missed-lines.txt、acceptance-waivers.md）按 `scripts/measure/coverage.sh`
   的设计被 gitignore。
 - **归因限制**：运行历史花费只覆盖 10 次 loop 运行。future-loop 推进
   （PR #148）与 future-cli 收尾（PR #146/#147）部分由共享 worktree

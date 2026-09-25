@@ -841,7 +841,7 @@ mod tests {
         assert_eq!(idx_of(out.last().unwrap()), (total - 1) as i64);
     }
 
-    /// Real-traffic measurement, driven by `scripts/measure-live-lane.py`.
+    /// Real-traffic measurement, driven by `scripts/measure/measure-live-lane.py`.
     ///
     /// Feeds one run's real journal through this real coalescer using the
     /// event's own timestamps as the clock, and reports what the phone would
@@ -850,7 +850,7 @@ mod tests {
     /// one published event, and the published index range must cover the whole
     /// run with the newest event last.
     #[test]
-    #[ignore = "driven by scripts/measure-live-lane.py with a real journal"]
+    #[ignore = "driven by scripts/measure/measure-live-lane.py with a real journal"]
     fn measure_real_journal() {
         let path = std::env::var("SYNC_MEASURE_JOURNAL").expect("SYNC_MEASURE_JOURNAL");
         let session = std::env::var("SYNC_MEASURE_SESSION").expect("SYNC_MEASURE_SESSION");
@@ -981,7 +981,7 @@ mod tests {
     /// [`crate::remote_host::lean::lean_event_data`], exactly as
     /// `remote::publisher::publish_event` rewrites it, and then coalesced.
     ///
-    /// Run it through `scripts/measure-live-lane.py`, which supplies the three
+    /// Run it through `scripts/measure/measure-live-lane.py`, which supplies the three
     /// environment variables.
     ///
     /// Unlike the full-lane measurement it cannot assert "every source event is

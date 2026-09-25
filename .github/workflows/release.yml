@@ -216,7 +216,7 @@ jobs:
             publish/*
             latest.json
       - name: Setup ossutil
-        run: bash scripts/setup-ossutil.sh
+        run: bash scripts/release/setup-ossutil.sh
       - name: Upload artifacts to OSS
         run: |
           set -euo pipefail
