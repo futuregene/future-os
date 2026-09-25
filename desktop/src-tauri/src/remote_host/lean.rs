@@ -160,6 +160,72 @@ pub(crate) fn lean_replay_page(page: &mut Value, lean: bool) {
     }
 }
 
+/// Trim one history page's `entries` array for the lean feed.
+///
+/// A history page has a different shape from the live lane — entries holding
+/// blocks rather than per-token events — but the same three payloads dominate
+/// it, measured on the three heaviest sessions:
+///
+/// | Trim | Share of the page |
+/// | --- | --- |
+/// | reasoning body | 25.6-32.2% |
+/// | tool-result body | 22.0-26.5% |
+/// | tool-call arguments beyond the four the client reads | 12.3-17.8% |
+///
+/// Together they are 64.4-70.7% of a page. Each is unread rather than merely
+/// unrendered, which is what makes this a removal:
+///
+/// - `targetFromArgs` derives a tool row's text from `command`/`path`/
+///   `file_path`/`filePath` and **never** reads any other argument key, for any
+///   tool name, so keeping exactly those four is behaviour-preserving.
+/// - `foldToolEntry` reads a result block's `toolCallId` and `isError` and
+///   nothing else.
+/// - A reasoning block's body is only ever rendered when the row is expanded.
+///
+/// Nothing here adds, removes or reorders an entry or a block: entries keep their
+/// identity and count, so the page's `nextOffset`/`hasMore`/flush-cursor logic
+/// and the client's gap-fill are unaffected. Only field payload shrinks.
+pub(crate) fn lean_entries(entries: &mut Value) {
+    let Some(entries) = entries.as_array_mut() else {
+        return;
+    };
+    for entry in entries {
+        let Some(blocks) = entry.get_mut("blocks").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for block in blocks {
+            match block["kind"].as_str().unwrap_or_default() {
+                // The body goes; the block stays, so the row still appears.
+                "reasoning" => {
+                    if let Some(fields) = block.as_object_mut() {
+                        fields.remove("text");
+                    }
+                }
+                "tool_result" => {
+                    if let Some(fields) = block.as_object_mut() {
+                        fields.remove("text");
+                    }
+                }
+                "tool_call" => {
+                    let Some(arguments) = block.get_mut("arguments") else {
+                        continue;
+                    };
+                    if let Some(fields) = arguments.as_object_mut() {
+                        fields.retain(|key, _| TARGET_ARGUMENT_KEYS.contains(&key.as_str()));
+                    }
+                }
+                // Every other block kind is forwarded verbatim, so a future
+                // vocabulary the client renders is never silently reshaped.
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The argument keys `targetFromArgs` reads. Anything else in `arguments`
+/// cannot affect what the client displays.
+const TARGET_ARGUMENT_KEYS: [&str; 4] = ["command", "path", "file_path", "filePath"];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,5 +387,198 @@ mod tests {
         let mut page = before.clone();
         lean_replay_page(&mut page, false);
         assert_eq!(page, before);
+    }
+
+    /// The three trims, on the shapes a real page carries.
+    #[test]
+    fn lean_entries_trims_the_three_unread_payloads() {
+        let mut entries = json!([
+            {
+                "id": "a1",
+                "kind": "assistant",
+                "role": "assistant",
+                "createdAtMs": 1,
+                "blocks": [
+                    {"kind": "reasoning", "text": "a long private monologue"},
+                    {"kind": "text", "text": "visible answer"},
+                    {"kind": "tool_call", "name": "write", "toolCallId": "c1",
+                     "arguments": {"path": "/tmp/a", "content": "x".repeat(2000)}},
+                ],
+            },
+            {
+                "id": "t1",
+                "kind": "tool",
+                "role": "tool",
+                "createdAtMs": 2,
+                "blocks": [
+                    {"kind": "tool_result", "toolCallId": "c1", "text": "y".repeat(2000)},
+                ],
+            },
+        ]);
+        lean_entries(&mut entries);
+
+        let blocks = entries[0]["blocks"].as_array().unwrap();
+        // The reasoning block survives with no body, so the row still appears.
+        assert_eq!(blocks[0]["kind"], json!("reasoning"));
+        assert!(blocks[0].get("text").is_none(), "reasoning body is dropped");
+        // Visible text is untouched.
+        assert_eq!(blocks[1]["text"], json!("visible answer"));
+        // Only the keys the target derivation can read survive.
+        assert_eq!(blocks[2]["arguments"], json!({"path": "/tmp/a"}));
+        assert_eq!(blocks[2]["toolCallId"], json!("c1"));
+        // The result block keeps its identity and loses its body.
+        let result = &entries[1]["blocks"][0];
+        assert_eq!(result["toolCallId"], json!("c1"));
+        assert!(result.get("text").is_none(), "tool output is dropped");
+    }
+
+    /// Entry identity and count are what the page's cursor arithmetic depends
+    /// on, so the trim must not touch them.
+    #[test]
+    fn lean_entries_preserves_entry_and_block_counts() {
+        let mut entries = json!([
+            {"id": "e1", "kind": "user", "role": "user", "createdAtMs": 1,
+             "blocks": [{"kind": "text", "text": "q"}]},
+            {"id": "e2", "kind": "assistant", "role": "assistant", "createdAtMs": 2,
+             "blocks": [{"kind": "reasoning", "text": "t"}, {"kind": "text", "text": "a"}]},
+            {"id": "e3", "kind": "tool", "role": "tool", "createdAtMs": 3, "blocks": []},
+        ]);
+        let before = entries.clone();
+        lean_entries(&mut entries);
+        let ids = |value: &Value| {
+            value
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["id"].clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(&entries),
+            ids(&before),
+            "entries keep identity and order"
+        );
+        for (after, original) in entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(before.as_array().unwrap())
+        {
+            assert_eq!(
+                after["blocks"].as_array().unwrap().len(),
+                original["blocks"].as_array().unwrap().len(),
+                "blocks are never added or removed"
+            );
+            assert_eq!(after["createdAtMs"], original["createdAtMs"]);
+        }
+    }
+
+    /// Fail closed on anything unrecognized: an argument list that is not an
+    /// object, blocks that are not an array, and block kinds this code has never
+    /// heard of all pass through untouched.
+    #[test]
+    fn lean_entries_leaves_unrecognized_shapes_alone() {
+        for kind in ["text", "image", "future_kind"] {
+            let block = json!({"kind": kind, "text": "kept", "data": {"x": 1}});
+            let mut entries = json!([{"id": "e", "kind": "assistant", "blocks": [block]}]);
+            let before = entries.clone();
+            lean_entries(&mut entries);
+            assert_eq!(entries, before, "{kind} must be forwarded verbatim");
+        }
+        // A string argument list (a model that emitted the call as JSON text) is
+        // not ours to reshape.
+        let mut entries = json!([{"id": "e", "kind": "assistant",
+            "blocks": [{"kind": "tool_call", "arguments": "{\"content\":\"x\"}"}]}]);
+        let before = entries.clone();
+        lean_entries(&mut entries);
+        assert_eq!(entries, before);
+        // Not an array at all: no panic.
+        let mut not_entries = json!({"entries": {"nope": true}});
+        let before = not_entries.clone();
+        lean_entries(&mut not_entries["entries"]);
+        assert_eq!(not_entries, before);
+    }
+
+    /// Unknown tool names are treated as `shell` by the client and read only
+    /// `command`, so trimming cannot strand a target the client would have shown.
+    #[test]
+    fn a_trimmed_argument_list_still_yields_every_target_the_client_can_read() {
+        let cases = [
+            ("shell", json!({"command": "ls -la", "timeout": 30})),
+            ("read", json!({"path": "/a/b", "offset": 5, "limit": 10})),
+            ("write", json!({"path": "/a/b", "content": "body"})),
+            ("edit", json!({"path": "/a/b", "edits": [{"oldText": "x"}]})),
+            // A tool name the client has never seen: `asToolKind` calls it shell
+            // and reads `command`, which survives if it was there.
+            ("future_tool", json!({"command": "do", "secret": "s"})),
+            ("future_query_tool", json!({"query": "s"})),
+        ];
+        for (name, arguments) in cases {
+            let expected = trimmed(arguments.clone());
+            let mut entries = json!([{"id": "e", "kind": "assistant", "blocks": [
+                {"kind": "tool_call", "name": name, "toolCallId": "c", "arguments": arguments},
+            ]}]);
+            lean_entries(&mut entries);
+            assert_eq!(
+                entries[0]["blocks"][0]["arguments"], expected,
+                "{name} must keep exactly the keys a target can come from"
+            );
+        }
+    }
+
+    fn trimmed(arguments: Value) -> Value {
+        let mut entries = json!([{"id": "e", "kind": "assistant", "blocks": [
+            {"kind": "tool_call", "arguments": arguments},
+        ]}]);
+        lean_entries(&mut entries);
+        entries[0]["blocks"][0]["arguments"].clone()
+    }
+
+    /// Measure the trim against real history, through the shipping code.
+    ///
+    /// Driven by `scripts/measure-lean-history.py`, which dumps one session's
+    /// `get_session_entries` reply to a file and supplies its path. Runs against
+    /// the live (read-only) agent, so the numbers describe real sessions rather
+    /// than a synthetic payload.
+    #[test]
+    #[ignore = "measurement: needs LEAN_HISTORY_ENTRIES"]
+    fn measure_real_entries() {
+        let path = std::env::var("LEAN_HISTORY_ENTRIES").expect("LEAN_HISTORY_ENTRIES");
+        let raw = std::fs::read_to_string(path).expect("entries readable");
+        let mut entries: Value = serde_json::from_str(&raw).expect("entries json");
+
+        let sized = |value: &Value| serde_json::to_vec(value).expect("serializes").len();
+        let before = sized(&entries);
+
+        // Per-kind byte totals, so the report says where the bytes were rather
+        // than only how many went away.
+        let mut by_kind: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        let mut block_counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        if let Some(list) = entries.as_array() {
+            for entry in list {
+                for block in entry["blocks"].as_array().into_iter().flatten() {
+                    let kind = block["kind"].as_str().unwrap_or("<none>").to_string();
+                    *block_counts.entry(kind.clone()).or_default() += 1;
+                    *by_kind.entry(kind).or_default() += sized(block);
+                }
+            }
+        }
+
+        lean_entries(&mut entries);
+        let after = sized(&entries);
+
+        println!(
+            "LEAN_HISTORY {}",
+            serde_json::json!({
+                "entries": entries.as_array().map(Vec::len).unwrap_or(0),
+                "beforeBytes": before,
+                "afterBytes": after,
+                "saved": 1.0 - (after as f64 / before.max(1) as f64),
+                "blockCounts": block_counts,
+                "blockBytes": by_kind,
+            })
+        );
     }
 }

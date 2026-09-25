@@ -356,6 +356,36 @@ would re-fetch a range whose events are always dropped. The folded projection
 riding a replay page keeps its events and their `idx` — both the desktop and the
 client reject an empty or reordered list — so only their text is blanked.
 
+**Lean history (2026-09-26):** the same declaration also trims the history pages
+(`get_session_entries`, both the paged and the full read). Three payloads, all of
+them unread rather than merely unrendered, measured on the three heaviest real
+sessions:
+
+| Trim | Share of the page |
+| --- | --- |
+| reasoning body | 25.6-32.2% |
+| tool-result body | 22.0-26.5% |
+| tool-call arguments beyond the four a target can come from | 12.3-17.8% |
+
+Together 67.1% / 72.7% / 68.4% of a page. `targetFromArgs` derives a tool row's
+text from `command`, `path`, `file_path` or `filePath` and reads **no other**
+argument key for any tool name, so keeping exactly those four is
+behaviour-preserving; `foldToolEntry` reads a result block's `toolCallId` and
+`isError` and nothing else; a reasoning body is only rendered when its row is
+expanded.
+
+Nothing in this trim adds, removes or reorders an entry or a block — entries keep
+their identity and count — so a page's `nextOffset`/`hasMore`/flush-cursor
+arithmetic and the client's gap-fill are unaffected. It is applied **before** the
+page byte budget rather than after: the budget sheds whole oldest exchanges to fit
+a reply, so measuring the trimmed page is what lets it hold more of them per
+round trip.
+
+It is the same declaration as the lean event lane because it is the same client
+generation: the reasoning row, the tool target and the tool outcome are exactly
+the three things that client reads differently. It is cleared on every new
+connection for the same reason.
+
 **Idle catalog traffic (2026-09-25):** catalog snapshots are published only when
 content changes. There is no periodic re-send: the presence heartbeat carries
 `catalogVersion` (`{epoch, sessions, workspaces}`), and a client whose applied
