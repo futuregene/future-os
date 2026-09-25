@@ -48,7 +48,7 @@ Per-module working docs, previously scattered under `desktop/DEV_MD/`,
 
 - [desktop/](internals/desktop/PRODUCT.md) — product semantics, data model (`ER.md`), colors, sandbox (macOS/Windows/Linux), connection & remote, embedded terminal, compaction (formerly `desktop/DEV_MD/`; see `desktop/CLAUDE.md` for the document map)
 - [compaction/](internals/compaction/compaction.md) — runtime context compaction: the two strategies and their parameters, the production request shape, the developer map (`compaction-development.md`), retrieval interfaces, and the two experiments — closed book (`compaction-closed-book-experiment.md`) and open book (`compaction-open-book-experiment.md`)
-- [mobile/](internals/mobile/README.md) — mobile build/TestFlight, iOS platform parity, streaming-sync performance/audits, harmonyOS compatibility (formerly `mobile/README.md` + `mobile/docs/`)
+- [mobile/](internals/mobile/README.md) — mobile build/TestFlight, iOS platform parity, streaming-sync design and measurements, HarmonyOS compatibility (formerly `mobile/README.md` + `mobile/docs/`; the dated audits and measurement reports are in `archives/verification/`)
 - [tui/](internals/tui/tests.md) — TUI test harness conventions (formerly `tui/tests/README.md`)
 - [skill_reco/](internals/skill_reco/harness.md) — skill recommendation: the Jev recommender's [evaluation](internals/skill_reco/evaluation.md), its [harness](internals/skill_reco/harness.md) and the [integration plan](internals/skill_reco/integration-plan.md) (a historical design record)
 - [Desktop NATS bridge](internals/desktop-nats.md) (formerly `desktop/nats/README.md`)
@@ -96,7 +96,11 @@ to match today's code.
 - [verification/](archives/verification/errors-outdated-missing.md) — dated
   doc↔source verification snapshots: fact inventory, error/outdated/missing
   lists, [doc↔code mismatch audit](archives/verification/doc-code-mismatches.md),
-  sandbox/E2EE/latency audits and mobile performance/issue snapshots
+  sandbox/E2EE/latency audits, and mobile snapshots: the
+  [Markdown rendering audit](archives/verification/markdown-rendering-audit.md),
+  [browser sync measurement](archives/verification/streaming-sync-browser-measurement.md),
+  [cached-reopen measurement](archives/verification/streaming-sync-warm-measurement.md),
+  plus performance/issue reports
 
 ## Maintainers (`maintainers/`)
 

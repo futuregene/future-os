@@ -2,7 +2,7 @@
 
 > ([中文](streaming-sync-warm-measurement.zh-CN.md)) The follow-up snapshot
 > optimization is complete; see
-> [snapshot + incremental and the A/B measurements](streaming-sync-snapshot-optimization.md).
+> [snapshot + incremental and the A/B measurements](../../internals/mobile/streaming-sync-snapshot-optimization.md).
 > This report's controlled-cutoff experiment keeps the raw-event bootstrap (the
 > measurement entry explicitly disables `preferSnapshot`) to reproduce whether
 > the cache is reused; this report's ~12.7-second recovery time is not the new
@@ -159,7 +159,7 @@ lifecycle trace:
   measurement scripts pass TypeScript checks separately.
 
 Raw de-identified metrics are archived in
-[`streaming-sync-warm-measurement-2026-09-16.json`](../../archives/verification/streaming-sync-warm-measurement-2026-09-16.json).
+[`streaming-sync-warm-measurement-2026-09-16.json`](streaming-sync-warm-measurement-2026-09-16.json).
 
 ## Reproduction
 

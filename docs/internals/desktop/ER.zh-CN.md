@@ -306,7 +306,7 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 | `thread_id` | 所属 Thread |
 | `run_id` | 来源 Run |
 | `tool_call_id` | 来源 Tool Call，可为空 |
-| `kind` | `shell_command`、`file_read`、`file_write`、`file_delete`、`network_access`、`data_access`、`batch_operation`、`outside_workspace_write` |
+| `kind` | 当前实现产出：`shell_command`、`file_read`、`file_write`、`outside_workspace_write`、`sandbox_escalation`（macOS/Linux 脱沙盒升级）、`windows_write_capability`（Windows 前置写路径）；`file_delete`、`network_access`、`data_access`、`batch_operation` 是设计草案值，实现从不产出；`outside_workspace_read` 为已废弃变体（见下方 v2 说明） |
 | `status` | `pending`、`approved`、`rejected`、`cancelled` |
 | `title` | 标题 |
 | `summary` | 摘要 |
@@ -315,6 +315,7 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 | `action_category` | P2 结构化字段：操作类别 |
 | `action_payload` | P2 结构化字段：完整 action JSON |
 | `sandbox_boundary` | P2 结构化字段：沙盒边界信息 JSON |
+| `save_suggestion` | v2 结构化字段：审批卡「在本工作区 / 本对话允许」背后的建议规则 JSON（`{path, access, action}`）；敏感文件为 null，只能允许一次 |
 | `reviewer` | 审查者，`user` 或 `auto_review`（预留） |
 | `decision_scope` | 决策范围，`once`、`session`、`always`（预留），当前仅 `once` |
 | `decision_source` | 决策来源，`user`、`rule`（预留）、`sandbox`（预留） |
@@ -383,7 +384,7 @@ Review Changeset 表示一组可供用户 review 的变更集合。
 - 普通 Chat 不展示 Review，文件产物进入 Artifact 管理；Workspace 对话不展示 Artifacts，避免同一文件同时进入 Review 和 Artifact 两套语义。
 - 用户可以在 Review 中查看代码 diff、文件变更，以及后续文本类 artifact 的变更摘要。
 - `files_changed`、`additions`、`deletions` 用于展示类似 Git / Codex 的本轮变更汇总，例如 `2 个文件 +204 -90`。
-- `status` 列（`draft`/`ready`/`viewed`/`applied`/`discarded`）属于早期的 apply/discard 决策流；该流程前端已移除，`run_snapshot` changeset **不使用**该列，其状态改由 `completeness` / `confidence` 表达（见 4.10）。`StoredReviewChangeset` 类型保留，仅 markdown `futureos://` 引用仍在用。
+- `status` 列（`draft`/`ready`/`viewed`/`applied`/`discarded`）属于早期的 apply/discard 决策流；该流程前端已移除，`run_snapshot` changeset 写入 `status = 'n/a'`，其状态改由 `completeness` / `confidence` 表达（见 4.10）。`StoredReviewChangeset` 类型保留，仅 markdown `futureos://` 引用仍在用。
 
 ### 4.10 Review File Change
 
@@ -395,10 +396,10 @@ Review File Change 表示某个文件或 artifact 的具体变更。
 | --- | --- |
 | `id` | Review File Change 唯一标识 |
 | `changeset_id` | 所属 Review Changeset |
-| `target_type` | `workspace_file` 或 `artifact` |
+| `target_type` | 影子管线写入 `file`；`workspace_file` / `artifact` 是影子 Review 之前的设计草案值（已移除的 apply/discard 流程） |
 | `target_id` | 目标对象 id，可为空 |
 | `path` | 文件路径或 artifact 路径 |
-| `change_type` | `create`、`modify`、`delete`、`rename` |
+| `change_type` | git name-status 代码：`A` / `M` / `D` / `R` / `C`（新增 / 修改 / 删除 / 重命名 / 复制）；`create`、`modify`、`delete`、`rename` 是影子 Review 之前的设计草案值 |
 | `before_ref` | 变更前内容引用，可为空 |
 | `after_ref` | 变更后内容引用，可为空 |
 | `diff` | 小型文本 diff，可为空 |
@@ -493,8 +494,8 @@ Artifact 表示工作过程中产生的可复用产物。
 - 普通 Chat 产生的 Artifact 存在临时 Workspace 下。
 - 清理普通 Chat 时，用户可以下载 Artifact。
 - 对话输入框附件不自动登记为 Artifact，也不复制到普通 Chat / Workspace 的工作目录。Artifacts 面板的主动上传是独立流程。
-- **附件持久化目录**（不属于 Artifact/SQLite，纯文件树）：`~/.future/app/images/<threadId>/` 下 `thumb/` 保存所有图片附件的缩略图，`origin/` 保存粘贴图片及手机上传等没有稳定桌面原始路径的附件。附件元数据（`path` / `kind` / `name` / `thumbnail`）存在 Agent SQLite entry 元数据中，经 RPC `metadata.attachments` 返回；GUI 无消息副本，**无独立附件表**。
-- **回收**：`images/<tid>` 无逐删执行器,靠启动时 `reconcile_orphan_images` 孤儿清扫——`threads` 表中 `status='deleted'` 或无行的 tid 其目录被删（无软删撤销）；整库 reset 额外清 `images/` 整棵。覆盖 GUI 删、TUI/CLI 外部删 session、reset 三种来源。
+- **附件持久化目录**（不属于 Artifact/SQLite，纯文件树）：`~/.future/app/images/<assetRootId>/`（即线程自身的 `asset_root_id`；fork 后代共享祖先的根，见 4.2）下 `thumb/` 保存所有图片附件的缩略图，`origin/` 保存粘贴图片及手机上传等没有稳定桌面原始路径的附件。附件元数据（`path` / `kind` / `name` / `thumbnail`）存在 Agent SQLite entry 元数据中，经 RPC `metadata.attachments` 返回；GUI 无消息副本，**无独立附件表**。
+- **回收**：`images/<assetRootId>` 无逐删执行器，靠启动时 `reconcile_orphan_images` 孤儿清扫——当没有任何未删除线程解析到该根（`COALESCE(NULLIF(asset_root_id, ''), id)`）时其目录被删，即拥有者不存在或已软删（无软删撤销）；fork 后代让祖先的根保持存活。整库 reset 额外清 `images/` 整棵。覆盖 GUI 删、TUI/CLI 外部删 session、reset 三种来源。
 
 ### 4.12–4.13 Research Collection / Research Resource（已移除，未建表）
 

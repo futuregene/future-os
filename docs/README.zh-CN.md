@@ -45,7 +45,7 @@
 
 - [desktop/](internals/desktop/PRODUCT.md) — 产品语义、数据模型（`ER.md`）、颜色、沙箱（macOS/Windows/Linux）、连接与远程、嵌入式终端、压缩（原 `desktop/DEV_MD/`；文档地图见 `desktop/CLAUDE.md`）
 - [compaction/](internals/compaction/compaction.zh-CN.md) — 运行时上下文压缩：两个策略及其参数、生产请求形状、开发指南（`compaction-development.zh-CN.md`）、检索接口，以及两个实验——闭卷（`compaction-closed-book-experiment.zh-CN.md`）与开卷（`compaction-open-book-experiment.zh-CN.md`）
-- [mobile/](internals/mobile/README.md) — 移动端构建/TestFlight、iOS 平台对齐、流式同步性能/审计、鸿蒙兼容（原 `mobile/README.md` + `mobile/docs/`）
+- [mobile/](internals/mobile/README.md) — 移动端构建/TestFlight、iOS 平台对齐、流式同步设计与测量、鸿蒙兼容（原 `mobile/README.md` + `mobile/docs/`；带日期的审计与测量报告见 `archives/verification/`）
 - [tui/](internals/tui/tests.md) — TUI 测试框架约定（原 `tui/tests/README.md`）
 - [skill_reco/](internals/skill_reco/harness.zh-CN.md) — 技能推荐：[评测](internals/skill_reco/evaluation.zh-CN.md)、[运行框架](internals/skill_reco/harness.zh-CN.md) 与[集成方案](internals/skill_reco/integration-plan.zh-CN.md)（历史设计记录）
 - [Desktop NATS 桥](internals/desktop-nats.md)（原 `desktop/nats/README.md`）
@@ -91,7 +91,9 @@ DMG、Windows 便携 zip 与 Linux 便携 tarball。它们是**活文档**——
 - [verification/](archives/verification/errors-outdated-missing.zh-CN.md) —
   带日期的文档↔源码核验快照：事实清单、错误/过时/缺失清单、
   [文档↔代码不符审计](archives/verification/doc-code-mismatches.zh-CN.md)、
-  沙箱/E2EE/延迟审计与移动端性能/问题快照
+  沙箱/E2EE/延迟审计，以及移动端快照：[Markdown 展示审计](archives/verification/markdown-rendering-audit.zh-CN.md)、
+  [浏览器同步测量](archives/verification/streaming-sync-browser-measurement.zh-CN.md)、
+  [缓存重开测量](archives/verification/streaming-sync-warm-measurement.zh-CN.md) 与性能/问题报告
 
 ## 维护者文档（`maintainers/`）
 

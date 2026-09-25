@@ -413,7 +413,7 @@ Field draft:
 | `thread_id` | owning Thread |
 | `run_id` | source Run |
 | `tool_call_id` | source Tool Call, nullable |
-| `kind` | `shell_command`, `file_read`, `file_write`, `file_delete`, `network_access`, `data_access`, `batch_operation`, `outside_workspace_write` |
+| `kind` | produced by the current implementation: `shell_command`, `file_read`, `file_write`, `outside_workspace_write`, `sandbox_escalation` (macOS/Linux de-sandbox escalation), `windows_write_capability` (Windows pre-approved write paths); `file_delete`, `network_access`, `data_access`, `batch_operation` are design-draft values never produced; `outside_workspace_read` is a deprecated variant (see the v2 note below) |
 | `status` | `pending`, `approved`, `rejected`, `cancelled` |
 | `title` | title |
 | `summary` | summary |
@@ -422,6 +422,7 @@ Field draft:
 | `action_category` | P2 structured field: action category |
 | `action_payload` | P2 structured field: complete action JSON |
 | `sandbox_boundary` | P2 structured field: sandbox boundary info JSON |
+| `save_suggestion` | v2 structured field: the suggested rule JSON (`{path, access, action}`) behind "allow in this workspace / this chat"; null for sensitive files, which can only be allowed once |
 | `reviewer` | reviewer, `user` or `auto_review` (reserved) |
 | `decision_scope` | decision scope, `once`, `session`, `always` (reserved); currently only `once` |
 | `decision_source` | decision source, `user`, `rule` (reserved), `sandbox` (reserved) |
@@ -542,8 +543,8 @@ Notes:
   per-round change summary, e.g. `2 files +204 -90`.
 - The `status` column (`draft`/`ready`/`viewed`/`applied`/`discarded`) belongs
   to the early apply/discard decision flow; that flow's frontend is removed,
-  and `run_snapshot` changesets **do not use** the column — their state is
-  expressed by `completeness` / `confidence` (see 4.10). The
+  and `run_snapshot` changesets are written with `status = 'n/a'` — their
+  state is expressed by `completeness` / `confidence` (see 4.10). The
   `StoredReviewChangeset` type is kept, only still used by markdown
   `futureos://` references.
 
@@ -557,10 +558,10 @@ Field draft:
 | --- | --- |
 | `id` | Review File Change unique identifier |
 | `changeset_id` | owning Review Changeset |
-| `target_type` | `workspace_file` or `artifact` |
+| `target_type` | the shadow pipeline writes `file`; `workspace_file` / `artifact` are pre-shadow design-draft values (the removed apply/discard flow) |
 | `target_id` | target object id, nullable |
 | `path` | file path or artifact path |
-| `change_type` | `create`, `modify`, `delete`, `rename` |
+| `change_type` | git name-status code: `A` / `M` / `D` / `R` / `C` (added / modified / deleted / renamed / copied); `create` / `modify` / `delete` / `rename` are pre-shadow design-draft values |
 | `before_ref` | pre-change content reference, nullable |
 | `after_ref` | post-change content reference, nullable |
 | `diff` | small text diff, nullable |
@@ -708,17 +709,21 @@ Notes:
   into the ordinary Chat / Workspace working directory. The Artifacts panel's
   active upload is a separate flow.
 - **Attachment persistence directory** (not part of Artifact/SQLite, a pure
-  file tree): under `~/.future/app/images/<threadId>/`, `thumb/` keeps
-  thumbnails of all image attachments, `origin/` keeps pasted images and
-  phone-uploaded attachments without a stable desktop original path.
+  file tree): under `~/.future/app/images/<assetRootId>/` (a thread's own
+  `asset_root_id`; fork descendants share their ancestor's root — see 4.2),
+  `thumb/` keeps thumbnails of all image attachments, `origin/` keeps pasted
+  images and phone-uploaded attachments without a stable desktop original
+  path.
   Attachment metadata (`path` / `kind` / `name` / `thumbnail`) lives in Agent
   SQLite entry metadata, returned via RPC `metadata.attachments`; the GUI has
   no message copy — **no standalone attachment table**.
-- **Reclamation**: `images/<tid>` has no per-delete executor; it relies on the
-  startup `reconcile_orphan_images` orphan sweep — directories whose tid has
-  `status='deleted'` or no row in `threads` are deleted (no soft-delete undo);
-  a whole-database reset additionally clears the entire `images/` tree. Covers
-  GUI deletion, TUI/CLI external session deletion, and reset.
+- **Reclamation**: `images/<assetRootId>` has no per-delete executor; it
+  relies on the startup `reconcile_orphan_images` orphan sweep — a directory
+  is deleted when no non-deleted thread resolves to that root
+  (`COALESCE(NULLIF(asset_root_id, ''), id)`), i.e. its owner is absent or
+  soft-deleted (no soft-delete undo); a fork descendant keeps the ancestor's
+  root alive. A whole-database reset additionally clears the entire `images/`
+  tree. Covers GUI deletion, TUI/CLI external session deletion, and reset.
 
 ### 4.12–4.13 Research Collection / Research Resource (removed, no tables created)
 

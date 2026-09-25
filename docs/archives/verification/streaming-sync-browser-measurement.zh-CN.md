@@ -1,6 +1,6 @@
 # 真实数据浏览器同步测量（2026-09-16）
 
-本报告保留的是原始事件回放基线。后续已实现快照 + 增量优化，见 [新的 A/B 实测](streaming-sync-snapshot-optimization.zh-CN.md)。为保持本报告可复现，旧测量入口现显式关闭 `preferSnapshot`；不能再把本报告耗时当作新默认路径耗时。
+本报告保留的是原始事件回放基线。后续已实现快照 + 增量优化，见 [新的 A/B 实测](../../internals/mobile/streaming-sync-snapshot-optimization.zh-CN.md)。为保持本报告可复现，旧测量入口现显式关闭 `preferSnapshot`；不能再把本报告耗时当作新默认路径耗时。
 
 ## 结论与决策
 
@@ -53,7 +53,7 @@ Chrome 153 / V8
 
 回放获取之后约 1.37–1.51 秒不是纯 CPU 指标：其中包含浏览器调度/让出，不能用来估算 Hermes 的 CPU 耗时。后端数字也混合了数据库读取、Agent 和 Desktop 的转换/序列化，尚未区分哪个内部步骤最重。
 
-源代码可定位一个下一步测量点：`remote_host/business.rs` 首次 `get_events_since` 在没有 watermark 时走 `agent_bridge::get_events_since` 全尾读取；带 watermark 的后续请求走 `get_events_since_page`。本轮已测出首请求明显更慢，但未单独测量其内部 SQL/反序列化/全尾合并，不能据此直接宣称最终根因或优化收益。
+源代码可定位一个下一步测量点：`remote_host/business/history.rs` 首次 `get_events_since` 在没有 watermark 时走 `agent_bridge::get_events_since` 全尾读取；带 watermark 的后续请求走 `get_events_since_page`。本轮已测出首请求明显更慢，但未单独测量其内部 SQL/反序列化/全尾合并，不能据此直接宣称最终根因或优化收益。
 
 ## 实际字节数与旧估算纠错
 
@@ -77,7 +77,7 @@ Chrome 153 / V8
 - `scripts/measure/measure-sync-browser.html`：只显示指标的浏览器外壳。
 - `scripts/measure/measure-sync-browser.py`：SQLite backup、隔离 agent、只读 loopback probe 的启动与清理。
 - `desktop/src-tauri/src/remote_host/sync_measurement.rs`：默认 ignored 的浏览器测试入口，不加入生产行为。
-- `streaming-sync-browser-measurement-2026-09-16.json`（[已归档](../../archives/verification/streaming-sync-browser-measurement-2026-09-16.json)）：去除会话/run 身份与正文后的九次测量记录。
+- `streaming-sync-browser-measurement-2026-09-16.json`（[已归档](streaming-sync-browser-measurement-2026-09-16.json)）：去除会话/run 身份与正文后的九次测量记录。
 
 在隔离 worktree 中、已有项目依赖时：
 

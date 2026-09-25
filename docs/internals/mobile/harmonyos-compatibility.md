@@ -56,9 +56,36 @@ above):
 ## Current APK source audit and changes
 
 - Photo: `expo-image-picker`'s `CameraContract` uses the Android camera Intent.
-- Gallery: `ImageLibraryContract` uses AndroidX `PickVisualMedia` /
-  `PickMultipleVisualMedia` with `legacy: false`; no custom gallery UI, no
-  whole-library read permission requested.
+- Gallery: Android 13+ uses `expo-image-picker`'s `ImageLibraryContract`
+  (AndroidX `PickVisualMedia` / `PickMultipleVisualMedia`, `legacy: false`)
+  when the system photo picker really answers. **Below API 33 without the
+  Play-services picker backport, AndroidX resolves that contract to
+  `ACTION_OPEN_DOCUMENT`** — the document picker; that is how the album opened
+  the file browser on a Play-less Huawei phone on 2026-09-25. The app now
+  resolves the candidates through the native probe (`future-file-handler`'s
+  `resolveImagePickRoutes`) before launching anything: a gallery is preferred
+  only when it answers the image `ACTION_GET_CONTENT` intent the app actually
+  launches (expo-image-picker's legacy contract) — the contract cannot target
+  a component, so a gallery that only advertises `ACTION_PICK` +
+  `content://media/external/images/media` falls through to the next route;
+  only a real photo picker (the framework's
+  `android.provider.action.PICK_IMAGES`, the AOSP backport
+  `androidx.activity.result.contract.action.PICK_IMAGES`, or the Play-services
+  `com.google.android.gms.provider.action.PICK_IMAGES`) goes through the
+  `PickVisualMedia` contract. **When neither exists the app draws its own album
+  grid** (`listAlbumImages`: MediaStore first, then the usual
+  DCIM/Pictures/Download scans) and asks for the media read permission only
+  for that grid, explaining a refusal inside it; it no longer degrades to the
+  document picker. No system route asks for whole-library access — each gets
+  only the selected photos. If an environment's `ACTION_PICK` /
+  `ACTION_GET_CONTENT` is answered only by a file manager (the probe sees a
+  package like `com.huawei.hidisk` and does not treat it as a gallery), the
+  grid is used; the album is truly unavailable only when the grid can read no
+  image either (the container maps neither the media library nor shared
+  storage). Also: never launch the pick through `expo-intent-launcher` — it
+  resolves a result's `data` to the *Intent's* string, not a URI
+  (`"Intent { dat=content://… }"`), which is why the #823/#829 system-gallery
+  route never opened the real selection.
 - Phone files: `expo-file-system`'s `FilePickerContract` uses
   `ACTION_OPEN_DOCUMENT`.
 - `NativeFileActionSheet` explicitly separates "open with another app / save /
@@ -93,7 +120,13 @@ above):
 2. Open, complete, and cancel the camera, gallery, and file pickers
    separately; record whether the actual page belongs to the HarmonyOS system
    or the compatibility environment. Being able to select a file only proves
-   data access works, not that the UI is HarmonyOS native.
+   data access works, not that the UI is HarmonyOS native. In the Zhuoyitong
+   container the album is expected to use the app's own grid (the probe sees
+   neither a gallery nor a photo picker); an empty grid or a refused media
+   permission is the "container maps no media" boundary. If the album opens a
+   file browser instead, the probe treated some file-manager package as an
+   unknown app (its name missed the gallery/file-manager patterns); record the
+   package and add it to the rules.
 3. With no matching reader for a PDF, the file menu still offers save and
    share; open-external hints that the current environment has no handler app.
 4. Share a PDF with a Chinese filename, an image, and text; confirm the target

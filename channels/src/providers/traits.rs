@@ -120,7 +120,7 @@ pub struct ChannelDefinition {
     /// Longest single message the platform accepts, in [`Self::length_unit`].
     pub max_text_len: usize,
     pub length_unit: LengthUnit,
-    /// A minimal `providers.<id>` block, printed by `future channel list`.
+    /// A minimal `providers.<id>` block; the per-channel docs and tests mirror it.
     pub config_example: &'static str,
     /// External software or account requirements (empty for a plain HTTP API).
     pub requires: &'static [&'static str],
