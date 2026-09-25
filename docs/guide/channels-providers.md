@@ -71,9 +71,12 @@ whether the bridge *starts* the channel); the bridge does not have to be running
 
 ## Provider matrix
 
-`future channel list` prints this matrix for the build you are running, including
-each channel's maturity and its declared external requirements. The capability
-columns are what the bridge can rely on:
+`future channel list` reports each channel's maturity, configured state, bridge
+kind, capabilities and declared external requirements for the build you are
+running; `list --json` adds the full requirement strings and the message limit.
+The matrix below expands the capability list into columns and adds the inbound
+transport and the mention gate. The capability columns are what the bridge can
+rely on:
 
 - **Edit** lets the bridge stream a progressive answer by rewriting one message;
   a channel without it gets a single message at the end.
@@ -94,7 +97,7 @@ columns are what the bridge can rely on:
   addressed to it by construction.
 - **Max message** is the platform limit in the unit the platform counts:
   characters everywhere except Slack (UTF-16 code units, so an emoji costs two)
-  and IRC/Email (bytes).
+  and IRC/Email/WeCom (bytes).
 
 | Channel | Id | Maturity | Inbound | Edit | Threads | Typing | Reactions | Media in | Mention gate | Max message | Requires |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -137,17 +140,18 @@ rate-limit arithmetic.
 ## Per-channel configuration
 
 Each block below is the minimal shape the provider reads: its own
-`config_example` (what `future channel list` prints) plus every other key it
-honours. Every key has a default and can be omitted except the credentials marked
-*required*. Keys marked *test seam* point a channel at a mock server and are
-empty in production. The policy keys (`dm_policy`, `dm_allowlist`,
-`group_policy`, `group_allowlist`, `require_mention`) are read by the bridge for
-every channel; the blocks show the ones that channel's own example names, and the
-defaults from the table above apply to the rest.
+`config_example` — the example literal in the provider file under
+`channels/src/providers/` — plus every other key it honours. Every key has a
+default and can be omitted except the credentials marked *required*. Keys marked
+*test seam* point a channel at a mock server and are empty in production. The
+policy keys (`dm_policy`, `dm_allowlist`, `group_policy`, `group_allowlist`,
+`require_mention`) are read by the bridge for every channel; the blocks show the
+ones that channel's own example names, and the defaults from the table above
+apply to the rest.
 
 There is no `streaming` key: a channel streams when it declares the `edit`
-capability. The key still appears in `future channel list` examples for Discord
-and Mattermost, where it is ignored.
+capability. The key still appears in the `config_example` of Discord and
+Mattermost, where it is ignored.
 
 ### Telegram
 
@@ -170,9 +174,9 @@ and Mattermost, where it is ignored.
 Long polling needs nothing but outbound HTTPS and remembers its offset across
 restarts (`<channel>/offset.json`), so a restart does not lose queued updates and
 does not replay what it already answered. Webhook mode needs a public URL that
-forwards to `webhook.addr` (put it behind a reverse proxy for TLS) and a
-`secret_token`, which Telegram echoes in a header that the channel verifies
-before parsing the body.
+forwards to `webhook.addr` (put it behind a reverse proxy for TLS); set a
+`secret_token` and the channel verifies the header Telegram echoes it in before
+parsing the body, and with none set the gate is open.
 
 Only plain `message` updates become prompts: edited messages, channel posts and
 service events are ignored. A group message counts as addressed when the bot's
@@ -379,11 +383,13 @@ work" are remembered so the delivery queue stops retrying it.
 ```jsonc
 {
   "enabled": true,
-  "app_id": "",
-  "app_secret": "",
+  "app_id": "",                           // required: from the open-platform console
+  "app_secret": "",                       // required: paired with app_id on the token endpoint
   "sandbox": false,
   "group_allowlist": [],
-  "require_mention": true
+  "require_mention": true,
+  "api_base": "",                         // test seam: replaces the API origin (production or sandbox)
+  "gateway_url": ""                       // test seam: replaces the URL discovered via GET /gateway
 }
 ```
 
@@ -400,7 +406,7 @@ is addressed. `sandbox` selects the platform's sandbox gateway.
 ```jsonc
 {
   "enabled": true,
-  "recipients": [],
+  "recipients": [],                       // declared but not consulted in this build
   "sender_allowlist": [],
   "poll_seconds": 5,
   "db_path": ""
@@ -412,8 +418,9 @@ Messages database read-only and converts Apple's epoch (2001-01-01, nanoseconds)
 into Unix milliseconds. `db_path` defaults to the standard location and exists so
 a test can point at a fixture. The process running the bridge needs Full Disk
 Access, and the channel only exists on macOS — elsewhere every entry point
-reports `unsupported` rather than pretending. `sender_allowlist` is the access
-rule; there is no mention gate because iMessage conversations here are direct.
+reports `unsupported` rather than pretending. `sender_allowlist` filters senders
+at the provider (empty accepts every sender) before the shared DM policy
+applies; there is no mention gate because iMessage conversations here are direct.
 
 ### Email
 
@@ -437,10 +444,15 @@ quoted-printable, base64 and RFC 2047 headers, preferring `text/plain` and
 falling back to `text/html` with tags stripped. Replies thread through
 `In-Reply-To`/`References`, so `threads` is advertised. Attachments are *listed*
 but not downloaded, and the bridge never answers the mailbox's own address.
-`security` is `implicit` (TLS on connect, port 993/465) or `starttls`
-(port 587/25); `timeout_seconds` bounds every protocol read, so a server that
-accepts the connection and then stalls fails as a transient error instead of
-hanging the poll loop. OAuth is not supported — use a password or app password.
+`sender_allowlist` and `subject_prefix` are extra gates — empty accepts every
+sender and every subject. `security` is `implicit` (TLS on connect, port
+993/465), `starttls` (port 587/25) or `plain` (no TLS, for a loopback or
+in-network relay); `imap.host`, `imap.username`, `imap.password`, `smtp.host`
+and `smtp.from` are required, and `smtp.username`/`smtp.password` must be set
+together or not at all. `timeout_seconds` bounds every protocol read, so a
+server that accepts the connection and then stalls fails as a transient error
+instead of hanging the poll loop. OAuth is not supported — use a password or app
+password.
 
 ### WeCom
 
@@ -451,11 +463,11 @@ would slug to `wecom-企业微信`, because those characters are alphanumeric.
 ```jsonc
 {
   "enabled": true,
-  "corp_id": "",                         // corp id, ww…; the callback's receive id is checked against it
-  "agent_id": 0,                         // the self-built app's AgentId; every send names it
-  "secret": "",                          // the app secret, used to fetch the access token
-  "token": "",                           // callback Token
-  "encoding_aes_key": "",                 // callback EncodingAESKey, 43 characters
+  "corp_id": "",                         // required: corp id, ww…; the callback's receive id is checked against it
+  "agent_id": 0,                         // required: the self-built app's AgentId; every send names it
+  "secret": "",                          // required: the app secret, used to fetch the access token
+  "token": "",                           // required to receive: callback Token
+  "encoding_aes_key": "",                 // required to receive: callback EncodingAESKey, 43 characters
   "webhook": { "addr": "127.0.0.1:8790", "path": "/webhooks/wecom" },
   "dm_policy": "allowlist", "dm_allowlist": [],
   "api_base": ""                         // test seam: replaces the app API origin

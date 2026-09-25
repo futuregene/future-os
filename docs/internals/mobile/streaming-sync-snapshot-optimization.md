@@ -218,8 +218,9 @@ Return shape:
 - `scripts/measure/measure-sync-browser.py`: isolated launcher, new `--agent-binary`
   option to specify the newly built independent Agent; it does not replace the
   system install or stop the user's agent.
-- `streaming-sync-snapshot-ab-2026-09-16.json`: 18 de-identified metrics plus
-  binary info.
+- `streaming-sync-snapshot-ab-2026-09-16.json`
+  ([archived](../../archives/verification/streaming-sync-snapshot-ab-2026-09-16.json)):
+  18 de-identified metrics plus binary info.
 
 ```sh
 # In this branch's worktree, build with the pinned toolchain

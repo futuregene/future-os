@@ -141,7 +141,7 @@ Linux 将 `Device or resource busy`（EBUSY）与其他权限错误一样作为�
 
 ## 5. 进度、决策与后续计划
 
-2026-07-04 v2 R1/R2/R3 已完成：文件规则、read 前置审批、Seatbelt 编译、敏感守卫、GUI 保存与当轮注入。历史结果：R1 Agent 55 lib + 10 规则 + 9 smoke；R2 GUI/前端 39；R3 Agent 58 lib + 9 smoke、GUI 72、前端 39，lint/check-desktop 通过。早期 v1 的 Agent 67、GUI 69、前端 39、smoke 9 仅是旧架构基线，不是当前总测试数。
+v2 的文件规则、read 前置审批、Seatbelt 编译、敏感守卫、GUI 保存与当轮注入均已实现。v1/v2 各轮的测试计数既不是当前总数、也不是当前验收结论，本文不再重录。
 
 保留的决策：V1–V9（2026-07）确立纯路径规则、网络开放、分车道 fallback、文件真源、三档与项目允许；V10 的“仅 macOS 显示”已被 V11–V14（2026-08 Windows unelevated、具体 capability、共享可信 UI、接受身份/删除限制）及 Linux L-D1–L-D11 取代。不再保留互相冲突的旧状态段落。
 

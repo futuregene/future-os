@@ -10,7 +10,7 @@ do not copy or vendor them into FutureOS.
 
 ## Runners
 
-Run from this directory:
+The harness lives in `tests/provider-protocol/`; run from there:
 
 ```bash
 cargo run --bin rig-cassette

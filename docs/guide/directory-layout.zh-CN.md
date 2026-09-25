@@ -27,7 +27,8 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 │   └── feishu/                # 飞书桥数据（会话文件、接收的文件）
 ├── tui/                       # 终端界面（future-tui）
 │   ├── settings.json          # defaultModel、defaultThinkingLevel 等（见 tui.zh-CN.md）
-│   ├── keybindings.json       # 可选按键绑定覆盖
+│   ├── keybindings.json       # 按键绑定覆盖（由 /keymap 写入，启动时读取）
+│   ├── skill_reco.json        # 当天技能推荐配额（当天已推荐过的技能与已评估的草稿）
 │   ├── debug.log              # 调试重绘日志（仅 PI_DEBUG_REDRAW=1）
 │   ├── write.log              # 原始屏幕写入日志（仅 PI_TUI_WRITE_LOG=1）
 │   └── crash.log              # 崩溃时的 panic 回溯
@@ -137,8 +138,10 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
 ## `~/.future/tui/` — 终端界面
 
 归 `future-tui` 所有。`settings.json` 持久化客户端侧设置（`defaultModel`、
-`defaultThinkingLevel`、`defaultPermissionLevel`、`enabledModelIds`）；
-可选的按键绑定覆盖放在 `keybindings.json`；`debug.log` 在设置 `PI_DEBUG_REDRAW=1` 时写入调试重绘日志，设置 `PI_TUI_WRITE_LOG=1` 时 `write.log` 记录原始屏幕写入；`crash.log` 在 TUI 崩溃时接收 panic 回溯。
+`defaultThinkingLevel`、`defaultPermissionLevel`、`enabledModelIds`、`themeId`、
+`skillRecommend`）；按键绑定覆盖放在 `keybindings.json`（`/keymap` 写入与默认值不同的
+绑定，启动时读取）；`skill_reco.json` 保存当天技能推荐配额（已推荐过哪些技能、已评估过
+哪些草稿——按天滚动，从不跨天读取）；`debug.log` 在设置 `PI_DEBUG_REDRAW=1` 时写入调试重绘日志，设置 `PI_TUI_WRITE_LOG=1` 时 `write.log` 记录原始屏幕写入；`crash.log` 在 TUI 崩溃时接收 panic 回溯。
 见 [tui.zh-CN.md](tui.zh-CN.md)。
 
 ## `~/.future/app/` — 桌面 GUI

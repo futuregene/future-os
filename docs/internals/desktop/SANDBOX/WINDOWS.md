@@ -399,20 +399,19 @@ paste full JSON publicly.
 
 ## 7. Historical verification evidence (not an automatic PASS for the current candidate)
 
-| Date / commit | Result and evidence |
-|---|---|
-| 2026-08-24 `a55c558200a80d2c2008c6ee2ef0c0c0ce86aa8e` | NT10.0.26200 AMD64, ordinary user, NTFS, PS5.1, Rust 1.97 MSVC; native 50, capability 11, singleton 1, Desktop shutdown 2, Agent/Desktop Clippy, release probe pass, record 0. Log `target/windows-sandbox-results/windows-sandbox-20260824-102215.log` |
-| 2026-08-24 11:21 `471a8cd79da99c3186a88448a0b685c0130cb2e4` | clean workspace, Agent home C:\Users\FgClaw01; the behavior matrix above re-verified PASS, record 0. This report had no IncludeClippy; the same commit's Agent dev-side Clippy passed separately |
-| same-host SID experiment | capability+Everyone starts, capability+logon does not; evidence for this host only — do not delete the production compatibility SIDs based on it without the matrix |
-| later packaged RM-01~07 | original draft records all PASS: singleton/exit, three restarts, external ownership, crash startup recovery, CLI reset, real NSIS uninstall; RM-05 force-kill was already 0 at the time; after stopping, manual seed then restart was 1/1/0 |
-| P2 multi-host | original draft records Pro/PS7/Chinese username & path/portable matrix complete; per-item commits and logs not attached — this pass fabricates no evidence; release re-verification should backfill |
-| 2026-08-24 GUI Home | probe/entry, workspace content write, external content write denial, normal-exit record 0 pass; corresponds to the core of W7-01/03/08, not covering all scope buttons, phones, restart fallback, or siblings |
+Earlier rounds recorded native, installer-lifecycle, and packaged PASSes on
+Windows 11 hosts (capability records back to 0); per-run logs stay under
+`target\windows-sandbox-results\` and in git history. They prove their own
+hosts and commits only: full product evidence for W7-02/04/05/06/07 still needs
+item-by-item verification, and none of those records is an automatic PASS for
+the current candidate.
 
-The old text's opening "all complete" and later "some product items pending
-verification" must not be conflated: the exact low-level logs and the original
-draft's later PASS records are kept, but full product evidence for
-W7-02/04/05/06/07 still needs item-by-item verification. This documentation
-pass ran no tests on Windows.
+Two observations from those rounds remain binding: the same-host SID
+experiment (capability+Everyone starts, capability+logon does not) is evidence
+for one host only — do not drop the production compatibility SIDs without the
+full matrix; and a force-killed bundled Agent left no synchronous cleanup, but
+the singleton still recovered through startup GC on the next start (the RM-05
+expectation above).
 
 ## 8. Follow-up plan and release requirements
 

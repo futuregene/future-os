@@ -115,7 +115,7 @@
 
 - `scripts/measure/measure-sync-snapshot.ts`：A/B 浏览器入口。
 - `scripts/measure/measure-sync-browser.py`：隔离启动器，新增 `--agent-binary` 可指定新构建的独立 Agent；不会替换系统安装或停止用户的 agent。
-- `streaming-sync-snapshot-ab-2026-09-16.json`：18 次去身份指标及二进制信息。
+- `streaming-sync-snapshot-ab-2026-09-16.json`（[已归档](../../archives/verification/streaming-sync-snapshot-ab-2026-09-16.json)）：18 次去身份指标及二进制信息。
 
 ```sh
 # 在本分支 worktree 中，用固定工具链构建

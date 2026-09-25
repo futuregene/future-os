@@ -111,8 +111,10 @@ selector, the session list, the model-scope and tool menus, the providers list
 and its filter cleared by an escape), the sandbox/permission panel (overlay, an
 applied tier, an applied permission level), the theme picker (light applied,
 dark restored), `/usage`, `/transcript` (pager, search editor and the
-PageDown/PageUp keys), `/stats`, `/agent`, `/metrics`, `/snapshot`,
-`/tool-output` (list and diff body) and `/history`.
+PageDown/PageUp keys), `/status` (whose card carries the session counters the
+retired `/stats` panel used to show), `/agent`, `/metrics`, `/snapshot`,
+`/tool-output` (list and diff body), `/history`, plus text/image paste and the
+`ctrl+d` compact view, and paged history through `/sessions`.
 
 ## Harness
 
@@ -130,8 +132,8 @@ what CI sees (see the local-only note below).
 
 The harness starts one mock agent instance (`tui/examples/mock_agent`, a
 deterministic `FutureAgent` gRPC server), opens a tmux window (80x36 pane)
-with the Rust TUI (`future-tui`), and drives it with keystrokes. **45 checks =
-44 golden screens + the Ctrl+C exit**, one per step of a single fixed session
+with the Rust TUI (`future-tui`), and drives it with keystrokes. **56 checks =
+55 golden screens + the Ctrl+C exit**, one per step of a single fixed session
 (every screen sits on top of the chat the earlier steps produced, so the order
 is part of the golden). Grouped:
 
@@ -149,9 +151,18 @@ is part of the golden). Grouped:
    `permission-overlay`, `permission-applied`
 7. theme — `theme-overlay`, `theme-light`, `theme-dark-restored`
 8. readouts — `usage-overlay`, `transcript-pager`, `transcript-page-down`,
-   `transcript-page-up`, `transcript-search`, `stats`, `agent`, `metrics`,
-   `snapshot`, `tool-output-list`, `tool-output-diff`, `history`
-9. `ctrl-c` — the TUI must exit with status 0
+   `transcript-page-up`, `transcript-search`, `agent`, `metrics`, `snapshot`,
+   `tool-output-list`, `tool-output-diff`, `history` (the separate `/stats`
+   panel is gone; its counters are a section of the `/status` card from step 1)
+9. paste — `paste-folded` / `paste-sent` (one placeholder in the box, the whole
+   pasted text on the wire) and the image path `paste-image-attached` /
+   `paste-image-two` / `paste-image-renumbered` / `paste-image-sent`
+10. compact view — `burst-expanded` / `burst-folded` / `burst-restored`
+    (`ctrl+d` folds an uninterrupted three-file read burst into one row and
+    brings it back)
+11. paged history — `history-tail` / `history-older` (switches to the other
+    mock session and fetches the older page with PageUp)
+12. `ctrl-c` — the TUI must exit with status 0
 
 The authoritative list is the script itself:
 `grep -nE '^step |^step_when ' tui/tests/tmux-diff.sh`.
@@ -163,7 +174,7 @@ installed` for the merged skill catalogue) and only then captures — that is
 what keeps the goldens stable on a loaded machine. A scenario whose evidence is
 a *transition* rather than a screen uses `require_text` and asserts instead.
 
-**Golden tests**: `tui/tests/golden/<scenario>.txt` holds the 44 reference
+**Golden tests**: `tui/tests/golden/<scenario>.txt` holds the 55 reference
 screens, each captured with `capture-pane -p -e` — **ANSI included**, and
 byte-compared as a whole. All of them are recorded from the **Rust** pane with
 `--record`; the file names date from the port commit `1467a1cd` (2026-08-07),
@@ -243,8 +254,9 @@ red for **~6 weeks** until the panel re-record. Two habits keep it honest:
 Staleness can also make a scenario capture the *wrong* screen without any
 golden drifting to something visibly broken: once the transcript pager's search
 editor learned to claim the first escape, the single escape left in that
-scenario closed only the search editor, so `/stats` and the scenarios after it
-recorded the transcript instead of their own panel. The transition
+scenario closed only the search editor, so the scenario that sat there at the
+time (`/stats`, since removed) and the ones after it recorded the transcript
+instead of their own panel. The transition
 assertions above are what catch that class of drift.
 
 ## Bugs the harness caught (all fixed)

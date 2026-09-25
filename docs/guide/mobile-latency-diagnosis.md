@@ -1,5 +1,11 @@
 # Mobile history-loading latency: reproduction and verification
 
+> **Historical snapshot (2026-09-12).** This page records what was diagnosed,
+fixed and measured on that date — the fix landed as commit `a5117d57` on top of
+baseline `c5e87eec` — so its conclusions apply to that point in the source, not
+to current `main`. It is kept for provenance; the Chinese pair
+([中文](mobile-latency-diagnosis.zh-CN.md)) carries the same notice.
+
 Date: 2026-09-12. Baseline: `c5e87eec`. Local platform: Windows.
 
 ## Diagnosed causes

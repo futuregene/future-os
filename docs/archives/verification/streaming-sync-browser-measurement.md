@@ -2,7 +2,7 @@
 
 > ([中文](streaming-sync-browser-measurement.zh-CN.md)) This report keeps the raw
 > event-replay baseline. The snapshot + incremental optimization followed; see
-> the [new A/B measurements](streaming-sync-snapshot-optimization.md). To keep
+> the [new A/B measurements](../../internals/mobile/streaming-sync-snapshot-optimization.md). To keep
 > this report reproducible, the old measurement entry now explicitly disables
 > `preferSnapshot`; this report's timings must no longer be read as the new
 > default path's timings.
@@ -92,7 +92,7 @@ browser scheduling/yielding and cannot be used to estimate Hermes CPU time.
 The backend number also mixes database reads and Agent/Desktop
 conversion/serialization; which internal step is heaviest is not yet separated.
 
-The source pinpoints a next measurement point: `remote_host/business.rs`'s
+The source pinpoints a next measurement point: `remote_host/business/history.rs`'s
 first `get_events_since` without a watermark goes through
 `agent_bridge::get_events_since` full-tail reading; later requests with a
 watermark go through `get_events_since_page`. This round measured the first
@@ -134,7 +134,8 @@ Measurement files:
   read-only loopback probe startup and cleanup.
 - `desktop/src-tauri/src/remote_host/sync_measurement.rs`: a default-ignored
   browser test entry, not added to production behavior.
-- `streaming-sync-browser-measurement-2026-09-16.json` in the same directory:
+- `streaming-sync-browser-measurement-2026-09-16.json`
+  ([archived](streaming-sync-browser-measurement-2026-09-16.json)):
   the nine measurement records with session/run identity and bodies removed.
 
 In an isolated worktree with existing project dependencies:

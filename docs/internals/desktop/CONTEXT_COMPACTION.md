@@ -1,25 +1,50 @@
 # Context compaction architecture and next-phase semantic compaction plan
 
-> ([中文](CONTEXT_COMPACTION.zh-CN.md)) Status: **v2 data foundation landed; the
-> semantic compaction core (S1) is implemented and wired into the runtime** —
-> automatic (PreTurn/MidTurn), provider-limit recovery, and manual `/compact`
-> all call `prepare_semantic_with_lifecycle` (`agent/src/agent/run_loop.rs`,
-> `agent/src/rpc/session.rs`), producing `semantic-v1` summaries with a
-> `deterministic-emergency-v1` fallback on provider-limit failure. The
-> model-switch "old model first" fallback chain (S3) is implemented but not
-> yet connected at runtime call sites (all pass `None`; tests only); S4
-> compatibility/release close-out is 【待核实】. (2026-08-24; runtime wiring
-> re-checked 2026-09-16)
+> ([中文](CONTEXT_COMPACTION.zh-CN.md)) Status: **v2 data foundation landed;
+> the runtime now compacts with the evidence-backed strategies, not the S1–S4
+> semantic pipeline originally planned here** (status re-checked 2026-09-26).
 
 Baseline commit: `8fd6804e Implement durable context compaction checkpoints`
 
-This document is the current authoritative design for FutureOS context
-compaction. It has two parts:
+**Implementation status (2026-09-26).** The v2 data foundation (§3) still
+stands, and the phases/triggers of §6–§7 ship as designed
+(`CompactionTrigger`/`CompactionPhase`, `agent/src/compaction/mod.rs:119-133`).
+Automatic (PreTurn/MidTurn), provider-limit recovery, and manual compaction all
+enter `prepare_with_journal_and_summary`
+(`agent/src/compaction/durable.rs:245`; call sites
+`agent/src/agent/run_loop.rs:390,638`, `agent/src/rpc/session.rs:751`), which
+writes one of exactly two `algorithm_version`s
+(`agent/src/compaction/semantic/evidence.rs:7,13`):
+
+- `summarized-evidence-v1` — deterministic tool-evidence index plus a
+  model-written, cumulative handoff summary; the runtime default;
+- `deterministic-evidence-v1` — no model call; also what is committed when no
+  provider is reachable or the summary call fails.
+
+The plan's fold machinery is **not** in the production path: there is no
+chunked fold (§10.2), no context-limit re-planning (§10.3), and no separate
+`deterministic-emergency-v1` algorithm (§10.5) — the shipped summary call is
+bounded by transient retries and otherwise falls back to the deterministic
+projection (`semantic/evidence.rs:486-490,580`). The `prepare_semantic*` entry
+points and their `semantic-v1` naming were retired
+(`agent/src/compaction/mod.rs:314-322`), and the S3 "old model first" chain
+(§9.4/§13) is not in production either: `ModelContextDownshift` compacts with
+the session's current model (`agent/src/agent/run_loop.rs:335-345`). The
+summary template and prior-summary merge (§9.1–§9.2) do ship inside the
+summary call (`agent/src/compaction/semantic.rs:39-65`,
+`semantic/evidence.rs:640-690`). §13–§15 below are kept as the historical plan
+of record; the current implementation is documented in
+[`docs/internals/compaction/compaction.md`](../compaction/compaction.md).
+
+This document records the design and compatibility contract for FutureOS
+context compaction. It has two parts:
 
 1. the landed v2 data and compatibility foundation, which later work must not
-   break;
-2. the next phase's local semantic compaction, model-switch detection, and
-   compaction-request fault tolerance.
+   break — still authoritative;
+2. the 2026-08 semantic-compaction plan (local structured summarization,
+   model-switch detection, and compaction-request fault tolerance), kept as
+   the historical plan of record: the shipped implementation is the
+   evidence-backed pair described above.
 
 This document no longer lists the completed Journal, Prompt Projection,
 ContextCheckpoint, RPC/UI markers, and fork compatibility work as future
@@ -231,11 +256,11 @@ showing "Compacting".
 - the desktop SQLite schema is unchanged, and later phases must not add SQLite
   tables for context compaction either.
 
-## 4. Remaining problems of the current baseline
+## 4. Remaining problems of the baseline this plan started from
 
 The v2 data foundation fixed misreporting, history rewriting, and
-compatibility, but the current summarizer is still a deterministic file-
-operation summary:
+compatibility, but at the plan's 2026-08-24 baseline the summarizer was still a
+deterministic file-operation summary:
 
 ```text
 Previous conversation summarized.
@@ -243,7 +268,7 @@ Files read: ...
 Modified: ...
 ```
 
-It cannot stably preserve:
+It could not stably preserve:
 
 - the user's final goal and explicit constraints;
 - decisions made and why;
@@ -647,9 +672,14 @@ semantic-v1
 deterministic-emergency-v1
 ```
 
-Emergency summaries must equally pass checkpoint range validation and durable
-commit. Never write an empty summary, and never misreport a semantic summary
-failure as a `semantic-v1` success.
+> **Shipped names differ.** The plan's `semantic-v1` /
+> `deterministic-emergency-v1` pair was replaced by
+> `summarized-evidence-v1` / `deterministic-evidence-v1` (see the
+> implementation status at the top). The rule below still holds: never write an
+> empty summary, and never misreport a model-summary failure as a summarized
+> success — a failed or unavailable summary commits the deterministic
+> projection and reports the fallback via `on_fallback`
+> (`agent/src/compaction/semantic/evidence.rs:486-490,605-610`).
 
 ## 11. Checkpoint commit flow
 
@@ -719,7 +749,22 @@ run-event, summary, or checkpoint tables. Model-switch state, summary
 intermediate results, and retry states belong to a single run's memory; only
 the final checkpoint enters the agent JSONL.
 
+> Shipped addition (2026-09-26): the **Agent** database (not desktop SQLite)
+> gained `compaction_operations` to make manual and automatic compaction
+> idempotent across restarts — key, digest, operation id, state and result
+> JSON (`agent/src/session/database.rs:336-343`). Summaries themselves are
+> still not stored there; the deterministic index is rebuilt and the model
+> summary is recomputed when a replayed operation has no result.
+
 ## 13. Next-phase development plan
+
+> Historical plan of record (2026-08-24). It was delivered in a different
+> shape: S1/S2 landed as the evidence-backed strategies
+> (`summarized-evidence-v1` / `deterministic-evidence-v1`) with the legacy
+> semantic entry points retired; S3's phase/trigger work landed, but the
+> "old model first" chain did not; S4's compatibility work is covered by
+> `docs/internals/compaction/compaction.md`'s validation section. See the
+> implementation status at the top.
 
 ### Phase S1: semantic summary core
 
@@ -873,6 +918,13 @@ usable" to "direct failure".
 - the desktop SQLite schema snapshot is completely unchanged.
 
 ## 15. Completion criteria
+
+> Planned acceptance for the semantic pipeline. Where the shipped design
+> differs, read item 1 as `summarized-evidence-v1` with the structured
+> template, item 4 without the chunked fold (a single bounded summary call
+> plus the deterministic fallback), and item 5 as the
+> `deterministic-evidence-v1` fallback in place of a separate emergency
+> algorithm.
 
 The next phase is complete only when all of the following hold:
 
