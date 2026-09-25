@@ -271,3 +271,26 @@ test("preferences auto-load without a persistent refresh button", async () => {
   expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(4);
   expect(tree.root.findAllByType(Button)).toHaveLength(0);
 });
+
+test("the official-account entry stays reachable while the desktop is offline", async () => {
+  // Every other row on "This phone" is gated on the desktop connection; following
+  // an account needs no connection, so a regression that adds a `disabled` here
+  // would strand the entry exactly when the user has no desktop at hand.
+  // Inspect the Pressable the row renders — that is what decides whether a tap
+  // goes through — rather than the SettingsLink element's own props.
+  const row = () => tree.root.findAll(node =>
+    node.props.accessibilityLabel === "desktopSettings.followAccount"
+    && node.props.accessibilityRole === "button")[0]!;
+  expect(row().props.disabled).toBe(false);
+  expect(row().props.accessibilityState.disabled).toBe(false);
+
+  act(() => link("desktopSettings.followAccount").props.onPress());
+  expect(tree.root.findAllByType(Text).map(node => node.props.children))
+    .toContain("desktopSettings.followAccount");
+
+  // Now take the desktop away and confirm the row is still usable.
+  mockRemote.desktopOnline = false;
+  await act(async () => { tree = create(createElement(SettingsScreen, props)); });
+  expect(row().props.disabled).toBe(false);
+  expect(row().props.accessibilityState.disabled).toBe(false);
+});

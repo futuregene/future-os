@@ -280,6 +280,13 @@
     "website": "Website",
     "websiteLabel": "www.future-os.cn",
     "openSource": "Open source",
-    "builtWith": "Built with open-source software, including {{projects}}"
+    "builtWith": "Built with open-source software, including {{projects}}",
+    "follow": "Official account",
+    "followDescription": "Follow {{name}} on WeChat for release notes, feature guides and research tips.",
+    "followHint": "Scan the QR code with WeChat, or search for “{{name}}” in WeChat.",
+    "followQrAlt": "WeChat QR code for the {{name}} official account",
+    "followCopyName": "Copy account name",
+    "followCopied": "Copied",
+    "followReadArticle": "Read an article"
   }
 }

@@ -277,6 +277,13 @@
     "website": "官网",
     "websiteLabel": "www.future-os.cn",
     "openSource": "开源软件",
-    "builtWith": "基于以下开源软件构建：{{projects}}"
+    "builtWith": "基于以下开源软件构建：{{projects}}",
+    "follow": "微信公众号",
+    "followDescription": "关注 {{name}} 公众号，获取版本更新、功能说明与研究技巧。",
+    "followHint": "用微信扫描二维码，或在微信中搜索「{{name}}」。",
+    "followQrAlt": "{{name}} 公众号二维码",
+    "followCopyName": "复制公众号名",
+    "followCopied": "已复制",
+    "followReadArticle": "阅读文章"
   }
 }
