@@ -21,11 +21,12 @@ import { Animated, FlatList, Linking, Platform, Pressable, ScrollView, StyleShee
 import { AppAlert as Alert } from "./appAlerts";
 import { useStreamingText } from "./useStreamingText";
 import { chatTypography, colors, radius, spacing } from "../theme/tokens";
-import { MarkdownImage, MarkdownImageBasePathContext } from "./MarkdownImage";
+import { MarkdownImage, MarkdownImageBasePathContext, resolveMarkdownPath } from "./MarkdownImage";
 import { MathFormula } from "./MathFormula";
 
 interface MarkdownTextProps {
-  /** Message links can fetch local files; file previews never nest previews. */
+  /** Message links resolve against the workspace; a previewed document's links
+   * resolve against that document, and a local file there is openable. */
   mode?: "message" | "file-preview";
   text: string;
   /** Original desktop document path, not its downloaded phone cache URI. */
@@ -415,18 +416,24 @@ export function MarkdownText({ text, onOpenFile, imageBasePath, mode = "message"
   const openTarget = useCallback<OpenTarget>(rawTarget => {
     const target = classifyMarkdownTarget(rawTarget);
     if (target.kind === "local-file") {
-      if (mode === "file-preview") {
-        Alert.alert(t("attachment.title"), t("attachment.localLinkDesktopOnly"));
-      } else {
-        onOpenFile?.(target.path);
+      // In a previewed document a link is relative to that document, not to the
+      // workspace the desktop resolves chat links against. A document opened
+      // from this phone has no desktop-side directory to resolve against.
+      const path = mode === "file-preview"
+        ? resolveMarkdownPath(target.path, imageBasePath)
+        : target.path;
+      if (!path) {
+        Alert.alert(t("attachment.title"), t("attachment.localLinkUnresolvable"));
+        return;
       }
+      onOpenFile?.(path);
       return;
     }
     if (target.kind !== "external-url") return;
     void Linking.openURL(target.url).catch(() => {
       Alert.alert(t("attachment.title"), t("attachment.linkOpenFailed"));
     });
-  }, [mode, onOpenFile, t]);
+  }, [imageBasePath, mode, onOpenFile, t]);
   const renderPreviewBlock = useCallback(({ item, index }: { item: MarkdownNode; index: number }) => (
     <MarkdownBlock node={item} openTarget={openTarget} isLast={index === document.nodes.length - 1} animate={false} />
   ), [document.nodes.length, openTarget]);

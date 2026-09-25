@@ -395,20 +395,48 @@ describe("MarkdownText", () => {
     expect(onOpenFile).toHaveBeenCalledWith("assets/pic.png");
   });
 
-  test("prompts for a local image from a Markdown file preview", () => {
+  test("a local link inside a Markdown preview opens beside it, not on a desktop-only notice", () => {
+    const onOpenFile = jest.fn();
     const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
     let renderer: ReactTestRenderer | undefined;
     act(() => {
       renderer = create(
         createElement(MarkdownText, {
+          imageBasePath: "/root/articles/silver/cover-notes.md",
           mode: "file-preview",
-          text: "![diagram](assets/pic.png)",
+          onOpenFile,
+          text: "[SOURCES](../../SOURCES.md) and [sub](images/diagram.png)",
+        }),
+      );
+    });
+    const links = renderer?.root.findAllByType(Text).filter(node => node.props.onPress) ?? [];
+    act(() => links[0]?.props.onPress());
+    act(() => links[1]?.props.onPress());
+    // Relative to the document that carries the link, not to the workspace.
+    expect(onOpenFile).toHaveBeenNthCalledWith(1, "/root/articles/silver/../../SOURCES.md");
+    expect(onOpenFile).toHaveBeenNthCalledWith(2, "/root/articles/silver/images/diagram.png");
+    expect(alert).not.toHaveBeenCalled();
+    alert.mockRestore();
+  });
+
+  test("cannot follow a link in a document opened from this phone's own storage", () => {
+    const onOpenFile = jest.fn();
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    let renderer: ReactTestRenderer | undefined;
+    act(() => {
+      renderer = create(
+        createElement(MarkdownText, {
+          imageBasePath: "file:///phone/cache/report.md",
+          mode: "file-preview",
+          onOpenFile,
+          text: "[diagram](assets/pic.png)",
         }),
       );
     });
     const chip = renderer?.root.findAllByType(Text).find(node => node.props.onPress);
     act(() => chip?.props.onPress());
-    expect(alert).toHaveBeenCalledTimes(1);
+    expect(onOpenFile).not.toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledWith("attachment.title", "attachment.localLinkUnresolvable");
     alert.mockRestore();
   });
 

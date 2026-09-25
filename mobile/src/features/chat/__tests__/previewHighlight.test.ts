@@ -9,7 +9,7 @@ import { codeColors } from "../../../theme/tokens";
 
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-jest.mock("lucide-react-native", () => ({ Download: "Download", Ellipsis: "Ellipsis", ExternalLink: "ExternalLink", Share2: "Share2", X: "X" }));
+jest.mock("lucide-react-native", () => ({ ChevronLeft: "ChevronLeft", Download: "Download", Ellipsis: "Ellipsis", ExternalLink: "ExternalLink", Share2: "Share2", X: "X" }));
 jest.mock("../../../components/MarkdownText", () => ({ MarkdownText: "MarkdownText" }));
 jest.mock("../../../components/JsonPreview", () => ({ JsonPreview: "JsonPreview" }));
 
@@ -30,8 +30,9 @@ function renderTextPreview(name: string, text: string): ReactTestRenderer {
   let tree!: ReactTestRenderer;
   act(() => {
     tree = create(createElement(PreviewModal, {
-      preview, activeDownload: null, closePreview: jest.fn(), dismissPreviewThen: jest.fn(),
-      downloadOriginal: jest.fn(), flushPendingPreviewAction: jest.fn(), t,
+      previews: [preview], activeDownload: null, closePreview: jest.fn(), popPreview: jest.fn(),
+      dismissPreviewThen: jest.fn(), downloadOriginal: jest.fn(),
+      flushPendingPreviewAction: jest.fn(), openLinkedFile: jest.fn(async () => {}), t,
     }));
   });
   return tree;
