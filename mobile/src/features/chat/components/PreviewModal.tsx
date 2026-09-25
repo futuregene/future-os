@@ -15,7 +15,7 @@ import type { TFunction } from "i18next";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { CodeTokens } from "../../../components/CodeTokens";
 import { codePreviewRows, codeRowText } from "../../../components/codePreviewRows";
-import { codeLanguageForFile, codeTokenRows, highlightCode } from "../../../components/codeHighlight";
+import { codeLanguageForFile, codeStyleForFile, codeTokenRows, highlightCode } from "../../../components/codeHighlight";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { JsonPreview } from "../../../components/JsonPreview";
 import type { HistoryAttachment } from "../../../remote/types";
@@ -153,11 +153,13 @@ function PreviewLayer({
   // both code files and prose (`.txt`, `.log`), so only the file name knows
   // whether this is source. Tokenizing is bounded — `highlightCode` refuses
   // oversized files and grammars it does not ship — and the fallback is the
-  // untouched source, never mangled text. Recognized code keeps the monospace
-  // metrics even when it is too large to color.
+  // untouched source, never mangled text. Monospace comes from the file name
+  // alone (`codeStyleForFile`), so a code file Prism has no grammar for still
+  // gets the metrics that make its columns line up.
   const fileName = preview.attachment.name ?? "";
   const previewText = preview.text;
   const language = useMemo(() => codeLanguageForFile(fileName), [fileName]);
+  const codeStyle = useMemo(() => codeStyleForFile(fileName), [fileName]);
   const tokens = useMemo(
     () => (previewText === undefined ? null : highlightCode(previewText, language ?? undefined)),
     [language, previewText],
@@ -276,7 +278,7 @@ function PreviewLayer({
                 : null}
               maxToRenderPerBatch={12}
               renderItem={({ item, index }) => (
-                <Text selectable style={language ? styles.previewCode : styles.previewText}>
+                <Text selectable style={codeStyle ? styles.previewCode : styles.previewText}>
                   <CodeTokens fallback={codeRowText(item.text)} tokens={rowTokens[index] ?? null} />
                 </Text>
               )}

@@ -617,6 +617,10 @@ fn mime_type_for_name(name: &str) -> &'static str {
     if lower.ends_with(".tar.gz") {
         return "application/gzip";
     }
+    // Names with no extension at all (`Makefile`, `.gitignore`, `Cargo.lock`).
+    if is_text_file_name(name) {
+        return "text/plain";
+    }
     let ext = Path::new(&lower)
         .extension()
         .and_then(|value| value.to_str())
@@ -633,7 +637,9 @@ fn mime_type_for_name(name: &str) -> &'static str {
         "csv" => "text/csv",
         "tsv" => "text/tab-separated-values",
         "json" => "application/json",
+        "ipynb" => "application/json",
         "jsonl" => "application/jsonl",
+        "ndjson" => "application/x-ndjson",
         "yaml" | "yml" => "application/yaml",
         "xml" => "application/xml",
         "html" | "htm" => "text/html",
@@ -688,10 +694,10 @@ fn mime_type_for_name(name: &str) -> &'static str {
 /// The phone's allow-list (`mobile/src/remote/fileTypes.ts`, `route: "text"`)
 /// must cover exactly this set — a suffix missing here is refused before the
 /// transfer, and one accepted here must be previewable there. (`.txt` / `.log`
-/// are handled by the `text/plain` arm above, `.md` / `.json` by theirs.)
-/// The desktop overlay's list (`desktop/src/features/filepreview/previewKind.ts`)
-/// is deliberately wider: it has no transfer budget and reads whatever the OS
-/// hands it.
+/// are handled by the `text/plain` arm above, `.md` / `.json` / `.ipynb` by
+/// theirs.) The desktop overlay's own list
+/// (`desktop/src/features/filepreview/previewKind.ts`) is deliberately wider:
+/// it has no transfer budget and reads whatever the OS hands it.
 const CODE_TEXT_EXTENSIONS: &[&str] = &[
     "asm",
     "bash",
@@ -702,26 +708,36 @@ const CODE_TEXT_EXTENSIONS: &[&str] = &[
     "clj",
     "cljs",
     "cjs",
+    "cmake",
     "cmd",
     "conf",
     "cpp",
     "cs",
     "csh",
+    "csproj",
     "css",
+    "cts",
+    "csv",
     "cxx",
     "dart",
+    "diff",
+    "edn",
     "el",
+    "elm",
     "env",
     "erl",
     "ex",
     "exs",
+    "f",
     "f90",
     "f95",
     "fish",
     "go",
     "gradle",
+    "graphql",
     "groovy",
     "h",
+    "hcl",
     "hh",
     "hpp",
     "hs",
@@ -729,21 +745,30 @@ const CODE_TEXT_EXTENSIONS: &[&str] = &[
     "ini",
     "java",
     "jl",
+    "jsonl",
     "js",
     "jsx",
     "kt",
     "kts",
     "less",
     "lisp",
+    "lock",
     "lua",
     "m",
+    "mk",
     "mjs",
+    "mm",
+    "mts",
+    "ndjson",
     "nim",
     "pas",
+    "patch",
     "php",
     "pl",
+    "plist",
     "pm",
     "properties",
+    "proto",
     "ps1",
     "py",
     "pyi",
@@ -755,22 +780,102 @@ const CODE_TEXT_EXTENSIONS: &[&str] = &[
     "scm",
     "scss",
     "sh",
+    "sln",
     "sol",
     "sql",
     "svelte",
     "swift",
     "tf",
+    "tfvars",
     "toml",
     "ts",
+    "tsv",
     "tsx",
     "vb",
     "vue",
+    "xcconfig",
+    "xhtml",
+    "xml",
+    "yaml",
+    "yml",
     "zig",
     "zsh",
 ];
 
+/// Suffix-less file names the phone reads in-app as plain text. Kept in step
+/// with the phone's `MOBILE_FILE_NAMES` (`mobile/src/remote/fileTypes.ts`).
+const CODE_TEXT_NAMES: &[&str] = &[
+    ".babelrc",
+    ".bashrc",
+    ".bazelrc",
+    ".condarc",
+    ".dockerignore",
+    ".editorconfig",
+    ".envrc",
+    ".eslintrc",
+    ".gitattributes",
+    ".gitignore",
+    ".gitmodules",
+    ".npmrc",
+    ".nvmrc",
+    ".prettierrc",
+    ".profile",
+    ".rprofile",
+    ".vimrc",
+    ".yamllint",
+    ".zshrc",
+    "authors",
+    "brewfile",
+    "build.bazel",
+    "caddyfile",
+    "changelog",
+    "codeowners",
+    "gemfile",
+    "go.mod",
+    "go.sum",
+    "justfile",
+    "license",
+    "meson.build",
+    "notice",
+    "podfile",
+    "procfile",
+    "rakefile",
+    "readme",
+    "vagrantfile",
+    "workspace",
+];
+
+/// Names that qualify themselves with a suffix (`Dockerfile.dev`, `Makefile.am`,
+/// `.env.local`): the prefix alone, or the prefix followed by `.`.
+const CODE_TEXT_NAME_PREFIXES: &[&str] = &[
+    "makefile",
+    "gnumakefile",
+    "dockerfile",
+    "containerfile",
+    "jenkinsfile",
+    ".env",
+];
+
 fn is_code_text_extension(ext: &str) -> bool {
     CODE_TEXT_EXTENSIONS.contains(&ext)
+}
+
+/// The last path segment, lowercased. `name` is only ever a client-supplied
+/// string, so both platform separators have to be considered — `Path` would
+/// treat `C:\w\Makefile` as one component on Unix.
+fn base_file_name(name: &str) -> String {
+    display_name(name, name).to_ascii_lowercase()
+}
+
+fn is_text_file_name(name: &str) -> bool {
+    let base = base_file_name(name);
+    if CODE_TEXT_NAMES.contains(&base.as_str()) {
+        return true;
+    }
+    CODE_TEXT_NAME_PREFIXES.iter().any(|prefix| {
+        base.strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+    })
 }
 
 fn is_mobile_download_allowed(name: &str) -> bool {
@@ -857,6 +962,10 @@ fn prepare_preview(
         .unwrap_or_default()
         .to_ascii_lowercase();
     let original_name = display_name(requested_display_name, "attachment");
+    // Suffix-less files (`.gitignore`, `Makefile`, `Cargo.lock`) have nothing for
+    // the extension branches below to match on; the name is their only signal,
+    // and it is the name the client matched on to ask for a text preview.
+    let named_text = is_text_file_name(&original_name);
     let dir = transfer_root().join("download");
     ensure_private_dir(&dir)?;
     let stamp = new_transfer_id("preview");
@@ -938,9 +1047,10 @@ fn prepare_preview(
             .into());
     }
     let markdown = matches!(ext.as_str(), "md" | "markdown");
-    let json = ext == "json";
+    let json = matches!(ext.as_str(), "json" | "ipynb");
     let rich_json = json && size < MAX_JSON_RICH_PREVIEW_BYTES;
-    let plain_text = matches!(ext.as_str(), "txt" | "log") || is_code_text_extension(&ext);
+    let plain_text =
+        named_text || matches!(ext.as_str(), "txt" | "log") || is_code_text_extension(&ext);
     if !markdown && !json && !plain_text {
         return Err("This file type must be opened by a mobile app."
             .to_string()
@@ -1341,11 +1451,21 @@ mod tests {
         assert_eq!(preview.mime_type, "application/json");
         std::fs::remove_file(preview.path).unwrap();
 
+        // Text data formats are read in-app as plain text.
         let csv = dir.join("result.csv");
         std::fs::write(&csv, "sample,value\na,1\n").unwrap();
-        let error = prepare_preview(&csv, "result.csv")
-            .expect_err("CSV must be delegated to an installed mobile app");
-        assert!(error.to_string().contains("mobile app"));
+        let csv_preview = prepare_preview(&csv, "result.csv").unwrap();
+        assert_eq!(csv_preview.preview_kind, "text");
+        assert_eq!(csv_preview.mime_type, "text/plain");
+        std::fs::remove_file(csv_preview.path).unwrap();
+
+        // A notebook is one JSON document, so it gets the rich JSON reader.
+        let notebook = dir.join("plan.ipynb");
+        std::fs::write(&notebook, r#"{"cells":[]}"#).unwrap();
+        let notebook_preview = prepare_preview(&notebook, "plan.ipynb").unwrap();
+        assert_eq!(notebook_preview.preview_kind, "json");
+        assert_eq!(notebook_preview.mime_type, "application/json");
+        std::fs::remove_file(notebook_preview.path).unwrap();
 
         // Code / config files are read in-app as plain text.
         for (file_name, body) in [
@@ -1353,12 +1473,32 @@ mod tests {
             ("train.py", "print('hi')\n"),
             ("server.go", "package main\n"),
             ("config.toml", "[a]\nb = 1\n"),
+            ("api.proto", "message Ping {}\n"),
+            ("changes.patch", "--- a\n+++ b\n"),
         ] {
             let code = dir.join(file_name);
             std::fs::write(&code, body).unwrap();
             let preview = prepare_preview(&code, file_name).unwrap();
             assert_eq!(preview.preview_kind, "text");
             assert_eq!(preview.mime_type, "text/plain");
+            std::fs::remove_file(preview.path).unwrap();
+        }
+
+        // A suffix-less name is the only signal those files have.
+        for file_name in [
+            "Makefile",
+            "Dockerfile.dev",
+            ".gitignore",
+            "Cargo.lock",
+            "go.mod",
+            "LICENSE",
+        ] {
+            let named = dir.join(file_name);
+            std::fs::write(&named, "all:\n\tcc -o app main.c\n").unwrap();
+            let preview = prepare_preview(&named, file_name).unwrap();
+            assert_eq!(preview.preview_kind, "text");
+            assert_eq!(preview.mime_type, "text/plain");
+            assert_eq!(preview.name, file_name);
             std::fs::remove_file(preview.path).unwrap();
         }
 
@@ -1378,12 +1518,22 @@ mod tests {
         assert_eq!(mime_type_for_name("drawing.svg"), "image/svg+xml");
         assert_eq!(mime_type_for_name("MAIN.RS"), "text/plain");
         assert_eq!(mime_type_for_name("train.py"), "text/x-python");
+        assert_eq!(mime_type_for_name("analysis.ipynb"), "application/json");
+        // Suffix-less names, reached through either platform's path form.
+        assert_eq!(mime_type_for_name("Makefile"), "text/plain");
+        assert_eq!(mime_type_for_name("Dockerfile.dev"), "text/plain");
+        assert_eq!(mime_type_for_name(".gitignore"), "text/plain");
+        assert_eq!(mime_type_for_name("C:\\w\\servers\\Makefile"), "text/plain");
         assert!(is_mobile_download_allowed("archive.7z"));
         assert!(is_mobile_download_allowed("analysis.jsonl"));
         assert!(is_mobile_download_allowed("main.rs"));
         assert!(is_mobile_download_allowed("config.toml"));
+        assert!(is_mobile_download_allowed("Cargo.lock"));
+        assert!(is_mobile_download_allowed("Makefile"));
         assert!(!is_mobile_download_allowed("dataset.h5"));
         assert!(!is_mobile_download_allowed("unknown"));
+        // A name that merely starts like one of the prefixes is not a match.
+        assert!(!is_mobile_download_allowed("makefile-list.bin"));
     }
 }
 

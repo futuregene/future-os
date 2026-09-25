@@ -9,7 +9,7 @@ import { FilePreviewOverlay } from "./FilePreviewOverlay";
 import { ImagePreview } from "./ImagePreview";
 import { JsonPreview } from "./JsonPreview";
 import { MarkdownPreview } from "./MarkdownPreview";
-import { codeLanguageForPath, imageMimeForPath, isTextReadablePath, LANGUAGE_BY_EXTENSION, previewKindForPath } from "./previewKind";
+import { codeLanguageForPath, imageMimeForPath, isTextReadablePath, LANGUAGE_BY_EXTENSION, LANGUAGE_BY_NAME, previewKindForPath } from "./previewKind";
 import { PreviewNotice } from "./PreviewNotice";
 import { TextPreview } from "./TextPreview";
 import {
@@ -74,6 +74,8 @@ describe("previewKind", () => {
     expect(previewKindForPath("/a/b.md")).toBe("markdown");
     expect(previewKindForPath("/a/b.markdown")).toBe("markdown");
     expect(previewKindForPath("/a/b.JSON")).toBe("json");
+    // A notebook is one JSON document.
+    expect(previewKindForPath("/a/plan.ipynb")).toBe("json");
     expect(previewKindForPath("/a/b.pdf")).toBeNull();
     expect(previewKindForPath("/a/b")).toBeNull();
   });
@@ -86,16 +88,24 @@ describe("previewKind", () => {
     expect(previewKindForPath("/a/b.toml")).toBe("text");
     expect(previewKindForPath("/a/b.sh")).toBe("text");
     expect(previewKindForPath("/a/b.jsonl")).toBe("text");
+    expect(previewKindForPath("/a/b.proto")).toBe("text");
+    // Suffix-less build and lock files read as text too.
+    expect(previewKindForPath("/a/Makefile")).toBe("text");
+    expect(previewKindForPath("/a/Dockerfile.dev")).toBe("text");
+    expect(previewKindForPath("/a/Cargo.lock")).toBe("text");
+    expect(previewKindForPath("/a/.gitignore")).toBe("text");
+    expect(previewKindForPath("/a/go.mod")).toBe("text");
     // Unsupported or ambiguous types keep the OS-handler path.
     expect(previewKindForPath("/a/b.bin")).toBeNull();
     expect(previewKindForPath("/a/b.h5")).toBeNull();
-    expect(previewKindForPath("/a/Makefile")).toBeNull();
+    expect(previewKindForPath("/a/dataset.parquet")).toBeNull();
   });
 
   it("detects text-readable paths for the artifact preview", () => {
     expect(isTextReadablePath("/a/b.rs")).toBe(true);
     expect(isTextReadablePath("/a/b.md")).toBe(true);
     expect(isTextReadablePath("/a/b.json")).toBe(true);
+    expect(isTextReadablePath("/a/Makefile")).toBe(true);
     expect(isTextReadablePath("/a/b.pdf")).toBe(false);
     expect(isTextReadablePath("/a/b.png")).toBe(false);
   });
@@ -107,23 +117,36 @@ describe("previewKind", () => {
     expect(codeLanguageForPath("/w/Cargo.toml")).toBe("toml");
     expect(codeLanguageForPath("/w/deploy.sh")).toBe("shellscript");
     expect(codeLanguageForPath("/w/main.tf")).toBe("hcl");
+    expect(codeLanguageForPath("/w/prod.tfvars")).toBe("hcl");
     expect(codeLanguageForPath("/w/solver.m")).toBe("matlab");
     expect(codeLanguageForPath("/w/AppDelegate.mm")).toBe("objective-cpp");
     expect(codeLanguageForPath("/w/legacy.f")).toBe("fortran-fixed-form");
     expect(codeLanguageForPath("/w/modern.f90")).toBe("fortran-free-form");
     expect(codeLanguageForPath("/w/rows.jsonl")).toBe("jsonl");
+    expect(codeLanguageForPath("/w/api.proto")).toBe("protobuf");
+    expect(codeLanguageForPath("/w/build.mk")).toBe("make");
+    expect(codeLanguageForPath("/w/CMakeLists.txt")).toBe("cmake");
+    expect(codeLanguageForPath("/w/plan.ipynb")).toBe("json");
+    // Suffix-less names are resolved by name, not by extension.
+    expect(codeLanguageForPath("/w/Makefile")).toBe("make");
+    expect(codeLanguageForPath("/w/Dockerfile.dev")).toBe("dockerfile");
+    expect(codeLanguageForPath("/w/Jenkinsfile")).toBe("groovy");
+    expect(codeLanguageForPath("/w/Gemfile")).toBe("ruby");
+    expect(codeLanguageForPath("/w/.bashrc")).toBe("shellscript");
+    expect(codeLanguageForPath("/w/.env.local")).toBe("ini");
     // Reads as text but has no grammar: the preview stays plain.
     expect(codeLanguageForPath("/w/notes.txt")).toBeNull();
     expect(codeLanguageForPath("/w/wire.h5")).toBeNull();
-    expect(codeLanguageForPath("/w/.bashrc")).toBeNull();
+    expect(codeLanguageForPath("/w/Cargo.lock")).toBeNull();
+    expect(codeLanguageForPath("/w/.gitignore")).toBeNull();
     expect(codeLanguageForPath("/w/README")).toBeNull();
   });
 
-  it("maps every extension to a grammar the highlighter can actually load", () => {
+  it("maps every extension and name to a grammar the highlighter can actually load", () => {
     // A typo'd id silently degrades to plain text, which no screenshot would
     // flag; Shiki's registry is the authority the highlighter itself uses.
     const known = new Set(bundledLanguagesInfo.flatMap(language => [language.id, ...(language.aliases ?? [])]));
-    expect(Object.entries(LANGUAGE_BY_EXTENSION).filter(([, language]) => !known.has(language))).toEqual([]);
+    expect(Object.entries({ ...LANGUAGE_BY_EXTENSION, ...LANGUAGE_BY_NAME }).filter(([, language]) => !known.has(language))).toEqual([]);
   });
 
   it("maps extensions to MIME types with a fallback", () => {

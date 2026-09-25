@@ -59,6 +59,15 @@ import "prismjs/components/prism-hcl";
 import "prismjs/components/prism-batch";
 import "prismjs/components/prism-markup-templating";
 import "prismjs/components/prism-php";
+// Grammars for the file names the phone previews as text (see
+// `CODE_LANGUAGE_BY_NAME`): build entry points and the ignore/config dotfiles.
+import "prismjs/components/prism-makefile";
+import "prismjs/components/prism-git";
+import "prismjs/components/prism-protobuf";
+import "prismjs/components/prism-graphql";
+import "prismjs/components/prism-elm";
+// `prism-objectivec` extends the C grammar, which is loaded above.
+import "prismjs/components/prism-objectivec";
 import { codeColors } from "../theme/tokens";
 
 /** Prism grammar per file suffix for in-app code previews. This mirrors the
@@ -149,17 +158,109 @@ export const CODE_LANGUAGE_BY_SUFFIX: Readonly<Record<string, string>> = {
   ".properties": "properties",
   ".toml": "toml",
   ".tf": "hcl",
+  ".hcl": "hcl",
+  ".tfvars": "hcl",
+  ".mk": "makefile",
+  ".proto": "protobuf",
+  ".diff": "diff",
+  ".patch": "diff",
+  ".graphql": "graphql",
+  ".edn": "clojure",
+  ".elm": "elm",
+  ".mm": "objectivec",
+  ".f": "fortran",
+  ".mts": "typescript",
+  ".cts": "typescript",
+  // Data formats the text route serves: the grammars color them where one
+  // lines up (`json` over JSON Lines, `xml` over plists and project files).
+  ".yaml": "yaml",
+  ".yml": "yaml",
+  ".xml": "xml",
+  ".xhtml": "html",
+  ".jsonl": "json",
+  ".ndjson": "json",
+  ".plist": "xml",
+  ".csproj": "xml",
 };
+
+/** Prism grammar per bare file name, for the suffix-less files the text route
+ * reads (`Makefile`, `Gemfile`, `.bashrc`). The names mirror
+ * `remote/fileTypes.ts`'s `MOBILE_FILE_NAMES`; names whose language Prism does
+ * not ship (`.sln`, `.cmake`, `go.mod`, the licence files) stay unlisted and
+ * plain — `codeStyleForFile` still gives them the monospace metrics. */
+export const CODE_LANGUAGE_BY_NAME: Readonly<Record<string, string>> = {
+  "dockerfile": "docker",
+  "containerfile": "docker",
+  "makefile": "makefile",
+  "gnumakefile": "makefile",
+  "jenkinsfile": "groovy",
+  "gemfile": "ruby",
+  "rakefile": "ruby",
+  "podfile": "ruby",
+  "vagrantfile": "ruby",
+  "brewfile": "ruby",
+  ".gitignore": "git",
+  ".gitattributes": "git",
+  ".gitmodules": "git",
+  ".dockerignore": "git",
+  ".npmrc": "ini",
+  ".editorconfig": "ini",
+  ".condarc": "yaml",
+  ".yamllint": "yaml",
+  ".bashrc": "bash",
+  ".zshrc": "bash",
+  ".profile": "bash",
+  ".envrc": "bash",
+};
+
+/** Names that qualify themselves with a suffix (`Dockerfile.dev`,
+ * `Makefile.am`, `.env.local`) rather than standing alone. */
+const CODE_LANGUAGE_BY_NAME_PREFIXES: Readonly<Record<string, string>> = {
+  "makefile": "makefile",
+  "gnumakefile": "makefile",
+  "dockerfile": "docker",
+  "containerfile": "docker",
+  "jenkinsfile": "groovy",
+  ".env": "ini",
+};
+
+/** Suffixes the text route reads as prose. Everything else there — including
+ * files with no grammar at all (`Cargo.lock`, `.csv`, `meson.build`) — keeps
+ * the monospace metrics, because alignment is what makes them readable. */
+const PROSE_SUFFIXES = [".txt", ".log"];
+/** Suffix-less prose: the licence / readme files that ship without one. */
+const PROSE_NAMES = ["authors", "changelog", "license", "notice", "readme"];
+
+/** Whether a previewed file should be laid out as source (monospace) rather
+ * than as prose. Independent of `codeLanguageForFile`: a grammar is a bonus,
+ * not the signal. */
+export function codeStyleForFile(name: string): boolean {
+  const normalized = previewBaseName(name);
+  if (PROSE_NAMES.includes(normalized)) return false;
+  return !PROSE_SUFFIXES.some(suffix => normalized.endsWith(suffix));
+}
 
 const CODE_LANGUAGE_SUFFIXES = Object.keys(CODE_LANGUAGE_BY_SUFFIX)
   .sort((left, right) => right.length - left.length);
+
+const PATH_SEPARATORS = /[\\/]/;
+
+function previewBaseName(name: string): string {
+  const normalized = name.trim().toLowerCase();
+  return normalized.split(PATH_SEPARATORS).pop() ?? normalized;
+}
 
 /** Prism language for a previewed file name. Null means "read it as plain
  * text": not a code file at all (`.txt`, `.log`), or no grammar shipped for it.
  * `highlightCode` validates the name against the loaded grammars anyway, so an
  * unknown or misspelled entry degrades to plain text instead of throwing. */
 export function codeLanguageForFile(name: string): string | null {
-  const normalized = name.trim().toLowerCase();
+  const normalized = previewBaseName(name);
+  const named = CODE_LANGUAGE_BY_NAME[normalized];
+  if (named) return named;
+  const prefix = Object.keys(CODE_LANGUAGE_BY_NAME_PREFIXES)
+    .find(candidate => normalized.startsWith(`${candidate}.`));
+  if (prefix) return CODE_LANGUAGE_BY_NAME_PREFIXES[prefix]!;
   const suffix = CODE_LANGUAGE_SUFFIXES.find(candidate => normalized.endsWith(candidate));
   return suffix ? CODE_LANGUAGE_BY_SUFFIX[suffix]! : null;
 }

@@ -21,7 +21,6 @@ const MOBILE_FILE_TYPES: Readonly<Record<string, MobileFileType>> = {
   ".tar.gz": { mimeType: "application/gzip", route: "external" },
   ".markdown": { mimeType: "text/markdown", route: "markdown" },
   ".numbers": { mimeType: "application/vnd.apple.numbers", route: "external" },
-  ".jsonl": { mimeType: "application/jsonl", route: "external", textFallback: true },
   ".pages": { mimeType: "application/vnd.apple.pages", route: "external" },
   ".docx": {
     mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -39,7 +38,6 @@ const MOBILE_FILE_TYPES: Readonly<Record<string, MobileFileType>> = {
   ".heic": { mimeType: "image/heic", route: "external" },
   ".heif": { mimeType: "image/heif", route: "external" },
   ".html": { mimeType: "text/html", route: "external" },
-  ".yaml": { mimeType: "application/yaml", route: "external", textFallback: true },
   ".gzip": { mimeType: "application/gzip", route: "external" },
   ".epub": { mimeType: "application/epub+zip", route: "external" },
   ".webp": { mimeType: "image/webp", route: "image" },
@@ -55,10 +53,6 @@ const MOBILE_FILE_TYPES: Readonly<Record<string, MobileFileType>> = {
   ".txt": { mimeType: "text/plain", route: "text" },
   ".log": { mimeType: "text/plain", route: "text" },
   ".md": { mimeType: "text/markdown", route: "markdown" },
-  ".csv": { mimeType: "text/csv", route: "external", textFallback: true },
-  ".tsv": { mimeType: "text/tab-separated-values", route: "external", textFallback: true },
-  ".yml": { mimeType: "application/yaml", route: "external", textFallback: true },
-  ".xml": { mimeType: "application/xml", route: "external", textFallback: true },
   ".htm": { mimeType: "text/html", route: "external" },
   ".tex": { mimeType: "application/x-tex", route: "external", textFallback: true },
   ".bib": { mimeType: "application/x-bibtex", route: "external", textFallback: true },
@@ -97,6 +91,21 @@ const MOBILE_FILE_TYPES: Readonly<Record<string, MobileFileType>> = {
   ".bz2": { mimeType: "application/x-bzip2", route: "external" },
   ".xz": { mimeType: "application/x-xz", route: "external" },
   ".zst": { mimeType: "application/zstd", route: "external" },
+
+  // Text data formats read in-app instead of being handed to another app:
+  // columns and indentation only line up in the monospace reader. Each keeps
+  // its precise MIME + `textFallback` so the preview menu can still push it to
+  // an installed editor.
+  ".csv": { mimeType: "text/csv", route: "text", textFallback: true },
+  ".tsv": { mimeType: "text/tab-separated-values", route: "text", textFallback: true },
+  ".yaml": { mimeType: "application/yaml", route: "text", textFallback: true },
+  ".yml": { mimeType: "application/yaml", route: "text", textFallback: true },
+  ".xml": { mimeType: "application/xml", route: "text", textFallback: true },
+  ".jsonl": { mimeType: "application/jsonl", route: "text", textFallback: true },
+  ".ndjson": { mimeType: "application/x-ndjson", route: "text", textFallback: true },
+  // A notebook is one JSON document, so it gets the rich JSON reader (and the
+  // plain-text fallback that reader already has above its size ceiling).
+  ".ipynb": { mimeType: "application/json", route: "json", textFallback: true },
 
   // Code and configuration files read in-app as text. The preview renders them
   // with the grammar for their suffix (`components/codeHighlight.ts`).
@@ -168,12 +177,110 @@ const MOBILE_FILE_TYPES: Readonly<Record<string, MobileFileType>> = {
   ".properties": { mimeType: "text/plain", route: "text" },
   ".tf": { mimeType: "text/plain", route: "text" },
   ".toml": { mimeType: "text/plain", route: "text" },
+  ".mk": { mimeType: "text/plain", route: "text" },
+  ".cmake": { mimeType: "text/plain", route: "text" },
+  ".lock": { mimeType: "text/plain", route: "text" },
+  ".plist": { mimeType: "text/plain", route: "text" },
+  ".xcconfig": { mimeType: "text/plain", route: "text" },
+  ".csproj": { mimeType: "text/plain", route: "text" },
+  ".sln": { mimeType: "text/plain", route: "text" },
+  ".proto": { mimeType: "text/plain", route: "text" },
+  ".diff": { mimeType: "text/plain", route: "text" },
+  ".patch": { mimeType: "text/plain", route: "text" },
+  ".graphql": { mimeType: "text/plain", route: "text" },
+  ".edn": { mimeType: "text/plain", route: "text" },
+  ".elm": { mimeType: "text/plain", route: "text" },
+  ".xhtml": { mimeType: "text/plain", route: "text" },
+  ".mm": { mimeType: "text/plain", route: "text" },
+  ".f": { mimeType: "text/plain", route: "text" },
+  ".hcl": { mimeType: "text/plain", route: "text" },
+  ".tfvars": { mimeType: "text/plain", route: "text" },
+  ".mts": { mimeType: "text/plain", route: "text" },
+  ".cts": { mimeType: "text/plain", route: "text" },
 };
+
+/** Shared entry for the suffix-less names below. */
+const PLAIN_TEXT: MobileFileType = { mimeType: "text/plain", route: "text" };
+
+// Suffix-less files are the norm for build entry points, lockfiles and
+// editor / shell / version-manager dotfiles, so a suffix table can never see
+// them (`Makefile`, `Dockerfile`, `.gitignore`, `Cargo.lock`). They match on the
+// whole base name instead. The desktop host (`remote_host/files.rs`) carries the
+// same names, and the desktop overlay's own list (`previewKind.ts`) is wider
+// because it has no transfer budget.
+const MOBILE_FILE_NAMES: Readonly<Record<string, MobileFileType>> = {
+  // Build and project entry points.
+  "brewfile": PLAIN_TEXT,
+  "build.bazel": PLAIN_TEXT,
+  "caddyfile": PLAIN_TEXT,
+  "gemfile": PLAIN_TEXT,
+  "justfile": PLAIN_TEXT,
+  "meson.build": PLAIN_TEXT,
+  "podfile": PLAIN_TEXT,
+  "procfile": PLAIN_TEXT,
+  "rakefile": PLAIN_TEXT,
+  "vagrantfile": PLAIN_TEXT,
+  "workspace": PLAIN_TEXT,
+  // Dependency manifests (`.lock` files are covered by their suffix).
+  "go.mod": PLAIN_TEXT,
+  "go.sum": PLAIN_TEXT,
+  // Editor, shell and version-manager dotfiles.
+  ".bazelrc": PLAIN_TEXT,
+  ".babelrc": PLAIN_TEXT,
+  ".bashrc": PLAIN_TEXT,
+  ".condarc": PLAIN_TEXT,
+  ".dockerignore": PLAIN_TEXT,
+  ".editorconfig": PLAIN_TEXT,
+  ".envrc": PLAIN_TEXT,
+  ".eslintrc": PLAIN_TEXT,
+  ".gitattributes": PLAIN_TEXT,
+  ".gitignore": PLAIN_TEXT,
+  ".gitmodules": PLAIN_TEXT,
+  ".npmrc": PLAIN_TEXT,
+  ".nvmrc": PLAIN_TEXT,
+  ".prettierrc": PLAIN_TEXT,
+  ".profile": PLAIN_TEXT,
+  ".rprofile": PLAIN_TEXT,
+  ".vimrc": PLAIN_TEXT,
+  ".yamllint": PLAIN_TEXT,
+  ".zshrc": PLAIN_TEXT,
+  // Licence and attribution files that ship without an extension; the `.md` /
+  // `.txt` versions are already covered by their suffix.
+  "authors": PLAIN_TEXT,
+  "changelog": PLAIN_TEXT,
+  "codeowners": PLAIN_TEXT,
+  "license": PLAIN_TEXT,
+  "notice": PLAIN_TEXT,
+  "readme": PLAIN_TEXT,
+};
+
+// Names that carry a qualifier of their own (`Dockerfile.dev`, `Makefile.am`,
+// `.env.local`): the prefix alone, or the prefix followed by `.`.
+const MOBILE_FILE_NAME_PREFIXES: readonly string[] = [
+  "makefile",
+  "gnumakefile",
+  "dockerfile",
+  "containerfile",
+  "jenkinsfile",
+  ".env",
+];
 
 const SUFFIXES = Object.keys(MOBILE_FILE_TYPES).sort((left, right) => right.length - left.length);
 
+/** A path separator on either platform: the name a file was listed under may be
+ * a full desktop path, and only its last segment decides the type. */
+const PATH_SEPARATORS = /[\\/]/;
+
+function baseName(normalized: string): string {
+  return normalized.split(PATH_SEPARATORS).pop() ?? normalized;
+}
+
 export function mobileFileType(name: string): MobileFileType | null {
-  const normalized = name.trim().toLowerCase();
+  const normalized = baseName(name.trim().toLowerCase());
+  const named = MOBILE_FILE_NAMES[normalized];
+  if (named) return named;
+  if (MOBILE_FILE_NAME_PREFIXES.some(prefix =>
+    normalized === prefix || normalized.startsWith(`${prefix}.`))) return PLAIN_TEXT;
   const suffix = SUFFIXES.find(candidate => normalized.endsWith(candidate));
   return suffix ? MOBILE_FILE_TYPES[suffix]! : null;
 }
