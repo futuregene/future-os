@@ -1015,6 +1015,16 @@ export function useTimelineController({
       syncEngineRef.current?.restart(sessionId, "open");
   }, [clientRef, selectedRef]);
 
+  // Pull-to-refresh: rebuild the visible window from durable history. This is
+  // the explicit escape hatch for any sync state the automatic reconciles
+  // failed to heal — it re-runs the same open path, so a stuck or wrong
+  // timeline converges to whatever the journal holds.
+  const reloadTimeline = useCallback(() => {
+    const sessionId = selectedRef.current;
+    if (!sessionId) return;
+    syncEngineRef.current?.restart(sessionId, "open");
+  }, [selectedRef]);
+
   return {
     timeline,
     timelinePending,
@@ -1023,6 +1033,7 @@ export function useTimelineController({
     canLoadOlderTimeline: selectedHistoryPaging?.hasMore ?? false,
     loadingOlderTimeline: selectedHistoryPaging?.loading ?? false,
     loadOlderTimeline,
+    reloadTimeline,
     prepareTimelineOpen,
     syncEngineRef,
     streamingRef,
