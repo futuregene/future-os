@@ -60,8 +60,9 @@
 
 ## Provider 能力矩阵
 
-`future channel list` 会打印你当前构建的这张矩阵，含每个通道的成熟度与声明式外部依赖。
-能力列是桥可以依赖的行为：
+`future channel list` 会报告当前构建中每个通道的成熟度、配置状态、桥类型、能力与声明式
+外部依赖；`list --json` 另外给出完整的外部依赖原文与单条上限。下方矩阵把能力列表展开成
+逐项列，并补上接入方式与提及门。能力列是桥可以依赖的行为：
 
 - **编辑**：桥可以改写同一条消息来做渐进式流式回复；不具备该能力的通道在结束时一次性发送。
 - **线程**：每个线程是独立的 agent 会话，也是独立的会话。
@@ -113,13 +114,14 @@ preview 不等于半成品：它周围的链路（策略、去重、会话、流
 ## 各通道配置
 
 下列每个块都是该 provider 真正读取的最小集合：它自己的 `config_example`（即
-`future channel list` 打印的内容）加上它认可的其他键。所有键都有默认值，标注 *必填* 的凭据
-除外。标注 *测试口* 的键用于把通道指向 mock 服务，生产环境留空。策略键（`dm_policy`、
-`dm_allowlist`、`group_policy`、`group_allowlist`、`require_mention`）由桥为每个通道读取；
-块里列出的是该通道示例中点到的键，其余键取上一节的默认值。
+`channels/src/providers/` 下 provider 文件中的示例字面量）加上它认可的其他键。所有键都有
+默认值，标注 *必填* 的凭据除外。标注 *测试口* 的键用于把通道指向 mock 服务，生产环境留空。
+策略键（`dm_policy`、`dm_allowlist`、`group_policy`、`group_allowlist`、
+`require_mention`）由桥为每个通道读取；块里列出的是该通道示例中点到的键，其余键取上一节的
+默认值。
 
 不存在 `streaming` 键：通道是否流式取决于它是否声明 `edit` 能力。该键仍出现在 Discord 与
-Mattermost 的 `future channel list` 示例中，但不被读取。
+Mattermost 的 `config_example` 中，但不被读取。
 
 ### Telegram
 

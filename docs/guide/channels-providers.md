@@ -71,9 +71,12 @@ whether the bridge *starts* the channel); the bridge does not have to be running
 
 ## Provider matrix
 
-`future channel list` prints this matrix for the build you are running, including
-each channel's maturity and its declared external requirements. The capability
-columns are what the bridge can rely on:
+`future channel list` reports each channel's maturity, configured state, bridge
+kind, capabilities and declared external requirements for the build you are
+running; `list --json` adds the full requirement strings and the message limit.
+The matrix below expands the capability list into columns and adds the inbound
+transport and the mention gate. The capability columns are what the bridge can
+rely on:
 
 - **Edit** lets the bridge stream a progressive answer by rewriting one message;
   a channel without it gets a single message at the end.
@@ -137,17 +140,18 @@ rate-limit arithmetic.
 ## Per-channel configuration
 
 Each block below is the minimal shape the provider reads: its own
-`config_example` (what `future channel list` prints) plus every other key it
-honours. Every key has a default and can be omitted except the credentials marked
-*required*. Keys marked *test seam* point a channel at a mock server and are
-empty in production. The policy keys (`dm_policy`, `dm_allowlist`,
-`group_policy`, `group_allowlist`, `require_mention`) are read by the bridge for
-every channel; the blocks show the ones that channel's own example names, and the
-defaults from the table above apply to the rest.
+`config_example` — the example literal in the provider file under
+`channels/src/providers/` — plus every other key it honours. Every key has a
+default and can be omitted except the credentials marked *required*. Keys marked
+*test seam* point a channel at a mock server and are empty in production. The
+policy keys (`dm_policy`, `dm_allowlist`, `group_policy`, `group_allowlist`,
+`require_mention`) are read by the bridge for every channel; the blocks show the
+ones that channel's own example names, and the defaults from the table above
+apply to the rest.
 
 There is no `streaming` key: a channel streams when it declares the `edit`
-capability. The key still appears in `future channel list` examples for Discord
-and Mattermost, where it is ignored.
+capability. The key still appears in the `config_example` of Discord and
+Mattermost, where it is ignored.
 
 ### Telegram
 
