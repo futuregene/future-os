@@ -210,7 +210,7 @@
     "type": "tool_start"
   },
   {
-    "data": "{\"tool_id\":\"call_8\",\"tool_name\":\"shell\",\"type\":\"tool_end\"}",
+    "data": "{\"type\":\"tool_end\",\"text\":\"ls: cannot access '/nonexistent-workspace-path': No such file or directory\\n\\n[exit: 2]\",\"tool_name\":\"shell\",\"tool_id\":\"call_8\"}",
     "idx": 46,
     "runId": "run_verify_lean",
     "type": "tool_end"
