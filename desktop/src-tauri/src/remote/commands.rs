@@ -89,10 +89,10 @@ pub(super) struct HandshakeState {
 /// command replies. Additive: a client that does not ask never receives one.
 pub(super) const REPLY_GZIP_FEATURE: &str = "reply_gzip_v1";
 
-/// Record what a connection declared on `secure_ready`. Both capabilities are
+/// Record what a connection declared on `secure_ready`. Every capability is
 /// opt-in, and the declared set is authoritative: a declaration always writes
-/// the flag, so an empty list clears a previous declaration rather than
-/// leaving it latched.
+/// the flag, so an empty list clears a previous declaration rather than leaving
+/// it latched.
 pub(super) fn apply_declared_features(
     handshake: &HandshakeState,
     pair_id: &str,
@@ -104,6 +104,9 @@ pub(super) fn apply_declared_features(
             .any(|feature| feature == super::publisher::EVENT_COALESCING_FEATURE),
         Ordering::Release,
     );
+    // The lean feed is read from two layers (see `remote_host::lean`), so it is
+    // recorded in one place instead of an `Arc` per declaration site.
+    crate::remote_host::lean::set_enabled(crate::remote_host::lean::feature_declared(features));
     handshake.gzip_replies.store(
         features.iter().any(|feature| feature == REPLY_GZIP_FEATURE),
         Ordering::Release,
@@ -2037,6 +2040,164 @@ mod bridge_tests {
         let bridge = Bridge::start().await;
         bridge.activate();
         (home, bridge)
+    }
+
+    /// The history lane's half of the lean feed, end to end through the real
+    /// command path. The unit tests pin the rewrite itself; this pins that the
+    /// command consults the declared flag, that an undeclared client still gets
+    /// every field, and that a later connection cannot inherit the declaration.
+    ///
+    /// `mock_agent_lock` serializes this family, so no sibling test can observe
+    /// the process-wide flag while it is flipped here.
+    #[tokio::test]
+    async fn lean_history_trims_only_for_a_client_that_declared_it() {
+        use crate::remote_host::lean::LEAN_EVENTS_FEATURE;
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-lean-history").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("sess-lean");
+        agent.set_session_entries(
+            &session,
+            json!({ "entries": [
+                {
+                    "id": "u1", "kind": "user", "role": "user", "createdAtMs": 1,
+                    "blocks": [{"kind": "text", "text": "question"}],
+                },
+                {
+                    "id": "a1", "kind": "assistant", "role": "assistant", "createdAtMs": 2,
+                    "blocks": [
+                        {"kind": "reasoning", "text": "private reasoning body"},
+                        {"kind": "text", "text": "visible answer"},
+                        {"kind": "tool_call", "name": "read", "toolCallId": "c1",
+                         "arguments": {"path": "/tmp/a", "offset": 5, "limit": 10}},
+                    ],
+                },
+                {
+                    "id": "t1", "kind": "tool", "role": "tool", "createdAtMs": 3,
+                    "blocks": [
+                        {"kind": "tool_result", "toolCallId": "c1", "text": "tool output body"},
+                    ],
+                },
+            ] }),
+        );
+
+        let read = |id: &'static str| {
+            let bridge = &bridge;
+            let session = session.clone();
+            async move {
+                bridge
+                    .call(json!({ "id": unique(id), "type": "get_session_entries", "sessionId": session }))
+                    .await
+            }
+        };
+        // The paged shape is the one the phone actually uses (`useTimelineController`
+        // always sends `before`), and it is a separate code path from the full
+        // read above, so both are asserted throughout.
+        let read_paged = |id: &'static str| {
+            let bridge = &bridge;
+            let session = session.clone();
+            async move {
+                bridge
+                    .call(json!({
+                        "id": unique(id),
+                        "type": "get_session_entries",
+                        "sessionId": session,
+                        "before": i64::MAX,
+                        "limit": 10,
+                    }))
+                    .await
+            }
+        };
+
+        // Undeclared: the page is exactly what it always was. A distinct id per
+        // call, because a repeated id is served from the single-flight response
+        // cache and would mask the flag change.
+        let full = read("lean-before").await;
+        assert_eq!(full["success"], json!(true));
+        assert_eq!(
+            full["data"]["entries"][1]["blocks"][0]["text"],
+            json!("private reasoning body")
+        );
+        assert_eq!(
+            full["data"]["entries"][1]["blocks"][2]["arguments"]["offset"],
+            json!(5)
+        );
+        assert_eq!(
+            full["data"]["entries"][2]["blocks"][0]["text"],
+            json!("tool output body")
+        );
+        let full_paged = read_paged("lean-before-paged").await;
+        assert_eq!(
+            full_paged["data"]["entries"][1]["blocks"][0]["text"],
+            json!("private reasoning body")
+        );
+
+        apply_declared_features(
+            &bridge.handshake,
+            &bridge.pair_id,
+            &[LEAN_EVENTS_FEATURE.to_string()],
+        );
+        let lean = read("lean-after").await;
+        assert_eq!(lean["success"], json!(true));
+        let blocks = lean["data"]["entries"][1]["blocks"].as_array().unwrap();
+        // The reasoning block survives without its body, so the row still shows.
+        assert_eq!(blocks[0]["kind"], json!("reasoning"));
+        assert!(blocks[0].get("text").is_none());
+        // Visible text is untouched.
+        assert_eq!(blocks[1]["text"], json!("visible answer"));
+        // Only the keys a target can be derived from survive.
+        assert_eq!(blocks[2]["arguments"], json!({"path": "/tmp/a"}));
+        assert_eq!(blocks[2]["toolCallId"], json!("c1"));
+        // The result block keeps its identity and loses its body.
+        let result = &lean["data"]["entries"][2]["blocks"][0];
+        assert_eq!(result["toolCallId"], json!("c1"));
+        assert!(result.get("text").is_none());
+        // Nothing structural moved: the page still carries all three entries.
+        assert_eq!(lean["data"]["entries"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            lean["data"]["entries"][0]["blocks"][0]["text"],
+            json!("question")
+        );
+
+        let lean_paged = read_paged("lean-after-paged").await;
+        assert_eq!(lean_paged["success"], json!(true));
+        let paged_blocks = lean_paged["data"]["entries"][1]["blocks"]
+            .as_array()
+            .unwrap();
+        assert!(
+            paged_blocks[0].get("text").is_none(),
+            "the paged path must trim too"
+        );
+        assert_eq!(paged_blocks[2]["arguments"], json!({"path": "/tmp/a"}));
+        assert!(lean_paged["data"]["entries"][2]["blocks"][0]
+            .get("text")
+            .is_none());
+        assert_eq!(lean_paged["data"]["entries"].as_array().unwrap().len(), 3);
+
+        // A later connection that declares only another capability must not
+        // inherit this one, or an older build on the same pairing would receive
+        // history it cannot read.
+        apply_declared_features(
+            &bridge.handshake,
+            &bridge.pair_id,
+            &["event_coalescing_v1".to_string()],
+        );
+        let full_again = read("lean-withdrawn").await;
+        assert_eq!(
+            full_again["data"]["entries"][1]["blocks"][0]["text"],
+            json!("private reasoning body"),
+            "withdrawing the declaration must restore the full page"
+        );
+        assert_eq!(
+            full_again["data"]["entries"][2]["blocks"][0]["text"],
+            json!("tool output body")
+        );
+        let full_again_paged = read_paged("lean-withdrawn-paged").await;
+        assert_eq!(
+            full_again_paged["data"]["entries"][1]["blocks"][0]["text"],
+            json!("private reasoning body")
+        );
     }
 
     #[tokio::test]

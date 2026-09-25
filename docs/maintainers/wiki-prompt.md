@@ -33,7 +33,7 @@ repository guides when necessary for troubleshooting.
 | Page | Content | Verify against |
 |---|---|---|
 | `Home.md` | Purpose, use cases, navigation, platform summary | Root README; `desktop/src/components/layout/ActivityRail.tsx` |
-| `Installation.md` | Artifacts/architectures, first launch, runtime requirements, updates/uninstall | `.github/workflows/release.yml`, `build-{macos-signed,windows-signed}.yml`, `build-linux.yaml`; `scripts/release/install.sh`, `install.ps1`; `docs/dist/` |
+| `Installation.md` | Artifacts/architectures, first launch, runtime requirements, updates/uninstall | `.github/workflows/release.yml`, `build-{macos-signed,windows-signed}.yml`, `build-linux.yaml`; `scripts/release/install.sh`, `scripts/release/install.ps1`; `docs/dist/` |
 | `Quick-Start.md` | Sign in or BYOK, first conversation, approval choice, model selector | Desktop login/new-conversation flow and settings locales |
 | `Using-FutureOS.md` | Chat/workspace, attachments, tools, approval cards, Files/Runs/Review | `desktop/src/features/agent/`, `review/`, `filetree/`; `components/layout/` |
 | `Settings.md` | Current settings and defaults | `desktop/src/features/settings/`; `desktop/src-tauri/src/store/app_settings.rs` |

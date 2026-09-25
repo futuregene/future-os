@@ -79,7 +79,17 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 )
                 .await
                 {
-                    Ok(data) => {
+                    Ok(mut data) => {
+                        // Trim before the byte budget, not after: the budget sheds
+                        // whole oldest exchanges to fit a reply, so measuring the
+                        // trimmed page is what lets it hold more of them per round
+                        // trip. Nothing here adds or removes an entry, so the
+                        // cursor arithmetic below is untouched (see `lean_entries`).
+                        if crate::remote_host::lean::enabled() {
+                            if let Some(entries) = data.get_mut("entries") {
+                                crate::remote_host::lean::lean_entries(entries);
+                            }
+                        }
                         // A chunked first paint is the one page that pays the
                         // byte budget for a reader who is waiting: dropping the
                         // oldest complete exchange sends it to the next pull
@@ -119,7 +129,12 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 return;
             }
             match crate::agent_bridge::get_session_entries(cmd.session_id.clone()).await {
-                Ok(data) => {
+                Ok(mut data) => {
+                    if crate::remote_host::lean::enabled() {
+                        if let Some(entries) = data.get_mut("entries") {
+                            crate::remote_host::lean::lean_entries(entries);
+                        }
+                    }
                     let entries = entries_vec(data);
                     reply(
                         sink,
@@ -155,6 +170,15 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 .await
                 {
                     Ok(Some(snapshot)) => {
+                        // The snapshot's folded events are the same reasoning and
+                        // tool-argument content again, in a shape both sides
+                        // validate for length and ordering — so its events keep
+                        // their `idx` and only their text is blanked.
+                        let mut snapshot = snapshot;
+                        crate::remote_host::lean::lean_replay_page(
+                            &mut snapshot,
+                            crate::remote_host::lean::enabled(),
+                        );
                         reply(sink, true, snapshot, None).await;
                         return;
                     }
@@ -223,6 +247,13 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     page["hasMore"] = json!(
                         next < watermark
                             && (agent_has_more || page["hasMore"].as_bool().unwrap_or(false))
+                    );
+                    // Only now, with the page's cursors fixed: the lean rewrite
+                    // drops events, and dropping one must not move the resume
+                    // point (see `lean_replay_page`).
+                    crate::remote_host::lean::lean_replay_page(
+                        &mut page,
+                        crate::remote_host::lean::enabled(),
                     );
                     reply(sink, true, page, None).await;
                 }

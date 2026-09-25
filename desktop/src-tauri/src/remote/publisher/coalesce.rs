@@ -841,7 +841,7 @@ mod tests {
         assert_eq!(idx_of(out.last().unwrap()), (total - 1) as i64);
     }
 
-    /// Real-traffic measurement, driven by `scripts/measure-live-lane.py`.
+    /// Real-traffic measurement, driven by `scripts/measure/measure-live-lane.py`.
     ///
     /// Feeds one run's real journal through this real coalescer using the
     /// event's own timestamps as the clock, and reports what the phone would
@@ -850,7 +850,7 @@ mod tests {
     /// one published event, and the published index range must cover the whole
     /// run with the newest event last.
     #[test]
-    #[ignore = "driven by scripts/measure-live-lane.py with a real journal"]
+    #[ignore = "driven by scripts/measure/measure-live-lane.py with a real journal"]
     fn measure_real_journal() {
         let path = std::env::var("SYNC_MEASURE_JOURNAL").expect("SYNC_MEASURE_JOURNAL");
         let session = std::env::var("SYNC_MEASURE_SESSION").expect("SYNC_MEASURE_SESSION");
@@ -972,6 +972,131 @@ mod tests {
                 "parties": parties,
                 "windowMs": window.as_millis(),
                 "ratio": today_bytes as f64 / coalesced_bytes.max(1) as f64,
+            })
+        );
+    }
+
+    /// The same measurement for the lean lane, over the same real journal and
+    /// through the same shipping code: every event is first rewritten by
+    /// [`crate::remote_host::lean::lean_event_data`], exactly as
+    /// `remote::publisher::publish_event` rewrites it, and then coalesced.
+    ///
+    /// Run it through `scripts/measure/measure-live-lane.py`, which supplies the three
+    /// environment variables.
+    ///
+    /// Unlike the full-lane measurement it cannot assert "every source event is
+    /// accounted for" — dropping content is the point. It asserts what must stay
+    /// true instead: nothing of a dropped type reaches the lane, and the newest
+    /// source index is still published, so a client's dedup cursor still reaches
+    /// the end of the run.
+    #[test]
+    #[ignore = "measurement: needs SYNC_MEASURE_JOURNAL/SESSION/RUN"]
+    fn measure_real_journal_lean() {
+        use crate::remote_host::lean::lean_event_data;
+        let path = std::env::var("SYNC_MEASURE_JOURNAL").expect("SYNC_MEASURE_JOURNAL");
+        let session = std::env::var("SYNC_MEASURE_SESSION").expect("SYNC_MEASURE_SESSION");
+        let run = std::env::var("SYNC_MEASURE_RUN").expect("SYNC_MEASURE_RUN");
+        let journal = std::fs::read_to_string(path).expect("journal readable");
+        let base = Instant::now();
+        let mut first_stamp: Option<i64> = None;
+        let window = std::env::var("SYNC_MEASURE_WINDOW_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .unwrap_or(COALESCE_WINDOW);
+        let mut coalescer = Coalescer::with_window(window);
+        let mut published = Vec::new();
+        let mut full_bytes = 0usize;
+        let mut lean_bytes = 0usize;
+        let mut events = 0usize;
+        let mut delivered = 0usize;
+        let mut last_idx = i64::MIN;
+
+        for line in journal.lines().filter(|line| !line.trim().is_empty()) {
+            let raw: Value = serde_json::from_str(line).expect("journal line");
+            let event_type = raw["event_type"].as_str().unwrap_or_default();
+            let data = raw["data"].as_str().unwrap_or("{}");
+            let idx = raw["idx"].as_i64().unwrap_or(0);
+            events += 1;
+            last_idx = last_idx.max(idx);
+            full_bytes += serde_json::to_vec(&super::super::build_event_body(
+                &session,
+                event_type,
+                data,
+                &run,
+                idx,
+                raw["epoch"].as_i64().unwrap_or(0),
+                "",
+                raw["timestamp"].as_str().unwrap_or_default(),
+                raw["session_idx"].as_i64().unwrap_or(-1),
+                raw["run_sequence"].as_i64().unwrap_or(0),
+            ))
+            .expect("body serializes")
+            .len();
+
+            let Some(lean) = lean_event_data(event_type, data) else {
+                continue;
+            };
+            delivered += 1;
+            let payload = super::super::build_event_body(
+                &session,
+                event_type,
+                &lean,
+                &run,
+                idx,
+                raw["epoch"].as_i64().unwrap_or(0),
+                "",
+                raw["timestamp"].as_str().unwrap_or_default(),
+                raw["session_idx"].as_i64().unwrap_or(-1),
+                raw["run_sequence"].as_i64().unwrap_or(0),
+            );
+            lean_bytes += serde_json::to_vec(&payload).expect("body serializes").len();
+            let stamp = raw["timestamp"]
+                .as_str()
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.timestamp_millis())
+                .unwrap_or(idx * 100);
+            let first = *first_stamp.get_or_insert(stamp);
+            let now = base + Duration::from_millis((stamp - first).max(0) as u64);
+            coalescer.offer(
+                EventPublish {
+                    subject: format!("p.pair.evt.{session}"),
+                    payload: serde_json::to_vec(&payload).expect("body serializes"),
+                    status_subject: None,
+                },
+                now,
+                &mut published,
+            );
+        }
+        coalescer.flush(&mut published);
+
+        let mut coalesced_bytes = 0usize;
+        let mut newest_idx = i64::MIN;
+        for event in &published {
+            coalesced_bytes += event.payload.len();
+            let body: Value = serde_json::from_slice(&event.payload).expect("published body");
+            let event_type = body["type"].as_str().unwrap_or_default();
+            assert!(
+                lean_event_data(event_type, "{}").is_some(),
+                "{event_type} streams content the lean lane must not carry"
+            );
+            newest_idx = newest_idx.max(body["idx"].as_i64().unwrap_or(0));
+        }
+        assert_eq!(
+            newest_idx, last_idx,
+            "the newest index must still be published, or the client's cursor stalls"
+        );
+        println!(
+            "LEAN_LANE {}",
+            serde_json::json!({
+                "events": events,
+                "delivered": delivered,
+                "fullBytes": full_bytes,
+                "leanBytes": lean_bytes,
+                "published": published.len(),
+                "coalescedBytes": coalesced_bytes,
+                "windowMs": window.as_millis(),
+                "reduction": 1.0 - (lean_bytes as f64 / full_bytes.max(1) as f64),
             })
         );
     }

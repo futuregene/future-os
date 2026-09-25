@@ -328,6 +328,64 @@ still fills missing details from the durable journal. The platform API, JWT
 scope and Agent authority are unchanged; Desktop-to-broker legacy publication
 is retained, while irrelevant detailed delivery to the phone is avoided.
 
+**Lean event content (2026-09-26):** a phone that declares `lean_events_v1`
+receives the same event lane with the content it never renders removed. Measured
+on the three heaviest completed runs, a run costs 67-77 MB raw / 4.4-4.7 MB
+coalesced without the declaration, and 0.9-1.4 MB raw / 0.5-0.9 MB coalesced
+with it.
+
+| Event | Without the declaration | With it |
+| --- | --- | --- |
+| `thinking_delta`, `tool_delta`, `toolcall_delta` | per-token content | not published |
+| `tool_end` / `tool_result` | plus the captured output | output dropped; `exit_code`, `is_soft_fail`, `target_path`, `error` kept |
+| `run_snapshot` | plus folded `snapshotEvents` | array dropped; the client only uses this event as a resync signal |
+
+Only those named types are touched; every other event is forwarded
+byte-for-byte, so a future type cannot be silently reshaped. Three properties
+make the removal safe rather than lossy: `thinking_start`/`thinking_end` alone
+open and close a reasoning row, a tool's target already rides `tool_start`'s
+complete `tool_args`, and a tool's outcome is on `tool_end` as structured fields.
+The client therefore reads `exit_code` instead of parsing an `[exit: N]` footer
+out of the output — which is why an older client must not be sent this feed, and
+why the flag is cleared on every new connection rather than latched.
+
+The durable replay path is rewritten to match (`get_events_since`, the snapshot
+bootstrap). There the page's cursor fields are computed **before** the rewrite:
+dropping an event must not move `nextSinceIdx`, or a client that resumes from it
+would re-fetch a range whose events are always dropped. The folded projection
+riding a replay page keeps its events and their `idx` — both the desktop and the
+client reject an empty or reordered list — so only their text is blanked.
+
+**Lean history (2026-09-26):** the same declaration also trims the history pages
+(`get_session_entries`, both the paged and the full read). Three payloads, all of
+them unread rather than merely unrendered, measured on the three heaviest real
+sessions:
+
+| Trim | Share of the page |
+| --- | --- |
+| reasoning body | 25.6-32.2% |
+| tool-result body | 22.0-26.5% |
+| tool-call arguments beyond the four a target can come from | 12.3-17.8% |
+
+Together 67.1% / 72.7% / 68.4% of a page. `targetFromArgs` derives a tool row's
+text from `command`, `path`, `file_path` or `filePath` and reads **no other**
+argument key for any tool name, so keeping exactly those four is
+behaviour-preserving; `foldToolEntry` reads a result block's `toolCallId` and
+`isError` and nothing else; a reasoning body is only rendered when its row is
+expanded.
+
+Nothing in this trim adds, removes or reorders an entry or a block — entries keep
+their identity and count — so a page's `nextOffset`/`hasMore`/flush-cursor
+arithmetic and the client's gap-fill are unaffected. It is applied **before** the
+page byte budget rather than after: the budget sheds whole oldest exchanges to fit
+a reply, so measuring the trimmed page is what lets it hold more of them per
+round trip.
+
+It is the same declaration as the lean event lane because it is the same client
+generation: the reasoning row, the tool target and the tool outcome are exactly
+the three things that client reads differently. It is cleared on every new
+connection for the same reason.
+
 **Idle catalog traffic (2026-09-25):** catalog snapshots are published only when
 content changes. There is no periodic re-send: the presence heartbeat carries
 `catalogVersion` (`{epoch, sessions, workspaces}`), and a client whose applied

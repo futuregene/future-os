@@ -28,7 +28,7 @@ Wiki 不必单独创建 TUI 页，仓库已有 `docs/guide/tui*.md`；CLI 页可
 | 页面 | 内容 | 核验来源 |
 |---|---|---|
 | `Home.md` | 定位、场景、导航、平台概览 | 根 README；`desktop/src/components/layout/ActivityRail.tsx` |
-| `Installation.md` | 产物/架构、首次启动、运行库、更新与卸载 | `.github/workflows/release.yml`、`build-{macos-signed,windows-signed}.yml`、`build-linux.yaml`；`scripts/release/install.sh`、`install.ps1`；`docs/dist/` |
+| `Installation.md` | 产物/架构、首次启动、运行库、更新与卸载 | `.github/workflows/release.yml`、`build-{macos-signed,windows-signed}.yml`、`build-linux.yaml`；`scripts/release/install.sh`、`scripts/release/install.ps1`；`docs/dist/` |
 | `Quick-Start.md` | 登录或 BYOK、首个对话、审批选择、模型选择 | 桌面登录/新会话流程及设置文案 |
 | `Using-FutureOS.md` | Chat/workspace、附件、工具、批准卡、Files/Runs/Review | `desktop/src/features/agent/`、`review/`、`filetree/`；`components/layout/` |
 | `Settings.md` | 当前设置项与默认值 | `desktop/src/features/settings/`；`desktop/src-tauri/src/store/app_settings.rs` |

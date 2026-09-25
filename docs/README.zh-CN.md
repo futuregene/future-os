@@ -107,13 +107,13 @@ DMG、Windows 便携 zip 与 Linux 便携 tarball。它们是**活文档**——
 ## 文档如何保持正确
 
 - `docs/wiki/{en,zh}/Models.md` 由 `make generate-models`
-  （`scripts/docs/generate_models.py`）生成——切勿手工编辑。
+  （scripts/docs/generate_models.py）生成——切勿手工编辑。
 - wiki 页面按 [wiki-prompt.md](maintainers/wiki-prompt.md) 的范围撰写：
   macOS/Windows/Linux 桌面、Android/iOS 远程、各平台沙箱、无独立 TUI 页、
   CLI 名为 `future`。传输细节归入排障/CLI 与仓库指南。
 - 变更声明须对照当前源码核验并同时更新两种语言。
   历史核验记录保留原始证据，而非永久 PASS。
-- **文档检查**（`scripts/docs/check-docs.py`）：`make check-docs`（或
+- [文档检查](../scripts/docs/check-docs.py)：`make check-docs`（或
   `python3 scripts/docs/check-docs.py`）强制校验目录归属、双语配对、本地链接、
   wiki 目标与代码围栏。两种模式：
   - 默认——问题即错误；`BILINGUAL_PENDING` 中的条目允许存在并只报告数量，

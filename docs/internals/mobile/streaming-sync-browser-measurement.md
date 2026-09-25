@@ -127,8 +127,8 @@ presentation path, and all three current history windows were under 512 KiB.
 
 Measurement files:
 
-- `scripts/measure/measure-sync-browser.ts`: imports the real mobile production
-  sync code.
+- `scripts/measure/measure-sync-browser.ts`: imports the real mobile production sync
+  code.
 - `scripts/measure/measure-sync-browser.html`: metrics-only browser shell.
 - `scripts/measure/measure-sync-browser.py`: SQLite backup, isolated agent, and
   read-only loopback probe startup and cleanup.
