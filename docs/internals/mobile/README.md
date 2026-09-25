@@ -38,7 +38,9 @@ development and distribution maintenance.
 - Paginated history loading, deduplication by `(runId, idx)`, and real-time
   event backfill via `get_events_since` after reconnection.
 - Pick images from the system photo library or shoot with the system camera;
-  add file attachments through the system file picker; download session
+  add file attachments through the system file picker; a message carries at most
+  10 attachments including images (non-image files are not count-limited);
+  download session
   attachments and preview images, Markdown, text, and JSON in the app — other
   supported types go to the system app to open, save, or share. The preview
   page can also share the original file or open it in another app; a missing

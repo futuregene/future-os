@@ -10,6 +10,8 @@ import { Image, Platform } from "react-native";
 import type { RemoteClient } from "../client";
 import type { DownloadInfo, HistoryAttachment, MobileAttachment } from "../types";
 import {
+  MAX_ATTACHMENTS,
+  MAX_IMAGES,
   albumSource,
   cachedDownload,
   cachedPreviewForAttachment,
@@ -487,7 +489,7 @@ describe("pickAttachments", () => {
   });
 
   test("rejects a batch over the image count quota", async () => {
-    const files = Array.from({ length: 5 }, (_, i) =>
+    const files = Array.from({ length: MAX_IMAGES + 1 }, (_, i) =>
       fsFile(`file:///docs/f${i}.png`, { bytes: new Uint8Array(1), type: "image/png" }),
     );
     mockFS.File.pickFileAsync.mockResolvedValue({ canceled: false, result: files });
@@ -755,7 +757,7 @@ describe("pickFromAlbum", () => {
       await pickFromAlbum([]);
       expect(mockedRequestLibrary).not.toHaveBeenCalled();
       expect(mockedLaunchLibrary).toHaveBeenCalledWith(
-        expect.objectContaining({ legacy: false, defaultTab: "albums", selectionLimit: 4 }),
+        expect.objectContaining({ legacy: false, defaultTab: "albums", selectionLimit: MAX_IMAGES }),
       );
     },
   );
@@ -984,9 +986,30 @@ describe("pickFromAlbum", () => {
     await expect(pickFromAlbum([])).rejects.toThrow("No activity found");
   });
 
+  test("a message can be filled with ten images", async () => {
+    useSystemPhotoPickerDevice();
+    const assets = Array.from({ length: MAX_IMAGES }, (_, index) => ({
+      uri: `file:///album/${index}.png`,
+      mimeType: "image/png",
+    }));
+    for (let index = 0; index < MAX_IMAGES; index += 1) {
+      mockFS.__set(`file:///album/${index}.png`, { bytes: new Uint8Array(10), type: "image/png" });
+    }
+    mockedLaunchLibrary.mockResolvedValue({ canceled: false, assets });
+
+    const result = await pickFromAlbum([]);
+
+    expect(result).toHaveLength(MAX_IMAGES);
+    // The picker is asked for the same number, so the OS cannot return more
+    // than the message accepts.
+    expect(mockedLaunchLibrary).toHaveBeenCalledWith(
+      expect.objectContaining({ selectionLimit: MAX_IMAGES }),
+    );
+  });
+
   test("does not open a picker when the image quota is full", async () => {
     await expect(
-      pickFromAlbum(Array.from({ length: 4 }, () => attachment({ kind: "image" }))),
+      pickFromAlbum(Array.from({ length: MAX_IMAGES }, () => attachment({ kind: "image" }))),
     ).rejects.toThrow("attachment_image_count");
     expect(mockedLaunchLibrary).not.toHaveBeenCalled();
   });
@@ -1074,7 +1097,7 @@ describe("prepareAlbumImages", () => {
   });
 
   test("rejects a batch past the image quota before copying anything", async () => {
-    const existing = Array.from({ length: 4 }, () => attachment({ kind: "image" }));
+    const existing = Array.from({ length: MAX_IMAGES }, () => attachment({ kind: "image" }));
     await expect(
       prepareAlbumImages(existing, [albumImage(1, "one.jpg", "image/jpeg")]),
     ).rejects.toThrow("attachment_image_count");
@@ -1083,12 +1106,12 @@ describe("prepareAlbumImages", () => {
 
 describe("remainingImageSlots", () => {
   test("counts both the image cap and the attachment cap", () => {
-    expect(remainingImageSlots([])).toBe(4);
-    expect(remainingImageSlots([attachment({ kind: "image" })])).toBe(3);
+    expect(remainingImageSlots([])).toBe(MAX_IMAGES);
+    expect(remainingImageSlots([attachment({ kind: "image" })])).toBe(MAX_IMAGES - 1);
     expect(
       remainingImageSlots([
-        ...Array.from({ length: 4 }, () => attachment({ kind: "image" })),
-        ...Array.from({ length: 6 }, () => attachment()),
+        ...Array.from({ length: MAX_IMAGES }, () => attachment({ kind: "image" })),
+        ...Array.from({ length: MAX_ATTACHMENTS - MAX_IMAGES }, () => attachment()),
       ]),
     ).toBe(0);
   });
@@ -1127,7 +1150,7 @@ describe("prepareSharedAttachments", () => {
     mockFS.__set("file:///share/new.png", { bytes: new Uint8Array(10), type: "image/png" });
     await expect(prepareSharedAttachments(
       [{ uri: "file:///share/new.png", name: "new.png", mimeType: "image/png" }],
-      Array.from({ length: 4 }, () => attachment({ kind: "image" })),
+      Array.from({ length: MAX_IMAGES }, () => attachment({ kind: "image" })),
     )).rejects.toThrow("attachment_image_count");
     expect(mockedManipulate).not.toHaveBeenCalled();
   });
@@ -1280,7 +1303,7 @@ describe("uploadAttachments", () => {
 
   test("rejects a batch over the image count quota", async () => {
     const client = mockClient();
-    const images = Array.from({ length: 5 }, (_, i) =>
+    const images = Array.from({ length: MAX_IMAGES + 1 }, (_, i) =>
       attachment({ kind: "image", localUri: `file:///img/${i}.png` }),
     );
     await expect(uploadAttachments(client as unknown as RemoteClient, images)).rejects.toThrow(

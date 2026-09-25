@@ -546,7 +546,7 @@ export const resources = {
           attachment_total_size:
             "Attachments exceed the 20 MB per-message limit.",
           attachment_count: "A message can contain at most 10 attachments.",
-          attachment_image_count: "A message can contain at most 4 images.",
+          attachment_image_count: "A message can contain at most 10 images.",
           attachment_image_format: "This image format is not supported.",
           attachment_image_decode:
             "This image could not be decoded on this phone.",
@@ -1202,7 +1202,7 @@ export const resources = {
           attachment_compressed_too_large: "图片压缩后仍超过 10 MB。",
           attachment_total_size: "本消息附件原始大小合计超过 20 MB。",
           attachment_count: "每条消息最多添加 10 个附件。",
-          attachment_image_count: "每条消息最多添加 4 张图片。",
+          attachment_image_count: "每条消息最多添加 10 张图片。",
           attachment_image_format: "暂不支持这种图片格式。",
           attachment_image_decode: "这张图片无法在当前手机上解码。",
           attachment_camera_permission: "拍照需要相机权限。",
