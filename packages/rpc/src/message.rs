@@ -27,10 +27,20 @@ pub struct MessageBlock {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Token counts of one message. The fields carry `skip_serializing_if` for the
+/// same reason as [`SessionEntryPayload`]'s optionals: an unset category is
+/// `null` on every entry that has the object, and the phone reads them through
+/// an optional accessor (`usage?.outputTokens`), so an omitted field is
+/// indistinguishable from an explicit `null`. Deserialization still accepts
+/// both spellings.
 pub struct MessageUsage {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_read_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_write_tokens: Option<i64>,
 }
 
@@ -62,9 +72,15 @@ pub struct SessionUsage {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// Outcome of the run a message belongs to. `skip_serializing_if` follows
+/// [`MessageUsage`]: nearly every entry carries this object, and its unset
+/// members were a `null` on each of them.
 pub struct MessageRun {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<i64>,
 }
 
@@ -232,4 +248,105 @@ pub fn run_terminal(value: &Value) -> Value {
         "error":value["error"].as_str().filter(|s|!s.is_empty()),
         "usage":MessageUsage {input_tokens:value["input_tokens"].as_i64(), output_tokens:value["run_tokens"].as_i64(),cache_read_tokens:value["cache_read_tokens"].as_i64(),cache_write_tokens:value["cache_write_tokens"].as_i64()}
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn assistant_entry(
+        usage: Option<MessageUsage>,
+        run: Option<MessageRun>,
+    ) -> SessionEntryPayload {
+        SessionEntryPayload {
+            id: "e1".into(),
+            kind: "assistant".into(),
+            role: "assistant".into(),
+            created_at_ms: 1_785_931_200_000,
+            blocks: Vec::new(),
+            usage,
+            run,
+            ..Default::default()
+        }
+    }
+
+    /// A partially-filled `usage`/`run` must not spend a `null` on each unset
+    /// subfield: a history page carries a `run` object on nearly every entry and
+    /// most subfields are unset, so those `null`s are dead weight there too.
+    #[test]
+    fn session_entry_usage_and_run_omit_unset_subfields_instead_of_null() {
+        let entry = assistant_entry(
+            Some(MessageUsage {
+                output_tokens: Some(12),
+                ..Default::default()
+            }),
+            Some(MessageRun {
+                status: Some("completed".into()),
+                ..Default::default()
+            }),
+        );
+        let value = serde_json::to_value(&entry).unwrap();
+        assert_eq!(value["usage"], json!({"outputTokens": 12}));
+        assert_eq!(value["run"], json!({"status": "completed"}));
+        let usage = value["usage"].as_object().unwrap();
+        for key in ["inputTokens", "cacheReadTokens", "cacheWriteTokens"] {
+            assert!(
+                !usage.contains_key(key),
+                "unset usage.{key} must be omitted, not null"
+            );
+        }
+        let run = value["run"].as_object().unwrap();
+        for key in ["error", "durationMs"] {
+            assert!(
+                !run.contains_key(key),
+                "unset run.{key} must be omitted, not null"
+            );
+        }
+    }
+
+    /// The omission is a serialization concern only: `null` subfields written by
+    /// an older peer (or a cached page) must keep deserializing exactly as before.
+    #[test]
+    fn session_entry_usage_and_run_still_read_explicit_null_subfields() {
+        let raw = json!({
+            "id": "e1",
+            "kind": "assistant",
+            "role": "assistant",
+            "createdAtMs": 1_785_931_200_000_i64,
+            "blocks": [],
+            "usage": {
+                "inputTokens": null,
+                "outputTokens": 12,
+                "cacheReadTokens": null,
+                "cacheWriteTokens": null,
+            },
+            "run": { "status": null, "error": null, "durationMs": 34 },
+        });
+        let entry: SessionEntryPayload = serde_json::from_value(raw).unwrap();
+        let usage = entry.usage.expect("usage object");
+        assert_eq!(usage.input_tokens, None);
+        assert_eq!(usage.output_tokens, Some(12));
+        assert_eq!(usage.cache_read_tokens, None);
+        assert_eq!(usage.cache_write_tokens, None);
+        let run = entry.run.expect("run object");
+        assert_eq!(run.status, None);
+        assert_eq!(run.error, None);
+        assert_eq!(run.duration_ms, Some(34));
+    }
+
+    /// The same rule through the other producer: `run_terminal` serialises a
+    /// `MessageUsage` built from a journal row, and must omit what the row
+    /// does not carry rather than nulling it.
+    #[test]
+    fn run_terminal_usage_omits_unset_categories() {
+        let value = run_terminal(&json!({
+            "run_id": "r1",
+            "state": "completed",
+            "run_duration_ms": 10,
+            "input_tokens": 5,
+        }));
+        assert_eq!(value["usage"], json!({"inputTokens": 5}));
+        assert_eq!(value["error"], Value::Null, "the run-level error stays");
+    }
 }
