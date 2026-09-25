@@ -151,11 +151,15 @@ offline push.
   camera, photo, or file picker. Android's album resolves its route through the
   native probe (`resolveImagePickRoutes`, `future-file-handler`) before anything
   launches: Android 13+ uses `PickVisualMedia` (the system photo picker, with
-  multi-select) when that picker answers; below 33 the album intent `ACTION_PICK`
-  on MediaStore's image collection is preferred and targeted at the gallery
-  component, so a file manager that also advertises the pick cannot stand in for
-  it. A gallery that only answers `ACTION_GET_CONTENT` is used the same way, and a
-  real photo picker (framework, AOSP backport
+  multi-select) when that picker answers. Below 33 a gallery is preferred, but
+  only when it answers the intent the app actually launches — image
+  `ACTION_GET_CONTENT`, which expo-image-picker's legacy contract invokes; the
+  contract cannot target one component, so a gallery that only advertises
+  `ACTION_PICK` on MediaStore's image collection falls through to the next route
+  rather than risking a file manager. Never launch the pick through
+  expo-intent-launcher: it resolves a result's `data` to the *Intent's* string
+  (`"Intent { dat=content://… }"`), not a URI, so a real pick could never open.
+  A real photo picker (framework, AOSP backport
   `androidx.activity.result.contract.action.PICK_IMAGES`, or its Play-services
   build) still wins over any hand-drawn UI. The probe's `<queries>` entries name
   the scheme as well as the MIME type, because package visibility hides a
