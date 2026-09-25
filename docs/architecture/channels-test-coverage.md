@@ -21,6 +21,9 @@ and takes an exclusive lock: a leaked variable changes the instrumented unit
 hash and llvm-cov then reports every line as never executed, and concurrent
 instrumented runs thrash the machine.
 
+The line numbers below are one measurement snapshot; they drift as the crate
+changes. Re-run the commands above before relying on a specific number.
+
 ## The rule
 
 New code is expected to have every line executed by a test. "Covered" means a

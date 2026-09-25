@@ -82,8 +82,8 @@ Configure under the same Apple Developer team:
    <share.plist>` to check App IDs, team, validity, distribution type, and App
    Group.
 
-**The CI/release workflow is not modified in this pass.** The existing workflow
-has no opt-in set, keeps producing builds without the extension/App Group, and
+**The default CI/release workflow does not build the extension.** It has no
+opt-in set, keeps producing builds without the extension/App Group, and
 file save/open still work. Adding a secret alone does not enable the
 extension; distributing it later needs separate signing workflow
 configuration. This is Apple-backend configuration that merging code alone
@@ -106,9 +106,9 @@ TestFlight".
   `xcodebuild -workspace FutureOS.xcworkspace -scheme FutureOS -configuration
   Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator'
   CODE_SIGNING_ALLOWED=NO build`. This compiles the App, both native modules,
-  and the enabled extension without Apple keys. This machine only has Command
-  Line Tools, so the full UIKit/App compilation was not executed; existing CI
-  does not include this native compile check.
+  and the enabled extension without Apple keys. The full UIKit/App
+  compilation was not executed locally, and existing CI does not include this
+  native compile check.
 
 Real-device acceptance still needed: Safari links, selected text, single/multi
 photos, PDF/Chinese filenames from the Files app; save then pair when unpaired;

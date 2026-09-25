@@ -99,9 +99,13 @@ future run "介绍一下这个项目"
 | `--session <id>` | 连接指定 ID 的已有会话。 |
 | `--fork <entry-id>` | 从当前会话的某个条目分叉出新会话。 |
 | `--permission <level>` | `all`（新会话默认，不受限）、`workspace`（审批门控访问）、`none`（拒绝所有工具调用）。这不是 OS 沙箱选择器，见 [[审批与沙箱|Sandbox]]。 |
+| `--tools`、`-t <names>` | 用逗号分隔要启用的工具名（如 `read,shell`）；`--no-tools` / `--no-builtin-tools` 可禁用工具。 |
 | `--steer` | 中断当前会话正在运行的任务；不传时，新 prompt 排在忙碌任务之后。 |
+| `--system-prompt`、`--append-system-prompt` | 替换或追加系统提示词。 |
 | `--cwd <dir>` | 设置工作目录。 |
 | `--mode json` | 以 JSON 而非文本打印回答。 |
+| `--verbose` | 把进度与工具调用写到 stderr。 |
+| `--grpc-addr <addr>` | 显式指定 Agent 的 TCP 地址（默认每用户本地 IPC；也可用 `FUTURE_AGENT_GRPC_ADDR`）。 |
 | `--no-session` | 本次不保存为会话。 |
 
 示例:
@@ -109,8 +113,10 @@ future run "介绍一下这个项目"
 ```bash
 future run --model sonnet:high "审查这些改动"
 future run @README.md "总结这个文件"
-echo "一些文本" | future run "把这段文本整理一下"
+future run --tools read,shell "读一下 README 并列出文件"
 ```
+
+完整选项见 `future run --help`。
 
 ### `skills` —— 管理能力包
 
@@ -174,6 +180,8 @@ future session list
 future session set <id> [--parent <id>] [--title <name>] [--cwd <dir>]
                         [--model <id>] [--thinking <level>]
 future session info <id>
+future session history --help   # 搜索并读取原始历史
+future session compact --help   # 请求手动压缩上下文
 future session rename <id> <name>
 future session delete <id>
 ```
@@ -181,11 +189,12 @@ future session delete <id>
 `set` 修改**已有**会话的这些设置（只改传了的参数，其余不动，`--parent ""` 表示解除父会话）。
 `--parent` 只记录会话谱系，不复制父会话历史（那是 `fork` 的行为），且父会话必须是已存在的会话。
 
-标题与 cwd 在会话已有记录（即已经跑过一次）时立即写入；全新会话则在首次运行时一并落盘。模型与思考
+已有记录的会话，其标题与 cwd 会立即写入；从未运行过的新会话则在首次运行时一并落盘。模型与思考
 等级属于运行快照，随下一次运行写入记录。`future run` 启动时会用自己的 `--cwd`（默认当前目录）覆盖会话 cwd，
 所以这里设的 cwd 只保持到下一次运行为止。
 
-会话数据保存在 `~/.future/agent/sessions/`。
+会话数据存放在 Agent 的 SQLite 数据库 `~/.future/agent/agent.db`；`~/.future/agent/sessions/` 仅作为旧版
+JSONL 数据的导入来源保留。
 
 ### `doctor` —— 环境诊断
 

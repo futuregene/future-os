@@ -27,6 +27,13 @@ Rules
    empty — i.e. bilingualization fully complete.
 3. Structure: local markdown links resolve, wiki [[...]] targets resolve,
    code fences are closed (kept from the original checker).
+4. Script references: every repo-internal `scripts/...` path named in a
+   current doc must exist in the working tree (see SCRIPTS_PATH). Refs are
+   checked on the raw text, so code blocks, inline code and the generated
+   wiki header comment are covered; docs/archives/ is exempt because it is
+   frozen history that describes the tree as it was. A documented glob
+   (`test-windows-sandbox*.ps1`) must match at least one file, and Windows
+   separators are normalised before the check.
 
 Each finding carries the path it is *about* (`Diagnostic.path`), so --scope
 filters by affected file. Filtering on the printed message instead would drop
@@ -47,6 +54,15 @@ LINK = re.compile(r"!?\[[^\]\n]*\]\((<[^>\n]+>|[^)\n]+)\)")
 WIKI = re.compile(r"\[\[([^]\n]+)\]\]")
 FENCE = re.compile(r"^\s*(?:>\s*)*(`{3,}|~{3,})(.*)$")
 INLINE_CODE = re.compile(r"(`+).*?\1")
+# Repo-internal `scripts/...` references inside current docs. Both separators
+# are accepted because the docs quote PowerShell command lines
+# (`.\scripts\tests\x.ps1`); the reference is normalised to POSIX before the
+# existence check. `*`/`?` keep a documented glob in one token so it can be
+# expanded (it must match at least one file), and the trailing character
+# class drops sentence punctuation that follows a bare path.
+SCRIPTS_PATH = re.compile(
+    r"(?<![A-Za-z0-9_/\-])scripts[\\/][A-Za-z0-9_.\\/\-*?]*[A-Za-z0-9_*?]"
+)
 
 
 class Diagnostic:
@@ -166,11 +182,35 @@ def in_submodule(destination, submodule_paths):
     )
 
 
+def check_scripts_paths(root, relative, text):
+    """Every repo-internal `scripts/...` reference in a current doc must exist.
+
+    Runs on the raw text (not prose_lines): the stale reference this rule was
+    written for lived in the generated wiki pages' HTML header comment, which
+    the prose filter strips, and command lines mostly sit in code fences.
+    """
+    errors = []
+    for number, line in enumerate(text.splitlines(), 1):
+        for match in SCRIPTS_PATH.finditer(line):
+            ref = match.group(0).replace("\\", "/")
+            if not any(root.glob(ref)):
+                errors.append(
+                    diagnostic(
+                        relative,
+                        f"{relative}:{number}: missing scripts path {ref}",
+                    )
+                )
+    return errors
+
+
 def check_file(root, relative, submodule_paths):
     errors = []
     path = root / relative
     is_wiki = Path(relative).parts[:2] == ("docs", "wiki")
-    for number, line, error in prose_lines(path.read_text(encoding="utf-8")):
+    text = path.read_text(encoding="utf-8")
+    if not relative.startswith("docs/archives/"):
+        errors.extend(check_scripts_paths(root, relative, text))
+    for number, line, error in prose_lines(text):
         if error:
             errors.append(diagnostic(relative, f"{relative}:{number}: {error}"))
         for match in LINK.finditer(line):
@@ -386,7 +426,8 @@ def main():
         return 0
     print(
         f"Checked {len(docs)} docs: placement, bilingual pairing, local/wiki "
-        f"links and fences OK ({len(BILINGUAL_PENDING)} pairs pending bilingualization)."
+        f"links, script paths and fences OK "
+        f"({len(BILINGUAL_PENDING)} pairs pending bilingualization)."
     )
     return 0
 

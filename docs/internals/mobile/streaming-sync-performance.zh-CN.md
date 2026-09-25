@@ -31,7 +31,7 @@ Mobile 原来没有给 `get_events_since` 指定 `limit`，因而落到 Desktop 
 
 - `mobile/src/remote/syncEngine.ts`：`open`、`runReconcile`、`needsHistory`。
 - `mobile/src/remote/replay.ts`：串行分页循环及 watermark 固定。
-- `desktop/src-tauri/src/remote_host/business.rs`：`DEFAULT_MESSAGE_PAGE_LIMIT = 100`、`MESSAGES_PAGE_BYTES = 512 * 1024`、`paginate_events`。
+- `desktop/src-tauri/src/remote_host/business/wire_limits.rs`：`DEFAULT_MESSAGE_PAGE_LIMIT = 100`、`MESSAGES_PAGE_BYTES = 512 * 1024`、`paginate_events`。
 - `agent/src/rpc/protocol.rs`：超出内存 ring 的运行记录可以从持久 journal 回补，故回补数量并不限于 2,000 个 ring 事件。
 
 ### 本轮修改与结果

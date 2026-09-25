@@ -86,19 +86,26 @@ Edit `~/.future/channels/config.json`:
 > `sender_allowlist` before receiving prompts — group membership alone does
 > not authorize access to the agent.
 
+> DingTalk and Feishu also accept a `providers.dingtalk` / `providers.feishu` block;
+> when both exist, `providers.<id>` wins. See [the channel configuration guide](../../guide/channels-config.md)
+> for the full field reference.
+
 ---
 
 ## Start the Bridge
 
 ```bash
-# Build and run the channel bridge
+future channel
+```
+
+The bridge is a **standalone service** — the desktop app doesn't manage it. Run `future channel` whenever you want the DingTalk bridge up. From a source checkout you can also build and run it directly:
+
+```bash
 cargo build -p future-channel --release
 ./target/release/future-channel
 ```
 
-For an installed release, simply run `future channel`. New channel sessions default to permission `all` and do not independently enable the desktop sandbox policy; restrict bot access carefully.
-
-The bridge is a **standalone service** — the desktop app doesn't manage it. Start it with `future channel`, or run the `future-channel` binary directly (or via `make run-channels`) whenever you want the DingTalk bridge up.
+(or `make run-channels`). New channel sessions default to permission `all` and do not independently enable the desktop sandbox policy; restrict bot access carefully.
 
 The bridge loads `~/.future/channels/config.json` on startup. If the file doesn't exist, a template is created and the bridge exits — edit the template and restart.
 
@@ -149,7 +156,7 @@ Commands like `/new`, `/status`, `/stop`, `/model`, `/models`, `/effort`, `/comp
 
 ### Bot doesn't respond
 
-1. Check that the bridge is running: the `future-channel` process should be up (`ps aux | grep future-channel` on macOS/Linux, Task Manager on Windows)
+1. Run `future channel status` (it works even when no bridge is running), then check that the `future channel` (or `future-channel`) process is up (`ps aux | grep future` on macOS/Linux, Task Manager on Windows)
 2. Check that `dingtalk.enabled` is `true` in `config.json`
 3. Verify the `client_id` and `client_secret` are correct.
 4. Check the bridge logs for Stream Mode connection errors.

@@ -55,7 +55,7 @@ prebuild 时生成并嵌入扩展，避免提交 `mobile/ios/`。扩展版本与
    `python3 scripts/tests/validate-ios-share-profiles.py <host.plist> <share.plist>` 检查 App ID、团队、
    有效期、分发类型与 App Group。
 
-**本次不修改 CI/发版工作流。** 现有工作流未设置 opt-in，继续生成不含扩展/App Group 的版本，
+**默认的 CI/发版工作流不构建扩展。** 现有工作流未设置 opt-in，继续生成不含扩展/App Group 的版本，
 文件保存/打开仍可用。仅添加 secret 不会自动启用扩展；后续分发扩展需要另行配置签名流程。
 这不是仅合并代码就能完成的 Apple 后台配置，不能把“代码已支持”当作已在 TestFlight 上线。
 
@@ -69,8 +69,8 @@ prebuild 时生成并嵌入扩展，避免提交 `mobile/ios/`。扩展版本与
   源文件、嵌入关系、entitlements、重复运行、版本同步和每个 target 的签名设置。
 - 有 Xcode/iOS SDK 的 macOS 上，可在 `mobile/ios/` 安装 Pods 后运行：
   `xcodebuild -workspace FutureOS.xcworkspace -scheme FutureOS -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build`。
-  这会编译 App、两个原生模块及已启用的扩展，不需要 Apple 密钥。本次本机只有 Command
-  Line Tools，未执行 UIKit/App 的完整编译；现有 CI 不包含此原生编译检查。
+  这会编译 App、两个原生模块及已启用的扩展，不需要 Apple 密钥。UIKit/App 的完整编译
+  未在本地执行，现有 CI 也不包含此原生编译检查。
 
 真机验收仍需执行：Safari 链接、选中文字、照片单/多张、文件 App 的 PDF/中文文件名；
 未配对时保存后再配对；连续分享、取消、超限、同名文件、冷启动/前后台；iCloud 文件下载；

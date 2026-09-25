@@ -153,6 +153,11 @@ future agent      # 在终端启动 agent（日志打到 stdout，Ctrl-C 停止�
 future tui        # 终端界面
 ```
 
+正式发布的构建会在 TUI 启动后于后台检查一次更新：发现新版本时仅在本地提示
+并给出官方安装脚本链接，不会自动安装。release 构建检查 release 通道，
+test/nightly 构建检查 nightly；本地/源码构建跳过检查。网络失败静默忽略；
+`future tui --offline` 关闭该检查，非交互命令从不执行检查。
+
 > **远程 / 开发模式：**给 `future agent` 传入 `--grpc-addr 127.0.0.1:50051` 可显式启用 TCP；客户端设置 `FUTURE_AGENT_GRPC_ADDR=127.0.0.1:50051`。TCP 非默认，不要暴露到不可信网络。
 
 <p align="center">
@@ -174,33 +179,46 @@ future tui        # 终端界面
 | `/model [name]` | 选择 / 切换模型 |
 | `/new` | 新建会话 |
 | `/sessions` | 浏览和切换会话 |
-| `/compact` | 压缩对话上下文 |
-| `/scoped-models` | 配置模型启用/禁用列表 |
-| `/clone` | 克隆当前会话 |
-| `/fork` | 分叉当前会话 |
 | `/tree` | 会话树（含 fork/clone 层级） |
-| `/name [n]` | 设置会话名称 |
+| `/fork` | 从指定消息分叉 |
+| `/clone` | 克隆当前会话 |
+| `/name <name>` | 设置会话名称 |
+| `/scoped-models` | 配置模型启用/禁用列表 |
+| `/compact` | 压缩对话上下文 |
 | `/status` | 会话状态、token 用量、费用 |
 | `/stop` | 中断当前生成 |
-| `/cwd` | 切换工作目录 |
-| `/approve` | 批准待执行的工具调用 |
-| `/reject` | 拒绝待执行的工具调用 |
 | `/cancel <run-id>` | 取消排队中的运行 |
-| `/reload` | 重新加载技能与上下文 |
+| `/cwd <dir>` | 切换工作目录 |
+| `/approve <request-id>` | 批准待执行的工具调用 |
+| `/reject <request-id>` | 拒绝待执行的工具调用 |
+| `/reload` | 重新加载技能与上下文文件 |
+| `/skills` | 浏览、安装与管理技能 |
+| `/providers` | 配置 provider 与模型 |
+| `/theme [id]` | 切换配色主题 |
+
+在 TUI 中运行 `/help` 查看完整列表（40+ 命令）。
 
 ### 键盘快捷键（TUI）
 
 | 按键 | 功能 |
 |---|---|
+| `ctrl+c` | 中断 / 退出 |
+| `ctrl+l` | 清屏 / 重绘 |
 | `ctrl+p` | 循环切换模型 |
 | `ctrl+t` | 循环切换思考级别 |
+| `shift+tab` | 循环切换思考 |
 | `ctrl+o` | 展开 / 收起思考内容 |
+| `ctrl+g` | 展开 / 收起工具输出 |
+| `ctrl+d` | 紧凑视图：折叠连续的工具调用与思考 |
+| `ctrl+x` | 复制最后一条回答 |
 | `ctrl+r` | 浏览会话列表 |
-| `ctrl+c` | 中断 / 退出 |
+| `ctrl+v` | 粘贴剪贴板（图片或文本） |
 | `tab` | 自动补全 |
+| `↑↓` | 滚动 / 导航列表 |
+| `page up` / `page down` | 滚动聊天区 |
+| `ctrl+↑` / `ctrl+↓` | 逐行滚动聊天区 |
 | `enter` | 提交 / 确认 |
 | `escape` | 关闭弹窗 |
-| `↑↓` | 滚动 / 导航列表 |
 
 ## 故障排查
 
