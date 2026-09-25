@@ -267,6 +267,11 @@ async fn reply_settings(
 ) {
     match result {
         Ok(settings) => {
+            // Every field `SettingsPatch` accepts must be echoed back here: the
+            // phone renders the snapshot this reply returns, so a writable field
+            // left out of the reply reads as absent and the phone's toggle
+            // silently snaps back to its default (issue: skill recommendation
+            // could not be turned off from the phone).
             reply(
                 sink,
                 true,
@@ -274,6 +279,7 @@ async fn reply_settings(
                     "autoUpgradeSkills": settings.auto_upgrade_skills,
                     "autoTitleFirstTurn": settings.auto_title_first_turn,
                     "autoConnectRemote": settings.auto_connect_remote,
+                    "skillRecommend": settings.skill_recommend,
                     "hiddenModels": settings.hidden_models,
                 }),
                 None,
