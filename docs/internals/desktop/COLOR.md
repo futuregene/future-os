@@ -14,11 +14,12 @@
   `status → color` className mapping.
 - **Exception — category colors**: where colors **distinguish sibling categories**
   (not status), the raw palette may be kept. The semantic tokens are few and
-  cannot express N sibling categories. Current exceptions:
-  `eventCategoryClass` (only `artifact`/`review` have no semantic-token
-  equivalent and keep the raw purple/orange; approval/error/tool/default have
-  converged to `warning`/`danger`/`info`/`neutral`), `formatErrorType` (5 error
-  subtypes, additionally disambiguated by icon).
+  cannot express N sibling categories. The current (and only) exception is
+  `errorTypeMeta` in `features/runs/runErrorMeta.ts`: the six run error
+  subtypes (`stream_disconnected`, `command_failed`, `model_failed`,
+  `abort_requested`, `timeout`, `unknown`) each keep a raw `text-*` color,
+  additionally disambiguated by an icon. Run-event rows and everything else use
+  the semantic tokens.
 
 ## Token list
 
@@ -138,9 +139,8 @@ Each status has three variants — `X` (text), `X-soft` (light bg), `X-line`
   classes — use `<Badge tone>` instead
 - ❌ Writing a mask color inside a component (`bg-black/…` / `bg-*/…`) — use
   the `overlay` token via the shared `Overlay`
-- ✅ The only exception: **category colors** (event categories / error
-  subtypes) use the raw palette to distinguish sibling kinds; see "Principles"
-  above
+- ✅ The only exception: **category colors** for run error subtypes use the raw
+  palette to distinguish sibling kinds; see "Principles" above
 
 ## Source
 

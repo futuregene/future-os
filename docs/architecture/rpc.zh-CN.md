@@ -57,8 +57,8 @@ REGENERATE_PROTO=1 cargo build -p future-rpc   # 或：make generate-proto
   命令响应将其留空。
 - JSON 形态区分 null/absent 与默认值的 proto3 字段声明为 `optional`，使 typed 路径
   保留 JSON 语义。
-- `transport.rs` 持有共享的每用户 IPC 发现与显式 TCP 回退；其依赖包括 async/网络与
-  平台 IPC 支持（见 Cargo.toml）。所有消费方（`future-agent`、`future-channel`、
+- `transport.rs` 持有共享的每用户 IPC 发现与显式 TCP 备选（显式地址是权威的，绝不回退
+  到本地 IPC）；其依赖包括 async/网络与平台 IPC 支持（见 Cargo.toml）。所有消费方（`future-agent`、`future-channel`、
   经 path dependency 的桌面端 Tauri 后端）依赖它——绝不反向。桌面端后端在自己的
   cargo workspace 里：其 `tonic`/`prost` 版本要与根 `workspace.dependencies` 钉住
   的版本对齐。

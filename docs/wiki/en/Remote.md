@@ -8,7 +8,7 @@ Desktop running (graphical or explicitly headless), and both devices connected t
 
 1. Install the mobile build from the official distribution channel appropriate to
    your platform (Android package or iOS TestFlight invitation when offered).
-2. Sign in on the desktop, open **Remote**, and select **Pair & start**.
+2. Sign in on the desktop, open **Phone Control** (the phone icon in the left panel), and select **Pair & start**.
 3. Open FutureOS Mobile, grant camera permission and scan the desktop QR code.
    You can also paste the pairing code manually.
 4. The code is valid for **five minutes** and can be used **once**. If expired,
@@ -37,8 +37,9 @@ Read streaming replies, thinking and tool activity; send prompts and attachments
 choose the model/thinking level; rename conversations; stop runs; and respond to
 approval requests. Image/file previews and downloads are available for supported
 formats. Conversations can be pinned, renamed or deleted individually — or in
-bulk from multi-select — and a workspace can be deleted with everything in it.
-Workspace groups remember whether you folded them. Attachments come from the
+bulk from multi-select — and a workspace can be deleted together with its
+conversations; the files in the workspace folder are not deleted. Workspace
+groups remember whether you folded them. Attachments come from the
 system camera, the system photo picker or the system file picker, and text,
 images or files can be **shared** into FutureOS from another app: choose a new
 conversation (or one of your workspaces) or an existing one — grouped by
@@ -63,10 +64,13 @@ phone is lost or shared, and protect the desktop account too.
 
 Commands, conversation events and requested file content pass through the
 configured NATS relay. Mobile uses per-device credentials, short-lived JWTs and
-refresh tokens, with secrets in platform secure storage; it requires `wss://`.
-The desktop-to-NATS hop follows the deployment configuration and does not enforce
-TLS unconditionally. This is not a promise of end-to-end encryption or local-only
-data processing. Only pair devices and use relay deployments you trust.
+refresh tokens, with secrets in platform secure storage, and requires `wss://`;
+the desktop requires TLS for its relay connection. Once a phone is paired, the
+desktop↔phone channel is end-to-end encrypted (a Noise handshake with
+ChaCha20-Poly1305 records), so the relay carries ciphertext; the desktop's
+availability announcement before a channel is established is not encrypted. This
+is still not local-only processing — model requests go to your model providers.
+Only pair devices and use relay deployments you trust.
 
 ## Troubleshooting
 

@@ -69,8 +69,9 @@ repository guides when necessary for troubleshooting.
    failures. Linux has x86_64/aarch64 deb, portable and static CLI release packages;
    local build scripts can differ in naming/linkage. Honor actual artifact names.
 5. **Local-first is not local-only.** Model requests, online tools, Remote relay
-   and IM bridges transmit data. Mobile enforces WSS; desktop NATS transport is
-   deployment-controlled. Do not promise E2EE or universal credential isolation.
+   and IM bridges transmit data. Mobile enforces WSS and the desktop NATS
+   transport requires verified TLS (no plaintext downgrade).
+   Do not promise E2EE or universal credential isolation.
 6. **Commands match code.** Use Rust sources, not retired `cli/src/*.ts` files.
    Prefer `future channel`; if showing a release binary, build with `--release`.
    Slash commands handled by bridge code can still call the agent over RPC;

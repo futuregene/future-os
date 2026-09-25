@@ -1,23 +1,27 @@
 # 决策内核回归基线（P0 快照）
 
-> （[English](snapshots.md)）拆分前 `src/decision.rs`（696 行）的逐字节快照。它是
+> （[English](snapshots.md)）拆分前 `src/decision.rs`（714 行）的逐字节快照。它是
 > G-1 内核模块化的冻结基线：`decision.rs` 被拆分为 `src/decision/` 子域模块
 > （identity / boundary / frontier / monitor / stall / heartbeat recommendation /
-> goal boundary / primary action），本快照锚定逐字段 packet 一致性回归。
+> goal boundary / primary action；此后又叠加了 arbitration / oscillation /
+> goal_frontier 子域），本快照锚定逐字段 packet 一致性回归。
 
 ## 快照文件
 
 | 文件 | 说明 |
 |---|---|
-| `decision.rs.pre-split` | 拆分前 `src/decision.rs`（696 行）的逐字节副本，即完整的拆分前决策内核 |
+| `decision.rs.pre-split` | 拆分前 `src/decision.rs`（714 行）的逐字节副本，即完整的拆分前决策内核 |
 
 ## 基线元数据
 
 - **源 commit**：`85372a53a0b61f57ba492894788249fb66315b94`
   （分支 `claude/loop-orchestrator`，"full lifecycle process + quota packet
-  parity"，2026-08-05）
-- **SHA-256**：`4ac8c78e7e3f489e1304e57ce0e9f5dbc3bebc965b013913b487b89b9bebf165`
-- **行数**：696
+  parity"，2026-08-05）——原始出处；该 commit 已不在本仓库当前历史中。
+- **快照版本**：文件最后一次变更是 `de19b99c`（2026-08-24，"agent decides,
+  kernel provides the kanban"，#347），同一 PR 也改动了内核的 replan/会话保留
+  行为；下面的哈希与行数对应当前版本。
+- **SHA-256**：`00dc4b35393bc1841502e757fc9980e0e4a67c637221945e8f81000bd4914944`
+- **行数**：714
 - **范围**：`decide`/`decide_for`（should-run 决策编译）、`complete_todo` 义务
   （successor / no-follow-up）、monitor 到期轮询/退避、replan
   （成功/失败/停滞/验收缺口），以及 `packet()` 组装（约 40 字段
@@ -38,7 +42,7 @@
 3. **哈希检查**（带外）：
    ```sh
    shasum -a 256 orchestration/loop/snapshots/decision.rs.pre-split
-   # 期望 4ac8c78e7e3f489e1304e57ce0e9f5dbc3bebc965b013913b487b89b9bebf165
+   # 期望 00dc4b35393bc1841502e757fc9980e0e4a67c637221945e8f81000bd4914944
    ```
 
 ## 更新策略

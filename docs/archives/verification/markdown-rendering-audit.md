@@ -1,6 +1,8 @@
 # Mobile Markdown rendering audit
 
-> ([中文](markdown-rendering-audit.zh-CN.md)) Audit date: 2026-09-14. Covers
+> ([中文](markdown-rendering-audit.zh-CN.md)) Audit date: 2026-09-14;
+> re-verified against source on 2026-09-26 (math typesetting and code
+> highlighting landed after the audit). Covers
 > assistant messages (including streaming fragments) and Markdown attachment
 > previews; not an Android/iOS real-device acceptance report.
 
@@ -28,24 +30,24 @@
 | Table newlines ineffective | `<br>` was treated as ordinary HTML text. Only attribute-less `<br>` / `<br/>` / `<br />` (case-insensitive) convert to newlines; other HTML still displays safely as literal text. |
 | Footnotes cannot match their body | References kept `[^id]`, but footnote bodies became unmarked blockquotes. The body gets the same marker back; this is still a readable degradation, not full footnote interaction. |
 | Wide tables squeezed into narrow columns | Originally all columns used `flexBasis: 0`, splitting the screen evenly. The whole table gets horizontal scrolling, uniform column widths with a minimum, updating with container width and system font size; missing cells are still padded. |
-| Code layout and iOS fonts | Originally long lines wrapped, and generic `monospace` is not a valid iOS font name. Added horizontal scrolling, kept newlines/indentation/selection-copy, shows the code language; iOS uses Menlo. |
+| Code layout and iOS fonts | Generic `monospace` is not a valid iOS font name. Code wraps to the phone width (no horizontal scrolling), keeps newlines/indentation/selection-copy, and shows the code language; iOS uses Menlo. Blocks over 16 lines or 10,000 characters collapse with an expand toggle and a copy button. |
 | Fixed image boxes, images embedded in Text | Originally fixed 240×160 — narrow containers could overflow, wide/tall images had obvious padding. Remote images move out of selectable Text, sized by container width and the post-load original aspect ratio; keeps formatting around the image, external-link taps, and load-failure text fallback. |
 
-## Still unimplemented / intentional limits
+## Intentional limits and fallbacks
 
 | Item | Current behavior |
 | --- | --- |
-| Math | `$…$`, `$$…$$`, `\(…\)`, `\[…\]` parse, but mobile only shows the TeX source — no real typesetting of fractions/matrices/sup-subscripts. Desktop's KaTeX DOM cannot be used directly in native Text. No formula engine added this round. |
+| Math | `$…$`, `$$…$$`, `\(…\)`, `\[…\]` parse and typeset offline: MathJax v4 lays the TeX out in JS and mobile renders the SVG (no DOM, external fonts, or CDN), scaled by the native font size; display equations scroll horizontally instead of clipping. Input over 8,192 characters, incomplete streaming input, or a MathJax error falls back to the TeX source. Desktop keeps KaTeX. |
 | Diagrams like Mermaid | Shown as code blocks, no diagrams generated. |
-| Code syntax highlighting | Language labels and monospace code work, but no token coloring or a dedicated code copy button; native text selection and message copy still work. |
+| Code syntax highlighting | Fenced code, and previews of build files, lockfiles, and text-data formats, are token-colored by language (prismjs); language labels are shown, and native text selection and message copy still work. Large blocks additionally get an explicit copy button. |
 | Footnotes, TOC anchors | Footnotes have matching markers but no superscript/jump/back; `#anchor` links stay non-clickable. |
 | Arbitrary HTML | Beyond the inline newline above, HTML (like `<details>`, `<sup>`, `<img>`) shows source and does not execute. Arbitrary HTML/scripts must not be enabled just for display. |
 | Local images | The follow-up image optimization supports tap-to-load into the body, showing directly when a verified cache exists; images in document previews resolve against the original document directory. Uncached images are not silently downloaded; the open-file entry remains. Phone-local URI documents without a desktop base directory do not guess paths; unsupported formats still go through the original-file entry. |
 | Remote image formats and network | Only HTTP(S) allowed; concrete formats depend on the platform Image decoder; SVG, network failures, or platform HTTP policy may trigger text fallback. No SVG decoding or relaxed network security policy added this round. |
 | File-link text | The follow-up image optimization keeps the original inline nodes — images, bold, and other formatting inside links are no longer lost. |
 
-**Math typesetting** remains an obvious display gap. Images received the
-follow-up optimization below, but unit tests or browser verification cannot
+Images received the follow-up optimization below, and math is now typeset
+offline (MathJax SVG); unit tests or browser verification still cannot
 substitute for native acceptance.
 
 ## Automated checks
@@ -160,5 +162,5 @@ previews:
    handled per existing routing; javascript/data etc. are not handed to the
    system to execute.
 8. For math, Mermaid, HTML, TOC anchors, local images, and footnotes, use the
-   boundary list above for acceptance — avoid misjudging full support as
+   limits and fallbacks above for acceptance — avoid misjudging full support as
    present.

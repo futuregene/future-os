@@ -16,7 +16,7 @@ git clone --recurse-submodules https://github.com/futuregene/future-os.git
 
 # 2) 启动 —— 凭据自动取自 Future 账号（~/.future/agent/auth.json），无需任何参数
 cd scripts/skill_reco
-node server.mjs                                   # 默认 http://127.0.0.1:8791
+node server.mjs                                   # 默认 http://127.0.0.1:8787
 ```
 
 启动日志里必须出现这一行，否则第 2 步没生效（界面会是空的）：
@@ -206,7 +206,7 @@ AGENT_SKILL_RECO=.../agent/src/skill_reco/mod.rs \
 
 ```bash
 future agent --home /tmp/reco-test --verbose --log-file    # 隔离实例，不碰你在用的 agent
-python3 suggest-skill-tests.py              # 43 项、5 个套件；≈33 次调用 ≈¥0.04
+python3 suggest-skill-tests.py              # 35 项、5 个套件；≈33 次调用 ≈¥0.04
 python3 suggest-skill-tests.py --only A,B,D # 不花钱的三个套件（不发网络）
 python3 order-sensitivity.py --runs 8       # 顺序敏感性 vs 运行间噪音
 ```
@@ -224,7 +224,7 @@ python3 order-sensitivity.py --runs 8       # 顺序敏感性 vs 运行间噪音
 产品的推荐功能在 agent 里用 Rust 实现（`agent/src/skill_reco/mod.rs`），三端（桌面 / TUI / 移动）
 都调它。这个 demo 是**另一份实现**（JS），所以必须说清两边各自负责什么。
 
-**实验脚本必须留在 JS —— 这是设计，不是偷懒。** `bench/` 里那 37 个脚本存在的意义，就是**去改
+**实验脚本必须留在 JS —— 这是设计，不是偷懒。** `bench/` 里那 38 个脚本存在的意义，就是**去改
 生产特意固定下来的东西**：提示词措辞（宽松 vs 严格）、载荷形态（描述 220 vs 256、带不带中文）、
 分块大小、门控阈值、选项集合。如果它们跑生产代码，就一个旋钮都没有——那么现在的这些常量
 （0.15 / 254 / 220）**根本推导不出来**。它们是造出生产的工厂，不是产品本身。

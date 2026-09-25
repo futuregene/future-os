@@ -168,7 +168,7 @@ done
 而 Codex 用的是完整原生 shell，查询工作量并不对等。更正后的链路：
 
 ```text
-native_open_exam.py
+run_open_book.py
  → NativeFutureShell.execute_shell(原始 arguments)
  → production_tool_executor
  → 原生 tools::shell_tool().handler
@@ -216,7 +216,7 @@ launcher 只检查 shell 已解析好的单次 CLI argv 再转发，不解析 sh
 
 - `agent/examples/production_tool_executor.rs`、`scripts/compaction_experiment/native_future_shell.py`：原生 Future shell 入口和 CLI 范围护栏。
 - `native_codex.py`：原版 Codex 进程/工具事件转接。
-- `native_opencode.py`：原版 OpenCode CLI、原生 schema 与 ToolRegistry 调用。
+- `opencode_fidelity.mjs`：用上游固定版本 AI SDK 计算 OpenCode 序列化；OpenCode 分支由 `strategies.py` 的转写规则建模，没有原生适配器。
 - `native_stores.py`：冻结记录转换与原生存储准备；旧单次 argv 执行仅保留用于历史结果追溯，不再作为完整 shell。
 
 核心边界：**检索算法和工具执行必须来自对应产品；胶水只负责隔离、输入转换、原生调用与记录，不能偷偷削弱或补造能力。**

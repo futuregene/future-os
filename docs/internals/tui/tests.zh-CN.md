@@ -91,8 +91,9 @@ serde_json 分叉。
 model scope 与工具菜单、providers 列表（两个 Tab 与编辑表单）、技能浏览器（目录、
 搜索过滤、用 escape 清除过滤）、sandbox/permission 面板（overlay、已应用的 tier、
 已应用的权限级别）、主题选择器（应用 light、恢复 dark）、`/usage`、`/transcript`
-（pager、搜索编辑器与 PageDown/PageUp 键）、`/stats`、`/agent`、`/metrics`、
-`/snapshot`、`/tool-output`（列表与 diff 正文）与 `/history`。
+（pager、搜索编辑器与 PageDown/PageUp 键）、`/status`（其卡片承载已退役 `/stats`
+面板的会话计数）、`/agent`、`/metrics`、`/snapshot`、`/tool-output`（列表与 diff 正文）、
+`/history`，以及文本/图片粘贴、`ctrl+d` 紧凑视图与经 `/sessions` 的分页历史。
 
 ## 测试工具
 
@@ -109,7 +110,7 @@ tui/tests/tmux-diff.sh --keep     # 保留 /tmp/future-tui-tmux-* 产物
 
 测试工具启动一个 mock agent 实例（`tui/examples/mock_agent`，一个确定性的
 `FutureAgent` gRPC 服务），开一个 tmux 窗口（80x36 pane）跑 Rust TUI
-（`future-tui`），用按键驱动它。**共 45 项检查 = 44 个 golden 屏幕 + Ctrl+C 退出**，
+（`future-tui`），用按键驱动它。**共 56 项检查 = 55 个 golden 屏幕 + Ctrl+C 退出**，
 对应同一个固定会话的每个步骤（每个屏幕都叠在前面步骤产生的聊天之上，所以顺序是
 golden 的一部分）。按功能分组：
 
@@ -127,9 +128,16 @@ golden 的一部分）。按功能分组：
    `permission-overlay`、`permission-applied`
 7. 主题 —— `theme-overlay`、`theme-light`、`theme-dark-restored`
 8. 读数 —— `usage-overlay`、`transcript-pager`、`transcript-page-down`、
-   `transcript-page-up`、`transcript-search`、`stats`、`agent`、`metrics`、
-   `snapshot`、`tool-output-list`、`tool-output-diff`、`history`
-9. `ctrl-c` —— TUI 必须以状态 0 退出
+   `transcript-page-up`、`transcript-search`、`agent`、`metrics`、
+   `snapshot`、`tool-output-list`、`tool-output-diff`、`history`（独立 `/stats`
+   面板已移除，其计数是第 1 步 `/status` 卡片的一节）
+9. 粘贴 —— `paste-folded` / `paste-sent`（输入框内一个占位符，线上收到完整粘贴文本），
+   以及图片路径 `paste-image-attached` / `paste-image-two` / `paste-image-renumbered` /
+   `paste-image-sent`
+10. 紧凑视图 —— `burst-expanded` / `burst-folded` / `burst-restored`
+    （`ctrl+d` 把连续三次 read 折叠成一行再恢复）
+11. 分页历史 —— `history-tail` / `history-older`（切到另一个 mock 会话并用 PageUp 拉取更早一页）
+12. `ctrl-c` —— TUI 必须以状态 0 退出
 
 权威清单就是脚本本身：
 `grep -nE '^step |^step_when ' tui/tests/tmux-diff.sh`。
@@ -140,7 +148,7 @@ golden 的一部分）。按功能分组：
 在负载高的机器上依然稳定的原因。以**状态迁移**为证据、而不是以某个屏幕为证据的场景
 用 `require_text`，然后靠断言。
 
-**Golden 测试**：`tui/tests/golden/<scenario>.txt` 存 44 个参照屏幕，每个都用
+**Golden 测试**：`tui/tests/golden/<scenario>.txt` 存 55 个参照屏幕，每个都用
 `capture-pane -p -e` 抓取——**含 ANSI**，整体逐字节比对。它们**全部**由 `--record`
 录自 **Rust** pane；文件名可追溯到移植提交 `1467a1cd`（2026-08-07），当时最初十个录自
 退役的 TypeScript pane，而 TS 源码早已删除。Verify 模式把 Rust pane 与 golden 对比，
@@ -199,7 +207,8 @@ CI 不跑它：runner 上没有 tmux，测试工具会打印 `SKIP: tmux not fou
 
 过期还会让场景抓到**错误的**屏幕，而 golden 并不会漂移成肉眼可见的损坏：transcript
 pager 的搜索编辑器学会抢占第一次 escape 后，该场景里仅剩的那次 escape 只关掉了搜索
-编辑器，于是 `/stats` 及其后的各个场景录下的都是 transcript，而不是它们声称的面板。
+编辑器，于是当时排在那里的 `/stats`（现已移除）及其后各个场景录下的都是 transcript，
+而不是它们声称的面板。
 上面的状态迁移断言正是用来抓这类漂移的。
 
 ## 工具抓到过的 bug（均已修复）

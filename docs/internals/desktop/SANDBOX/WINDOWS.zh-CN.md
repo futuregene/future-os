@@ -234,16 +234,9 @@ Set-Content -LiteralPath (Join-Path $outside "sibling.txt") -Value "before"
 
 ## 7. 历史验证证据（不是当前候选自动PASS）
 
-| 日期 / 提交 | 结果与证据 |
-|---|---|
-| 2026-08-24 `a55c558200a80d2c2008c6ee2ef0c0c0ce86aa8e` | NT10.0.26200 AMD64、普通用户、NTFS、PS5.1、Rust1.97MSVC；原生50、capability11、singleton1、Desktop shutdown2、Agent/Desktop Clippy、release probe通过，record0。日志`target/windows-sandbox-results/windows-sandbox-20260824-102215.log` |
-| 2026-08-24 11:21 `471a8cd79da99c3186a88448a0b685c0130cb2e4` | 干净工作区、Agent home C:\Users\FgClaw01；上述行为矩阵复验PASS、record0。此报告未带IncludeClippy；同提交Agent开发端Clippy另过 |
-| 同主机SID实验 | capability+Everyone可启动，capability+logon不可启动；仅是该主机证据，不据此无矩阵删生产兼容SID |
-| 后续packaged RM-01～07 | 原稿记录全部PASS：单例/退出、三种重启、外部归属、崩溃启动恢复、CLI reset、真实NSIS卸载；RM-05强杀当时已归0，停止后人工seed再启动为1/1/0 |
-| P2多主机 | 原稿记录Pro/PS7/中文用户名与路径/portable矩阵完成；未逐项附commit与日志，本次不补造证据，发布复验应回填 |
-| 2026-08-24 GUI Home | probe/入口、workspace内容写、外部内容写拒绝、正常退出record0通过；对应W7-01/03/08核心，不覆盖全部scope按钮、手机、重启回退或sibling |
+早期几轮在 Windows 11 主机上留下过原生、安装包生命周期与打包制品的 PASS（capability record 都回到 0）；具体运行日志保留在 `target\windows-sandbox-results\` 与 git 历史。它们只证明各自的主机与提交：W7-02/04/05/06/07 的完整产品证据仍需逐项核实，这些记录都不是当前候选的自动 PASS。
 
-旧文首“全部完成”与后文“部分产品项待验证”不应混用：当前保留确切底层日志与原稿后续PASS记录，但W7-02/04/05/06/07完整产品证据仍需逐项核实。本次文档整理未在Windows执行测试。
+其中两条观察仍然有效：同主机 SID 实验（capability+Everyone 可启动、capability+logon 不可启动）只是单台主机的证据——没有完整矩阵不要据此删掉生产兼容 SID；强杀 bundled Agent 不承诺同步清理，但下一次启动 GC 仍能恢复 singleton（即上文 RM-05 的预期）。
 
 ## 8. 后续计划与发布要求
 

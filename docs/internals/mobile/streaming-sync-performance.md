@@ -58,7 +58,7 @@ Code references:
 
 - `mobile/src/remote/syncEngine.ts`: `open`, `runReconcile`, `needsHistory`.
 - `mobile/src/remote/replay.ts`: the serial paging loop and fixed watermark.
-- `desktop/src-tauri/src/remote_host/business.rs`:
+- `desktop/src-tauri/src/remote_host/business/wire_limits.rs`:
   `DEFAULT_MESSAGE_PAGE_LIMIT = 100`, `MESSAGES_PAGE_BYTES = 512 * 1024`,
   `paginate_events`.
 - `agent/src/rpc/protocol.rs`: run records beyond the in-memory ring can be

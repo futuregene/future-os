@@ -1,6 +1,12 @@
 # Loop 控制面（`future loop`）
 
-> 本地控制面，让长程 AI Agent 工作变得持久、可治理、可验收——目标、门禁、任务、证据与配额在聊天之外稳定存在，Agent 每次只执行一个有界回合，一个确定性内核决定下一步做什么。
+> （[English](loop-control-plane.md)）本地控制面，让长程 AI Agent 工作变得持久、可治理、可验收——目标、门禁、任务、证据与配额在聊天之外稳定存在，Agent 每次只执行一个有界回合，一个确定性内核决定下一步做什么。
+
+> **归属声明。** `future loop` 含有派生自
+> [LoopX](https://github.com/huangruiteng/loopx)（Apache-2.0）的代码——见
+> `orchestration/loop/NOTICE` 与 `orchestration/loop/UPSTREAM.md`。Future Loop
+> 是 FutureGene 维护的独立下游实现，不是 LoopX 官方发行版，也未经 LoopX 项目
+> 认证或背书。
 
 ## 为什么需要
 
@@ -32,19 +38,19 @@ Agent 执行一个有界回合（gRPC）→ 写证据 → 内核据此决定下�
 | 概念 | 命令 | 说明 |
 |---|---|---|
 | 目标 goal | `goal init` | 项目本地状态 `<cwd>/.future/loop/`，事件溯源 + 可重放 |
-| 任务 todo | `todo add/update/complete/supersede` | 类别：advancement（推进）/ user-gate（人工门禁）/ user-action（不冻结的人待办）/ monitor（监视）/ blocker（阻塞）/ coordination（编排记账）；`--blocks` 依赖链；`--priority` |
+| 任务 todo | `todo add/update/claim/complete/archive/supersede` | 类别：advancement（推进）/ user-gate（人工门禁）/ user-action（不冻结的人待办）/ monitor（监视）/ blocker（阻塞）/ coordination（编排记账）；`--blocks` 依赖链；`--priority`；`todo add --parent T` 在同一目标内建立不可变的组织父链（最多三层，与依赖/完成无关） |
 | 证据 evidence | `todo complete --evidence` | **非空强制**：关单必须写明实际落地了什么（路径、attempt id、测量结果），`--force` 是操作者显式覆盖 |
 | 验收契约 acceptance | `todo add --acceptance "tok1,tok2"` | 关单证据必须包含全部 token（大小写不敏感）——"done ≠ delivered" 的硬形式 |
 | 验证器 verify | `todo add --verify "cmd"` | 每个 **run 回合边界**后内核执行命令，exit 0 才算完成；上限 `--max-validation-attempts`。用于机器可判的确定性交付物。**不适用于探索性任务**（检索/报告）——内核判不了其正确性，正确性由编排 agent 读工件判断；手动 `todo complete` 也刻意不重跑 `--verify` |
 | 租约 lease | `lease claim/renew/release/expire/status` | 任务被谁租用、多久过期。**租约活性自愈**：记录持有进程 pid，进程死了自动回收——杀掉 worker 后无需手动清理 |
 | 门禁 gate | `gate resolve` | 普通门禁只阻塞依赖它的任务，无关工作可继续执行和完成；`--global-gate` 才全局冻结。门禁是决策点不是工作项：对 gate 用 `todo complete` 会**报错并指向 `gate resolve`**（决策被记录，绝不默默标 done）；user-action（不冻结的人待办）展示给用户但不阻塞 agent |
-| 交付闭环 delivery | `delivery status/record` | 完成 = `delivered` 待验证态；操作者用 `verified/failed/rework` 结案；3 回合未验证自动派生跟进任务 |
-| 终局 terminal | `frontier show` | 验证式闭环：todos 完成/被取代 + 闭环意图 + 无验收缺口 + 无待决 deferred 工作；`frontier` 给出终局判定与缺口明细 |
+| 交付闭环 delivery | `delivery status/record/followthrough` | 完成 = `delivered` 待验证态；操作者用 `verified/failed/rework` 结案；3 回合未验证自动派生跟进任务 |
+| 终局与前沿 terminal | `frontier show` | 验证式闭环：todos 完成/被取代 + 闭环意图 + 无验收缺口 + 无待决 deferred 工作，并给出缺口明细；同时投影成果连续段（outcome segments）、结构化 replan 规则与有界语义历史（N=50） |
+| 仪表盘 dashboard | `ui` | 本地只读 Web 仪表盘，监听 127.0.0.1：目标卡片、关注队列、内核决策、todo DAG、worker/成本、运行/事件账本——经 SSE 实时更新；所有变更仍留在 CLI |
 | 配额 quota | `quota should-run/usage/spend/decisions` | 确定性 should-run 内核：每个回合的调度、拒绝原因、花费全部可审计 |
 | 调度器 scheduler | `scheduler tick/show/record-host-failure/ack/liveness` | 监视器节奏、宿主故障记录、活性心跳 |
-| 多 agent | `agent onboard/list` | 注册并行 worker 身份与 workspace 写集合，通过 owner、依赖和租约协作。已移除的多宿主 contract/recipe/succession/collective 不是公开命令。 |
+| 多 agent | `agent onboard/list` | 注册并行 worker 身份与 workspace 写集合，通过 owner、依赖和租约协作 |
 | worker 可观测 | `worker tail` | 把 worker 的实时回合日志（`.live.jsonl`）渲染成浓缩 tool/用量视图（`--raw` 看原始）——编排者观察 worker 实际在做什么的窗口，据此 steer / stop / 放行 |
-| 前端面 frontier | `frontier show` | 成果连续段（outcome segments）、结构化 replan 规则、有界语义历史（N=50）、终局判定 |
 
 ## 用技能驱动 loop（推荐入口）
 
@@ -60,8 +66,9 @@ Agent 加载 future-loop 技能（v4 驾驶手册）
    ├─ 3. `goal init` + 拆 todos（依赖 --blocks、硬校验 --verify/--acceptance 一起挂）
    ├─ 4. detached 派发；watchdog 通知唤醒后，核对证据与预算再决定下一轮
    ├─ 5. 用 `todo update --text` 纠正跑偏的 worker（下一回合生效）
-   ├─ 6. 遇到不可逆/昂贵/用户专属决策 → 挂 user gate 等你拍板（普通 gate 只冻结下游；global gate 冻结全部）
-   └─ 7. 收尾：验收 todo 拷贝交付物到项目根 → validated closure（terminal）
+   ├─ 6. 常规 steer 等回合边界注入；只有紧急纠偏才加 `--interrupt`
+   ├─ 7. 遇到不可逆/昂贵/用户专属决策 → 挂 user gate 等你拍板（普通 gate 只冻结下游；global gate 冻结全部）
+   └─ 8. 收尾：验收 todo 拷贝交付物到项目根 → validated closure（terminal）
 ```
 
 **技能与 CLI 的分工**：技能负责"何时该做什么、如何拆解、如何驾驶"（编排层）；
@@ -84,6 +91,9 @@ future loop todo add --goal G --text "..." --blocks T1 --acceptance "attempt,sco
 future loop todo add --goal G --role user --class user_gate --text "发布门禁" --gate-question "是否发布？"
 
 # 3. 派发回合（每个并行 worker 独立 --agent-id；检查证据后再决定重启）
+# 新 worker 会话默认继承已注册的 supervisor 作为父会话。
+# 嵌套委派可用 --parent-session CURRENT_SESSION_ID 覆盖 lineage。
+# 这不会复制上下文，也不会改变显式 resume 会话的父会话。
 future loop run --goal G --agent-id mac-worker --model M --thinking-level L --max-turns 1
 
 # 4. 人工拍板
@@ -135,7 +145,7 @@ watchdog 投递 loop 事件；外部评分和算力结果需显式监控任务�
 ## 硬校验优先（约定靠不住，闸门靠得住）
 
 - 空证据关单会被**拒绝**（默认 fail-closed，`--force` 才放行）
-- `--verify` 让"写完"不等于"能编译/有产物"——每个交付类任务都应挂一个
+- `--verify` 校验确定性交付物（如能编译、产物存在）；只在存在有意义的机器检查时使用，不要用它替代对研究正确性的审阅
 - `--acceptance` 把"验收以外部可观测信号为准"变成硬校验
 - 租约活性自愈：死进程的租约自动回收，重启 worker 不再需要手动 release
 - 工作区守卫：多 agent 写冲突自动降级串行
@@ -208,7 +218,7 @@ usage 即可发现参数。
 
 ## 与 FutureOS 其他部件的关系
 
-- **Agent 服务**（`future agent`，默认按用户隔离的本地 IPC，`--grpc-addr` 可切 TCP）：`run` 通过它执行每个回合
+- **Agent 服务**（`future agent`，默认按用户隔离的本地 IPC，`--grpc-addr` 可切 TCP）：`run` 通过它与 TUI/CLI 客户端相同的共享传输发现执行每个回合——默认走每用户本地 IPC，`FUTURE_LOOP_AGENT_ADDR` 指定显式 TCP 地址（显式地址是权威的：连接失败会如实报错，不会静默改道本地 IPC）
 - **任何客户端都可经技能驱动**（TUI、桌面、移动端、飞书 / 钉钉）：loop 目标由 `/future-loop` 技能编排 `future loop` 命令驱动——桥与 loop 之间没有原生集成；门禁以 agent 消息形式提出一个具体问题
 - **技能 `/future-loop`**：编排 Agent 使用本控制面的驾驶手册（v4 与本文档同步维护）
 - **状态位置**：`<cwd>/.future/loop/`（加入项目 `.gitignore`）
