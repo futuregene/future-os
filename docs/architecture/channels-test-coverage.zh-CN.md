@@ -8,10 +8,10 @@
 指的是有测试执行了它；不用任何代理指标。
 
 ```bash
-bash scripts/chan-cov.sh                          # 整个 crate：报告 + 未覆盖清单
-bash scripts/chan-cov.sh --check FILE [FILE...]    # 指定文件有未覆盖行就失败
-python3 scripts/chan-missed.py [子串]              # 分组列出未覆盖行
-python3 scripts/show-lines.py FILE LINE [LINE...] # 带上下文打印这些行
+bash scripts/measure/chan-cov.sh                          # 整个 crate：报告 + 未覆盖清单
+bash scripts/measure/chan-cov.sh --check FILE [FILE...]    # 指定文件有未覆盖行就失败
+python3 scripts/measure/chan-missed.py [子串]              # 分组列出未覆盖行
+python3 scripts/measure/show-lines.py FILE LINE [LINE...] # 带上下文打印这些行
 ```
 
 脚本会消毒环境（`CARGO_HOME`、`CARGO_TARGET_DIR`、`HOME`）并加独占锁：

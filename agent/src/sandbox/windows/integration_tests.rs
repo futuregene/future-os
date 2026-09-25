@@ -3,7 +3,7 @@
 //! These tests deliberately exercise the production runner end to end:
 //! capability identity/state -> audited NTFS ACEs -> WRITE_RESTRICTED token ->
 //! suspended PowerShell -> Job Object -> captured output/exit status. They are
-//! invoked manually by `scripts/test-windows-sandbox.ps1`, not by CI.
+//! invoked manually by `scripts/tests/test-windows-sandbox.ps1`, not by CI.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

@@ -307,6 +307,10 @@ impl Loop {
             // prose.
             let semantics =
                 crate::tools::tool_end_semantics(&tool_name, &tc.function.arguments, &result);
+            // Record the real outcome: failed calls carry `is_error: true` so
+            // the phone can render the failure and the model is told the
+            // truth. See `tools::outcome_is_error` for the single verdict.
+            let is_error = crate::tools::outcome_is_error(err_str.as_deref(), &semantics);
             on_event(RunEvent::ToolExecutionFinished {
                 id: tc.id.clone(),
                 name: tool_name.clone(),
@@ -327,6 +331,7 @@ impl Loop {
                 &tool_args_str,
                 &result,
                 err_str.as_deref(),
+                is_error,
             );
             messages.push(tool_msg);
             if let Some(ref cb) = on_tool_result {
@@ -346,12 +351,16 @@ impl Loop {
                     serde_json::Value::String(s) => s.clone(),
                     other => serde_json::to_string(other).unwrap_or_default(),
                 };
+                // A skipped call is a cancellation, not a tool failure: keep
+                // the synthesized result out of the error verdict (`false`),
+                // exactly as before this recorded real outcomes.
                 messages.push(self.new_tool_result(
                     &tc.id,
                     &tc.function.name,
                     &tool_args_str,
                     &cancelled,
                     Some(&cancelled),
+                    false,
                 ));
             }
         }
@@ -496,6 +505,7 @@ impl Loop {
         tool_args: &str,
         result: &str,
         err: Option<&str>,
+        is_error: bool,
     ) -> AgentMessage {
         let text = if let Some(e) = err {
             format!("Error: {}", e)
@@ -519,7 +529,7 @@ impl Loop {
             content: vec![ContentBlock::tool_result(
                 call_id.to_string(),
                 &capped,
-                false,
+                is_error,
             )],
             name: tool_name.to_string(),
             tool_args: tool_args.to_string(),
@@ -589,25 +599,43 @@ mod tests {
     #[test]
     fn loop_new_tool_result_normal() {
         let loop_ = make_loop();
-        let msg = loop_.new_tool_result("call_1", "shell", "{\"cmd\": \"ls\"}", "output", None);
+        let msg = loop_.new_tool_result(
+            "call_1",
+            "shell",
+            "{\"cmd\": \"ls\"}",
+            "output",
+            None,
+            false,
+        );
         assert_eq!(msg.role, "tool");
         assert_eq!(msg.tool_call_id(), "call_1");
         assert_eq!(msg.text(), "output");
+        assert!(!tool_result_is_error(&msg));
+    }
+
+    /// The `tool_result` block's `is_error` flag as it will be persisted and
+    /// sent to providers: present-and-true only for recorded failures.
+    fn tool_result_is_error(message: &AgentMessage) -> bool {
+        message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolResult { is_error: true, .. }))
     }
 
     #[test]
     fn loop_new_tool_result_with_error() {
         let loop_ = make_loop();
-        let msg = loop_.new_tool_result("call_1", "shell", "{}", "", Some("file not found"));
+        let msg = loop_.new_tool_result("call_1", "shell", "{}", "", Some("file not found"), true);
         assert!(msg.text().contains("Error"));
         assert!(msg.text().contains("file not found"));
+        assert!(tool_result_is_error(&msg));
     }
 
     #[test]
     fn loop_new_tool_result_truncates_long_output() {
         let loop_ = make_loop();
         let long = "x".repeat(200_000);
-        let msg = loop_.new_tool_result("call_1", "shell", "{}", &long, None);
+        let msg = loop_.new_tool_result("call_1", "shell", "{}", &long, None, false);
         assert!(msg.text().len() <= 110_000);
         assert!(msg.text().contains("truncated"));
     }

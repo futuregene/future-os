@@ -651,7 +651,7 @@ mod tests {
 
     /// Measure the trim against real history, through the shipping code.
     ///
-    /// Driven by `scripts/measure-lean-history.py`, which dumps one session's
+    /// Driven by `scripts/measure/measure-lean-history.py`, which dumps one session's
     /// `get_session_entries` reply to a file and supplies its path. Runs against
     /// the live (read-only) agent, so the numbers describe real sessions rather
     /// than a synthetic payload.

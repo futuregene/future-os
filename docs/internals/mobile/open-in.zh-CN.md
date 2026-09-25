@@ -26,7 +26,7 @@
 在 `mobile/` 运行 `npm run check`：包含实际 Expo 插件生成配置断言、原生收件事件、
 读取竞态、草稿不自动发送及原有分享回归测试。
 
-在仓库根运行 `python3 scripts/test-mobile-ios-share.py`：用 macOS Swift 执行实际
+在仓库根运行 `python3 scripts/tests/test-mobile-ios-share.py`：用 macOS Swift 执行实际
 收件箱复制代码，覆盖中文文件名、文件内容、一次消费、超限、损坏输入和路径安全。
 
 Android 原生（需要 JDK 17、Android SDK，首次会下载 Robolectric 测试运行时）：

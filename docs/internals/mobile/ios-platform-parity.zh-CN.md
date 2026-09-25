@@ -52,7 +52,7 @@ prebuild 时生成并嵌入扩展，避免提交 `mobile/ios/`。扩展版本与
    传入这两个自定义设置，不能全局传一个 `PROVISIONING_PROFILE_SPECIFIER` 覆盖所有 target。
    导出 IPA 的 `provisioningProfiles` 字典须包含两个 bundle ID 对应的 profile。
 5. 可先用 `security cms -D -i <profile>` 解码两份 profile，再运行
-   `python3 scripts/validate-ios-share-profiles.py <host.plist> <share.plist>` 检查 App ID、团队、
+   `python3 scripts/tests/validate-ios-share-profiles.py <host.plist> <share.plist>` 检查 App ID、团队、
    有效期、分发类型与 App Group。
 
 **本次不修改 CI/发版工作流。** 现有工作流未设置 opt-in，继续生成不含扩展/App Group 的版本，
@@ -63,9 +63,9 @@ prebuild 时生成并嵌入扩展，避免提交 `mobile/ios/`。扩展版本与
 
 - `npm run check`（在 `mobile/`）：类型、lint、Jest；覆盖独立文件操作、旧包回退、等待
   下载弹窗真正关闭后再呈现 UIKit，以及取消/失败路径。
-- `python3 scripts/test-mobile-ios-share.py`：实际 Swift 收件箱的原子消费、失败重试、字节
+- `python3 scripts/tests/test-mobile-ios-share.py`：实际 Swift 收件箱的原子消费、失败重试、字节
   限额、Unicode、坏清单、路径逃逸、目录/符号链接拒绝与队列容量。
-- 显式启用扩展并 prebuild 后运行 `node scripts/test-mobile-ios-project.cjs`：验证生成项目的
+- 显式启用扩展并 prebuild 后运行 `node scripts/tests/test-mobile-ios-project.cjs`：验证生成项目的
   源文件、嵌入关系、entitlements、重复运行、版本同步和每个 target 的签名设置。
 - 有 Xcode/iOS SDK 的 macOS 上，可在 `mobile/ios/` 安装 Pods 后运行：
   `xcodebuild -workspace FutureOS.xcworkspace -scheme FutureOS -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build`。
