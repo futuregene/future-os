@@ -63,15 +63,36 @@ mod tests {
         );
         assert!(!error.contains("os error"), "{error}");
         drop(guard);
-        // Report the reason rather than a bare `is_ok()`: this line has failed
+        // Retry briefly before calling the lock leaked: a sibling test's
+        // `Command::spawn` forks while this guard is open, and the child shares
+        // the open file description until it execs. `flock` ownership follows
+        // the description rather than the fd, so the lock can still read as held
+        // for the length of that window -- an artifact of running the suite in
+        // parallel, not a lock that was never released. A lock that really is
+        // never released still fails here, just after the deadline.
+        //
+        // Report the reason rather than a bare `is_ok()`: this line failed
         // intermittently under full-suite load (3 times in ~20 runs) with no way
         // to tell a lock that was not released from an unrelated `open` failure,
         // which is the difference between a product bug and a test-environment
         // one. It has never reproduced in isolation (150 single runs, 320
-        // concurrent runs of this test, and several full-suite runs all pass),
-        // so the message is the point: the next failure has to be diagnosable.
-        if let Err(error) = InstanceGuard::at(directory.path()) {
-            panic!("re-acquiring the lock after release failed: {error}");
+        // concurrent runs of this test, and several full-suite runs all pass).
+        //
+        // fd exhaustion was measured and ruled out: this test holds no fds (all
+        // three of its cases pass under `ulimit -n 128`, where 284 other tests
+        // fail with EMFILE), and the suite's peak demand stays below 256 against
+        // a 2560 soft limit.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match InstanceGuard::at(directory.path()) {
+                Ok(_) => break,
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => {
+                    panic!("re-acquiring the lock after release failed: {error}")
+                }
+            }
         }
     }
 
