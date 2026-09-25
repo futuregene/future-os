@@ -522,7 +522,9 @@ invalid, explicitly show "file moved or deleted".
 
 Mobile attachments transfer in shards over the NATS relay: validated by
 original size on selection first (single file 10 MiB, single message total
-20 MiB, at most 10 attachments / 4 images); images with a longest edge over
+20 MiB, at most 10 attachments, images included — a message may be filled with
+up to 10 images and the backend accepts the same number); images with a longest
+edge over
 1600px are downsampled to 1600px on the phone, not rejected. JPEG/BMP are
 encoded as JPEG quality 65 on the phone before upload, HEIC/HEIF are input-only
 and also converted to JPEG 65, PNG/WebP/GIF stay as originals, SVG is an
