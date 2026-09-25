@@ -79,7 +79,17 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 )
                 .await
                 {
-                    Ok(data) => {
+                    Ok(mut data) => {
+                        // Trim before the byte budget, not after: the budget sheds
+                        // whole oldest exchanges to fit a reply, so measuring the
+                        // trimmed page is what lets it hold more of them per round
+                        // trip. Nothing here adds or removes an entry, so the
+                        // cursor arithmetic below is untouched (see `lean_entries`).
+                        if crate::remote_host::lean::enabled() {
+                            if let Some(entries) = data.get_mut("entries") {
+                                crate::remote_host::lean::lean_entries(entries);
+                            }
+                        }
                         // A chunked first paint is the one page that pays the
                         // byte budget for a reader who is waiting: dropping the
                         // oldest complete exchange sends it to the next pull
@@ -119,7 +129,12 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 return;
             }
             match crate::agent_bridge::get_session_entries(cmd.session_id.clone()).await {
-                Ok(data) => {
+                Ok(mut data) => {
+                    if crate::remote_host::lean::enabled() {
+                        if let Some(entries) = data.get_mut("entries") {
+                            crate::remote_host::lean::lean_entries(entries);
+                        }
+                    }
                     let entries = entries_vec(data);
                     reply(
                         sink,
