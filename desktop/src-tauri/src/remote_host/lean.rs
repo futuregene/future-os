@@ -534,6 +534,130 @@ mod tests {
         entries[0]["blocks"][0]["arguments"].clone()
     }
 
+    /// Derive the mobile render fixtures' lean pages from their full-feed
+    /// counterparts **through the shipping trims**.
+    ///
+    /// Driven by `scripts/screenshots/gen-lean-render-fixtures.mjs`, which writes
+    /// the full-feed fixture files (the wire shapes `rpc/prompt_helpers.rs` and
+    /// the history relay produce) and then runs this test. The lean files are the
+    /// output of [`lean_event_data`] / [`lean_entries`] themselves, so a render
+    /// capture cannot quietly test a hand-trimmed paraphrase of the wire: if a
+    /// trim changes, regenerating the fixtures changes what the phone is fed.
+    ///
+    /// The assertions below are the point of that claim — a generation run that
+    /// silently produced an untrimmed file would make every render check vacuous.
+    #[test]
+    #[ignore = "fixture generation: needs LEAN_RENDER_FIXTURES"]
+    fn generate_render_fixtures() {
+        let dir = std::env::var("LEAN_RENDER_FIXTURES").expect("LEAN_RENDER_FIXTURES");
+        let dir = std::path::Path::new(&dir);
+
+        for (input, output) in [
+            (
+                "render-full-lane-events.json",
+                "render-lean-lane-events.json",
+            ),
+            (
+                "render-full-lane-mid-events.json",
+                "render-lean-lane-mid-events.json",
+            ),
+        ] {
+            // The live lane: one event at a time, exactly like `publish_event`.
+            let raw = std::fs::read_to_string(dir.join(input)).expect("full lane events readable");
+            let full: Value = serde_json::from_str(&raw).expect("full lane events json");
+            let mut lean_events = Vec::new();
+            for event in full.as_array().expect("events array") {
+                let event_type = event["type"].as_str().unwrap_or_default().to_string();
+                let data = event["data"].as_str().unwrap_or_default().to_string();
+                let Some(rewritten) = lean_event_data(&event_type, &data) else {
+                    continue;
+                };
+                let mut copy = event.clone();
+                if let Cow::Owned(trimmed) = rewritten {
+                    copy["data"] = Value::String(trimmed);
+                }
+                lean_events.push(copy);
+            }
+            assert!(
+                !lean_events.is_empty(),
+                "{input} produced an empty lean lane"
+            );
+            for event in &lean_events {
+                let event_type = event["type"].as_str().unwrap_or_default();
+                assert!(
+                    !is_dropped(event_type),
+                    "{event_type} is streamed-only content and must not survive {input}"
+                );
+            }
+            std::fs::write(
+                dir.join(output),
+                serde_json::to_string_pretty(&Value::Array(lean_events)).expect("serializes"),
+            )
+            .expect("lean lane events writable");
+        }
+
+        let raw = std::fs::read_to_string(dir.join("render-lean-lane-events.json"))
+            .expect("lean lane events readable");
+        let lean_lane: Value = serde_json::from_str(&raw).expect("lean lane events json");
+        let lean_events = lean_lane.as_array().expect("events array");
+
+        // The history page: an in-place trim of the entries array, exactly like
+        // `history.rs` does for a page it is about to relay.
+        let raw = std::fs::read_to_string(dir.join("render-full-history-entries.json"))
+            .expect("full history entries readable");
+        let mut lean_entries_value: Value =
+            serde_json::from_str(&raw).expect("full history entries json");
+        lean_entries(&mut lean_entries_value);
+
+        // Self-checks: the generated lean files must actually be lean, and must
+        // still carry what the phone reads instead.
+        for event in lean_events {
+            let event_type = event["type"].as_str().unwrap_or_default();
+            if event_type == "tool_end" || event_type == "tool_result" {
+                let data: Value = serde_json::from_str(event["data"].as_str().unwrap_or("{}"))
+                    .expect("tool event data json");
+                assert!(
+                    data.get("text").is_none(),
+                    "tool_end output must be dropped"
+                );
+            }
+        }
+        for entry in lean_entries_value.as_array().expect("entries array") {
+            for block in entry["blocks"].as_array().into_iter().flatten() {
+                match block["kind"].as_str().unwrap_or_default() {
+                    "reasoning" => assert!(
+                        block.get("text").is_none(),
+                        "a lean reasoning block carries no body"
+                    ),
+                    "tool_result" => assert!(
+                        block.get("text").is_none(),
+                        "a lean tool_result carries no body"
+                    ),
+                    "tool_call" => {
+                        for key in block["arguments"].as_object().into_iter().flatten() {
+                            assert!(
+                                TARGET_ARGUMENT_KEYS.contains(&key.0.as_str()),
+                                "argument {key:?} is not one the target derivation reads"
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(
+            lean_events.iter().any(|event| event["type"] == "tool_end"),
+            "the settled lane fixture has to keep at least one tool_end for the render checks"
+        );
+
+        std::fs::write(
+            dir.join("render-lean-history-entries.json"),
+            serde_json::to_string_pretty(&lean_entries_value).expect("serializes"),
+        )
+        .expect("lean history entries writable");
+        println!("LEAN_RENDER_FIXTURES written to {}", dir.display());
+    }
+
     /// Measure the trim against real history, through the shipping code.
     ///
     /// Driven by `scripts/measure/measure-lean-history.py`, which dumps one session's

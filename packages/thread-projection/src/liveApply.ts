@@ -671,7 +671,11 @@ function buildSegments(
       // A compaction marker breaks the tool run — it renders as its own divider.
       if (current.type === "compaction")
         break;
-      if (!current.text.trim()) {
+      // Only whitespace-only *text* is glue between tools. A reasoning slot with
+      // no body is a row of its own — the lean feed never streams its deltas, so
+      // treating the empty slot as glue would swallow the row (and merge the tool
+      // calls on either side of it into one burst).
+      if (current.type === "text" && !current.text.trim()) {
         cursor += 1;
         continue;
       }
