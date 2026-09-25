@@ -155,6 +155,15 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 .await
                 {
                     Ok(Some(snapshot)) => {
+                        // The snapshot's folded events are the same reasoning and
+                        // tool-argument content again, in a shape both sides
+                        // validate for length and ordering — so its events keep
+                        // their `idx` and only their text is blanked.
+                        let mut snapshot = snapshot;
+                        crate::remote_host::lean::lean_replay_page(
+                            &mut snapshot,
+                            crate::remote_host::lean::enabled(),
+                        );
                         reply(sink, true, snapshot, None).await;
                         return;
                     }
@@ -223,6 +232,13 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     page["hasMore"] = json!(
                         next < watermark
                             && (agent_has_more || page["hasMore"].as_bool().unwrap_or(false))
+                    );
+                    // Only now, with the page's cursors fixed: the lean rewrite
+                    // drops events, and dropping one must not move the resume
+                    // point (see `lean_replay_page`).
+                    crate::remote_host::lean::lean_replay_page(
+                        &mut page,
+                        crate::remote_host::lean::enabled(),
                     );
                     reply(sink, true, page, None).await;
                 }

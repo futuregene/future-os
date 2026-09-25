@@ -716,6 +716,167 @@ mod runtime_tests {
         stop();
     }
 
+    /// The live lane's half of the lean feed. The unit tests pin the rewrite
+    /// rules; this pins that `publish_event` actually consults the declared
+    /// flag, drops the content events before they reach the queue, and forwards
+    /// a tool result the client can still read an outcome from.
+    ///
+    /// `HomeGuard` holds `TEST_HOME_LOCK`, so no sibling test can publish while
+    /// the process-wide flag is flipped.
+    #[tokio::test]
+    async fn lean_lane_drops_streamed_content_and_keeps_the_tool_outcome() {
+        let _home = HomeGuard::new("remote-lean");
+        let nats = FakeNats::start().await;
+        install_state(fake_state(&nats, "pair_lean").await);
+        let mut tap = nats.tap();
+
+        crate::remote_host::lean::set_enabled(true);
+        publish_event(
+            "sess-lean",
+            "thinking_delta",
+            r#"{"text":"long reasoning","block_id":"b"}"#,
+            "r",
+            1,
+            0,
+            "e1",
+            "",
+            -1,
+            0,
+        );
+        publish_event(
+            "sess-lean",
+            "tool_delta",
+            r#"{"text":"{\"path\"","tool_id":"c1"}"#,
+            "r",
+            2,
+            0,
+            "e2",
+            "",
+            -1,
+            0,
+        );
+        publish_event(
+            "sess-lean",
+            "tool_start",
+            r#"{"tool_args":{"command":"ls -la"}}"#,
+            "r",
+            3,
+            0,
+            "e3",
+            "",
+            -1,
+            0,
+        );
+        publish_event(
+            "sess-lean",
+            "tool_end",
+            r#"{"text":"boom\n[exit: 3]","exit_code":3,"tool_id":"c1"}"#,
+            "r",
+            4,
+            0,
+            "e4",
+            "",
+            -1,
+            0,
+        );
+        crate::remote_host::lean::set_enabled(false);
+
+        // The first thing on the lane is the tool start, not the reasoning that
+        // was published before it.
+        let first = await_publish(
+            &mut tap,
+            "p.pair_lean.evt.sess-lean",
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(first.json()["type"], json!("tool_start"));
+        assert_eq!(first.json()["idx"], json!(3));
+
+        let second = await_publish(
+            &mut tap,
+            "p.pair_lean.evt.sess-lean",
+            Duration::from_secs(5),
+        )
+        .await;
+        let body = second.json();
+        assert_eq!(body["type"], json!("tool_end"));
+        assert_eq!(body["idx"], json!(4));
+        let data: serde_json::Value =
+            serde_json::from_str(body["data"].as_str().expect("data is a string")).unwrap();
+        assert!(data.get("text").is_none(), "captured output is dropped");
+        assert_eq!(data["exit_code"], json!(3), "outcome survives");
+        assert_eq!(data["tool_id"], json!("c1"), "identity survives");
+
+        // Nothing trails the dropped events onto the lane.
+        super::test_support::assert_no_publish(
+            &mut tap,
+            "p.pair_lean.evt.sess-lean",
+            Duration::from_millis(200),
+        )
+        .await;
+
+        stop();
+    }
+
+    /// The same events, with no declaration: the lane keeps its legacy shape, so
+    /// an older client on this desktop is served exactly what it was before.
+    #[tokio::test]
+    async fn a_client_that_did_not_declare_keeps_the_full_lane() {
+        let _home = HomeGuard::new("remote-lean-legacy");
+        let nats = FakeNats::start().await;
+        install_state(fake_state(&nats, "pair_legacy").await);
+        let mut tap = nats.tap();
+
+        publish_event(
+            "sess-legacy",
+            "thinking_delta",
+            r#"{"text":"kept"}"#,
+            "r",
+            1,
+            0,
+            "e1",
+            "",
+            -1,
+            0,
+        );
+        publish_event(
+            "sess-legacy",
+            "tool_end",
+            r#"{"text":"boom\n[exit: 3]"}"#,
+            "r",
+            2,
+            0,
+            "e2",
+            "",
+            -1,
+            0,
+        );
+
+        let first = await_publish(
+            &mut tap,
+            "p.pair_legacy.evt.sess-legacy",
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(first.json()["type"], json!("thinking_delta"));
+        let second = await_publish(
+            &mut tap,
+            "p.pair_legacy.evt.sess-legacy",
+            Duration::from_secs(5),
+        )
+        .await;
+        let body = second.json();
+        assert_eq!(body["type"], json!("tool_end"));
+        let data: serde_json::Value = serde_json::from_str(body["data"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            data["text"],
+            json!("boom\n[exit: 3]"),
+            "the legacy lane must keep the footer the client parses"
+        );
+
+        stop();
+    }
+
     #[tokio::test]
     async fn publish_event_reports_offline_and_full_queue_drops() {
         let _home = HomeGuard::new("remote-drops");

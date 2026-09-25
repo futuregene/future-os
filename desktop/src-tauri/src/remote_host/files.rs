@@ -137,9 +137,21 @@ fn preview_cache_path(source: &Path) -> Result<Option<PathBuf>, crate::AppError>
     ))
 }
 
+/// Sweep the shared preview cache: expired files, then least-recently-modified
+/// ones while the directory is over its byte budget.
 fn prune_preview_cache() {
-    let dir = preview_cache_dir();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    prune_preview_cache_at(&preview_cache_dir());
+}
+
+/// The sweep itself, over an explicit directory.
+///
+/// Taking the directory as a parameter is what keeps the unit test off the
+/// process-wide cache: `tests` runs in parallel threads, and a sibling test
+/// calling [`clear_preview_cache`] does `remove_dir_all` on the shared path —
+/// deleting the fixture this sweep is meant to observe. Same shape as
+/// [`persist_image_preview_cache`], which also takes its path.
+fn prune_preview_cache_at(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     let mut files = entries
@@ -2452,7 +2464,11 @@ mod flow_tests {
 
     #[test]
     fn prune_preview_cache_removes_expired_files() {
-        let dir = preview_cache_dir();
+        // A private directory, not `preview_cache_dir()`: the shared cache is
+        // process-wide and a sibling test wipes it, which deleted this test's
+        // fresh fixture out from under the assertion (flaky only under full-suite
+        // load, when the two happen to interleave).
+        let dir = std::env::temp_dir().join(unique("futureos-prune-cache"));
         std::fs::create_dir_all(&dir).unwrap();
         let expired = dir.join("expired.jpg");
         std::fs::write(&expired, b"old").unwrap();
@@ -2468,11 +2484,20 @@ mod flow_tests {
             .set_times(std::fs::FileTimes::new().set_modified(past))
             .unwrap();
 
-        prune_preview_cache();
+        prune_preview_cache_at(&dir);
 
         assert!(!expired.exists(), "expired cache file removed");
         assert!(fresh.exists(), "fresh cache file kept");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A sweep of a directory that does not exist is a no-op, not a panic: it is
+    /// reached on every transfer cycle before the cache has ever been written.
+    #[test]
+    fn prune_preview_cache_tolerates_a_missing_directory() {
+        let dir = std::env::temp_dir().join(unique("futureos-prune-cache-absent"));
+        assert!(!dir.exists(), "fixture must not exist");
+        prune_preview_cache_at(&dir);
     }
 
     #[test]

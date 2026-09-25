@@ -89,10 +89,10 @@ pub(super) struct HandshakeState {
 /// command replies. Additive: a client that does not ask never receives one.
 pub(super) const REPLY_GZIP_FEATURE: &str = "reply_gzip_v1";
 
-/// Record what a connection declared on `secure_ready`. Both capabilities are
+/// Record what a connection declared on `secure_ready`. Every capability is
 /// opt-in, and the declared set is authoritative: a declaration always writes
-/// the flag, so an empty list clears a previous declaration rather than
-/// leaving it latched.
+/// the flag, so an empty list clears a previous declaration rather than leaving
+/// it latched.
 pub(super) fn apply_declared_features(
     handshake: &HandshakeState,
     pair_id: &str,
@@ -104,6 +104,9 @@ pub(super) fn apply_declared_features(
             .any(|feature| feature == super::publisher::EVENT_COALESCING_FEATURE),
         Ordering::Release,
     );
+    // The lean feed is read from two layers (see `remote_host::lean`), so it is
+    // recorded in one place instead of an `Arc` per declaration site.
+    crate::remote_host::lean::set_enabled(crate::remote_host::lean::feature_declared(features));
     handshake.gzip_replies.store(
         features.iter().any(|feature| feature == REPLY_GZIP_FEATURE),
         Ordering::Release,

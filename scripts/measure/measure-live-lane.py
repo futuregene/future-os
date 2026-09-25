@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Measure the real live-event lane: today's 1:1 forwarding against coalescing.
+"""Measure the real live-event lane: today's 1:1 forwarding against coalescing,
+and again against the lean feed a phone can declare (`lean_events_v1`).
 
 Dumps the heaviest completed runs from the agent database (read-only), then runs
-the shipped Rust coalescer over exactly the bodies the desktop would publish, so
-the numbers come from the real merge code and real event traffic — not from a
-model of either.
+the shipped Rust code over exactly the bodies the desktop would publish, so the
+numbers come from the real merge and rewrite paths and real event traffic — not
+from a model of either.
 
-  python3 scripts/measure/measure-live-lane.py [--sample-count 6] [--runs N]
+  python3 scripts/measure/measure-live-lane.py [--runs N] [--windows 50,100,250]
 """
 import argparse
 import json
@@ -33,6 +34,18 @@ def dump(session: str, run: str, path: Path) -> int:
     return len(rows)
 
 
+def run_measurement(binary: Path, test: str, env_extra: dict) -> dict | None:
+    result = subprocess.run(
+        [str(binary), test, "--exact", "--ignored", "--nocapture", "--test-threads=1"],
+        env=env_extra, capture_output=True, text=True, check=True)
+    marker = "LEAN_LANE " if "lean" in test else "LIVE_LANE "
+    line = next((row for row in result.stdout.splitlines() if marker in row), None)
+    if line is None:
+        print(result.stdout[-2000:])
+        return None
+    return json.loads(line[line.index(marker) + len(marker):])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", type=int, default=6)
@@ -53,8 +66,8 @@ def main() -> int:
         raise SystemExit("build the desktop test binary first "
                          "(cd desktop/src-tauri && cargo test --no-default-features --lib publish --no-run)")
 
-    print(f"{'sample':7}{'events':>9}{'window':>8}{'today MB':>10}{'coalesced MB':>14}{'parties':>9}"
-          f"{'published':>11}{'ratio':>8}")
+    print(f"{'sample':7}{'events':>9}{'window':>8}{'full MB':>10}{'coalesced MB':>14}"
+          f"{'full msgs':>11}{'lean MB':>10}{'lean merged MB':>16}{'saved':>8}{'lean msgs':>11}")
     windows = [int(value) for value in args.windows.split(",") if value.strip()] or [None]
     for index, (session, run, _count) in enumerate(runs, 1):
         with tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False) as handle:
@@ -66,18 +79,19 @@ def main() -> int:
                        "SYNC_MEASURE_SESSION": session, "SYNC_MEASURE_RUN": run}
                 if window is not None:
                     env["SYNC_MEASURE_WINDOW_MS"] = str(window)
-                result = subprocess.run(
-                    [str(binary), "remote::publisher::coalesce::tests::measure_real_journal",
-                     "--exact", "--ignored", "--nocapture", "--test-threads=1"],
-                    env=env, capture_output=True, text=True, check=True)
-                line = next((row for row in result.stdout.splitlines() if "LIVE_LANE " in row), None)
-                if line is None:
-                    print(f"top{index}: no measurement\n{result.stdout[-2000:]}")
+                full = run_measurement(
+                    binary, "remote::publisher::coalesce::tests::measure_real_journal", env)
+                lean = run_measurement(
+                    binary, "remote::publisher::coalesce::tests::measure_real_journal_lean", env)
+                if full is None or lean is None:
+                    print(f"top{index}: no measurement")
                     continue
-                data = json.loads(line[line.index("LIVE_LANE ") + len("LIVE_LANE "):])
-                print(f"top{index:<4}{data['events']:>9}{data['windowMs']:>8}"
-                      f"{data['todayBytes']/1e6:>10.2f}{data['coalescedBytes']/1e6:>14.2f}"
-                      f"{data['parties']:>9}{data['published']:>11}{data['ratio']:>7.1f}x")
+                saved = 1.0 - lean["coalescedBytes"] / max(full["coalescedBytes"], 1)
+                print(f"top{index:<4}{full['events']:>9}{full['windowMs']:>8}"
+                      f"{full['todayBytes']/1e6:>10.2f}{full['coalescedBytes']/1e6:>14.2f}"
+                      f"{full['published']:>11}{lean['leanBytes']/1e6:>10.2f}"
+                      f"{lean['coalescedBytes']/1e6:>16.2f}"
+                      f"{saved*100:>7.1f}%{lean['published']:>11}")
         finally:
             journal.unlink(missing_ok=True)
     return 0

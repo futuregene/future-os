@@ -1242,9 +1242,19 @@ export class RemoteClient {
     //   reply_gzip_v1 — replies may be gzip-compressed; `decodeRemoteJson`
     //     detects the magic bytes. An older client does not have that check and
     //     would fail to parse a compressed reply, hence the declaration.
+    //   lean_events_v1 — the desktop may omit reasoning text, streamed tool
+    //     arguments and captured tool output. This client renders a reasoning
+    //     row from its `thinking_start`/`thinking_end` boundary alone, takes a
+    //     tool's target from `tool_start`'s complete arguments, and reads a
+    //     tool's outcome from `exit_code`/`error` instead of parsing an
+    //     `[exit: N]` footer out of the output. An older client does all three
+    //     from the text, so it must keep receiving the full lane.
     await this.requestWithConnection(
       connection,
-      { type: "secure_ready", features: ["event_coalescing_v1", "reply_gzip_v1"] },
+      {
+        type: "secure_ready",
+        features: ["event_coalescing_v1", "reply_gzip_v1", "lean_events_v1"],
+      },
       "handshake",
     );
   }
