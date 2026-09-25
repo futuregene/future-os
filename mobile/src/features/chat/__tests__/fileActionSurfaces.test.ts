@@ -3,13 +3,14 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { Modal, Platform, StyleSheet, Text, View } from "react-native";
 import type { TFunction } from "i18next";
 import { NativeFileActionSheet } from "../components/NativeFileActionSheet";
-import { PreviewModal } from "../components/PreviewModal";
+import { PreviewModal, previewLayerKey } from "../components/PreviewModal";
+import { MarkdownText } from "../../../components/MarkdownText";
 import type { ActiveDownload, FileAction, FileOperation } from "../utils";
 import type { PreviewState } from "../useFileDownload";
 
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
-jest.mock("lucide-react-native", () => ({ Download: "Download", Ellipsis: "Ellipsis", ExternalLink: "ExternalLink", Share2: "Share2", X: "X" }));
+jest.mock("lucide-react-native", () => ({ ChevronLeft: "ChevronLeft", Download: "Download", Ellipsis: "Ellipsis", ExternalLink: "ExternalLink", Share2: "Share2", X: "X" }));
 jest.mock("../../../components/MarkdownText", () => ({ MarkdownText: "MarkdownText" }));
 jest.mock("../../../components/JsonPreview", () => ({ JsonPreview: "JsonPreview" }));
 
@@ -54,8 +55,9 @@ test.each<FileOperation>(["open", "save", "share"])("preview %s uses the origina
   const dismissPreviewThen = jest.fn((next: () => void) => { pending = next; });
   let tree!: ReactTestRenderer;
   act(() => { tree = create(createElement(PreviewModal, {
-    preview, activeDownload: null, closePreview: jest.fn(), dismissPreviewThen,
-    downloadOriginal, flushPendingPreviewAction: jest.fn(), t,
+    previews: [preview], activeDownload: null, closePreview: jest.fn(), popPreview: jest.fn(),
+    dismissPreviewThen, downloadOriginal, flushPendingPreviewAction: jest.fn(),
+    openLinkedFile: jest.fn(async () => {}), t,
   })); });
   try {
     expect(tree.root.findAll(node => node.props.accessibilityLabel === `attachment.${operation}`)).toHaveLength(0);
@@ -83,8 +85,9 @@ describe("preview overflow menu", () => {
     id: "download", fileName: "notes.txt", phase: "sharing", completedBytes: 3, totalBytes: 3,
   };
   const props = {
-    preview, activeDownload: null, closePreview: jest.fn(), dismissPreviewThen: jest.fn(),
-    downloadOriginal: jest.fn(), flushPendingPreviewAction: jest.fn(), t,
+    previews: [preview], activeDownload: null, closePreview: jest.fn(), popPreview: jest.fn(),
+    dismissPreviewThen: jest.fn(), downloadOriginal: jest.fn(),
+    flushPendingPreviewAction: jest.fn(), openLinkedFile: jest.fn(async () => {}), t,
   };
   let tree: ReactTestRenderer;
   const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0]!;
@@ -127,13 +130,13 @@ describe("preview overflow menu", () => {
     expect(props.closePreview).toHaveBeenCalledTimes(1);
   });
 
-  test("closing and changing previews do not retain the expanded menu", () => {
+  test("closing and changing documents do not retain the expanded menu", () => {
     openMenu();
-    act(() => tree.update(createElement(PreviewModal, { ...props, preview: null })));
+    act(() => tree.update(createElement(PreviewModal, { ...props, previews: [] })));
     act(() => tree.update(createElement(PreviewModal, props)));
     expect(menus()).toHaveLength(0);
     openMenu();
-    act(() => tree.update(createElement(PreviewModal, { ...props, preview: { ...preview, uri: "file:///other.txt" } })));
+    act(() => tree.update(createElement(PreviewModal, { ...props, previews: [{ ...preview, attachment: { path: "/other.txt", name: "other.txt" } }] })));
     expect(menus()).toHaveLength(0);
     act(() => button("common.close").props.onPress());
     expect(props.closePreview).toHaveBeenCalledTimes(1);
@@ -161,7 +164,7 @@ describe("preview overflow menu", () => {
       markdown: "# Title\n\nBody",
       truncated: true,
     };
-    act(() => tree.update(createElement(PreviewModal, { ...props, preview: markdown })));
+    act(() => tree.update(createElement(PreviewModal, { ...props, previews: [markdown] })));
     // No static parent of the document may apply a uniform gutter: padding there
     // stays put while the list scrolls, leaving a blank strip under the header.
     const padded = tree.root.findAllByType(View)
@@ -186,5 +189,75 @@ describe("preview overflow menu", () => {
     act(() => tree.root.findByType(Modal).props.onDismiss());
     expect(props.flushPendingPreviewAction).toHaveBeenCalledTimes(1);
     expect(menus()).toHaveLength(0);
+  });
+});
+
+describe("preview stack", () => {
+  const doc = (path: string, kind: PreviewState["info"]["previewKind"] = "markdown"): PreviewState => ({
+    attachment: { path, name: path.slice(path.lastIndexOf("/") + 1) },
+    info: { ...action.info, name: path, previewKind: kind, variant: "preview" },
+    uri: `file:///cache${path}`,
+    markdown: "# Title\n\nBody",
+  });
+  const props = {
+    activeDownload: null, closePreview: jest.fn(), popPreview: jest.fn(), dismissPreviewThen: jest.fn(),
+    downloadOriginal: jest.fn(), flushPendingPreviewAction: jest.fn(), openLinkedFile: jest.fn(async () => {}), t,
+  };
+  let tree!: ReactTestRenderer;
+  const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0]!;
+  // One layer per open document, bottom first. `findAllByType` counts the
+  // element we wrote, not the host view it renders.
+  const layers = () => tree.root.findAllByType(View).filter(node => node.props.testID === "preview-layer");
+  beforeEach(() => jest.clearAllMocks());
+  afterEach(() => act(() => tree.unmount()));
+
+  test("the document that linked here stays open underneath, reachable by the back control", () => {
+    act(() => { tree = create(createElement(PreviewModal, { ...props, previews: [doc("/root/publishing.md"), doc("/root/SOURCES.md")] })); });
+    expect(layers()).toHaveLength(2);
+    // Only the top document is interactive; the one below keeps nothing but its place.
+    expect(layers().map(layer => layer.props.pointerEvents)).toEqual(["none", "auto"]);
+    expect(layers().map(layer => layer.props.importantForAccessibility)).toEqual(["no-hide-descendants", "auto"]);
+    act(() => button("common.back").props.onPress());
+    expect(props.popPreview).toHaveBeenCalledTimes(1);
+    expect(props.closePreview).not.toHaveBeenCalled();
+  });
+
+  test("the outermost document has no back control: there is nothing under it", () => {
+    act(() => { tree = create(createElement(PreviewModal, { ...props, previews: [doc("/root/publishing.md")] })); });
+    expect(tree.root.findAll(node => node.props.accessibilityLabel === "common.back")).toHaveLength(0);
+  });
+
+  test("hardware back leaves one document at a time and closes only at the outermost", () => {
+    act(() => { tree = create(createElement(PreviewModal, { ...props, previews: [doc("/root/a.md"), doc("/root/b.md")] })); });
+    act(() => tree.root.findByType(Modal).props.onRequestClose());
+    expect(props.popPreview).toHaveBeenCalledTimes(1);
+    expect(props.closePreview).not.toHaveBeenCalled();
+    act(() => { tree.update(createElement(PreviewModal, { ...props, previews: [doc("/root/a.md")] })); });
+    act(() => tree.root.findByType(Modal).props.onRequestClose());
+    expect(props.closePreview).toHaveBeenCalledTimes(1);
+  });
+
+  test("a link inside a Markdown document opens through the stack, keeping the document", () => {
+    act(() => { tree = create(createElement(PreviewModal, { ...props, previews: [doc("/root/articles/cover.md")] })); });
+    const document = tree.root.findAllByType(MarkdownText)[0]!;
+    expect(document.props.mode).toBe("file-preview");
+    // The base is the document itself: the caller resolves the link against it.
+    expect(document.props.imageBasePath).toBe("/root/articles/cover.md");
+    act(() => document.props.onOpenFile("/root/SOURCES.md"));
+    expect(props.openLinkedFile).toHaveBeenCalledWith("/root/SOURCES.md");
+    expect(props.dismissPreviewThen).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    { expected: "/root/b.md#1", index: 1, name: "two documents", previews: [doc("/root/a.md"), doc("/root/b.md")] },
+    // A → B → A must give the second visit its own layer, not B's rows.
+    { expected: "/root/a.md#2", index: 1, name: "a second visit", previews: [doc("/root/a.md"), doc("/root/a.md")] },
+  ])("keys a layer by document per visit: $name", ({ previews, index, expected }) => {
+    expect(previewLayerKey(previews, index)).toBe(expected);
+  });
+
+  test("going back keeps the key of the document that stayed mounted", () => {
+    const stack = [doc("/root/a.md"), doc("/root/b.md")];
+    expect(previewLayerKey([stack[0]!], 0)).toBe(previewLayerKey(stack, 0));
   });
 });

@@ -13,10 +13,14 @@ export interface MarkdownImageLoader {
 export const MarkdownImageLoaderContext = createContext<MarkdownImageLoader | null>(null);
 export const MarkdownImageBasePathContext = createContext<string | undefined>(undefined);
 
-/** Keep relative paths relative to the desktop document, never the downloaded
- * phone cache file. The host canonicalizes and enforces its file-read boundary.
+/** Resolve a document-relative Markdown path (an image or a link) against the
+ * desktop path of the document that contains it, never the downloaded phone
+ * cache file. The host canonicalizes and enforces its own file-read boundary.
+ * Returns null when there is no usable base: a document opened from this
+ * phone's picker names a phone-local file, and a relative path cannot be
+ * resolved to anything the desktop can read.
  */
-export function markdownImagePath(src: string, basePath?: string): string | null {
+export function resolveMarkdownPath(src: string, basePath?: string): string | null {
   const path = localFilePath(src);
   if (!path) return null;
   if (basePath && /^[a-z][a-z0-9+.-]*:\/\//i.test(basePath)) return null;
@@ -34,7 +38,7 @@ export function MarkdownImage({ src, alt, href, openTarget }: {
   const loader = useContext(MarkdownImageLoaderContext);
   const basePath = useContext(MarkdownImageBasePathContext);
   const url = remoteMarkdownImageUrl(src);
-  const path = markdownImagePath(src, basePath);
+  const path = resolveMarkdownPath(src, basePath);
   const target = classifyMarkdownTarget(href ?? "");
   const linked = target.kind === "local-file" || target.kind === "external-url";
   if (url) {
