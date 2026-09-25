@@ -7,7 +7,7 @@ this script:
   1. dumps the run's journal (`run_events.payload`, one JSON object per line),
   2. dumps that session's real `get_session_entries` reply from the live agent
      and converts it to the payload shape the desktop relays (the same
-     conversion as `scripts/measure-lean-history.py`, including its
+     conversion as `scripts/measure/measure-lean-history.py`, including its
      fail-loudly shape check),
   3. runs `remote::verify_e2e::{measure_real_e2ee_bytes,measure_real_broker_bytes}`
      with both dumps. Those tests start a real bridge (real Noise v2 handshake +
