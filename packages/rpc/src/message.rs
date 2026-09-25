@@ -14,7 +14,7 @@ pub struct MessageBlock {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "is_false")]
     pub is_error: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_url: Option<String>,
@@ -23,6 +23,24 @@ pub struct MessageBlock {
     /// Unknown provider blocks remain opaque and lossless.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
+}
+
+/// Skip `isError` unless it is `true`.
+///
+/// The field is only worth sending when it says something happened. `false` is
+/// not "unset" in the usual sense — the value is genuinely set, just to the one
+/// that says nothing went wrong — but no consumer can tell it from an absent
+/// flag: the phone reads `if (block.isError && …)`. A history page was therefore
+/// spending ~16 bytes on every tool result to say "not an error".
+///
+/// Both uninformative spellings are skipped, so this must replace
+/// `Option::is_none` rather than sit beside it: `None` would otherwise start
+/// serializing as `null` again.
+///
+/// This pairs with recording the real outcome — once failures set `true`, a
+/// success sends no flag at all instead of a `false`.
+fn is_false(value: &Option<bool>) -> bool {
+    !matches!(value, Some(true))
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -348,5 +366,55 @@ mod tests {
         }));
         assert_eq!(value["usage"], json!({"inputTokens": 5}));
         assert_eq!(value["error"], Value::Null, "the run-level error stays");
+    }
+
+    /// A `false` is the flag saying nothing happened, so it does not need to be
+    /// written: every consumer already reads an absent flag as falsy. `true` is
+    /// the only informative value and must survive.
+    #[test]
+    fn block_is_error_is_written_only_when_it_is_true() {
+        let block = |is_error| MessageBlock {
+            kind: "tool_result".into(),
+            text: Some("output".into()),
+            tool_call_id: Some("c1".into()),
+            is_error,
+            ..Default::default()
+        };
+        let false_value = serde_json::to_value(block(Some(false))).unwrap();
+        assert!(
+            false_value.get("isError").is_none(),
+            "a false flag carries no information and must be omitted"
+        );
+        assert_eq!(false_value["text"], json!("output"), "the rest is intact");
+
+        let true_value = serde_json::to_value(block(Some(true))).unwrap();
+        assert_eq!(true_value["isError"], json!(true));
+
+        let unset = serde_json::to_value(block(None)).unwrap();
+        assert!(unset.get("isError").is_none());
+    }
+
+    /// Omitting `false` is a serialization choice only. A page written by an
+    /// older peer (or read back from cache) still spells it out, and both
+    /// spellings have to decode to the same value.
+    #[test]
+    fn block_is_error_still_reads_an_explicit_false_or_null() {
+        let decode = |raw: Value| -> Option<bool> {
+            serde_json::from_value::<MessageBlock>(raw)
+                .unwrap()
+                .is_error
+        };
+        let base = |extra: Value| {
+            let mut value = json!({"kind": "tool_result", "text": "o"});
+            for (key, item) in extra.as_object().unwrap() {
+                value[key] = item.clone();
+            }
+            value
+        };
+        assert_eq!(decode(base(json!({"isError": false}))), Some(false));
+        assert_eq!(decode(base(json!({"isError": null}))), None);
+        assert_eq!(decode(base(json!({}))), None);
+        // The informative value is unchanged in both directions.
+        assert_eq!(decode(base(json!({"isError": true}))), Some(true));
     }
 }
