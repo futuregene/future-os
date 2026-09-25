@@ -60,6 +60,8 @@ Coverage, profiling and performance measurement tooling.
   agent is never disturbed.
 - `profile-quick.ps1` — quick Windows agent profiling entry (used by `make profile-quick`).
 - `measure-live-lane.py` — real-traffic lane measurement driven against the desktop publisher.
+- `measure-lean-history.py` — measures the lean history page (reasoning bodies, tool output,
+  unused call arguments) against real sessions, replayed through the shipping Rust trim.
 - `measure-mobile-performance.mjs` — builds an offline browser A/B probe (baseline ref vs working tree).
 - `measure-mobile-performance.ts` — probe entry that imports the production mobile sync code.
 - `serve-mobile-performance.py` — read-only loopback playback server for the probe.

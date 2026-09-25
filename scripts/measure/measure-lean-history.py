@@ -6,7 +6,7 @@ Dumps each session's `get_session_entries` reply from the live (read-only) agent
 and runs the shipping Rust trim over it, so the numbers come from the code that
 serves the phone rather than from a model of it.
 
-  python3 scripts/measure-lean-history.py [--sessions 3]
+  python3 scripts/measure/measure-lean-history.py [--sessions 3]
 """
 import argparse
 import json
@@ -16,7 +16,7 @@ import sqlite3
 import subprocess
 import tempfile
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 PROTO = ROOT / "packages" / "rpc" / "proto"
 SOCKET = Path.home() / ".future" / "run" / "agent.sock"
 

@@ -54,6 +54,8 @@
 - `profile-isolated.py` — 在一次性用户 HOME 下运行剖析命令，绝不打扰正在运行的 agent。
 - `profile-quick.ps1` — Windows 快速 agent 剖析入口（`make profile-quick` 调用）。
 - `measure-live-lane.py` — 针对桌面发布器的真实流量通道测量。
+- `measure-lean-history.py` — 针对真实会话测量精简历史页（推理正文、工具输出、
+  未使用的调用参数），回放经过线上 Rust 裁剪逻辑。
 - `measure-mobile-performance.mjs` — 构建离线浏览器 A/B 探针（基线 ref 对比工作树）。
 - `measure-mobile-performance.ts` — 导入生产移动端同步代码的探针入口。
 - `serve-mobile-performance.py` — 供探针使用的只读 loopback 回放服务器。
