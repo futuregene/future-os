@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { Modal, Platform, StyleSheet, Text, View } from "react-native";
 import type { TFunction } from "i18next";
 import { NativeFileActionSheet } from "../components/NativeFileActionSheet";
@@ -210,9 +210,18 @@ describe("preview stack", () => {
   let tree!: ReactTestRenderer;
   const button = (label: string) => tree.root.findAll(node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0]!;
   const surface = () => tree.root.findAllByType(View).find(node => node.props.testID === "preview-surface")!;
+  // Found *under* the surface on purpose: the padding only reaches the layers
+  // while they hang off something the surface lays out normally.
+  const stack = () => surface().findAllByType(View).find(node => node.props.testID === "preview-stack")!;
   // One layer per open document, bottom first. `findAllByType` counts the
   // element we wrote, not the host view it renders.
   const layers = () => tree.root.findAllByType(View).filter(node => node.props.testID === "preview-layer");
+  // Test IDs from the nearest ancestor outwards.
+  const ancestorsOf = (node: ReactTestInstance) => {
+    const ids: string[] = [];
+    for (let parent = node.parent; parent; parent = parent.parent) ids.push(parent.props?.testID as string);
+    return ids;
+  };
   beforeEach(() => jest.clearAllMocks());
   afterEach(() => act(() => tree.unmount()));
 
@@ -237,13 +246,24 @@ describe("preview stack", () => {
 
   test("the reader's surface clears the Android status bar", () => {
     // The reader draws under the status bar on purpose, so its header — and with
-    // it the overflow button's hit area — has to be inset back out of the
-    // system bar's reach. A SafeAreaView cannot do that inside a Modal, where
-    // there is no provider to resolve insets against.
+    // it the buttons' hit areas — has to be inset back out of the system bar's
+    // reach. A SafeAreaView cannot do that inside a Modal, where there is no
+    // provider to resolve insets against.
     Platform.OS = "android";
     act(() => { tree = create(createElement(PreviewModal, { ...props, previews: [doc("/root/publishing.md")] })); });
     expect(tree.root.findByType(Modal).props.statusBarTranslucent).toBe(true);
     expect(StyleSheet.flatten(surface().props.style)).toMatchObject({ paddingTop: 24 });
+  });
+
+  test("the inset reaches the documents, which hang off their own flex stack", () => {
+    // Yoga positions an `absoluteFill` child from its parent's border edge and
+    // sizes it to the border box, so a parent's padding never moves one: padding
+    // the surface directly (as the first attempt did) left the layers at the top
+    // of the screen, still under the status bar. The padding has to land on a box
+    // whose child lays out normally, and the layers hang off that instead.
+    act(() => { tree = create(createElement(PreviewModal, { ...props, previews: [doc("/root/a.md"), doc("/root/b.md")] })); });
+    expect(layers().every(layer => ancestorsOf(layer).includes("preview-stack"))).toBe(true);
+    expect(StyleSheet.flatten(stack().props.style)).toMatchObject({ flex: 1 });
   });
 
   test("an iOS page sheet takes no top inset: the system already clears the status bar for it", () => {

@@ -44,22 +44,33 @@ export function previewLayerKey(previews: PreviewState[], index: number): string
  * Insets for the reader's own surface, read from the app's `SafeAreaProvider`
  * context rather than from a `SafeAreaView`.
  *
- * The reader covers the status bar on purpose (`statusBarTranslucent` below): its
- * header stands in for that strip of the screen while the system keeps drawing
- * its status bar over it. A `SafeAreaView` cannot help here — a Modal is its own
- * native window, so nothing inside it is a native descendant of the app's
- * provider, which is the only thing a `SafeAreaView` resolves insets through. It
- * therefore applied nothing: the header started at the top of the screen, and
- * the status bar's own hit area swallowed the taps aimed at the overflow button.
- * The context insets describe the window the app is drawn in, which is where
- * that status bar is.
+ * The reader covers the status bar on purpose (`statusBarTranslucent` below): the
+ * system keeps drawing its status bar over the top of the window, so the header
+ * has to be pushed back out of the bar's reach. A `SafeAreaView` cannot do that
+ * here — a Modal is its own native window, so nothing inside it is a native
+ * descendant of the app's provider, which is the only thing a `SafeAreaView`
+ * resolves insets through. It therefore applied nothing: the header sat at the
+ * top of the screen, and the status bar's hit area swallowed the taps aimed at
+ * its buttons (measured on the reporting device: the header occupied rows
+ * 0–60dp, its buttons' 44-point hit boxes rows 8–52dp, inside the bar). The
+ * context insets describe the window the app is drawn in, which is where that
+ * status bar is.
  *
- * Only the top edge is ours to apply: `statusBarTranslucent` extends the reader
- * under the status bar alone, the other edges stay laid out by the window.
+ * Only the top edge is ours: `statusBarTranslucent` extends the reader under the
+ * status bar alone, while the other edges stay laid out by the window (and the
+ * reader's body is full-bleed by design).
  *
  * iOS takes nothing: its reader is a `pageSheet`, which the system already
  * places below the status bar, so the context's window inset for the top edge
  * would only open a gap above the header.
+ *
+ * This padding only moves the document if it lands on an ancestor that lays its
+ * children out *normally*: Yoga positions an `absoluteFill` child from its
+ * parent's border edge and sizes it to the border box, so a parent's padding
+ * never reaches one (verified against Yoga 3.2.1: an absolute child of a box
+ * padded by 30 kept `top = 0` and its full height). The layers are exactly such
+ * children, which is why they hang off `previewStack` — a `flex: 1` child that
+ * the padding does move — rather than off this padded box directly.
  */
 export function previewSurfaceInsets(insets: EdgeInsets) {
   if (Platform.OS !== "android") return null;
@@ -114,35 +125,37 @@ export function PreviewModal({
         else closePreview();
       }}
       presentationStyle="pageSheet"
-      // Draw the header under the status bar deliberately: that is how the
-      // reader already looked wherever the system laid its window out that way,
-      // and the surface insets itself back out of the bar (see
-      // `previewSurfaceInsets`) instead of leaving the top edge to the window.
+      // Draw the content under the status bar deliberately, rather than
+      // depending on how the system happens to lay this window out: that is
+      // where it already sits on the reporting device, and the surface then
+      // insets itself back out of the bar (see `previewSurfaceInsets`).
       statusBarTranslucent
       visible={previews.length > 0}
     >
       <View style={[styles.previewSafe, previewSurfaceInsets(insets)]} testID="preview-surface">
-        {previews.map((preview, index) => {
-          const key = previewLayerKey(previews, index);
-          return (
-            <PreviewLayer
-              key={key}
-              active={index === top}
-              busy={activeDownload !== null}
-              canGoBack={index === top && index > 0}
-              closePreview={closePreview}
-              closeMenu={closeMenu}
-              dismissPreviewThen={dismissPreviewThen}
-              downloadOriginal={downloadOriginal}
-              menuOpen={menu?.key === key}
-              onLinkedFile={openLinkedFile}
-              openMenu={() => setMenu({ key, stack: previews })}
-              popPreview={popPreview}
-              preview={preview}
-              t={t}
-            />
-          );
-        })}
+        <View style={styles.previewStack} testID="preview-stack">
+          {previews.map((preview, index) => {
+            const key = previewLayerKey(previews, index);
+            return (
+              <PreviewLayer
+                key={key}
+                active={index === top}
+                busy={activeDownload !== null}
+                canGoBack={index === top && index > 0}
+                closePreview={closePreview}
+                closeMenu={closeMenu}
+                dismissPreviewThen={dismissPreviewThen}
+                downloadOriginal={downloadOriginal}
+                menuOpen={menu?.key === key}
+                onLinkedFile={openLinkedFile}
+                openMenu={() => setMenu({ key, stack: previews })}
+                popPreview={popPreview}
+                preview={preview}
+                t={t}
+              />
+            );
+          })}
+        </View>
       </View>
     </Modal>
   );
@@ -360,6 +373,10 @@ const monospace = Platform.select({ ios: "Menlo", default: "monospace" });
 
 const styles = StyleSheet.create({
   previewSafe: { flex: 1, backgroundColor: colors.surface },
+  // The padded box's only child, and a normal flex child on purpose: the padding
+  // above moves this box and therefore everything the layers draw (see
+  // `previewSurfaceInsets`).
+  previewStack: { flex: 1, minHeight: 0 },
   // A layer fills the reader so the layers below stay laid out, and therefore
   // keep their scroll offsets. Later siblings paint on top — which only hides
   // them because every layer paints the surface color: the text of the document
