@@ -188,6 +188,33 @@ test("every tool kind merges into a single tool-call count", () => {
   expect(summaryRow({ tools: 4, thinking: 1 })).toBeTruthy();
 });
 
+// A burst row is a fold of its own, and the run around it must count the calls
+// that burst collapsed — not the single row it draws. Counting rows made the
+// summary disagree with the rows right underneath it: a run holding "运行 2 次"
+// plus two single calls read ×3 over an expanded list that adds up to 4 (the
+// reported bug, from a real reply: 2 runs, 1 thought, 1 write, 1 run, 1 thought).
+test("a folded run counts the calls inside a burst row, not the row itself", () => {
+  const burst = tool("c1", {
+    count: 2,
+    children: [
+      { name: "shell", complete: true, status: "completed", detail: "cmd one" },
+      { name: "shell", complete: true, status: "completed", detail: "cmd two" },
+    ],
+  });
+  render(reply({
+    segments: [burst, thinking("k1"), tool("c2", { name: "write" }), tool("c3"), thinking("k2")],
+  }));
+  const row = summaryRow({ tools: 4, thinking: 2 });
+  expect(row).toBeTruthy();
+  expect(paintedStrings(row)).toEqual(["×4", "·", "×2"]);
+  // Inside the run the burst keeps its own count, so the rows add up to the
+  // summary the user just tapped: 2 + 1 + 1 tool calls.
+  act(() => row.props.onPress());
+  expect(hasText("chat.stepRun 2×")).toBe(true);
+  expect(countText("chat.writeCompleted")).toBe(1);
+  expect(countText("chat.runCompleted")).toBe(1);
+});
+
 test("a run of tool calls alone omits the zero thinking count", () => {
   render(reply({ segments: [tool("c1"), tool("c2")] }));
   expect(summaryRow({ tools: 2 })).toBeTruthy();
