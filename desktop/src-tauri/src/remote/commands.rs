@@ -2913,10 +2913,17 @@ mod bridge_tests {
         let defaults = bridge.call(json!({ "type": "get_desktop_settings" })).await;
         assert_eq!(defaults["success"], true);
         assert_eq!(defaults["data"]["autoTitleFirstTurn"], true);
+        // The phone renders this snapshot, so a writable field missing from the
+        // reply reads as absent and snaps its toggle back to the default — the
+        // recommendation switch could not be turned off that way.
+        assert_eq!(defaults["data"]["skillRecommend"], true);
         assert!(defaults["data"].get("communityEdition").is_none());
 
+        // Deliberately every writable field: `assert_eq!(updated["data"], patch)`
+        // then fails if the reply drops one, which is the bug class this guards.
         let patch = json!({ "autoTitleFirstTurn": false, "autoUpgradeSkills": false,
-            "autoConnectRemote": true, "hiddenModels": ["p1/shared"] });
+            "autoConnectRemote": true, "skillRecommend": false,
+            "hiddenModels": ["p1/shared"] });
         let updated = bridge
             .call(json!({ "type": "update_desktop_settings", "settings": patch }))
             .await;
@@ -2926,11 +2933,13 @@ mod bridge_tests {
         assert!(!stored.auto_title_first_turn);
         assert!(!stored.auto_upgrade_skills);
         assert!(stored.auto_connect_remote);
+        assert!(!stored.skill_recommend);
         assert_eq!(stored.hidden_models, ["p1/shared"]);
 
         for invalid in [
             json!({"communityEdition": true}),
             json!({"autoTitleFirstTurn": "true"}),
+            json!({"skillRecommend": "true"}),
             json!({"approvalTier": "off"}),
             json!({"hiddenModels": [""]}),
             Value::Null,
