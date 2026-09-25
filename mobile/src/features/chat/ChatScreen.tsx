@@ -9,6 +9,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  RefreshControl,
   StyleSheet,
   Text,
   View,
@@ -237,6 +238,18 @@ export function ChatScreen() {
     SYNC_NOTICE_MIN_MS,
     conversationKey,
   );
+  // Pull-to-refresh rebuilds the visible window from durable history — the
+  // manual escape hatch when the automatic sync left the conversation wrong.
+  // The inverted list renders the spinner at the visual top while the active
+  // sync/reconcile runs.
+  const pullRefreshActive =
+    !remote.draft &&
+    !remote.timelinePending &&
+    !remote.timelineError &&
+    remote.timelineSyncStatus !== "idle";
+  const pullRefresh = useCallback(() => {
+    remote.reloadTimeline();
+  }, [remote]);
 
   const decideApproval = useCallback(
     async (id: string, decision: "approved" | "rejected") => {
@@ -538,6 +551,16 @@ export function ChatScreen() {
                   inverted
                   key={remote.selectedSessionId || "draft"}
                   keyExtractor={(item) => item.id}
+                  refreshControl={
+                    <RefreshControl
+                      colors={[colors.accent]}
+                      enabled={!remote.draft && remote.desktopOnline}
+                      onRefresh={pullRefresh}
+                      progressViewOffset={spacing.lg}
+                      refreshing={pullRefreshActive}
+                      tintColor={colors.accent}
+                    />
+                  }
                   ListHeaderComponent={
                     invertedTranscriptItems.length > 0
                       ? TimelineFlexSpacer

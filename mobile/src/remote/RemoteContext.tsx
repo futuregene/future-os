@@ -94,6 +94,8 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   selectSession(sessionId: string): Promise<void>;
   retryTimeline(): Promise<void>;
   loadOlderTimeline(): Promise<false | string[]>;
+  /** Pull-to-refresh: rebuild the visible timeline from durable history. */
+  reloadTimeline(): void;
   newConversation(mode?: "chat" | "workspace", workspaceId?: string): Promise<void>;
   closeConversation(): void;
   sendMessage(
@@ -224,6 +226,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     canLoadOlderTimeline,
     loadingOlderTimeline,
     loadOlderTimeline,
+    reloadTimeline,
     prepareTimelineOpen,
     syncEngineRef,
     streamingRef,
@@ -466,6 +469,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       selectSession,
       retryTimeline,
       loadOlderTimeline,
+      reloadTimeline,
       newConversation,
       closeConversation,
       sendMessage,
@@ -559,6 +563,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       unpair,
       retryTimeline,
       loadOlderTimeline,
+      reloadTimeline,
     ],
   );
 
