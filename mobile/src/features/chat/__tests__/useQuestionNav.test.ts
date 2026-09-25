@@ -36,6 +36,7 @@ describe("useQuestionNav", () => {
     scrollToOffset: jest.fn(),
   };
   const listRef = { current: list as unknown as FlatList<TimelineItem> };
+  const onTakeOver = jest.fn();
 
   function Harness({
     sessionId = "s1",
@@ -46,7 +47,7 @@ describe("useQuestionNav", () => {
     atLatest?: boolean;
     items?: TimelineItem[];
   }): null {
-    result.current = useQuestionNav({ sessionId, items, listRef, atLatest });
+    result.current = useQuestionNav({ sessionId, items, listRef, atLatest, onTakeOver });
     return null;
   }
 
@@ -74,6 +75,7 @@ describe("useQuestionNav", () => {
   beforeEach(() => {
     list.scrollToIndex.mockClear();
     list.scrollToOffset.mockClear();
+    onTakeOver.mockClear();
     result = { current: undefined as never };
     act(() => {
       renderer = create(createElement(Harness));
@@ -85,11 +87,13 @@ describe("useQuestionNav", () => {
     renderer = null;
   });
 
-  test("offers nothing while the tail is on screen", () => {
-    act(() => result.current.onScroll(scrollEvent(0)));
-    reportRows(0, 0);
-    expect(result.current.visible).toBe(false);
-    expect(result.current.previous).toBeNull();
+  test("offers ↑ from the tail, before the reader has scrolled at all", () => {
+    // The viewability report is all a freshly opened conversation gets: the
+    // list is pinned to the tail and no scroll event has been delivered.
+    reportRows(0, null);
+    expect(result.current.visible).toBe(true);
+    expect(result.current.previous).toBe(1);
+    // Every newer question is already on screen, so ↓ has nothing to offer.
     expect(result.current.next).toBeNull();
   });
 
@@ -114,19 +118,24 @@ describe("useQuestionNav", () => {
     expect(result.current.visible).toBe(true);
   });
 
-  test("retracts the offer when the reader returns to the tail", () => {
+  test("↓ retracts when the reader returns to the tail, ↑ does not", () => {
     act(() => result.current.onScroll(scrollEvent(600)));
     reportRows(2, null);
-    expect(result.current.visible).toBe(true);
+    expect(result.current.next).toBe(1);
 
     act(() => result.current.onScroll(scrollEvent(0)));
+    expect(result.current.next).toBeNull();
+    expect(result.current.previous).toBe(3);
+  });
+
+  test("offers nothing when no question is left above the reader", () => {
+    // The oldest question is the topmost row on screen: the ladder runs out.
+    reportRows(3, 3);
     expect(result.current.visible).toBe(false);
+    expect(result.current.previous).toBeNull();
   });
 
   test("↑ aligns the target question's top edge below the viewport's", () => {
-    act(() => {
-      result.current.onScroll(scrollEvent(600));
-    });
     reportRows(2, null);
 
     act(() => result.current.goToPrevious());
@@ -140,10 +149,19 @@ describe("useQuestionNav", () => {
     });
   });
 
+  test("a jump hands the viewport over, so the tail cannot pull it back", () => {
+    reportRows(2, null);
+
+    act(() => result.current.goToPrevious());
+    expect(onTakeOver).toHaveBeenCalledTimes(1);
+
+    // Nothing to go to: a disabled direction must not move the reader either.
+    act(() => result.current.goToNext());
+    expect(onTakeOver).toHaveBeenCalledTimes(1);
+    expect(list.scrollToIndex).toHaveBeenCalledTimes(1);
+  });
+
   test("a jump out of the measured window is approximated, then re-issued", async () => {
-    act(() => {
-      result.current.onScroll(scrollEvent(600));
-    });
     reportRows(2, null);
     act(() => result.current.goToPrevious());
     list.scrollToIndex.mockClear();
@@ -163,7 +181,6 @@ describe("useQuestionNav", () => {
   });
 
   test("entering another session drops the offer", () => {
-    act(() => result.current.onScroll(scrollEvent(600)));
     reportRows(2, null);
     expect(result.current.visible).toBe(true);
 

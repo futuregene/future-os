@@ -733,6 +733,108 @@ describe("useTimelineController", () => {
       }
     });
 
+    test("a refresh gap wider than one page still recovers when every page is byte-trimmed", async () => {
+      jest.useFakeTimers();
+      try {
+      // Regression: a tool-dense session whose single exchange exceeds the
+      // bridge's 512KB page budget. The post-send refresh's tail page is
+      // trimmed to the newest exchange, and the gap back to the paged window
+      // spans several more pages that are EACH also over budget. Filling that
+      // gap must not throw `history_gap_cursor_invalid` and strand the
+      // visible conversation on the trimmed tail — every older exchange must
+      // survive. (Session 20260925-171247: one exchange ~531KB, tail trimmed
+      // 1.1MB → 161KB.)
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      const PAGE_BUDGET = 512 * 1024;
+      // Build a journal of exchanges; each exchange = 1 user + many
+      // assistant/tool rows, sized so a 3-exchange page exceeds the budget.
+      type Row = ReturnType<typeof userEntry> & { bytes: number };
+      const journal: Row[] = [];
+      const pushRow = (entry: ReturnType<typeof userEntry>, bytes: number) => {
+        journal.push(Object.assign(entry, { bytes }));
+      };
+      // 6 older exchanges, then the 3 in the tail window. Each exchange's
+      // rows carry enough bytes that [3 exchanges] > 512KB.
+      const exchangeSizes = [
+        200_000, 24_000, 48_000, 47_000, 532_000, 496_000, 160_000,
+      ];
+      exchangeSizes.forEach((total, ex) => {
+        const run = `run-${ex}`;
+        pushRow(userEntry(`u-${run}`, `question ${ex}`), 100);
+        // Split the exchange body across many assistant rows (tools in the
+        // real session). Keep every row small; the SUM is what trips the budget.
+        const rows = Math.max(1, Math.round(total / 8_000));
+        const perRow = Math.floor((total - 100) / rows);
+        for (let i = 0; i < rows; i += 1) {
+          pushRow(assistantEntry(`a-${run}-${i}`, `answer ${ex}.${i}`, run), perRow);
+        }
+      });
+      // Bridge page: walk back 3 user exchanges, then apply the byte budget
+      // (shed whole oldest exchanges until serialized size fits), unless the
+      // reader opts out with `untrimmed`.
+      const bridgePage = (before: number, untrimmed: boolean) => {
+        let start = before;
+        let users = 0;
+        while (start > 0 && users < 3) {
+          start -= 1;
+          if (journal[start]?.role === "user") users += 1;
+        }
+        let slice = journal.slice(start, before);
+        let removed = 0;
+        if (!untrimmed) {
+          const size = () => slice.reduce((n, r) => n + r.bytes, 0);
+          while (size() > PAGE_BUDGET) {
+            const nextUser = slice.findIndex(
+              (row, index) => index > 0 && row.role === "user",
+            );
+            if (nextUser < 0) break;
+            removed += nextUser;
+            slice = slice.slice(nextUser);
+          }
+        }
+        return {
+          entries: slice.map(({ bytes: _b, ...entry }) => entry),
+          hasMore: start + removed > 0,
+          nextOffset: start + removed,
+          trimmed: removed > 0,
+        };
+      };
+      request.mockImplementation(async (command: {
+        type: string;
+        before?: number;
+        untrimmed?: boolean;
+      }) => {
+        if (command.type !== "get_session_entries") return { data: {} };
+        const before = Math.min(command.before ?? journal.length, journal.length);
+        return { data: bridgePage(before, command.untrimmed === true) };
+      });
+      render();
+      await establish();
+      // Cold open: NO older paging. retained is just the (trimmed) tail. Send
+      // a new large exchange: the refresh's tail is byte-trimmed to start
+      // beyond the previous tail's cursor, opening a gap the fill must bridge.
+      pushRow(userEntry("u-run-new", "new question"), 100);
+      for (let i = 0; i < 70; i += 1)
+        pushRow(assistantEntry(`a-run-new-${i}`, `new answer ${i}`, "run-new"), 8_000);
+      act(() => result.current.reconcileSession("s1", "resend"));
+      await flush();
+      const healed = result.current.timeline.items
+        .filter((i) => i.kind === "message")
+        .map((i) => (i.kind === "message" ? i.text : ""));
+      // The pre-send tail exchanges (5, 6) must survive the refresh — the
+      // refresh must not collapse the visible window to just the new run.
+      expect(healed).toContain("question 5");
+      expect(healed).toContain("question 6");
+      expect(healed).toContain("new question");
+      expect(result.current.timelineSyncStatus).toBe("idle");
+      } finally {
+        act(() => renderer?.unmount());
+        renderer = null;
+        jest.useRealTimers();
+      }
+    });
+
     test("returns an empty timeline when the client is absent", async () => {
       render();
       const engine = result.current.syncEngineRef.current!;

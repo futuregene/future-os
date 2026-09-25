@@ -587,6 +587,8 @@ export interface EntriesData {
   total?: number;
   hasMore?: boolean;
   nextOffset?: number;
+  /** The bridge shed whole oldest exchanges to fit its page byte budget. */
+  trimmed?: boolean;
 }
 
 export interface PromptAck {

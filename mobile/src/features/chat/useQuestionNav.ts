@@ -55,9 +55,16 @@ const PARTLY_VISIBLE: ViewabilityConfig = { itemVisiblePercentThreshold: 1 };
 const FULLY_VISIBLE: ViewabilityConfig = { itemVisiblePercentThreshold: 100 };
 
 export interface QuestionNavApi {
-  /** View-space index of the ↑ target (the question being read), or null. */
+  /**
+   * View-space index of the ↑ target (the question start above the reader), or
+   * null. Offered from the tail as well, where it is the start of the turn on
+   * screen.
+   */
   previous: number | null;
-  /** View-space index of the ↓ target (the next question down), or null. */
+  /**
+   * View-space index of the ↓ target (the next question down), or null. Only
+   * once the reader has left the tail: at the tail there is nothing newer below.
+   */
   next: number | null;
   /** Whether the control has anything to offer. */
   visible: boolean;
@@ -88,22 +95,35 @@ function topOf(viewableItems: ViewToken[]): number | null {
  * The anchor comes from what the list reports as viewable — partly and fully
  * visible rows — rather than from row geometry: a row's `onLayout` `y` is
  * relative to its own parent, the virtualized cell, so it says nothing about
- * where the row sits in the transcript. Reading state is the union of the
- * native "a drag took the viewport off the tail" signal owned by
- * `useChatScroll` and the measured offset, because a web build never reports a
- * drag: `onScrollBeginDrag` has no equivalent there.
+ * where the row sits in the transcript. ↑ is offered whether or not the reader
+ * has scrolled: a conversation opens at its tail, where the question that
+ * starts the turn on screen is still one press away. ↓ is the direction that
+ * needs the tail off screen — with the tail on screen every newer question is
+ * already visible, so there is nothing below to go to. That reading state is
+ * the union of the native "a drag took the viewport off the tail" signal owned
+ * by `useChatScroll` and the measured offset, because a web build never reports
+ * a drag: `onScrollBeginDrag` has no equivalent there.
  */
 export function useQuestionNav({
   sessionId,
   items,
   listRef,
   atLatest,
+  onTakeOver,
 }: {
   sessionId: string;
   /** The rows the list renders, in view order (newest first). */
   items: readonly TimelineItem[];
   listRef: RefObject<FlatList<TimelineItem> | null>;
   atLatest: boolean;
+  /**
+   * A jump is the reader taking the viewport over from the tail, and it has to
+   * say so: while the list is still following the tail, the next streaming
+   * commit pins it back to the bottom and the jump is gone. `useChatScroll`
+   * owns that handover — the same one the load-older hint performs — and it is
+   * required so a host cannot wire a jump that silently undoes itself.
+   */
+  onTakeOver: () => void;
 }): QuestionNavApi {
   const questions = useMemo(() => questionIndices(items), [items]);
   const [nav, setNav] = useState<{
@@ -133,9 +153,10 @@ export function useQuestionNav({
     const session = sessionIdRef.current;
     const reading =
       !atLatestRef.current || offsetRef.current > AT_LATEST_THRESHOLD_PX;
-    const previous = reading
-      ? previousQuestion(questionsRef.current, rowsRef.current)
-      : null;
+    // ↑ reads the viewport rows alone: the question above the top edge is a
+    // question the reader can reach, from the tail as much as from anywhere
+    // else. ↓ is the tail-dependent half of the ladder.
+    const previous = previousQuestion(questionsRef.current, rowsRef.current);
     const next = reading
       ? nextQuestion(questionsRef.current, rowsRef.current)
       : null;
@@ -224,10 +245,11 @@ export function useQuestionNav({
       if (index === null || listRef.current === null) return;
       if (realignTimerRef.current !== null) clearTimeout(realignTimerRef.current);
       jumpRef.current = { index, attempts: 0 };
+      onTakeOver();
       align(index);
       realignTimerRef.current = setTimeout(() => align(index), REALIGN_MS);
     },
-    [align, listRef],
+    [align, listRef, onTakeOver],
   );
 
   const goToPrevious = useCallback(() => {

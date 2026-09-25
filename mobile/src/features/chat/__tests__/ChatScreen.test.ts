@@ -45,6 +45,7 @@ const mockRemote = {
   canLoadOlderTimeline: true,
   loadingOlderTimeline: false,
   loadOlderTimeline: jest.fn<Promise<false | string[]>, []>(),
+  reloadTimeline: jest.fn(),
   desktopOnline: true,
   timelineSyncStatus: "idle" as TimelineSyncStatus,
   connectionPresentation: { level: "connected" },
@@ -154,6 +155,10 @@ afterEach(() => {
   jest.useRealTimers();
   jest.restoreAllMocks();
 });
+
+/** The native pull-to-refresh indicator the transcript hands to the platform. */
+const refreshControl = () =>
+  tree.root.findByType(FlatList).props.refreshControl;
 
 const olderCollision = () => {
   const list = tree.root.findByType(FlatList);
@@ -353,6 +358,23 @@ test("cached messages remain visible and the sync notice stays for at least 750m
     ),
   ).toHaveLength(0);
   expect(tree.root.findByType(FlatList).props.data).toBe(data);
+});
+
+test("the pull spinner belongs to the pull, not to the lane", () => {
+  // An automatic sync already says so in the notice above the transcript; the
+  // native indicator at the bottom must not report the same wait a second time.
+  mockRemote.timelineSyncStatus = "syncing";
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(refreshControl().props.refreshing).toBe(false);
+
+  // A pull spins it, and it stays up until the lane it restarted settles.
+  act(() => refreshControl().props.onRefresh());
+  expect(mockRemote.reloadTimeline).toHaveBeenCalledTimes(1);
+  expect(refreshControl().props.refreshing).toBe(true);
+
+  mockRemote.timelineSyncStatus = "idle";
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(refreshControl().props.refreshing).toBe(false);
 });
 
 test("text selection cannot trigger Android focus-driven transcript scrolling", () => {
