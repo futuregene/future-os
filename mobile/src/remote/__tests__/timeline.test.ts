@@ -214,23 +214,24 @@ describe("entry reducer", () => {
   });
 
   /**
-   * The argument list a lean page delivers holds only the keys a tool target can
-   * come from, so the row must still render its label. This is the client half of
-   * the desktop's `TARGET_ARGUMENT_KEYS`; if the two ever disagree, tool rows go
+   * The argument list a lean page delivers holds only the file-path keys, and a
+   * shell call's arguments are dropped whole, so the row must still render its
+   * label without inventing a target — and keep the identity that lets it fetch
+   * the command when opened. This is the client half of the desktop's
+   * `path`/`file_path`/`filePath` trim; if the two ever disagree, tool rows go
    * blank on a real phone with nothing failing here.
    */
   test("a trimmed argument list still renders the tool row's label", () => {
-    // Every key the desktop keeps (`TARGET_ARGUMENT_KEYS`) has to be one this
-    // derivation can actually use, or the trim silently strands it and a real
-    // phone shows a blank row. All four are listed on purpose: an alias that only
-    // one side knows about is exactly the drift this test exists to catch.
+    // Every key the desktop keeps has to be one this derivation can actually
+    // use, or the trim silently strands it and a real phone shows a blank row.
+    // All four spellings are listed on purpose: an alias that only one side
+    // knows about is exactly the drift this test exists to catch.
     const cases: { name: string; arguments: Record<string, unknown>; target: string }[] = [
       { name: "shell", arguments: { command: "ls -la /tmp" }, target: "ls -la /tmp" },
       { name: "read", arguments: { path: "/a/b.txt" }, target: "/a/b.txt" },
       { name: "read", arguments: { file_path: "/a/b.txt" }, target: "/a/b.txt" },
       { name: "read", arguments: { filePath: "/a/b.txt" }, target: "/a/b.txt" },
-      // A tool name the client does not know is treated as shell, exactly as the
-      // desktop's trim assumes when it keeps `command`.
+      // A tool name the client does not know is treated as shell.
       { name: "future_tool", arguments: { command: "do the thing" }, target: "do the thing" },
     ];
     for (const { name, arguments: args, target } of cases) {
@@ -244,6 +245,7 @@ describe("entry reducer", () => {
           kind: "assistant",
           role: "assistant",
           createdAtMs: 1,
+          runId: "r9",
           blocks: [
             { kind: "tool_call", name, toolCallId: "c1", arguments: args },
           ],
@@ -254,7 +256,47 @@ describe("entry reducer", () => {
       const tool = reply.segments?.find(segment => segment.kind === "tool");
       if (!tool || tool.kind !== "tool") throw new Error(`tool row missing for ${name}`);
       expect(tool.tool.detail).toBe(target);
+      // Identity comes along for every row: it is what an on-open fetch needs,
+      // and the page's `runId` is where it comes from.
+      expect(tool.tool).toMatchObject({ toolCallId: "c1", runId: "r9" });
     }
+  });
+
+  /**
+   * The lean shape of a shell row: no arguments at all, so no target — but the
+   * call identity and run survive, which is the whole contract the on-open
+   * fetch depends on. A row that lost them would be permanently blank.
+   */
+  test("a shell row trimmed of its arguments keeps the identity to fetch them", () => {
+    const timeline = timelineFromEntries([
+      {
+        id: "u1", kind: "user", role: "user", createdAtMs: 0, runId: "r9",
+        blocks: [{ kind: "text", text: "go" }],
+      },
+      {
+        id: "a1", kind: "assistant", role: "assistant", createdAtMs: 1, runId: "r9",
+        blocks: [
+          { kind: "tool_call", name: "shell", toolCallId: "c1" },
+          { kind: "tool_call", name: "read", toolCallId: "c2", arguments: { path: "/a/b" } },
+        ],
+      },
+    ]);
+    const reply = timeline.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    const tools = reply.segments?.filter(segment => segment.kind === "tool") ?? [];
+    const shell = tools[0];
+    if (!shell || shell.kind !== "tool") throw new Error("shell row missing");
+    expect(shell.tool).toMatchObject({ name: "shell", toolCallId: "c1", runId: "r9" });
+    expect(shell.tool.detail).toBeUndefined();
+    // The file row still carries its target from the page.
+    const file = tools[1];
+    if (!file || file.kind !== "tool") throw new Error("file row missing");
+    expect(file.tool).toMatchObject({
+      name: "read",
+      detail: "/a/b",
+      toolCallId: "c2",
+      runId: "r9",
+    });
   });
 
   test("projects a durable checkpoint from reloaded history", () => {
@@ -539,7 +581,15 @@ describe("entry reducer", () => {
       {
         id: expect.any(String),
         kind: "tool",
-        tool: { name: "read", status: "completed", complete: true, detail: "/tmp/x" },
+        tool: {
+          name: "read",
+          status: "completed",
+          complete: true,
+          detail: "/tmp/x",
+          // The call's identity rides the row, so a target the page omitted can
+          // be fetched on open (this entry carries no runId, so none is set).
+          toolCallId: "call_0",
+        },
       },
       { id: expect.any(String), kind: "text", text: "done" },
     ]);
@@ -1363,6 +1413,55 @@ describe("shared-projection semantic flags", () => {
     expect(reply.segments?.map(segment => segment.kind)).toEqual(["thinking", "text"]);
     const thinking = reply.segments?.[0];
     expect(thinking && thinking.kind === "thinking" && thinking.text).toBe("");
+  });
+
+  /**
+   * A lean feed opens a reasoning block *after* work has already started: the
+   * tool calls streamed first, then the model thinks again. The block carries no
+   * body (its deltas are not published), so its boundary is the only thing that
+   * can render the row — the tool run's "hop over whitespace-only text" must not
+   * mistake the empty reasoning slot for that whitespace and swallow it, nor may
+   * it glue the tools on either side into one burst.
+   */
+  test("a reasoning row after a tool call survives with no body (lean feed)", () => {
+    const leanRow = (events: [string, Record<string, unknown>][]) => {
+      let state = applyStreamEvent(emptyTimeline(), {
+        type: "agent_start",
+        data: "{}",
+        runId: "run-1",
+        idx: 0,
+      });
+      events.forEach(([type, data], index) => {
+        state = applyStreamEvent(state, {
+          type,
+          data: JSON.stringify(data),
+          runId: "run-1",
+          idx: index + 1,
+        });
+      });
+      const reply = state.items.find(item => item.kind === "message" && item.role === "assistant");
+      if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+      return reply.segments?.map(segment => segment.kind);
+    };
+    const read = (id: string) => ([
+      "tool_start",
+      { tool_id: id, tool_name: "read", tool_args: { path: "/tmp/a" } },
+    ] as [string, Record<string, unknown>]);
+    const readEnd = (id: string) => ([
+      "tool_end",
+      { tool_id: id, tool_name: "read", exit_code: 0 },
+    ] as [string, Record<string, unknown>]);
+    const thinking = (blockId: string) => ([
+      "thinking_start",
+      { type: "thinking_start", block_id: blockId },
+    ] as [string, Record<string, unknown>]);
+
+    // Tool, then a fresh reasoning block, then nothing else yet (the live tail).
+    expect(leanRow([read("t1"), readEnd("t1"), thinking("b2")])).toEqual(["tool", "thinking"]);
+    // The reasoning boundary also separates two tool calls into their own rows.
+    expect(leanRow([
+      read("t1"), readEnd("t1"), thinking("b2"), read("t2"), readEnd("t2"),
+    ])).toEqual(["tool", "thinking", "tool"]);
   });
 
   test("a tool target comes from tool_start, with no argument stream", () => {

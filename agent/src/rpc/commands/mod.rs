@@ -129,31 +129,40 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     }
 
     // ── Session-scoped commands: resolve the target session or fail.
-    if matches!(cmd_type.as_str(), "list_tool_calls" | "get_tool_output") {
+    if matches!(
+        cmd_type.as_str(),
+        "list_tool_calls" | "get_tool_output" | "get_tool_call_args"
+    ) {
+        // `get_tool_call_args` is the lean client's way back to a shell call's
+        // arguments, which its history page deliberately omitted.
+        let call_scoped = matches!(cmd_type.as_str(), "get_tool_output" | "get_tool_call_args");
         if cmd.session_id.is_empty()
             || cmd.run_id.is_empty()
-            || (cmd_type == "get_tool_output"
-                && cmd.tool_call_id.as_deref().is_none_or(str::is_empty))
+            || (call_scoped && cmd.tool_call_id.as_deref().is_none_or(str::is_empty))
         {
             return RpcResponse::build_fail(
                 id,
                 cmd_type,
-                "sessionId, runId and (for output) toolCallId are required",
+                "sessionId, runId and (for call-scoped reads) toolCallId are required",
             );
         }
-        let result = if cmd_type == "list_tool_calls" {
-            state.session_manager.tool_page(
+        let result = match cmd_type.as_str() {
+            "list_tool_calls" => state.session_manager.tool_page(
                 &cmd.session_id,
                 &cmd.run_id,
                 cmd.offset.unwrap_or(0),
                 cmd.limit.unwrap_or(100),
-            )
-        } else {
-            state.session_manager.tool_output(
+            ),
+            "get_tool_call_args" => state.session_manager.tool_call_args(
                 &cmd.session_id,
                 &cmd.run_id,
                 cmd.tool_call_id.as_deref().unwrap_or(""),
-            )
+            ),
+            _ => state.session_manager.tool_output(
+                &cmd.session_id,
+                &cmd.run_id,
+                cmd.tool_call_id.as_deref().unwrap_or(""),
+            ),
         };
         return match result {
             Ok(data) => RpcResponse::ok(id, cmd_type, data),

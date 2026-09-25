@@ -169,6 +169,10 @@ struct ScriptedResponse {
 struct MockAgentState {
     /// (command, session_id) request log, for assertions.
     requests: Vec<(String, String)>,
+    /// Last few full requests, so a test can assert the fields a forwarded
+    /// read carried (run id, tool-call id) — the (command, session) log above
+    /// answers "was this served", not "with what".
+    full_requests: Vec<crate::agent_proto::RpcCommand>,
     /// One-shot scripted responses keyed by `command` or `command:session_id`.
     scripts: HashMap<String, VecDeque<ScriptedResponse>>,
     /// `get_session_entries` payloads keyed by session id.
@@ -330,7 +334,25 @@ impl MockAgent {
     /// asks for *from here on*. The log is process-global and the mock is
     /// shared, so a "was this command served" assertion needs a fresh start.
     pub(crate) fn clear_requests(&self) {
-        self.state.lock().unwrap().requests.clear();
+        let mut state = self.state.lock().unwrap();
+        state.requests.clear();
+        state.full_requests.clear();
+    }
+
+    /// The most recent full request for `command`, for assertions about the
+    /// fields it carried (see [`MockAgentState::full_requests`]).
+    pub(crate) fn last_full_request(
+        &self,
+        command: &str,
+    ) -> Option<crate::agent_proto::RpcCommand> {
+        self.state
+            .lock()
+            .unwrap()
+            .full_requests
+            .iter()
+            .rev()
+            .find(|request| request.r#type == command)
+            .cloned()
     }
 }
 
@@ -345,6 +367,10 @@ impl AgentService {
             state
                 .requests
                 .push((cmd.r#type.clone(), cmd.session_id.clone()));
+            state.full_requests.push(cmd.clone());
+            if state.full_requests.len() > 256 {
+                state.full_requests.remove(0);
+            }
             let key = format!("{}:{}", cmd.r#type, cmd.session_id);
             let scripted = state
                 .scripts

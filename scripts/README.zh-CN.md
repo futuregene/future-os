@@ -55,7 +55,10 @@
 - `profile-quick.ps1` — Windows 快速 agent 剖析入口（`make profile-quick` 调用）。
 - `measure-live-lane.py` — 针对桌面发布器的真实流量通道测量。
 - `measure-lean-history.py` — 针对真实会话测量精简历史页（推理正文、工具输出、
-  未使用的调用参数），回放经过线上 Rust 裁剪逻辑。
+  未使用的调用参数），回放经过线上 Rust 裁剪逻辑。`--pages N` 改为按手机真正读的
+  分页（每页 N 个用户问答、从最新往前）逐页测量，而不是整会话。
+- `audit-lean-page.py` — 审计真实单页的裁剪形状（shell 行保留/丢失哪些参数键，
+  以及取用所需的 `toolCallId`/`runId` 是否还在）。
 - `measure-mobile-performance.mjs` — 构建离线浏览器 A/B 探针（基线 ref 对比工作树）。
 - `measure-mobile-performance.ts` — 导入生产移动端同步代码的探针入口。
 - `serve-mobile-performance.py` — 供探针使用的只读 loopback 回放服务器。

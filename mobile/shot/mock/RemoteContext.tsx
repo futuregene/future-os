@@ -30,6 +30,7 @@ import type {
 import { createContext, useContext, useMemo, useState } from "react";
 import { connectionPresentation as buildConnectionPresentation } from "../../src/remote/connectionPresentation";
 import { applyStreamEvents, timelineFromEntries } from "../../src/remote/projection";
+import { leanRenderMode, leanRenderTimeline, leanTargetForToolCall } from "./leanRender";
 import {
   compactResumeEntries,
   demoCredentials,
@@ -102,6 +103,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const delayedCompaction = new URLSearchParams(window.location.search).get("compactionDelay") === "1";
   const [compactionFinished, setCompactionFinished] = useState(false);
   const scriptedCompaction = compactionFinished || new URLSearchParams(window.location.search).get("compacted") === "1";
+  // `?leanRender=<mode>` renders a lean (or, for the control, full) lane slice
+  // instead of the demo conversation — see shot/mock/leanRender.ts.
+  const renderMode = leanRenderMode(window.location.search);
   const baseTimeline = useMemo(() => {
     // `?compactHistory=1` swaps in the history of a run that compacted
     // mid-turn, so a capture can assert the reply after the divider survives
@@ -109,6 +113,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // a several-turn conversation, which is what the controls that jump between
     // questions need in order to have somewhere to jump.
     const search = new URLSearchParams(window.location.search);
+    const renderFixture = leanRenderTimeline(renderMode);
+    if (renderFixture) return renderFixture;
     const historyEntries = search.get("compactHistory") === "1"
       ? compactResumeEntries
       : search.get("multiTurn") === "1"
@@ -121,7 +127,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       { type: "compaction_started", runId: manualRun, idx: 900, data: JSON.stringify({ operation_id: "cmp_shot", trigger: "manual", phase: "standalone" }) },
       { type: "compaction_committed", runId: manualRun, idx: 901, data: JSON.stringify({ operation_id: "cmp_shot", checkpoint_id: "cp_shot", trigger: "manual", phase: "standalone", tokens_before: 33064, tokens_after: 9250 }) },
     ]);
-  }, [scriptedCompaction]);
+  }, [scriptedCompaction, renderMode]);
   const timeline = useMemo(
     () => (selectedSessionId === "" || selectedSessionId === "sess_dopamine_review"
       ? baseTimeline
@@ -208,6 +214,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       "provider_management_v1",
       "workspace_pinning_v1",
       "compaction_v1",
+      // What the shipping client declares (src/remote/client.ts); the lean
+      // fixtures are the feed a desktop serves a client that asked for it.
+      "lean_events_v1",
     ]),
 
     // Actions the harness drives for real
@@ -227,6 +236,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setDraft(false);
       setSelectedSessionId("");
     },
+    // A lean history row with no target fetches its command on open: the app
+    // goes through the bridge (`get_tool_call_args`), the harness answers from
+    // the full-feed fixture with the shipping target derivation.
+    resolveToolCallTarget: async (toolCallId: string) => leanTargetForToolCall(toolCallId),
     switchDesktop: async (id: string) => setDesktopId(id),
     setSessionPinned: async (sessionId: string, _threadId: string, pinned: boolean) =>
       setSessionPins(current => ({ ...current, [sessionId]: pinned })),

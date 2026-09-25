@@ -425,6 +425,7 @@ export function ChatScreen() {
     openFile: openTimelineFile,
     retry: retryMessage,
     continue: continueMessage,
+    resolveToolTarget: remote.resolveToolCallTarget,
   });
   useEffect(() => {
     timelineActionsRef.current = {
@@ -432,8 +433,15 @@ export function ChatScreen() {
       openFile: openTimelineFile,
       retry: retryMessage,
       continue: continueMessage,
+      resolveToolTarget: remote.resolveToolCallTarget,
     };
-  }, [continueMessage, openTimelineAttachment, openTimelineFile, retryMessage]);
+  }, [
+    continueMessage,
+    openTimelineAttachment,
+    openTimelineFile,
+    remote.resolveToolCallTarget,
+    retryMessage,
+  ]);
   const handleTimelineAttachment = useCallback(
     (attachment: Parameters<typeof openTimelineAttachment>[0]) =>
       void timelineActionsRef.current.openAttachment(attachment),
@@ -451,6 +459,11 @@ export function ChatScreen() {
     (item: TimelineItem) => timelineActionsRef.current.continue(item),
     [],
   );
+  const handleResolveToolTarget = useCallback(
+    (toolCallId: string, runId: string) =>
+      timelineActionsRef.current.resolveToolTarget(toolCallId, runId),
+    [],
+  );
 
   const renderTimelineItem = useCallback(
     ({ item }: { item: TimelineItem }) => (
@@ -462,10 +475,12 @@ export function ChatScreen() {
           onOpenFile={handleTimelineFile}
           onRetry={handleTimelineRetry}
           onContinue={handleTimelineContinue}
+          onResolveToolTarget={handleResolveToolTarget}
         />
       </View>
     ),
     [
+      handleResolveToolTarget,
       handleTimelineAttachment,
       handleTimelineContinue,
       handleTimelineFile,

@@ -844,3 +844,67 @@ describe("command dispatchers", () => {
     expect(engine.mutate).toHaveBeenCalledWith("s1", expect.any(Function));
   });
 });
+
+/**
+ * The lean history lane drops a shell call's arguments from the page, so the
+ * row fetches them by identity when the user opens it. The controller owns the
+ * one-fetch-per-call cache: the list virtualizes, and a remounted row must not
+ * turn a scroll into another request.
+ */
+describe("lean tool-argument fetch", () => {
+  const argsCalls = (requestRetry: jest.Mock) =>
+    requestRetry.mock.calls.filter(([command]: [{ type: string }]) =>
+      command.type === "get_tool_call_args");
+
+  it("fetches a call once and serves the cache to a remounted row", async () => {
+    const requestRetry = jest.fn(async () => ({
+      data: { toolCallId: "c1", name: "shell", arguments: { command: "ls -la", timeout: 30 } },
+    }));
+    const h = await mountController({ selected: "session-a", requestRetry });
+    await expect(current(h).resolveToolCallTarget("c1", "run-1")).resolves.toBe("ls -la");
+    expect(argsCalls(requestRetry)).toEqual([[
+      { type: "get_tool_call_args", sessionId: "session-a", runId: "run-1", toolCallId: "c1" },
+      "session-a",
+    ]]);
+    // The row mounted, unmounted and came back: no second request.
+    await expect(current(h).resolveToolCallTarget("c1", "run-1")).resolves.toBe("ls -la");
+    expect(argsCalls(requestRetry)).toHaveLength(1);
+    act(() => h.renderer.unmount());
+  });
+
+  it("never serves one conversation's call to another", async () => {
+    const requestRetry = jest.fn(async () => ({
+      data: { name: "shell", arguments: { command: "pwd" } },
+    }));
+    const h = await mountController({ selected: "session-a", requestRetry });
+    await expect(current(h).resolveToolCallTarget("c1", "run-1")).resolves.toBe("pwd");
+    h.selectedRef.current = "session-b";
+    requestRetry.mockResolvedValueOnce({ data: { name: "shell", arguments: { command: "whoami" } } });
+    await expect(current(h).resolveToolCallTarget("c1", "run-1")).resolves.toBe("whoami");
+    expect(argsCalls(requestRetry)).toHaveLength(2);
+    expect(argsCalls(requestRetry)[1]![0]).toMatchObject({ sessionId: "session-b" });
+    act(() => h.renderer.unmount());
+  });
+
+  it("remembers a call whose arguments yield no target instead of re-asking", async () => {
+    const requestRetry = jest.fn(async () => ({
+      data: { toolCallId: "c1", name: "read", arguments: null },
+    }));
+    const h = await mountController({ selected: "session-a", requestRetry });
+    await expect(current(h).resolveToolCallTarget("c1", "run-1")).resolves.toBeNull();
+    await expect(current(h).resolveToolCallTarget("c1", "run-1")).resolves.toBeNull();
+    expect(argsCalls(requestRetry)).toHaveLength(1);
+    act(() => h.renderer.unmount());
+  });
+
+  it("rejects when the desktop has no such route, so the row can stay as it was", async () => {
+    const requestRetry = jest.fn(async () => {
+      throw new Error("Unsupported command: get_tool_call_args");
+    });
+    const h = await mountController({ selected: "session-a", requestRetry });
+    await expect(current(h).resolveToolCallTarget("c1", "run-1")).rejects.toThrow(
+      "Unsupported command",
+    );
+    act(() => h.renderer.unmount());
+  });
+});

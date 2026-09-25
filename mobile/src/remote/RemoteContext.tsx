@@ -114,6 +114,13 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   ): Promise<import("./types").CompactionOutcome>;
   listSessionFiles(path?: string): Promise<SessionFileListing>;
   listSkills(): Promise<RemoteSkill[]>;
+  /**
+   * Fetch a tool call's display target on demand — the arguments a lean
+   * history page omitted — and cache it for this conversation. Resolves null
+   * when the call has no target; rejects on transport/route failure, which the
+   * row treats as "leave the row as it was".
+   */
+  resolveToolCallTarget(toolCallId: string, runId: string): Promise<string | null>;
   prepareAttachment(
     attachment: HistoryAttachment,
     variant?: "preview" | "original",
@@ -338,6 +345,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     selectSession,
     newConversation,
     listSessionFiles,
+    resolveToolCallTarget,
     listSkills,
     prepareAttachment,
     cachedAttachment,
@@ -479,6 +487,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       awaitCompactionOutcome,
       listSkills,
       listSessionFiles,
+    resolveToolCallTarget,
       prepareAttachment,
       cachedAttachment,
       downloadAttachment,
@@ -548,6 +557,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setWorkspacePinned,
       listSkills,
       listSessionFiles,
+    resolveToolCallTarget,
       prepareAttachment,
       cachedAttachment,
       downloadAttachment,

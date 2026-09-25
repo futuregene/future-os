@@ -862,6 +862,96 @@
           }
         ]
       },
+      "lean-render-live": {
+        "_comment": "Lean 车道渲染验证（#844/#846 的客户端一半）。载荷由发货 Rust trim 从全量 fixture 生成（scripts/screenshots/gen-lean-render-fixtures.mjs + desktop/src-tauri 的 generate_render_fixtures 测试），走真实移动端 UI 与真实投影。断言：① 无正文的 reasoning 块仍渲染出思考行；② 工具行 target = shell 全命令 / 文件类 basename；③ tool_end 无 text 时 exit_code≠0 判失败、=0 判完成、裸 grep exit 1 由客户端软失败豁免放行。第 8 行是『旧 agent 只有 [exit: N] 页脚』的形状：lean 车道上它没有 outcome 可读，读作已运行（本场景把它一并钉住，见报告）。",
+        "url": "http://localhost:8099/?leanRender=live",
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tap": "工作区" },
+          { "wait": 1200 },
+          { "tapText": "整理两篇文献的结论对比表" },
+          { "wait": 2500 },
+          { "shot": "m-lean-live.png" },
+          { "eval": "(async () => { const rows = [...document.querySelectorAll('[role=button]')]; const row = rows.find(el => (el.innerText || '').trim() === '已思考'); if (!row) throw new Error('the reasoning row is missing from the lean lane'); row.click(); await new Promise(r => setTimeout(r, 250)); const body = (row.parentElement.innerText || '').replace('已思考', '').trim(); if (body !== '') throw new Error('a lean reasoning row must have no body, got ' + JSON.stringify(body)); row.click(); return 'thinking row rendered with an empty body'; })()" },
+          { "eval": "(async () => { const failed = [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === '运行失败'); if (failed.length !== 1) throw new Error('expected exactly one failed row (exit_code 127), got ' + failed.length); failed[0].click(); await new Promise(r => setTimeout(r, 250)); const detail = (failed[0].parentElement.innerText || '').replace('运行失败', '').trim(); if (detail !== 'future nosuch-subcommand --verbose') throw new Error('the shell target must be the command verbatim, got ' + JSON.stringify(detail)); return detail; })()" },
+          { "eval": "(async () => { const pick = label => [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === label); const want = { '已读取': ['frank-summary.md', 'dreher-summary.md'], '已写入': ['compare-table.md'], '已编辑': ['compare-table.md'] }; const seen = {}; for (const label of Object.keys(want)) { const rows = pick(label); if (rows.length !== want[label].length) throw new Error(label + ': expected ' + want[label].length + ' row(s), got ' + rows.length); seen[label] = []; for (const row of rows) { row.click(); await new Promise(r => setTimeout(r, 200)); seen[label].push((row.parentElement.innerText || '').replace(label, '').trim()); } if (JSON.stringify(seen[label]) !== JSON.stringify(want[label])) throw new Error(label + ' target(s): expected the basename(s) ' + JSON.stringify(want[label]) + ', got ' + JSON.stringify(seen[label])); } return seen; })()" },
+          { "eval": "(async () => { const soft = [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === '已运行'); if (soft.length !== 3) throw new Error('expected the two soft-fail rows plus the footer-only row to read 已运行, got ' + soft.length); const details = []; for (const row of soft) { row.click(); await new Promise(r => setTimeout(r, 200)); details.push((row.parentElement.innerText || '').replace('已运行', '').trim()); } for (const command of ['grep -c dopamine notes/compare-table.md', 'diff notes/frank-summary.md notes/dreher-summary.md']) { if (!details.includes(command)) throw new Error('a soft-fail row lost its target: ' + command + ' not in ' + JSON.stringify(details)); } return details; })()" },
+          { "eval": "(() => { const text = document.body.innerText; for (const leaked of ['[exit: 127]', '[exit: 2]', 'bash: future: command not found', '效应量 d = 0.42']) { if (text.includes(leaked)) throw new Error('the lean lane leaked a payload it does not carry: ' + leaked); } return 'no dropped payload reached the screen'; })()" },
+          { "shot": "m-lean-live-expanded.png" }
+        ]
+      },
+      "lean-render-live-mid": {
+        "_comment": "Lean 车道运行中：调用还没有 tool_end（没有 exit_code），思考块只开了头。行必须仍然出现，标签是流式的『思考中』/『正在读取』，且运行中的行也有 target。",
+        "url": "http://localhost:8099/?leanRender=live-mid",
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tap": "工作区" },
+          { "wait": 1200 },
+          { "tapText": "整理两篇文献的结论对比表" },
+          { "wait": 2500 },
+          { "eval": "(async () => { const rows = [...document.querySelectorAll('[role=button]')]; const labels = rows.map(el => (el.innerText || '').trim()); const thinking = rows.find(el => (el.innerText || '').trim() === '思考中'); if (!thinking) throw new Error('the open reasoning row must read 思考中, got ' + JSON.stringify(labels)); if (labels.includes('已思考')) throw new Error('a reasoning row settled while its block is still open'); const running = rows.find(el => (el.innerText || '').trim() === '正在读取'); if (!running) throw new Error('the in-flight read row must read 正在读取, got ' + JSON.stringify(labels)); running.click(); await new Promise(r => setTimeout(r, 250)); const detail = (running.parentElement.innerText || '').replace('正在读取', '').trim(); if (detail !== 'frank-summary.md') throw new Error('a running row still shows its target basename, got ' + JSON.stringify(detail)); return '思考中 + 正在读取(' + detail + ')'; })()" },
+          { "shot": "m-lean-live-mid.png" }
+        ]
+      },
+      "lean-render-full": {
+        "_comment": "对照组：同一段运行、未修剪的全量载荷。三条渲染结论不变；全量的额外能力也没有回归——思考行展开有正文、[exit: N] 页脚仍能把失败/软失败判出来（第 8 行只有页脚，全量读作失败）。",
+        "url": "http://localhost:8099/?leanRender=full-live",
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tap": "工作区" },
+          { "wait": 1200 },
+          { "tapText": "整理两篇文献的结论对比表" },
+          { "wait": 2500 },
+          { "shot": "m-lean-full.png" },
+          { "eval": "(async () => { const rows = [...document.querySelectorAll('[role=button]')]; const row = rows.find(el => (el.innerText || '').trim() === '已思考'); if (!row) throw new Error('the reasoning row is missing from the full lane'); row.click(); await new Promise(r => setTimeout(r, 250)); const body = (row.parentElement.innerText || '').replace('已思考', '').trim(); if (!body.startsWith('用户要的是一张对比表')) throw new Error('the full feed must still render the reasoning body, got ' + JSON.stringify(body.slice(0, 60))); if (!body.includes('Dreher 2025 报的却是条件效应')) throw new Error('the full reasoning body is truncated: ' + JSON.stringify(body)); row.click(); return body.length + ' chars of reasoning rendered'; })()" },
+          { "eval": "(async () => { const failed = [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === '运行失败'); if (failed.length !== 2) throw new Error('the full feed reads both failure shapes (structured exit_code 127 + footer-only exit 2), got ' + failed.length); const details = []; for (const row of failed) { row.click(); await new Promise(r => setTimeout(r, 200)); details.push((row.parentElement.innerText || '').replace('运行失败', '').trim()); } for (const command of ['future nosuch-subcommand --verbose', 'ls /nonexistent-workspace-path']) { if (!details.includes(command)) throw new Error('a failed row lost its target: ' + command + ' not in ' + JSON.stringify(details)); } return details; })()" },
+          { "eval": "(async () => { const pick = label => [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === label); const want = { '已读取': ['frank-summary.md', 'dreher-summary.md'], '已写入': ['compare-table.md'], '已编辑': ['compare-table.md'] }; const seen = {}; for (const label of Object.keys(want)) { seen[label] = []; for (const row of pick(label)) { row.click(); await new Promise(r => setTimeout(r, 200)); seen[label].push((row.parentElement.innerText || '').replace(label, '').trim()); } if (JSON.stringify(seen[label]) !== JSON.stringify(want[label])) throw new Error(label + ' target(s): expected ' + JSON.stringify(want[label]) + ', got ' + JSON.stringify(seen[label])); } const soft = pick('已运行').length; if (soft !== 2) throw new Error('the full feed still exempts the two soft failures, got ' + soft); return seen; })()" },
+          { "eval": "(() => { const text = document.body.innerText; for (const leaked of ['[exit: 127]', \"[exit: 2]\"]) { if (text.includes(leaked)) throw new Error('tool output must not be rendered even in the full feed: ' + leaked); } return 'tool output stays off screen in the full feed too'; })()" },
+          { "shot": "m-lean-full-expanded.png" }
+        ]
+      },
+      "lean-render-history": {
+        "_comment": "历史页（持久读）的 lean 形状：reasoning 块没有正文、tool_result 没有输出、tool_call 的 arguments 只剩 target 能读的键。断言思考行照旧出现、文件类 target 仍是 basename；并记录一个既有缺口（与本 PR 无关）：历史行没有每行的 outcome（is_error 从未写入），所以同一个失败的 shell 命令在历史页读作已运行，而 isError:true 的探针行读作失败。",
+        "url": "http://localhost:8099/?leanRender=history",
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tap": "工作区" },
+          { "wait": 1200 },
+          { "tapText": "整理两篇文献的结论对比表" },
+          { "wait": 2500 },
+          { "shot": "m-lean-history.png" },
+          { "eval": "(async () => { const rows = [...document.querySelectorAll('[role=button]')]; const row = rows.find(el => (el.innerText || '').trim() === '已思考'); if (!row) throw new Error('the reasoning row is missing from a lean history page'); row.click(); await new Promise(r => setTimeout(r, 250)); const body = (row.parentElement.innerText || '').replace('已思考', '').trim(); if (body !== '') throw new Error('a lean history reasoning row must have no body, got ' + JSON.stringify(body)); row.click(); return 'thinking row rendered, body empty'; })()" },
+          { "eval": "(async () => { const pick = label => [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === label); const read = pick('已读取'); if (read.length !== 1) throw new Error('expected one read row, got ' + read.length); read[0].click(); await new Promise(r => setTimeout(r, 200)); const readTarget = (read[0].parentElement.innerText || '').replace('已读取', '').trim(); if (readTarget !== 'frank-summary.md') throw new Error('the trimmed arguments must still yield the basename, got ' + JSON.stringify(readTarget)); const write = pick('已写入'); if (write.length !== 1) throw new Error('expected one write row, got ' + write.length); write[0].click(); await new Promise(r => setTimeout(r, 200)); const writeTarget = (write[0].parentElement.innerText || '').replace('已写入', '').trim(); if (writeTarget !== 'compare-table.md') throw new Error('the write target must be the basename, got ' + JSON.stringify(writeTarget)); return readTarget + ' / ' + writeTarget; })()" },
+          { "eval": "(async () => { const rows = [...document.querySelectorAll('[role=button]')]; const labels = rows.map(el => (el.innerText || '').trim()); const ran = rows.filter(el => (el.innerText || '').trim() === '已运行'); const failed = rows.filter(el => (el.innerText || '').trim() === '运行失败'); if (failed.length !== 1) throw new Error('only the isError:true probe row fails in history today, got ' + failed.length + ' of ' + JSON.stringify(labels)); if (ran.length !== 1) throw new Error('the exit_code 127 row has no per-row outcome in history and must read 已运行, got ' + JSON.stringify(labels)); ran[0].click(); await new Promise(r => setTimeout(r, 200)); const command = (ran[0].parentElement.innerText || '').replace('已运行', '').trim(); failed[0].click(); await new Promise(r => setTimeout(r, 200)); const probe = (failed[0].parentElement.innerText || '').replace('运行失败', '').trim(); if (command !== 'future nosuch-subcommand --verbose') throw new Error('the history row target is wrong: ' + JSON.stringify(command)); if (probe !== 'grep -c dopamine notes/compare-table.md') throw new Error('the probe row target is wrong: ' + JSON.stringify(probe)); return 'shell(127)=' + ran.length + ' 已运行; probe=' + probe + ' 运行失败'; })()" },
+          { "eval": "(() => { const text = document.body.innerText; for (const leaked of ['效应量 d = 0.42', '# Dreher 2025', '| 维度 |', 'timeout', 'offset']) { if (text.includes(leaked)) throw new Error('a trimmed payload reached the screen: ' + leaked); } return 'no trimmed payload reached the screen'; })()" },
+          { "shot": "m-lean-history-expanded.png" }
+        ]
+      },
+      "lean-render-full-history": {
+        "_comment": "对照组：同一历史页、全量载荷（reasoning 有正文、tool_result 有输出、arguments 完整）。思考正文照旧可展开，target 与失败态判定不变；完整 arguments 里那些客户端不读的键（content/timeout/offset）仍然不上屏。",
+        "url": "http://localhost:8099/?leanRender=full-history",
+        "steps": [
+          { "wait": 900 },
+          { "tap": "稍后再说" },
+          { "wait": 1200 },
+          { "tap": "工作区" },
+          { "wait": 1200 },
+          { "tapText": "整理两篇文献的结论对比表" },
+          { "wait": 2500 },
+          { "eval": "(async () => { const rows = [...document.querySelectorAll('[role=button]')]; const row = rows.find(el => (el.innerText || '').trim() === '已思考'); if (!row) throw new Error('the reasoning row is missing'); row.click(); await new Promise(r => setTimeout(r, 250)); const body = (row.parentElement.innerText || '').replace('已思考', '').trim(); if (!body.startsWith('用户要的是一张对比表')) throw new Error('the full history reasoning body is missing, got ' + JSON.stringify(body.slice(0, 60))); row.click(); return body.length + ' chars of reasoning rendered'; })()" },
+          { "eval": "(async () => { const pick = label => [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === label); const read = pick('已读取'); read[0].click(); await new Promise(r => setTimeout(r, 200)); const readTarget = (read[0].parentElement.innerText || '').replace('已读取', '').trim(); if (readTarget !== 'frank-summary.md') throw new Error('read target: ' + JSON.stringify(readTarget)); const write = pick('已写入'); write[0].click(); await new Promise(r => setTimeout(r, 200)); const writeTarget = (write[0].parentElement.innerText || '').replace('已写入', '').trim(); if (writeTarget !== 'compare-table.md') throw new Error('write target: ' + JSON.stringify(writeTarget)); const failed = pick('运行失败'); if (failed.length !== 1) throw new Error('the probe row must still fail, got ' + failed.length); return readTarget + ' / ' + writeTarget + '; probe rows: ' + failed.length; })()" },
+          { "eval": "(() => { const text = document.body.innerText; for (const leaked of ['| 维度 |', 'timeout', 'offset', 'cwd']) { if (text.includes(leaked)) throw new Error('an unread argument reached the screen: ' + leaked); } return 'unread arguments stay off screen in the full page too'; })()" },
+          { "shot": "m-lean-full-history.png" }
+        ]
+      },
       "qn-nav-variants": {
         "variantsTitle": "提问导航 · 已采用样式（A）与两个仍然开放的加法",
         "url": "http://localhost:8099/?multiTurn=1",
