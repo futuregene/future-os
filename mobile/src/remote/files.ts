@@ -1,6 +1,6 @@
 import { File, FileMode, Directory, Paths } from "expo-file-system";
 import sha256 from "sha256-universal";
-import { hashFile as nativeFileSha256, resolveImagePickRoutes, type IntentHandler } from "future-file-handler";
+import { hashFile as nativeFileSha256, listAlbumImages, resolveImagePickRoutes, supportsAlbumGrid, type AlbumImage, type IntentHandler } from "future-file-handler";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import * as IntentLauncher from "expo-intent-launcher";
@@ -395,7 +395,11 @@ async function prepareImagePickerAssets(
 // leaving the category out keeps this call on gallery apps instead of landing
 // in the file browser.
 const ALBUM_PICK_ACTION = "android.intent.action.PICK";
+const ALBUM_CONTENT_ACTION = "android.intent.action.GET_CONTENT";
 const ALBUM_IMAGE_COLLECTION = "content://media/external/images/media";
+/** How many images the grid offers. Enough to cover a library's recent photos
+ * without turning the query (or the grid) into a full-library index. */
+const ALBUM_IMAGE_LIMIT = 240;
 
 // Package-name hints. Android exposes no "is this a gallery" flag, and both
 // kinds of app answer a pick, so the only signal is what the app calls itself.
@@ -432,45 +436,77 @@ function isGalleryPackage(name: string): boolean {
  * `androidx.activity.result.contract.action.PICK_IMAGES`), and some phones hand
  * the classic gallery intent to a file manager. So the candidates are resolved
  * before anything is launched, and a route is only taken when it leads to a real
- * picker. Without the native probe (an older app binary) the historical order is
- * kept: gallery below API 33, the photo-picker contract above it.
+ * picker.
+ *
+ * `inApp` is the last resort and the one an Android compatibility container
+ * lands on: no gallery app and no photo picker at all, so the app draws its own
+ * grid from the phone's images. Without the native probe (an older app binary)
+ * the historical order is kept: gallery below API 33, the photo-picker contract
+ * above it.
  */
+export type AlbumSource = "system" | "inApp" | "unavailable";
+
 type AlbumRoute =
-  | { kind: "contract" }
+  | { kind: "system" }
   | { kind: "album"; target?: IntentHandler }
+  | { kind: "content"; target?: IntentHandler }
+  | { kind: "inApp" }
   | { kind: "unavailable" };
 
 async function resolveAlbumRoute(): Promise<AlbumRoute> {
   const apiLevel = Number(Platform.Version);
   const routes = await resolveImagePickRoutes();
-  if (!routes) return apiLevel >= 33 ? { kind: "contract" } : { kind: "album" };
-  const photoPickers = routes.photoPicker.filter(route => !isFileBrowserPackage(route.package));
+  if (!routes) return apiLevel >= 33 ? { kind: "system" } : { kind: "album" };
+  const usable = (handlers: IntentHandler[]) =>
+    handlers.filter(route => !isFileBrowserPackage(route.package));
+  const photoPickers = [
+    ...usable(routes.photoPicker),
+    ...usable(routes.photoPickerFallback),
+    ...usable(routes.photoPickerPlayServices),
+  ];
   // Android 13's photo picker is the multi-select default; keep using it there.
-  if (apiLevel >= 33 && photoPickers.length > 0) return { kind: "contract" };
+  if (apiLevel >= 33 && usable(routes.photoPicker).length > 0) return { kind: "system" };
   // Below 33 the album is what the user asked for, so prefer a gallery when one
   // answers, and target it explicitly so a file manager that also advertises the
   // pick cannot stand in for it.
   const gallery = routes.album.find(route => isGalleryPackage(route.package));
   if (gallery) return { kind: "album", target: gallery };
-  if (photoPickers.length > 0) return { kind: "contract" };
-  if (routes.photoPickerFallback.some(route => !isFileBrowserPackage(route.package))) {
-    return { kind: "contract" };
-  }
+  const contentGallery = routes.imageContent.find(route => isGalleryPackage(route.package));
+  if (contentGallery) return { kind: "content", target: contentGallery };
+  // A real photo picker (framework, AOSP backport, or its Play-services build)
+  // is better than drawing our own grid.
+  if (photoPickers.length > 0) return { kind: "system" };
+  if (supportsAlbumGrid()) return { kind: "inApp" };
   // Keep the resolution in the log: a device report has to distinguish "no
   // album app at all" from "only a file manager advertises the pick".
   console.warn("album routes", JSON.stringify(routes));
   return { kind: "unavailable" };
 }
 
+/**
+ * How the album can be presented here, for a caller that has to show something
+ * else (the in-app grid) when no system picker exists.
+ */
+export async function albumSource(): Promise<AlbumSource> {
+  if (Platform.OS !== "android") return "system";
+  const route = await resolveAlbumRoute();
+  if (route.kind === "unavailable") return "unavailable";
+  return route.kind === "inApp" ? "inApp" : "system";
+}
+
 type AlbumPick = { uri: string } | "cancelled" | "unavailable";
 
 /** Ask the phone's own gallery for one image. */
-async function pickFromSystemGallery(target?: IntentHandler): Promise<AlbumPick> {
+async function pickFromSystemGallery(
+  action: string,
+  target?: IntentHandler,
+): Promise<AlbumPick> {
   try {
     const result = await withNativePresentation(() =>
-      IntentLauncher.startActivityAsync(ALBUM_PICK_ACTION, {
-        data: ALBUM_IMAGE_COLLECTION,
-        type: "image/*",
+      IntentLauncher.startActivityAsync(action, {
+        ...(action === ALBUM_PICK_ACTION
+          ? { data: ALBUM_IMAGE_COLLECTION, type: "image/*" }
+          : { type: "image/*" }),
         ...(target ? { packageName: target.package, className: target.activity } : {}),
       }),
     );
@@ -494,9 +530,10 @@ async function pickFromSystemGallery(target?: IntentHandler): Promise<AlbumPick>
 async function prepareGalleryPick(
   existing: MobileAttachment[],
   uri: string,
+  reported?: { name?: string; mimeType?: string },
 ): Promise<MobileAttachment[]> {
   const source = new File(uri);
-  const mimeType = source.type || mimeFor(source.name);
+  const mimeType = reported?.mimeType || source.type || mimeFor(reported?.name || source.name);
   validateRawSelection(existing, [{ file: source, mimeType }]);
   const format = imageFormat(source, mimeType);
   if (!format) throw new Error("attachment_image_format");
@@ -505,9 +542,12 @@ async function prepareGalleryPick(
     await source.copy(cached);
     const [prepared] = await prepareFiles([{ file: cached, mimeType }]);
     if (!prepared) throw new Error("attachment_failed");
-    // The generated cache name is not what the photo is called; the gallery
-    // reports the real one.
-    const combined = [...existing, { ...prepared, name: source.name || prepared.name, temporary: true }];
+    // The generated cache name is not what the photo is called; the gallery (or
+    // the album listing) reports the real one.
+    const combined = [
+      ...existing,
+      { ...prepared, name: reported?.name || source.name || prepared.name, temporary: true },
+    ];
     validateBatch(combined);
     return combined;
   } catch (error) {
@@ -516,17 +556,50 @@ async function prepareGalleryPick(
   }
 }
 
-export async function pickFromAlbum(existing: MobileAttachment[]): Promise<MobileAttachment[]> {
-  const remaining = Math.min(
-    MAX_IMAGES - existing.filter(item => item.kind === "image").length,
-    MAX_ATTACHMENTS - existing.length,
+/** Read the images the caller chose in the app's own album grid. */
+export async function prepareAlbumImages(
+  existing: MobileAttachment[],
+  images: { uri: string; name: string; mimeType: string }[],
+): Promise<MobileAttachment[]> {
+  let combined = existing;
+  for (const image of images) {
+    combined = await prepareGalleryPick(combined, image.uri, image);
+  }
+  return combined;
+}
+
+/** Every image the album grid can offer, newest first. */
+export async function loadAlbumImages(limit = ALBUM_IMAGE_LIMIT): Promise<AlbumImage[]> {
+  const permission = await withNativePresentation(() =>
+    ImagePicker.requestMediaLibraryPermissionsAsync(),
   );
+  if (!permission.granted) throw new Error("attachment_album_permission");
+  return listAlbumImages(limit);
+}
+
+/** How many more images this message can take. */
+export function remainingImageSlots(existing: MobileAttachment[]): number {
+  return Math.max(
+    0,
+    Math.min(
+      MAX_IMAGES - existing.filter(item => item.kind === "image").length,
+      MAX_ATTACHMENTS - existing.length,
+    ),
+  );
+}
+
+export async function pickFromAlbum(existing: MobileAttachment[]): Promise<MobileAttachment[]> {
+  const remaining = remainingImageSlots(existing);
   if (remaining <= 0) throw new Error("attachment_image_count");
   if (Platform.OS === "android") {
     const route = await resolveAlbumRoute();
-    if (route.kind === "unavailable") throw new Error("attachment_album_unavailable");
-    if (route.kind === "album") {
-      const album = await pickFromSystemGallery(route.target);
+    if (route.kind === "unavailable" || route.kind === "inApp") {
+      // The grid is the caller's surface, not something a pick can start.
+      throw new Error("attachment_album_unavailable");
+    }
+    if (route.kind === "album" || route.kind === "content") {
+      const action = route.kind === "album" ? ALBUM_PICK_ACTION : ALBUM_CONTENT_ACTION;
+      const album = await pickFromSystemGallery(action, route.target);
       if (album === "cancelled") return existing;
       if (album === "unavailable") throw new Error("attachment_album_unavailable");
       return prepareGalleryPick(existing, album.uri);

@@ -1,7 +1,7 @@
 import { createHash } from "crypto";
 import * as Crypto from "expo-crypto";
 import * as FS from "expo-file-system";
-import { hashFile as nativeFileSha256, resolveImagePickRoutes } from "future-file-handler";
+import { hashFile as nativeFileSha256, listAlbumImages, resolveImagePickRoutes, supportsAlbumGrid } from "future-file-handler";
 import type { ImagePickRoutes } from "future-file-handler";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
@@ -10,18 +10,22 @@ import { Image, Platform } from "react-native";
 import type { RemoteClient } from "../client";
 import type { DownloadInfo, HistoryAttachment, MobileAttachment } from "../types";
 import {
+  albumSource,
   cachedDownload,
   cachedPreviewForAttachment,
   deleteTemporaryAttachment,
   downloadPrepared,
   fileSha256,
   namedExternalFile,
+  loadAlbumImages,
   pickAttachments,
   pickFromAlbum,
+  prepareAlbumImages,
   prepareDownload,
   prepareSharedAttachments,
   recoverPendingImagePickerAttachments,
   rememberPreparedPreview,
+  remainingImageSlots,
   takePhoto,
   uploadAttachments,
 } from "../files";
@@ -29,6 +33,8 @@ import {
 jest.mock("future-file-handler", () => ({
   hashFile: jest.fn(async () => null),
   resolveImagePickRoutes: jest.fn(async () => null),
+  listAlbumImages: jest.fn(async () => []),
+  supportsAlbumGrid: jest.fn(() => true),
 }));
 
 jest.mock("expo-file-system", () => {
@@ -231,6 +237,8 @@ const mockedLaunchLibrary = ImagePicker.launchImageLibraryAsync as jest.Mock;
 const mockedPendingResult = ImagePicker.getPendingResultAsync as jest.Mock;
 const mockedStartActivity = IntentLauncher.startActivityAsync as jest.Mock;
 const mockedResolveRoutes = resolveImagePickRoutes as jest.Mock;
+const mockedListAlbumImages = listAlbumImages as jest.Mock;
+const mockedSupportsAlbumGrid = supportsAlbumGrid as jest.Mock;
 const mockedDigest = Crypto.digest as jest.Mock;
 const mockedGetSize = Image.getSize as jest.Mock;
 
@@ -267,6 +275,17 @@ function attachment(overrides: Partial<MobileAttachment> = {}): MobileAttachment
     originalSize: 8,
     transferSize: 8,
     ...overrides,
+  };
+}
+
+/** An image as the native album listing reports it. */
+function albumImage(index: number, name: string, mimeType: string) {
+  return {
+    uri: `content://media/external/images/media/${index}`,
+    name,
+    mimeType,
+    size: 10,
+    modified: 1_700_000_000_000 + index,
   };
 }
 
@@ -693,6 +712,7 @@ describe("pickFromAlbum", () => {
     Platform.OS = "ios";
     Object.assign(Platform, { Version: 0 });
     mockedResolveRoutes.mockResolvedValue(null);
+    mockedSupportsAlbumGrid.mockReturnValue(true);
   });
 
   /** API 33+ always has the system photo picker; older versions may not. */
@@ -712,8 +732,10 @@ describe("pickFromAlbum", () => {
     mockedResolveRoutes.mockResolvedValue({
       sdkInt: Number(Platform.Version),
       album: [],
+      imageContent: [],
       photoPicker: [],
       photoPickerFallback: [],
+      photoPickerPlayServices: [],
       document: [],
       ...overrides,
     });
@@ -811,6 +833,7 @@ describe("pickFromAlbum", () => {
     ["no handler at all", []],
   ])("reports the album as unavailable when only %s answers on Android", async (_label, album) => {
     useAlbumOnlyDevice();
+    mockedSupportsAlbumGrid.mockReturnValue(false);
     deviceResolves({ album: album.map(handler), document: [handler("com.huawei.hidisk")] });
 
     await expect(pickFromAlbum([])).rejects.toThrow("attachment_album_unavailable");
@@ -818,6 +841,63 @@ describe("pickFromAlbum", () => {
     // Never a document picker under the album label — that is "Choose files".
     expect(mockedStartActivity).not.toHaveBeenCalled();
     expect(mockedLaunchLibrary).not.toHaveBeenCalled();
+  });
+
+  test("hands an app-drawn album back to the caller when nothing can present one", async () => {
+    useAlbumOnlyDevice();
+    deviceResolves({ album: [handler("com.huawei.hidisk")], document: [handler("com.huawei.hidisk")] });
+
+    expect(await albumSource()).toBe("inApp");
+    // The grid is the caller's surface; a pick cannot start it.
+    await expect(pickFromAlbum([])).rejects.toThrow("attachment_album_unavailable");
+    expect(mockedStartActivity).not.toHaveBeenCalled();
+    expect(mockedLaunchLibrary).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["a gallery", { album: [handler("com.huawei.photos")] }, "system"],
+    ["a photo picker", { photoPicker: [handler("com.android.providers.media.module")] }, "system"],
+    ["the Play-services photo picker", { photoPickerPlayServices: [handler("com.google.android.gms")] }, "system"],
+    ["an image GET_CONTENT gallery", { imageContent: [handler("com.miui.gallery")] }, "system"],
+    ["only a file manager", { album: [handler("com.android.documentsui")], imageContent: [handler("com.android.documentsui")] }, "inApp"],
+  ])("%s makes the album source %s", async (_label, routes, expected) => {
+    useAlbumOnlyDevice();
+    deviceResolves(routes);
+    expect(await albumSource()).toBe(expected);
+  });
+
+  test("an older app binary keeps the API-level default", async () => {
+    useAlbumOnlyDevice();
+    mockedResolveRoutes.mockResolvedValue(null);
+    expect(await albumSource()).toBe("system");
+  });
+
+  test("iOS never needs the probe", async () => {
+    Platform.OS = "ios";
+    expect(await albumSource()).toBe("system");
+    expect(mockedResolveRoutes).not.toHaveBeenCalled();
+  });
+
+  test("a gallery that answers GET_CONTENT instead of the pick still opens", async () => {
+    useAlbumOnlyDevice();
+    deviceResolves({ imageContent: [handler("com.miui.gallery")] });
+    mockedStartActivity.mockResolvedValue({
+      resultCode: -1,
+      data: "content://media/external/images/media/9",
+    });
+    mockFS.__set("content://media/external/images/media/9", {
+      bytes: new Uint8Array(10),
+      type: "image/png",
+    });
+
+    const result = await pickFromAlbum([]);
+
+    expect(mockedStartActivity).toHaveBeenCalledWith("android.intent.action.GET_CONTENT", {
+      type: "image/*",
+      packageName: "com.miui.gallery",
+      className: "com.miui.gallery.PickerActivity",
+    });
+    expect(result).toHaveLength(1);
   });
 
   test.each([
@@ -849,7 +929,6 @@ describe("pickFromAlbum", () => {
       expect(mockedStartActivity).not.toHaveBeenCalled();
     }
   });
-
   test("Android 13 keeps the system photo picker when the device has it", async () => {
     useSystemPhotoPickerDevice();
     deviceResolves({
@@ -893,6 +972,7 @@ describe("pickFromAlbum", () => {
 
   test("reports the album as unavailable when nothing can present it", async () => {
     useAlbumOnlyDevice();
+    mockedSupportsAlbumGrid.mockReturnValue(false);
     mockedStartActivity.mockRejectedValue(new Error("No activity found to handle Intent"));
 
     await expect(pickFromAlbum([])).rejects.toThrow("attachment_album_unavailable");
@@ -933,6 +1013,84 @@ describe("pickFromAlbum", () => {
       mimeType: "image/png",
       name: "photo.png",
     });
+  });
+});
+
+describe("loadAlbumImages", () => {
+  test("asks for the media permission before reading the library", async () => {
+    mockedRequestLibrary.mockResolvedValue({ granted: false });
+    await expect(loadAlbumImages()).rejects.toThrow("attachment_album_permission");
+    expect(mockedListAlbumImages).not.toHaveBeenCalled();
+  });
+
+  test("returns what the phone reports, newest first", async () => {
+    mockedRequestLibrary.mockResolvedValue({ granted: true });
+    mockedListAlbumImages.mockResolvedValue([
+      { uri: "content://media/external/images/media/2", name: "b.jpg", mimeType: "image/jpeg", size: 20, modified: 2 },
+      { uri: "content://media/external/images/media/1", name: "a.jpg", mimeType: "image/jpeg", size: 10, modified: 1 },
+    ]);
+
+    expect((await loadAlbumImages(5)).map(image => image.name)).toEqual(["b.jpg", "a.jpg"]);
+    expect(mockedListAlbumImages).toHaveBeenCalledWith(5);
+  });
+});
+
+describe("prepareAlbumImages", () => {
+  test("copies the chosen images into the cache and keeps their reported names", async () => {
+    mockFS.__set("content://media/external/images/media/7", {
+      bytes: new Uint8Array(10),
+      type: "image/jpeg",
+    });
+    // A JPEG is re-encoded by the shared pipeline; the album name still wins.
+    mockedManipulate.mockResolvedValue({ uri: "file:///cache/re-encoded.jpg" });
+    mockFS.__set("file:///cache/re-encoded.jpg", { bytes: new Uint8Array(5) });
+
+    const result = await prepareAlbumImages([], [
+      albumImage(7, "IMG_20250925_203012.jpg", "image/jpeg"),
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      kind: "image",
+      mimeType: "image/jpeg",
+      name: "IMG_20250925_203012.jpg",
+      temporary: true,
+    });
+  });
+
+  test("keeps every image the user batched in the album", async () => {
+    for (const index of [1, 2]) {
+      mockFS.__set(`content://media/external/images/media/${index}`, {
+        bytes: new Uint8Array(10),
+        type: "image/png",
+      });
+    }
+
+    const result = await prepareAlbumImages(
+      [],
+      [1, 2].map(index => albumImage(index, `shot-${index}.png`, "image/png")),
+    );
+
+    expect(result.map(item => item.name)).toEqual(["shot-1.png", "shot-2.png"]);
+  });
+
+  test("rejects a batch past the image quota before copying anything", async () => {
+    const existing = Array.from({ length: 4 }, () => attachment({ kind: "image" }));
+    await expect(
+      prepareAlbumImages(existing, [albumImage(1, "one.jpg", "image/jpeg")]),
+    ).rejects.toThrow("attachment_image_count");
+  });
+});
+
+describe("remainingImageSlots", () => {
+  test("counts both the image cap and the attachment cap", () => {
+    expect(remainingImageSlots([])).toBe(4);
+    expect(remainingImageSlots([attachment({ kind: "image" })])).toBe(3);
+    expect(
+      remainingImageSlots([
+        ...Array.from({ length: 4 }, () => attachment({ kind: "image" })),
+        ...Array.from({ length: 6 }, () => attachment()),
+      ]),
+    ).toBe(0);
   });
 });
 

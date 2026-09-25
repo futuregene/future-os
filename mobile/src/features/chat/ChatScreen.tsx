@@ -162,7 +162,7 @@ export function ChatScreen() {
     remote,
     t,
   );
-  const { openAttachmentMenu, attachmentMenu } = useAttachmentPicker(
+  const { openAttachmentMenu, attachmentMenu, albumPicker } = useAttachmentPicker(
     attachments,
     setAttachments,
     t,
@@ -461,6 +461,7 @@ export function ChatScreen() {
     <MarkdownImageLoaderContext value={markdownImageLoader}>
       <SafeAreaView style={styles.safe}>
         {attachmentMenu}
+        {albumPicker}
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : undefined}
           style={styles.keyboard}

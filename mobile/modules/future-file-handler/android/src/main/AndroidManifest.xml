@@ -20,22 +20,43 @@
     <!-- The album and photo-picker intents are resolved by
          resolveImagePickRoutes before anything is launched. Package visibility
          would otherwise hide user-installed galleries from that query, which
-         the router would read as "no album app". -->
+         the router would read as "no album app". The scheme must be spelled out
+         too: a target filter that declares android:scheme="content" is not
+         matched by a rule that only names a MIME type. Each picker action is
+         declared with and without data, because a target filter that declares
+         no data is matched only by a data-less intent. -->
     <intent>
       <action android:name="android.intent.action.PICK" />
-      <data android:mimeType="image/*" />
+      <data android:scheme="content" android:mimeType="image/*" />
+    </intent>
+    <intent>
+      <action android:name="android.intent.action.GET_CONTENT" />
+      <data android:scheme="content" android:mimeType="image/*" />
     </intent>
     <intent>
       <action android:name="android.provider.action.PICK_IMAGES" />
-      <data android:mimeType="image/*" />
+      <data android:scheme="content" android:mimeType="image/*" />
+    </intent>
+    <intent>
+      <action android:name="android.provider.action.PICK_IMAGES" />
     </intent>
     <intent>
       <action android:name="androidx.activity.result.contract.action.PICK_IMAGES" />
-      <data android:mimeType="image/*" />
+      <data android:scheme="content" android:mimeType="image/*" />
+    </intent>
+    <intent>
+      <action android:name="androidx.activity.result.contract.action.PICK_IMAGES" />
+    </intent>
+    <intent>
+      <action android:name="com.google.android.gms.provider.action.PICK_IMAGES" />
+      <data android:scheme="content" android:mimeType="image/*" />
+    </intent>
+    <intent>
+      <action android:name="com.google.android.gms.provider.action.PICK_IMAGES" />
     </intent>
     <intent>
       <action android:name="android.intent.action.OPEN_DOCUMENT" />
-      <data android:mimeType="image/*" />
+      <data android:scheme="content" android:mimeType="image/*" />
     </intent>
   </queries>
 </manifest>
