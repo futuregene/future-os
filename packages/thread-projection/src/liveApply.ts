@@ -629,9 +629,12 @@ function buildSegments(
     }
 
     if (slot.type === "thinking") {
-      if (slot.text.trim()) {
-        segments.push({ kind: "thinking", id: `thinking_${index}`, text: slot.text });
-      }
+      // A reasoning block is shown from its boundary alone. Under the lean feed
+      // the deltas never arrive, so an empty slot is the normal case there and
+      // must still produce the row — it is the only indication that the model
+      // reasoned at all. (`text` stays for the full feed, which still renders
+      // the body when the row is expanded.)
+      segments.push({ kind: "thinking", id: `thinking_${index}`, text: slot.text });
       index += 1;
       continue;
     }
@@ -840,6 +843,18 @@ function hasToolError(payload: unknown, command: string | undefined) {
   const error = stringValue(payload.error) ?? stringValue(payload.errorText);
   if (error?.trim())
     return true;
+  // A lean feed does not carry the captured output, so the agent's structured
+  // outcome is the whole signal: a non-zero exit code is a failure, with the
+  // same soft-fail exemption the footer path applies. `is_soft_fail` is the
+  // agent's own verdict (it had the command too); it only ever exempts.
+  const structured = numberValue(payload.exit_code) ?? numberValue(payload.exitCode);
+  if (structured !== undefined) {
+    if (structured === 0)
+      return false;
+    if (payload.is_soft_fail === true || payload.isSoftFail === true)
+      return false;
+    return !isSoftExit(structured, command);
+  }
   // A shell command that runs is returned as a *successful* tool result (no
   // error field) with the exit code in a footer line at the end of the output
   // ("[exit: N]"). Treat a non-zero code as a failure so the row isn’t
@@ -876,4 +891,8 @@ export function isSoftExit(exitCode: number, command: string | undefined) {
 
 function stringValue(value: unknown) {
   return typeof value === "string" ? value : undefined;
+}
+
+function numberValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

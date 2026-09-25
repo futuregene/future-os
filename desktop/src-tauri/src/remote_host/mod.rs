@@ -4,6 +4,7 @@ pub(crate) mod availability;
 pub(crate) mod business;
 pub(crate) mod catalog;
 pub(crate) mod files;
+pub(crate) mod lean;
 pub(crate) mod pairing;
 mod read_pages;
 mod session_files;

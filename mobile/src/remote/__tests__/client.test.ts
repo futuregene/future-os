@@ -533,8 +533,13 @@ describe("RemoteClient connection handoff", () => {
     expect(declaration?.sessionId).toBe("handshake");
     expect(declaration?.command).toEqual({
       type: "secure_ready",
-      features: ["event_coalescing_v1", "reply_gzip_v1"],
+      features: ["event_coalescing_v1", "reply_gzip_v1", "lean_events_v1"],
     });
+    // Each declared capability has to stay truthful for this build, or the
+    // declaration must be dropped with it. The lean feed's three requirements
+    // are asserted in the projection tests: a reasoning row survives with no
+    // text, a tool target comes from `tool_start`, and a non-zero `exit_code`
+    // with no output still fails the row.
     // `reply_gzip_v1` is only truthful while the decoder sniffs the gzip magic.
     // If this ever stops holding, the declaration above must be removed too.
     const compressed = gzipSync(new TextEncoder().encode(JSON.stringify({ ok: true })));

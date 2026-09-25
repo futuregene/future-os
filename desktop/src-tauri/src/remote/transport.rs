@@ -36,6 +36,7 @@ pub(super) async fn build_transport(
     // detection and would fail to parse a compressed reply, so the permission
     // must not outlive the connection that asked for it.
     handshake.gzip_replies.store(false, Ordering::Release);
+    crate::remote_host::lean::set_enabled(false);
     let event_task =
         spawn_secure_event_publisher(client.clone(), event_rx, handshake.secure.clone(), coalesce);
     candidate_tasks.track(&event_task);

@@ -328,6 +328,34 @@ still fills missing details from the durable journal. The platform API, JWT
 scope and Agent authority are unchanged; Desktop-to-broker legacy publication
 is retained, while irrelevant detailed delivery to the phone is avoided.
 
+**Lean event content (2026-09-26):** a phone that declares `lean_events_v1`
+receives the same event lane with the content it never renders removed. Measured
+on the three heaviest completed runs, a run costs 67-77 MB raw / 4.4-4.7 MB
+coalesced without the declaration, and 0.9-1.4 MB raw / 0.5-0.9 MB coalesced
+with it.
+
+| Event | Without the declaration | With it |
+| --- | --- | --- |
+| `thinking_delta`, `tool_delta`, `toolcall_delta` | per-token content | not published |
+| `tool_end` / `tool_result` | plus the captured output | output dropped; `exit_code`, `is_soft_fail`, `target_path`, `error` kept |
+| `run_snapshot` | plus folded `snapshotEvents` | array dropped; the client only uses this event as a resync signal |
+
+Only those named types are touched; every other event is forwarded
+byte-for-byte, so a future type cannot be silently reshaped. Three properties
+make the removal safe rather than lossy: `thinking_start`/`thinking_end` alone
+open and close a reasoning row, a tool's target already rides `tool_start`'s
+complete `tool_args`, and a tool's outcome is on `tool_end` as structured fields.
+The client therefore reads `exit_code` instead of parsing an `[exit: N]` footer
+out of the output — which is why an older client must not be sent this feed, and
+why the flag is cleared on every new connection rather than latched.
+
+The durable replay path is rewritten to match (`get_events_since`, the snapshot
+bootstrap). There the page's cursor fields are computed **before** the rewrite:
+dropping an event must not move `nextSinceIdx`, or a client that resumes from it
+would re-fetch a range whose events are always dropped. The folded projection
+riding a replay page keeps its events and their `idx` — both the desktop and the
+client reject an empty or reordered list — so only their text is blanked.
+
 **Idle catalog traffic (2026-09-25):** catalog snapshots are published only when
 content changes. There is no periodic re-send: the presence heartbeat carries
 `catalogVersion` (`{epoch, sessions, workspaces}`), and a client whose applied

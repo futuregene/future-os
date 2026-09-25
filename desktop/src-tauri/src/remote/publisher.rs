@@ -106,13 +106,24 @@ pub fn publish_event(
         }
         return;
     }
+    // Lean feed: reasoning and streamed tool arguments never reach the lane.
+    // Dropping here (rather than later in the drain) keeps the queue and the
+    // coalescer from ever holding them.
+    let data = if crate::remote_host::lean::enabled() {
+        match crate::remote_host::lean::lean_event_data(event_type, data) {
+            Some(data) => data,
+            None => return,
+        }
+    } else {
+        std::borrow::Cow::Borrowed(data)
+    };
     // Guard the NATS payload cap: an oversized event is published with a
     // truncated `data` marker (type/runId/idx preserved) rather than dropped,
     // so the client's dedup cursor doesn't get a permanent hole.
     let body = build_event_body(
         session_id,
         event_type,
-        data,
+        &data,
         run_id,
         idx,
         epoch,

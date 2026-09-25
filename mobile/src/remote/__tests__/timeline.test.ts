@@ -1159,6 +1159,144 @@ describe("shared-projection semantic flags", () => {
     expect(reply.failed).toBeUndefined();
   });
 
+  /**
+   * The lean feed (declared as `lean_events_v1`) sends no captured tool output,
+   * so the `[exit: N]` footer these two tests above rely on is simply absent.
+   * The agent's structured outcome has to carry the verdict on its own —
+   * otherwise every failing command would render as completed.
+   */
+  test("a structured exit code fails the row with no output text at all", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "tool_start",
+      data: JSON.stringify({
+        tool_id: "t1",
+        tool_name: "shell",
+        tool_args: { command: "future nosuch" },
+      }),
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_end",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "shell", exit_code: 127 }),
+      runId: "run-1",
+      idx: 1,
+    });
+    const reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    const toolSegment = reply.segments?.find(segment => segment.kind === "tool");
+    expect(toolSegment && toolSegment.kind === "tool" && toolSegment.tool.status).toBe("failed");
+  });
+
+  test("a zero structured exit code completes the row", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "tool_start",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "shell", tool_args: { command: "ls" } }),
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_end",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "shell", exit_code: 0 }),
+      runId: "run-1",
+      idx: 1,
+    });
+    const reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    const toolSegment = reply.segments?.find(segment => segment.kind === "tool");
+    expect(toolSegment && toolSegment.kind === "tool" && toolSegment.tool.status).toBe("completed");
+  });
+
+  test("the soft-fail exemption survives the structured path", () => {
+    const run = (end: Record<string, unknown>) => {
+      let state = applyStreamEvent(emptyTimeline(), {
+        type: "tool_start",
+        data: JSON.stringify({
+          tool_id: "t1",
+          tool_name: "shell",
+          tool_args: { command: "grep foo file" },
+        }),
+        runId: "run-1",
+        idx: 0,
+      });
+      state = applyStreamEvent(state, {
+        type: "tool_end",
+        data: JSON.stringify({ tool_id: "t1", tool_name: "shell", ...end }),
+        runId: "run-1",
+        idx: 1,
+      });
+      const reply = state.items.find(item => item.kind === "message");
+      if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+      const segment = reply.segments?.find(candidate => candidate.kind === "tool");
+      return segment && segment.kind === "tool" ? segment.tool.status : undefined;
+    };
+    // Bare `grep` exits 1 when it simply finds nothing — not a failure.
+    expect(run({ exit_code: 1 })).toBe("completed");
+    // Any other code, or a piped command whose code is ambiguous, is a failure.
+    expect(run({ exit_code: 2 })).toBe("failed");
+    // The agent's own verdict is honoured when it is present.
+    expect(run({ exit_code: 1, is_soft_fail: true })).toBe("completed");
+  });
+
+  /**
+   * The other two halves of the lean contract: a reasoning row has to exist from
+   * its boundary alone (the deltas never arrive), and a tool's target has to come
+   * from `tool_start`'s complete arguments, since `tool_delta` is not sent.
+   */
+  test("a reasoning row is projected from its boundary alone", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "thinking_start",
+      data: JSON.stringify({ block_id: "b1" }),
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "thinking_end",
+      data: JSON.stringify({ block_id: "b1" }),
+      runId: "run-1",
+      idx: 1,
+    });
+    state = applyStreamEvent(state, {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "answer" }),
+      runId: "run-1",
+      idx: 2,
+    });
+    const reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.segments?.map(segment => segment.kind)).toEqual(["thinking", "text"]);
+    const thinking = reply.segments?.[0];
+    expect(thinking && thinking.kind === "thinking" && thinking.text).toBe("");
+  });
+
+  test("a tool target comes from tool_start, with no argument stream", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "tool_start",
+      data: JSON.stringify({
+        tool_id: "t1",
+        tool_name: "shell",
+        tool_args: { command: "ls -la /tmp" },
+      }),
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_end",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "shell", exit_code: 0 }),
+      runId: "run-1",
+      idx: 1,
+    });
+    const reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    const toolSegment = reply.segments?.find(segment => segment.kind === "tool");
+    if (!toolSegment || toolSegment.kind !== "tool") throw new Error("tool row missing");
+    // The mobile bubble renders the row's text from `detail`; the projection
+    // takes it from `tool_start`'s complete `tool_args`, which is why dropping
+    // the argument stream does not cost the row its label.
+    expect(toolSegment.tool.detail).toBe("ls -la /tmp");
+    expect(toolSegment.tool.status).toBe("completed");
+  });
+
   test("a cancelled run marks the bubble stopped (G15)", () => {
     let state = applyStreamEvent(emptyTimeline(), {
       type: "text_chunk",
