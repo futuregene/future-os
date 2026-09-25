@@ -1765,7 +1765,10 @@ mod flow_tests {
 
         // The same batch up to the cap is accepted.
         let ten: Vec<UploadReference> = (0..MAX_IMAGES).map(|_| make_image()).collect();
-        assert_eq!(claim_uploads(&ten, "thread-img-10").unwrap().len(), MAX_IMAGES);
+        assert_eq!(
+            claim_uploads(&ten, "thread-img-10").unwrap().len(),
+            MAX_IMAGES
+        );
 
         // A non-image payload claiming to be an image fails validation.
         let bogus = init_upload("pic.png", "", "image/png", "image", 4, 4)
