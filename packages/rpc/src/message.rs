@@ -70,17 +70,35 @@ pub struct MessageRun {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// One display-projected journal entry.
+///
+/// The optional fields carry `skip_serializing_if`, matching [`MessageBlock`]:
+/// otherwise an absent field is written as `null`, and a history page is mostly
+/// absent optionals — measured on the three heaviest real sessions, those
+/// `null`s are 2.4-3.0% of the page the phone downloads, for a field set that
+/// carries no information when unset. Every consumer reads them through an
+/// optional (`entry.usage?.outputTokens`, `obj.get("checkpoint")`), so an
+/// omitted field and an explicit `null` are indistinguishable to it.
+///
+/// Deserialization is unchanged: a peer or cached page that still spells these
+/// out as `null` decodes exactly as before.
 pub struct SessionEntryPayload {
     pub id: String,
     pub kind: String,
     pub role: String,
     pub created_at_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
     pub blocks: Vec<MessageBlock>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<MessageUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub run: Option<MessageRun>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub session: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<Value>,
 }
 
