@@ -607,3 +607,63 @@ test("cancelling an iOS dismissal handoff prevents its queued preview", async ()
     Object.defineProperty(Platform, "OS", { configurable: true, value: platform });
   }
 });
+
+describe("nested previews", () => {
+  const cachedRemote = () => ({
+    cachedAttachment: jest.fn(() => ({ info, file })),
+    prepareAttachment: jest.fn(async () => info),
+    downloadAttachment: jest.fn(),
+  });
+  const paths = (h: { api: { previews: { attachment: { path: string } }[] } }) =>
+    h.api.previews.map(entry => entry.attachment.path);
+
+  test("a link followed from a preview keeps the document that linked it", async () => {
+    const h = await mount(cachedRemote());
+    await act(async () => { await h.api.openFileLink("/notes.txt"); });
+    expect(paths(h)).toEqual(["/notes.txt"]);
+
+    await act(async () => { await h.api.openLinkedFile("/other.txt"); });
+    expect(paths(h)).toEqual(["/notes.txt", "/other.txt"]);
+    expect(h.api.preview?.attachment.path).toBe("/other.txt");
+
+    // Back is reversible, and the outermost document is not popped away by it.
+    act(() => h.api.popPreview());
+    expect(paths(h)).toEqual(["/notes.txt"]);
+    act(() => h.api.popPreview());
+    expect(paths(h)).toEqual(["/notes.txt"]);
+    act(() => h.api.closePreview());
+    expect(h.api.previews).toEqual([]);
+    act(() => h.tree.unmount());
+  });
+
+  test("opening from the conversation starts a new stack instead of stacking", async () => {
+    const h = await mount(cachedRemote());
+    await act(async () => { await h.api.openFileLink("/notes.txt"); });
+    await act(async () => { await h.api.openLinkedFile("/other.txt"); });
+    await act(async () => { await h.api.openFileLink("/third.txt"); });
+    expect(paths(h)).toEqual(["/third.txt"]);
+    act(() => h.tree.unmount());
+  });
+
+  test("an action that needs the whole surface gone clears every layer first", async () => {
+    const platform = Platform.OS;
+    Platform.OS = "android";
+    jest.useFakeTimers();
+    const h = await mount(cachedRemote());
+    try {
+      await act(async () => { await h.api.openFileLink("/notes.txt"); });
+      await act(async () => { await h.api.openLinkedFile("/other.txt"); });
+      const action = jest.fn();
+      act(() => h.api.dismissPreviewThen(action));
+      expect(h.api.previews).toEqual([]);
+      // The action sheet is a second Modal: it waits for this one to be gone.
+      expect(action).not.toHaveBeenCalled();
+      act(() => { jest.runOnlyPendingTimers(); });
+      expect(action).toHaveBeenCalledTimes(1);
+    } finally {
+      act(() => h.tree.unmount());
+      jest.useRealTimers();
+      Platform.OS = platform;
+    }
+  });
+});
