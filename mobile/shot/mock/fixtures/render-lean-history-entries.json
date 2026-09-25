@@ -22,9 +22,6 @@
         "text": "先看看工作区里有什么。"
       },
       {
-        "arguments": {
-          "command": "future nosuch-subcommand --verbose"
-        },
         "kind": "tool_call",
         "name": "shell",
         "toolCallId": "htc_1"
@@ -58,9 +55,6 @@
         "text": "对比表写好了。"
       },
       {
-        "arguments": {
-          "command": "grep -c dopamine notes/compare-table.md"
-        },
         "kind": "tool_call",
         "name": "shell",
         "toolCallId": "htc_4"

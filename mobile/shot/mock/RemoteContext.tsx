@@ -30,7 +30,7 @@ import type {
 import { createContext, useContext, useMemo, useState } from "react";
 import { connectionPresentation as buildConnectionPresentation } from "../../src/remote/connectionPresentation";
 import { applyStreamEvents, timelineFromEntries } from "../../src/remote/projection";
-import { leanRenderMode, leanRenderTimeline } from "./leanRender";
+import { leanRenderMode, leanRenderTimeline, leanTargetForToolCall } from "./leanRender";
 import {
   compactResumeEntries,
   demoCredentials,
@@ -236,6 +236,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setDraft(false);
       setSelectedSessionId("");
     },
+    // A lean history row with no target fetches its command on open: the app
+    // goes through the bridge (`get_tool_call_args`), the harness answers from
+    // the full-feed fixture with the shipping target derivation.
+    resolveToolCallTarget: async (toolCallId: string) => leanTargetForToolCall(toolCallId),
     switchDesktop: async (id: string) => setDesktopId(id),
     setSessionPinned: async (sessionId: string, _threadId: string, pinned: boolean) =>
       setSessionPins(current => ({ ...current, [sessionId]: pinned })),

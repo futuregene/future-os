@@ -27,6 +27,8 @@ pub(crate) struct IncomingCmd {
     // get_messages pagination (NATS payload-limit guard)
     pub(crate) offset: i64,
     pub(crate) limit: i64,
+    // get_tool_call_args: the call whose arguments a lean client asks back.
+    pub(crate) tool_call_id: String,
     // get_session_entries backward cursor (mobile lazy history)
     pub(crate) before: Option<i64>,
     // set_model / set_thinking_level
@@ -103,6 +105,7 @@ impl Default for IncomingCmd {
             since_idx: -1,
             offset: 0,
             limit: 0,
+            tool_call_id: String::new(),
             before: None,
             model_id: String::new(),
             provider_id: String::new(),

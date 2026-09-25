@@ -282,6 +282,10 @@ function foldAssistantEntry(acc: ExchangeAcc, entry: SessionEntry) {
         status: "completed",
         target,
         detail: target,
+        // Identity for a row whose target is absent: a lean page omits a shell
+        // call's arguments, and the row fetches them when it is opened.
+        ...(block.toolCallId ? { toolCallId: block.toolCallId } : {}),
+        ...(entry.runId ? { runId: entry.runId } : {}),
       };
       acc.segments.push({ id, kind: "activity", item });
       acc.pendingTools.push(item);
