@@ -689,11 +689,21 @@ fn get_session_entries_renders_roles_and_run_stats() {
     );
     assistant.thinking = "deep thought".to_string();
     let mut tool = crate::session::SessionEntry::new_tool("call-1", "tool output");
-    tool.content = Some(serde_json::json!([{
+    tool.content = Some(serde_json::json!( [{
         "type": "tool_result",
         "tool_call_id": "call-1",
         "content": "tool output",
         "is_error": false
+    }]));
+    // A failing call alongside it: `is_error: true` is the only value that says
+    // anything, so it must survive where `false` is omitted. Without this the
+    // success assertion below would also pass if the flag were dropped always.
+    let mut failing_tool = crate::session::SessionEntry::new_tool("call-2", "boom");
+    failing_tool.content = Some(serde_json::json!( [{
+        "type": "tool_result",
+        "tool_call_id": "call-2",
+        "content": "boom",
+        "is_error": true
     }]));
     let terminal = crate::session::SessionEntry::run_terminal(
         "run-1",
@@ -711,7 +721,7 @@ fn get_session_entries_renders_roles_and_run_stats() {
         &state,
         "default",
         "mock",
-        vec![info_old, user, assistant, tool, terminal, info_new],
+        vec![info_old, user, assistant, tool, failing_tool, terminal, info_new],
     );
 
     let resp = parse_response(&handle_command_internal(
@@ -720,8 +730,8 @@ fn get_session_entries_renders_roles_and_run_stats() {
     ));
     assert_eq!(resp["success"], true);
     let entries = resp["data"]["entries"].as_array().unwrap();
-    // session_info (deduped to one), user, assistant, tool.
-    assert_eq!(entries.len(), 4);
+    // session_info (deduped to one), user, assistant, tool, failing tool.
+    assert_eq!(entries.len(), 5);
     let info = &entries[0];
     assert_eq!(info["session"]["sessionName"], "fresh");
     let user_entry = &entries[1];
@@ -736,7 +746,17 @@ fn get_session_entries_renders_roles_and_run_stats() {
     let tool_entry = &entries[3];
     assert_eq!(tool_entry["blocks"][0]["text"], "tool output");
     assert_eq!(tool_entry["blocks"][0]["toolCallId"], "call-1");
-    assert_eq!(tool_entry["blocks"][0]["isError"], false);
+    // A successful result carries no flag: every consumer reads an absent
+    // `isError` as "not an error", so writing `false` on each of them was dead
+    // weight. The failing call below is what keeps that from being vacuous.
+    assert!(
+        tool_entry["blocks"][0].get("isError").is_none(),
+        "a successful tool result sends no isError: {}",
+        tool_entry["blocks"][0]
+    );
+    let failing_entry = &entries[4];
+    assert_eq!(failing_entry["blocks"][0]["toolCallId"], "call-2");
+    assert_eq!(failing_entry["blocks"][0]["isError"], true);
 }
 
 #[test]
