@@ -498,10 +498,47 @@ mod measure_phone_page_tests {
         );
 
         let source = entries.as_array().map(Vec::len).unwrap_or(0);
-        // `saved` is the trim's own effect, measured on the same entries without
-        // the budget — the only comparison in which both pages hold the same
-        // content. The budgeted pair is reported beside it as what each client
-        // actually receives.
+        // The wire size a phone actually pays: the reply body the command loop
+        // builds, run through the shipping encoder with the phone's own
+        // declaration (`reply_gzip_v1`). `wireBytes` above counts plain JSON +
+        // crypto overhead, which is what an *undeclared* client pays on small
+        // pages; a page at or above 32 KiB goes out gzipped.
+        let encode = |lean: bool, enforce: bool| {
+            let mut data = json!({ "entries": entries.clone() });
+            if lean {
+                if let Some(list) = data.get_mut("entries") {
+                    crate::remote_host::lean::lean_entries(list);
+                }
+            }
+            let page = prepare_backward_entries_page_with_cap(
+                "measure", data, /* cap_item_content */ false, enforce,
+            );
+            let body = json!({ "type": "response", "success": true, "data": page, "error": null });
+            let plain = crate::remote::commands::encode_reply_payload_with_gzip(
+                &body, /* gzip */ false,
+            );
+            let gzipped = crate::remote::commands::encode_reply_payload_with_gzip(
+                &body, /* gzip */ true,
+            );
+            // Over the decoded-reply limit the encoder answers with an error
+            // body, not the page — so a size read off it would be nonsense. That
+            // is reachable only without the budget (an untrimmed 3-exchange page
+            // can exceed 1 MiB), which no client configuration asks for; it is
+            // measured to value the trim, and is reported as unavailable here.
+            let over_limit = serde_json::to_vec(&body)
+                .map(|raw| raw.len() > future_remote_crypto::MAX_PLAINTEXT)
+                .unwrap_or(true);
+            (plain.len(), gzipped.len(), over_limit)
+        };
+        let (lean_plain, lean_gzip, _) = encode(true, true);
+        // The trim's own value *after* compression, on the same entries: what it
+        // removes (tool output, reasoning, commands, file bodies) is the part
+        // that compresses worst, so its post-gzip share is the honest one.
+        let (_, untrimmed_gzip, untrimmed_over) = encode(false, false);
+        let (_, trimmed_gzip, _) = encode(true, false);
+        let saved_gzip =
+            (!untrimmed_over).then(|| 1.0 - (trimmed_gzip as f64 / untrimmed_gzip.max(1) as f64));
+
         println!(
             "VERIFY_E2E_PHONE_PAGE {}",
             json!({
@@ -509,6 +546,11 @@ mod measure_phone_page_tests {
                 "plainBytes": plain_wire,
                 "trimmedBytes": trimmed_wire,
                 "saved": 1.0 - (trimmed_wire as f64 / plain_wire.max(1) as f64),
+                "untrimmedGzip": untrimmed_gzip,
+                "trimmedGzip": trimmed_gzip,
+                "savedGzip": saved_gzip,
+                "leanReplyPlain": lean_plain,
+                "leanReplyGzip": lean_gzip,
                 "undeclared": { "entries": full_entries, "wireBytes": full_wire },
                 "declared": { "entries": lean_count, "wireBytes": lean_wire },
                 "declaredWhole": lean_count == source,
