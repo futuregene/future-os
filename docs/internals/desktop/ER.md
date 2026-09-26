@@ -159,7 +159,7 @@ Field draft:
 | `pinned` | pinned or not |
 | `readonly` | read-only or not |
 | `agent_session_id` | GUI Thread ↔ Agent SQLite session mapping; non-null values globally unique, one Agent session binds at most one Desktop Thread; queried via RPC, no cross-database foreign key (`store/schema.rs`) |
-| `parent_session_id` | local projection of the parent Agent session ID; null means a root conversation. Written by startup sync, runtime discovery, and forks; no foreign key — a parent session may be imported later than its child or already deleted. The Agent remains the relation source of truth. |
+| `parent_session_id` | local projection of the parent Agent session ID; null means a root conversation. Written by startup sync, runtime discovery, and forks; no foreign key — a parent session may be imported later than its child or already deleted. The Agent remains the relation source of truth. A user delete follows this lineage recursively (`store::threads::delete_thread_tree`); the orphan sweep and the reaction to an externally deleted session delete one thread and keep surviving children. |
 | `asset_root_id` | stable owner of shared attachment originals/thumbnails; forks inherit it so deleting an ancestor cannot invalidate a child's history (released migration `v1.1.9-thread-asset-root`) |
 | `last_message_at` | most recent message time |
 | `last_opened_at` | most recent open time |

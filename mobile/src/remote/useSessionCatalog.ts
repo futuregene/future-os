@@ -27,6 +27,27 @@ const INITIAL_SYNC: CatalogSyncState = {
 const MODEL_RECOVERY_DELAYS_MS = [1_000, 5_000, 15_000, 30_000] as const;
 
 /**
+ * `root` plus every session below it in the local lineage. Cycle-safe: a
+ * malformed parent loop ends once no session outside the set chains to it.
+ * Pinned sessions are included — the pin moves a child in the sidebar, not in
+ * the lineage the desktop deletes by.
+ */
+function subtreeSessionIds(sessions: RemoteSession[], root: string): Set<string> {
+  const removed = new Set([root]);
+  for (let grown = true; grown;) {
+    grown = false;
+    for (const session of sessions) {
+      if (removed.has(session.sessionId)) continue;
+      if (session.parentSessionId && removed.has(session.parentSessionId)) {
+        removed.add(session.sessionId);
+        grown = true;
+      }
+    }
+  }
+  return removed;
+}
+
+/**
  * The desktop's control-plane catalogue — sessions, workspaces, the model
  * list, approval settings — and the unread/rename bookkeeping that rides on
  * top of it. Isolated from connection lifecycle and the per-session timeline
@@ -472,9 +493,12 @@ export function useSessionCatalog(
   );
 
   /**
-   * Delete a session on the desktop and drop it locally. Returns true when the
-   * deleted session was the one currently selected, so the caller can close the
-   * conversation (a navigation concern the catalogue doesn't own).
+   * Delete a session on the desktop and drop it locally. The desktop delete is
+   * recursive — a conversation's descendants go with it — so the local
+   * catalogue drops the whole subtree rather than keeping rows the desktop no
+   * longer knows about. Returns true when the deleted subtree contained the
+   * selected session, so the caller can close the conversation (a navigation
+   * concern the catalogue doesn't own).
    */
   const deleteSession = useCallback(
     async (sessionId: string, threadId: string): Promise<boolean> => {
@@ -484,8 +508,9 @@ export function useSessionCatalog(
       await client.request({ type: "delete_session", sessionId, threadId }, sessionId);
       if (clientRef.current !== client || catalogEpoch.current !== epoch) return false;
       revisions.current.sessions += 1;
-      setSessions((current) => current.filter((session) => session.sessionId !== sessionId));
-      return selectedRef.current === sessionId;
+      const removed = subtreeSessionIds(sessionsRef.current, sessionId);
+      setSessions((current) => current.filter((session) => !removed.has(session.sessionId)));
+      return removed.has(selectedRef.current);
     },
     [clientRef, selectedRef, setSessions],
   );
