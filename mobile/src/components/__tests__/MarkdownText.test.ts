@@ -64,31 +64,43 @@ describe("MarkdownText layout and fidelity", () => {
       Array.from({ length: 10 }, (_, i) => `| ${i + 1} | repo-${i + 1} | ${100 - i} |\n`).join("");
     const root = render(text);
     expect(root.findAllByType(FlatList)).toHaveLength(0);
+    // Under the cutoff a table is complete: nothing waits behind a control.
+    expect(root.findAll(node => node.props.accessibilityRole === "button"
+      && String(node.props.accessibilityLabel).startsWith("chat.tableRows"))).toHaveLength(0);
     const output = JSON.stringify(renderer.toJSON());
     expect(output).toContain("repo-9");
     expect(output).toContain("repo-10");
   });
 
-  test("a table past the inline limit keeps its bounded viewport and says how many rows it holds", () => {
+  test("a table past the inline limit holds its tail back until the reader asks for it", () => {
     const text = "| A | B |\n|---|---|\n" + Array.from({ length: 25 }, (_, i) => `| ${i} | value |\n`).join("");
     const root = render(text);
-    const list = root.findByType(FlatList);
-    expect(list.props.data).toHaveLength(25);
-    // Rows past the viewport are still reachable, but only if the reader is told.
-    expect(root.findAllByType(Text).map(node => node.props.children)).toContain("chat.tableRowsScrolled:25");
+    // No inner viewport: the list around the table takes the vertical pan, so a
+    // nested one would hide rows the reader cannot reach.
+    expect(root.findAllByType(FlatList)).toHaveLength(0);
+    const painted = () => root.findAllByType(Text).map(node => paintedText(node));
+    expect(painted()).not.toContain("24");
+    const open = root.findAll(node => node.props.accessibilityLabel === "chat.tableRowsExpand:25" && typeof node.props.onPress === "function")[0]!;
+    act(() => open.props.onPress());
+    expect(painted()).toContain("24");
+    const close = root.findAll(node => node.props.accessibilityLabel === "chat.tableRowsCollapse:25" && typeof node.props.onPress === "function")[0]!;
+    act(() => close.props.onPress());
+    expect(painted()).not.toContain("24");
   });
 
-  test("a 5000-row table mounts a bounded internal viewport", () => {
+  test("a 5000-row table paints a bounded head and keeps its columns aligned", () => {
     const text = "| A | B |\n|---|---|\n" + Array.from({ length: 5000 }, (_, i) => `| ${i} | value |\n`).join("");
     const root = render(text);
-    const list = root.findByType(FlatList);
-    expect(list.props.data).toHaveLength(5000);
     expect(root.findAllByType(Text).length).toBeLessThan(100);
     const headerCells = root.findByType(ScrollView).findAllByType(View)
       .filter(node => StyleSheet.flatten(node.props.style)?.paddingHorizontal === 8).slice(0, 2);
     expect(headerCells).toHaveLength(2);
-    expect(StyleSheet.flatten(list.props.style).width).toBe(headerCells.reduce((sum, cell) =>
-      sum + StyleSheet.flatten(cell.props.style).width, 0));
+    // The body rows are the table's own children, so they carry the header's
+    // widths rather than a viewport's.
+    const widths = root.findByType(ScrollView).findAllByType(View)
+      .filter(node => typeof StyleSheet.flatten(node.props.style)?.width === "number")
+      .map(node => StyleSheet.flatten(node.props.style).width);
+    expect(widths.slice(2, 4)).toEqual(widths.slice(0, 2));
   });
 
   test("large code previews a bounded wrapped head and expands to the whole source", () => {

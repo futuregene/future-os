@@ -28,7 +28,7 @@ Typing coalesces at 250 ms with a 2-second maximum wait during continuous input.
 
 ### Giant blocks
 
-Tables beyond a small initial row window scroll inside their own viewport instead of mounting every row. Long code blocks stay bounded by wrapping (never a horizontal scroll region: a phone-width block is what keeps a long CJK line readable) and by collapsing to a clipped 16-line preview whose toggle paints every bounded chunk inline, so the tail is one tap away rather than hidden behind a nested vertical viewport that loses the gesture to the message list. Code chunks are bounded by characters and line count, including minified single lines and large runs of empty lines; UTF-16 surrogate pairs remain intact. Continuation markers are presentation only and full-source copy preserves the original code.
+Tables beyond a small initial row window paint that many rows and keep the rest behind an explicit control rather than mounting every row: a nested vertical viewport loses the pan gesture to the message list, the same failure the long code block below was fixed for. Long code blocks stay bounded by wrapping (never a horizontal scroll region: a phone-width block is what keeps a long CJK line readable) and by collapsing to a clipped 16-line preview whose toggle paints every bounded chunk inline, so the tail is one tap away rather than hidden behind a nested vertical viewport that loses the gesture to the message list. Code chunks are bounded by characters and line count, including minified single lines and large runs of empty lines; UTF-16 surrogate pairs remain intact. Continuation markers are presentation only and full-source copy preserves the original code.
 
 ### Negotiated detailed-event interest
 
