@@ -28,6 +28,9 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[2]
 PROTO = ROOT / "packages" / "rpc" / "proto"
 SOCKET = Path.home() / ".future" / "run" / "agent.sock"
+# The phone's backward cursor for "start at the newest" (mobile sends the same
+# sentinel through `latestTimelineWindow`).
+NEWEST_PAGE_CURSOR = 9_007_199_254_740_991
 
 ENTRY_FIELDS = ["id", "kind", "role", "createdAtMs", "runId", "blocks",
                 "metadata", "usage", "run", "session", "checkpoint"]
@@ -74,6 +77,39 @@ def to_payload_shape(proto_entry: dict) -> dict:
         "checkpoint": parse_field(proto_entry.get("checkpointJson")),
     }
     return {k: source[k] for k in ENTRY_FIELDS if source[k] is not None}
+
+
+def dump_phone_page(session: str, path: Path, exchanges: int) -> tuple[int, int]:
+    """Dump the page the phone actually asks for.
+
+    Not the same as `dump`: the phone sends `before` (a backward cursor) and
+    `limit`, so the *agent* selects the newest `exchanges` user exchanges before
+    the bridge ever sees the page. Dumping the whole session instead measures
+    whatever the 512 KiB budget happens to keep from it, which differs whenever
+    the phone's own page would have fit.
+
+    Returns `(entryCount, bytes)` of the raw page for the report's context.
+    """
+    out = subprocess.run(
+        ["grpcurl", "-plaintext", "-max-msg-sz", "268435456",
+         "-import-path", str(PROTO), "-proto", "future.proto",
+         "-d", json.dumps({"id": "e1", "type": "get_session_entries",
+                           "session_id": session,
+                           "before": NEWEST_PAGE_CURSOR,
+                           "limit": exchanges}),
+         f"unix://{SOCKET}", "proto.FutureAgent/ExecuteCommand"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    entries = json.loads(out)["payload"]["getSessionEntries"]["entries"]
+    if not entries:
+        raise SystemExit("the phone page dump is empty; the cursor or limit is wrong")
+    roles = {entry.get("role") for entry in entries}
+    if "user" not in roles:
+        raise SystemExit(f"the phone page has no user entry (roles={roles}); "
+                         "backward paging would not have selected an exchange")
+    payload = [to_payload_shape(entry) for entry in entries]
+    path.write_text(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
+    return len(payload), len(json.dumps(payload, separators=(",", ":")))
 
 
 def dump(session: str, path: Path) -> None:
@@ -126,13 +162,23 @@ def main() -> int:
     parser.add_argument("--sessions", type=int, default=3)
     parser.add_argument("--pages", type=int, default=0,
                         help="measure in pages of this many user exchanges instead of whole sessions")
+    parser.add_argument("--phone-page", type=int, metavar="N", default=0,
+                        help="measure the page the phone requests (newest N user "
+                             "exchanges) through the shipping trim and 512 KiB budget")
+    parser.add_argument("--session", action="append", default=[], metavar="ID",
+                        help="measure this session id (repeatable); overrides --sessions")
     args = parser.parse_args()
 
     source = Path.home() / ".future" / "agent" / "agent.db"
     with sqlite3.connect(source.as_uri() + "?mode=ro", uri=True) as db:
-        rows = db.execute(
-            "SELECT session_id, count(*) n FROM entries GROUP BY 1 ORDER BY n DESC LIMIT ?",
-            (args.sessions,)).fetchall()
+        if args.session:
+            rows = [(session, db.execute("SELECT count(*) FROM entries WHERE session_id=?",
+                                         (session,)).fetchone()[0])
+                    for session in args.session]
+        else:
+            rows = db.execute(
+                "SELECT session_id, count(*) n FROM entries GROUP BY 1 ORDER BY n DESC LIMIT ?",
+                (args.sessions,)).fetchall()
     if not rows:
         raise SystemExit("no sessions in the agent database")
 
@@ -151,6 +197,33 @@ def main() -> int:
     print(f"{'session':<9}{'entries':>9}{'before MiB':>12}{'after MiB':>11}{'saved':>8}"
           f"   blocks (count)")
     for index, (session, _count) in enumerate(rows, 1):
+        if args.phone_page:
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
+                page_path = Path(handle.name)
+            try:
+                count, raw_bytes = dump_phone_page(session, page_path, args.phone_page)
+                result = subprocess.run(
+                    [str(binary),
+                     "remote_host::business::wire_limits::measure_phone_page_tests::measure_phone_page",
+                     "--exact", "--ignored", "--nocapture", "--test-threads=1"],
+                    env={**os.environ, "VERIFY_E2E_PHONE_PAGE": str(page_path)},
+                    capture_output=True, text=True, check=True)
+                line = next(
+                    (row for row in result.stdout.splitlines()
+                     if "VERIFY_E2E_PHONE_PAGE " in row), None)
+                if line is None:
+                    print(f"top{index}: no measurement\n{result.stdout[-1500:]}")
+                    continue
+                data = json.loads(line[line.index("VERIFY_E2E_PHONE_PAGE ")
+                                       + len("VERIFY_E2E_PHONE_PAGE "):])
+                un, de = data["undeclared"], data["declared"]
+                print(f"top{index:<6}{count:>9}{raw_bytes/2**20:>12.2f}"
+                      f"{de['wireBytes']/2**20:>11.2f}{data['saved']*100:>7.1f}%"
+                      f"   page {count} -> {un['entries']}/{de['entries']} entries; "
+                      f"wire {un['wireBytes']} -> {de['wireBytes']}")
+            finally:
+                page_path.unlink(missing_ok=True)
+            continue
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
             entries_path = Path(handle.name)
         try:

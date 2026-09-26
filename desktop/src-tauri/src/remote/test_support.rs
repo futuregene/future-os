@@ -428,6 +428,48 @@ fn ok(value: Value) -> (bool, String, String) {
     (true, value.to_string(), String::new())
 }
 
+/// Mirror the Agent's backward paging over a stored session.
+///
+/// A measurement that ignores `before`/`limit` hands the bridge a whole session,
+/// and the bridge's 512 KiB budget then keeps *as many newest exchanges as fit* —
+/// which is not the page the phone asks for. The phone sends `before` (its
+/// backward cursor) plus `limit` user exchanges, so the page has to be selected
+/// here the way `agent::session::history_index::read_page` selects it: the newest
+/// `limit` user entries ending at the cursor. Without this the harness overstates
+/// a lean page several-fold (it fills the budget instead of stopping at the
+/// requested exchanges).
+fn paginate_backward(entries: Value, before: Option<i64>, limit: Option<i64>) -> Value {
+    let mut stored = entries
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let Some(before) = before else {
+        return json!({ "entries": stored });
+    };
+    let total = stored.len() as i64;
+    let end = before.clamp(0, total) as usize;
+    let count = limit.unwrap_or(10).clamp(1, 100) as usize;
+    let user_positions: Vec<usize> = stored
+        .iter()
+        .enumerate()
+        .take(end)
+        .filter(|(_, entry)| entry.get("role").and_then(Value::as_str) == Some("user"))
+        .map(|(index, _)| index)
+        .collect();
+    let start = if user_positions.len() >= count {
+        user_positions[user_positions.len() - count]
+    } else {
+        0
+    };
+    let page: Vec<Value> = stored.drain(start..end).collect();
+    json!({
+        "entries": page,
+        "hasMore": start > 0,
+        "nextOffset": start,
+    })
+}
+
 fn default_answer(
     cmd: &crate::agent_proto::RpcCommand,
     state: &mut MockAgentState,
@@ -534,7 +576,7 @@ fn default_answer(
                 .get(&cmd.session_id)
                 .cloned()
                 .unwrap_or_else(|| json!({ "entries": [] }));
-            ok(entries)
+            ok(paginate_backward(entries, cmd.before, cmd.limit))
         }
         // The lean phone's way back to a shell call's dropped `arguments`.
         // Answered from the same recorded entries `get_session_entries` serves,

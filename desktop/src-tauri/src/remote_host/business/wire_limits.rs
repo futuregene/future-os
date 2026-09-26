@@ -3,10 +3,12 @@ use serde_json::{json, Value};
 /// Reply budget for a `get_messages` page: comfortably under NATS's 1MB
 /// user-JWT payload limit, leaving headroom for the reply envelope.
 pub(crate) const MESSAGES_PAGE_BYTES: usize = 512 * 1024;
-/// Backward mobile history keeps the requested ten-exchange semantic maximum,
-/// with the same 512 KiB wire budget as other remote history pages. Complete
-/// oldest exchanges are deferred only when an unusually content-heavy ten-turn
-/// page would exceed that budget; a page never splits an exchange.
+/// Backward mobile history keeps the requested page of user exchanges, with the
+/// same 512 KiB wire budget as other remote history pages. Complete oldest
+/// exchanges are deferred only when an unusually content-heavy page would exceed
+/// that budget; a page never splits an exchange. (The phone asks for
+/// `HISTORY_PAGE_USER_EXCHANGES` = 3 of them; this comment used to say "ten",
+/// which was true before #607 lowered it.)
 pub(crate) const BACKWARD_HISTORY_PAGE_BYTES: usize = 512 * 1024;
 /// A single persisted message can embed a huge tool result; cap its content so
 /// one oversized message can't push a page past the payload limit on its own.
@@ -421,5 +423,70 @@ mod tests {
         assert_eq!(kept.len() % 2, 0);
         assert_eq!(bounded["nextOffset"], 100 + 12 - kept.len());
         assert_eq!(bounded["hasMore"], true);
+    }
+}
+
+#[cfg(test)]
+mod measure_phone_page_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// Measure a *phone page* through the shipping trim and page budget.
+    ///
+    /// The whole-session measurements size payloads a phone never reads: the
+    /// phone asks the agent for the newest `HISTORY_PAGE_USER_EXCHANGES`
+    /// exchanges (`before` + `limit`, agent-side paging) and only then meets the
+    /// bridge's trim and 512 KiB budget. The budget sheds whole oldest exchanges,
+    /// so applying it to a whole session yields "as many newest exchanges as fit
+    /// in 512 KiB" — which equals the phone's page only when that page already
+    /// exceeds the budget, and overstates it when the exchanges are small.
+    ///
+    /// Driven by `scripts/measure/measure-lean-history.py --phone-page`, which
+    /// dumps exactly that page. Trim and budget here are the shipping ones.
+    #[test]
+    #[ignore = "measurement: needs VERIFY_E2E_PHONE_PAGE"]
+    fn measure_phone_page() {
+        let path = std::env::var("VERIFY_E2E_PHONE_PAGE").expect("VERIFY_E2E_PHONE_PAGE");
+        let raw = std::fs::read_to_string(path).expect("phone page readable");
+        let entries: Value = serde_json::from_str(&raw).expect("phone page json");
+        let sized = |value: &Value| serde_json::to_vec(value).expect("serializes").len();
+
+        // The phone is a chunked reader (it reassembles `readChunk`s) and reads
+        // the newest page, so it does not pay the per-item content cap but does
+        // pay the byte budget.
+        let build = |lean: bool| {
+            let mut data = json!({ "entries": entries.clone() });
+            if lean {
+                if let Some(list) = data.get_mut("entries") {
+                    crate::remote_host::lean::lean_entries(list);
+                }
+            }
+            let page = prepare_backward_entries_page_with_cap(
+                "measure", data, /* cap_item_content */ false, /* enforce */ true,
+            );
+            let wire =
+                sized(&page) + future_remote_crypto::HEADER_LEN + future_remote_crypto::TAG_LEN;
+            (page["entries"].as_array().map(Vec::len).unwrap_or(0), wire)
+        };
+
+        let (full_entries, full_wire) = build(false);
+        let (lean_count, lean_wire) = build(true);
+        let source = entries.as_array().map(Vec::len).unwrap_or(0);
+        // The byte claim holds entry-wise: the trim only ever removes bytes. The
+        // *entry* count may grow, because the budget behind it sheds whole oldest
+        // exchanges until the page fits — so a leaner page keeps more of them.
+        assert!(
+            lean_wire <= full_wire,
+            "the trim may only shrink the bytes of a page ({full_wire} vs {lean_wire})"
+        );
+        println!(
+            "VERIFY_E2E_PHONE_PAGE {}",
+            json!({
+                "sourceEntries": source,
+                "undeclared": { "entries": full_entries, "wireBytes": full_wire },
+                "declared": { "entries": lean_count, "wireBytes": lean_wire },
+                "saved": 1.0 - (lean_wire as f64 / full_wire.max(1) as f64),
+            })
+        );
     }
 }

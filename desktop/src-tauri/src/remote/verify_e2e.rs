@@ -51,7 +51,7 @@ use serde_json::{json, Value};
 
 use super::commands::{new_reply_slots, HandshakeState};
 use super::protocol::PairingCreds;
-use super::publisher::MAX_EVENT_BYTES;
+use super::publisher::{EVENT_COALESCING_FEATURE, MAX_EVENT_BYTES};
 use super::test_support::{
     ensure_mock_agent, init_store, jwt, mock_agent_lock, now_secs, secure_pair, unique, FakeNats,
     HomeGuard,
@@ -62,6 +62,11 @@ use crate::remote_host::business::truncated_event_data;
 use crate::remote_host::lean;
 
 /// The `before` cursor the mobile client opens a conversation with.
+/// The phone's history page size, in user exchanges: `HISTORY_PAGE_USER_EXCHANGES`
+/// in `mobile/src/remote/useTimelineController.ts` (#607 lowered it from 10).
+/// Keep these in step — a page measured at another size is not the page a phone
+/// reads.
+const PHONE_HISTORY_PAGE_EXCHANGES: i64 = 3;
 const NEWEST_PAGE_CURSOR: i64 = 9_007_199_254_740_991;
 
 /// One journal event, exactly the fields the replay path publishes.
@@ -361,6 +366,13 @@ impl E2e {
         ensure_mock_agent();
         let creds = v2_creds(&broker);
         let pair_id = creds.pair_id.clone();
+        // Install the per-pairing shared runtime the way the supervisor does
+        // before it builds the transport (`supervisor::start`). The live-lane
+        // capability flags live there, and `coalesce_events()` answers an
+        // unknown pairing with a *fresh, disabled* flag rather than an error —
+        // so a harness that skips this step has its declarations land in a
+        // throwaway flag and silently measures the undeclared lane.
+        let _shared = super::supervisor::shared_runtime(&creds, true, false);
         let bridge_client = connect(broker.url(), &format!("verify-bridge-{pair_id}")).await;
         let bridge_instance_id = format!("bridge_{}", unique("e2e"));
         let handshake = HandshakeState::new(
@@ -496,14 +508,18 @@ impl E2e {
         }
     }
 
+    /// Whether the drain task currently sees the client's coalescing
+    /// declaration (the same flag `publish_event` feeds through).
+    fn coalescing(&self) -> bool {
+        super::SUPERVISOR
+            .coalesce_events(&self.pair_id)
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Declare a capability set on `secure_ready`, as the phone does after the
     /// handshake confirmation. The bridge applies it before it replies, so
     /// awaiting the reply makes the new state observable.
     async fn declare(&mut self, features: &[&str]) {
-        assert!(
-            features.len() <= 1,
-            "this harness flips one capability at a time"
-        );
         let subject = format!("p.{}.cmd.ready", self.pair_id);
         let body = json!({ "type": "secure_ready", "features": features });
         let reply = self.sealed_command(&subject, &body).await;
@@ -531,7 +547,13 @@ impl E2e {
 
         let lean_on = lean::enabled();
         let mut capture = LaneCapture::default();
-        let mut in_flight = 0usize;
+        // Flow control counts *source events*, not messages. With coalescing on,
+        // one message can stand for many events (`coalescedCount`); decrementing
+        // per message would leave the drain permanently "behind", so it would
+        // wait a full merge window for nearly every event — a three-minute
+        // measurement becomes hours. Off the coalesced lane every message is one
+        // event, which is what the original accounting assumed.
+        let mut outstanding = 0usize;
         for event in journal {
             publish_event(
                 session,
@@ -546,22 +568,20 @@ impl E2e {
                 event.run_sequence,
             );
             if expected_lane_data(event, lean_on).is_some() {
-                in_flight += 1;
+                outstanding += 1;
             }
             // Keep the bounded event queue from ever filling: drain what we
             // published before adding much more.
-            while in_flight > 64 {
-                capture
-                    .received
-                    .push(receive_event(&mut subscription, &mut self.channel).await);
-                in_flight -= 1;
+            while outstanding > 64 {
+                let received = receive_event(&mut subscription, &mut self.channel).await;
+                outstanding = outstanding.saturating_sub(covered_source_events(&received));
+                capture.received.push(received);
             }
         }
-        while in_flight > 0 {
-            capture
-                .received
-                .push(receive_event(&mut subscription, &mut self.channel).await);
-            in_flight -= 1;
+        while outstanding > 0 {
+            let received = receive_event(&mut subscription, &mut self.channel).await;
+            outstanding = outstanding.saturating_sub(covered_source_events(&received));
+            capture.received.push(received);
         }
         self.phone_rx_bytes += capture.wire_bytes();
         self.phone_rx_messages += capture.received.len();
@@ -594,7 +614,7 @@ impl E2e {
                     "type": "get_session_entries",
                     "sessionId": session,
                     "before": NEWEST_PAGE_CURSOR,
-                    "limit": 10,
+                    "limit": PHONE_HISTORY_PAGE_EXCHANGES,
                 }),
             )
             .await;
@@ -668,33 +688,32 @@ async fn receive_event(
 
 /// Assert the lane carried exactly the expected events, and that every received
 /// record really was a sealed one.
+/// How many source events one received message stands for. A merged message
+/// declares it (`coalescedCount`, written next to `idx` on the envelope); an
+/// unmerged one stands for exactly itself.
+fn covered_source_events(event: &ReceivedEvent) -> usize {
+    event.body["coalescedCount"].as_u64().unwrap_or(1).max(1) as usize
+}
+
+/// The `data.text` a source event carried, or `None` when it has none.
+fn data_text(data: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(data).ok()?;
+    value.get("text")?.as_str().map(str::to_owned)
+}
+
 fn assert_lane(capture: &LaneCapture, journal: &[JournalEvent], lean_on: bool, what: &str) {
     let expected: Vec<(&JournalEvent, String)> = journal
         .iter()
         .filter_map(|event| expected_lane_data(event, lean_on).map(|data| (event, data)))
         .collect();
-    assert_eq!(
-        capture.received.len(),
-        expected.len(),
-        "{what}: message count"
-    );
-    for (received, (source, data)) in capture.received.iter().zip(expected) {
-        let at = format!("{what}: {}#{}", source.event_type, source.idx);
-        assert_eq!(
-            received.body["type"].as_str(),
-            Some(source.event_type.as_str()),
-            "{at}"
-        );
-        assert_eq!(received.body["idx"].as_i64(), Some(source.idx), "{at}");
-        assert_eq!(
-            received.body["data"].as_str(),
-            Some(data.as_str()),
-            "{at}: data"
-        );
-        // A real AEAD record: the wire is the plaintext plus the fixed
-        // header/tag. A plaintext passthrough (or a pre-encryption tap) cannot
-        // satisfy this, which is what makes the byte count a received-bytes
-        // count rather than a model of one.
+    // Walk the expected source events, consuming `coalescedCount` per message.
+    // A merged message keeps the *newest* event of its group — envelope and `idx`
+    // — and carries the whole group's text (the client reads it the same way:
+    // `start = idx - coalescedCount + 1`). So "one message per event" is only
+    // true off the coalesced lane, and the idx to check is the group's last.
+    let mut next = 0usize;
+    for received in &capture.received {
+        let at = format!("{what}: message {next}");
         assert_eq!(
             received.wire_bytes,
             received.plaintext_bytes
@@ -702,7 +721,53 @@ fn assert_lane(capture: &LaneCapture, journal: &[JournalEvent], lean_on: bool, w
                 + future_remote_crypto::TAG_LEN,
             "{at}: received bytes must be a sealed record"
         );
+        let covered = covered_source_events(received);
+        let group = expected
+            .get(next..next + covered)
+            .unwrap_or_else(|| panic!("{at}: covers {covered} events, past the journal's end"));
+        let newest = group[group.len() - 1].0;
+        assert_eq!(
+            received.body["type"].as_str(),
+            Some(newest.event_type.as_str()),
+            "{at}: {}#{}",
+            newest.event_type,
+            newest.idx
+        );
+        assert_eq!(
+            received.body["idx"].as_i64(),
+            Some(newest.idx),
+            "{at}: a merged message keeps its group's newest idx"
+        );
+        if covered == 1 {
+            assert_eq!(
+                received.body["data"].as_str(),
+                Some(group[0].1.as_str()),
+                "{at}: data"
+            );
+        } else {
+            let kinds: Vec<&str> = group
+                .iter()
+                .map(|(event, _)| event.event_type.as_str())
+                .collect();
+            assert!(
+                kinds.windows(2).all(|pair| pair[0] == pair[1]),
+                "{at}: a merge may only cover one stream, got {kinds:?}"
+            );
+            let body: Value = serde_json::from_str(received.body["data"].as_str().unwrap_or("{}"))
+                .unwrap_or(Value::Null);
+            let merged: String = group
+                .iter()
+                .filter_map(|(_, data)| data_text(data))
+                .collect();
+            assert_eq!(
+                body.get("text").and_then(Value::as_str),
+                Some(merged.as_str()),
+                "{at}: a merged message carries its whole group's text"
+            );
+        }
+        next += covered;
     }
+    assert_eq!(next, expected.len(), "{what}: covered source events");
 }
 
 fn fixture_journal() -> Vec<JournalEvent> {
@@ -938,6 +1003,35 @@ async fn run_fixture(broker: Broker, label: &str) {
         full.wire_bytes()
     );
 
+    // ── Coalesced: fragments merge, and the merge is verifiable ──
+    //
+    // The capability has to be installed per pairing before the transport is
+    // built (`E2e::on_broker` does what the supervisor does). Without it the
+    // declaration lands in a throwaway flag and a measurement silently reports
+    // the un-merged lane as "coalesced" — which is what happened once.
+    e2e.declare(&[EVENT_COALESCING_FEATURE]).await;
+    assert!(
+        e2e.coalescing(),
+        "the coalescing declaration must land in the flag the drain reads"
+    );
+    let coalesced = e2e.replay_live_lane(&session, "run-verify", &journal).await;
+    assert_lane(&coalesced, &journal, false, "coalesced");
+    assert!(
+        coalesced.received.len() < full.received.len(),
+        "the coalesced lane must merge fragments ({} vs {} messages)",
+        coalesced.received.len(),
+        full.received.len()
+    );
+    e2e.declare(&[]).await;
+    assert!(!e2e.coalescing());
+    let uncoalesced = e2e.replay_live_lane(&session, "run-verify", &journal).await;
+    for (after, before) in uncoalesced.received.iter().zip(&full.received) {
+        assert_eq!(
+            after.body, before.body,
+            "withdrawing the capability must restore the per-event lane"
+        );
+    }
+
     // ── Withdrawn: a later connection must not inherit the declaration ──
     e2e.declare(&[]).await;
     assert!(!lean::enabled());
@@ -1103,9 +1197,62 @@ async fn run_real_traffic(broker: Broker) {
         history_lean.full.body
     );
 
-    // Both history shapes keep their structure. The full page is bounded by the
-    // 100-entry limit; the paged page is bounded by the 512 KiB budget, which
-    // fits *more* lean exchanges per round trip — so the count may only grow.
+    // ── What the phone actually negotiates ──
+    //
+    // The mobile client declares all three features at once
+    // (`mobile/src/remote/client.ts`: `event_coalescing_v1`, `reply_gzip_v1`,
+    // `lean_events_v1`). Measuring lean alone answers "what does the trim remove
+    // from the raw stream", not "what did the phone gain from it" — coalescing
+    // was already shipped before the trim landed, so the phone's before/after is
+    // coalesced-vs-coalesced+lean. Both are measured here.
+    e2e.declare(&[EVENT_COALESCING_FEATURE]).await;
+    // The declaration must actually reach the drain task's flag. Without this
+    // the harness would keep measuring the undeclared lane while reporting a
+    // "coalesced" number, which is how a wrong `98.5% marginal` reading was
+    // produced once already: capabilities live behind a per-pairing lookup that
+    // answers an unknown pairing with a fresh, disabled flag instead of an
+    // error.
+    assert!(
+        e2e.coalescing(),
+        "the coalescing declaration must land in the flag the drain reads"
+    );
+    let live_coalesced = e2e.replay_live_lane(&session, &run, &journal).await;
+    assert_lane(&live_coalesced, &journal, false, "coalesced");
+    assert!(
+        live_coalesced.received.len() < journal.len(),
+        "the coalesced lane must merge fragments ({} messages for {} source events)",
+        live_coalesced.received.len(),
+        journal.len()
+    );
+    e2e.declare(&[EVENT_COALESCING_FEATURE, lean::LEAN_EVENTS_FEATURE])
+        .await;
+    assert!(lean::enabled());
+    let live_phone = e2e.replay_live_lane(&session, &run, &journal).await;
+    assert_lane(&live_phone, &journal, true, "coalesced+lean");
+    assert!(
+        live_phone.wire_bytes() < live_coalesced.wire_bytes()
+            || live_phone.received.len() <= live_coalesced.received.len(),
+        "the phone's lane may not grow when lean is added ({} vs {})",
+        live_phone.wire_bytes(),
+        live_coalesced.wire_bytes()
+    );
+    println!(
+        "VERIFY_E2E_LIVE_PHONE {}",
+        json!({
+            "session": session,
+            "journalEvents": journal.len(),
+            "coalesced": live_coalesced.summary(),
+            "coalescedLean": live_phone.summary(),
+            "leanMarginal": 1.0 - (live_phone.wire_bytes() as f64
+                / live_coalesced.wire_bytes().max(1) as f64),
+        })
+    );
+
+    // Both history shapes keep their structure. The full read is bounded by the
+    // 100-entry limit; the paged read carries the same requested exchanges for
+    // either client, and it is the *undeclared* one that has to shed oldest
+    // exchanges when they exceed the byte budget — so the lean page may hold
+    // more of the very page that was asked for, never fewer.
     let count = |capture: &ReplyCapture| {
         capture.body["data"]["entries"]
             .as_array()
