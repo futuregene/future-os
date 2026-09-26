@@ -322,6 +322,17 @@ mod tests {
         }
     }
 
+    /// The busy flag of a routed conversation, read through a non-blocking lock
+    /// so a test can wait on it from `wait_until`'s synchronous predicate
+    /// instead of sleeping for a guess at how long the worker needs.
+    fn busy(conversations: &Conversations, conversation: &str) -> Option<bool> {
+        conversations.entries.try_lock().ok().and_then(|entries| {
+            entries
+                .get(conversation)
+                .map(|entry| entry.busy.load(Ordering::SeqCst))
+        })
+    }
+
     #[tokio::test]
     async fn submissions_for_one_conversation_run_in_order() {
         let seen: Arc<StdMutex<Vec<(String, u64)>>> = Arc::new(StdMutex::new(Vec::new()));
@@ -671,16 +682,184 @@ mod tests {
                 .submit(job(&format!("c{index}"), sink.clone()))
                 .await;
         }
+        // Eviction happens synchronously inside `submit`, so the table is
+        // already at its limit here and two workers have lost their mailbox
+        // sender. Asserting that up front keeps the wait below about the one
+        // thing that is actually asynchronous — the worker task being polled
+        // after its mailbox closed — instead of silently covering for an
+        // eviction that never happened.
+        assert_eq!(
+            conversations.len().await,
+            2,
+            "four submissions must leave the table at its two-entry limit"
+        );
+        // 20 s is the budget its siblings use (`email` waits 20 s, the feishu
+        // bridge 15 s). At 5 s this was the only wait in the suite observed to
+        // expire: a mutation run on a saturated machine reported "an evicted
+        // conversation's worker must exit" for a mutant of `policy.rs`, which
+        // cannot affect it. The assertion is unchanged.
         let stopped = crate::test_support::wait_until(
             || {
                 let logged = String::from_utf8_lossy(&writer.lock().unwrap()).to_string();
                 logged.contains("conversation worker stopped")
             },
-            Duration::from_secs(5),
+            Duration::from_secs(20),
         )
         .await;
         assert!(stopped, "an evicted conversation's worker must exit");
         assert!(conversations.len().await <= 2);
+    }
+
+    #[tokio::test]
+    async fn a_full_table_keeps_its_bystander_when_an_existing_conversation_sends_again() {
+        // A re-submission to a conversation that is already routed is not a
+        // capacity event: the table is exactly full before it and must be
+        // exactly full after it, with the bystander still routed. The guard
+        // `len < max || contains(keep)` is what keeps the eviction loop from
+        // running here; a loop that ran would drop a bystander — closing a
+        // mailbox whose turn may still be running — for no reason at all.
+        let conversations =
+            Conversations::new(Arc::new(|_job, _watch| Box::pin(async {}))).with_limits(4, 2);
+        let sink: Arc<dyn ReplySink> = Arc::new(RecordingSink::default());
+        for name in ["a", "b"] {
+            assert_eq!(
+                conversations.submit(job(name, sink.clone())).await,
+                SubmitOutcome::Accepted
+            );
+        }
+        assert_eq!(conversations.len().await, 2, "the table is exactly full");
+        assert_eq!(
+            conversations.submit(job("a", sink.clone())).await,
+            SubmitOutcome::Accepted
+        );
+        assert_eq!(
+            conversations.len().await,
+            2,
+            "a re-submission must not evict a bystander"
+        );
+        assert!(
+            conversations.generation("b").await.is_some(),
+            "the bystander conversation must keep its mailbox"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_running_turn_is_kept_and_the_idle_conversation_goes() {
+        // Which conversation an eviction drops is the entire point of the
+        // idle-preference filter, and a table-size assertion cannot see it.
+        // `running` is the older of the two and its runner parks, so it is
+        // busy; `idle` is newer and its runner has already returned, so it is
+        // not. Only the non-busy, past-the-timeout `idle` may be evicted —
+        // every boolean or comparison error in that four-line filter either
+        // empties the idle set or admits `running` to it, and the `or_else`
+        // fallback then drops the running turn instead.
+        let gate = crate::bridge::Shutdown::new();
+        let gate_for_runner = gate.clone();
+        let started = Arc::new(AtomicU64::new(0));
+        let started_for_runner = started.clone();
+        let conversations = Conversations::new(Arc::new(move |job, _watch| {
+            let gate = gate_for_runner.clone();
+            let started = started_for_runner.clone();
+            Box::pin(async move {
+                started.fetch_add(1, Ordering::SeqCst);
+                if job.conversation == "running" {
+                    gate.notified().await; // park, so `running` stays busy
+                }
+            })
+        }))
+        .with_limits(4, 2)
+        // Anything not busy counts as idle, so the filter alone decides.
+        .with_idle_timeout(Duration::ZERO);
+        let sink: Arc<dyn ReplySink> = Arc::new(RecordingSink::default());
+        assert_eq!(
+            conversations.submit(job("running", sink.clone())).await,
+            SubmitOutcome::Accepted
+        );
+        let parked = crate::test_support::wait_until(
+            || busy(&conversations, "running") == Some(true),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(parked, "`running`'s runner should have parked it as busy");
+        assert_eq!(
+            conversations.submit(job("idle", sink.clone())).await,
+            SubmitOutcome::Accepted
+        );
+        let returned = crate::test_support::wait_until(
+            || started.load(Ordering::SeqCst) >= 2 && busy(&conversations, "idle") == Some(false),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(returned, "`idle`'s runner should have returned");
+        assert_eq!(conversations.len().await, 2);
+        // A third conversation overflows the two-entry table. The only entry
+        // that is both non-busy and past the idle timeout is `idle`.
+        assert_eq!(
+            conversations.submit(job("third", sink.clone())).await,
+            SubmitOutcome::Accepted
+        );
+        assert!(
+            conversations.generation("running").await.is_some(),
+            "the conversation whose turn is in flight must keep its mailbox"
+        );
+        assert!(
+            conversations.generation("idle").await.is_none(),
+            "the idle conversation is the one that must be evicted"
+        );
+        gate.trigger();
+        let released = crate::test_support::wait_until(
+            || busy(&conversations, "running") == Some(false),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(released, "a finished turn must clear its busy flag");
+    }
+
+    #[tokio::test]
+    async fn the_default_idle_timeout_leaves_a_two_minute_old_conversation_routed() {
+        // `DEFAULT_IDLE_TIMEOUT` is exercised rather than restated. With the
+        // 30-minute default, a conversation idle for two minutes is *not* yet
+        // evictable, so a full table must fall back to dropping its least
+        // recently used entry — here the older conversation whose turn is
+        // still running, exactly as the `or_else` branch documents.
+        //
+        // Two minutes is chosen to sit between the real default (30 min) and
+        // every mis-computation of `30 * 60`: 90 s (`30 + 60`) and 0 s
+        // (`30 / 60`) both make the two-minute-old conversation stale, so the
+        // filter prefers it and the assertions below fail.
+        //
+        // `last_used` is written directly because production reaches this
+        // state only by running for two minutes; `evict_idle` itself is the
+        // code under test and is called unmodified.
+        let conversations = Conversations::new(Arc::new(|_job, _watch| Box::pin(async {})))
+            // Deliberately no `with_idle_timeout`: this test is about the default.
+            .with_limits(4, 2);
+        let now = Instant::now();
+        let entry = |age: Duration, busy: bool| {
+            let (tx, rx) = mpsc::channel(1);
+            drop(rx); // nothing is delivered to this entry; only its age matters
+            Entry {
+                tx,
+                generation: Arc::new(AtomicU64::new(0)),
+                last_used: now
+                    .checked_sub(age)
+                    .expect("this machine must have been up for a couple of minutes"),
+                busy: Arc::new(AtomicBool::new(busy)),
+            }
+        };
+        let mut entries = conversations.entries.lock().await;
+        entries.insert("running".into(), entry(Duration::from_secs(150), true));
+        entries.insert("idle".into(), entry(Duration::from_secs(120), false));
+        assert_eq!(entries.len(), 2, "the table is exactly full");
+        conversations.evict_idle(&mut entries, "new");
+        let mut remaining: Vec<&str> = entries.keys().map(String::as_str).collect();
+        remaining.sort();
+        assert_eq!(
+            remaining,
+            vec!["idle"],
+            "a two-minute-old conversation is not past the 30-minute default, so the \
+             least recently used entry (`running`) is the one that goes"
+        );
     }
 
     /// A `Write` that appends to a shared buffer, so a test can read what the

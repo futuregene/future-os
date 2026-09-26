@@ -778,36 +778,125 @@ mod tests {
 
     // ─── approve_tool_path_if_present ──────────────────────────────────────
 
-    #[test]
-    fn approve_tool_path_write_and_edit() {
-        // Should not panic
-        approve_tool_path_if_present(
-            "/workspace",
-            "write",
-            &serde_json::json!({"path": "test.txt"}),
-        );
-        approve_tool_path_if_present(
-            "/workspace",
-            "edit",
-            &serde_json::json!({"path": "test.txt"}),
-        );
+    /// A scope in which the approval list actually exists: the three tests
+    /// below observe it through `crate::tools::is_approved_outside_path`
+    /// (crate-visible since this audit), so a no-op has to be distinguishable
+    /// from a recorded approval.
+    fn approval_scope(cwd: &str) -> crate::tools::ScopeOptions {
+        crate::tools::ScopeOptions {
+            workspace: cwd.to_string(),
+            permission_level: "all".to_string(),
+            interrupt_flag: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            sandbox: std::sync::Arc::new(crate::sandbox::ResolvedSandbox::disabled(cwd)),
+            escalation: None,
+            on_sandboxed: None,
+        }
     }
 
-    #[test]
-    fn approve_tool_path_other_tools_noop() {
-        // read and shell don't approve paths
-        approve_tool_path_if_present(
-            "/workspace",
-            "read",
-            &serde_json::json!({"path": "test.txt"}),
-        );
-        approve_tool_path_if_present("/workspace", "shell", &serde_json::json!({"command": "ls"}));
+    #[tokio::test]
+    async fn approve_tool_path_write_and_edit() {
+        let cwd = workspace();
+        let cwd_str = cwd.to_string_lossy().to_string();
+        let write_target = cwd.join("test.txt");
+        let edit_target = cwd.join("edited.txt");
+
+        crate::tools::with_tool_scope(approval_scope(&cwd_str), async {
+            assert!(
+                !crate::tools::is_approved_outside_path(&write_target),
+                "a fresh scope must start with nothing approved"
+            );
+
+            approve_tool_path_if_present(
+                &cwd_str,
+                "write",
+                &serde_json::json!({"path": "test.txt"}),
+            );
+            assert!(
+                crate::tools::is_approved_outside_path(&write_target),
+                "write must approve {write_target:?} for the agent"
+            );
+
+            // `edit` approves a *different* file, so a guard that only matched
+            // "write" would fail here instead of riding on the first call.
+            assert!(!crate::tools::is_approved_outside_path(&edit_target));
+            approve_tool_path_if_present(
+                &cwd_str,
+                "edit",
+                &serde_json::json!({"path": "edited.txt"}),
+            );
+            assert!(
+                crate::tools::is_approved_outside_path(&edit_target),
+                "edit must approve {edit_target:?} too"
+            );
+        })
+        .await;
     }
 
-    #[test]
-    fn approve_tool_path_no_path_field() {
-        // Missing path field → no-op
-        approve_tool_path_if_present("/workspace", "write", &serde_json::json!({}));
+    #[tokio::test]
+    async fn approve_tool_path_other_tools_noop() {
+        let cwd = workspace();
+        let cwd_str = cwd.to_string_lossy().to_string();
+        let target = cwd.join("test.txt");
+
+        crate::tools::with_tool_scope(approval_scope(&cwd_str), async {
+            // `read`/`shell` hit the tool-name early return, so even a `path`
+            // argument must not approve anything.
+            approve_tool_path_if_present(
+                &cwd_str,
+                "read",
+                &serde_json::json!({"path": "test.txt"}),
+            );
+            approve_tool_path_if_present(&cwd_str, "shell", &serde_json::json!({"command": "ls"}));
+            assert!(
+                !crate::tools::is_approved_outside_path(&target),
+                "read/shell must not approve {target:?}"
+            );
+
+            // Control: the same scope does record a `write`, so the emptiness
+            // above is the tool-name guard, not a dead list.
+            approve_tool_path_if_present(
+                &cwd_str,
+                "write",
+                &serde_json::json!({"path": "test.txt"}),
+            );
+            assert!(
+                crate::tools::is_approved_outside_path(&target),
+                "the control write must be recorded in the same scope"
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn approve_tool_path_no_path_field() {
+        let cwd = workspace();
+        let cwd_str = cwd.to_string_lossy().to_string();
+        let target = cwd.join("test.txt");
+
+        crate::tools::with_tool_scope(approval_scope(&cwd_str), async {
+            // `write` is the tool that *would* approve, but the arguments carry
+            // no usable path → the `argument_path(..)` early return.
+            approve_tool_path_if_present(&cwd_str, "write", &serde_json::json!({}));
+            assert!(
+                !crate::tools::is_approved_outside_path(&target),
+                "an arguments object without a path must not approve anything"
+            );
+            // Same early return for a present-but-non-string path.
+            approve_tool_path_if_present(&cwd_str, "write", &serde_json::json!({"path": 42}));
+            assert!(!crate::tools::is_approved_outside_path(&target));
+
+            // Control: with a string path the same scope does record it.
+            approve_tool_path_if_present(
+                &cwd_str,
+                "write",
+                &serde_json::json!({"path": "test.txt"}),
+            );
+            assert!(
+                crate::tools::is_approved_outside_path(&target),
+                "the control write must be recorded in the same scope"
+            );
+        })
+        .await;
     }
 
     // ─── rewrite_path_field ────────────────────────────────────────────────

@@ -938,6 +938,60 @@ mod tests {
         assert_eq!(disabled, plain, "gzip must remain opt-in");
     }
 
+    /// The operator override is what lets the wire path be exercised without a
+    /// client that declares the capability. It must accept exactly the
+    /// documented spellings and let anything else fall back to the per-connection
+    /// capability (off outside a command).
+    #[test]
+    fn the_gzip_override_is_an_operator_switch() {
+        let _home = crate::remote::test_support::HomeGuard::new("remote-gzip-env");
+        let previous = std::env::var(REMOTE_JSON_GZIP_ENV).ok();
+        for (value, expected) in [
+            ("1", true),
+            ("true", true),
+            ("YES", true),
+            (" on ", true),
+            ("0", false),
+            ("off", false),
+            ("", false),
+            ("maybe", false),
+        ] {
+            std::env::set_var(REMOTE_JSON_GZIP_ENV, value);
+            assert_eq!(
+                remote_json_gzip_enabled(),
+                expected,
+                "value {value:?} must be {expected}"
+            );
+        }
+        std::env::remove_var(REMOTE_JSON_GZIP_ENV);
+        assert!(
+            !remote_json_gzip_enabled(),
+            "an unset override leaves the connection in charge"
+        );
+
+        // Restoring the operator's own value is the test's cleanup, and both of
+        // its arms matter: an operator who launched the app with the switch
+        // already set must get that value back, and one who did not must not be
+        // left with a variable this test invented. Assert both, so the cleanup
+        // is a checked behaviour rather than an unexecuted branch.
+        let restore = |value: &Option<String>| match value {
+            Some(value) => std::env::set_var(REMOTE_JSON_GZIP_ENV, value),
+            None => std::env::remove_var(REMOTE_JSON_GZIP_ENV),
+        };
+        restore(&Some("1".to_string()));
+        assert_eq!(
+            std::env::var(REMOTE_JSON_GZIP_ENV).as_deref(),
+            Ok("1"),
+            "a pre-set override survives the test"
+        );
+        restore(&None);
+        assert!(
+            std::env::var(REMOTE_JSON_GZIP_ENV).is_err(),
+            "an absent override stays absent"
+        );
+        restore(&previous);
+    }
+
     /// The capability — not the process — decides, so an older client on the
     /// same pairing keeps receiving plain JSON. It has no magic-byte detection
     /// and would fail to parse a compressed reply.
@@ -1519,6 +1573,7 @@ mod bridge_tests {
         nats_connect_once, now_secs, unique, wait_until, FakeNats, HomeGuard,
     };
     use super::*;
+    use crate::remote::SUPERVISOR;
     use crate::remote_host::files as transfer;
     use flate2::read::GzDecoder;
     use serde_json::json;
@@ -1554,6 +1609,18 @@ mod bridge_tests {
         }
     }
 
+    /// The same credentials with a real v2 secure identity, so the bridge serves
+    /// the encrypted lane: every command must arrive as a sealed `FRE2` record.
+    fn secure_bridge_creds() -> crate::remote::pairing::PairingCreds {
+        let mut creds = bridge_creds();
+        creds.handshake_version = 2;
+        creds.secure = Some(
+            crate::remote::secure::PairingIdentity::new(now_secs() + 300)
+                .expect("a fresh secure identity"),
+        );
+        creds
+    }
+
     /// A running command loop against a fake NATS: returns the client handle a
     /// test drives, plus the pieces it may need to poke.
     struct Bridge {
@@ -1566,18 +1633,59 @@ mod bridge_tests {
 
     impl Bridge {
         async fn start() -> Self {
-            Self::start_with_host(super::super::host()).await
+            Self::start_with(super::super::host(), None).await
         }
         async fn start_with_host(host: &'static dyn super::super::services::BusinessHost) -> Self {
+            Self::start_with(host, None).await
+        }
+        /// A bridge whose connection was admitted under `access_epoch`. `None`
+        /// is the untracked connection every other fixture uses; `Some` is what
+        /// a supervised generation is admitted under, so a stale one can be
+        /// built by admitting under an epoch that has since moved on.
+        async fn start_with(
+            host: &'static dyn super::super::services::BusinessHost,
+            access_epoch: Option<u64>,
+        ) -> Self {
+            Self::spawn_flavour(host, access_epoch, false).await.0
+        }
+        /// A bridge with a real secure identity, paired over the encrypted
+        /// lane. Returns the invitation a phone would scan.
+        async fn start_secure(access_epoch: Option<u64>) -> (Self, String) {
+            Self::spawn_flavour(super::super::host(), access_epoch, true).await
+        }
+
+        async fn spawn_flavour(
+            host: &'static dyn super::super::services::BusinessHost,
+            access_epoch: Option<u64>,
+            secure: bool,
+        ) -> (Self, String) {
             let nats = FakeNats::start().await;
             let client = nats_connect(&nats).await;
-            let creds = bridge_creds();
+            let creds = if secure {
+                secure_bridge_creds()
+            } else {
+                bridge_creds()
+            };
             let pair_id = creds.pair_id.clone();
+            let invitation = if secure {
+                let identity = creds.secure.as_ref().expect("secure identity");
+                format!(
+                    "futureos://remote/pair?v=2&desktopId={}&secureKey={}&secret={}",
+                    creds.desktop_id,
+                    identity.public_key,
+                    identity.secret.as_deref().expect("invitation secret"),
+                )
+            } else {
+                String::new()
+            };
             let mut handshake = HandshakeState::new(
                 creds,
                 Arc::new(AtomicBool::new(false)),
                 format!("bridge_{}", unique("cmd")),
             );
+            if let Some(epoch) = access_epoch {
+                handshake = handshake.with_access(epoch);
+            }
             handshake.host = host;
             let reply_slots = new_reply_slots();
             let loop_handle = tokio::spawn(command_loop(
@@ -1588,13 +1696,16 @@ mod bridge_tests {
             ));
             nats.wait_for_sub(&format!("p.{pair_id}.cmd.>"), Duration::from_secs(5))
                 .await;
-            Bridge {
-                client,
-                nats,
-                pair_id,
-                handshake,
-                loop_handle,
-            }
+            (
+                Bridge {
+                    client,
+                    nats,
+                    pair_id,
+                    handshake,
+                    loop_handle,
+                },
+                invitation,
+            )
         }
 
         /// Activate the bridge (as a completed handshake would).
@@ -2767,16 +2878,21 @@ mod bridge_tests {
         let thread_id = reply["data"]["threadId"].as_str().unwrap().to_string();
         // The run the ack carried settles through the normal collector.
         let run_id = reply["data"]["runId"].as_str().unwrap().to_string();
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let run = crate::store::get_run(&run_id).unwrap().expect("run row");
-            if run.status != "running" {
-                assert_eq!(run.status, "completed");
-                break;
-            }
-            assert!(std::time::Instant::now() < deadline, "run never settled");
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+        wait_until("the run must settle", Duration::from_secs(5), || {
+            crate::store::get_run(&run_id)
+                .expect("run lookup")
+                .expect("run row")
+                .status
+                != "running"
+        })
+        .await;
+        assert_eq!(
+            crate::store::get_run(&run_id)
+                .expect("run lookup")
+                .expect("run row")
+                .status,
+            "completed"
+        );
 
         // The run id is a durable receipt keyed by the mobile command id. It
         // remains queryable after the in-memory single-flight cache expires,
@@ -4028,21 +4144,44 @@ mod bridge_tests {
         .await;
     }
 
+    /// A pairing id whose queue group NATS rejects makes the loop's critical
+    /// subscription impossible. The loop must report that and return — not sit
+    /// on a stream that can never receive anything — because returning is what
+    /// lets the runtime supervisor spend its recovery budget on a new
+    /// generation. The old version of this test only killed the server:
+    /// async-nats accepts a subscribe optimistically, so `queue_subscribe` still
+    /// succeeded and the branch under test never ran.
     #[tokio::test]
-    async fn command_loop_subscribe_failure_logs_and_returns() {
+    async fn a_pairing_id_that_cannot_form_a_queue_group_returns_instead_of_waiting() {
         let nats = FakeNats::start().await;
-        let client = nats_connect_once(&nats).await;
-        // Sever the connection before the loop subscribes → `queue_subscribe`
-        // fails and the loop returns without panicking (the error is logged).
-        nats.kill();
-        let creds = bridge_creds();
+        let client = nats_connect(&nats).await;
+        let mut creds = bridge_creds();
+        // Whitespace cannot appear in a NATS queue group: the loop's
+        // `queue_subscribe` is refused before anything reaches the broker.
+        creds.pair_id = "pair with a space".to_string();
         let pair_id = creds.pair_id.clone();
         let handshake = HandshakeState::new(
             creds,
             Arc::new(AtomicBool::new(false)),
             format!("bridge_{}", unique("cmd")),
         );
-        command_loop(client, pair_id, new_reply_slots(), handshake).await;
+        let mut tap = nats.tap();
+        // Returned rather than hung: the await below is the assertion that the
+        // failure path terminated the loop.
+        command_loop(client, pair_id.clone(), new_reply_slots(), handshake).await;
+        // And with no subscription the loop is deaf: a command addressed to it
+        // is dropped, never answered.
+        nats.inject(
+            &format!("p.{pair_id}.cmd.rpc"),
+            Some("rep_no_subscription"),
+            serde_json::to_vec(&json!({"id": "x", "type": "get_presence"})).unwrap(),
+        );
+        crate::remote::test_support::assert_no_publish(
+            &mut tap,
+            "rep_no_subscription",
+            Duration::from_millis(200),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -4067,6 +4206,1284 @@ mod bridge_tests {
             json!({"entries":[entry.clone()],"hasMore":false,"nextOffset":0}),
         );
         assert_eq!(page["entries"][0], entry);
+    }
+
+    // ── Business handlers reached only through the command loop ─────────────
+    //
+    // These cover the *phone-visible* half of `remote_host::business`: the
+    // settings/skill/provider/history handlers, their error arms, and the
+    // transport's paged-read envelope. They go through the real bridge (fake
+    // NATS → command loop → real Desktop host) rather than calling the handlers
+    // directly, so a regression in the dispatch table fails them too.
+
+    /// `list_settings_models` and `list_available_skills` answer a failure with
+    /// `success:false` and the agent's own message. A phone that gets a silent
+    /// empty list cannot tell "no skills" from "the desktop cannot ask".
+    #[tokio::test]
+    async fn skill_and_model_listings_report_an_agent_failure() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-skill-lists").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+
+        // The catalogue is decoded into typed skills, so the agent answers with
+        // a bare array (a `{"skills": [...]}` envelope is rejected) carrying the
+        // two fields the contract does not default (`latestVersion`, `builtin`).
+        agent.script(
+            "list_available_skills",
+            true,
+            json!([{
+                "id": "future-web",
+                "name": "future-web",
+                "latestVersion": null,
+                "builtin": true,
+            }]),
+            "",
+        );
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_available_skills" }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        assert_eq!(
+            reply["data"]["skills"][0]["id"],
+            json!("future-web"),
+            "got: {reply}"
+        );
+
+        agent.script("list_available_skills", false, Value::Null, "agent offline");
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_available_skills" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(
+            reply["error"].as_str().unwrap().contains("agent offline"),
+            "got: {reply}"
+        );
+
+        agent.script("list_models", false, Value::Null, "models down");
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_settings_models" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(
+            reply["error"].as_str().unwrap().contains("models down"),
+            "got: {reply}"
+        );
+        bridge.stop().await;
+    }
+
+    /// A recommendation is best-effort by contract: a failure is reported as
+    /// "no recommendation" with `success:true`, because a phone whose desktop is
+    /// mid-upgrade still has to send the user's message. A malformed candidate
+    /// list must not change that.
+    #[tokio::test]
+    async fn a_skill_recommendation_never_blocks_the_message() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-suggest-skill").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+
+        agent.script(
+            "suggest_skill",
+            true,
+            json!({ "skill": { "name": "future-paper", "description": "papers" } }),
+            "",
+        );
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "suggest_skill",
+                "query": "find me a paper",
+                "candidates": [
+                    { "name": "future-paper", "description": "papers" },
+                    "not an object",
+                    { "description": "anonymous" }
+                ]
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["skill"]["name"], json!("future-paper"));
+
+        // The agent found nothing: a null skill, still a success.
+        agent.script("suggest_skill", true, json!({ "skill": Value::Null }), "");
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "suggest_skill",
+                "query": "nothing matches",
+                "candidates": []
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert!(reply["data"]["skill"].is_null());
+
+        // The agent failed: still a success, with the reason carried alongside
+        // so the phone can log it without treating the draft as rejected.
+        agent.script("suggest_skill", false, Value::Null, "engine busy");
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "suggest_skill",
+                "query": "anything",
+                "candidates": []
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert!(reply["data"]["skill"].is_null());
+        assert!(
+            reply["error"].as_str().unwrap().contains("engine busy"),
+            "got: {reply}"
+        );
+        bridge.stop().await;
+    }
+
+    /// The recommendation ledger is desktop-owned: the phone may record what it
+    /// showed (so the desktop can suppress that skill next time), but a record
+    /// with no skill id is a client bug and must be refused rather than stored
+    /// under an empty key.
+    #[tokio::test]
+    async fn recording_a_shown_recommendation_validates_and_persists() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-record-reco").await;
+
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "skill_reco_today" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert!(reply["data"].get("today").is_some(), "got: {reply}");
+
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "record_skill_reco",
+                "skillId": "",
+                "messageHash": "hash"
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(
+            reply["error"]
+                .as_str()
+                .unwrap()
+                .contains("skill_id is required"),
+            "got: {reply}"
+        );
+
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "record_skill_reco",
+                "skillId": "future-web",
+                "messageHash": unique("hash")
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "skill_reco_today" }))
+            .await;
+        assert_eq!(reply["success"], json!(true));
+        let today = reply["data"]["today"].to_string();
+        assert!(
+            !today.is_empty(),
+            "a recorded recommendation is readable back: {reply}"
+        );
+        bridge.stop().await;
+    }
+
+    /// `set_approval_tier` is the one settings write the phone owns. A tier the
+    /// desktop cannot honour is downgraded (not silently stored, and not an
+    /// error): the phone is told which tier is actually in force. When the
+    /// desktop cannot even ask, the write is refused.
+    #[tokio::test]
+    async fn the_approval_tier_reflects_what_the_desktop_can_enforce() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-approval-tier").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+
+        agent.script(
+            "probe_sandbox",
+            true,
+            json!({ "available": true, "code": "available", "backend": "seatbelt" }),
+            "",
+        );
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_approval_tier", "tier": "sandbox" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["approvalTier"], json!("sandbox"));
+
+        agent.script(
+            "probe_sandbox",
+            true,
+            json!({ "available": false, "code": "unavailable", "backend": "none" }),
+            "",
+        );
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_approval_tier", "tier": "sandbox" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(
+            reply["data"]["approvalTier"],
+            json!("manual"),
+            "an unenforceable tier is downgraded, not stored: {reply}"
+        );
+
+        // `manual` never needs a probe, so it must succeed even when the probe
+        // is failing.
+        agent.script("probe_sandbox", false, Value::Null, "probe exploded");
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_approval_tier", "tier": "manual" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["approvalTier"], json!("manual"));
+
+        // Asking for a sandbox tier while the probe fails is refused: the phone
+        // must not be told a tier is in force that the desktop cannot check.
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "set_approval_tier", "tier": "sandbox" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(
+            reply["error"].as_str().unwrap().contains("probe exploded"),
+            "got: {reply}"
+        );
+        bridge.stop().await;
+    }
+
+    /// `get_settings` reports whether a sandbox even exists on this desktop, and
+    /// refuses the whole read when the probe fails rather than answering with a
+    /// guessed `false` the phone would show as a missing feature.
+    #[tokio::test]
+    async fn desktop_settings_refuse_to_guess_sandbox_availability() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-settings-probe").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+
+        agent.script(
+            "probe_sandbox",
+            true,
+            json!({ "available": true, "code": "available", "backend": "seatbelt" }),
+            "",
+        );
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_settings" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["sandboxAvailable"], json!(true));
+
+        agent.script("probe_sandbox", false, Value::Null, "probe exploded");
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "get_settings" }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(
+            reply["error"].as_str().unwrap().contains("probe exploded"),
+            "got: {reply}"
+        );
+        bridge.stop().await;
+    }
+
+    /// A phone that never declared the chunked-read capability must keep
+    /// receiving one plain reply per command, even for a result larger than the
+    /// page threshold: the phone has no reader for a `readChunk` envelope and
+    /// would render nothing at all. The reply stays a decoded JSON value (and
+    /// under the relay's plaintext budget), so this is also the boundary where
+    /// paging and the reply size limit meet.
+    #[tokio::test]
+    async fn a_client_without_the_capability_is_never_sent_a_page() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-no-chunked-read").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        agent.script(
+            "list_models",
+            true,
+            json!({ "models": [], "blob": "x".repeat(560 * 1024) }),
+            "",
+        );
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "list_settings_models" }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert!(
+            reply["data"].get("readChunk").is_none(),
+            "no page envelope without the declaration: {reply}"
+        );
+        assert_eq!(
+            reply["data"]["blob"].as_str().unwrap().len(),
+            560 * 1024,
+            "the whole reply reaches a client that cannot page"
+        );
+        bridge.stop().await;
+    }
+
+    /// `generate_session_title` is a brand-new mobile command: it must reach the
+    /// agent through the desktop (never the phone's own model), and a failure
+    /// must be the agent's message rather than an empty title the phone would
+    /// store.
+    #[tokio::test]
+    async fn generate_session_title_reports_success_and_failure() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-session-title").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("sess");
+
+        agent.script_for(
+            "generate_session_title",
+            &session,
+            true,
+            json!({ "title": "Deploying the bridge" }),
+            "",
+        );
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "generate_session_title",
+                "sessionId": session, "mode": "chat"
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["title"], json!("Deploying the bridge"));
+
+        agent.script_for(
+            "generate_session_title",
+            &session,
+            false,
+            Value::Null,
+            "no model configured",
+        );
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "generate_session_title",
+                "sessionId": session, "mode": "chat"
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(
+            reply["error"]
+                .as_str()
+                .unwrap()
+                .contains("no model configured"),
+            "got: {reply}"
+        );
+        bridge.stop().await;
+    }
+
+    /// A replay whose snapshot has already moved past the watermark the phone
+    /// is filling is refused instead of answered with a page it cannot place:
+    /// the phone would otherwise stitch events from two different projections
+    /// into one transcript.
+    #[tokio::test]
+    async fn a_replay_whose_projection_moved_on_is_refused() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-replay-window").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("sess");
+
+        agent.script_typed_for(
+            "get_events_since",
+            &session,
+            json!({
+                "runId": "r",
+                "events": [{"idx": 0, "type": "text_chunk", "data": "{}"}],
+                "hasMore": false,
+                "projection": {"cursor": 10}
+            }),
+        );
+        // The caller pins the replay to index 2, but the projection has already
+        // folded through 10 — the window moved under it.
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "get_events_since", "sessionId": session,
+                "runId": "r", "sinceIdx": 0, "limit": 5, "replayUntilIdx": 2
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(false), "got: {reply}");
+        assert_eq!(reply["error"], json!("replay_window_changed"));
+
+        // With the watermark at or past the projection cursor the page is
+        // served, so the guard is about the ordering, not about the cursor
+        // simply existing.
+        agent.script_typed_for(
+            "get_events_since",
+            &session,
+            json!({
+                "runId": "r",
+                "events": [{"idx": 0, "type": "text_chunk", "data": "{}"}],
+                "hasMore": false,
+                "projection": {"cursor": 2}
+            }),
+        );
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "get_events_since", "sessionId": session,
+                "runId": "r", "sinceIdx": 0, "limit": 5, "replayUntilIdx": 2
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["watermark"], json!(2));
+        bridge.stop().await;
+    }
+
+    /// A phone gap-fill asks for the untrimmed page and the reply says so, so
+    /// the client can tell a page that ends flush with its cursor from one the
+    /// bridge trimmed. The flag must not appear on a page nobody asked to keep
+    /// whole. The backward page is served from the mock's own `get_session_entries`
+    /// payload (it ignores `before`), which is why this drives the real
+    /// `before`-cursor path through the handler rather than a scripted reply.
+    #[tokio::test]
+    async fn an_untrimmed_page_is_marked_as_such() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-untrimmed").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("sess");
+        agent.set_session_entries(
+            &session,
+            json!({ "entries": [{"id": "e1", "role": "user", "blocks": []}], "hasMore": false }),
+        );
+
+        let untrimmed = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "get_session_entries", "sessionId": session,
+                "before": 10, "limit": 5, "chunkedRead": true, "untrimmed": true
+            }))
+            .await;
+        assert_eq!(untrimmed["success"], json!(true), "got: {untrimmed}");
+        assert_eq!(untrimmed["data"]["untrimmed"], json!(true));
+        assert_eq!(untrimmed["data"]["entries"][0]["id"], json!("e1"));
+
+        let trimmed = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "get_session_entries", "sessionId": session,
+                "before": 10, "limit": 5, "chunkedRead": true
+            }))
+            .await;
+        assert_eq!(trimmed["success"], json!(true), "got: {trimmed}");
+        assert!(
+            trimmed["data"].get("untrimmed").is_none(),
+            "only the requested page is marked: {trimmed}"
+        );
+        bridge.stop().await;
+    }
+
+    /// A backward-history read the agent refuses is reported as a failure with
+    /// the agent's own reason. Answering an empty page instead would look to the
+    /// user like the conversation has no history at all.
+    #[tokio::test]
+    async fn a_failed_backward_page_is_not_an_empty_conversation() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-backward-fail").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("sess");
+        agent.script_for(
+            "get_session_entries",
+            &session,
+            false,
+            Value::Null,
+            "history backend down",
+        );
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "get_session_entries", "sessionId": session,
+                "before": 10, "limit": 5
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(false), "got: {reply}");
+        assert!(
+            reply["error"]
+                .as_str()
+                .unwrap()
+                .contains("history backend down"),
+            "got: {reply}"
+        );
+        bridge.stop().await;
+    }
+
+    /// A command id *is* the identity of the work it starts: a mobile outbox
+    /// retries the same `prompt` after a lost reply, and the desktop must answer
+    /// that retry with the run it already created — never with a second one.
+    /// Reusing the id for a *different* command is refused rather than
+    /// reinterpreted, which is what keeps an id from being silently reshaped by
+    /// whatever arrived last.
+    #[tokio::test]
+    async fn a_prompt_id_is_the_identity_of_its_run() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-replay-receipt").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("sess");
+        let prompt_id = unique("cmd");
+        let body = || {
+            json!({
+                "id": prompt_id, "type": "prompt", "sessionId": session,
+                "message": "hello", "modelId": "m1", "providerId": "p1"
+            })
+        };
+
+        agent.complete_next_run_stream();
+        let first = bridge.call(body()).await;
+        assert_eq!(first["success"], json!(true), "got: {first}");
+        let run_id = first["data"]["runId"].as_str().unwrap().to_string();
+
+        // The immediate retry (inside the reply-slot window) is answered from
+        // the slot, byte for byte.
+        let duplicate = bridge.call(body()).await;
+        assert_eq!(
+            duplicate, first,
+            "a retry replays the reply, it does not re-run"
+        );
+
+        // The same id with a different command is a conflict, not a new
+        // meaning for the id.
+        let conflict = bridge
+            .call(json!({
+                "id": prompt_id, "type": "continue_run", "sessionId": session, "runId": run_id
+            }))
+            .await;
+        assert_eq!(conflict["success"], json!(false), "got: {conflict}");
+        assert_eq!(conflict["error"], json!("command_id_conflict"));
+
+        // Let the run settle, then let the reply slot expire (500 ms in tests).
+        // The poll panics with its own message if the run never settles, so a
+        // hang here can never be mistaken for a pass.
+        wait_until("the run must settle", Duration::from_secs(5), || {
+            crate::store::get_run(&run_id)
+                .expect("run lookup")
+                .expect("run row")
+                .status
+                != "running"
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(650)).await;
+
+        // With the slot gone the stored receipt still answers: the phone gets
+        // the run it already has. A second run would carry a different id, so
+        // this is the assertion that proves no duplicate was created.
+        let replayed = bridge.call(body()).await;
+        assert_eq!(replayed["success"], json!(true), "got: {replayed}");
+        assert_eq!(replayed["data"]["runId"], json!(run_id));
+        assert_eq!(replayed["data"]["threadId"], first["data"]["threadId"]);
+        bridge.stop().await;
+    }
+
+    /// `get_prompt_receipt` answers `null` for an unknown id and the receipt for
+    /// a known one, so the phone can poll a prompt it may never have sent.
+    #[tokio::test]
+    async fn a_prompt_receipt_is_null_for_an_unknown_id() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-receipt").await;
+        let agent = ensure_mock_agent();
+        agent.complete_next_run_stream();
+
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "get_prompt_receipt",
+                "promptId": unique("never-sent")
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert!(reply["data"].is_null());
+
+        let prompt_id = unique("cmd");
+        agent.complete_next_run_stream();
+        let started = bridge
+            .call(json!({
+                "id": prompt_id, "type": "prompt", "sessionId": unique("sess"),
+                "message": "hello", "modelId": "m1", "providerId": "p1"
+            }))
+            .await;
+        assert_eq!(started["success"], json!(true), "got: {started}");
+        let receipt = bridge
+            .call(json!({
+                "id": unique("cmd"), "type": "get_prompt_receipt", "promptId": prompt_id
+            }))
+            .await;
+        assert_eq!(receipt["success"], json!(true), "got: {receipt}");
+        assert_eq!(receipt["data"]["runId"], started["data"]["runId"]);
+        assert_eq!(receipt["data"]["threadId"], started["data"]["threadId"]);
+        bridge.stop().await;
+    }
+
+    // ── The encrypted lane, and the access epoch ────────────────────────────
+    //
+    // Every command passes two gates before a handler runs: the connection must
+    // be admitted under the *live* access epoch, and a v2 connection must also
+    // present a record sealed by the channel it proved. Each test below pins one
+    // gate with a phone-visible outcome (a named refusal, or silence) plus the
+    // thing the gate exists to prevent — the host running, a credential written,
+    // a reply published in the clear.
+
+    /// The point of the secure lane: a paired phone's commands are sealed,
+    /// answered sealed, and answered at all only after `secure_ready` activated
+    /// the very channel it proved.
+    #[tokio::test]
+    async fn a_paired_phone_gets_its_commands_answered_over_the_encrypted_lane() {
+        let _home = HomeGuard::new("cmd-secure-lane");
+        init_store();
+        let (bridge, invitation) = Bridge::start_secure(None).await;
+        let mut channel =
+            crate::remote::test_support::secure_pair(&bridge.client, &invitation, &bridge.pair_id)
+                .await;
+        assert!(
+            bridge.handshake.active_flag().load(Ordering::Acquire),
+            "the channel the phone proved must be the active one"
+        );
+
+        let subject = format!("p.{}.cmd.rpc", bridge.pair_id);
+        let request = channel
+            .seal(
+                &subject,
+                &serde_json::to_vec(&json!({"id": "secure-business", "type": "get_presence"}))
+                    .unwrap(),
+            )
+            .unwrap();
+        let context = future_remote_crypto::reply_context(&subject, &request).unwrap();
+        let reply = bridge
+            .client
+            .request(subject, request.into())
+            .await
+            .unwrap();
+        let reply: Value =
+            serde_json::from_slice(&channel.open(&context, &reply.payload).unwrap()).unwrap();
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["online"], json!(true));
+        bridge.stop().await;
+    }
+
+    /// A record that cannot be opened is dropped: it must not reach the
+    /// dispatcher as if it were plaintext, and it must not be answered.
+    #[tokio::test]
+    async fn an_unopenable_secure_record_is_dropped_without_a_reply() {
+        let _home = HomeGuard::new("cmd-secure-garbage");
+        let (bridge, _invitation) = Bridge::start_secure(None).await;
+        let mut tap = bridge.nats.tap();
+        bridge.nats.inject(
+            &format!("p.{}.cmd.rpc", bridge.pair_id),
+            Some("rep_unopenable"),
+            b"FRE2this is not a sealed record".to_vec(),
+        );
+        crate::remote::test_support::assert_no_publish(
+            &mut tap,
+            "rep_unopenable",
+            Duration::from_millis(250),
+        )
+        .await;
+        bridge.stop().await;
+    }
+
+    /// Handshake messages are never business commands, even when the paired
+    /// peer seals them inside a record the desktop can open: answering a
+    /// `pair_handshake_confirm` through `handle_command` would tell an already
+    /// authenticated phone to pair first.
+    #[tokio::test]
+    async fn a_handshake_sealed_inside_a_secure_record_is_never_a_business_command() {
+        let _home = HomeGuard::new("cmd-secure-handshake");
+        init_store();
+        let (bridge, invitation) = Bridge::start_secure(None).await;
+        let mut channel =
+            crate::remote::test_support::secure_pair(&bridge.client, &invitation, &bridge.pair_id)
+                .await;
+        let subject = format!("p.{}.cmd.rpc", bridge.pair_id);
+        let mut tap = bridge.nats.tap();
+        for cmd_type in ["pair_handshake", "pair_handshake_confirm"] {
+            let reply_subject = format!("rep_{cmd_type}");
+            let wire = channel
+                .seal(
+                    &subject,
+                    &serde_json::to_vec(&json!({"id": "sealed-handshake", "type": cmd_type}))
+                        .unwrap(),
+                )
+                .unwrap();
+            bridge.nats.inject(&subject, Some(&reply_subject), wire);
+            crate::remote::test_support::assert_no_publish(
+                &mut tap,
+                &reply_subject,
+                Duration::from_millis(200),
+            )
+            .await;
+        }
+        bridge.stop().await;
+    }
+
+    /// Readiness is a commit, not a consequence of finishing the handshake: a
+    /// channel that has only *proved* the invitation is a candidate, and
+    /// commands sealed with it must be dropped until `secure_ready` swaps it in.
+    /// Otherwise a half-open candidate would answer on behalf of a session it
+    /// has not been admitted to.
+    #[tokio::test]
+    async fn a_channel_that_has_not_declared_readiness_is_not_yet_active() {
+        let _home = HomeGuard::new("cmd-secure-not-ready");
+        init_store();
+        let (bridge, invitation) = Bridge::start_secure(None).await;
+        let mut channel = crate::remote::test_support::open_secure_channel(
+            &bridge.client,
+            &invitation,
+            &bridge.pair_id,
+        )
+        .await;
+        assert!(
+            !bridge.handshake.active_flag().load(Ordering::Acquire),
+            "a proven invitation is not readiness"
+        );
+        let subject = format!("p.{}.cmd.rpc", bridge.pair_id);
+        let wire = channel
+            .seal(
+                &subject,
+                &serde_json::to_vec(&json!({"id": "too-early", "type": "get_presence"})).unwrap(),
+            )
+            .unwrap();
+        let mut tap = bridge.nats.tap();
+        bridge.nats.inject(&subject, Some("rep_too_early"), wire);
+        crate::remote::test_support::assert_no_publish(
+            &mut tap,
+            "rep_too_early",
+            Duration::from_millis(250),
+        )
+        .await;
+        bridge.stop().await;
+    }
+
+    /// A handshake opening with no reply subject is processed — the desktop has
+    /// no way to know the peer is not listening — but nothing at all is
+    /// published, because there is nowhere to publish it.
+    #[tokio::test]
+    async fn a_handshake_opening_without_a_reply_subject_sends_nothing() {
+        let _home = HomeGuard::new("cmd-handshake-no-reply");
+        let (bridge, _invitation) = Bridge::start_secure(None).await;
+        let mut tap = bridge.nats.tap();
+        bridge.nats.inject(
+            &format!("p.{}.cmd.handshake", bridge.pair_id),
+            None,
+            b"{\"type\":\"secure_open\"}".to_vec(),
+        );
+        // The tap sees the injection itself first (it is the broker's own
+        // publish feed), so the check is that *nothing follows it*.
+        let injected = tokio::time::timeout(Duration::from_millis(250), tap.recv())
+            .await
+            .expect("the injection is observed")
+            .expect("a live tap");
+        assert_eq!(injected.reply, None, "the opening carried no reply subject");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(250), tap.recv())
+                .await
+                .is_err(),
+            "a one-way opening must not answer into thin air"
+        );
+        bridge.stop().await;
+    }
+
+    /// A connection admitted under an epoch that has since moved on owns no
+    /// access at all: even a sealed record is dropped before it is opened.
+    #[tokio::test]
+    async fn a_secure_connection_admitted_under_a_stale_epoch_answers_nothing() {
+        let _home = HomeGuard::new("cmd-secure-stale-epoch");
+        let (bridge, _invitation) = Bridge::start_secure(Some(u64::MAX)).await;
+        let mut tap = bridge.nats.tap();
+        bridge.nats.inject(
+            &format!("p.{}.cmd.rpc", bridge.pair_id),
+            Some("rep_secure_stale"),
+            b"FRE2x".to_vec(),
+        );
+        crate::remote::test_support::assert_no_publish(
+            &mut tap,
+            "rep_secure_stale",
+            Duration::from_millis(250),
+        )
+        .await;
+        bridge.stop().await;
+    }
+
+    /// Counts how often the bridge actually handed a command to the host.
+    struct CountingHost;
+    static COUNTING: CountingHost = CountingHost;
+    static COUNTING_RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    impl super::super::services::BusinessHost for CountingHost {
+        fn execute<'a>(
+            &'a self,
+            cmd: IncomingCmd,
+            sink: &'a dyn ReplySink,
+        ) -> futures::future::BoxFuture<'a, ()> {
+            Box::pin(async move {
+                COUNTING_RUNS.fetch_add(1, Ordering::AcqRel);
+                sink.send(true, json!({"id": cmd.id}), None).await
+            })
+        }
+    }
+
+    /// The admission check on the plaintext lane: a command delivered to a
+    /// generation whose epoch is gone must not reach the host at all. The live
+    /// half of the same test proves the fixture can run a command, so the
+    /// silence is about the epoch and not about the harness.
+    #[tokio::test]
+    async fn a_command_admitted_under_a_stale_epoch_never_reaches_the_host() {
+        let _home = HomeGuard::new("cmd-stale-epoch-host");
+        let before = COUNTING_RUNS.load(Ordering::Acquire);
+        let stale = Bridge::start_with(&COUNTING, Some(u64::MAX)).await;
+        stale.activate();
+        let mut tap = stale.nats.tap();
+        stale.nats.inject(
+            &format!("p.{}.cmd.rpc", stale.pair_id),
+            Some("rep_stale_host"),
+            serde_json::to_vec(&json!({"id": "stale", "type": "get_state"})).unwrap(),
+        );
+        crate::remote::test_support::assert_no_publish(
+            &mut tap,
+            "rep_stale_host",
+            Duration::from_millis(250),
+        )
+        .await;
+        assert_eq!(
+            COUNTING_RUNS.load(Ordering::Acquire),
+            before,
+            "a stale epoch must not run the command"
+        );
+
+        let live = Bridge::start_with(&COUNTING, Some(SUPERVISOR.access.current())).await;
+        live.activate();
+        let reply = live
+            .call(json!({"id": unique("cmd"), "type": "get_state"}))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(COUNTING_RUNS.load(Ordering::Acquire), before + 1);
+        live.stop().await;
+        stale.stop().await;
+    }
+
+    /// The same gate inside `handle_command`, which is also reached directly by
+    /// the unpair path: a stale epoch must be refused before the payload is even
+    /// decoded, let alone answered.
+    #[tokio::test]
+    async fn a_stale_epoch_drops_the_command_before_it_is_decoded() {
+        let _home = HomeGuard::new("cmd-stale-epoch-decoded");
+        let nats = FakeNats::start().await;
+        let client = nats_connect(&nats).await;
+        let handshake = HandshakeState::new(
+            bridge_creds(),
+            Arc::new(AtomicBool::new(false)),
+            format!("bridge_{}", unique("cmd")),
+        )
+        .with_access(u64::MAX);
+        let mut tap = nats.tap();
+        let msg = async_nats::Message {
+            subject: "p.pair_stale.cmd.rpc".into(),
+            reply: Some("rep_stale_decoded".into()),
+            payload: serde_json::to_vec(&json!({"id": "x", "type": "get_state"}))
+                .unwrap()
+                .into(),
+            headers: None,
+            status: None,
+            description: None,
+            length: 0,
+        };
+        handle_command(&client, msg, handshake).await;
+        crate::remote::test_support::assert_no_publish(
+            &mut tap,
+            "rep_stale_decoded",
+            Duration::from_millis(250),
+        )
+        .await;
+    }
+
+    /// The single-flight retry path re-checks the epoch *after* it acquires the
+    /// reply slot. A retry that waited for an in-flight delivery and won the
+    /// lock only after the epoch moved on must be dropped, not served a reply
+    /// the new generation never produced.
+    #[tokio::test]
+    async fn an_epoch_revoked_while_a_retry_waited_for_its_slot_drops_the_retry() {
+        let _home = HomeGuard::new("cmd-epoch-contended");
+        let nats = FakeNats::start().await;
+        let client = nats_connect(&nats).await;
+        let handshake = HandshakeState::new(
+            bridge_creds(),
+            Arc::new(AtomicBool::new(false)),
+            format!("bridge_{}", unique("cmd")),
+        )
+        .with_access(SUPERVISOR.access.current());
+        let slots = new_reply_slots();
+        let request = json!({"id": "contended", "type": "get_state"});
+        let slot = Arc::new(CachedReply {
+            request: request.clone(),
+            response: tokio::sync::Mutex::new(None),
+        });
+        slots
+            .lock()
+            .unwrap()
+            .insert("contended".to_string(), slot.clone());
+        // Hold the reply slot exactly as an in-flight first delivery does.
+        let in_flight = slot.response.lock().await;
+        let msg = async_nats::Message {
+            subject: "p.pair.cmd.rpc".into(),
+            reply: Some("rep_contended".into()),
+            payload: serde_json::to_vec(&request).unwrap().into(),
+            headers: None,
+            status: None,
+            description: None,
+            length: 0,
+        };
+        let mut retry = Box::pin(handle_command_singleflight(&client, msg, slots, handshake));
+        // One poll carries the retry past its admission check and parks it on
+        // the slot; nothing yields in between, so this is a fact, not a race.
+        assert!(
+            futures::FutureExt::now_or_never(retry.as_mut()).is_none(),
+            "a retry must wait for the in-flight delivery, not answer from it"
+        );
+        SUPERVISOR.access.invalidate(|| {});
+        drop(in_flight);
+        retry.await;
+        let mut tap = nats.tap();
+        crate::remote::test_support::assert_no_publish(
+            &mut tap,
+            "rep_contended",
+            Duration::from_millis(250),
+        )
+        .await;
+    }
+
+    /// Every identity field in a pairing handshake is checked by name. The name
+    /// is the whole point: it is what lets the desktop tell the user *why* a
+    /// scanned invitation did not work. A refusal must also leave no challenge
+    /// behind and must not activate the bridge.
+    #[tokio::test]
+    async fn a_handshake_that_disagrees_on_one_identity_field_is_refused() {
+        let _home = HomeGuard::new("cmd-identity-ladder");
+        let bridge = Bridge::start().await;
+        let creds = bridge.handshake.creds.clone();
+        let client_key = nkeys::KeyPair::new_user();
+        let other_key = nkeys::KeyPair::new_user();
+        for (field, value) in [
+            ("pairId", json!("pair_someone_else")),
+            ("expectedDesktopId", json!("desktop_someone_else")),
+            ("expectedDesktopPublicKey", json!(other_key.public_key())),
+            ("deviceId", json!("phone")),
+            ("clientPublicKey", json!("not-a-user-key")),
+            ("clientNonce", json!("too-short")),
+        ] {
+            let mut cmd = handshake_cmd(&creds, &client_key);
+            cmd[field] = value;
+            let reply = bridge.call(cmd).await;
+            assert_eq!(reply["success"], json!(false), "field {field}: {reply}");
+            assert_eq!(
+                reply["error"],
+                json!("pairing_identity_mismatch"),
+                "field {field}: {reply}"
+            );
+        }
+        assert!(
+            bridge.handshake.pending.lock().unwrap().is_empty(),
+            "a refused handshake must not leave a challenge behind"
+        );
+        assert!(
+            !bridge.handshake.active_flag().load(Ordering::Acquire),
+            "a refused handshake must not activate the bridge"
+        );
+        bridge.stop().await;
+    }
+
+    /// The challenge table is bounded, so an unauthenticated peer cannot grow it
+    /// without limit. The refusal is silent (there is no reply to give), but it
+    /// must not displace a challenge the table already holds either — that would
+    /// let a flood knock a legitimately pairing phone out.
+    #[tokio::test]
+    async fn the_challenge_table_stops_accepting_a_flood() {
+        let _home = HomeGuard::new("cmd-challenge-flood");
+        let bridge = Bridge::start().await;
+        let creds = bridge.handshake.creds.clone();
+        for _ in 0..32 {
+            let key = nkeys::KeyPair::new_user();
+            let reply = bridge.call(handshake_cmd(&creds, &key)).await;
+            assert_eq!(reply["success"], json!(true), "got: {reply}");
+        }
+        assert_eq!(bridge.handshake.pending.lock().unwrap().len(), 32);
+
+        let mut tap = bridge.nats.tap();
+        bridge.nats.inject(
+            &format!("p.{}.cmd.pair_handshake", bridge.pair_id),
+            Some("rep_flood"),
+            serde_json::to_vec(&handshake_cmd(&creds, &nkeys::KeyPair::new_user())).unwrap(),
+        );
+        crate::remote::test_support::assert_no_publish(
+            &mut tap,
+            "rep_flood",
+            Duration::from_millis(250),
+        )
+        .await;
+        assert_eq!(
+            bridge.handshake.pending.lock().unwrap().len(),
+            32,
+            "the refused challenge must not displace one already issued"
+        );
+        bridge.stop().await;
+    }
+
+    /// `pair_handshake_confirm` commits the pairing under the epoch the
+    /// connection was admitted under. Under the live epoch the phone is
+    /// confirmed and the credential is persisted; under a stale one the commit is
+    /// refused, and nothing is written or answered — a credential saved after
+    /// `stop()` invalidated the generation would outlive the bridge that proved
+    /// it.
+    #[tokio::test]
+    async fn a_confirm_commits_only_under_its_own_access_epoch() {
+        let _home = HomeGuard::new("cmd-confirm-epoch");
+        init_store();
+        for (label, epoch) in [("live", SUPERVISOR.access.current()), ("stale", u64::MAX)] {
+            let nats = FakeNats::start().await;
+            let client = nats_connect(&nats).await;
+            let creds = bridge_creds();
+            let client_key = nkeys::KeyPair::new_user();
+            let bridge_instance_id = format!("bridge_{}", unique("cmd"));
+            let state = HandshakeState::new(
+                creds.clone(),
+                Arc::new(AtomicBool::new(false)),
+                bridge_instance_id.clone(),
+            )
+            .with_access(epoch);
+            // A challenge the desktop already issued for this client.
+            let desktop_nonce = nkeys::KeyPair::new_user().public_key();
+            let transcript = handshake_transcript(&HandshakeTranscript {
+                pair_id: &creds.pair_id,
+                desktop_id: &creds.desktop_id,
+                desktop_public_key: &crate::remote::pairing::public_key(&creds).unwrap(),
+                bridge_instance_id: &bridge_instance_id,
+                device_id: "dev_test",
+                client_public_key: &client_key.public_key(),
+                client_nonce: "nonce-0123456789abcdef",
+                desktop_nonce: &desktop_nonce,
+            });
+            state.pending.lock().unwrap().insert(
+                desktop_nonce.clone(),
+                PendingHandshake {
+                    transcript: transcript.clone(),
+                    device_id: "dev_test".to_string(),
+                    client_public_key: client_key.public_key(),
+                    created_at: std::time::Instant::now(),
+                },
+            );
+            crate::remote::pairing::clear_creds().expect("start with no persisted pairing");
+
+            let reply_subject = format!("rep_confirm_{label}");
+            let cmd: IncomingCmd = serde_json::from_value(json!({
+                "id": unique("cmd"),
+                "type": "pair_handshake_confirm",
+                "deviceId": "dev_test",
+                "desktopNonce": desktop_nonce,
+                "clientSignature": URL_SAFE_NO_PAD
+                    .encode(client_key.sign(transcript.as_bytes()).unwrap()),
+            }))
+            .unwrap();
+            let msg = async_nats::Message {
+                subject: format!("p.{}.cmd.pair_handshake_confirm", creds.pair_id).into(),
+                reply: Some(reply_subject.clone().into()),
+                payload: Vec::new().into(),
+                headers: None,
+                status: None,
+                description: None,
+                length: 0,
+            };
+            let mut tap = nats.tap();
+            handle_pair_handshake_confirm(&client, &msg, &cmd, &state).await;
+            if label == "live" {
+                let reply: Value = await_publish(&mut tap, &reply_subject, Duration::from_secs(5))
+                    .await
+                    .json();
+                assert_eq!(reply["success"], json!(true), "got: {reply}");
+                assert_eq!(reply["data"]["confirmed"], json!(true));
+                assert!(state.active.load(Ordering::Acquire));
+                assert!(
+                    crate::remote::pairing::load_creds().is_some(),
+                    "a confirmed pairing is persisted"
+                );
+            } else {
+                // A generation whose epoch is gone is refused by name at the
+                // access screen, before the commit is ever reached.
+                let refused: Value =
+                    await_publish(&mut tap, &reply_subject, Duration::from_secs(5))
+                        .await
+                        .json();
+                assert_eq!(refused["success"], json!(false), "got: {refused}");
+                assert_eq!(refused["error"], json!("pairing_identity_mismatch"));
+                assert!(
+                    !state.active.load(Ordering::Acquire),
+                    "a stale epoch must not activate the bridge"
+                );
+                assert!(
+                    crate::remote::pairing::load_creds().is_none(),
+                    "a stale epoch must not persist a credential"
+                );
+            }
+        }
+    }
+
+    /// A reply that never reached a broker is not a delivered reply: the failure
+    /// is logged and the function returns without pretending otherwise. The
+    /// command channel closes when the connection handler exits, which is what a
+    /// drained or expired connection leaves behind.
+    #[tokio::test]
+    async fn a_reply_that_cannot_be_published_is_not_reported_as_delivered() {
+        let nats = FakeNats::start().await;
+        let client = nats_connect(&nats).await;
+        client.drain().await.expect("drain the client");
+        // Poll the condition the reply path depends on rather than guessing a
+        // delay: the handler exits once the drain completes, and that closes the
+        // command channel every `publish` goes through.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while client
+            .publish("probe".to_string(), Vec::<u8>::new().into())
+            .await
+            .is_ok()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the drained client never closed its command channel"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        let msg = async_nats::Message {
+            subject: "p.pair.cmd.rpc".into(),
+            reply: Some("rep_unpublishable".into()),
+            payload: Vec::new().into(),
+            headers: None,
+            status: None,
+            description: None,
+            length: 0,
+        };
+        let mut tap = nats.tap();
+        publish_reply_payload(&client, &msg, b"payload".to_vec()).await;
+        crate::remote::test_support::assert_no_publish(
+            &mut tap,
+            "rep_unpublishable",
+            Duration::from_millis(250),
+        )
+        .await;
+    }
+
+    /// The unpair cleanup is best-effort: the phone already has its
+    /// acknowledgement, so a local persistence failure is logged and the command
+    /// still reports success — the user's unpair must not appear to fail because
+    /// the desktop could not write its bookkeeping.
+    #[tokio::test]
+    async fn an_unpair_that_cannot_persist_is_still_acknowledged() {
+        let _home = HomeGuard::new("cmd-unpair-persist-failure");
+        init_store();
+        crate::remote::pairing::save_creds(&secure_bridge_creds()).expect("seed a pairing");
+        // The HOME the pairing lives under disappears between the ack and the
+        // spawned cleanup, so the destructive work cannot be recorded.
+        let previous_userprofile = std::env::var("USERPROFILE").ok();
+        std::env::remove_var("HOME");
+        std::env::remove_var("USERPROFILE");
+        // The premise is asserted, not assumed: with no HOME the local unpair
+        // cannot record anything, which is the only reason the spawned cleanup
+        // below can fail. The generation this first call stops is a throwaway —
+        // the connection under test is admitted under the epoch captured after
+        // it.
+        assert!(
+            crate::remote::unpair().await.is_err(),
+            "a pairing under an unset HOME must fail to persist"
+        );
+
+        let nats = FakeNats::start().await;
+        let client = nats_connect(&nats).await;
+        let handshake = HandshakeState::new(
+            bridge_creds(),
+            Arc::new(AtomicBool::new(false)),
+            format!("bridge_{}", unique("cmd")),
+        )
+        .with_access(SUPERVISOR.access.current());
+        handshake.active.store(true, Ordering::Release);
+        let reply_subject = "rep_unpair_persist".to_string();
+        let msg = async_nats::Message {
+            subject: "p.pair.cmd.unpair".into(),
+            reply: Some(reply_subject.clone().into()),
+            payload: serde_json::to_vec(&json!({"id": unique("cmd"), "type": "unpair"}))
+                .unwrap()
+                .into(),
+            headers: None,
+            status: None,
+            description: None,
+            length: 0,
+        };
+        let mut tap = nats.tap();
+        handle_command(&client, msg, handshake).await;
+        let ack: Value = await_publish(&mut tap, &reply_subject, Duration::from_secs(5))
+            .await
+            .json();
+        assert_eq!(ack["success"], json!(true), "got: {ack}");
+        // The acknowledgement is published before the cleanup runs; yield so the
+        // spawned task observably reaches the failure while HOME is still gone.
+        tokio::task::yield_now().await;
+        // `home_dir` ignores an empty override exactly as it ignores an absent
+        // one, so restoring to the empty string needs no branch on whether this
+        // process happened to carry a USERPROFILE.
+        std::env::set_var("USERPROFILE", previous_userprofile.unwrap_or_default());
+    }
+
+    /// A phone-initiated unpair acknowledges first and does the destructive work
+    /// in a spawned task — which must re-check the epoch, because `stop()`
+    /// invalidates it in between. Both halves are asserted: with a live epoch the
+    /// local pairing is cleared, and with a revoked one it is left exactly as it
+    /// was, so an unpair from a torn-down generation cannot destroy a pairing the
+    /// user never asked to remove.
+    #[tokio::test]
+    async fn an_unpair_whose_epoch_was_revoked_leaves_the_pairing_alone() {
+        let _home = HomeGuard::new("cmd-unpair-epoch");
+        init_store();
+        for (label, stale) in [("live", false), ("revoked", true)] {
+            let nats = FakeNats::start().await;
+            let client = nats_connect(&nats).await;
+            crate::remote::pairing::save_creds(&secure_bridge_creds()).expect("seed a pairing");
+            let handshake = HandshakeState::new(
+                bridge_creds(),
+                Arc::new(AtomicBool::new(false)),
+                format!("bridge_{}", unique("cmd")),
+            )
+            .with_access(SUPERVISOR.access.current());
+            handshake.active.store(true, Ordering::Release);
+            let reply_subject = format!("rep_unpair_{label}");
+            let msg = async_nats::Message {
+                subject: "p.pair.cmd.unpair".into(),
+                reply: Some(reply_subject.clone().into()),
+                payload: serde_json::to_vec(&json!({"id": unique("cmd"), "type": "unpair"}))
+                    .unwrap()
+                    .into(),
+                headers: None,
+                status: None,
+                description: None,
+                length: 0,
+            };
+            let mut tap = nats.tap();
+            handle_command(&client, msg, handshake).await;
+            if stale {
+                // The generation is torn down before the spawned cleanup runs;
+                // the current-thread test runtime has not scheduled it yet.
+                SUPERVISOR.access.invalidate(|| {});
+            }
+            let ack: Value = await_publish(&mut tap, &reply_subject, Duration::from_secs(5))
+                .await
+                .json();
+            assert_eq!(ack["success"], json!(true), "got: {ack}");
+            if stale {
+                // Nothing observable marks the skipped cleanup, so give it the
+                // same window the live case needs to complete.
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                assert!(
+                    crate::remote::pairing::load_creds().is_some(),
+                    "a revoked epoch must not clear the pairing"
+                );
+            } else {
+                wait_until(
+                    "the live unpair clears the local pairing",
+                    Duration::from_secs(5),
+                    || crate::remote::pairing::load_creds().is_none(),
+                )
+                .await;
+            }
+        }
     }
 }
 

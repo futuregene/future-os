@@ -909,6 +909,640 @@ mod tests {
             .contains("Rate limited"));
     }
 
+    // ─── transport error classification and the image projection ─────────────
+
+    /// Every arm of `reqwest_stream_error_kind` is reachable from a real socket,
+    /// and the classification is what an operator reads to tell "the network went
+    /// away" from "the provider sent garbage". Each expectation is paired with the
+    /// independent `reqwest` predicate so the test fails if either side drifts.
+    #[tokio::test]
+    async fn a_transport_error_is_classified_by_the_kind_that_caused_it() {
+        use std::io::{Read, Write};
+
+        // Nothing listening: a connect error.
+        let closed = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap()
+        };
+        let error = reqwest::Client::new()
+            .get(format!("http://{closed}/"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(error.is_connect(), "{error}");
+        assert_eq!(reqwest_stream_error_kind(&error), "connect");
+        assert!(
+            !error_source_chain(&error).is_empty(),
+            "a connect error has a source chain to report"
+        );
+
+        // A body that stops short of its declared length. `hyper` surfaces this as
+        // a *decode* failure (the message is incomplete), which the classifier must
+        // report as such rather than claiming the peer closed the connection.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\nshort");
+            let _ = stream.flush();
+        });
+        let error = reqwest::Client::new()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap_err();
+        assert!(error.is_decode(), "expected a decode error: {error:?}");
+        assert_eq!(reqwest_stream_error_kind(&error), "decode");
+
+        // A chunked body whose chunk header is not a number is *also* surfaced as
+        // a decode failure by this hyper/reqwest pair (`Invalid chunk size line`),
+        // not as `is_body`. Pin both facts: the mapping follows the predicate, and
+        // this toolchain never reports a framing failure as a body error.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = stream.read(&mut buf);
+            let _ =
+                stream.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nZZZ\r\n");
+            let _ = stream.flush();
+        });
+        let chunked = reqwest::Client::new()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap_err();
+        assert!(chunked.is_decode(), "expected a decode error: {chunked:?}");
+        assert!(!chunked.is_body());
+        assert_eq!(reqwest_stream_error_kind(&chunked), "decode");
+
+        // A URL the client cannot build a request from is a `Builder` error, which
+        // is *outside* every named transport kind — so the catch-all must take it
+        // too, and the kind must stay the classifier's own fallback rather than a
+        // guess at what the peer did.
+        let error = reqwest::Client::new()
+            .get("http://this host name has spaces/")
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            !error.is_timeout()
+                && !error.is_connect()
+                && !error.is_body()
+                && !error.is_decode()
+                && !error.is_request(),
+            "an unbuildable request must not be reported as a transport kind: {error:?}"
+        );
+        assert_eq!(reqwest_stream_error_kind(&error), "unknown");
+
+        // The table is total and ordered: for any error this crate can hand it, the
+        // result is exactly the first matching predicate. Data-driven so the check
+        // itself introduces no untested arm.
+        for candidate in [&error, &chunked] {
+            let expected = [
+                (candidate.is_timeout(), "timeout"),
+                (candidate.is_connect(), "connect"),
+                (candidate.is_body(), "body"),
+                (candidate.is_decode(), "decode"),
+                (candidate.is_request(), "request"),
+            ]
+            .into_iter()
+            .find_map(|(matches, name)| matches.then_some(name))
+            .unwrap_or("unknown");
+            assert_eq!(reqwest_stream_error_kind(candidate), expected);
+        }
+
+        // An error the classifier does not know must not be mislabelled as a
+        // transport kind it is not: an unhandled redirect takes the catch-all.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for _ in 0..8 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let location = format!("http://{addr}/again");
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n"
+                    )
+                    .as_bytes(),
+                );
+                let _ = stream.flush();
+            }
+        });
+        let error = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(1))
+            .build()
+            .unwrap()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap_err();
+        assert!(
+            !error.is_timeout()
+                && !error.is_connect()
+                && !error.is_body()
+                && !error.is_decode()
+                && !error.is_request(),
+            "the catch-all arm needs an error outside every named kind: {error:?}"
+        );
+        assert_eq!(reqwest_stream_error_kind(&error), "unknown");
+    }
+
+    /// `error_source_chain` reports `none` rather than an empty string when an
+    /// error has no source, because the value is embedded in a diagnostic line
+    /// where an empty field would read as "the chain was not collected".
+    #[test]
+    fn an_error_without_a_source_chain_says_none() {
+        #[derive(Debug)]
+        struct Bare;
+        impl std::fmt::Display for Bare {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "bare")
+            }
+        }
+        impl std::error::Error for Bare {}
+
+        assert_eq!(error_source_chain(&Bare), "none");
+        let chained = anyhow::Error::new(Bare).context("outer");
+        assert_eq!(error_source_chain(chained.as_ref()), "bare");
+    }
+
+    /// Providers choose modalities per request: a model that accepts images gets
+    /// the session's image attachments, and one that does not must have the image
+    /// blocks *stripped* rather than sent (which the provider rejects). A message
+    /// that already carries an image block is left alone instead of being
+    /// duplicated by its own attachment metadata.
+    #[tokio::test]
+    async fn the_image_projection_attaches_attachments_strips_for_text_only_and_never_duplicates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        image::RgbImage::from_pixel(2, 2, image::Rgb([255, 0, 0]))
+            .save(&path)
+            .unwrap();
+        let path = path.to_string_lossy().to_string();
+
+        let attachment = || {
+            let mut metadata = serde_json::Map::new();
+            metadata.insert(
+                "attachments".to_string(),
+                serde_json::json!([
+                    {"kind": "image", "path": path},
+                    {"kind": "file", "path": path}
+                ]),
+            );
+            metadata
+        };
+        let request = || schema::ModelRequest {
+            model: "mock".to_string(),
+            system_prompt: "sys".to_string(),
+            messages: vec![
+                crate::types::AgentMessage {
+                    role: "user".to_string(),
+                    content: vec![crate::types::ContentBlock::text("look")],
+                    metadata: Some(attachment()),
+                    ..Default::default()
+                },
+                // Already has an image, and metadata that would add a second one.
+                crate::types::AgentMessage {
+                    role: "user".to_string(),
+                    content: vec![crate::types::ContentBlock::image(
+                        "data:image/png;base64,AAAA",
+                    )],
+                    metadata: Some(attachment()),
+                    ..Default::default()
+                },
+            ],
+            tools: vec![],
+        };
+
+        // A vision model sees both attachments (and the text stays first).
+        let server = mock_server(|_| {
+            (
+                200,
+                "text/event-stream",
+                "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n".into(),
+            )
+        });
+        let mut target = chat_target(&server.base_url, "k", None, None);
+        target.capabilities.supports_image_input = true;
+        let client = Client::from_target(target);
+        let _events: Vec<_> = client
+            .stream_model(request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        let body: Value = {
+            let requests = server.requests.lock().unwrap();
+            serde_json::from_str(&requests[0]).unwrap()
+        };
+        let images = |body: &Value| body.to_string().matches("data:image/png;base64,").count();
+        // Message 1 keeps exactly the image it already carried: the attachment
+        // metadata must not add a second one, and the non-image attachment must
+        // not become an image either (three would mean a duplicate).
+        assert_eq!(
+            images(&body),
+            2,
+            "one image per message, no duplicates: {body}"
+        );
+        assert!(body.to_string().contains("look"), "text survives: {body}");
+
+        // A text-only model gets no image block at all, not even the one the
+        // conversation already carried.
+        let server = mock_server(|_| {
+            (
+                200,
+                "text/event-stream",
+                "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n".into(),
+            )
+        });
+        let mut target = chat_target(&server.base_url, "k", None, None);
+        target.capabilities.supports_image_input = false;
+        let client = Client::from_target(target);
+        let _events: Vec<_> = client
+            .stream_model(request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        let body: Value = {
+            let requests = server.requests.lock().unwrap();
+            serde_json::from_str(&requests[0]).unwrap()
+        };
+        let serialized = body.to_string();
+        assert!(
+            !serialized.contains("base64"),
+            "a text-only model must be sent no image payload: {body}"
+        );
+        assert!(serialized.contains("look"), "the text survives: {body}");
+    }
+
+    /// A request that exceeds its HTTP deadline is reported as a *timeout*, not as
+    /// a generic request failure: the run loop turns that code into
+    /// `request_timeout` so an orchestrator can decide whether to resume.
+    #[tokio::test]
+    async fn a_request_deadline_is_reported_as_a_response_timeout() {
+        // A server that accepts and then says nothing: only the client deadline
+        // can end this request, and it must end it as a timeout.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for _ in 0..4 {
+                let Ok((stream, _)) = listener.accept() else {
+                    return;
+                };
+                held.push(stream); // keep the connection open, write nothing
+            }
+        });
+        let target = chat_target(&format!("http://{addr}"), "k", None, None);
+        let mut client = Client::from_target(target);
+        client.http = HttpClient::builder()
+            .timeout(std::time::Duration::from_millis(120))
+            .build()
+            .unwrap();
+
+        let error = client.stream_model(canonical_request()).await.unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("[RESPONSE_TIMEOUT]"),
+            "a deadline must be labelled as a timeout, not as a generic failure: {message}"
+        );
+
+        // The same code path for a request that fails *without* timing out: the
+        // error is forwarded verbatim, because inventing a timeout label there
+        // would make a dead provider look like a slow one.
+        let closed = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            probe.local_addr().unwrap()
+        };
+        let client = Client::from_target(chat_target(&format!("http://{closed}"), "k", None, None));
+        let message = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            !message.contains("[RESPONSE_TIMEOUT]"),
+            "a refused connection is not a timeout: {message}"
+        );
+        assert!(
+            message.contains("error sending request"),
+            "a non-timeout transport failure is forwarded verbatim: {message}"
+        );
+    }
+
+    /// An SSE frame whose bytes are not valid UTF-8 — a multi-byte character cut
+    /// in the middle, which is exactly what a peer- or proxy-truncated stream
+    /// produces — must be reported as a model-response error and must not be
+    /// silently dropped or decoded into a panic.
+    #[tokio::test]
+    async fn a_frame_with_a_truncated_utf8_sequence_is_a_model_response_error() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let mut body: Vec<u8> = br#"data: {"choices":[{"delta":{"content":""#.to_vec();
+            // 0xE6 starts a three-byte CJK character; only the first byte is sent.
+            body.extend_from_slice(&[0xE6, 0x0A, 0x0A]);
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        });
+
+        let client = Client::from_target(chat_target(&format!("http://{addr}"), "k", None, None));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        let mut message = None;
+        for event in &events {
+            if let schema::ModelStreamEvent::Error { message: text } = event {
+                message = Some(text.as_str());
+                break;
+            }
+        }
+        let message = message.expect("an undecodable frame must surface a terminal error event");
+        assert!(
+            message.contains(MODEL_RESPONSE_ERROR),
+            "an undecodable frame is a model-response error: {message}"
+        );
+    }
+
+    /// A stream that stalls long enough to hit the request deadline is a *timeout*
+    /// disconnect — the one category that tells an orchestrator the request was
+    /// cut short by us rather than by the peer.
+    #[tokio::test]
+    async fn a_stalled_stream_body_is_reported_as_a_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let mut held = Vec::new();
+            for _ in 0..4 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                // Headers and one complete frame, then nothing at all.
+                let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+                let frame = "data: {\"choices\":[{\"delta\":{\"content\":\"cut\"}}]}\n\n";
+                let chunk = format!("{:x}\r\n{frame}\r\n", frame.len());
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(chunk.as_bytes());
+                let _ = stream.flush();
+                held.push(stream);
+            }
+        });
+
+        let mut client =
+            Client::from_target(chat_target(&format!("http://{addr}"), "k", None, None));
+        client.http = HttpClient::builder()
+            .timeout(std::time::Duration::from_millis(150))
+            .build()
+            .unwrap();
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+
+        let message = events
+            .iter()
+            .find_map(|event| match event {
+                schema::ModelStreamEvent::Error { message } => Some(message.as_str()),
+                _ => None,
+            })
+            .expect("a stalled body must surface a terminal error event");
+        assert!(
+            message.contains("[RESPONSE_TIMEOUT]"),
+            "a stalled body is a timeout, not a bare disconnect: {message}"
+        );
+    }
+
+    /// A stream that dies mid-body is reported as an upstream disconnect carrying
+    /// the progress it had made, and the buffered tail is *not* decoded: after a
+    /// transport error the tail can be cut mid-JSON or mid-UTF-8, and reporting a
+    /// parse error there would turn a retryable disconnect into a hard failure.
+    #[tokio::test]
+    async fn a_truncated_stream_body_is_an_upstream_disconnect_not_a_parse_error() {
+        let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"par\"}}]}\n\n";
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            use std::io::{Read, Write};
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            // Declare far more than we send, then close: the body is cut.
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
+                sse.len() + 5000
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(sse.as_bytes());
+            let _ = stream.flush();
+            drop(stream);
+        });
+
+        let target = chat_target(&format!("http://{addr}"), "k", None, None);
+        let client = Client::from_target(target);
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+
+        let error = events
+            .iter()
+            .find_map(|event| match event {
+                schema::ModelStreamEvent::Error { message } => Some(message.as_str()),
+                _ => None,
+            })
+            .expect("a cut body must surface a terminal error event");
+        assert!(
+            error.contains(UPSTREAM_DISCONNECTED),
+            "a cut body is an upstream disconnect: {error}"
+        );
+        assert!(
+            error.contains("kind=") && error.contains("causes="),
+            "the diagnostic must carry the classified kind and the cause chain: {error}"
+        );
+        assert!(
+            !error.contains(MODEL_RESPONSE_ERROR),
+            "the cut tail must not be decoded into a parse error: {error}"
+        );
+        // The partial text the provider did deliver is preserved.
+        assert!(events.iter().any(|event| matches!(
+            event,
+            schema::ModelStreamEvent::TextDelta { text, .. } if text == "par"
+        )));
+    }
+
+    /// A frame that is valid SSE but not a valid provider payload must be
+    /// reported as a model-response error rather than ending the stream quietly:
+    /// a gateway that injects an HTML error page or a truncated JSON object into
+    /// the event stream would otherwise look like a clean completion.
+    #[tokio::test]
+    async fn a_frame_whose_payload_is_not_valid_json_is_a_model_response_error() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for _ in 0..4 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let body = "data: {\"choices\": [truncated\n\n";
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(body.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        let client = Client::from_target(chat_target(&format!("http://{addr}"), "k", None, None));
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        let mut message = None;
+        for event in &events {
+            if let schema::ModelStreamEvent::Error { message: text } = event {
+                message = Some(text.as_str());
+                break;
+            }
+        }
+        let message = message.expect("an undecodable payload must surface a terminal error event");
+        assert!(
+            message.contains(MODEL_RESPONSE_ERROR),
+            "a malformed payload is a model-response error: {message}"
+        );
+        assert!(
+            message.contains("invalid provider stream event"),
+            "the diagnostic must say the provider event was invalid: {message}"
+        );
+    }
+
+    /// The client accepts an injected adapter registry, which is the seam the
+    /// protocol-level failure arms need: an adapter that refuses to close a
+    /// stream must surface as a model-response error at EOF, and one that
+    /// declares the stream complete must end the pump early (its trailing bytes
+    /// are intentionally dropped, which is what a logical terminator means).
+    #[tokio::test]
+    async fn an_adapter_that_fails_or_terminates_controls_the_end_of_the_pump() {
+        struct RefusingAdapter;
+        impl crate::llm::adapters::ProtocolAdapter for RefusingAdapter {
+            fn protocol(&self) -> schema::ApiProtocol {
+                schema::ApiProtocol::OpenAiChatCompletions
+            }
+            fn endpoint_path(&self) -> &'static str {
+                "/v1/chat/completions"
+            }
+            fn build_body(
+                &self,
+                _: &schema::ResolvedModelTarget,
+                request: &schema::ModelRequest,
+            ) -> Result<Value> {
+                Ok(serde_json::json!({"model": request.model, "stream": true}))
+            }
+            fn new_stream_state(&self) -> Box<dyn std::any::Any + Send> {
+                Box::new(())
+            }
+            fn decode_frame(
+                &self,
+                _: &crate::llm::sse::SseFrame,
+                _: &mut (dyn std::any::Any + Send),
+            ) -> Result<Vec<schema::ModelStreamEvent>> {
+                Ok(Vec::new())
+            }
+            fn finish_stream(
+                &self,
+                _: &mut (dyn std::any::Any + Send),
+            ) -> Result<Vec<schema::ModelStreamEvent>> {
+                Err(anyhow::anyhow!("refusing to close this stream"))
+            }
+        }
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for _ in 0..4 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let body = "data: {}\n\n";
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(body.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        let mut registry = crate::llm::adapters::AdapterRegistry::default();
+        registry.register(RefusingAdapter);
+        let client = Client::from_target_with_registry(
+            chat_target(&format!("http://{addr}"), "k", None, None),
+            registry,
+        );
+        let events: Vec<_> = client
+            .stream_model(canonical_request())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        let mut message = None;
+        for event in &events {
+            if let schema::ModelStreamEvent::Error { message: text } = event {
+                message = Some(text.as_str());
+                break;
+            }
+        }
+        let message = message.expect("a failed close must surface a terminal error event");
+        assert!(
+            message.contains(MODEL_RESPONSE_ERROR) && message.contains("refusing to close"),
+            "the adapter's close failure must be reported: {message}"
+        );
+    }
+
     // ─── mock HTTP server ───────────────────────────────────────────────────
     /// One-shot HTTP server: accepts a single request, records its body, and
     /// replies with a canned (status, content_type, body). Loops so aborted

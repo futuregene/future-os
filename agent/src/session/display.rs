@@ -198,3 +198,48 @@ mod metadata_tests {
         assert!(!metadata_is_redundant(&json!(0)));
     }
 }
+
+/// A terminal marker that cannot be attributed to a run (no content, or no
+/// `run_id`) must leave the run's usage unclaimed, and only the authoritative
+/// `session_info` snapshot is projected.
+#[cfg(test)]
+mod projection_guards {
+    use super::*;
+    use crate::session::SessionEntry;
+
+    #[test]
+    fn unusable_terminal_markers_change_nothing_and_stale_metadata_is_dropped() {
+        let assistant = SessionEntry::new_assistant(serde_json::json!("answer"), Vec::new());
+        let baseline = project_entries(std::slice::from_ref(&assistant));
+
+        // No content at all, and content without a run id: neither can be
+        // attributed, so the projection is identical to having no marker.
+        let without_content = SessionEntry {
+            content: None,
+            ..SessionEntry::run_terminal("r", "completed", 7, 9, None)
+        };
+        let without_run_id = SessionEntry {
+            content: Some(serde_json::json!({"state":"completed","run_tokens":7})),
+            ..SessionEntry::run_terminal("r", "completed", 7, 9, None)
+        };
+        let with_markers = project_entries(&[assistant, without_content, without_run_id]);
+        assert_eq!(baseline, with_markers);
+
+        // Only the first session_info slot survives, carrying the last snapshot.
+        let old = SessionEntry::session_info(
+            serde_json::json!({"session_name":"old"}),
+            "mock".into(),
+            String::new(),
+        );
+        let new = SessionEntry::session_info(
+            serde_json::json!({"session_name":"new"}),
+            "mock".into(),
+            String::new(),
+        );
+        let projected = project_entries(&[old, new]);
+        assert_eq!(projected.len(), 1);
+        let session = projected[0]["session"].to_string();
+        assert!(session.contains("new"), "{session}");
+        assert!(!session.contains("old"), "{session}");
+    }
+}

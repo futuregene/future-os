@@ -430,6 +430,34 @@ mod tests {
     fn non_executable_path_is_rejected() {
         assert!(!is_executable_file(Path::new("/etc/hostname")));
         assert!(!is_executable_file(Path::new("/definitely/not/here")));
+        // A directory exists but is not a program: the `is_file` guard is what
+        // keeps a directory from being offered as a shell.
+        assert!(!is_executable_file(&std::env::temp_dir()));
+    }
+
+    /// A `SHELL` value is preferred over the known fallbacks, but a blank one is
+    /// not a candidate at all (it must never become a relative program name).
+    #[test]
+    fn an_environment_shell_is_preferred_but_a_blank_one_is_ignored() {
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let saved = std::env::var_os("SHELL");
+
+        std::env::set_var("SHELL", "");
+        let fallback = resolve_shell().expect("the known fallbacks still resolve");
+        assert_ne!(fallback.source, ShellSource::EnvShell);
+
+        let exe = std::env::current_exe().expect("test binary path");
+        std::env::set_var("SHELL", &exe);
+        let preferred = resolve_shell().expect("an absolute environment shell resolves");
+        assert_eq!(preferred.source, ShellSource::EnvShell);
+        assert_eq!(preferred.path, exe);
+
+        match saved {
+            Some(value) => std::env::set_var("SHELL", value),
+            None => std::env::remove_var("SHELL"),
+        }
     }
 
     #[test]
@@ -550,6 +578,27 @@ mod windows_tests {
             ),
             None
         );
+    }
+
+    /// An empty or nested name resolves to nothing rather than to the current
+    /// directory or to a well-known install location: `bin\pwsh.exe` must not
+    /// silently become `%ProgramFiles%\PowerShell\7\pwsh.exe`.
+    #[test]
+    fn empty_and_nested_names_never_resolve() {
+        assert_eq!(resolve_windows_program_in("", None, &[]), None);
+        assert_eq!(resolve_windows_program_in("   ", None, &[]), None);
+        assert_eq!(resolve_windows_program_in("\"\"", None, &[]), None);
+        assert_eq!(resolve_windows_program_in(r"bin\pwsh.exe", None, &[]), None);
+    }
+
+    /// The well-known locations exist only for the three shells the resolver
+    /// knows about; any other stem contributes none (including the `cmd`
+    /// alias in a non-`exe` extension, which is never offered).
+    #[test]
+    fn unknown_shell_stems_contribute_no_well_known_locations() {
+        assert!(known_windows_locations("fish.exe").is_empty());
+        assert!(known_windows_locations("nu").is_empty());
+        assert!(!known_windows_locations("pwsh").is_empty());
     }
 
     #[test]

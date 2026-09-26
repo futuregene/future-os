@@ -430,7 +430,7 @@ mod tests {
 mod http_tests {
     use super::*;
     use crate::remote::test_support::{
-        jwt, now_secs, pairing_code, sign_in, HomeGuard, MockPlatform,
+        init_store, jwt, now_secs, pairing_code, sign_in, HomeGuard, MockPlatform,
     };
     use serde_json::json;
 
@@ -799,5 +799,116 @@ mod http_tests {
     #[should_panic(expected = "expected Remote")]
     fn remote_error_parts_panics_on_non_remote() {
         let _ = remote_error_parts(crate::AppError::Message("x".to_string()));
+    }
+
+    /// A platform that answers a pair-code request whose code carries no
+    /// readable expiry is not something the desktop can serve: the invitation it
+    /// would mint could never be shown to expire. It must be refused by name
+    /// rather than silently minted with an expiry the desktop invented.
+    #[tokio::test]
+    async fn a_pairing_code_without_an_expiry_is_refused_by_name() {
+        let _home = HomeGuard::new("pairing-create-no-expiry");
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        platform.push(
+            "/client/v1/remote/pair/code",
+            200,
+            json!({
+                "pair_id": "pair_no_expiry",
+                // Not decodable as the `{exp}` payload every client validates.
+                "pairing_code": "!!!not-a-pairing-code!!!",
+                "user_jwt": jwt(now_secs() + 3600),
+                "nats_url": "nats://127.0.0.1:4222",
+                "nats_ws_url": "ws://127.0.0.1:4222",
+            }),
+        );
+        let error = create_pairing().await.unwrap_err();
+        assert!(
+            error.to_string().contains("pairing_expiry_required"),
+            "got {error}"
+        );
+    }
+
+    /// Compensation is retried until the platform accepts it, but only against
+    /// the environment that issued the pairing: an entry recorded for another
+    /// platform address must be left alone, and an authorization failure (4xx,
+    /// except the two retryable statuses) stops the periodic retry instead of
+    /// hammering it. A throttled revoke stays pending and is retried.
+    #[tokio::test]
+    async fn pending_revokes_are_skipped_blocked_or_retried_by_error_class() {
+        let _home = HomeGuard::new("pairing-retry-revokes");
+        init_store();
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        let current = crate::future_platform::current_platform_url();
+        let file = pairing_path()
+            .expect("pairing path")
+            .with_file_name("remote_pending_revokes.json");
+        crate::config_io::write_json_atomic(
+            &file,
+            &json!({
+                // Different platform environment: never revoked here.
+                "pair_foreign": "https://api.example.invalid",
+                // Authorization rejection: blocked after the first attempt.
+                "pair_forbidden": current,
+                // Throttled: retried on every pass.
+                "pair_throttled": current,
+            }),
+            true,
+        )
+        .unwrap();
+
+        let revoked = |requests: &[(String, String, String)]| -> Vec<String> {
+            let mut ids: Vec<String> = requests
+                .iter()
+                .map(|(_, path, body)| {
+                    assert_eq!(path, "/client/v1/remote/pair/revoke");
+                    serde_json::from_str::<Value>(body).unwrap()["pair_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect();
+            ids.sort();
+            ids
+        };
+
+        for pair_id in ["pair_forbidden", "pair_throttled"] {
+            platform.push(
+                "/client/v1/remote/pair/revoke",
+                if pair_id == "pair_forbidden" {
+                    400
+                } else {
+                    429
+                },
+                json!({ "error": "forbidden", "message": "no" }),
+            );
+        }
+        retry_pending_revokes().await.unwrap();
+        assert_eq!(
+            revoked(&platform.requests()),
+            vec!["pair_forbidden", "pair_throttled"],
+            "a foreign-platform entry must not be sent to this platform"
+        );
+
+        // Nothing was revoked, so every entry stays pending.
+        let pending: Value = crate::config_io::read_json_object(&file).unwrap();
+        assert_eq!(pending.as_object().unwrap().len(), 3);
+
+        // Second pass: the 4xx entry is blocked (no new request), the throttled
+        // one is retried.
+        platform.push(
+            "/client/v1/remote/pair/revoke",
+            429,
+            json!({ "error": "throttled", "message": "slow down" }),
+        );
+        retry_pending_revokes().await.unwrap();
+        let requests = platform.requests();
+        assert_eq!(requests.len(), 3, "the blocked entry was not retried");
+        assert_eq!(
+            revoked(&requests)[2],
+            "pair_throttled",
+            "the throttled entry must be retried once more"
+        );
     }
 }

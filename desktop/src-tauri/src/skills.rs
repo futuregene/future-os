@@ -78,3 +78,36 @@ pub async fn get_skill_guide() -> Result<SkillGuide, AppError> {
         .await
         .map_err(|error| AppError::Message(format!("Failed to parse skill guide: {error}")))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A non-2xx guide response must be reported with its status — the
+    /// onboarding banner shows the failure instead of an empty guide.
+    #[tokio::test]
+    async fn a_non_success_guide_response_reports_its_status() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-guide-error");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let count = stream.read(&mut request).unwrap();
+            assert!(String::from_utf8_lossy(&request[..count]).contains("/client/v1/guide"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+        crate::auth_store::set_future_base_url(&format!("{url}/api")).unwrap();
+
+        let error = get_skill_guide()
+            .await
+            .expect_err("a 503 must not be read as an empty guide")
+            .to_string();
+        assert!(error.contains("HTTP 503"), "{error}");
+    }
+}

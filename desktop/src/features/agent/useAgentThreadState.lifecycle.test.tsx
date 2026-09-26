@@ -262,4 +262,122 @@ describe("local send lifecycle", () => {
     reply.resolve(success);
     await first.done;
   });
+
+  it("leaves the send alone when the watchdog's run read fails", async () => {
+    // error-path: the watchdog driver reads the run row to decide whether a hung
+    // send can be abandoned. If that read fails there is no evidence the run
+    // finished, so the send must be left exactly as it was - abandoning it on a
+    // failed read would release the composer while the agent is still working.
+    const view = await mount();
+    const first = await begin(view);
+    const before = view.current.recentRun;
+    storage.getRun.mockRejectedValueOnce(new Error("run table locked"));
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+
+    // The read was attempted and its failure tolerated.
+    expect(storage.getRun).toHaveBeenCalledWith(running.id);
+    expect(view.current.recentRun).toEqual(before);
+    view.unmount();
+    reply.resolve(success);
+    await first.done;
+  });
+
+  it("anchors the live timer on createdAt for a legacy run with no start time", async () => {
+    // boundary: `recentRun?.startedAt ?? recentRun?.createdAt ?? null`. A row written
+    // by an older build can carry `createdAt` but no `startedAt`, and the live
+    // elapsed timer still needs an anchor - falling through to `createdAt` keeps the
+    // timer running instead of starting it from nothing. The row must be the one the
+    // pipeline itself caches, so `createRun` returns it.
+    const legacy = { ...running, startedAt: null, createdAt: time - 5_000 } as unknown as StoredRun;
+    storage.createRun.mockImplementationOnce(async () => {
+      latest = legacy;
+      return legacy;
+    });
+    const view = await mount();
+    const first = await begin(view);
+
+    // The run is active (not settled), so the anchor expression is evaluated with
+    // its `createdAt` operand as the only timestamp available.
+    expect(view.current.recentRun?.id).toBe(running.id);
+    expect(view.current.recentRun?.startedAt).toBeNull();
+    expect(view.current.recentRun?.createdAt).toBe(time - 5_000);
+    view.unmount();
+    reply.resolve(success);
+    await first.done;
+  });
+
+  it("yields no anchor for a run with neither a start nor a creation time", async () => {
+    // boundary: the third operand of the chain. A row with no usable timestamp must
+    // still render (the bubble shows no elapsed figure rather than `NaN`).
+    const bare = { ...running, startedAt: null, createdAt: null } as unknown as StoredRun;
+    storage.createRun.mockImplementationOnce(async () => {
+      latest = bare;
+      return bare;
+    });
+    const view = await mount();
+    const first = await begin(view);
+
+    expect(view.current.recentRun?.id).toBe(running.id);
+    expect(view.current.recentRun?.startedAt).toBeNull();
+    expect(view.current.recentRun?.createdAt).toBeNull();
+    view.unmount();
+    reply.resolve(success);
+    await first.done;
+  });
+
+  it("does not reconcile a hung send while the tab is hidden", async () => {
+    // concurrency: `visibilitychange` fires both when a tab returns AND when it goes
+    // away, and the guard is what tells them apart. Reconciling while hidden would
+    // abandon a send the user cannot see: the composer would silently release the
+    // lock and the run would look finished before the user came back.
+    const view = await mount();
+    const first = await begin(view);
+    latest = { ...running, status: "completed", endedAt: time + 1000 } as StoredRun;
+    storage.getRun.mockClear();
+
+    await act(async () => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    // The tab is hidden, so the watchdog pass must not have read the run at all.
+    expect(storage.getRun).not.toHaveBeenCalled();
+
+    // Returning to the tab is the same event with the other value, and now the
+    // terminal row is honoured.
+    await act(async () => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(storage.getRun).toHaveBeenCalledWith(running.id);
+    expect(view.current.recentRun?.status).toBe("completed");
+
+    view.unmount();
+    reply.resolve(success);
+    await first.done;
+  });
+
+  it("waits for the thread a staged prompt was composed for", async () => {
+    // concurrency: a fast thread switch during the (async) message load can make
+    // `thread` the newly-opened conversation while the prompt still targets the
+    // one just created. Delivering here would drop the first message (and its
+    // attachments) into the wrong chat, so the effect must wait for the target to
+    // be active - asserting nothing was sent on this view.
+    const options = {
+      pendingPrompt: { id: "other-thread-prompt", content: "question", targetThreadId: "some-other-thread" },
+      onPromptConsumed: vi.fn(),
+    };
+    const view = await mount(options);
+    await act(async () => {});
+
+    expect(agent.send).not.toHaveBeenCalled();
+    expect(storage.createRun).not.toHaveBeenCalled();
+    expect(options.onPromptConsumed).not.toHaveBeenCalled();
+    // The prompt is not consumed, so a later visit to its own thread can still
+    // deliver it: the guard waits rather than discarding.
+    view.unmount();
+  });
 });

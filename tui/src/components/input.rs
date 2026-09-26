@@ -1897,6 +1897,43 @@ mod tests {
     }
 
     #[test]
+    fn down_from_the_last_visual_line_of_a_recalled_multi_line_entry_walks_history() {
+        // `down` on a *multi-line* recall is ambiguous: it either moves the
+        // caret within the entry or steps forward through history. The rule is
+        // "caret first": only from the **last** visual line does it browse
+        // forward. Here the recalled entry itself is multi-line, so the caret
+        // lands on its last line and `down` must reach history.
+        let mut input = make_input();
+        input.set_value("multi\nline entry", None);
+        input.handle_key("enter"); // history[0] = "multi\nline entry"
+        input.set_value("draft", None);
+
+        assert!(input.handle_key("up"));
+        assert_eq!(input.value, "multi\nline entry");
+        assert!(input.is_browsing_history());
+        assert!(
+            input.count_visual_lines() > 1,
+            "the recalled entry must span several visual lines"
+        );
+
+        // Caret is at the end of the recall = its last visual line → history.
+        assert!(input.handle_key("down"));
+        assert_eq!(
+            input.value, "draft",
+            "down on the last line returns the draft"
+        );
+        assert!(!input.is_browsing_history());
+
+        // One more `down` at the draft is a consumed no-op: nothing to walk to.
+        assert!(input.handle_key("down"));
+        assert_eq!(input.value, "draft");
+        // And `up` re-enters browsing at the oldest entry, still multi-line.
+        assert!(input.handle_key("up"));
+        assert_eq!(input.value, "multi\nline entry");
+        assert!(input.is_browsing_history());
+    }
+
+    #[test]
     fn history_navigation_fires_on_change() {
         use std::cell::RefCell;
         use std::rc::Rc;

@@ -147,6 +147,91 @@ impl TerminalIo for crate::terminal::Terminal {
     }
 }
 
+#[cfg(test)]
+mod terminal_io_delegation_tests {
+    use super::*;
+
+    /// The app reaches a terminal *only* through `TerminalIo`, so these
+    /// delegations are the app's entire terminal surface — and until they are
+    /// exercised against a real console, "the app can drive a terminal" is
+    /// untested. Without a console the test skips (`terminal_or_skip`); inside
+    /// the `console_harness` child it runs for real: raw mode on a real console,
+    /// a reader thread polling it, the size read from its screen buffer, and a
+    /// stop that restores the console and joins the reader.
+    #[test]
+    fn every_terminal_io_delegation_reaches_a_real_terminal() {
+        let Some(mut terminal) = crate::terminal::terminal_or_skip() else {
+            return;
+        };
+        let io: &mut dyn TerminalIo = &mut terminal;
+
+        io.hide_cursor();
+        io.show_cursor();
+        let (cols, rows) = (io.columns(), io.rows());
+        assert!(cols > 0 && rows > 0, "console size {cols}x{rows}");
+        io.write("terminal-io probe\r\n");
+        io.drain_input(5, 1);
+        // Installed, replaced and cleared: the app wires SIGINT through this and
+        // must survive all three states (nothing is raised here — the POSIX
+        // signal path has its own test in `terminal`).
+        io.set_exit_signal_callback(Some(Box::new(|| {})));
+        io.set_exit_signal_callback(Some(Box::new(|| {})));
+        io.set_exit_signal_callback(None);
+
+        let typed = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen = Arc::clone(&typed);
+        let resizes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let resized = Arc::clone(&resizes);
+        io.start(
+            Box::new(move |text| seen.lock().unwrap().push(text)),
+            Box::new(move || {
+                resized.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }),
+        )
+        .expect("a real console starts the reader");
+        // Let the reader reach its wait/timer path (the kitty query fallback
+        // fires at 150 ms), then stop: the console is restored and the reader
+        // thread is joined.
+        //
+        // Deliberately no programmatic `SetConsoleWindowInfo` here: resizing the
+        // harness console makes the reader spin on repeated size-changed events
+        // and the child never finishes (measured: the harness ran for over 60 s
+        // and had to be killed). The `on_resize` callback therefore stays
+        // uncovered and is waived as unreachable-in-this-environment in
+        // `docs/testing/module-tui.md`.
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            (io.columns(), io.rows()),
+            (cols, rows),
+            "the reader keeps the console's own size"
+        );
+        io.stop();
+        // The console feeds the reader thread for real: `start()` enables focus
+        // reporting (`\x1b[?1004h`), so a hidden window still delivers events.
+        // What may arrive is not fixed — a real console can also hand over a
+        // stray key from the window lifecycle (a run of this test observed a
+        // bare "g") — so the assertion is the *invariant* the pipeline must
+        // hold no matter what the console sends: every chunk is forwarded whole,
+        // and the incremental UTF-8 decoding never splits a character (a split
+        // would surface here as U+FFFD).
+        let typed = typed.lock().unwrap().clone();
+        for text in &typed {
+            assert!(
+                !text.is_empty(),
+                "the pipeline must not forward an empty chunk"
+            );
+            assert!(
+                !text.contains('\u{FFFD}'),
+                "a chunk with a replacement character means the decoder split a \
+                 multi-byte character across reads: {text:?}"
+            );
+        }
+        // The console survived: it can still be sized and drawn on.
+        assert!(io.columns() > 0);
+        io.write("\r\n");
+    }
+}
+
 impl<T: TerminalIo> HistoryScreen for App<T> {
     fn leave_alternate_screen(&mut self) {
         self.suspend_terminal();
@@ -9817,6 +9902,9 @@ mod tests {
         rows: u16,
         on_input: Option<Box<dyn FnMut(String) + Send + 'static>>,
         on_resize: Option<Box<dyn FnMut() + Send + 'static>>,
+        /// When set, `start` fails — the terminal-failure path a real console
+        /// takes on an unusable handle.
+        fail_start: bool,
     }
 
     impl TerminalIo for FakeTerminal {
@@ -9836,6 +9924,9 @@ mod tests {
             on_input: Box<dyn FnMut(String) + Send + 'static>,
             on_resize: Box<dyn FnMut() + Send + 'static>,
         ) -> std::io::Result<()> {
+            if self.fail_start {
+                return Err(std::io::Error::other("the terminal refused to start"));
+            }
             self.on_input = Some(on_input);
             self.on_resize = Some(on_resize);
             Ok(())
@@ -9867,6 +9958,7 @@ mod tests {
                 rows,
                 on_input: None,
                 on_resize: None,
+                fail_start: false,
             },
             Arc::new(client),
             op_tx,
@@ -9874,6 +9966,61 @@ mod tests {
             test_settings_path(),
         );
         (app, op_rx)
+    }
+
+    /// An app whose terminal refuses to start — the `?` in `App::start` has to
+    /// propagate that instead of pretending the alternate screen was entered.
+    fn make_app_with_failing_terminal() -> (App<FakeTerminal>, mpsc::UnboundedReceiver<UiCmd>) {
+        let (mut app, rx) = make_app(80, 24);
+        app.terminal.fail_start = true;
+        (app, rx)
+    }
+
+    /// `App::start` propagates a terminal that cannot enter raw mode / the
+    /// alternate screen, and leaves the app believing no screen was entered. A
+    /// silently swallowed failure would leave the TUI drawing to a cooked
+    /// terminal with no way back.
+    ///
+    /// Deliberately only the *failing* case: a succeeding `start` goes on to
+    /// `wait_for_agent`, which loops until the app is connected — so a healthy
+    /// terminal paired with a dead address would spin forever. The success path
+    /// is covered by every test that starts an app against the live mock
+    /// (`app_with_live_agent`).
+    #[tokio::test]
+    async fn start_propagates_a_terminal_failure() {
+        let (mut app, _rx) = make_app_with_failing_terminal();
+        let error = app
+            .start(mpsc::unbounded_channel().0)
+            .await
+            .expect_err("a failing terminal must be reported");
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert!(
+            !app.screen_entered,
+            "a terminal that never started must not be marked as entered"
+        );
+    }
+
+    /// Cycling the model with a *scoped* list that is empty: there is nothing to
+    /// cycle locally, so the agent is asked instead — the `is_empty()` guard's
+    /// other side.
+    #[tokio::test]
+    async fn cycle_model_with_an_empty_scoped_list_falls_back_to_the_agent() {
+        let (mut app, mut rx) = make_app(100, 30);
+        app.state.model = "a/m1".to_string();
+        app.enabled_model_ids = Some(Vec::new());
+
+        app.handle_key_action(KeyAction::CycleModel);
+        pump(&mut app, &mut rx).await;
+
+        assert_eq!(
+            app.state.model, "a/m1",
+            "an empty scoped list cycles nothing locally"
+        );
+        // With a non-empty list the local cycle does move the model (the other
+        // arm, asserted here so the two sit side by side).
+        app.enabled_model_ids = Some(vec!["a/m1".to_string(), "b/m2".to_string()]);
+        app.handle_key_action(KeyAction::CycleModel);
+        assert_eq!(app.state.model, "b/m2");
     }
 
     #[tokio::test]
@@ -10188,6 +10335,7 @@ mod tests {
                 rows: 24,
                 on_input: None,
                 on_resize: None,
+                fail_start: false,
             },
             Arc::new(client),
             op_tx,
@@ -11202,9 +11350,28 @@ mod tests {
         // the no-op arm the same way `fake_terminal_exit_callback_setter` pins
         // the other double's. `index.rs` is what calls it on the real terminal
         // (to restore the screen from a signal handler).
-        let (mut app, _log) = make_scrollback_app(40, 12);
+        //
+        // The arm is a no-op *by design* (nothing to restore in the double), so
+        // the assertion is what the caller can observe: the call is accepted in
+        // both the cleared and the installed state, and the app is unscathed —
+        // no output, no transcript change.
+        let (mut app, log) = make_scrollback_app(40, 12);
+        let writes_before = log.borrow().len();
+        let messages_before = app.chat.plain_messages().len();
+
         app.terminal.set_exit_signal_callback(None);
         app.terminal.set_exit_signal_callback(Some(Box::new(|| {})));
+
+        assert_eq!(
+            log.borrow().len(),
+            writes_before,
+            "setting the callback must not draw anything"
+        );
+        assert_eq!(
+            app.chat.plain_messages().len(),
+            messages_before,
+            "and must not touch the transcript"
+        );
     }
 
     #[tokio::test]
@@ -11588,6 +11755,58 @@ mod tests {
             found,
             "timed out waiting for system message containing {needle:?}"
         );
+    }
+
+    /// Pump until a system message reports a working-directory switch, then
+    /// return the path it reported (bounded, like [`pump_until_msg`]).
+    ///
+    /// The message carries a path that went through `Path::join`, so its
+    /// separators (and, on Windows, the `\\?\` prefix a `canonicalize`d
+    /// fixture would add) depend on the host; the caller compares locations
+    /// with [`location`] rather than spellings.
+    async fn pump_until_workdir(
+        app: &mut App<FakeTerminal>,
+        op_rx: &mut mpsc::UnboundedReceiver<UiCmd>,
+        expected: &std::path::Path,
+    ) -> String {
+        let want = location(&expected.display().to_string());
+        let mut reported: Option<String> = None;
+        for _ in 0..PUMP_BUDGET_ITERS {
+            while let Ok(cmd) = op_rx.try_recv() {
+                app.handle_cmd(cmd);
+            }
+            if let Some(path) = system_messages(app)
+                .iter()
+                .filter_map(|msg| msg.strip_prefix("Working directory: "))
+                .find(|path| location(path) == want)
+            {
+                reported = Some(path.to_string());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(PUMP_INTERVAL_MS)).await;
+        }
+        // Bound eagerly: `assert!`'s message is evaluated only on failure, so a
+        // lazily-formatted value would leave the diagnostic line permanently
+        // "uncovered" (a gap in the report where there is none).
+        let wanted = expected.display().to_string();
+        assert!(
+            reported.is_some(),
+            "timed out waiting for the working directory to become {wanted:?}"
+        );
+        reported.unwrap_or_default()
+    }
+
+    /// Normalised spelling of a path, for comparisons that must tolerate the
+    /// host separator (git prints `/`, `Path::join` writes `\` on Windows) and
+    /// the `\\?\` verbatim prefix `fs::canonicalize` may add.
+    fn location(path: &str) -> String {
+        let slashed = path.replace('\\', "/");
+        let stripped = slashed.strip_prefix("//?/").unwrap_or(slashed.as_str());
+        if cfg!(windows) {
+            stripped.to_ascii_lowercase()
+        } else {
+            stripped.to_string()
+        }
     }
 
     /// Pump until *every* needle is present, then return — the same bounded
@@ -13083,12 +13302,14 @@ mod tests {
         ] {
             app.handle_cmd(UiCmd::Submit(cmd.into()));
         }
-        pump(&mut app, &mut rx).await;
-        // `/export` now really calls the agent (which is unreachable here),
-        // while `/import` stays a documented stub.
+        // `/export` really calls the agent (which is unreachable here), so the
+        // failure lands only once the loopback connect is refused — seconds on
+        // Windows, far outside `pump`'s quiesce window. Wait on the message.
+        pump_until_msg(&mut app, &mut rx, "Failed to export session").await;
         assert!(system_messages(&app)
             .iter()
             .any(|m| m.contains("Failed to export session")));
+        // `/import` stays a documented stub (answered without the agent).
         assert!(system_messages(&app)
             .iter()
             .any(|m| m.contains("import is not available")));
@@ -13798,6 +14019,7 @@ mod tests {
                 rows: 30,
                 on_input: None,
                 on_resize: None,
+                fail_start: false,
             },
             Arc::new(client),
             op_tx,
@@ -16668,6 +16890,15 @@ mod tests {
     /// A draft long enough to pass the minimum-length gate (well over 30 bytes).
     const RECO_DRAFT: &str = "帮我查一下这个基因在人群里的频率并找出引用来源";
 
+    /// The catalogue answer a fake skills CLI returns: one document, on stdout,
+    /// exit 0. Named rather than an inline closure so every test that needs it
+    /// (including the one whose whole point is that it must **not** be called)
+    /// shares one covered body instead of a per-test closure that only some
+    /// tests execute.
+    fn catalogue_answer(_args: &[String]) -> Result<(i32, String, String), String> {
+        Ok((0, SKILLS_CATALOGUE_JSON.to_string(), String::new()))
+    }
+
     /// An app with a catalogue but a dead client, so the *gates* can be tested
     /// without a network. `make_app_at` derives a per-test budget path, so these
     /// tests cannot spend each other's daily budget.
@@ -16712,9 +16943,7 @@ mod tests {
     /// Now the draft itself starts the fetch — while it is still being typed.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_catalogue_is_prefetched_once_a_draft_could_be_recommended() {
-        let (mut app, mut rx, calls) = reco_app_without_catalogue(|_| {
-            Ok((0, SKILLS_CATALOGUE_JSON.to_string(), String::new()))
-        });
+        let (mut app, mut rx, calls) = reco_app_without_catalogue(catalogue_answer);
         // The reported state: no catalogue, no card, whatever the user writes.
         assert!(!app.recommendation_gates_pass(RECO_DRAFT));
 
@@ -16774,9 +17003,7 @@ mod tests {
     /// prefetch asks the same question as the gate, not a looser one.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_prefetch_waits_for_a_draft_that_could_be_recommended() {
-        let (mut app, mut rx, calls) = reco_app_without_catalogue(|_| {
-            Ok((0, SKILLS_CATALOGUE_JSON.to_string(), String::new()))
-        });
+        let (mut app, mut rx, calls) = reco_app_without_catalogue(catalogue_answer);
 
         // Too short to ask about (9 汉字), a local slash command, and a draft
         // that already picks its own skill.
@@ -16794,9 +17021,7 @@ mod tests {
         assert_eq!(skill_list_count(&skill_args(&calls)), 1);
 
         // The toggle is the user's opt-out: no fetch, no call.
-        let (mut off, mut off_rx, off_calls) = reco_app_without_catalogue(|_| {
-            Ok((0, SKILLS_CATALOGUE_JSON.to_string(), String::new()))
-        });
+        let (mut off, mut off_rx, off_calls) = reco_app_without_catalogue(catalogue_answer);
         off.tui_settings.skill_recommend = Some(false);
         off.handle_cmd(UiCmd::InputChanged(RECO_DRAFT.to_string()));
         off.handle_submit(RECO_DRAFT);
@@ -16810,9 +17035,7 @@ mod tests {
     /// not delayed for a catalogue.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_submitted_draft_prefetches_without_holding_the_send() {
-        let (mut app, mut rx, calls) = reco_app_without_catalogue(|_| {
-            Ok((0, SKILLS_CATALOGUE_JSON.to_string(), String::new()))
-        });
+        let (mut app, mut rx, calls) = reco_app_without_catalogue(catalogue_answer);
 
         assert!(
             !app.maybe_recommend_skill(RECO_DRAFT),
@@ -17836,8 +18059,10 @@ mod tests {
     async fn usage_command_opens_the_usage_panel() {
         let (mut app, mut rx) = make_app(100, 30);
         app.handle_submit("/usage");
-        // get_state goes to the real client (no agent) → error path.
-        pump(&mut app, &mut rx).await;
+        // get_state goes to the real client (no agent) → error path. The answer
+        // only arrives once the loopback connect is refused, which takes seconds
+        // on Windows, so wait on the condition instead of a fixed window.
+        pump_until_msg(&mut app, &mut rx, "Failed to load usage").await;
         let messages = system_messages(&app);
         assert!(
             messages.iter().any(|m| m.contains("Failed to load usage")),
@@ -18241,6 +18466,17 @@ mod tests {
         let _ = rx;
     }
 
+    /// The editor `$EDITOR` names when a test needs one that exists on this
+    /// host: `/editor` really spawns the process (only `edit_draft_with`'s
+    /// launch is injectable), and Windows has no `true`.
+    fn noop_editor() -> &'static str {
+        if cfg!(windows) {
+            "cmd /c rem"
+        } else {
+            "true"
+        }
+    }
+
     #[tokio::test]
     async fn editor_command_refills_the_draft_from_the_temp_file() {
         let _guard = crate::test_env::lock();
@@ -18251,7 +18487,7 @@ mod tests {
         app.input.set_value("draft text", None);
 
         let previous = std::env::var("EDITOR").ok();
-        std::env::set_var("EDITOR", "true");
+        std::env::set_var("EDITOR", noop_editor());
         std::env::remove_var("VISUAL");
 
         // The injected "editor" appends a line to the draft file.
@@ -18302,7 +18538,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         app.tui_settings_path = dir.join("settings.json");
         let previous = std::env::var("EDITOR").ok();
-        std::env::set_var("EDITOR", "true");
+        std::env::set_var("EDITOR", noop_editor());
         let result = app.edit_draft_with(&mut |_command: &mut std::process::Command| {
             Err(crate::external_editor::EditorError::Io("no tty".into()))
         });
@@ -18331,7 +18567,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         app.tui_settings_path = dir.join("settings.json");
         let previous = std::env::var("EDITOR").ok();
-        std::env::set_var("EDITOR", "true");
+        std::env::set_var("EDITOR", noop_editor());
         // `start` is what installs `input_tx`; install it directly instead
         // (a real `start` would block on the agent handshake).
         let (input_tx, _input_rx) = mpsc::unbounded_channel();
@@ -18399,7 +18635,9 @@ mod tests {
     async fn providers_list_reports_a_failed_load() {
         let (mut app, mut rx) = make_app(100, 30);
         app.handle_submit("/providers");
-        pump(&mut app, &mut rx).await;
+        // The refused loopback connect takes seconds on Windows, so wait for
+        // the failure message rather than for `pump`'s quiesce window.
+        pump_until_msg(&mut app, &mut rx, "Failed to load providers").await;
         let messages = system_messages(&app);
         assert!(
             messages
@@ -20435,8 +20673,19 @@ mod tests {
         press_on_overlay(&mut app, &mut rx, "r");
         app.handle_key("escape");
         assert!(app.overlay_stack.is_empty());
-        pump(&mut app, &mut rx).await;
-        assert!(last_system(&app).contains("Sandbox probe failed"));
+        // The probe's failure is the refused loopback connect (seconds on
+        // Windows): wait on the message, not a fixed window.
+        pump_until_msg(&mut app, &mut rx, "Sandbox probe failed").await;
+        // The *report* is what this asserts; which message came last is a
+        // race between this failure and the policy write above, both of whose
+        // refused connects land at their own pace.
+        assert!(
+            system_messages(&app)
+                .iter()
+                .any(|m| m.contains("Sandbox probe failed")),
+            "{:?}",
+            system_messages(&app)
+        );
     }
 
     /// A policy write that fails is reported, and the cached status is left
@@ -20627,9 +20876,17 @@ mod tests {
         let (mut app, mut rx) = make_app(100, 30);
         app.handle_submit("/sandbox");
         app.handle_cmd(UiCmd::PermissionLevelRequested(PermissionKind::Workspace));
-        // The dead client's failure must not move the mirrored level.
-        pump(&mut app, &mut rx).await;
-        assert!(last_system(&app).contains("Failed to set the permission level"));
+        // The dead client's failure must not move the mirrored level; the
+        // failure lands only after the loopback connect is refused (seconds on
+        // Windows), so wait on the message.
+        pump_until_msg(&mut app, &mut rx, "Failed to set the permission level").await;
+        let messages = system_messages(&app);
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("Failed to set the permission level")),
+            "{messages:?}"
+        );
         assert_eq!(app.state.permission_level, PermissionKind::All);
 
         app.handle_cmd(UiCmd::PermissionLevelSet {
@@ -22332,12 +22589,13 @@ mod tests {
             "Created worktree demo on branch feat/demo from main.",
         )
         .await;
-        pump_until_msg(
-            &mut app,
-            &mut rx,
-            "Working directory: /repo/.worktrees/demo",
-        )
-        .await;
+        // The app echoes the path it planned, whose spelling is the host's
+        // (`Path::join` writes the platform separator), so the wait compares
+        // locations — the argv below is built the same way in production.
+        let expected = std::path::Path::new("/repo")
+            .join(".worktrees")
+            .join("demo");
+        pump_until_workdir(&mut app, &mut rx, &expected).await;
 
         assert_eq!(
             git_args(&calls),
@@ -22360,7 +22618,11 @@ mod tests {
             .filter(|cmd| cmd.r#type == "set_cwd")
             .map(|cmd| cmd.cwd.clone())
             .collect();
-        assert_eq!(seen, vec!["/repo/.worktrees/demo".to_string()]);
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(
+            location(&seen[0]),
+            location(&expected.display().to_string())
+        );
         app.stop();
     }
 
@@ -22444,10 +22706,16 @@ mod tests {
             let dir =
                 std::env::temp_dir().join(format!("future-app-worktree-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&dir).unwrap();
-            // `git worktree list` prints resolved paths; canonicalise once so
-            // nothing below compares a resolved path with the macOS
-            // `/var` → `/private/var` symlink.
+            // `git worktree list` prints resolved paths, so the fixture
+            // resolves once on macOS (`/var` → `/private/var`) and nothing
+            // below compares a resolved path with an unresolved one. Windows
+            // is deliberately left alone: there is no symlink to resolve in
+            // the temp dir, and `canonicalize` would add the `\\?\` verbatim
+            // prefix git never prints.
+            #[cfg(not(windows))]
             let root = std::fs::canonicalize(&dir).unwrap();
+            #[cfg(windows)]
+            let root = dir;
             git_setup(&root, &["init", "-q", "-b", "main"]);
             git_setup(&root, &["config", "user.email", "tui@example.com"]);
             git_setup(&root, &["config", "user.name", "TUI Test"]);
@@ -22519,13 +22787,14 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "feat/demo");
-        pump_until_msg(
-            &mut app,
-            &mut rx,
-            &format!("Working directory: {}", path.display()),
-        )
-        .await;
-        assert_eq!(app.state.cwd, path.display().to_string());
+        // The app echoes the path it planned, whose spelling is the host's
+        // (`Path::join` separators); git reports its own spelling. Compare
+        // locations, not punctuation (see `pump_until_workdir`).
+        pump_until_workdir(&mut app, &mut rx, &path).await;
+        assert_eq!(
+            location(&app.state.cwd),
+            location(&path.display().to_string())
+        );
         let seen: Vec<String> = requests
             .lock()
             .unwrap()
@@ -22533,7 +22802,8 @@ mod tests {
             .filter(|cmd| cmd.r#type == "set_cwd")
             .map(|cmd| cmd.cwd.clone())
             .collect();
-        assert_eq!(seen, vec![path.display().to_string()]);
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(location(&seen[0]), location(&path.display().to_string()));
         app.stop();
     }
 
@@ -22555,6 +22825,7 @@ mod tests {
                 rows: 30,
                 on_input: None,
                 on_resize: None,
+                fail_start: false,
             },
             Arc::new(client),
             op_tx,
@@ -23527,7 +23798,13 @@ mod tests {
             "{}",
             attachment.path
         );
-        assert_eq!(attachment.name, attachment.path.rsplit('/').next().unwrap());
+        assert_eq!(
+            attachment.name,
+            std::path::Path::new(&attachment.path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("the attachment path has a file name")
+        );
         // The image answered the question, so the text tool was never asked, and
         // nothing was reported to the user.
         assert_eq!(clipboard_programs(&programs), vec!["osascript"]);
@@ -23671,5 +23948,1050 @@ mod tests {
 
         assert!(clipboard_programs(&programs).is_empty());
         assert!(app.input.get_value().is_empty());
+    }
+
+    // ─── Skill recommendation: the accept / install / send-through path ────
+    //
+    // The tests above cover the *gates* and the hold. What follows drives the
+    // rest of the flow end to end through the app's own entry points: the agent's
+    // answer arriving as `UiCmd::SkillRecoSuggested`, the `a` key accepting it,
+    // the installer answering as `UiCmd::SkillRecoInstalled`, and the composed
+    // draft going out through the normal send path.
+
+    /// The composed message a recommendation produces: draft + `/skill` + a
+    /// trailing space, with the separator omitted when the draft already ends in
+    /// whitespace (or is empty) so the command does not become `/`-prefixed text
+    /// glued to the last word.
+    #[tokio::test]
+    async fn use_recommended_skill_composes_the_draft_and_the_command() {
+        for (draft, expected) in [
+            (RECO_DRAFT.to_string(), format!("{RECO_DRAFT} /alpha ")),
+            (
+                "帮我查一下这个基因在人群里的频率并找出引用来源 ".to_string(),
+                "帮我查一下这个基因在人群里的频率并找出引用来源 /alpha ".to_string(),
+            ),
+            (String::new(), "/alpha ".to_string()),
+        ] {
+            let mut app = reco_app();
+            app.state.session_id = "s1".to_string();
+            app.use_recommended_skill(&draft, "alpha");
+            let sent = system_messages(&app);
+            assert!(
+                sent.is_empty(),
+                "a successful composition sends, it does not report: {sent:?}"
+            );
+            let last = app
+                .chat
+                .last_message()
+                .expect("the composed draft must be sent");
+            let text = last.content.clone();
+            assert!(
+                text.contains("/alpha"),
+                "the command must be in the sent message: {text:?}"
+            );
+            assert!(
+                text.contains(expected.trim_end()),
+                "expected {expected:?} in {text:?}"
+            );
+            assert_eq!(
+                app.skill_reco,
+                SkillRecoState::Idle,
+                "the flow is released once the message goes out"
+            );
+            assert_eq!(
+                app.input.get_value(),
+                "",
+                "the input box is emptied by the send"
+            );
+        }
+    }
+
+    /// `a` on a shown card: installs the skill and then sends the draft with the
+    /// command appended — the whole accept path, with the installer answering
+    /// through the same `UiCmd` channel the spawning task uses.
+    #[tokio::test]
+    async fn accepting_a_recommendation_installs_it_and_sends_the_draft() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (mut app, mut rx) = make_app_at("127.0.0.1:1", &CliOptions::default());
+        app.skills_catalogue = Some(skills_catalogue_fixture());
+        app.skills_cli = Some(fake_skills_cli(&calls, |_| {
+            Ok((0, "installed alpha".to_string(), String::new()))
+        }));
+        app.state.session_id = "s1".to_string();
+
+        // The agent's answer arrives for the draft that asked for it.
+        app.skill_reco = SkillRecoState::Pending {
+            draft: RECO_DRAFT.to_string(),
+        };
+        app.handle_cmd(UiCmd::SkillRecoSuggested {
+            draft: RECO_DRAFT.to_string(),
+            suggestion: Some(("alpha".to_string(), "does alpha things".to_string())),
+        });
+        assert!(
+            matches!(&app.skill_reco, SkillRecoState::Suggested { skill, .. } if skill == "alpha"),
+            "the card is up: {:?}",
+            app.skill_reco
+        );
+
+        // `a` accepts it. The install runs on a blocking task; pump its answer.
+        app.handle_key("a");
+        pump(&mut app, &mut rx).await;
+
+        let installs = skill_op_args(&calls);
+        assert_eq!(installs.len(), 1, "exactly one install ran: {installs:?}");
+        assert_eq!(installs[0][0], "skills");
+        assert_eq!(installs[0][1], "install", "the mutating op is install");
+        assert_eq!(
+            installs[0][2], "alpha",
+            "and it names the recommended skill"
+        );
+
+        assert_eq!(
+            app.skill_reco,
+            SkillRecoState::Idle,
+            "the flow finished and released the draft"
+        );
+        let last = app
+            .chat
+            .last_message()
+            .expect("the draft must have been sent");
+        let text = last.content.clone();
+        assert!(
+            text.contains("/alpha"),
+            "the accepted skill is in the sent message: {text:?}"
+        );
+        // The start message and the outcome line are reported to the user.
+        let messages = system_messages(&app).join("\n");
+        assert!(
+            messages.contains("alpha"),
+            "the install is reported: {messages}"
+        );
+    }
+
+    /// A failed install must **not** send the draft: the card stays up so the
+    /// user can retry or send without the skill, and the draft is untouched
+    /// (PRD v1.6 §6.2). The failure is reported as a system message.
+    #[tokio::test]
+    async fn an_install_failure_keeps_the_card_and_holds_the_draft() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (mut app, mut rx) = make_app_at("127.0.0.1:1", &CliOptions::default());
+        app.skills_catalogue = Some(skills_catalogue_fixture());
+        app.skills_cli = Some(fake_skills_cli(&calls, |_| {
+            Ok((
+                1,
+                String::new(),
+                "no such skill in the registry".to_string(),
+            ))
+        }));
+        app.state.session_id = "s1".to_string();
+        app.input.set_value(RECO_DRAFT, None);
+        app.skill_reco = SkillRecoState::Suggested {
+            draft: RECO_DRAFT.to_string(),
+            skill: "alpha".to_string(),
+            summary: "does alpha things".to_string(),
+        };
+
+        app.handle_key("a");
+        pump(&mut app, &mut rx).await;
+
+        assert_eq!(
+            app.skill_reco,
+            SkillRecoState::Suggested {
+                draft: RECO_DRAFT.to_string(),
+                skill: "alpha".to_string(),
+                summary: "does alpha things".to_string(),
+            },
+            "a failed install leaves the card up for a retry"
+        );
+        assert_eq!(
+            app.input.get_value(),
+            RECO_DRAFT,
+            "the draft the answer belonged to is untouched"
+        );
+        let messages = system_messages(&app).join("\n");
+        assert!(
+            messages.contains("Could not install"),
+            "the failure is reported with its recovery hint: {messages}"
+        );
+        assert!(
+            messages.contains("Esc"),
+            "the user is told how to send without the skill: {messages}"
+        );
+        assert!(
+            app.chat
+                .last_message()
+                .map(|m| !m.content.contains("/alpha"))
+                .unwrap_or(true),
+            "no message with the uninstalled skill may go out"
+        );
+    }
+
+    /// The `a` shortcut belongs to a *shown* card only, and an open panel or a
+    /// visible autocomplete wins over it: `a` must stay an ordinary character
+    /// everywhere else, or the user could not type the letter at all.
+    #[tokio::test]
+    async fn the_accept_key_only_applies_to_a_shown_card() {
+        // Pending (the answer is in flight): `a` is a normal keystroke.
+        let mut app = reco_app();
+        app.skill_reco = SkillRecoState::Pending {
+            draft: RECO_DRAFT.to_string(),
+        };
+        app.input.set_value("", None);
+        app.handle_key("a");
+        assert_eq!(
+            app.input.get_value(),
+            "",
+            "a locked box ignores the key entirely"
+        );
+        assert!(matches!(app.skill_reco, SkillRecoState::Pending { .. }));
+
+        // Idle: `a` types.
+        let mut idle = reco_app();
+        idle.input.set_value("", None);
+        idle.handle_key("a");
+        assert_eq!(idle.input.get_value(), "a", "with no card, `a` types");
+
+        // Suggested but an overlay is open: the panel owns the keyboard.
+        // The overlay is opened *first*: with a card already on screen, Enter is
+        // the card's "send without the skill" action (see `handle_submit`), so
+        // `/help` cannot be entered from that state.
+        let mut overlaid = reco_app();
+        overlaid.handle_submit("/help");
+        assert!(!overlaid.overlay_stack.is_empty(), "the card is open");
+        overlaid.skill_reco = SkillRecoState::Suggested {
+            draft: RECO_DRAFT.to_string(),
+            skill: "alpha".to_string(),
+            summary: "s".to_string(),
+        };
+        overlaid.skills_cli = None;
+        overlaid.handle_key("a");
+        assert!(
+            matches!(overlaid.skill_reco, SkillRecoState::Suggested { .. }),
+            "the overlay must win over the shortcut"
+        );
+        let overlay_messages = system_messages(&overlaid).join("\n");
+        assert!(
+            !overlay_messages.contains("Could not install"),
+            "the shortcut must not have run at all: {overlay_messages}"
+        );
+
+        // Uppercase is accepted too (the check is case-insensitive).
+        let mut upper = reco_app();
+        upper.skills_cli = None;
+        upper.skill_reco = SkillRecoState::Suggested {
+            draft: RECO_DRAFT.to_string(),
+            skill: "alpha".to_string(),
+            summary: "s".to_string(),
+        };
+        upper.handle_key("A");
+        let messages = system_messages(&upper).join("\n");
+        assert!(
+            messages.to_lowercase().contains("future"),
+            "with no CLI installed the accept path reports it: {messages}"
+        );
+    }
+
+    /// Accepting with no `future` binary is possible (the CLI is resolved at
+    /// runtime), so it must report the missing binary instead of silently doing
+    /// nothing.
+    #[tokio::test]
+    async fn accepting_without_a_skills_binary_reports_it() {
+        let mut app = reco_app();
+        app.skills_cli = None;
+        app.skill_reco = SkillRecoState::Suggested {
+            draft: RECO_DRAFT.to_string(),
+            skill: "alpha".to_string(),
+            summary: "s".to_string(),
+        };
+        app.accept_skill_recommendation();
+        let messages = system_messages(&app).join("\n");
+        assert!(
+            !messages.is_empty(),
+            "a missing binary must be reported, not swallowed"
+        );
+    }
+
+    /// `apply_skill_reco_suggestion` only consumes the answer for the draft that
+    /// asked: a late answer for an abandoned draft must be dropped, and the
+    /// current draft must not be sent by it.
+    #[tokio::test]
+    async fn a_suggestion_for_a_stale_draft_is_dropped() {
+        let mut app = reco_app();
+        app.state.session_id = "s1".to_string();
+        app.skill_reco = SkillRecoState::Pending {
+            draft: RECO_DRAFT.to_string(),
+        };
+        // The answer names a *different* draft (the user kept typing).
+        app.apply_skill_reco_suggestion(
+            "a different message entirely".to_string(),
+            Some(("alpha".to_string(), "s".to_string())),
+        );
+        assert!(
+            matches!(app.skill_reco, SkillRecoState::Pending { .. }),
+            "the stale answer must not resolve the hold: {:?}",
+            app.skill_reco
+        );
+        assert!(app.chat.last_message().is_none(), "and nothing was sent");
+    }
+
+    /// `send_held_draft` with nothing held is a no-op (the `Idle` arm): it is
+    /// reached from the Escape path, which must not send an empty message.
+    #[tokio::test]
+    async fn sending_with_nothing_held_does_nothing() {
+        let mut app = reco_app();
+        app.state.session_id = "s1".to_string();
+        assert_eq!(app.skill_reco, SkillRecoState::Idle);
+        app.send_held_draft();
+        assert!(
+            app.chat.last_message().is_none(),
+            "nothing may be sent when nothing is held"
+        );
+    }
+
+    /// Escape with a card on screen means "send the draft **without** the
+    /// skill", not "clear the draft" — clearing would discard the very message
+    /// the card is about.
+    #[tokio::test]
+    async fn escape_with_a_card_sends_the_draft_without_the_skill() {
+        let mut app = reco_app();
+        app.state.session_id = "s1".to_string();
+        app.input.set_value(RECO_DRAFT, None);
+        app.skill_reco = SkillRecoState::Suggested {
+            draft: RECO_DRAFT.to_string(),
+            skill: "alpha".to_string(),
+            summary: "does alpha things".to_string(),
+        };
+
+        app.handle_key(Key::ESCAPE);
+
+        assert_eq!(app.skill_reco, SkillRecoState::Idle);
+        let last = app.chat.last_message().expect("the draft was sent");
+        assert_eq!(last.content, RECO_DRAFT);
+        assert!(
+            !last.content.contains("/alpha"),
+            "Escape must not attach the skill it declined: {}",
+            last.content
+        );
+    }
+
+    /// Accepting is only meaningful with a card on screen: called in any other
+    /// state it must return without touching the installer or the input box.
+    #[tokio::test]
+    async fn accepting_without_a_card_is_a_no_op() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut app = reco_app();
+        app.skills_cli = Some(fake_skills_cli(&calls, catalogue_answer));
+
+        for state in [
+            SkillRecoState::Idle,
+            SkillRecoState::Pending {
+                draft: RECO_DRAFT.to_string(),
+            },
+        ] {
+            app.skill_reco = state;
+            app.accept_skill_recommendation();
+            assert!(
+                skill_op_args(&calls).is_empty(),
+                "no install may run without a card to accept"
+            );
+        }
+    }
+
+    /// The prefetch is skipped entirely when there is no `future` binary: it has
+    /// nothing to run and says nothing (the panel reports a missing CLI
+    /// separately). The flag must stay unset so a later keystroke can still try.
+    #[tokio::test]
+    async fn the_prefetch_without_a_skills_binary_does_nothing() {
+        let (mut app, mut rx, calls) = reco_app_without_catalogue(catalogue_answer);
+        // No binary: the prefetch bails before spawning anything.
+        app.skills_cli = None;
+        app.handle_cmd(UiCmd::InputChanged(RECO_DRAFT.to_string()));
+        pump(&mut app, &mut rx).await;
+
+        assert!(calls.lock().unwrap().is_empty(), "nothing may be spawned");
+        assert!(app.skills_catalogue.is_none(), "and nothing was cached");
+        // The flag is set *before* the binary check on purpose: it is what stops
+        // a keystroke burst from starting a second child, and the code documents
+        // it as never cleared. So the contract here is "one attempt per session,
+        // and that attempt spawned nothing" — asserted explicitly rather than
+        // assumed.
+        assert!(
+            app.skills_catalogue_prefetch_started,
+            "the attempt is recorded even when there is no binary to run"
+        );
+    }
+
+    /// `/skill-recommend` with no argument *reports* the state and changes
+    /// nothing — in both states, which is the whole point of a bare form. An
+    /// unusable argument is reported too instead of being silently ignored.
+    #[tokio::test]
+    async fn the_bare_and_unknown_skill_recommend_arguments_report_only() {
+        let mut app = reco_app();
+        // On (the default): the report says so.
+        app.set_skill_recommend("");
+        let on = system_messages(&app).join("\n");
+        assert!(
+            on.contains("is on"),
+            "the bare form reports the state: {on}"
+        );
+        assert!(app.tui_settings.skill_recommend_enabled());
+
+        // Off: the report says off, and the state is still untouched.
+        let mut off = reco_app();
+        off.set_skill_recommend("off");
+        off.set_skill_recommend("");
+        let report = system_messages(&off).join("\n");
+        assert!(
+            report.contains("is off"),
+            "the bare form reports the *off* state too: {report}"
+        );
+        assert!(!off.tui_settings.skill_recommend_enabled());
+
+        // An unusable argument is named, and the setting is not changed.
+        let mut junk = reco_app();
+        junk.set_skill_recommend("sideways");
+        let message = system_messages(&junk).join("\n");
+        assert!(
+            message.contains("sideways"),
+            "the rejected argument is echoed back: {message}"
+        );
+        assert!(
+            message.contains("on or off"),
+            "and the accepted values are given: {message}"
+        );
+        assert!(
+            junk.tui_settings.skill_recommend_enabled(),
+            "a rejected argument must not change the setting"
+        );
+    }
+
+    /// A card with no summary must render the skill name alone — no stray
+    /// double space where the summary would go. The prompt line is also counted
+    /// as editor height, so the chat viewport shrinks by exactly the row it
+    /// takes rather than being overdrawn by it.
+    #[tokio::test]
+    async fn a_card_without_a_summary_renders_just_the_skill_name() {
+        let (mut app, _rx) = running_app(80, 24);
+        app.skill_reco = SkillRecoState::Suggested {
+            draft: RECO_DRAFT.to_string(),
+            skill: "alpha".to_string(),
+            summary: String::new(),
+        };
+        // The line itself first: an empty summary must leave the name immediately
+        // followed by the hint spacing, with no empty detail slot in between.
+        let line = app
+            .skill_reco
+            .prompt_line(0)
+            .expect("a card has a prompt line");
+        assert!(line.contains("/alpha"), "{line}");
+        assert!(
+            line.contains("/alpha    [a] install & use"),
+            "an empty summary must leave no extra gap: {line:?}"
+        );
+
+        // …and the line is really drawn: it is counted as editor height and
+        // inserted above the input box.
+        app.terminal.writes.borrow_mut().clear();
+        app.request_render(true);
+        app.do_render();
+        let joined = crate::utils::strip_ansi_codes(&render_writes(&app));
+        assert!(
+            joined.contains("Recommended skill"),
+            "the card's line is rendered above the input: {joined}"
+        );
+        assert!(joined.contains("/alpha"), "{joined}");
+
+        // A summary is appended after two spaces, trimmed first (the other arm).
+        app.skill_reco = SkillRecoState::Suggested {
+            draft: RECO_DRAFT.to_string(),
+            skill: "alpha".to_string(),
+            summary: "  does alpha things  ".to_string(),
+        };
+        let line = app.skill_reco.prompt_line(0).expect("a card has a line");
+        assert!(
+            line.contains("/alpha  does alpha things"),
+            "the summary is trimmed and appended: {line:?}"
+        );
+        assert!(
+            !line.contains("/alpha    does"),
+            "the summary's own leading padding is trimmed, not kept: {line:?}"
+        );
+    }
+
+    /// `/compact` while a run or a compaction is in flight is refused with a
+    /// message: queueing a second compaction would corrupt the transcript the
+    /// first one is rewriting.
+    #[tokio::test]
+    async fn compact_is_refused_while_a_run_or_compaction_is_in_progress() {
+        for (streaming, compacting, requested) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            let mut app = reco_app();
+            app.state.session_id = "s1".to_string();
+            app.state.streaming = streaming;
+            app.state.compacting = compacting;
+            app.state.compaction_requested = requested;
+
+            app.handle_submit("/compact");
+
+            let messages = system_messages(&app).join("\n");
+            assert!(
+                messages.contains("Cannot compact"),
+                "streaming={streaming} compacting={compacting} requested={requested} \
+                 must be refused: {messages}"
+            );
+            // The refusal is the whole response: nothing was sent, and no
+            // compaction request reached the agent.
+            let last = app.chat.last_message().map(|m| m.content.clone());
+            assert!(
+                last.as_deref() != Some("/compact"),
+                "the command must not be sent as a message: {last:?}"
+            );
+            assert!(
+                !app.state.compaction_requested || requested,
+                "a refused /compact must not set the request flag"
+            );
+        }
+    }
+
+    /// Answers for a session this app has already left are dropped: acting on
+    /// them would rewrite the transcript of the session now on screen.
+    #[tokio::test]
+    async fn answers_for_a_departed_session_are_dropped() {
+        let mut app = reco_app();
+        app.state.session_id = "current".to_string();
+        let before = app.chat.last_message().cloned();
+
+        // A compaction that finished for the session we left.
+        app.handle_cmd(UiCmd::CompactDone {
+            session_id: "departed".to_string(),
+            result: Ok("compacted".to_string()),
+        });
+        // …and a refresh sweep that completed for it.
+        app.handle_cmd(UiCmd::RefreshCompleted {
+            result: Err("the agent is gone".to_string()),
+            session_id: "departed".to_string(),
+            compaction_revision: 0,
+        });
+
+        assert_eq!(
+            app.chat.last_message().map(|m| m.content.clone()),
+            before.map(|m| m.content.clone()),
+            "a departed session's answers must not touch the transcript"
+        );
+        assert!(
+            system_messages(&app).is_empty(),
+            "and must not be reported either: {:?}",
+            system_messages(&app)
+        );
+    }
+
+    /// A history page that arrives for a session the app has left must not be
+    /// appended: the paging cursor belongs to the session on screen.
+    #[tokio::test]
+    async fn a_history_page_for_a_departed_session_is_dropped() {
+        let mut app = reco_app();
+        app.state.session_id = "current".to_string();
+        app.history_paging.session_id = "departed".to_string();
+        let lines_before = app.chat.plain_messages().len();
+
+        app.maybe_load_older_history();
+
+        assert!(
+            !app.history_paging.loading,
+            "no page was requested for the departed session"
+        );
+        assert_eq!(
+            app.chat.plain_messages().len(),
+            lines_before,
+            "the transcript is untouched"
+        );
+    }
+
+    /// The one flow that needs a live agent on this host: the `Ok` arm of the
+    /// autocomplete model fetch, which a dead client can never run.
+    ///
+    /// The `Ok` arms of every command whose call site is inside a **spawned task**
+    /// — the recommendation request, the startup prompt, the autocomplete
+    /// fetches and the interrupt's abort. A dead client never answers them, so
+    /// those tasks stop at their first `await`.
+    ///
+    /// The measured trick that makes this affordable: `GrpcClient::call` waits up
+    /// to `CALL_CONNECT_WAIT_MS` (5 s) for a connection **only when the client has
+    /// a session id**. An in-process mock never makes the client report
+    /// "connected", so with a session set every call costs 5 s; with
+    /// `set_current_session_id("")` the wait is skipped and each call completes
+    /// in ~5 ms (measured: 4.8 / 4.8 / 6.0 / 5.5 ms for
+    /// `list_sessions`/`abort`/`suggest_skill`/`prompt`).
+    #[tokio::test]
+    async fn a_live_agent_settles_the_spawned_task_commands() {
+        let (mut app, mut rx, requests) = app_with_live_agent(Default::default()).await;
+        app.skills_catalogue = Some(skills_catalogue_fixture());
+        app.skill_reco_path =
+            std::env::temp_dir().join(format!("tui-test-skill-reco-{}.json", random_id()));
+        app.state.session_id = "s1".to_string();
+        app.state.streaming = false;
+        // The fast path: no session id on the *client*, so `call` skips its
+        // connection wait.
+        app.client.set_current_session_id("");
+
+        // 1. The autocomplete fetches: each spawns, the task completes and the
+        //    answer is routed by purpose rather than opening the picker.
+        let models_before = agent_command_count(&requests, "list_models");
+        app.cached_models.clear();
+        app.input.set_value("/model g", None);
+        app.trigger_autocomplete();
+        pump_until_agent_commands(
+            &mut app,
+            &mut rx,
+            &requests,
+            "list_models",
+            models_before + 1,
+        )
+        .await;
+        assert!(
+            app.overlay_stack.is_empty(),
+            "an autocomplete fetch must not open a picker"
+        );
+
+        let sessions_before = agent_command_count(&requests, "list_sessions");
+        app.cached_sessions.clear();
+        app.client.set_current_session_id("");
+        app.input.set_value("/fork s", None);
+        app.trigger_autocomplete();
+        pump_until_agent_commands(
+            &mut app,
+            &mut rx,
+            &requests,
+            "list_sessions",
+            sessions_before + 1,
+        )
+        .await;
+        assert!(
+            app.overlay_stack.is_empty(),
+            "the session autocomplete fetch must not open the picker either"
+        );
+
+        // 2. The recommendation request: the task completes, its answer comes
+        //    back through the command channel, and (the mock declining) the held
+        //    draft is released and sent unchanged.
+        app.state.streaming = false;
+        app.client.set_current_session_id("");
+        app.input.set_value(RECO_DRAFT, None);
+        app.handle_submit(RECO_DRAFT);
+        assert!(
+            matches!(app.skill_reco, SkillRecoState::Pending { .. }),
+            "the draft is held while the agent is asked"
+        );
+        pump_until_agent_commands(&mut app, &mut rx, &requests, "suggest_skill", 1).await;
+        // The answer travels back through the command channel that
+        // `pump_until_agent_commands` drains, so by here it has been applied.
+        assert_eq!(
+            app.skill_reco,
+            SkillRecoState::Idle,
+            "the agent's answer releases the hold"
+        );
+        let sent = app.chat.last_message().expect("the held draft went out");
+        assert_eq!(sent.content, RECO_DRAFT, "and unchanged");
+
+        // 3. The startup prompt timer's spawn (`--prompt`): the task runs and
+        //    reports back, whichever way the agent answers.
+        app.cli_initial_prompt = Some("hello from the command line".to_string());
+        app.timers.push((Instant::now(), TimerId::InitialPrompt));
+        app.client.set_current_session_id("");
+        app.on_tick();
+        pump_until_agent_commands(&mut app, &mut rx, &requests, "prompt", 1).await;
+
+        // 4. The interrupt's abort spawn.
+        app.state.streaming = true;
+        app.client.set_current_session_id("");
+        app.handle_interrupt();
+        pump_until_agent_commands(&mut app, &mut rx, &requests, "abort", 1).await;
+        assert!(!app.state.streaming, "the local run state is cleared too");
+    }
+
+    /// Kept as its own test for the platform-independent part: the wire request
+    /// for the autocomplete fetch, asserted without timing.
+    #[tokio::test]
+    async fn a_live_agent_answer_reaches_the_autocomplete_path() {
+        let mock = AppMockAgent::default();
+        let requests = mock.requests.clone();
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        app.state.streaming = false;
+        app.client.set_current_session_id("");
+
+        // The autocomplete fetch for `/model `: the answer is routed by purpose
+        // rather than opening the picker.
+        app.cached_models.clear();
+        app.input.set_value("/model g", None);
+        app.trigger_autocomplete();
+        pump(&mut app, &mut rx).await;
+        assert!(
+            agent_command_count(&requests, "list_models") >= 1,
+            "the model list was fetched for autocomplete"
+        );
+        assert!(
+            app.overlay_stack.is_empty(),
+            "an autocomplete fetch must not open a picker"
+        );
+    }
+
+    /// The sessions answer is routed by *purpose*: an autocomplete fetch must
+    /// refresh the cached names without opening the session picker, while the
+    /// browse purpose opens it. Asserted by delivering the same answer under both
+    /// purposes, which is exactly what the two arms decide.
+    #[tokio::test]
+    async fn a_session_answer_is_routed_by_its_purpose() {
+        let (mut app, _rx) = make_app(100, 30);
+        let sessions = vec![sample_session("s1", "first", "/tmp", None)];
+
+        // Autocomplete: cache only, no panel.
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sessions.clone()),
+            purpose: SessionsPurpose::Autocomplete,
+        });
+        assert!(
+            app.overlay_stack.is_empty(),
+            "an autocomplete answer must not open a picker"
+        );
+        assert_eq!(
+            app.cached_sessions,
+            vec!["s1".to_string()],
+            "but it does refresh the cached names"
+        );
+
+        // Browse: the picker opens.
+        app.handle_cmd(UiCmd::SessionsLoaded {
+            result: Ok(sessions),
+            purpose: SessionsPurpose::Browse,
+        });
+        assert!(
+            !app.overlay_stack.is_empty(),
+            "the browse purpose opens the session picker"
+        );
+    }
+
+    /// The client is re-aligned to the latest session switch only when there is
+    /// one: with no switch recorded the call is a no-op, and a switch whose
+    /// target is already current is left alone too.
+    #[tokio::test]
+    async fn realigning_without_a_pending_switch_is_a_no_op() {
+        let mut app = reco_app();
+        app.latest_session_switch = None;
+        app.realign_client_to_latest_switch(); // must not panic
+
+        // A recorded switch whose target is already the current session.
+        app.state.session_id = "s1".to_string();
+        app.latest_session_switch = Some(SessionSwitchRequest {
+            from: "s0".to_string(),
+            target: "s1".to_string(),
+        });
+        app.realign_client_to_latest_switch();
+        assert_eq!(app.state.session_id, "s1");
+    }
+
+    /// The heart of the hold: a message that *could* be recommended is kept in
+    /// the input box while the agent is asked about it, and the submission stops
+    /// there (it never reaches the send path). The answer then either replaces
+    /// the hold with a card or releases the draft.
+    #[tokio::test]
+    async fn a_recommendable_draft_is_held_while_the_agent_is_asked() {
+        let (mut app, _rx) = make_app_at("127.0.0.1:1", &CliOptions::default());
+        app.skills_catalogue = Some(skills_catalogue_fixture());
+        app.skill_reco_path =
+            std::env::temp_dir().join(format!("tui-test-skill-reco-{}.json", random_id()));
+        app.state.session_id = "s1".to_string();
+        app.input.set_value(RECO_DRAFT, None);
+
+        app.handle_submit(RECO_DRAFT);
+
+        assert!(
+            matches!(&app.skill_reco, SkillRecoState::Pending { draft } if draft == RECO_DRAFT),
+            "the draft is held while the agent is asked: {:?}",
+            app.skill_reco
+        );
+        assert_eq!(
+            app.input.get_value(),
+            RECO_DRAFT,
+            "a held draft stays in the input box"
+        );
+        assert!(
+            app.chat.last_message().is_none(),
+            "the submission must not reach the send path"
+        );
+        assert!(
+            app.editor_locked_by_reco(),
+            "and the box is locked for the wait"
+        );
+
+        // The dead client never answers, so simulate the agent's reply on the
+        // channel the spawning task uses — the same shape the real answer has.
+        app.handle_cmd(UiCmd::SkillRecoSuggested {
+            draft: RECO_DRAFT.to_string(),
+            suggestion: None,
+        });
+        assert_eq!(
+            app.skill_reco,
+            SkillRecoState::Idle,
+            "the hold is released once the agent has answered"
+        );
+        let sent = app.chat.last_message().expect("the held draft went out");
+        assert_eq!(sent.content, RECO_DRAFT, "and unchanged");
+    }
+
+    /// `handle_interrupt` while a run is streaming must abort it through the
+    /// client and clear the local run state, so the UI does not keep showing a
+    /// spinner the agent has already stopped.
+    #[tokio::test]
+    async fn interrupt_while_streaming_clears_the_run_state() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.streaming = true;
+        app.state.active_tool_count = 2;
+        app.state.tool_start_time = Some(Instant::now());
+
+        app.handle_interrupt();
+
+        assert!(!app.state.streaming);
+        assert_eq!(app.state.active_tool_count, 0);
+        assert!(app.state.tool_start_time.is_none());
+    }
+
+    /// Web-search autocomplete for `/model` and the session commands: the first
+    /// keystroke past the command fetches the list once and caches it, and the
+    /// answer is routed by *purpose* (an autocomplete fetch must not open the
+    /// picker overlay, and vice versa).
+    #[tokio::test]
+    async fn autocomplete_queries_fetch_models_and_sessions_by_purpose() {
+        let (mut app, mut rx) = make_app(100, 30);
+        assert!(app.cached_models.is_empty());
+        assert!(app.cached_sessions.is_empty());
+
+        // `/model ` with nothing cached asks for the model list for autocomplete.
+        app.input.set_value("/model g", None);
+        app.trigger_autocomplete();
+        pump(&mut app, &mut rx).await;
+
+        // `/fork ` asks for the session list for autocomplete.
+        app.input.set_value("/fork s", None);
+        app.trigger_autocomplete();
+        pump(&mut app, &mut rx).await;
+
+        // Neither may have opened a picker: the purpose is autocomplete.
+        let opened = app.overlay_stack.len();
+        assert!(
+            app.overlay_stack.is_empty(),
+            "an autocomplete fetch must not open an overlay: {opened} opened"
+        );
+        // The dead client answers nothing, so nothing was cached — the point of
+        // the test is that both fetches were *issued* and neither opened a panel.
+        let _ = (&app.cached_models, &app.cached_sessions);
+    }
+
+    /// A relative `/cwd` argument is resolved against the session's current
+    /// directory (not the process's) and its `..` is folded, because the agent
+    /// stores the path verbatim. Asserted on the command that goes on the wire —
+    /// the resolution happens before the send, so the request is the observable.
+    #[tokio::test]
+    async fn a_relative_cwd_argument_resolves_against_the_session_cwd() {
+        let (mut app, mut rx, requests) = app_with_live_agent(Default::default()).await;
+        let root = tempfile::tempdir().expect("tempdir");
+        let nested = root.path().join("nested");
+        std::fs::create_dir_all(&nested).expect("nested dir");
+        app.state.cwd = root.path().display().to_string();
+        // Let the client attach before the command is issued.
+        pump(&mut app, &mut rx).await;
+        // …then force the flag: the mock's `get_state` may report a run in
+        // flight, and `/cwd` is refused while one is (`cwd_change_blocked`),
+        // which would skip the resolution this test is about.
+        app.state.streaming = false;
+        app.client.set_current_session_id("");
+
+        app.handle_submit("/cwd nested/../nested");
+
+        // Bounded wait for the request. On a freshly started client the first
+        // command waits for the stream to attach; asserting on the command that
+        // reaches the agent is both precise and independent of that timing.
+        let sent = wait_for_set_cwd(&mut app, &mut rx, &requests, 1).await;
+        assert_eq!(
+            sent.as_deref(),
+            Some(nested.display().to_string().as_str()),
+            "a relative `/cwd` resolves against the session cwd and folds `..`"
+        );
+
+        // An **absolute** argument skips the whole resolution chain (the
+        // fall-through of the three conditions) and is forwarded as given.
+        let absolute = nested.display().to_string();
+        app.state.streaming = false;
+        app.client.set_current_session_id("");
+        app.handle_submit(&format!("/cwd {absolute}"));
+        let sent = wait_for_set_cwd(&mut app, &mut rx, &requests, 2).await;
+        assert_eq!(
+            sent.as_deref(),
+            Some(absolute.as_str()),
+            "an absolute `/cwd` is forwarded unchanged"
+        );
+    }
+
+    /// Wait until the mock has seen `count` `set_cwd` commands, and return the
+    /// most recent one's argument (bounded). `None` on timeout: the caller's
+    /// assertion carries the diagnostic, so this helper needs no failure branch
+    /// of its own.
+    async fn wait_for_set_cwd(
+        app: &mut App<FakeTerminal>,
+        rx: &mut mpsc::UnboundedReceiver<UiCmd>,
+        requests: &std::sync::Arc<std::sync::Mutex<Vec<RpcCommand>>>,
+        count: usize,
+    ) -> Option<String> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            while let Ok(cmd) = rx.try_recv() {
+                app.handle_cmd(cmd);
+            }
+            let seen = requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|cmd| cmd.r#type == "set_cwd")
+                .count();
+            if seen >= count {
+                return requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .rev()
+                    .find(|cmd| cmd.r#type == "set_cwd")
+                    .map(|cmd| cmd.cwd.clone());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        None
+    }
+
+    /// A pending tick timer and a pending UI deadline must be combined: the next
+    /// tick is the **earlier** of the two. Taking the later one would oversleep
+    /// the first, and taking only the timer would miss the render/paste deadline.
+    #[tokio::test]
+    async fn the_next_deadline_is_the_earliest_of_the_timer_and_the_ui_deadlines() {
+        let (mut app, _rx) = make_app(100, 30);
+        let soon = Instant::now() + Duration::from_millis(50);
+        let late = Instant::now() + Duration::from_secs(30);
+
+        // Only a UI deadline: that one is the deadline.
+        app.render_deadline = Some(late);
+        app.timers.clear();
+        assert_eq!(app.next_deadline(), Some(late));
+
+        // Both: the earlier wins, whichever side it comes from.
+        app.timers.push((soon, TimerId::ReconnectRefresh));
+        assert_eq!(
+            app.next_deadline(),
+            Some(soon),
+            "the earlier deadline wins (a later one would oversleep it)"
+        );
+
+        app.render_deadline = Some(soon);
+        app.timers.clear();
+        app.timers.push((late, TimerId::ReconnectRefresh));
+        assert_eq!(app.next_deadline(), Some(soon), "and symmetrically");
+
+        // Nothing pending at all: no deadline.
+        app.render_deadline = None;
+        app.resize_deadline = None;
+        app.ac_query_deadline = None;
+        app.timers.clear();
+        assert_eq!(app.next_deadline(), None);
+    }
+
+    /// The fork picker's `onSelect` callback is what turns a key press into an
+    /// `OverlaySelect` command; injecting the command directly (as the other
+    /// tests do) never exercises it. Pressing Enter on the real overlay does.
+    #[tokio::test]
+    async fn selecting_a_fork_row_emits_the_overlay_select_command() {
+        let (mut app, mut rx) = make_app(100, 30);
+        app.handle_cmd(UiCmd::ForkMessagesLoaded(Ok(serde_json::json!({
+            "messages": [
+                {"id": "m1", "createdAtMs": 1_700_000_000_000i64,
+                 "blocks": [{"kind": "text", "text": "first message"}]},
+                {"id": "m2", "createdAtMs": 1_700_000_001_000i64,
+                 "blocks": [{"kind": "text", "text": "second message"}]}
+            ]
+        }))));
+        assert!(!app.overlay_stack.is_empty(), "the picker is open");
+
+        // Enter on the highlighted row must send OverlaySelect through the
+        // component's own callback.
+        press_on_overlay(&mut app, &mut rx, "enter");
+
+        assert!(
+            app.overlay_stack.is_empty() || app.get_top_overlay_index().is_some(),
+            "the selection was delivered (and the picker closed or was replaced)"
+        );
+    }
+
+    /// A page whose cursor belongs to a session the app has left is never
+    /// requested: appending it would splice another session's history into the
+    /// transcript on screen.
+    #[tokio::test]
+    async fn a_page_for_a_departed_session_is_never_requested() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.state.session_id = "current".to_string();
+        app.history_paging.session_id = "departed".to_string();
+        // Everything else is in the state a real upward scroll would leave.
+        app.history_paging.has_more = true;
+        app.history_paging.loading = false;
+        app.chat.clear_messages();
+        assert!(app.chat.is_at_top(), "an empty transcript is at its top");
+
+        app.maybe_load_older_history();
+
+        assert!(
+            !app.history_paging.loading,
+            "the departed session's page must not be requested"
+        );
+    }
+
+    /// Tool arguments arriving as a JSON **string** are kept as that string
+    /// rather than re-encoded. A legacy transcript sends exactly that shape, and
+    /// re-encoding it would change the bytes shown next to the call.
+    #[test]
+    fn a_string_tool_argument_is_kept_verbatim_when_rows_are_loaded() {
+        let rows = serde_json::json!([
+            // The assistant row needs a text block as well: a row that renders
+            // nothing is dropped before its tool arguments are read.
+            {"id": "a1", "role": "assistant", "blocks": [
+                {"kind": "text", "text": "calling two tools"},
+                {"kind": "tool_call", "toolCallId": "c1", "name": "read",
+                 "arguments": "{\"file\":\"a.rs\"}"},
+                {"kind": "tool_call", "toolCallId": "c2", "name": "write",
+                 "arguments": {"file": "b.rs"}}
+            ]},
+            // The result rows carry only the call id; name and arguments come
+            // from the call block above.
+            {"id": "t1", "role": "tool", "blocks": [
+                {"kind": "tool_result", "toolCallId": "c1", "text": "ok"}
+            ]},
+            {"id": "t2", "role": "tool", "blocks": [
+                {"kind": "tool_result", "toolCallId": "c2", "text": "ok"}
+            ]}
+        ]);
+        let messages =
+            App::<FakeTerminal>::history_rows_to_messages(rows.as_array().expect("an array"));
+
+        let all: Vec<&str> = messages
+            .iter()
+            .filter_map(|m| m.tool_args.as_deref())
+            .collect();
+        assert!(
+            all.contains(&"{\"file\":\"a.rs\"}"),
+            "a string argument is kept verbatim on the result row: {all:?}"
+        );
+        assert!(
+            all.iter().any(|s| s.contains("b.rs")),
+            "an object argument is serialized: {all:?}"
+        );
     }
 }

@@ -122,6 +122,36 @@ describe("claimPairingCode", () => {
     await expect(claimPairingCode("not-an-invitation")).rejects.toThrow("invalid_pairing_code");
   });
 
+  test("an invitation without the v2 transport keys is refused before any request", async () => {
+    // A v1 code carries no secureKey/secret, so the Noise channel this client
+    // only speaks cannot be established. Failing here names the problem
+    // instead of surfacing an unexplained handshake error later.
+    const legacy = "futureos://remote/pair?code=abc_123&desktopId=desktop_1&desktopKey=UABC";
+    await expect(claimPairingCode(legacy)).rejects.toThrow("pairing_identity_mismatch");
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  test("an already-registered device id is reused instead of rotated", async () => {
+    // Rotating the device id on every claim would leave the desktop with a
+    // stale peer entry for the same phone.
+    mockedLoadDeviceId.mockResolvedValue("dev_existing");
+    const credentials = await claimPairingCode(invitation());
+    expect(credentials.deviceId).toBe("dev_existing");
+    expect(mockedSaveDeviceId).not.toHaveBeenCalled();
+    expect(lastFetchBody().device_id).toBe("dev_existing");
+  });
+
+  test("an error body that is not JSON still reports the HTTP status", async () => {
+    // A proxy or a captive portal can answer with HTML; the phone must still
+    // say what the server said (the status), not that JSON parsing failed.
+    globalThis.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      json: async () => { throw new Error("not json"); },
+    } as unknown as Response);
+    await expect(claimPairingCode(invitation())).rejects.toThrow("HTTP 502");
+  });
+
   test("rejects an invitation whose embedded code does not decode", async () => {
     const bad = invitation().replace(pairingCode(), "!!!");
     await expect(claimPairingCode(bad)).rejects.toThrow("invalid_pairing_code");

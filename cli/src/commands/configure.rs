@@ -639,4 +639,295 @@ mod tests {
         );
         assert!(output_text(&captured.err).contains("Please enter 1"));
     }
+
+    /// `ask_yes_no` accepts only the documented spellings (plus the blank
+    /// default) and re-prompts on anything else — it must never guess, because
+    /// the answer decides whether an existing token is replaced.
+    #[test]
+    fn ask_yes_no_reprompts_and_honours_the_default() {
+        let (out, captured) = Output::memory();
+        // Unrecognised, then the explicit spellings.
+        let mut prompt = FakePrompter::new(&["maybe", "YES"]);
+        assert!(ask_yes_no(&mut prompt, &out, "? ", false).unwrap());
+        assert!(output_text(&captured.err).contains("Please answer yes or no."));
+
+        let mut prompt = FakePrompter::new(&["nope", "n"]);
+        assert!(!ask_yes_no(&mut prompt, &out, "? ", true).unwrap());
+
+        // Blank takes the caller's default, either way round.
+        let mut prompt = FakePrompter::new(&[""]);
+        assert!(ask_yes_no(&mut prompt, &out, "? ", true).unwrap());
+        let mut prompt = FakePrompter::new(&[""]);
+        assert!(!ask_yes_no(&mut prompt, &out, "? ", false).unwrap());
+    }
+
+    /// Every prompt is fallible and every one of them propagates: a prompter
+    /// that fails at *any* stage ends the flow with that error rather than
+    /// continuing with a default (which would write a provider from
+    /// half-collected input). Truncating the answer list at each length
+    /// therefore has to fail at each stage.
+    #[tokio::test]
+    async fn a_prompter_failure_at_any_stage_propagates() {
+        let choice = ["2"];
+        let custom = [
+            "acme",
+            "Acme AI",
+            "2",
+            "https://api.acme.test/v1",
+            "secret-key",
+            "reasoner-v1",
+            "Reasoner",
+            "200000",
+            "32000",
+            "yes",
+        ];
+
+        // The custom-collection stages (one prompt each).
+        for taken in 0..custom.len() {
+            let (out, _captured) = Output::memory();
+            let mut prompt = FakePrompter::new(&custom[..taken]);
+            let err = collect_custom_provider(&mut prompt, &out)
+                .expect_err("a failed prompt must not yield an input");
+            assert_eq!(err, "test input exhausted", "taken={taken}");
+        }
+
+        // …and through the full `configure_with` entry, including the
+        // provider-choice prompt that precedes them.
+        for taken in 0..custom.len() {
+            let (out, _captured) = Output::memory();
+            let mut all: Vec<&str> = choice.to_vec();
+            all.extend_from_slice(&custom[..taken]);
+            let mut prompt = FakePrompter::new(&all);
+            let err = configure_with(&mut prompt, &out)
+                .await
+                .expect_err("a failed prompt must abort the wizard");
+            assert_eq!(err, "test input exhausted", "taken={taken}");
+        }
+    }
+
+    /// The two field validators that have a documented limit: an API key or a
+    /// model ID that is not ASCII, carries a control character, or is too long
+    /// is refused and the prompt repeats — the boundary is inclusive on the
+    /// limit (16 384 bytes / 256 characters are accepted, the next byte is
+    /// not). Also covered: the blank key is allowed (a keyless local endpoint)
+    /// while a blank model ID is not.
+    #[test]
+    fn api_key_and_model_id_limits_reprompt_at_the_boundary() {
+        let (out, captured) = Output::memory();
+        let long_key = "k".repeat(16_385);
+        let long_model = "m".repeat(257);
+        let mut prompt = FakePrompter::new(&[
+            "acme", // id
+            "",     // name
+            "1",    // protocol
+            "https://api.acme.test/v1",
+            "café",          // non-ASCII key → refused
+            "with\u{7}bell", // control character → refused
+            &long_key,       // over the byte limit → refused
+            "ok-key",        // accepted
+            "",              // blank model id → refused
+            "modèle",        // non-ASCII model → refused
+            &long_model,     // over the length limit → refused
+            "good-model",    // accepted
+            "",              // model display name
+            "",              // context window
+            "",              // max tokens
+            "n",             // images
+        ]);
+        let input = collect_custom_provider(&mut prompt, &out).expect("accepted");
+        assert_eq!(input.api_key.as_deref(), Some("ok-key"));
+        assert_eq!(input.model_id, "good-model");
+        assert_eq!(
+            input.model_name, "good-model",
+            "the name defaults to the id"
+        );
+        let stderr = output_text(&captured.err);
+        assert_eq!(
+            stderr
+                .matches("API key must be ASCII, contain no control characters, and be at most 16384 bytes.")
+                .count(),
+            3,
+            "{stderr}"
+        );
+        assert_eq!(
+            stderr
+                .matches("Model ID is required and must be at most 256 ASCII characters.")
+                .count(),
+            3,
+            "{stderr}"
+        );
+    }
+
+    /// A prompter that fails while the FutureOS path is asking its question
+    /// propagates that failure instead of treating it as "no" — a login must
+    /// never be started, or skipped, on a prompt that never got an answer.
+    #[tokio::test]
+    async fn a_prompter_failure_at_the_relogin_question_propagates() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env = EnvGuard::set(&[
+            ("HOME", dir.path().as_os_str().to_owned()),
+            ("USERPROFILE", dir.path().as_os_str().to_owned()),
+        ]);
+        let path = crate::constants::auth_file();
+        tokio::fs::create_dir_all(path.parent().expect("parent"))
+            .await
+            .expect("mkdir");
+        tokio::fs::write(
+            &path,
+            r#"{"future":{"type":"api_key","key":"existing","base_url":"http://127.0.0.1:1"}}"#,
+        )
+        .await
+        .expect("write");
+
+        // No answers at all: the question itself cannot be read.
+        let mut prompt = FakePrompter::new(&[]);
+        let (out, _captured) = Output::memory();
+        let err = configure_futureos(&mut prompt, &out)
+            .await
+            .expect_err("an unreadable answer is not a default");
+        assert_eq!(err, "test input exhausted");
+        // …and the stored credential was not touched.
+        let after: Value =
+            serde_json::from_str(&tokio::fs::read_to_string(&path).await.expect("read"))
+                .expect("json");
+        assert_eq!(after["future"]["key"], "existing");
+    }
+
+    /// A `collect_custom_provider` answer that fails the agent's own validator
+    /// validators cannot silently disagree: the CLI accepts a 64-character id
+    /// and the authoritative writer is what finally judges the whole spec.
+    #[test]
+    fn the_agent_validator_is_the_final_authority() {
+        let (out, _captured) = Output::memory();
+        let mut prompt = FakePrompter::new(&[
+            &"a".repeat(64),
+            "",
+            "1",
+            "https://api.acme.test/v1",
+            "",
+            "m",
+            "",
+            "",
+            "",
+            "",
+        ]);
+        let input = collect_custom_provider(&mut prompt, &out).expect("a 64-char id is valid");
+        assert_eq!(input.id.len(), 64);
+        // A 65-character id never reaches the validator — the prompt loop
+        // rejects it first, which is the boundary the two share.
+        let mut prompt = FakePrompter::new(&[
+            &"b".repeat(65),
+            "custom",
+            "",
+            "1",
+            "https://api.acme.test/v1",
+            "",
+            "m",
+            "",
+            "",
+            "",
+            "",
+        ]);
+        let input = collect_custom_provider(&mut prompt, &out).expect("retries with a valid id");
+        assert_eq!(input.id, "custom");
+    }
+
+    /// With no stored token the FutureOS path says so and hands off to the
+    /// login flow.
+    ///
+    /// `auth::login` always targets `DEFAULT_PLATFORM_URL` (the override it
+    /// would need is the caller's, and `configure_futureos` passes `None`), so
+    /// the login itself is a real network round trip and is *not* followed:
+    /// the call is bounded by a timeout and only the hand-off it logged before
+    /// starting is asserted. That is the whole claim — the message is printed,
+    /// the question is not asked, and control reaches the login call.
+    #[tokio::test]
+    async fn futureos_without_a_token_hands_off_to_login() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env = EnvGuard::set(&[
+            ("HOME", dir.path().as_os_str().to_owned()),
+            ("USERPROFILE", dir.path().as_os_str().to_owned()),
+        ]);
+        let path = crate::constants::auth_file();
+        tokio::fs::create_dir_all(path.parent().expect("parent"))
+            .await
+            .expect("mkdir");
+        // A `future` entry with no key is not a token.
+        tokio::fs::write(&path, r#"{"future":{"base_url":"http://127.0.0.1:1"}}"#)
+            .await
+            .expect("write auth.json");
+
+        let mut prompt = FakePrompter::new(&[]);
+        let (out, captured) = Output::memory();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            configure_futureos(&mut prompt, &out),
+        )
+        .await;
+
+        let stdout = output_text(&captured.out);
+        assert!(
+            stdout.contains("No FutureOS token found. Starting login..."),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("Log in again?"),
+            "no token means no replace question: {stdout}"
+        );
+    }
+
+    /// An existing token is never silently replaced: declining leaves the file
+    /// untouched, and accepting proceeds to the login flow (which is bounded
+    /// for the same reason as above, so only the hand-off is asserted).
+    #[tokio::test]
+    async fn futureos_existing_token_asks_before_replacing_it() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env = EnvGuard::set(&[
+            ("HOME", dir.path().as_os_str().to_owned()),
+            ("USERPROFILE", dir.path().as_os_str().to_owned()),
+        ]);
+        let path = crate::constants::auth_file();
+        tokio::fs::create_dir_all(path.parent().expect("parent"))
+            .await
+            .expect("mkdir");
+        let seeded =
+            r#"{"future":{"type":"api_key","key":"keep-me","base_url":"http://127.0.0.1:1"}}"#;
+        tokio::fs::write(&path, seeded).await.expect("write");
+
+        // Declining: reported, and the stored key is untouched.
+        let mut prompt = FakePrompter::new(&["n"]);
+        let (out, captured) = Output::memory();
+        configure_futureos(&mut prompt, &out)
+            .await
+            .expect("declining is not an error");
+        let stdout = output_text(&captured.out);
+        assert!(stdout.contains("Log in again?"), "{stdout}");
+        assert!(stdout.contains("no changes were made"), "{stdout}");
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.expect("read"),
+            seeded
+        );
+
+        // Accepting reaches the login hand-off (bounded; see the test above).
+        let mut prompt = FakePrompter::new(&["y"]);
+        let (out, captured) = Output::memory();
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            configure_futureos(&mut prompt, &out),
+        )
+        .await;
+        let stdout = output_text(&captured.out);
+        assert!(stdout.contains("Log in again?"), "{stdout}");
+        assert!(
+            !stdout.contains("no changes were made"),
+            "accepting must not take the decline path: {stdout}"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.expect("read"),
+            seeded
+        );
+    }
 }

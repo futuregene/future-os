@@ -134,3 +134,23 @@ test.each([
   expect(h.api.pending).toBe(false);
   h.unmount();
 });
+
+test("an acknowledgement for another session is refused instead of waited on", async () => {
+  const wait = jest.fn(async () => ({ status: "committed" as const }));
+  const h = mount({
+    // The desktop answered for a conversation this screen is not showing
+    // (the session changed under a stale admission).
+    compactContext: jest.fn(async () => ({ sessionId: "s2", operationId: "cmp" })),
+    awaitCompactionOutcome: wait,
+  });
+  await act(async () => { await h.api.compact(); });
+  // Waiting on it would hold this screen's composer for another session's
+  // operation, and its outcome would be reported here.
+  expect(wait).not.toHaveBeenCalled();
+  expect(h.api.pending).toBe(false);
+  expect(toast).toHaveBeenCalledWith("chat.compactionRequestFailed");
+  expect(h.t).toHaveBeenCalledWith("chat.compactionRequestFailed", {
+    message: "compaction_session_changed",
+  });
+  h.unmount();
+});

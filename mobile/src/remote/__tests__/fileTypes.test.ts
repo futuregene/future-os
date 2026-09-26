@@ -109,4 +109,12 @@ describe("mobile file type policy", () => {
     expect(mobilePreviewRoute("data.json", MAX_JSON_RICH_PREVIEW_BYTES)).toBe("text");
     expect(mobilePreviewRoute("data.json", MAX_JSON_RICH_PREVIEW_BYTES + 1)).toBe("text");
   });
+
+  test("a file the phone cannot classify has no preview route to offer", () => {
+    expect(mobilePreviewRoute("archive.zzz9", 4096)).toBeNull();
+    expect(mobilePreviewRoute("", 0)).toBeNull();
+    // A desktop path is decided by its last segment, on either separator.
+    expect(mobilePreviewRoute("C:\\docs\\report.zzz9", 4096)).toBeNull();
+    expect(mobilePreviewRoute("C:\\docs\\notes.txt", 4096)).toBe("text");
+  });
 });

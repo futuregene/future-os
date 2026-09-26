@@ -255,3 +255,58 @@ mod tests {
         assert!(!repair_dangling_tool_calls(&mut Vec::new()));
     }
 }
+
+/// Healing paths that only a half-written journal produces: a placeholder that
+/// a later real result supersedes, and a call whose id is missing so it can
+/// never claim somebody else's result.
+#[cfg(test)]
+mod dedupe_and_orphan_paths {
+    use super::*;
+    use crate::types::{ToolCall, ToolCallFn};
+
+    #[test]
+    fn a_real_result_replaces_the_placeholder_for_its_call() {
+        let placeholder_text = format!("{TOOL_LOST_PLACEHOLDER_PREFIX} synthetic]");
+        let mut placeholder = SessionEntry::new_tool("call", &placeholder_text);
+        placeholder.id = "placeholder".into();
+        let mut real = SessionEntry::new_tool("call", "real result");
+        real.id = "real".into();
+        let mut entries = vec![placeholder, real];
+        assert!(dedupe_tool_entries(&mut entries));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "real");
+        assert!(!dedupe_tool_entries(&mut entries), "second pass is a no-op");
+    }
+
+    #[test]
+    fn a_call_without_an_id_never_claims_a_later_result() {
+        let mut assistant = SessionEntry::new_assistant(serde_json::json!("answer"), Vec::new());
+        assistant.id = "assistant".into();
+        assistant.tool_calls = vec![ToolCall {
+            id: String::new(),
+            call_type: "function".into(),
+            function: ToolCallFn {
+                name: "read".into(),
+                arguments: serde_json::json!({}),
+            },
+        }];
+        let user = SessionEntry::new_user("user", serde_json::json!("next question"));
+        let boundary_id = user.id.clone();
+        let mut late = SessionEntry::new_tool("", "late result");
+        late.id = "orphan".into();
+        let mut entries = vec![assistant, user, late];
+        repair_dangling_tool_calls(&mut entries);
+        let ids: Vec<_> = entries.iter().map(|entry| entry.id.clone()).collect();
+        let boundary = ids
+            .iter()
+            .position(|id| *id == boundary_id)
+            .expect("the user boundary survives the repair");
+        let orphan = ids
+            .iter()
+            .position(|id| id == "orphan")
+            .expect("the late result stays in the journal");
+        // The id-less call cannot match the later result, so that result stays
+        // behind the user boundary instead of being pulled forward.
+        assert!(orphan > boundary, "{ids:?}");
+    }
+}

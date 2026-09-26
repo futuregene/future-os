@@ -36,6 +36,24 @@ fn alice() -> Value {
     json!({ "id": 7, "username": "alice", "first_name": "Alice" })
 }
 
+/// A loopback address on a port the OS just handed out and we released again.
+///
+/// The webhook address is read from the config, so the provider cannot be asked
+/// to bind port 0 and report back which port it got. The two webhook tests below
+/// used to hard-code `127.0.0.1:18787` / `:18899`; any *second* copy of this
+/// suite on the same machine — a mutation run, a CI shard, another agent's test
+/// run — then died with `webhook server cannot bind … (os error 10048)`, and
+/// because the readiness probe only asks "is anything listening here" it
+/// happily connected to the *other* process's server and blamed the channel for
+/// a panic instead. Letting the OS name a free port removes the shared name.
+fn free_loopback_addr() -> String {
+    let reserved = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve a loopback port");
+    let addr = reserved.local_addr().expect("local_addr");
+    // Released before the provider binds it: this is a name, not a reservation.
+    drop(reserved);
+    addr.to_string()
+}
+
 // ─── MarkdownV2 escaping ────────────────────────────────────────────────────
 
 #[test]
@@ -1364,8 +1382,9 @@ async fn the_webhook_serves_verified_deliveries_and_rejects_the_rest() {
     )])
     .await;
     let dir = crate::test_support::temp_dir("tg-webhook");
-    // Default path branch (/telegram) with a free port: 8787 is occupied by a
-    // long-running local service on this machine, so tests bind elsewhere.
+    // Default path branch (/telegram) on a port of our own.
+    let addr = free_loopback_addr();
+    let url = format!("http://{addr}/telegram");
     let ctx = ctx_with_config(
         "tg-webhook",
         json!({
@@ -1373,7 +1392,7 @@ async fn the_webhook_serves_verified_deliveries_and_rejects_the_rest() {
             "bot_token": "tok",
             "api_base": base,
             "mode": "webhook",
-            "webhook": { "addr": "127.0.0.1:18787", "secret_token": "s3cret" }
+            "webhook": { "addr": addr.clone(), "secret_token": "s3cret" }
         }),
         &dir,
     );
@@ -1382,16 +1401,18 @@ async fn the_webhook_serves_verified_deliveries_and_rejects_the_rest() {
 
     let client = reqwest::Client::builder().http1_only().build().unwrap();
     let delivery = update(50, message(private_chat(), alice(), "via webhook"));
-    // Wait for the server to bind before posting.
+    // Wait for the server to bind before posting. The budget is a deadline, not
+    // a premise: a machine saturated by other test runs can take seconds to get
+    // the task onto a core, and nothing about the product is being measured here.
     let bound = crate::test_support::wait_until(
-        || std::net::TcpStream::connect("127.0.0.1:18787").is_ok(),
-        Duration::from_secs(5),
+        || std::net::TcpStream::connect(&addr).is_ok(),
+        Duration::from_secs(15),
     )
     .await;
     assert!(bound, "the webhook server did not bind in time");
     // Wrong/absent secret: 401, and the update must not be consumed.
     let denied = client
-        .post("http://127.0.0.1:18787/telegram")
+        .post(&url)
         .header("X-Telegram-Bot-Api-Secret-Token", "wrong")
         .json(&delivery)
         .send()
@@ -1400,7 +1421,7 @@ async fn the_webhook_serves_verified_deliveries_and_rejects_the_rest() {
     assert_eq!(denied.status().as_u16(), 401);
     // Correct secret: 200 immediately (the agent turn runs in the background).
     let accepted = client
-        .post("http://127.0.0.1:18787/telegram")
+        .post(&url)
         .header("X-Telegram-Bot-Api-Secret-Token", "s3cret")
         .json(&delivery)
         .send()
@@ -1423,6 +1444,8 @@ async fn a_webhook_configured_with_explicit_addr_and_path_binds_there() {
     )])
     .await;
     let dir = crate::test_support::temp_dir("tg-webhook-custom");
+    let addr = free_loopback_addr();
+    let url = format!("http://{addr}/hook/tg");
     let ctx = ctx_with_config(
         "tg-webhook-custom",
         json!({
@@ -1430,7 +1453,7 @@ async fn a_webhook_configured_with_explicit_addr_and_path_binds_there() {
             "bot_token": "tok",
             "api_base": base,
             "mode": "webhook",
-            "webhook": { "addr": "127.0.0.1:18899", "path": "/hook/tg", "secret_token": "" }
+            "webhook": { "addr": addr.clone(), "path": "/hook/tg", "secret_token": "" }
         }),
         &dir,
     );
@@ -1438,14 +1461,14 @@ async fn a_webhook_configured_with_explicit_addr_and_path_binds_there() {
     let running = tokio::spawn(async move { Telegram.run(ctx).await });
     let client = reqwest::Client::builder().http1_only().build().unwrap();
     let bound = crate::test_support::wait_until(
-        || std::net::TcpStream::connect("127.0.0.1:18899").is_ok(),
-        Duration::from_secs(5),
+        || std::net::TcpStream::connect(&addr).is_ok(),
+        Duration::from_secs(15),
     )
     .await;
     assert!(bound, "the webhook server did not bind in time");
     // No secret configured: the gate is open.
     let accepted = client
-        .post("http://127.0.0.1:18899/hook/tg")
+        .post(&url)
         .json(&update(60, message(private_chat(), alice(), "open gate")))
         .send()
         .await

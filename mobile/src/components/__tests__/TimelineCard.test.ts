@@ -493,6 +493,28 @@ test("a compaction divider with no post-compaction estimate keeps the count it h
   expect(hasText("Context compacted · 190,000 tokens")).toBe(true);
 });
 
+test("a second copy tap restarts the feedback instead of clearing it early", async () => {
+  jest.useFakeTimers();
+  try {
+    render(reply({ id: "a1", text: "answer", streaming: false }));
+    const copy = () => tree.root.findAll(node =>
+      node.props.accessibilityLabel === "chat.copyResponse" && typeof node.props.onPress === "function")[0]!;
+    await act(async () => { copy().props.onPress(); });
+    // Half-way through the flash the user copies again.
+    await act(async () => { jest.advanceTimersByTime(700); });
+    await act(async () => { copy().props.onPress(); });
+    await act(async () => { jest.advanceTimersByTime(700); });
+    const confirmed = () => countIconsNamed(tree.root, "Check") > 0;
+    // The first flash's deadline has passed, but the confirmation must still be
+    // showing: the copy the user just made has not been acknowledged for its own
+    // full beat. Without cancelling the first timer the check would already have
+    // flipped back, i.e. tapping copy would look like it did nothing.
+    expect(confirmed()).toBe(true);
+    await act(async () => { jest.advanceTimersByTime(700); });
+    expect(confirmed()).toBe(false);
+  } finally { jest.useRealTimers(); }
+});
+
 test("a manual compaction divider reports both counts too", () => {
   render(reply({
     segments: [compaction({ tokensBefore: 33_064, tokensAfter: 9_250, trigger: "manual" })],

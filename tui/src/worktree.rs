@@ -1410,6 +1410,23 @@ mod tests {
         assert!(out.status.success(), "git {args:?} failed: {stderr}");
     }
 
+    /// Compare two spellings of a path as the same directory.
+    ///
+    /// `git worktree list` prints forward slashes and drops the trailing
+    /// separator, while `Path::join`/`display` write the host's separator — and
+    /// on Windows `fs::canonicalize` adds a `\\?\` verbatim prefix that git
+    /// never prints. The assertion is about *which directory* git reported, not
+    /// about its punctuation, so both readings are normalised first.
+    fn location(path: &str) -> String {
+        let slashed = path.replace('\\', "/");
+        let stripped = slashed.strip_prefix("//?/").unwrap_or(slashed.as_str());
+        if cfg!(windows) {
+            stripped.to_ascii_lowercase()
+        } else {
+            stripped.to_string()
+        }
+    }
+
     /// A throwaway repository with one commit on `main`, removed on drop.
     struct TempRepo {
         root: PathBuf,
@@ -1419,12 +1436,17 @@ mod tests {
         fn new() -> Self {
             let dir =
                 std::env::temp_dir().join(format!("future-worktree-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
             // `git worktree list` prints resolved paths, and on macOS the temp
             // dir is reached through the `/var` → `/private/var` symlink: the
-            // fixture canonicalises once so nothing downstream compares a
-            // resolved path against an unresolved one.
-            std::fs::create_dir_all(&dir).unwrap();
+            // fixture resolves once so nothing downstream compares a resolved
+            // path against an unresolved one. Windows gets no such prefix: the
+            // temp dir has no symlink to resolve, and `canonicalize` would add
+            // the `\\?\` verbatim prefix git never prints.
+            #[cfg(not(windows))]
             let root = std::fs::canonicalize(&dir).unwrap();
+            #[cfg(windows)]
+            let root = dir;
             git_in(&root, &["init", "-q", "-b", "main"]);
             git_in(&root, &["config", "user.email", "tui@example.com"]);
             git_in(&root, &["config", "user.name", "TUI Test"]);
@@ -1457,7 +1479,7 @@ mod tests {
         // A fresh repository: one worktree, on the branch just created, clean.
         let list = cli.probe(&repo.root).unwrap();
         assert_eq!(list.len(), 1);
-        assert_eq!(list[0].path, cwd);
+        assert_eq!(location(&list[0].path), location(&cwd));
         assert_eq!(list[0].branch.as_deref(), Some("main"));
         assert_eq!(list[0].dirty, Some(false));
         assert_eq!(cli.branch(&repo.root).unwrap(), "main");
@@ -1477,7 +1499,10 @@ mod tests {
         // …and git lists it, so the picker shows it.
         let list = cli.probe(&repo.root).unwrap();
         assert_eq!(list.len(), 2);
-        assert_eq!(list[1].path, created.plan.path.display().to_string());
+        assert_eq!(
+            location(&list[1].path),
+            location(&created.plan.path.display().to_string())
+        );
         assert_eq!(list[1].branch.as_deref(), Some("feat/demo"));
         assert_eq!(list[1].dirty, Some(false));
         assert!(list[1].is_current(&created.plan.path.display().to_string()));

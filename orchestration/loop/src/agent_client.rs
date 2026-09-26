@@ -136,6 +136,17 @@ impl AgentClient {
         })
     }
 
+    /// A client whose transport is lazy and points at a port nothing listens
+    /// on. Tests that fail before the first RPC (e.g. a ledger write the fault
+    /// seam rejects) need the type but must never reach the network.
+    #[cfg(test)]
+    pub(crate) fn unreachable_for_test() -> Self {
+        let channel = tonic::transport::Endpoint::from_static("http://127.0.0.1:1").connect_lazy();
+        Self {
+            inner: future_rpc::transport::agent_client(channel),
+        }
+    }
+
     async fn call(&mut self, cmd_type: &str, session_id: &str, extra: RpcCommand) -> Result<Value> {
         let request = future_rpc::command_policy::request_with_timeout(RpcCommand {
             id: uuid::Uuid::new_v4().to_string(),

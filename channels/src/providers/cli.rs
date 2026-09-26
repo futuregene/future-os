@@ -338,12 +338,80 @@ mod tests {
         assert!(rx.try_recv().is_err(), "the pump ended at EOF");
     }
 
+    /// A [`std::io::BufRead`] that never reports EOF, so `pump_lines` can only
+    /// leave through the closed-consumer or the read-error arm. It errors once
+    /// `budget` lines were requested, so a pump that ignored a closed consumer
+    /// fails the assertion below instead of spinning forever.
+    struct EndlessLines {
+        reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        budget: usize,
+    }
+
+    impl EndlessLines {
+        /// One `read_line` call draws exactly one byte from here.
+        fn next_byte(&mut self) -> std::io::Result<u8> {
+            let read = self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if read >= self.budget {
+                return Err(std::io::Error::other("line budget exhausted"));
+            }
+            Ok(b'\n')
+        }
+    }
+
+    impl std::io::Read for EndlessLines {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if buf.is_empty() {
+                return Ok(0);
+            }
+            buf[0] = self.next_byte()?;
+            Ok(1)
+        }
+    }
+
+    impl std::io::BufRead for EndlessLines {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            self.next_byte()?;
+            Ok(b"\n")
+        }
+
+        fn consume(&mut self, _amount: usize) {}
+    }
+
     #[test]
     fn the_pump_stops_when_the_consumer_goes_away() {
-        // Closing the receiver must end the reader rather than block forever.
+        // Closing the receiver must end the reader rather than block forever or
+        // keep consuming input no one can receive.
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(1);
         drop(rx);
-        pump_lines(std::io::Cursor::new(b"one\ntwo\n".to_vec()), tx);
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        pump_lines(
+            EndlessLines {
+                reads: reads.clone(),
+                budget: 1_000,
+            },
+            tx,
+        );
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the pump must stop at the first line whose consumer is already gone"
+        );
+
+        // Sanity-check the fixture itself, so `reads == 1` above can only mean
+        // "the pump stopped", never "the reader stopped early": with a live
+        // consumer it forwards exactly `budget` lines and then ends on the read
+        // error, i.e. one counted read per line plus the failing one.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        pump_lines(
+            EndlessLines {
+                reads: reads.clone(),
+                budget: 3,
+            },
+            tx,
+        );
+        assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 4);
+        assert_eq!(rx.try_recv().expect("first line forwarded"), "\n");
     }
 
     #[tokio::test]

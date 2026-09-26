@@ -1191,9 +1191,10 @@ mod tests {
         let (_home, _conn) = guarded_conn("threads_delete_file_failure");
         let chat = create_thread(chat_input()).expect("chat thread");
         let chat_path = super::super::db::chat_workspace_path(&chat.id).expect("chat path");
-        if chat_path.exists() {
-            std::fs::remove_dir_all(&chat_path).expect("remove generated directory");
-        }
+        // Whatever a previous run left at this path must go: the assertion below
+        // needs a *file* here, so the removal cannot be conditional on the
+        // directory existing (a leftover directory would make the write fail).
+        let _ = std::fs::remove_dir_all(&chat_path);
         std::fs::write(&chat_path, b"not a directory").expect("create blocker");
 
         assert!(delete_thread_with_files(&chat.id, true).is_err());
@@ -1262,5 +1263,35 @@ mod tests {
         assert_eq!(runs, 0, "child rows of the purged thread are gone");
 
         assert_eq!(purge_soft_deleted_threads().expect("purge again"), 0);
+    }
+
+    #[test]
+    fn inheriting_an_asset_root_for_a_missing_thread_is_an_error() {
+        let (_home, _conn) = guarded_conn("threads_asset_root_missing");
+        let error = inherit_thread_asset_root("no-such-thread", "parent-thread")
+            .expect_err("a thread that does not exist cannot inherit an asset root")
+            .to_string();
+        assert!(error.contains("Thread could not be loaded"), "{error}");
+    }
+
+    #[test]
+    fn binding_a_session_to_a_thread_that_is_out_of_service_is_refused() {
+        let (_home, conn) = guarded_conn("threads_bind_deleted");
+        let thread = create_thread(chat_input()).expect("chat thread");
+        // A soft-deleted row still exists — the cleanup reconciler works from
+        // exactly that state — but it is out of service, so the bind statement
+        // matches nothing and the caller gets the explicit refusal.
+        conn.execute(
+            "UPDATE threads SET status = 'deleted' WHERE id = ?1",
+            params![thread.id],
+        )
+        .expect("soft delete");
+        let error = bind_thread_session_id(&thread.id, "session-1")
+            .expect_err("a thread that is out of service cannot take a session")
+            .to_string();
+        assert!(
+            error.contains("Thread is not available for session binding"),
+            "{error}"
+        );
     }
 }

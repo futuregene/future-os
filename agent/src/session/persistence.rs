@@ -1478,13 +1478,18 @@ mod tests {
 
     #[test]
     fn writer_drop_during_execute_stops_worker() {
-        let (_dir, manager, _session) = fixture();
-        let persistence = test_persistence(manager);
+        let (_dir, manager, session) = fixture();
+        let persistence = test_persistence(manager.clone());
         let gate = persistence.hold_worker_for_test();
         gate.wait(); // worker is blocked inside execute
         drop(persistence); // last strong ref while the worker is mid-command
         gate.wait(); // release: the loop-top upgrade now fails and the worker exits
         std::thread::sleep(Duration::from_millis(100));
+        // Dropping the writer mid-command must neither hang the process nor
+        // leave the session unusable through the manager's own path.
+        manager.save(&session).unwrap();
+        let reloaded = manager.load(&session.id).unwrap();
+        assert_eq!(reloaded.entries.len(), session.entries.len());
         let _ = std::fs::remove_dir_all(_dir);
     }
 
@@ -1533,6 +1538,18 @@ mod tests {
             .fail_saves_remaining
             .store(2, std::sync::atomic::Ordering::Release);
         save_with_retry(&manager, &session).unwrap();
+        assert_eq!(
+            manager
+                .fail_saves_remaining
+                .load(std::sync::atomic::Ordering::Acquire),
+            0,
+            "both injected failures were consumed by the retries"
+        );
+        assert_eq!(
+            manager.load(&session.id).unwrap().entries.len(),
+            session.entries.len(),
+            "the retry persisted the whole session"
+        );
         let _ = std::fs::remove_dir_all(_dir);
     }
 
@@ -1594,13 +1611,122 @@ mod tests {
         );
         manager.save(&session).unwrap();
         let persistence = SessionPersistence::with_idle_timeout(
-            manager,
+            manager.clone(),
             "brand-new".to_string(),
             Duration::from_secs(60),
         );
         let terminal =
             SessionEntry::run_terminal("run-x", super::super::RUN_STATE_COMPLETED, 0, 0, None);
         persistence.commit_run(vec![terminal]).unwrap();
+        persistence.close().unwrap();
+        let loaded = manager.load("brand-new").unwrap();
+        assert!(
+            loaded
+                .entries
+                .iter()
+                .any(|entry| entry.entry_type == "run_terminal"),
+            "the run marker committed even though no metadata merge was needed"
+        );
+        assert!(
+            !loaded
+                .entries
+                .iter()
+                .any(|entry| entry.entry_type == "session_info"),
+            "no session_info row is invented for a session that never had one"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// A context checkpoint is committed through its own FIFO boundary; the entry
+/// must reach the journal and be visible to a reloaded session.
+#[cfg(test)]
+mod commit_checkpoint_paths {
+    use super::*;
+
+    #[test]
+    fn commit_checkpoint_appends_its_entry_to_the_journal() {
+        let dir =
+            std::env::temp_dir().join(format!("future-checkpoint-{}", crate::utils::generate_id()));
+        let manager = std::sync::Arc::new(Manager::new(dir.clone()));
+        let mut session = Session::new("/synthetic", "mock");
+        session.entries.push(SessionEntry::new_user(
+            "user",
+            serde_json::json!("question"),
+        ));
+        manager.save(&session).unwrap();
+        let persistence = SessionPersistence::with_idle_timeout(
+            manager.clone(),
+            session.id.clone(),
+            Duration::from_secs(60),
+        );
+        let mut checkpoint = SessionEntry::new_user("user", serde_json::json!("summary body"));
+        checkpoint.id = "checkpoint-1".to_string();
+        checkpoint.entry_type = crate::session::ENTRY_TYPE_COMPACTION.to_string();
+        persistence.commit_checkpoint(checkpoint).unwrap();
+        persistence.close().unwrap();
+
+        let loaded = manager.load(&session.id).unwrap();
+        let committed = loaded
+            .entries
+            .iter()
+            .find(|entry| entry.id == "checkpoint-1")
+            .expect("the checkpoint entry is committed");
+        assert_eq!(committed.entry_type, "compaction");
+        assert_eq!(
+            committed.content.as_ref().unwrap(),
+            &serde_json::json!("summary body")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_failed_compaction_commit_is_surfaced_and_poisons_later_checkpoints() {
+        let dir = std::env::temp_dir().join(format!(
+            "future-compaction-commit-{}",
+            crate::utils::generate_id()
+        ));
+        let manager = std::sync::Arc::new(Manager::new(dir.clone()));
+        let mut session = Session::new("/synthetic", "mock");
+        session.entries.push(SessionEntry::new_user(
+            "user",
+            serde_json::json!("question"),
+        ));
+        manager.save(&session).unwrap();
+        let persistence = SessionPersistence::with_idle_timeout(
+            manager.clone(),
+            session.id.clone(),
+            Duration::from_secs(60),
+        );
+        persistence.fail_next_commit();
+        let mut checkpoint = SessionEntry::new_user("user", serde_json::json!("summary body"));
+        checkpoint.id = "checkpoint-2".to_string();
+        checkpoint.entry_type = crate::session::ENTRY_TYPE_COMPACTION.to_string();
+        let error = persistence
+            .commit_compaction(
+                "key".to_string(),
+                "input".to_string(),
+                Some(checkpoint),
+                serde_json::json!({"checkpoint": {"entry_id": "checkpoint-2"}}),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("injected"), "{error}");
+        // The failed boundary is remembered: a later checkpoint must not claim
+        // coverage over journal data that never became durable.
+        let error = persistence
+            .commit_compaction(
+                "key-2".to_string(),
+                "input".to_string(),
+                None,
+                serde_json::json!({}),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("refusing checkpoint after persistence failure"),
+            "{error}"
+        );
         persistence.close().unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }

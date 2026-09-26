@@ -338,4 +338,19 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn count_files_under_descends_into_subdirectories() {
+        let dir = std::env::temp_dir().join(format!("futureos-count-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("nested").join("deeper")).unwrap();
+        fs::write(dir.join("top.txt"), b"x").unwrap();
+        fs::write(dir.join("nested").join("one.txt"), b"x").unwrap();
+        fs::write(dir.join("nested").join("deeper").join("two.txt"), b"x").unwrap();
+
+        // Nested directories are pushed onto the frontier (not recursed), and
+        // only regular files are counted.
+        assert_eq!(count_files_under(vec![dir.clone()]).unwrap(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

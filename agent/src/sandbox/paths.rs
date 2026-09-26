@@ -380,4 +380,31 @@ mod tests {
         ));
         assert!(!within_any_root(&ws, "/etc/hosts", &roots));
     }
+
+    /// The extended-length spelling `Path::canonicalize` returns on Windows must
+    /// never reach the rule model (its `?` would be read as a glob
+    /// metacharacter), so both the drive form and the `\\?\UNC\` form are
+    /// folded back to ordinary spelling — and an already-ordinary path is left
+    /// untouched.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn ordinary_platform_path_strips_only_the_extended_length_prefix() {
+        assert_eq!(
+            ordinary_platform_path(PathBuf::from(r"\\?\C:\work\a.txt")),
+            PathBuf::from(r"C:\work\a.txt")
+        );
+        assert_eq!(
+            ordinary_platform_path(PathBuf::from(r"\\?\UNC\server\share\a.txt")),
+            PathBuf::from(r"\\server\share\a.txt")
+        );
+        // Already ordinary → returned unchanged, not re-prefixed or dropped.
+        assert_eq!(
+            ordinary_platform_path(PathBuf::from(r"C:\work\a.txt")),
+            PathBuf::from(r"C:\work\a.txt")
+        );
+        assert_eq!(
+            ordinary_platform_path(PathBuf::from(r"\\server\share")),
+            PathBuf::from(r"\\server\share")
+        );
+    }
 }

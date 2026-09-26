@@ -640,9 +640,16 @@ async fn a_reset_socket_fails_the_auth_challenge_send() {
     // The platform can reset the connection between the upgrade and the first
     // write. The session must report that as an unwritable socket instead of
     // hanging.
+    //
+    // `ResetTcp` is only an abortive close where `SO_LINGER` exists (unix);
+    // elsewhere it is a clean FIN, into which the auth write succeeds and the
+    // session would fail on its read arm instead. The write half is therefore
+    // also killed directly, so the send this test is named for fails on every
+    // platform.
     let (url, _) = spawn_ws(vec![WsAction::ResetTcp]).await;
     let ctx = crate::bridge::ProviderCtx::offline(&DEFINITION);
     let socket = ws::connect(&url, &[]).await.unwrap();
+    crate::test_support::kill_write_half(&socket);
     let sender: Arc<dyn ChannelSender> = Arc::new(NullSender);
     let allowlist = HashSet::new();
     let result = websocket_session(&ctx, sender, "token-1", "bot-id", &allowlist, socket).await;
@@ -983,9 +990,24 @@ async fn run_authenticates_then_handles_posts_until_shutdown() {
         shutdown.clone(),
     );
     let run = tokio::spawn(async move { Mattermost.run(ctx).await });
+    // Wait for the challenge to be recorded instead of guessing with a fixed
+    // sleep: under load the WS handshake can take longer than any delay, and
+    // then shutdown would fire before the client ever authenticated.
+    let challenged = crate::test_support::wait_until(
+        || {
+            received
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .first()
+                .and_then(|m| m.to_text().ok())
+                .is_some_and(|t| t.contains("authentication_challenge"))
+        },
+        std::time::Duration::from_secs(10),
+    )
+    .await;
+    assert!(challenged, "the client must send an auth challenge");
     // Shutdown while the session is mid-read: the session's select hears the
     // notification and returns Ok, and the supervisor passes it through.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     shutdown.trigger();
     let result = tokio::time::timeout(std::time::Duration::from_secs(15), run)
         .await

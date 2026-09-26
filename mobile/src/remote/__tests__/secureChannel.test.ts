@@ -99,4 +99,49 @@ describe("remote v2 secure records", () => {
     const wire = old.i.seal("command", new Uint8Array([1]));
     expect(() => fresh.r.open("command", wire)).toThrow();
   });
+  test("refuses keys and identifiers that are not canonical v2 material", () => {
+    const key = encodeBase64Url(new Uint8Array(32).fill(9));
+    // A short or non-canonical key would seed Noise with bytes the desktop
+    // never bound; the failure has to be this stable code, not a library error.
+    expect(() => keyBytes("AAAA")).toThrow("remote_secure_channel_invalid");
+    expect(() => keyBytes(`${key}=`)).toThrow("remote_secure_channel_invalid");
+    expect(keyBytes(key).length).toBe(32);
+    // Identifiers go into the Noise prologue verbatim.
+    expect(() => securePrologue("pair 1", "desktop_1")).toThrow("remote_secure_channel_invalid");
+    expect(() => securePrologue("pair_1", "x".repeat(129))).toThrow("remote_secure_channel_invalid");
+  });
+  test("refuses a channel whose split keys or id are the wrong size", () => {
+    const bytes = keyBytes(createSecureIdentity().publicKey);
+    expect(() => new SecureChannel(new Uint8Array(31), bytes, new Uint8Array(16)))
+      .toThrow("remote_secure_channel_invalid");
+    expect(() => new SecureChannel(bytes, bytes, new Uint8Array(15)))
+      .toThrow("remote_secure_channel_invalid");
+  });
+  test("refuses contexts that cannot be authenticated and requests too broken to answer", () => {
+    const { i } = pair();
+    // The context is authenticated as AAD, so it must stay ASCII and bounded
+    // for both peers to derive the same bytes.
+    expect(() => i.seal("", new Uint8Array([1]))).toThrow("remote_secure_channel_invalid");
+    expect(() => i.seal("caf\u00e9", new Uint8Array([1]))).toThrow("remote_secure_channel_invalid");
+    expect(() => i.seal("x".repeat(1025), new Uint8Array([1]))).toThrow("remote_secure_channel_invalid");
+    // A reply binds to the request it answers; a truncated record has no header
+    // to hash, and an oversized subject cannot fit the AAD budget.
+    expect(() => replyContext("p.pair_1.cmd.list", new Uint8Array(8)))
+      .toThrow("remote_secure_channel_invalid");
+    const wire = i.seal("p.pair_1.cmd.list", new Uint8Array([1]));
+    expect(() => replyContext("x".repeat(1100), wire)).toThrow("remote_secure_channel_invalid");
+  });
+  test("refuses an oversized handshake message and an unfinished handshake", () => {
+    const identity = createSecureIdentity();
+    const handshake = new SecureHandshake(
+      identity, "pair_1", "desktop_1", identity.publicKey,
+      encodeBase64Url(new Uint8Array(32).fill(1)),
+    );
+    // No reply has been read yet: there is no shared secret to hand over.
+    expect(() => handshake.finish()).toThrow("remote_secure_channel_invalid");
+    // A message beyond the protocol's frame budget is refused before the Noise
+    // state machine ever sees it.
+    expect(() => handshake.read(new Uint8Array(8193))).toThrow("remote_secure_channel_invalid");
+    handshake.destroy();
+  });
 });

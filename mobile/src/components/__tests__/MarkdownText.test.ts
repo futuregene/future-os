@@ -154,6 +154,34 @@ describe("MarkdownText layout and fidelity", () => {
     } finally { open.mockRestore(); }
   });
 
+  test("a local image inside a list item renders as an openable file chip", () => {
+    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+    try {
+      const root = render("- ![chart](docs/chart.png)");
+      // A path the phone cannot display inline becomes a chip that names the
+      // file and opens it, rather than an alt-text word that does nothing.
+      const chip = root.findAllByType(Text).find(
+        node => paintedText(node) === "chart" && typeof node.props.onPress === "function",
+      );
+      expect(chip).toBeDefined();
+      act(() => chip!.props.onPress());
+      expect(open).not.toHaveBeenCalled();
+    } finally { open.mockRestore(); }
+  });
+
+  test("an in-document anchor wrapped around an image never reaches the OS", () => {
+    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+    try {
+      const root = render("[![chart](docs/chart.png)](#section)");
+      const pressables = root.findAll(node => typeof node.props.onPress === "function");
+      expect(pressables.length).toBeGreaterThan(0);
+      // The image's own chip and its link wrapper both resolve to an anchor in
+      // this document; handing it to Linking would open a browser on a fragment.
+      act(() => { pressables.forEach(node => node.props.onPress()); });
+      expect(open).not.toHaveBeenCalled();
+    } finally { open.mockRestore(); }
+  });
+
   test("headings have distinct scales and accessible heading roles", () => {
     const root = render("# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six");
     const headings = root.findAllByType(Text).filter(node => node.props.accessibilityRole === "header");
@@ -284,6 +312,15 @@ describe("MarkdownText layout and fidelity", () => {
     expect(output).toContain("x^2");
     expect(output).toContain("frac{a}{b}");
     expect(output).toContain("graph TD; A-->B;");
+  });
+
+  test("a formula the TeX layout cannot render stays readable as its source", () => {
+    // `\frac{a}` is an arity error: MathJax answers with an error node, so the
+    // vector is refused and the reader keeps the TeX rather than a blank gap.
+    const root = render("Broken $\\frac{a}$ here");
+    expect(root.findAllByType(SvgXml)).toHaveLength(0);
+    const source = root.findAllByType(Text).map(node => paintedText(node)).filter(Boolean);
+    expect(source.join(" ")).toContain("\\frac{a}");
   });
 });
 
@@ -480,5 +517,110 @@ describe("MarkdownText", () => {
     expect(pressable).toBeUndefined();
     expect(open).not.toHaveBeenCalled();
     open.mockRestore();
+  });
+});
+
+/** A tree of its own for the cases below: they assert error surfaces and block
+ * kinds the layout suite does not need, and each mounts and unmounts its own. */
+describe("MarkdownText error surfaces and block kinds", () => {
+  const mounted: ReactTestRenderer[] = [];
+  const render = (text: string) => {
+    let tree!: ReactTestRenderer;
+    act(() => { tree = create(createElement(MarkdownText, { text })); });
+    mounted.push(tree);
+    return tree.root;
+  };
+  afterEach(() => {
+    for (const tree of mounted.splice(0)) act(() => tree.unmount());
+  });
+
+  test("a copy whose clipboard write fails says so instead of claiming success", async () => {
+    const copy = jest.spyOn(Clipboard, "setStringAsync").mockRejectedValue(new Error("clipboard busy"));
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    try {
+      const root = render("```ts\n" + 'const value = "text";\n'.repeat(40) + "```");
+      const button = root.findAll(node =>
+        node.props.accessibilityLabel === "chat.copy" && typeof node.props.onPress === "function")[0]!;
+      await act(async () => { button.props.onPress(); });
+      expect(copy).toHaveBeenCalled();
+      expect(alert).toHaveBeenCalledWith("common.error", "clipboard busy");
+    } finally {
+      copy.mockRestore();
+      alert.mockRestore();
+    }
+  });
+
+  test("a link the phone cannot open reports itself rather than failing silently", async () => {
+    const open = jest.spyOn(Linking, "openURL").mockRejectedValue(new Error("no handler"));
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    try {
+      const root = render("[site](https://example.com)");
+      const link = root.findAllByType(Text).find(node => node.props.onPress)!;
+      await act(async () => { link.props.onPress(); });
+      expect(open).toHaveBeenCalledWith("https://example.com");
+      expect(alert).toHaveBeenCalledWith("attachment.title", "attachment.linkOpenFailed");
+    } finally {
+      open.mockRestore();
+      alert.mockRestore();
+    }
+  });
+
+  test("blockquotes, rules, struck text and file embeds all paint as themselves", async () => {
+    // Each of these is a distinct block/inline kind. A fall-through would still
+    // show the words, so the assertion is that the *structure* is gone: the
+    // quote keeps its bar, the rule paints no literal dashes, the embed becomes
+    // a pressable chip with its title, and `~~` never reaches the screen.
+    const root = render([
+      "> quoted **line** and *slanted*…",
+      "",
+      "---",
+      "",
+      "```futureos-file",
+      "id: docs/report.md",
+      "title: The report",
+      "```",
+      "",
+      "~~struck~~ and ![shot](assets/pic.png)",
+      "",
+      "a **bold ![inline-chip](docs/chart.png) tail**",
+    ].join("\n"));
+    const screen = paintedText(root.findByType(View));
+    expect(screen).toContain("quoted line");
+    expect(screen).toContain("slanted");
+    expect(screen).not.toContain("*slanted*");
+    expect(screen).toContain("struck");
+    expect(screen).not.toContain("~~");
+    // The rule is a drawn line, not three characters of prose.
+    expect(screen).not.toContain("---");
+    // The embed keeps the title the directive carries, not the file path.
+    expect(screen).toContain("The report");
+    expect(screen).not.toContain("futureos-file");
+    // Pressing the embed chip opens the file the directive names.
+    const embedChip = root.findAllByType(Text).find(node =>
+      node.props.onPress && paintedText(node) === "The report");
+    expect(embedChip).toBeDefined();
+    act(() => embedChip!.props.onPress());
+    // ...and the local image nested in bold text is a chip for its own path,
+    // not a bare file name the reader cannot open.
+    const inlineChip = root.findAllByType(Text).find(node =>
+      node.props.onPress && paintedText(node) === "inline-chip");
+    expect(inlineChip).toBeDefined();
+    act(() => inlineChip!.props.onPress());
+  });
+
+  test("a file embed opens its target, and a quote keeps its own bar", () => {
+    const root = render([
+      ">> nested **quote**",
+      "",
+      "```futureos-file",
+      "id: docs/report.md",
+      "```",
+    ].join("\n"));
+    // Nested quoting exercises the recursive block renderer too.
+    expect(paintedText(root.findByType(View))).toContain("nested quote");
+    // With no title, the chip falls back to the file's base name.
+    const chip = root.findAllByType(Text).find(node =>
+      node.props.onPress && paintedText(node) === "report.md");
+    expect(chip).toBeDefined();
   });
 });

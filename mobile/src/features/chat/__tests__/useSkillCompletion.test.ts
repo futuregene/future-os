@@ -121,3 +121,51 @@ test("Android Back closes suggestions first; IME dismissal also closes them", ()
   act(() => hide());
   expect(completion.query).toBeNull();
 });
+
+test("an edit that keeps a common tail places the caret after it", () => {
+  // A paste/replace whose new text shares a trailing run with the draft (the
+  // common JS case: rewriting the middle of a line). Nothing about the prefix
+  // matches, so the caret is derived from the shared tail.
+  act(() => { tree = create(createElement(Harness, { initial: "abcdef" })); });
+  act(() => completion.onSelectionChange({ start: 0, end: 0 }));
+  act(() => completion.onChangeText("xyzcdef"));
+  expect(message).toBe("xyzcdef");
+  expect(completion.selection).toEqual({ start: 3, end: 3 });
+  // The tail was consumed, not the whole string: a full-common-tail read would
+  // put the caret at the start of the new text.
+  expect(completion.selection.start).not.toBe(0);
+  expect(completion.selection.start).not.toBe(7);
+});
+
+test("an edit with nothing in common places the caret at the end", () => {
+  act(() => { tree = create(createElement(Harness, { initial: "abcdef" })); });
+  act(() => completion.onSelectionChange({ start: 0, end: 0 }));
+  act(() => completion.onChangeText("zzz"));
+  expect(message).toBe("zzz");
+  expect(completion.selection).toEqual({ start: 3, end: 3 });
+});
+
+test("a slash action with no open query is ignored instead of clearing the draft", () => {
+  const onAction = jest.fn();
+  function ActionHarness() {
+    const [text, setText] = useState("");
+    const input = useRef({ focus } as unknown as TextInput);
+    const result = useSkillCompletion(text, setText, true, input, onAction);
+    useLayoutEffect(() => { message = text; completion = result; });
+    return null;
+  }
+  act(() => { tree = create(createElement(ActionHarness)); });
+  // No query yet: the button must not run an action against a half-typed draft.
+  act(() => completion.runAction({ id: "compact", label: "Compact", insert: "" } as never));
+  expect(onAction).not.toHaveBeenCalled();
+  expect(message).toBe("");
+
+  // With a query open the action runs and the typed command is removed.
+  act(() => completion.insertSlash());
+  act(() => completion.onChangeText("/compact"));
+  expect(completion.query?.query).toBe("compact");
+  act(() => completion.runAction({ id: "compact", label: "Compact", insert: "" } as never));
+  expect(onAction).toHaveBeenCalledTimes(1);
+  expect(message).toBe("");
+});
+

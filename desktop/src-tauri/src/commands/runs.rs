@@ -597,6 +597,290 @@ mod tests {
         script_mock_agent(MockScript::default());
     }
 
+    /// Every field of a tool row is mapped onto the record the panel renders,
+    /// including the two argument shapes (an object is re-serialized, a string
+    /// is passed through) and rows with no end timestamp.
+    #[tokio::test]
+    async fn tool_rows_are_mapped_onto_records() {
+        use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_tools_map");
+        create_run(run_input(&thread.id, "run_tools_map")).expect("create run");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "list_tool_calls".to_string(),
+                serde_json::json!({
+                    "tools": [
+                        {
+                            "toolCallId": "tc-1",
+                            "name": "Read",
+                            "arguments": { "path": "a.rs" },
+                            "status": "completed",
+                            "startedAtMs": 10,
+                            "completedAtMs": 20
+                        },
+                        {
+                            "toolCallId": "tc-2",
+                            "name": "Bash",
+                            "arguments": "ls",
+                            "status": "failed"
+                        },
+                        {
+                            "toolCallId": "tc-3",
+                            "name": "Null",
+                            "arguments": null,
+                            "status": "running"
+                        }
+                    ],
+                    "hasMore": false,
+                    "nextOffset": 0
+                })
+                .to_string(),
+            )]),
+            ..Default::default()
+        });
+        let tools = list_tool_calls("run_tools_map".into())
+            .await
+            .expect("tool calls");
+        assert_eq!(tools.len(), 3);
+        assert_eq!(tools[0].id, "tc-1");
+        assert_eq!(tools[0].run_id, "run_tools_map");
+        assert_eq!(tools[0].kind, "Read");
+        assert_eq!(tools[0].name, "Read");
+        assert_eq!(tools[0].input.as_deref(), Some("{\"path\":\"a.rs\"}"));
+        assert_eq!(tools[0].status, "completed");
+        assert_eq!(tools[0].started_at, Some(10));
+        assert_eq!(tools[0].ended_at, Some(20));
+        assert_eq!(tools[0].created_at, 10);
+        // A string argument is passed through untouched...
+        assert_eq!(tools[1].input.as_deref(), Some("ls"));
+        assert_eq!(tools[1].ended_at, None);
+        assert_eq!(tools[1].created_at, 0);
+        // ...and a null argument becomes "no input" rather than the text "null".
+        assert_eq!(tools[2].input, None);
+        script_mock_agent(MockScript::default());
+    }
+
+    /// A page that claims more tools without moving the cursor is refused: the
+    /// loop would otherwise re-request the same page forever.
+    #[tokio::test]
+    async fn a_tool_page_that_does_not_advance_the_cursor_is_refused() {
+        use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_tools_stuck");
+        create_run(run_input(&thread.id, "run_tools_stuck")).expect("create run");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "list_tool_calls".to_string(),
+                "{\"tools\":[],\"hasMore\":true,\"nextOffset\":0}".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let error = list_tool_calls("run_tools_stuck".into())
+            .await
+            .expect_err("a stuck cursor must fail rather than loop");
+        assert!(error.to_string().contains("did not advance"), "{error}");
+        script_mock_agent(MockScript::default());
+    }
+
+    /// A page that *does* advance the cursor is followed, and the loop's second
+    /// round trip is what detects a peer that then stops advancing.
+    ///
+    /// The sibling test above sends `nextOffset: 0`, so it fails on the very
+    /// first page and never exercises the advance. Here the first page advances
+    /// (`nextOffset: 1`) and the mock — which answers every call with the same
+    /// scripted payload — then reports the same cursor again, so the failure can
+    /// only come from the *second* iteration. That the rows collected from the
+    /// first page survive into the error path is what proves the loop ran rather
+    /// than the command rejecting the payload up front.
+    #[tokio::test]
+    async fn an_advancing_tool_page_is_followed_and_a_repeat_is_refused() {
+        use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_tools_advance");
+        create_run(run_input(&thread.id, "run_tools_advance")).expect("create run");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "list_tool_calls".to_string(),
+                "{\"tools\":[{\"toolCallId\":\"tc-adv\",\"name\":\"read\",\"status\":\"ok\"}],\
+                  \"hasMore\":true,\"nextOffset\":1}"
+                    .to_string(),
+            )]),
+            ..Default::default()
+        });
+        let error = list_tool_calls("run_tools_advance".into())
+            .await
+            .expect_err("a cursor that stops advancing must be refused");
+        assert!(
+            error.to_string().contains("did not advance"),
+            "the second page repeats the first page's cursor, so the refusal is \
+             the cursor's: {error}"
+        );
+
+        // The advancing page is also usable on its own: request a page the
+        // agent reports as final and the rows come back mapped.
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "list_tool_calls".to_string(),
+                "{\"tools\":[{\"toolCallId\":\"tc-adv\",\"name\":\"read\",\"status\":\"ok\"}],\
+                  \"hasMore\":false}"
+                    .to_string(),
+            )]),
+            ..Default::default()
+        });
+        let tools = list_tool_calls("run_tools_advance".into())
+            .await
+            .expect("a final page is returned as-is");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].id, "tc-adv");
+        assert_eq!(tools[0].name, "read");
+        script_mock_agent(MockScript::default());
+    }
+
+    /// A row the agent sends without an identity or a name is reported as an
+    /// invalid page instead of being silently dropped.
+    #[tokio::test]
+    async fn an_incomplete_tool_row_is_reported() {
+        use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_tools_incomplete");
+        create_run(run_input(&thread.id, "run_tools_incomplete")).expect("create run");
+        crate::commands::agent_mock::ensure_mock_agent();
+        for (page, needle) in [
+            (
+                "{\"tools\":[{\"name\":\"Read\",\"status\":\"running\"}],\"hasMore\":false}",
+                "tool identity",
+            ),
+            (
+                "{\"tools\":[{\"toolCallId\":\"tc\",\"status\":\"running\"}],\"hasMore\":false}",
+                "tool name",
+            ),
+            (
+                "{\"tools\":[{\"toolCallId\":\"tc\",\"name\":\"Read\"}],\"hasMore\":false}",
+                "tool status",
+            ),
+            (
+                "{\"tools\":\"nope\",\"hasMore\":false}",
+                "Invalid tool page",
+            ),
+        ] {
+            script_mock_agent(MockScript {
+                data: HashMap::from([("list_tool_calls".to_string(), page.to_string())]),
+                ..Default::default()
+            });
+            let error = list_tool_calls("run_tools_incomplete".into())
+                .await
+                .expect_err("an incomplete row must be reported");
+            assert!(
+                error.to_string().contains(needle),
+                "expected {needle:?} in {error}"
+            );
+        }
+        script_mock_agent(MockScript::default());
+    }
+
+    /// Tool *output* is fetched through the same agent call and mapped onto the
+    /// record the transcript renders — including the error shape and the case
+    /// where the agent has no output for the call at all.
+    #[tokio::test]
+    async fn tool_outputs_are_mapped_including_the_error_shape() {
+        use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_tool_outputs");
+        create_run(run_input(&thread.id, "run_tool_out")).expect("create run");
+        crate::commands::agent_mock::ensure_mock_agent();
+
+        // A single tool call is read through `get_tool_output`; `list_tool_calls`
+        // is the *bulk* command (`agent_bridge::queries::query_tools` picks by
+        // whether a `tool_call_id` is present). Scripting the wrong one made the
+        // mock answer with an empty payload, so the mapping under test never ran.
+        let script = |payload: &str| {
+            script_mock_agent(MockScript {
+                data: HashMap::from([("get_tool_output".to_string(), payload.to_string())]),
+                ..Default::default()
+            });
+        };
+
+        script("{\"tools\":[],\"output\":{\"isError\":false,\"text\":\"done\",\"createdAtMs\":7}}");
+        let outputs = list_tool_outputs("run_tool_out".into(), "tc-1".into())
+            .await
+            .expect("outputs");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].id, "tc-1:result");
+        assert_eq!(outputs[0].tool_call_id, "tc-1");
+        assert_eq!(outputs[0].kind, "text");
+        assert_eq!(outputs[0].created_at, 7);
+        assert!(outputs[0]
+            .content
+            .as_deref()
+            .expect("content")
+            .contains("\"text\":\"done\""));
+
+        // The error shape is tagged so the UI can render it as a failure.
+        script("{\"tools\":[],\"output\":{\"isError\":true,\"text\":\"boom\"}}");
+        let outputs = list_tool_outputs("run_tool_out".into(), "tc-2".into())
+            .await
+            .expect("outputs");
+        assert_eq!(outputs[0].kind, "error");
+        assert_eq!(outputs[0].created_at, 0, "a missing timestamp is epoch");
+        assert!(outputs[0]
+            .content
+            .as_deref()
+            .expect("content")
+            .contains("\"error\""));
+
+        // No output at all is an empty list, not a fabricated row.
+        script("{\"tools\":[]}");
+        assert!(list_tool_outputs("run_tool_out".into(), "tc-3".into())
+            .await
+            .expect("outputs")
+            .is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    /// The bulk tool reader keeps one entry per requested run — the panel's
+    /// `Object.fromEntries` shape — and returns the tools the agent reported.
+    #[tokio::test]
+    async fn tool_bulk_readers_return_one_entry_per_run() {
+        use crate::commands::agent_mock::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_tools_bulk");
+        create_run(run_input(&thread.id, "run_bulk_a")).expect("create run");
+        create_run(run_input(&thread.id, "run_bulk_b")).expect("create run");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "list_tool_calls".to_string(),
+                "{\"tools\":[{\"toolCallId\":\"tc-1\",\"name\":\"Read\",\"status\":\"completed\",\"startedAtMs\":3}],\"hasMore\":false,\"nextOffset\":0}".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let bulk = list_tool_calls_bulk(vec!["run_bulk_a".into(), "run_bulk_b".into()])
+            .await
+            .expect("bulk tools");
+        assert_eq!(bulk.len(), 2, "every requested run appears");
+        assert_eq!(bulk[0].0, "run_bulk_a");
+        assert_eq!(bulk[0].1.len(), 1);
+        assert_eq!(bulk[0].1[0].run_id, "run_bulk_a");
+        assert_eq!(bulk[1].1.len(), 1);
+        script_mock_agent(MockScript::default());
+    }
+
     #[tokio::test]
     async fn list_run_events_bulk_skips_empty_runs() {
         use crate::commands::agent_mock::{mock_agent_lock, with_broken_endpoint};

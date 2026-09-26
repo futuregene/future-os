@@ -92,3 +92,36 @@ mod tests {
         );
     }
 }
+
+/// The RPC-facing wrappers around the store queries. They are the only path
+/// `list_tool_calls` / `get_tool_output` reach production through, so their
+/// delegation is asserted against the store's own answer.
+#[cfg(test)]
+mod manager_wrappers {
+    use super::*;
+
+    #[test]
+    fn the_manager_delegates_tool_reads_to_the_initialized_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = crate::session::Manager::new(dir.path().join("sessions"));
+        manager
+            .storage()
+            .unwrap()
+            .replace(
+                "s",
+                vec![
+                    json!({"id":"a","type":"assistant","role":"assistant","timestamp":"2026-01-01T00:00:00Z","meta":{"run_id":"one"},"content":[{"type":"tool_call","id":"call-0","name":"read","args":null}]}),
+                    json!({"id":"t","type":"tool","role":"tool","timestamp":"2026-01-01T00:00:01Z","meta":{"run_id":"one"},"content":[{"type":"tool_result","tool_call_id":"call-0","content":"synthetic result"}]}),
+                ],
+            )
+            .unwrap();
+        let page = manager.tool_page("s", "one", 0, 5).unwrap();
+        assert_eq!(page["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(page["tools"][0]["name"], "read");
+        assert_eq!(page["hasMore"], false);
+        assert_eq!(
+            manager.tool_output("s", "one", "call-0").unwrap()["output"]["text"],
+            "synthetic result"
+        );
+    }
+}

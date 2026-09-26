@@ -67,3 +67,45 @@ test("native delivery failure falls back without breaking sync; switched pairing
   expect(Alert.alert).not.toHaveBeenCalled();
   expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
 });
+
+/** Re-import the module against the current mocks, returning its registration. */
+function freshModule() {
+  jest.resetModules();
+  const notif = jest.requireMock("expo-notifications") as {
+    getPermissionsAsync: jest.Mock;
+    setNotificationHandler: jest.Mock;
+  };
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- fresh module instance
+  const module = require("../taskNotifications") as typeof import("../taskNotifications");
+  return { handler: notif.setNotificationHandler.mock.calls[0]?.[0], module, notif };
+}
+
+test("a foreground notification is shown as a banner, listed, and audible, but never badged", async () => {
+  const { handler } = freshModule();
+  expect(handler).toBeDefined();
+  // These four flags are the whole product decision for a task-completion
+  // notification; the app owns no unread badge, so it must stay off.
+  await expect(
+    (handler as { handleNotification(): Promise<Record<string, boolean>> }).handleNotification(),
+  ).resolves.toEqual({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+  });
+});
+
+test("a failed preparation is not cached, so the next launch can retry", async () => {
+  const { module, notif } = freshModule();
+  const permissions = notif.getPermissionsAsync as jest.Mock;
+  permissions.mockRejectedValueOnce(new Error("native unavailable"));
+  await expect(module.prepareTaskNotifications()).resolves.toBeUndefined();
+  permissions.mockResolvedValueOnce({ granted: true, canAskAgain: false });
+  // The rejection cleared the memoised promise: a second call really retries.
+  await expect(module.prepareTaskNotifications()).resolves.toBeUndefined();
+  expect(permissions).toHaveBeenCalledTimes(2);
+  // …and a success is memoised: a third call reuses the same promise.
+  await expect(module.prepareTaskNotifications()).resolves.toBeUndefined();
+  expect(permissions).toHaveBeenCalledTimes(2);
+});
+

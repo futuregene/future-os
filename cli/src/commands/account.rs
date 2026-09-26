@@ -458,6 +458,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auth_file_that_cannot_be_read_reports_the_io_error() {
+        // A directory where `auth.json` belongs: the read fails with a
+        // non-NotFound IO error (EISDIR on POSIX, access-denied on Windows),
+        // which must surface as itself — not as the "run future auth login"
+        // message that a *missing* file gets, and not as a parse error.
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        tokio::fs::create_dir_all(auth_file()).await.unwrap();
+        let (code, _, stderr) = run(&["account", "profile"]).await;
+        assert_eq!(code, 1);
+        assert!(
+            !stderr.contains("No API key found"),
+            "an unreadable file is not a missing one: {stderr}"
+        );
+        assert!(
+            stderr.contains("os error"),
+            "the raw IO error is what is reported: {stderr}"
+        );
+    }
+
+    #[tokio::test]
     async fn auth_file_edge_cases() {
         let _guard = crate::test_env::lock_env().await;
         let _home = EnvGuard::temp_home();

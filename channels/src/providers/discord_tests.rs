@@ -760,14 +760,41 @@ async fn a_non_array_backfill_response_is_a_noop() {
 
 // ─── Gateway session (mock server) ─────────────────────────────────────────
 
-/// The error text when the mock server drops the socket mid-session: either a
-/// clean EOF read or a protocol-level reset, depending on timing.
+/// The error the mock server's drop produces: either the gateway's own
+/// end-of-stream message or the socket error the platform reports for an
+/// aborted connection.
+///
+/// The OS wording is localized and differs by platform — a Windows reset
+/// arrives as `你的主机中的软件中止了一个已建立的连接 (os error 10053)` — so the
+/// socket case is classified by `ErrorKind`, never by message text.
 fn assert_socket_drop(error: &anyhow::Error) {
-    let text = error.to_string();
-    assert!(
-        text.contains("closed the connection") || text.contains("Connection reset"),
-        "{text}"
-    );
+    use tokio_tungstenite::tungstenite::{error::ProtocolError, Error as WsError};
+
+    if error.to_string().contains("gateway closed the connection") {
+        return;
+    }
+    let dropped = match error.downcast_ref::<WsError>() {
+        // A peer that vanishes without a close frame.
+        Some(WsError::Protocol(ProtocolError::ResetWithoutClosingHandshake)) => true,
+        Some(WsError::Io(io)) => connection_loss(io.kind()),
+        _ => false,
+    } || error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|io| connection_loss(io.kind()));
+    assert!(dropped, "expected a dropped socket: {error}");
+}
+
+/// Error kinds that mean "the connection went away", as opposed to a parse or
+/// protocol failure the gateway should have handled without reconnecting.
+fn connection_loss(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::BrokenPipe
+    )
 }
 
 /// Run the gateway against the mock until it ends or the budget expires.
@@ -838,8 +865,13 @@ async fn a_server_heartbeat_is_echoed_and_the_ack_clears_the_flag() {
         WsAction::SendText(hello.to_string()),
         WsAction::SendText(ready.to_string()),
         WsAction::SendText(server_heartbeat.to_string()),
-        // Let the client's own heartbeat fire once, then ack it.
-        WsAction::Delay(Duration::from_millis(260)),
+        // Wait for the client's echo of the server heartbeat plus one clock
+        // tick before acking: a fixed delay made "two heartbeats exist" a
+        // wall-clock guess, so a loaded machine failed the test spuriously.
+        WsAction::WaitForReceived {
+            count: 3,
+            timeout: Duration::from_secs(10),
+        },
         WsAction::SendText(json!({"op": 11}).to_string()),
         WsAction::Delay(Duration::from_millis(60)),
     ])
@@ -1057,12 +1089,28 @@ async fn a_message_create_dispatch_flows_to_the_bridge() {
         WsAction::Delay(Duration::from_millis(150)),
     ])
     .await;
+    // The gateway must talk to the mock REST API, not to whatever loopback
+    // service happens to listen on the machine: a hard-coded dead port costs
+    // seconds per attempt on Windows and the reply would be invisible anyway.
+    let (api, recorded) = spawn_http(vec![HttpRoute::json(
+        "/channels/chan-1/messages",
+        200,
+        r#"{"id": "m-1"}"#,
+    )])
+    .await;
     let ctx = ctx_with_config(json!({}));
     let config = gateway_config(&url);
-    let sender = test_sender(&ctx, "http://127.0.0.1:1");
-    run_gateway_once(&ctx, &config, sender)
+    let sender = test_sender(&ctx, &api);
+    let error = run_gateway_once(&ctx, &config, sender)
         .await
         .expect_err("a dropped socket is a reconnect, not a clean exit");
+    assert_socket_drop(&error);
+    // The frame reached the bridge: the offline policy denies guild traffic,
+    // so the bridge answered with its denial reason through the sender.
+    let replies = requests_to(&recorded, "/channels/chan-1/messages");
+    assert_eq!(replies.len(), 1, "the dispatch must produce one reply");
+    let body: Value = serde_json::from_str(&replies[0].body_string()).expect("a JSON reply body");
+    assert_eq!(body["content"], "Group chat is disabled");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1339,7 +1387,12 @@ async fn heartbeat_ticks_complete_while_the_connection_is_open() {
         WsAction::SendText(ready.to_string()),
         // Ack heartbeats so the gateway keeps ticking instead of reconnecting.
         WsAction::SendText(ack.to_string()),
-        WsAction::Delay(Duration::from_millis(120)),
+        // Deterministic premise: close only once the client's first tick has
+        // actually arrived, not after a guessed delay.
+        WsAction::WaitForReceived {
+            count: 2,
+            timeout: Duration::from_secs(10),
+        },
         WsAction::SendText(ack.to_string()),
         WsAction::Delay(Duration::from_millis(120)),
         WsAction::SendText(ack.to_string()),

@@ -370,4 +370,27 @@ mod tests {
         assert_eq!(r["nextOffset"], 8192);
         assert!(r.to_string().len() < 10_000);
     }
+
+    #[test]
+    fn out_of_range_search_and_read_requests_are_rejected_before_touching_storage() {
+        let (_temp, m) = setup();
+        assert!(m.search_history("", "query", 5).is_err());
+        assert!(m.search_history("s", "   ", 5).is_err());
+        // The query bound is on characters, not bytes.
+        assert!(m.search_history("s", &"q".repeat(200), 20).is_ok());
+        assert!(m.search_history("s", &"q".repeat(201), 5).is_err());
+        assert!(m.search_history("s", "q", 0).is_err());
+        assert!(m.search_history("s", "q", 21).is_err());
+
+        assert!(m.read_history_entry("s", "", 0, 8).is_err());
+        assert!(m.read_history_entry("s", "u", -1, 8).is_err());
+        assert!(m.read_history_entry("s", "u", 0, 3).is_err());
+        assert!(m.read_history_entry("s", "u", 0, 40_000).is_err());
+        assert!(m.read_history_entry("s", "missing-entry", 0, 8).is_err());
+        let error = m
+            .read_history_entry("s", "u", 1_000, 8)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("readable bytes"), "{error}");
+    }
 }

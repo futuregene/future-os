@@ -143,11 +143,13 @@ impl DingtalkBridge {
         } else {
             text.clone()
         };
+        let sender_name = event.sender_name.as_deref().unwrap_or("?");
+        // Hoisted out of the macro argument list: macro arguments only
+        // evaluate when a subscriber is installed, which makes the expression
+        // untrackable (the same hoisting is what `feishu::bridge` does).
         info!(
             "[DING RECV] sender={} name={} text=\"{}\"",
-            sender_id,
-            event.sender_name.as_deref().unwrap_or("?"),
-            text_preview
+            sender_id, sender_name, text_preview
         );
 
         let webhook = event.session_webhook.clone();
@@ -638,6 +640,67 @@ mod tests {
         }
         assert!(!bridge.enqueue_event(event(&fx.base, "overflow", "x")));
         assert_eq!(bridge.event_queues.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_dropped_bridge_ends_its_queued_worker() {
+        // The per-conversation worker holds only a Weak<Self>: when the bridge
+        // is gone by the time a queued event is picked up, the worker must break
+        // out instead of upgrading from a dead handle.
+        let mut state = MockState::default();
+        state.events = done_events();
+        let fx = make_bridge("dt-dropped", state, vec![]).await;
+        let bridge = Arc::new(fx.bridge);
+        assert!(bridge.enqueue_event(event(&fx.base, "m1", "hello")));
+        // Drop the only strong handle before the worker is ever polled: on a
+        // current_thread runtime a spawned task cannot run until we await.
+        drop(bridge);
+        tokio::task::yield_now().await;
+        // Nothing was handled: the queued event died with the bridge.
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+        assert!(hook_bodies(&fx.http).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_session_failure_without_a_webhook_just_fails_the_turn() {
+        let mut state = MockState::default();
+        state.fail_commands.insert("new_session".into());
+        let fx = make_bridge("dt-sess-nowebhook", state, vec![]).await;
+        let mut e = event(&fx.base, "m1", "hello");
+        e.session_webhook = None; // nowhere to report the failure
+        let error = fx
+            .bridge
+            .handle_event(e)
+            .await
+            .expect_err("no session means no prompt");
+        assert!(error.to_string().contains("mock failure"), "{error}");
+        assert!(hook_bodies(&fx.http).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_prompt_failure_without_a_webhook_is_silent_and_recovers() {
+        // The spawned prompt loop fails once, with no webhook to report to.
+        let mut state = MockState::default();
+        state.events = done_events();
+        state.fail_times.insert("prompt".into(), 1);
+        let fx = make_bridge("dt-prompt-nowebhook", state, vec![]).await;
+        let mut failing = event(&fx.base, "m1", "first");
+        failing.session_webhook = None;
+        fx.bridge.handle_event(failing).await.unwrap();
+        assert!(
+            ts::wait_until(
+                || !ts::recorded_of(&fx.grpc, "prompt").is_empty(),
+                std::time::Duration::from_secs(5)
+            )
+            .await
+        );
+        assert!(hook_bodies(&fx.http).is_empty(), "no webhook, no report");
+        // The next turn succeeds and answers through the webhook.
+        fx.bridge
+            .handle_event(event(&fx.base, "m2", "second"))
+            .await
+            .unwrap();
+        assert!(wait_hook(&fx.http, "ding answer").await);
     }
 
     #[tokio::test(flavor = "multi_thread")]

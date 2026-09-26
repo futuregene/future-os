@@ -236,4 +236,126 @@ mod tests {
             "remote_read_too_large"
         );
     }
+
+    /// Pagination is enabled by the *client's* declaration plus the command
+    /// name, and by nothing else. A phone that never declared it must keep
+    /// receiving plain replies for every one of these commands, or it would get
+    /// a `readChunk` envelope it cannot decode.
+    #[test]
+    fn every_pageable_command_family_needs_both_the_declaration_and_its_name() {
+        let sink = crate::remote::test_support::RecordingSink::default();
+        for cmd_type in [
+            "get_session_entries",
+            "get_events_since",
+            "get_messages",
+            "list_session_files",
+            "list_settings_models",
+            "list_providers",
+            "list_available_skills",
+            "list_skills",
+        ] {
+            let cmd = IncomingCmd {
+                cmd_type: cmd_type.into(),
+                chunked_read: true,
+                ..command()
+            };
+            assert!(PagedReply::new(&cmd, &sink).enabled, "{cmd_type}");
+            let undeclared = IncomingCmd {
+                cmd_type: cmd_type.into(),
+                ..command()
+            };
+            assert!(!PagedReply::new(&undeclared, &sink).enabled, "{cmd_type}");
+        }
+        // A command outside the pageable set stays plain even when the client
+        // declares the capability.
+        let cmd = IncomingCmd {
+            cmd_type: "get_desktop_settings".into(),
+            chunked_read: true,
+            ..command()
+        };
+        assert!(!PagedReply::new(&cmd, &sink).enabled);
+    }
+
+    /// A large reply is replaced by a snapshot page whose first chunk is what
+    /// the client asked for. This is the `Ok` arm of the transport: without it
+    /// the phone would receive an event too big for the broker payload limit.
+    #[tokio::test]
+    async fn a_large_reply_is_replaced_by_a_page_that_starts_at_offset_zero() {
+        let inner = crate::remote::test_support::RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "list_providers".into(),
+            chunked_read: true,
+            ..command()
+        };
+        let payload = json!({ "blob": "x".repeat(PAGE_THRESHOLD + 1) });
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        PagedReply::new(&cmd, &inner)
+            .send(true, payload, None)
+            .await;
+
+        let (success, page, error) = inner.only();
+        assert!(success, "{error:?}");
+        let chunk = &page["readChunk"];
+        assert!(
+            !chunk["id"].as_str().unwrap().is_empty(),
+            "a page is addressable by the client"
+        );
+        assert_eq!(chunk["totalBytes"], json!(bytes.len()));
+        assert_eq!(chunk["offset"], json!(0));
+        assert_eq!(chunk["nextOffset"], json!(CHUNK_BYTES));
+        // The chunk is the raw reply bytes, so the client reassembles exactly
+        // what the unpaged path would have sent.
+        let decoded = URL_SAFE_NO_PAD
+            .decode(chunk["data"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(decoded, bytes[..CHUNK_BYTES]);
+        clear();
+    }
+
+    /// A reply too large to snapshot is refused with an error rather than
+    /// silently sent whole: a partial page the phone cannot detect would look
+    /// like a complete answer.
+    #[tokio::test]
+    async fn a_reply_above_the_snapshot_bound_is_refused_not_truncated() {
+        let inner = crate::remote::test_support::RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "list_skills".into(),
+            chunked_read: true,
+            ..command()
+        };
+        PagedReply::new(&cmd, &inner)
+            .send(
+                true,
+                json!({ "blob": "x".repeat(MAX_SNAPSHOT_BYTES + 1) }),
+                None,
+            )
+            .await;
+        let (success, data, error) = inner.only();
+        assert!(!success);
+        assert_eq!(data, Value::Null);
+        assert_eq!(error.as_deref(), Some("remote_read_too_large"));
+    }
+
+    /// A reply below the page threshold is passed through untouched even when
+    /// the client declared the capability: paging a small answer would cost the
+    /// phone a second round trip for nothing.
+    #[tokio::test]
+    async fn a_small_reply_is_not_paged_and_a_failure_is_not_either() {
+        let inner = crate::remote::test_support::RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "list_providers".into(),
+            chunked_read: true,
+            ..command()
+        };
+        let paged = PagedReply::new(&cmd, &inner);
+        paged.send(true, json!({ "providers": [] }), None).await;
+        assert_eq!(inner.ok_data(), json!({ "providers": [] }));
+        // A failure keeps the handler's own error text instead of being
+        // replaced by a transport error.
+        paged
+            .send(false, Value::Null, Some("providers_unavailable".into()))
+            .await;
+        assert_eq!(inner.error_text(), "providers_unavailable");
+        assert_eq!(inner.len(), 2);
+    }
 }

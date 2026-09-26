@@ -1006,4 +1006,164 @@ mod tests {
         let error = run_native(child, &huge).expect_err("the pipe must break");
         assert!(error.starts_with("failed to write"), "{error}");
     }
+
+    // ─── The same default-runner paths on Windows ──────────────────────────
+    //
+    // The POSIX tests above use `true`; Windows has no such program, so without
+    // these the spawn/pipe/status path of the *default* runner (the one the app
+    // uses) is only exercised on POSIX. `cmd` is always present.
+
+    #[cfg(windows)]
+    fn cmd_child(script: &str) -> Child {
+        Command::new("cmd")
+            .args(["/c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn cmd")
+    }
+
+    /// `cmd /c exit 0` reads nothing and succeeds: the payload write, the wait
+    /// and the successful-status arm all run against a real program.
+    #[cfg(windows)]
+    #[test]
+    fn default_runner_pipes_into_a_real_windows_program() {
+        native_runner("cmd", &["/c".to_string(), "exit 0".to_string()], "payload")
+            .expect("cmd /c exit 0 must succeed");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_runner_reports_a_nonzero_exit_without_stderr() {
+        let error = native_runner("cmd", &["/c".to_string(), "exit 3".to_string()], "payload")
+            .expect_err("exit 3 is a failure");
+        assert!(error.starts_with("exited with status"), "{error}");
+        assert!(error.contains('3'), "{error}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_runner_surfaces_stderr_from_a_failing_program() {
+        let error = native_runner(
+            "cmd",
+            &["/c".to_string(), "echo boom 1>&2 & exit /b 7".to_string()],
+            "payload",
+        )
+        .expect_err("exit 7 is a failure");
+        assert!(error.starts_with("failed: "), "{error}");
+        assert!(error.contains("boom"), "{error}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn run_native_reports_a_missing_windows_stdin_pipe() {
+        let child = Command::new("cmd")
+            .args(["/c", "exit 0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn cmd");
+        assert_eq!(
+            run_native(child, "hi").expect_err("there is no stdin pipe"),
+            "failed to open stdin"
+        );
+    }
+
+    /// `cmd /c exit 0` leaves without reading stdin, so once it has exited the
+    /// pipe's read end is closed and the payload write must fail rather than
+    /// hang or report success.
+    #[cfg(windows)]
+    #[test]
+    fn run_native_reports_a_broken_windows_stdin_write() {
+        let mut child = cmd_child("exit 0");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while child.try_wait().expect("try_wait").is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cmd /c exit 0 did not exit"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let error = run_native(child, &"x".repeat(1_000_000)).expect_err("the pipe must break");
+        assert!(error.starts_with("failed to write"), "{error}");
+    }
+
+    /// A program that does not exist cannot be spawned on any platform.
+    #[test]
+    fn spawn_native_reports_a_program_that_does_not_exist() {
+        let error = spawn_native("future-tui-no-such-clipboard-program", &[])
+            .expect_err("there is no such program");
+        assert!(error.starts_with("failed to spawn"), "{error}");
+    }
+
+    /// With no candidate at all, the failure names the missing backend instead
+    /// of reporting an empty reason.
+    #[test]
+    fn write_native_without_candidates_names_the_missing_backend() {
+        let clipboard = Clipboard::with_parts(forbidden_runner(), Vec::new(), false);
+        assert_eq!(
+            clipboard.write_native("payload"),
+            Err("no native clipboard program".to_string())
+        );
+    }
+
+    /// `with_runner` must keep the candidate list `new()` probed for this host
+    /// and route copies through the injected runner (never the real clipboard).
+    #[test]
+    fn with_runner_keeps_the_probed_candidates_and_uses_the_injected_runner() {
+        let (runner, log) = recording_runner(&[]);
+        let clipboard = Clipboard::with_runner(runner);
+        let probed = Clipboard::new();
+        assert_eq!(clipboard.candidates(), probed.candidates());
+        assert_eq!(clipboard.is_ssh(), probed.is_ssh());
+        assert_eq!(clipboard.copy("hello", false, true), CopyOutcome::Copied);
+        let calls = recorded(&log);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].2, "hello");
+    }
+
+    /// `env_value` is the single place that decides whether an environment
+    /// variable counts as "set": unset and blank are absent, anything else is
+    /// passed through verbatim. Both restore arms run — the key is probed once
+    /// already-set (the `Some` arm) and once absent (the `None` arm) — because a
+    /// probe key that leaked into the environment would change what other tests
+    /// observe.
+    #[test]
+    fn env_value_treats_blank_as_unset() {
+        let _guard = crate::test_env::lock();
+        let key = "FUTURE_TUI_CLIPBOARD_ENV_PROBE";
+        for pre_existing in [Some("set-before"), None] {
+            match pre_existing {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+            let saved = std::env::var_os(key);
+            assert_eq!(
+                saved.is_some(),
+                pre_existing.is_some(),
+                "the probe must start from the state it asked for"
+            );
+
+            std::env::remove_var(key);
+            assert_eq!(env_value(key), None);
+            std::env::set_var(key, "");
+            assert_eq!(env_value(key), None);
+            std::env::set_var(key, "  ");
+            assert_eq!(env_value(key).as_deref(), Some("  "));
+            std::env::set_var(key, "x");
+            assert_eq!(env_value(key).as_deref(), Some("x"));
+
+            match saved {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+            assert_eq!(
+                std::env::var_os(key).is_some(),
+                pre_existing.is_some(),
+                "the restore must put the key back as it was found"
+            );
+        }
+    }
 }

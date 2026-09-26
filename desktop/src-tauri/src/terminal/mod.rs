@@ -27,4 +27,7 @@ pub mod session;
 pub mod shell;
 pub mod ticket;
 
+#[cfg(test)]
+pub mod test_support;
+
 pub use server::ServerInfo;

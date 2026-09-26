@@ -176,6 +176,26 @@ mod tests {
     use crate::rpc::{protocol::apply_to_projection, SseBroadcaster};
     use serde_json::json;
 
+    /// A `tool_start` only carries arguments when the payload is present and
+    /// non-empty; every other shape means "no arguments yet".
+    #[test]
+    fn tool_start_arguments_are_only_significant_when_present_and_non_empty() {
+        for (data, expected) in [
+            (json!({}), false),
+            (json!({"tool_args": null}), false),
+            (json!({"tool_args": {}}), false),
+            (json!({"tool_args": []}), false),
+            (json!({"tool_args": ""}), false),
+            (json!({"tool_args": {"path": "a"}}), true),
+            (json!({"tool_args": [1]}), true),
+            (json!({"tool_args": "{}"}), true),
+            // A non-JSON scalar still counts as supplied arguments.
+            (json!({"tool_args": 7}), true),
+        ] {
+            assert_eq!(carries_arguments(&data), expected, "for {data}");
+        }
+    }
+
     fn event(kind: &str, idx: i64, data: Value) -> SseEvent {
         SseEvent {
             idx,

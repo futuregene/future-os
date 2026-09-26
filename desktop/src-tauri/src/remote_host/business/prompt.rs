@@ -406,3 +406,170 @@ pub(crate) fn derive_thread_title(content: &str) -> String {
         compact.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A continuation without a session and source run would resume "whatever
+    /// was last used", which is not something the user asked for. Both ids are
+    /// required, and the guard runs before any store lookup so a stale outbox
+    /// entry cannot reach the database at all.
+    #[test]
+    fn a_continuation_needs_both_a_session_and_a_source_run() {
+        for (session, run) in [("", "run"), ("  ", "run"), ("sess", ""), ("sess", "\t")] {
+            let error = validate_continue_source(session, run)
+                .expect_err("a missing id must be refused")
+                .to_string();
+            assert!(
+                error.contains("requires a session and source run"),
+                "session {session:?} run {run:?} -> {error}"
+            );
+        }
+    }
+
+    /// A receipt lookup is the first thing `prompt`, `get_prompt_receipt` and
+    /// `continue_run` do, because a retried command id must be answered with the
+    /// run it already started. A store that cannot answer must fail the command
+    /// loudly: "I could not check" is not "there is no receipt", and treating it
+    /// as one would let a lost reply become a second run.
+    #[tokio::test]
+    async fn a_prompt_whose_receipt_cannot_be_checked_is_refused() {
+        use crate::remote::test_support::{HomeGuard, RecordingSink};
+
+        // A fresh HOME with no store: every receipt lookup fails.
+        let _home = HomeGuard::new("business-prompt-unreadable");
+        for cmd_type in ["prompt", "get_prompt_receipt", "continue_run"] {
+            let sink = RecordingSink::default();
+            let command_id = format!("cmd-{cmd_type}");
+            let cmd = IncomingCmd {
+                cmd_type: cmd_type.to_string(),
+                id: command_id.clone(),
+                // `get_prompt_receipt` keys off `prompt_id`; the other two key
+                // off the command id. All three must reach the store.
+                prompt_id: command_id,
+                ..Default::default()
+            };
+            execute(&cmd, &sink).await;
+            let (success, _data, error) = sink.last();
+            assert!(!success, "{cmd_type} must not answer without its receipt");
+            let error = error.expect("a failed reply carries the reason");
+            assert!(
+                error.contains("no such table"),
+                "{cmd_type} must report the store fault, got {error:?}"
+            );
+        }
+    }
+
+    /// A receipt is only meaningful for a conversation that still exists. A run
+    /// row whose thread was removed out-of-band (the TUI/CLI can delete a
+    /// thread; the GUI's own delete cascades) must read as "no receipt", never
+    /// as a receipt naming a thread the phone cannot open.
+    #[tokio::test]
+    async fn a_receipt_for_a_thread_that_no_longer_exists_reads_as_no_receipt() {
+        use crate::remote::protocol::IncomingCmd;
+        use crate::remote::test_support::{raw_store_connection, HomeGuard, RecordingSink};
+
+        let _home = HomeGuard::new("business-prompt-dangling-run");
+        crate::remote::test_support::init_store();
+        let command_id = "cmd-dangling-run";
+        {
+            let conn = raw_store_connection();
+            conn.execute(
+                "INSERT INTO runs (
+                     id, thread_id, trigger_message_id, status, remote_accepted_at,
+                     created_at, updated_at
+                 ) VALUES ('run-dangling', 'thread-that-is-gone', ?1, 'completed', 1, 1, 1)",
+                rusqlite::params![command_id],
+            )
+            .expect("write a run whose thread is gone");
+        }
+        assert!(
+            crate::store::get_thread("thread-that-is-gone")
+                .expect("thread lookup")
+                .is_none(),
+            "the fixture must describe a dangling run"
+        );
+
+        let sink = RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "get_prompt_receipt".to_string(),
+            prompt_id: command_id.to_string(),
+            ..Default::default()
+        };
+        execute(&cmd, &sink).await;
+        let (success, data, error) = sink.last();
+        assert!(
+            success,
+            "a receipt question is answered, not refused: {error:?}"
+        );
+        assert!(
+            data.is_null(),
+            "a run whose conversation is gone has no receipt to hand back: {data}"
+        );
+    }
+
+    /// A retried `continue_run` is answered with the run it already started.
+    /// The stored receipt is what makes that survive the reply-slot window: the
+    /// phone's outbox can retry long after the in-memory cache expired, and the
+    /// second delivery must not start a second continuation of the same failed
+    /// run.
+    #[tokio::test]
+    async fn a_retried_continuation_is_answered_from_its_stored_receipt() {
+        use crate::remote::test_support::{raw_store_connection, HomeGuard, RecordingSink};
+
+        let _home = HomeGuard::new("business-prompt-continue-receipt");
+        crate::remote::test_support::init_store();
+        let command_id = "cmd-continue-replay";
+        {
+            let conn = raw_store_connection();
+            conn.execute_batch(&format!(
+                "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                     VALUES ('ws_cont', 'WS', 'user', '/tmp/ws', 1, 1);
+                 INSERT INTO threads (id, workspace_id, mode, title, agent_session_id,
+                                      created_at, updated_at)
+                     VALUES ('th_cont', 'ws_cont', 'chat', 'T', 'sess_cont', 1, 1);
+                 INSERT INTO runs (id, thread_id, trigger_message_id, status,
+                                   remote_accepted_at, created_at, updated_at)
+                     VALUES ('run_cont', 'th_cont', '{command_id}', 'failed', 1, 1, 1);"
+            ))
+            .expect("write the receipt the retry must find");
+        }
+
+        let sink = RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "continue_run".to_string(),
+            id: command_id.to_string(),
+            session_id: "sess_cont".to_string(),
+            run_id: "run_cont".to_string(),
+            ..Default::default()
+        };
+        execute(&cmd, &sink).await;
+        let (success, data, error) = sink.last();
+        assert!(success, "a retry is answered, not refused: {error:?}");
+        assert_eq!(
+            data["runId"],
+            json!("run_cont"),
+            "the receipt names the run"
+        );
+        assert_eq!(data["threadId"], json!("th_cont"));
+        assert_eq!(
+            data["sessionId"],
+            json!("sess_cont"),
+            "and the session the phone asked about"
+        );
+    }
+
+    /// The prompt family is a closed set of five commands; a name from another
+    /// family must not be answered with a plausible-looking reply.
+    #[tokio::test]
+    #[should_panic(expected = "handler received")]
+    async fn a_command_from_another_family_is_not_answered() {
+        let sink = crate::remote::test_support::RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "get_settings".into(),
+            ..Default::default()
+        };
+        execute(&cmd, &sink).await;
+    }
+}

@@ -148,3 +148,25 @@ test("samples foreground JS scheduling lag without counting time in the backgrou
   await act(async () => current.stop());
   expect(info.mock.calls[2]![1].recentJsLagMs).toBe(0);
 });
+
+test("a lag sample older than the two-second window is dropped, not carried forward", async () => {
+  let stateChanged!: (state: AppStateStatus) => void;
+  jest.spyOn(AppState, "addEventListener").mockImplementation((_, handler) => {
+    stateChanged = handler;
+    return { remove: jest.fn() };
+  });
+  const now = jest.spyOn(performance, "now").mockReturnValue(0);
+  render({ abort: async () => {} });
+  act(() => stateChanged("active"));
+  // First tick reports a 19.75 s stall (nextTick was armed at t=250).
+  now.mockReturnValue(20_000);
+  act(() => jest.advanceTimersByTime(250));
+  // Second tick lands 10 s later, so the stale sample falls out of the window.
+  now.mockReturnValue(30_000);
+  act(() => jest.advanceTimersByTime(250));
+  await act(async () => current.stop());
+  // 9750 is the second sample alone: had the stale 19750 survived, the report
+  // would still show it and every later stop would inherit a phantom stall.
+  expect(info.mock.calls[0]![1].recentJsLagMs).toBe(9750);
+});
+

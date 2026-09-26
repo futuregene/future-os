@@ -389,6 +389,20 @@ function renderWorkspaceTab(): void {
   });
 }
 
+/** Re-render the list on the chat tab with the original three sessions.
+ * `renderWorkspaceTab` replaces `mockRemote.sessions`, and the workspace section
+ * does not restore it, so a test appended after it must reset the catalogue it
+ * expects rather than inherit one. */
+function renderChatTab(): void {
+  mockRemote.sessions = [
+    { sessionId: "s1", threadId: "t1", title: "First", streaming: false },
+    { sessionId: "s2", threadId: "t2", title: "Second", streaming: false },
+    { sessionId: "child", threadId: "tc", title: "Child", parentSessionId: "s1", streaming: false },
+  ];
+  mockRemote.workspaces = [];
+  act(() => tree.update(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange })));
+}
+
 /** Select a real app sheet row and finish its iOS dismissal before navigation. */
 function pressWorkspaceMenu(action: string): void {
   act(() => button("sessions.workspaceActions:Project").props.onPress());
@@ -407,11 +421,29 @@ function activeDialog() {
 function dialogText() {
   return activeDialog().findAllByType(Text).map(node => node.props.children);
 }
+/** How many *app dialogs* are on screen right now. Unlike `activeDialog` this
+ * tolerates zero, which is what a guard that must not re-open a confirmation has
+ * to be asserted against; the workspace sheet's own Modal carries no
+ * `DialogSurface`, so it can never be counted here. */
+function visibleDialogs(): number {
+  return tree.root
+    .findAllByType(Modal)
+    .filter(node => node.props.visible && node.findAllByType(DialogSurface).length > 0).length;
+}
 function confirmAlert(): void {
   const modal = tree.root.findAllByType(Modal).find(node => node.props.visible);
   if (!modal) return;
   act(() => modal.findAllByType(Button).find(node => node.props.variant === "danger")!.props.onPress());
   act(() => modal.props.onDismiss());
+}
+
+/** The destructive button of the *confirmation dialog* (not a menu item), with
+ * its handler left un-invoked so a double tap can land on it twice before the
+ * surface is gone. */
+function dangerPress(): () => void {
+  const modal = tree.root.findAllByType(Modal).find(node => node.props.visible && node.findAllByType(DialogSurface).length > 0)!;
+  const button = modal.findAllByType(Button).find(node => node.props.variant === "danger")!;
+  return button.props.onPress;
 }
 
 test.each(["workspace", "chat"] as const)("%s parents fold with +/−, not the workspace header chevron", (tab) => {
@@ -683,4 +715,357 @@ test("a failed workspace delete surfaces the workspace error instead of the gene
   } finally {
     jest.useRealTimers();
   }
+});
+
+test("a workspace menu cannot outlive the screen that opened it", () => {
+  renderWorkspaceTab();
+  act(() => button("sessions.workspaceActions:Project").props.onPress());
+  expect(tree.root.findByType(ActionMenu).props.visible).toBe(true);
+  // Leaving the list (entering a chat, or a pairing change) unmounts the page
+  // but the menu it opened lives in a native Modal: it has to be torn down with
+  // the screen rather than left floating over whatever comes next.
+  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange, active: false })));
+  expect(tree.root.findByType(ActionMenu).props.visible).toBe(false);
+  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange, active: true })));
+  expect(tree.root.findByType(ActionMenu).props.visible).toBe(false);
+});
+
+test("system back leaves batch selection before it leaves the list", () => {
+  renderChatTab();
+  // The listener is registered when selection opens, so the spy has to exist
+  // first or there is nothing to capture.
+  const subscribe = jest.spyOn(BackHandler, "addEventListener");
+  act(() => button("sessions.select").props.onPress());
+  act(() => button("First").props.onPress());
+  expect(button("First").props.accessibilityState.checked).toBe(true);
+  const back = subscribe.mock.calls.at(-1)![1];
+  act(() => { expect(back({} as never)).toBe(true); });
+  // The toolbar is back and the batch is empty, so a stray back cannot delete.
+  expect(button("sessions.select")).toBeDefined();
+  expect(button("First")).toBeUndefined();
+});
+
+test("tapping a selected row removes it from the batch", () => {
+  renderChatTab();
+  act(() => button("sessions.select").props.onPress());
+  act(() => button("First").props.onPress());
+  expect(button("First").props.accessibilityState.checked).toBe(true);
+  expect(button("sessions.deleteSelected").props.disabled).toBe(false);
+  // A second tap on the same row is how a user takes one back out: leaving it
+  // checked would delete a conversation the user just unticked.
+  act(() => button("First").props.onPress());
+  expect(button("First").props.accessibilityState.checked).toBe(false);
+  expect(button("sessions.deleteSelected").props.disabled).toBe(true);
+});
+
+test("deselect visible empties the batch that select visible made", () => {
+  renderChatTab();
+  act(() => button("sessions.select").props.onPress());
+  act(() => button("sessions.selectVisible").props.onPress());
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:2").length).toBeGreaterThan(0);
+  act(() => button("sessions.deselectVisible").props.onPress());
+  expect(button("sessions.deleteSelected").props.disabled).toBe(true);
+  expect(button("sessions.selectVisible")).toBeDefined();
+});
+
+test("a batch tap with nothing selected, or while offline, sends nothing", () => {
+  renderChatTab();
+  const visibleDialog = () => tree.root.findAllByType(Modal).some(node => node.props.visible);
+  act(() => button("sessions.select").props.onPress());
+  // The button is disabled in both states; a tap that began before the disable
+  // still reaches the handler, which is what the guard is for. Asserting only
+  // that no request was sent would miss a confirmation that should never have
+  // been offered — the mutant that drops this guard survives that assertion.
+  act(() => button("sessions.deleteSelected").props.onPress());
+  expect(mockRemote.deleteSession).not.toHaveBeenCalled();
+  expect(visibleDialog()).toBe(false);
+  act(() => button("First").props.onPress());
+  mockRemote.desktopOnline = false;
+  act(() => tree.update(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange })));
+  act(() => button("sessions.deleteSelected").props.onPress());
+  expect(mockRemote.deleteSession).not.toHaveBeenCalled();
+  expect(visibleDialog()).toBe(false);
+  mockRemote.desktopOnline = true;
+});
+
+test("selecting a row inside a workspace group works the same as in a chat list", () => {
+  renderWorkspaceTab();
+  act(() => button("sessions.select").props.onPress());
+  act(() => sessionBody("Plan").props.onPress());
+  // Row taps route to the same toggle as the checkbox while selecting.
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:1").length).toBeGreaterThan(0);
+  expect(button("Plan").props.accessibilityState.checked).toBe(true);
+});
+
+test("a workspace select-all with nothing to select is inert", () => {
+  renderWorkspaceTab();
+  // Every session in the group is a promoted pin, which carries no checkbox.
+  mockRemote.sessions = mockRemote.sessions.map(session => ({ ...session, pinned: true }));
+  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange })));
+  pressWorkspaceMenu("sessions.selectWorkspaceSessions");
+  // The shortcut must not open an empty batch: the toolbar would then offer a
+  // delete with nothing selected.
+  expect(button("sessions.deleteSelected")).toBeUndefined();
+  expect(button("sessions.select")).toBeDefined();
+});
+
+test("a workspace menu does not open while the desktop is unreachable", () => {
+  renderWorkspaceTab();
+  mockRemote.desktopOnline = false;
+  act(() => tree.update(createElement(SessionList, { tab: "workspace", empty: null, onMenu, onTabChange })));
+  act(() => button("sessions.workspaceActions:Project").props.onPress());
+  // Pin/rename/delete are all desktop writes; opening the sheet on a dead link
+  // would offer actions that cannot run.
+  expect(tree.root.findByType(ActionMenu).props.visible).toBe(false);
+  mockRemote.desktopOnline = true;
+});
+
+test("a workspace cannot be deleted twice while the first request is in flight", async () => {
+  jest.useFakeTimers();
+  try {
+    renderWorkspaceTab();
+    const pending = (() => {
+      let resolve!: () => void;
+      return { promise: new Promise<void>(done => { resolve = done; }), resolve: () => resolve() };
+    })();
+    mockRemote.deleteWorkspace.mockReturnValue(pending.promise);
+    pressWorkspaceMenu("sessions.deleteWorkspace");
+    await act(async () => { confirmAlert(); });
+    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+    // A tap on the workspace menu that began before the delete disabled it must
+    // not queue a second destructive request.
+    act(() => button("sessions.workspaceActions:Project").props.onPress());
+    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+    await act(async () => { pending.resolve(); });
+  } finally {
+    jest.useRealTimers();
+    mockRemote.deleteWorkspace.mockResolvedValue(undefined);
+  }
+});
+
+test("a double tap on the delete confirmation cannot queue the batch twice", async () => {
+  renderChatTab();
+  // The desktop is slow to answer, so the first delete is still unresolved when
+  // the second confirmation is confirmed.
+  let resolveFirst!: () => void;
+  mockRemote.deleteSession.mockReturnValueOnce(
+    new Promise<void>(done => { resolveFirst = () => done(); }),
+  );
+  act(() => button("sessions.select").props.onPress());
+  act(() => button("First").props.onPress());
+  // Two confirmations are queued: the toolbar button stays enabled until the
+  // delete actually starts, so a second tap re-arms it.
+  act(() => {
+    button("sessions.deleteSelected").props.onPress();
+    button("sessions.deleteSelected").props.onPress();
+  });
+  await act(async () => { confirmAlert(); });
+  expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
+  // The second confirmation is still on screen; confirming it must not delete
+  // the same conversations again — a thread the desktop already removed would
+  // answer with an error the user would see for an action that had succeeded.
+  await act(async () => { confirmAlert(); });
+  expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
+  await act(async () => { resolveFirst(); await Promise.resolve(); });
+  expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
+  mockRemote.deleteSession.mockResolvedValue(undefined);
+});
+
+test("a double tap on the workspace confirmation deletes it once", async () => {
+  jest.useFakeTimers();
+  try {
+    renderWorkspaceTab();
+    let resolveDelete!: () => void;
+    mockRemote.deleteWorkspace.mockReturnValueOnce(
+      new Promise<void>(done => { resolveDelete = () => done(); }),
+    );
+    // Two confirmations are queued for the same workspace: the menu can be
+    // reopened while the first confirmation is still on screen (the delete has
+    // not started), so both requests reach the user.
+    pressWorkspaceMenu("sessions.deleteWorkspace");
+    pressWorkspaceMenu("sessions.deleteWorkspace");
+    await act(async () => { confirmAlert(); });
+    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+    // The first request is still in flight and the second confirmation is on
+    // screen; confirming it must not queue the same destructive request again.
+    await act(async () => { confirmAlert(); });
+    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+    await act(async () => { resolveDelete(); await Promise.resolve(); });
+    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+  } finally {
+    jest.useRealTimers();
+    mockRemote.deleteWorkspace.mockResolvedValue(undefined);
+  }
+});
+
+test("a stale workspace delete item cannot queue a second confirmation while the first is in flight", async () => {
+  // The workspace sheet (ActionMenu) does not run an item when it is pressed: it
+  // *queues* it and runs it from the Modal's `onDismiss`, and that flush clears
+  // its own latch. So a press+dismiss pair captured while the sheet was usable
+  // can be driven a second time after the sheet has closed, and the second round
+  // lands on `confirmDeleteWorkspace` with `deletingRef.current` still true.
+  jest.useFakeTimers();
+  try {
+    renderWorkspaceTab();
+    let resolveDelete!: () => void;
+    mockRemote.deleteWorkspace.mockReturnValueOnce(
+      new Promise<void>(done => { resolveDelete = () => done(); }),
+    );
+
+    act(() => button("sessions.workspaceActions:Project").props.onPress());
+    const sheet = tree.root.findByType(ActionMenu).findByType(Modal);
+    const press = button("sessions.deleteWorkspace").props.onPress as () => void;
+    const flush = sheet.props.onDismiss as () => void;
+
+    act(() => { press(); flush(); });
+    expect(visibleDialogs()).toBe(1);
+    await act(async () => { confirmAlert(); });
+    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+    expect(mockRemote.deleteWorkspace).toHaveBeenCalledWith("w1");
+    // The request really is in flight, so the guard's read at round 2 is a live
+    // `true`; a delete that had already settled would make round 2 vacuous.
+    expect(button("sessions.workspaceActions:Project").props.disabled).toBe(true);
+
+    act(() => { press(); flush(); });
+    // Nothing was re-queued. This count — not the request count, which would
+    // only move if the stale confirmation were then tapped — is what fails when
+    // the guard is dropped: round 2 would put a second confirmation on screen.
+    expect(visibleDialogs()).toBe(0);
+    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+
+    // Control, with the same captured pair: settle the delete, so the ref reads
+    // false again, and drive it a third time. A confirmation *is* queued now —
+    // which is what makes round 2's zero a statement about the guard rather than
+    // about a closure that went dead when the sheet closed.
+    await act(async () => { resolveDelete(); await Promise.resolve(); });
+    expect(button("sessions.workspaceActions:Project").props.disabled).toBe(false);
+    act(() => { press(); flush(); });
+    expect(visibleDialogs()).toBe(1);
+    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+  } finally {
+    jest.useRealTimers();
+    mockRemote.deleteWorkspace.mockResolvedValue(undefined);
+  }
+});
+
+test("a workspace cannot be deleted twice while the first request is in flight", async () => {
+  jest.useFakeTimers();
+  try {
+    renderWorkspaceTab();
+    const pending = (() => {
+      let resolve!: () => void;
+      return { promise: new Promise<void>(done => { resolve = done; }), resolve: () => resolve() };
+    })();
+    mockRemote.deleteWorkspace.mockReturnValue(pending.promise);
+    // Two requests reach the queue (the menu is re-openable, and a slow desktop
+    // leaves the first one pending), so a second confirmation is on screen while
+    // the first delete is still in flight.
+    pressWorkspaceMenu("sessions.deleteWorkspace");
+    pressWorkspaceMenu("sessions.deleteWorkspace");
+    await act(async () => { confirmAlert(); });
+    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+    await act(async () => { confirmAlert(); });
+    // The second confirmation must not queue another destructive request.
+    expect(mockRemote.deleteWorkspace).toHaveBeenCalledTimes(1);
+    await act(async () => { pending.resolve(); });
+  } finally {
+    jest.useRealTimers();
+    mockRemote.deleteWorkspace.mockResolvedValue(undefined);
+  }
+});
+
+test("a queued second batch confirmation cannot delete while the first is in flight", async () => {
+  jest.useFakeTimers();
+  try {
+    renderChatTab();
+    const pending = (() => {
+      let resolve!: () => void;
+      return { promise: new Promise<void>(done => { resolve = done; }), resolve: () => resolve() };
+    })();
+    mockRemote.deleteSession.mockReturnValue(pending.promise);
+    act(() => button("sessions.select").props.onPress());
+    act(() => button("First").props.onPress());
+    act(() => button("sessions.deleteSelected").props.onPress());
+    act(() => button("sessions.deleteSelected").props.onPress());
+    await act(async () => { confirmAlert(); });
+    expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
+    await act(async () => { confirmAlert(); });
+    // A batch delete is a sequence of desktop writes; a second confirmation
+    // while the first runs would interleave them and delete twice.
+    expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
+    await act(async () => { pending.resolve(); });
+  } finally {
+    jest.useRealTimers();
+    mockRemote.deleteSession.mockResolvedValue(undefined);
+  }
+});
+
+test("a second tap on the same batch-delete confirm cannot start a second round", async () => {
+  // The neighbouring test re-finds the dialog for its second tap, so it would
+  // pass even if the guard were missing — after the first flush the dialog is
+  // invisible and the second lookup finds nothing. This one captures the
+  // dismiss/flush pair once and drives it twice: `useAppDialog` queues the
+  // action on press and runs it on `onDismiss`, and `flush` resets its own
+  // latch, so both rounds reach the guarded closure. The first sets the flag
+  // synchronously; the second must see it and not start a second round.
+  jest.useFakeTimers();
+  try {
+    renderChatTab();
+    const pending = (() => {
+      let resolve!: () => void;
+      return { promise: new Promise<void>(done => { resolve = done; }), resolve: () => resolve() };
+    })();
+    mockRemote.deleteSession.mockReturnValue(pending.promise);
+    act(() => button("sessions.select").props.onPress());
+    act(() => button("First").props.onPress());
+    act(() => button("sessions.deleteSelected").props.onPress());
+    const modal = tree.root.findAllByType(Modal).find(node => node.props.visible)!;
+    const press = modal.findAllByType(Button).find(node => node.props.variant === "danger")!.props.onPress;
+    const flush = modal.props.onDismiss;
+    act(() => { press(); flush(); });
+    expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
+    // Same captured closures, second round: the request is still in flight.
+    await act(async () => { press(); flush(); });
+    expect(mockRemote.deleteSession).toHaveBeenCalledTimes(1);
+    await act(async () => { pending.resolve(); });
+  } finally {
+    jest.useRealTimers();
+    mockRemote.deleteSession.mockResolvedValue(undefined);
+  }
+});
+
+test("a refused workspace conversation reports the failure instead of a stale screen", async () => {
+  renderWorkspaceTab();
+  act(() => button("sessions.workspaceActions:Project").props.onPress());
+  const modal = tree.root.findByType(ActionMenu).findByType(Modal);
+  mockRemote.newConversation.mockRejectedValueOnce(new Error("offline"));
+  act(() => button("sessions.new").props.onPress());
+  await act(async () => { modal.props.onDismiss(); });
+  expect(mockRemote.newConversation).toHaveBeenCalledWith("workspace", "w1");
+  expect(dialogText()).toEqual(expect.arrayContaining(["common.error"]));
+});
+
+test("a long press on a row opens the menu only outside selection mode", () => {
+  renderChatTab();
+  act(() => sessionBody("First").props.onLongPress());
+  expect(onMenu).toHaveBeenCalledWith(mockRemote.sessions[0]);
+  onMenu.mockClear();
+  act(() => button("sessions.select").props.onPress());
+  // Inside the batch a long press is a no-op: the row already has a checkbox.
+  act(() => sessionBody("First").props.onLongPress());
+  expect(onMenu).not.toHaveBeenCalled();
+  expect(button("First").props.accessibilityState.checked).toBe(false);
+});
+
+test("pressing and releasing a row leaves no stuck pressed state", () => {
+  renderChatTab();
+  const rowStyle = () => StyleSheet.flatten(sessionBody("First").parent!.props.style);
+  expect(rowStyle().backgroundColor).toBeUndefined();
+  act(() => sessionBody("First").props.onPressIn());
+  expect(rowStyle().backgroundColor).toBeDefined();
+  // A finger lifting off another row must not clear the one still pressed.
+  act(() => sessionBody("Second").props.onPressOut());
+  expect(rowStyle().backgroundColor).toBeDefined();
+  act(() => sessionBody("First").props.onPressOut());
+  expect(rowStyle().backgroundColor).toBeUndefined();
 });

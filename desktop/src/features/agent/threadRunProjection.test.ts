@@ -991,3 +991,104 @@ describe("mergeStreamingPreview", () => {
     ).toHaveLength(1);
   });
 });
+
+describe("legacy run rows and malformed timestamps", () => {
+  // One fixture closes several fallbacks at once: a row written by an older build
+  // that recorded a start time but neither an end time nor an error message. Every
+  // fixture elsewhere in this spec supplies a complete run, so these arms had never
+  // run - `run.endedAt ?? run.updatedAt ?? run.startedAt` never reached its third
+  // operand, `runEndedIso`'s `typeof ms === "number"` never saw a non-number, and
+  // the failure bubble's `errorMessage ?? ""` never had an empty error.
+  function legacyRun(id: string): StoredRun {
+    return {
+      id,
+      threadId: "t1",
+      status: "failed",
+      createdAt: 1_000,
+      startedAt: 1_000,
+      endedAt: null,
+      updatedAt: null,
+      errorMessage: null,
+    } as unknown as StoredRun;
+  }
+
+  it("rebuilds a failure bubble from a run with no end time and no error text", () => {
+    // The user turn inside the run's window is the trust evidence the guard needs
+    // (and is also the "first run failed before any reply was saved" shape); there
+    // is no assistant reply, so the run counts as an orphan and gets a bubble.
+    const user: AgentMessage = {
+      id: "u1",
+      role: "user",
+      content: "prompt",
+      createdAt: "1970-01-01T00:00:01.000Z",
+    } as unknown as AgentMessage;
+
+    const result = recoverFailedRuns([user], [legacyRun("r-legacy")]);
+
+    expect(result).toHaveLength(2);
+    const bubble = result.find(message => message.runId === "r-legacy")!;
+    expect(bubble.status).toBe("failed");
+    expect(bubble.content).toBe("");
+    // `errorMessage ?? ""` yields an empty message, so the title/notice are the
+    // library's neutral wording rather than a literal "undefined".
+    expect(bubble.terminationTitle).not.toContain("undefined");
+    expect(bubble.terminationNotice).not.toContain("undefined");
+    // `runEndedIso(run) ?? new Date().toISOString()`: with no end time the bubble is
+    // stamped now rather than left without a sortable createdAt.
+    expect(Number.isFinite(Date.parse(bubble.createdAt))).toBe(true);
+    expect(Date.parse(bubble.createdAt)).toBeGreaterThan(1_000);
+  });
+
+  it("windows a legacy run from its start time when it recorded no end", () => {
+    // `runWindow` needs a numeric `startedAt` and derives `end` through its own
+    // chain, so a row with only a start time still produces a usable window.
+    const result = applyRunMetadata(
+      [message("a1", { createdAt: "1970-01-01T00:00:01.000Z" })],
+      [legacyRun("r-legacy")],
+    );
+
+    expect(result[0]!.runId).toBe("r-legacy");
+    expect(result[0]!.status).toBe("failed");
+  });
+
+  it("skips a message whose createdAt cannot be parsed", () => {
+    // boundary: `Date.parse` yields NaN for a malformed stamp, and `Number.isFinite`
+    // is what keeps NaN out of the per-role timestamp lists - a NaN in there would
+    // poison every window comparison (`NaN >= x` is false for every run). Both the
+    // USER branch and the assistant branch collect timestamps, so each needs its own
+    // malformed row: a user entry is the only exchange in a session whose first run
+    // failed, so its branch matters independently.
+    const result = applyRunMetadata(
+      [
+        user("u-bad", { createdAt: "not a date" }),
+        assistant("a-bad", { createdAt: "also not a date" }),
+        user("u-ok", { createdAt: "1970-01-01T00:00:01.000Z" }),
+        assistant("a-ok", { createdAt: "1970-01-01T00:00:02.000Z" }),
+      ],
+      [run("r-legacy", { status: "failed", startedAt: 1_000, createdAt: 1_000 })],
+    );
+
+    // Neither malformed row is stamped, and neither poisons the window: the two
+    // well-formed rows inside the window are the ones the run lands on.
+    expect(result[0]!.runId).toBeUndefined();
+    expect(result[1]!.runId).toBeUndefined();
+    expect(result[3]!.runId).toBe("r-legacy");
+  });
+
+  it("keeps a persisted row's own status and falls back to complete", () => {
+    // boundary: `run.status === "failed" ? "failed" : (message.status ?? "complete")`.
+    // A non-failed run stamping a row that was persisted WITHOUT a status (an older
+    // transcript) must render it as a finished reply rather than an unknown state,
+    // and a row that carries its own status keeps it.
+    const result = applyRunMetadata(
+      [
+        user("u1", { createdAt: "1970-01-01T00:00:01.000Z" }),
+        assistant("a1", { createdAt: "1970-01-01T00:00:02.000Z", status: undefined }),
+      ],
+      [run("r-ok", { status: "completed", startedAt: 1_000, createdAt: 1_000, endedAt: 3_000 })],
+    );
+
+    expect(result[1]!.runId).toBe("r-ok");
+    expect(result[1]!.status).toBe("complete");
+  });
+});

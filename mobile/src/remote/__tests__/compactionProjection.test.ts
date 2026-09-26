@@ -102,6 +102,27 @@ describe.each(Object.entries(projectors))("%s compaction projection", (_name, ap
     expect(after.items[0]).toMatchObject({ id: "compaction:one", segments: [{ status: "completed", checkpointId: "cp-one" }] });
   });
 
+  test("repeating an operation's start never revives a divider it already settled", async () => {
+    // The agent re-sends the started frame on reconnect. Once the operation's
+    // marker is settled for that identity, a second start must be a no-op: it
+    // may not flip the divider back to "running", or the panel would show a
+    // compaction that no terminal frame can ever finish.
+    const history = timelineFromEntries([
+      { id: "cp-entry", role: "system", kind: "compaction", createdAtMs: 0, blocks: [],
+        checkpoint: { checkpointId: "cp-one", trigger: "manual", phase: "standalone" } },
+    ]);
+    const once = await apply(history, [compact("compaction_started", "one", "old", 3)]);
+    const twice = await apply(once, [compact("compaction_started", "one", "old", 4)]);
+    expect(twice.items).toEqual(once.items);
+    expect(twice.items).toHaveLength(1);
+    expect(twice.items[0]).toMatchObject({ id: "compaction:one", segments: [{ status: "completed" }] });
+    // The alias is still the pending identity, so a late terminal can settle it.
+    const settled = await apply(twice, [compact("compaction_committed", "one", "old", 5)]);
+    expect(settled.items).toHaveLength(1);
+    expect(settled.items[0]).toMatchObject({ id: "m_cp-one", segments: [{ status: "completed" }] });
+    expect(settled.compacting).toBe(false);
+  });
+
   test("a genuine new compaction still draws its running divider", async () => {
     // A committed divider for an EARLIER operation must not swallow the next
     // compaction's start: the earlier divider is not the last item, so the
@@ -227,5 +248,42 @@ describe.each(Object.entries(projectors))("%s compaction projection", (_name, ap
     expect(after.items.flatMap(item =>
       item.kind === "message" ? (item.segments ?? []).filter(segment => segment.kind === "compaction") : [],
     )).toHaveLength(2);
+  });
+
+  test("a compaction frame without an operation or checkpoint is not a marker", async () => {
+    const before = await apply(emptyTimeline(), oldRun);
+    const after = await apply(before, [
+      event("compaction_started", "old", 3, { trigger: "manual", phase: "standalone" }),
+    ]);
+    // Nothing identifies the operation, so there is no row to place and no
+    // checkpoint to key later terminal frames against.
+    expect(after.items).toEqual(before.items);
+  });
+
+  test("an unknown compaction-shaped frame is ignored instead of opening a divider", async () => {
+    const before = await apply(emptyTimeline(), oldRun);
+    const after = await apply(before, [
+      event("compaction_progress", "old", 3, {
+        operation_id: "one", checkpoint_id: "cp-one", trigger: "manual", phase: "standalone",
+      }),
+    ]);
+    expect(after.items).toEqual(before.items);
+  });
+});
+
+describe("replay lane fencing", () => {
+  test("a replay with no events returns the timeline it was given", async () => {
+    const initial = await applyReplayEvents(emptyTimeline(), oldRun);
+    expect(await applyReplayEvents(initial, [])).toBe(initial);
+  });
+
+  test("a replay whose lane goes stale before or after the fold is refused", async () => {
+    await expect(applyReplayEvents(emptyTimeline(), oldRun, { isCurrent: () => false }))
+      .rejects.toThrow("stale_sync_lane");
+    let checks = 0;
+    // The lane was current for the pre-check and for the batch itself, and
+    // moved on only as the finished timeline was about to be handed back.
+    await expect(applyReplayEvents(emptyTimeline(), oldRun, { isCurrent: () => ++checks <= 2 }))
+      .rejects.toThrow("stale_sync_lane");
   });
 });

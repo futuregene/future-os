@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { classifyAttachment, READ_SOURCE_MAX_BYTES } from "./attachments";
+import { classifyAttachment, extOf, fileNameFromPath, READ_SOURCE_MAX_BYTES } from "./attachments";
 
 const inspectAttachment = vi.fn();
 const validateImageAttachment = vi.fn();
@@ -8,6 +8,35 @@ vi.mock("../../integrations/storage/files", () => ({
   inspectAttachment: (...args: unknown[]) => inspectAttachment(...args),
   validateImageAttachment: (...args: unknown[]) => validateImageAttachment(...args),
 }));
+
+describe("path helpers", () => {
+  it("falls back to the whole path when it has no basename", () => {
+    // boundary: `pathBasename("/")` is empty, so a separator-only path keeps its own
+    // text as the display name rather than rendering nothing at all.
+    expect(fileNameFromPath("/")).toBe("/");
+    expect(fileNameFromPath("/tmp/a.ts")).toBe("a.ts");
+    expect(fileNameFromPath("C:\\dir\\b.md")).toBe("b.md");
+  });
+
+  it("reports no extension for a dotless name or a leading-dot dotfile", () => {
+    // boundary: `lastIndexOf(".") > 0` deliberately excludes index 0, so ".env" is a
+    // name with no extension rather than an empty-stem file named "env".
+    expect(extOf("/tmp/README")).toBe("");
+    expect(extOf("/tmp/.env")).toBe("");
+    // A real extension is lowercased, and the last dot wins.
+    expect(extOf("/tmp/A.TS")).toBe("ts");
+    expect(extOf("/tmp/archive.tar.gz")).toBe("gz");
+  });
+
+  it("classifies an image path as an image", async () => {
+    // boundary: `isImageExtension(path) ? "image" : "file"` - the image arm is what
+    // routes a supported picture to the inline path instead of a tool read.
+    inspectAttachment.mockResolvedValue({ isBinary: true, isDir: false, size: 1024 });
+
+    await expect(classifyAttachment("/tmp/photo.png")).resolves.toEqual({ kind: "image" });
+    await expect(classifyAttachment("/tmp/notes.md")).resolves.toEqual({ kind: "file" });
+  });
+});
 
 describe("classifyAttachment", () => {
   beforeEach(() => {

@@ -84,6 +84,32 @@ describe("Android handoff without an activity result", () => {
   });
 });
 
+test("a second round trip after the grace was released cannot release twice", async () => {
+  const onState = jest.fn();
+  const remove = jest.fn();
+  jest.spyOn(AppState, "addEventListener").mockImplementation((_event, listener) => {
+    onState.mockImplementation(listener);
+    return { remove };
+  });
+  jest.useFakeTimers();
+  try {
+    await withNativeHandoff(async () => {});
+    onState("background");
+    onState("active");
+    expect(nativePresentationInFlight()).toBe(false);
+    // The activity returns a second time (a chooser reopened and dismissed).
+    onState("background");
+    onState("active");
+    // The handle was already released: the grace must not be released twice,
+    // which would drive the process-global depth negative.
+    expect(nativePresentationInFlight()).toBe(false);
+    expect(remove).toHaveBeenCalledTimes(1);
+  } finally {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  }
+});
+
 test("nested presentations unwind one at a time", async () => {
   beginNativePresentation();
   beginNativePresentation();

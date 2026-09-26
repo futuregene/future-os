@@ -423,6 +423,37 @@ mod tests {
         r
     }
 
+    /// `find_subcommand` resolves a `parent` + `sub` pair. All three outcomes
+    /// matter for the CLI: a hit returns the group AND the parent command (the
+    /// caller renders usage from them), while an unknown parent or an unknown
+    /// subcommand returns `None` — which is what makes `future loop worker bogus`
+    /// report the allowed set instead of panicking.
+    #[test]
+    fn find_subcommand_resolves_parent_and_sub_or_none() {
+        let mut r = sample();
+        r.subcommand("goal", "init", "create a goal", "init --objective X");
+
+        let (group, parent, sub) = r
+            .find_subcommand("goal", "init", false)
+            .expect("a registered subcommand must resolve");
+        assert_eq!(
+            group.name, "goal",
+            "the group is returned for usage rendering"
+        );
+        assert_eq!(parent.name, "goal", "the parent command is returned too");
+        assert_eq!(sub.name, "init");
+        assert_eq!(sub.usage, "init --objective X");
+
+        // Unknown parent, and a known parent with an unknown subcommand.
+        assert!(r.find_subcommand("nope", "init", true).is_none());
+        assert!(r.find_subcommand("goal", "nope", true).is_none());
+        // An experimental parent is only visible when experimental is enabled.
+        let mut x = sample();
+        x.subcommand("doctor-x", "run", "probe", "run");
+        assert!(x.find_subcommand("doctor-x", "run", false).is_none());
+        assert!(x.find_subcommand("doctor-x", "run", true).is_some());
+    }
+
     #[test]
     fn groups_and_commands_register_in_order() {
         let r = sample();

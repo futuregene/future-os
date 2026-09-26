@@ -66,7 +66,7 @@ fn write_agent_instance_metadata(lock_path: &Path) -> Result<AgentInstanceMetada
         metadata["startTimeFiletime"] = serde_json::json!(
             (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)
         );
-        return write_agent_instance_metadata_file(path, metadata);
+        write_agent_instance_metadata_file(path, metadata)
     }
     #[cfg(not(windows))]
     write_agent_instance_metadata_file(path, metadata)
@@ -1198,5 +1198,217 @@ mod tests {
             crate::utils::future_home().join("agent")
         );
         crate::test_support::restore_env(future_rpc::home::FUTURE_HOME_ENV, &previous);
+    }
+
+    /// The instance metadata file is advisory: dropping its guard must remove
+    /// only the file this process wrote, and must never take the process down
+    /// when it cannot (the lock, not this file, is what enforces the singleton).
+    #[test]
+    fn unremovable_instance_metadata_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent-instance.json");
+        // A directory is not the file the guard wrote, and `remove_file` refuses
+        // it — a non-NotFound failure, which must not panic out of `Drop`.
+        std::fs::create_dir_all(path.join("nested")).unwrap();
+        drop(AgentInstanceMetadata(path.clone()));
+        assert!(
+            path.join("nested").is_dir(),
+            "the guard must not remove what it did not write"
+        );
+        // A path that is already gone is silent, not an error.
+        drop(AgentInstanceMetadata(dir.path().join("never-written.json")));
+    }
+
+    /// The singleton lock is the first thing the Agent creates, and it decides
+    /// the config directory's existence — a fresh `--home` has none yet.
+    #[test]
+    fn the_instance_lock_creates_its_missing_parent_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("not")
+            .join("created")
+            .join("agent-instance.lock");
+        let guard = acquire_agent_instance_lock_at(&path).expect("lock with its parents");
+        assert!(path.is_file());
+        assert!(
+            acquire_agent_instance_lock_at(&path).is_err(),
+            "the nested lock is exclusive like any other"
+        );
+        drop(guard);
+        assert!(acquire_agent_instance_lock_at(&path).is_ok());
+        // A lock path with no parent skips the directory creation entirely; it
+        // then fails on the open, because a directory is not a lock file.
+        assert!(
+            acquire_agent_instance_lock_at(Path::new("/")).is_err(),
+            "the filesystem root is not a lock file"
+        );
+    }
+
+    /// Interrupting the Agent must stop what is running *and* release anything
+    /// blocked on the user: a run parked on an approval prompt would otherwise
+    /// keep the process alive after the interrupt.
+    #[test]
+    fn abort_all_sessions_aborts_and_cancels_pending_approvals() {
+        let _sink = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .with_ansi(false)
+                .finish(),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let gate = crate::rpc::ApprovalGate::default();
+        let broadcaster = std::sync::Arc::new(crate::rpc::SseBroadcaster::new());
+        let workspace_arg = workspace.to_string_lossy().to_string();
+        let session = Arc::new(parking_lot::RwLock::new(
+            crate::rpc::ServerSession::new_with_queue_budget(
+                "session-1".to_string(),
+                std::sync::Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                    std::sync::Arc::new(crate::test_support::EmptyProvider),
+                    "test-model",
+                ))),
+                std::sync::Arc::new(crate::session::Manager::new(dir.path().join("sessions"))),
+                &workspace_arg,
+                broadcaster.clone(),
+                gate.clone(),
+                std::sync::Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+                std::sync::Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
+            ),
+        ));
+        let sessions: SessionsMap =
+            Arc::new(parking_lot::RwLock::new(std::collections::HashMap::from([
+                ("session-1".to_string(), session.clone()),
+            ])));
+
+        // A `shell` command from the Manual tier asks; the call blocks until the
+        // gate decides, so it runs on its own thread like a real tool call.
+        let sandbox = crate::sandbox::ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Manual,
+            },
+            &workspace.to_string_lossy(),
+        );
+        let asking = {
+            let gate = gate.clone();
+            let broadcaster = broadcaster.clone();
+            std::thread::spawn(move || {
+                gate.request(
+                    broadcaster.as_ref(),
+                    "session-1",
+                    "/tmp",
+                    "shell",
+                    "tool-1",
+                    &serde_json::json!({"command": "rm -rf /tmp/futureos-abort-test"}),
+                    &sandbox,
+                )
+            })
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while gate.pending_for_session("session-1").is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the approval request never registered"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        abort_all_sessions(&sessions);
+
+        assert!(
+            gate.pending_for_session("session-1").is_empty(),
+            "an interrupt must release a run blocked on the user"
+        );
+        assert!(
+            asking.join().is_ok(),
+            "the tool call must return a decision rather than hang"
+        );
+    }
+
+    /// The Linux sandbox helper is a Linux-only entry point; asking for it from
+    /// another platform must fail loudly rather than silently skipping the flag.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn the_linux_sandbox_helper_flag_is_rejected_off_linux() {
+        let error = run_from_args(&["--linux-sandbox-helper".to_string(), "probe".to_string()])
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("unavailable on this platform"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// `--reset-windows-sandbox` is a sessionless maintenance command: it must
+    /// run without taking the singleton lock (the installer runs it while the
+    /// Agent is up) and print a machine-readable count. Run against an isolated
+    /// home so no real capability state is touched.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn reset_windows_sandbox_is_a_sessionless_maintenance_command() {
+        let _home = crate::test_support::TestHome::new();
+        assert!(run_from_args(&["--reset-windows-sandbox".to_string()]).is_ok());
+    }
+
+    /// A capability file that cannot be parsed is not deleted: the granted ACEs
+    /// it describes are still on the filesystem, so the startup and exit cleanup
+    /// must report the failure and leave the file for an operator to inspect.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn sandbox_cleanup_reports_an_unreadable_capability_file() {
+        let _home = crate::test_support::TestHome::new();
+        let path = crate::utils::future_home().join("windows-capabilities.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "{not json").unwrap();
+        let _sink = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .with_ansi(false)
+                .finish(),
+        );
+        cleanup_windows_sandbox_on_startup();
+        cleanup_windows_sandbox_on_exit();
+        assert!(
+            path.exists(),
+            "a file we cannot parse is not ours to delete"
+        );
+    }
+
+    /// `--migration-source` only means something with one of the two migration
+    /// commands; alone it must be rejected before any state is touched.
+    #[test]
+    fn a_migration_source_without_a_migration_command_is_rejected() {
+        let error = run_from_args(&[
+            "--migration-source".to_string(),
+            "/tmp/legacy-sessions".to_string(),
+        ])
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("--migrate-sessions"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// `agent-instance.json` is a convenience for the installer, never a
+    /// requirement: when it cannot be written the Agent must still start and do
+    /// its job (the lock is what makes it a singleton).
+    #[test]
+    fn unbootable_instance_metadata_does_not_stop_startup() {
+        let home = crate::test_support::TestHome::new();
+        let config = crate::utils::default_config_dir();
+        std::fs::create_dir_all(&config).unwrap();
+        // A directory where the metadata file belongs: `fs::write` cannot win.
+        std::fs::create_dir_all(config.join("agent-instance.json")).unwrap();
+        let source = home.path().join("legacy-sessions");
+        std::fs::create_dir_all(&source).unwrap();
+        let result = run_from_args(&[
+            "--migrate-sessions".to_string(),
+            "--migration-source".to_string(),
+            source.to_string_lossy().to_string(),
+        ]);
+        assert!(
+            result.is_ok(),
+            "startup continued without metadata: {result:?}"
+        );
     }
 }

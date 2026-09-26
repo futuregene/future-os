@@ -94,3 +94,13 @@ test("unexpected EOF fails without leaking the handle", async () => {
   await expect(readPreviewText(f.file)).rejects.toThrow("preview_read_size_mismatch");
   expect(f.close).toHaveBeenCalledTimes(1);
 });
+
+test("a file whose reported length is not a usable size is refused before any read", async () => {
+  // A negative or non-numeric size cannot be turned into a byte count; reading
+  // anyway would either throw inside the native layer or inline the whole file.
+  await expect(readPreviewText(fixture(new Uint8Array([65]), -1).file))
+    .rejects.toThrow("invalid_preview_size");
+  const nan = fixture(new Uint8Array([65]), Number.NaN);
+  await expect(readPreviewText(nan.file)).rejects.toThrow("invalid_preview_size");
+  expect(nan.open).not.toHaveBeenCalled();
+});

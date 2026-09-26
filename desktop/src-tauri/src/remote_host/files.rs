@@ -2546,6 +2546,111 @@ mod flow_tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// The preview cache is a *cache*: every way of populating it fails must
+    /// leave the requested download working and leave no half-written file
+    /// behind, because the phone retries the same request.
+    #[test]
+    fn a_preview_cache_that_cannot_be_written_leaves_no_debris() {
+        let dir = std::env::temp_dir().join(unique("futureos-persist-debris"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.jpg");
+        image::DynamicImage::new_rgb8(5, 5).save(&source).unwrap();
+        let prepared = || PreparedPreview {
+            path: source.clone(),
+            name: "x.jpg".to_string(),
+            mime_type: "image/jpeg".to_string(),
+            preview_kind: "image".to_string(),
+            variant: "preview".to_string(),
+        };
+        let temporary_files = |dir: &std::path::Path| {
+            std::fs::read_dir(dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+                .count()
+        };
+
+        // A cache path with no parent at all is not a place to write: the
+        // function returns before it computes a temporary path.
+        persist_image_preview_cache(&prepared(), Path::new(""));
+
+        // The copy of the source fails (`path` is a directory, not a file), so
+        // no temporary file may survive the attempt and no cache appears.
+        let mut unreadable = prepared();
+        unreadable.path = dir.clone();
+        let cache = dir.join("copy-failed.jpg");
+        persist_image_preview_cache(&unreadable, &cache);
+        assert!(!cache.exists(), "a failed copy must not publish a preview");
+        assert_eq!(temporary_files(&dir), 0, "a failed copy left a .tmp behind");
+
+        // The rename fails (the cache path is a non-empty directory), so the
+        // existing entry survives and no `.tmp` remains.
+        let blocked = dir.join("blocked.jpg");
+        std::fs::create_dir_all(blocked.join("occupied")).unwrap();
+        persist_image_preview_cache(&prepared(), &blocked);
+        assert!(
+            blocked.join("occupied").exists(),
+            "the existing cache survives"
+        );
+        assert_eq!(
+            temporary_files(&dir),
+            0,
+            "a failed rename left a .tmp behind"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A cache entry the desktop cannot even `stat` is an error the caller
+    /// reports, not a silent miss: answering `Ok(None)` would send the phone
+    /// back to re-prepare against a path that can never be probed.
+    #[test]
+    fn an_unstattable_cache_path_is_reported_not_ignored() {
+        // 300 characters cannot be a file-name component on any supported
+        // platform, and the resulting error is not `NotFound`.
+        let error = cached_image_preview("photo.jpg", Path::new(&"p".repeat(300)))
+            .expect_err("an unstattable cache path is an error");
+        assert!(
+            !error.to_string().is_empty(),
+            "the error carries a reason: {error}"
+        );
+        // A path that simply does not exist stays a cache miss.
+        assert!(
+            cached_image_preview("photo.jpg", Path::new("futureos-absent-preview.jpg"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// Rolling back a claimed attachment must remove its cached thumbnail too.
+    /// A surviving thumbnail is a file under the app's data dir that no row
+    /// refers to again — it is never overwritten and never collected.
+    #[test]
+    fn a_rollback_removes_the_thumbnail_as_well_as_the_copy() {
+        let dir = std::env::temp_dir().join(unique("futureos-rollback-thumb"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let copy = dir.join("attachment.png");
+        let thumbnail = dir.join("attachment.thumb.png");
+        std::fs::write(&copy, b"copy").unwrap();
+        std::fs::write(&thumbnail, b"thumb").unwrap();
+        let claimed = vec![AttachmentInput {
+            path: copy.to_string_lossy().into_owned(),
+            kind: "image".to_string(),
+            name: "attachment.png".to_string(),
+            thumbnail: Some(thumbnail.to_string_lossy().into_owned()),
+        }];
+        rollback_claimed(&claimed);
+        assert!(!copy.exists(), "the claimed copy is removed");
+        assert!(!thumbnail.exists(), "the cached thumbnail is removed");
+        // An attachment without a thumbnail is not an error.
+        rollback_claimed(&[AttachmentInput {
+            path: copy.to_string_lossy().into_owned(),
+            kind: "file".to_string(),
+            name: "gone.txt".to_string(),
+            thumbnail: None,
+        }]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[tokio::test]
     async fn prepare_download_variant_rejects_disallowed_types_and_unknown_variants() {
         let _lock = mock_agent_lock();

@@ -1234,6 +1234,89 @@ mod tests {
             .unwrap();
         let (_, stdout, _) = run_doctor().await;
         assert!(stdout.contains("Not logged in"), "stdout: {stdout}");
+
+        // A `future` entry with no `key` member at all is the other "not
+        // logged in" arm (a key that is *present but blank* is the one above).
+        tokio::fs::write(&auth, r#"{"future":{}}"#).await.unwrap();
+        let (_, stdout, _) = run_doctor().await;
+        assert!(stdout.contains("Not logged in"), "stdout: {stdout}");
+    }
+
+    /// A config path that exists but cannot be *read* is a different arm from
+    /// one that holds invalid JSON: the read fails before any parse. A
+    /// directory where the file belongs produces that on every platform (an
+    /// unreadable mode only does so for an unprivileged POSIX user), and a
+    /// sessions path that is a regular file makes `read_dir` fail while
+    /// `metadata` still succeeds.
+    #[tokio::test]
+    async fn doctor_unreadable_config_paths_and_sessions_are_reported() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = isolate_env();
+        for rel in ["auth.json", "models.json", "settings.json"] {
+            tokio::fs::create_dir_all(agent_dir().join(rel))
+                .await
+                .unwrap();
+        }
+        let sessions = sessions_dir_path();
+        tokio::fs::create_dir_all(sessions.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&sessions, "not a directory")
+            .await
+            .unwrap();
+
+        let (code, stdout, _) = run_doctor().await;
+        assert_eq!(code, 0);
+        assert_eq!(
+            stdout.matches("exists but is not valid JSON").count(),
+            3,
+            "all three unreadable config paths are reported: {stdout}"
+        );
+        assert!(
+            stdout.contains("Cannot read"),
+            "an unreadable sessions directory is named too: {stdout}"
+        );
+    }
+
+    /// The agent binary is on PATH but nothing answers on the gRPC address:
+    /// the report has to be an issue that names the binary to start.
+    ///
+    /// Windows half of `doctor_detects_agent_binary_not_running_as_issue`
+    /// (whose fixture is a `#!/bin/sh` script): `which` runs
+    /// `where future-agent.exe`, which matches on name and extension alone, so
+    /// a placeholder file is enough for the component to count as present —
+    /// and `get_binary_version` then fails to spawn it, which is deterministic
+    /// and starts no process at all.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn doctor_reports_an_unreachable_agent_with_a_binary_on_path() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set(&[
+            ("HOME", dir.path().as_os_str().to_owned()),
+            ("FUTURE_AGENT_GRPC_ADDR", OsString::from("127.0.0.1:1")),
+        ]);
+        let bin_dir = dir.path().join("fake-bin");
+        tokio::fs::create_dir_all(&bin_dir).await.unwrap();
+        tokio::fs::write(bin_dir.join("future-agent.exe"), b"placeholder")
+            .await
+            .unwrap();
+        let mut paths = vec![bin_dir];
+        if let Some(p) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&p));
+        }
+        std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+
+        let (code, stdout, _) = run_doctor().await;
+        assert_eq!(code, 0);
+        assert!(
+            stdout.contains("Not running — start with: future-agent"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("[!!]"),
+            "an unreachable agent must be an issue, not a warning: {stdout}"
+        );
     }
 
     #[tokio::test]
@@ -1337,9 +1420,12 @@ mod tests {
             .insert("list_sessions".into(), "{\"sessions\":[]}".into());
         let addr = crate::test_server::spawn_mock(agent).await;
         // All five binaries resolvable on PATH (fake versions); prepend so
-        // the `which` binary itself stays resolvable.
+        // the `which` binary itself stays resolvable. `which` runs
+        // `where <name>.exe` on Windows, so the fixture's names must carry the
+        // platform's executable suffix there or the lookup never matches.
         let bin_dir = dir.path().join("bin");
         tokio::fs::create_dir_all(&bin_dir).await.unwrap();
+        let suffix = if cfg!(windows) { ".exe" } else { "" };
         for name in [
             "future",
             "future-agent",
@@ -1347,7 +1433,7 @@ mod tests {
             "future-desktop",
             "future-channel",
         ] {
-            let path = bin_dir.join(name);
+            let path = bin_dir.join(format!("{name}{suffix}"));
             tokio::fs::write(&path, "#!/bin/sh\necho \"future v1.0.0\"\n")
                 .await
                 .unwrap();
@@ -1492,6 +1578,91 @@ mod tests {
         assert!(
             !stdout.contains("(directory not found)"),
             "stdout: {stdout}"
+        );
+    }
+
+    /// A `future` entry that carries no `key` member at all: the credential is
+    /// absent, so `check_login` must report the warning rather than claiming a
+    /// login (the `entry.key` is `None` arm — distinct from a present-but-empty
+    /// key, and from no `future` entry).
+    #[tokio::test]
+    async fn login_with_an_entry_that_has_no_key_member_is_a_warning() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set(&[("FUTURE_HOME", dir.path().as_os_str().to_owned())]);
+        let auth = dir.path().join("agent").join("auth.json");
+        tokio::fs::create_dir_all(auth.parent().unwrap())
+            .await
+            .unwrap();
+        // `type` is present, `key` is not.
+        tokio::fs::write(&auth, r#"{"future":{"type":"api_key"}}"#)
+            .await
+            .unwrap();
+
+        let result = check_login().await;
+        assert_eq!(result.name, "Login");
+        assert_eq!(result.status, Status::Warn, "{:?}", result.lines);
+        assert!(
+            result.lines[0].contains("Not logged in"),
+            "{:?}",
+            result.lines
+        );
+    }
+
+    /// `get_binary_version`'s deadline: a binary that prints nothing and never
+    /// exits must be killed and reaped at the 5 s mark rather than awaited, and
+    /// the command must still return (no version) instead of hanging.
+    ///
+    /// The elapsed time is the assertion that the *deadline* ended the call —
+    /// a spawn failure would return instantly, and awaiting the child would
+    /// take the script's own 30 s.
+    #[cfg(any(windows, unix))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn binary_version_kills_a_probe_that_never_exits() {
+        // Other tests in this module repoint PATH at an empty directory, and
+        // PATH is process-global: hold the shared env lock and use an absolute
+        // system path inside the script so neither can decide the outcome.
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        let script = {
+            let script = dir.path().join("hangs.cmd");
+            // A `cmd` builtin busy loop, not `ping`: the probe must keep
+            // *its own* pipes open, otherwise killing `cmd.exe` leaves an
+            // orphaned grandchild holding them and the readers (not the
+            // deadline) would decide when the call returns.
+            std::fs::write(
+                &script,
+                "@echo off\r\nfor /l %%i in (1,1,900000000) do @rem\r\n",
+            )
+            .expect("write hanging script");
+            script
+        };
+        #[cfg(unix)]
+        let script = {
+            use std::os::unix::fs::PermissionsExt;
+            let script = dir.path().join("hangs.sh");
+            std::fs::write(&script, "#!/bin/sh\nsleep 30\n").expect("write hanging script");
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod hanging script");
+            script
+        };
+
+        let started = std::time::Instant::now();
+        let version = get_binary_version(script.to_str().expect("utf8 path")).await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            version.is_none(),
+            "a silent probe has no version: {version:?}"
+        );
+        assert!(
+            elapsed >= std::time::Duration::from_secs(4),
+            "the 5 s deadline ended the probe, not an early exit: {elapsed:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(25),
+            "the probe was killed at the deadline, not awaited: {elapsed:?}"
         );
     }
 }

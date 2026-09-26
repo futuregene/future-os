@@ -99,6 +99,34 @@ describe("useThreadStore", () => {
     h.unmount();
   });
 
+  it("stays silent when the bootstrap fails after the store was torn down", async () => {
+    // A failure that arrives after unmount must not be written into the dead
+    // hook's state (nor replace a newer mount's error with a stale one). The
+    // bootstrap is parked mid-flight, the hook is unmounted, and only then does
+    // the store reject.
+    let failBootstrap!: (error: Error) => void;
+    getRecentOrCreateDefaultThread.mockReturnValue(new Promise((_resolve, reject) => {
+      failBootstrap = reject;
+    }));
+
+    const h = renderHook(() => useThreadStore());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(h.current.loadingStore).toBe(true);
+
+    h.unmount();
+
+    await act(async () => {
+      failBootstrap(new Error("db corrupt"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The hook is gone; nothing threw and no state was written back into it.
+    expect(h.current.storeError).toBeNull();
+  });
+
   it("refreshStore prefers the requested id, then the current, then the first", async () => {
     const h = await mountStore();
     // Prefer the requested id.
@@ -315,15 +343,31 @@ describe("useThreadStore", () => {
     listThreads.mockImplementation(() => new Promise((resolve) => {
       resolveThreads = resolve;
     }));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const h = renderHook(() => useThreadStore());
     // Let the bootstrap reach the hanging listThreads call.
     await flushAsync();
     await flushAsync();
+    const beforeUnmount = h.current.threads;
     h.unmount();
+
     await act(async () => {
       resolveThreads([thread("t1")]);
       await Promise.resolve();
+      await Promise.resolve();
     });
-    // No crash / no post-unmount setState.
+
+    // The late resolution is absorbed: it neither throws/warns nor lands in the
+    // snapshot the consumer last saw.
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(h.current.threads).toBe(beforeUnmount);
+    consoleError.mockRestore();
+
+    // NOTE: the `if (cancelled)` guard itself is **not observable** here — React
+    // 18+ silently drops a setState on an unmounted component, so removing the
+    // guard does not change anything this test can see. The assertion above is
+    // therefore a regression guard against the late path *throwing* (or logging),
+    // not a proof that the guard is what prevents the write. Recorded in
+    // docs/testing/desktop-shell.md §2 rather than dressed up as more.
   });
 });

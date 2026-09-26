@@ -101,6 +101,43 @@ fn take_post_start_failure(run_id: &str) -> Option<String> {
     }
 }
 
+/// Test-only registry of the run callbacks `prompt_internal` built for a
+/// session, so a test can invoke the *production* closures with production
+/// inputs and assert what they do. Two of them cannot run at runtime on a host
+/// without a working sandbox backend (`escalation`, `on_sandboxed`), and the
+/// third (`on_checkpoint`) is shadowed by the compaction ticket whenever a
+/// compaction journal is present — which, in this wiring, is exactly when the
+/// callback is installed. Keyed by session id: tests use distinct session ids
+/// and never consume each other's capture. Absent from non-test builds.
+#[cfg(test)]
+struct RunCallbacksForTest {
+    on_checkpoint: crate::agent::CheckpointCallback,
+    escalation: crate::sandbox::EscalationRequester,
+    on_sandboxed: crate::tools::SandboxedNotifier,
+}
+
+#[cfg(test)]
+static RUN_CALLBACKS_FOR_TEST: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<String, RunCallbacksForTest>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(test)]
+fn capture_run_callbacks_for_test(
+    session_id: &str,
+    on_checkpoint: crate::agent::CheckpointCallback,
+    escalation: crate::sandbox::EscalationRequester,
+    on_sandboxed: crate::tools::SandboxedNotifier,
+) {
+    RUN_CALLBACKS_FOR_TEST.lock().insert(
+        session_id.to_string(),
+        RunCallbacksForTest {
+            on_checkpoint,
+            escalation,
+            on_sandboxed,
+        },
+    );
+}
+
 impl ServerSession {
     #[cfg(test)]
     pub(super) fn scheduled_setting_summary(
@@ -735,6 +772,8 @@ impl ServerSession {
                 checkpoint_persistence
                     .commit_checkpoint(crate::session::checkpoint_to_entry(checkpoint))
             });
+        #[cfg(test)]
+        let checkpoint_callback_for_test = checkpoint_callback.clone();
         let stream_ctx = crate::agent::StreamContext {
             // Use the bare model ID from the Loop — the LLM API expects just
             // the model name, not the "provider/model" display format stored
@@ -843,6 +882,18 @@ impl ServerSession {
                 });
             })
         };
+
+        // Test-only handle on the closures this run built (see
+        // `RunCallbacksForTest`). Nothing is captured in a non-test build.
+        #[cfg(test)]
+        {
+            capture_run_callbacks_for_test(
+                &session_id,
+                checkpoint_callback_for_test,
+                escalation.clone(),
+                on_sandboxed.clone(),
+            );
+        }
 
         // Build the run future; SessionRuntime owns spawning, monitoring, and
         // the task slot. Terminal persistence is committed through the

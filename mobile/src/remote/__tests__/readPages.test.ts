@@ -20,11 +20,24 @@ function clientFor(pages: unknown[]) {
 }
 
 test("reassembles a multi-megabyte Unicode projection without changing its cursor or content", async () => {
-  const data = { events: [], projection: { cursor: 99, events: [{ data: "中文\\\"".repeat(180_000) }] } };
+  const content = "中文".repeat(360_000);
+  const data = { events: [], projection: { cursor: 99, events: [{ data: content }] } };
   const pages = parts(data);
   const { client, requestRetry } = clientFor(pages);
   const result = await requestReadPage(client, { type: "get_events_since", runId: "r" }, "s");
-  expect(result.data).toEqual(data);
+  // Asserted field by field rather than with a whole-payload `toEqual`: the
+  // deep walk over a 720 KB string costs seconds under load, and these four
+  // assertions pin exactly the same shape (the object has no other keys) while
+  // checking the big string by identity rather than by structural comparison.
+  expect(Object.keys(result.data as Record<string, unknown>).sort()).toEqual(["events", "projection"]);
+  expect((result.data as typeof data).events).toEqual([]);
+  expect((result.data as typeof data).projection.cursor).toBe(99);
+  expect((result.data as typeof data).projection.events).toHaveLength(1);
+  // Multi-megabyte on the wire, Unicode, and byte-for-byte identical across
+  // every chunk boundary. Measured in UTF-8 bytes: 720 000 CJK code points are
+  // ~2.1 MB on the wire, which is the size the chunking actually has to survive.
+  expect(new TextEncoder().encode(content).length).toBeGreaterThan(2 * 1024 * 1024);
+  expect((result.data as typeof data).projection.events[0]!.data).toBe(content);
   expect(requestRetry).toHaveBeenCalledTimes(pages.length);
   expect(requestRetry.mock.calls[0][0]).toMatchObject({ chunkedRead: true });
   expect(requestRetry.mock.calls[1][0]).toEqual({ type: "get_read_chunk", sessionId: "s", runId: "r", replyId: "read_snapshot", offset: SIZE });
@@ -156,4 +169,23 @@ test.each([
   const { client, requestRetry } = clientFor([{ readChunk }]);
   await expect(requestReadPage(client, { type: "get_session_entries" }, "s")).rejects.toThrow("remote_read_invalid_chunk");
   expect(requestRetry).toHaveBeenCalledTimes(1);
+});
+
+test("a lane that goes stale never starts, or continues, a chunked read", async () => {
+  // Before the first request and between chunk waves: both are places where a
+  // navigation can have moved the timeline on, and a stale read must not spend
+  // a request or write into an abandoned buffer.
+  const pages = parts({ text: "x".repeat(2 * SIZE) });
+  const { client, requestRetry } = clientFor(pages);
+  await expect(requestReadPage(client, { type: "get_events_since" }, "s", () => false))
+    .rejects.toThrow("stale_sync_lane");
+  expect(requestRetry).not.toHaveBeenCalled();
+
+  let checks = 0;
+  const { client: late, requestRetry: lateRequests } = clientFor(pages);
+  await expect(requestReadPage(late, { type: "get_events_since" }, "s", () => ++checks <= 2))
+    .rejects.toThrow("stale_sync_lane");
+  // The initial reply already carried the snapshot; the loop must stop before
+  // asking for its remaining offsets.
+  expect(lateRequests).toHaveBeenCalledTimes(1);
 });

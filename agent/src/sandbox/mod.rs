@@ -620,7 +620,14 @@ pub fn windows_shell() -> &'static WindowsShell {
 /// process spawn — so it is cheap and side-effect-free.
 #[cfg(target_os = "windows")]
 fn pwsh_on_path() -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
+    pwsh_in_path(std::env::var_os("PATH"))
+}
+
+/// `pwsh_on_path` with the PATH value injected, so both arms are testable
+/// without mutating the process environment (mirrors the unix `on_path_in`).
+#[cfg(target_os = "windows")]
+fn pwsh_in_path(path: Option<std::ffi::OsString>) -> bool {
+    let Some(path) = path else {
         return false;
     };
     std::env::split_paths(&path).any(|dir| dir.join("pwsh.exe").is_file())
@@ -1258,6 +1265,151 @@ mod tests {
         }
     }
 
+    /// The wrapper stripper covers all three shapes a model emits: double-
+    /// quoted, single-quoted (unwrapped, the quotes removed) and an unquoted
+    /// `-Command` body; backtick escapes are PowerShell's own escaping and are
+    /// folded into plain quotes.
+    #[test]
+    fn normalize_shell_quoting_strips_every_wrapper_shape() {
+        assert_eq!(
+            ResolvedSandbox::normalize_shell_quoting("powershell 'Get-ChildItem'"),
+            "Get-ChildItem"
+        );
+        assert_eq!(
+            ResolvedSandbox::normalize_shell_quoting("powershell -Command \"Get-ChildItem\""),
+            "Get-ChildItem"
+        );
+        assert_eq!(
+            ResolvedSandbox::normalize_shell_quoting("powershell -c \"Get-ChildItem\""),
+            "Get-ChildItem"
+        );
+        // No surrounding quotes → the body is taken verbatim, not truncated.
+        assert_eq!(
+            ResolvedSandbox::normalize_shell_quoting("powershell -Command Get-ChildItem"),
+            "Get-ChildItem"
+        );
+        // A bare `powershell <empty>` keeps the command (nothing to unwrap).
+        assert_eq!(
+            ResolvedSandbox::normalize_shell_quoting("powershell x"),
+            "x"
+        );
+    }
+
+    /// Bash-style escaped JSON arguments are re-wrapped in single quotes so
+    /// PowerShell parses the braces; a JSON-ish argument whose closing quote is
+    /// missing is passed through untouched (never truncated); and a CJK
+    /// payload survives byte-for-byte.
+    #[test]
+    fn normalize_shell_quoting_rewrites_bash_style_json_arguments() {
+        assert_eq!(
+            ResolvedSandbox::normalize_shell_quoting("Write-Output \"{\\\"a\\\":1}\""),
+            "Write-Output '{\"a\":1}'"
+        );
+        // No escapes inside → passed through verbatim.
+        assert_eq!(
+            ResolvedSandbox::normalize_shell_quoting("Write-Output \"{plain}\""),
+            "Write-Output \"{plain}\""
+        );
+        // Unterminated JSON-ish argument: the quote is emitted as-is and the
+        // rest of the command is not swallowed (find_closing_quote → None).
+        assert_eq!(
+            ResolvedSandbox::normalize_shell_quoting("Write-Output \"{unterminated"),
+            "Write-Output \"{unterminated"
+        );
+        // PowerShell backtick escapes are folded into plain quotes.
+        assert_eq!(
+            ResolvedSandbox::normalize_shell_quoting("echo `\"x`\""),
+            "echo \"x\""
+        );
+        // CJK / emoji pass through unchanged (no byte-level mangling, no panic
+        // on multi-byte chars adjacent to the rewrite).
+        assert_eq!(
+            ResolvedSandbox::normalize_shell_quoting("echo 中文😀"),
+            "echo 中文😀"
+        );
+        assert_eq!(ResolvedSandbox::normalize_shell_quoting("   "), "");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn pwsh_detection_scans_the_injected_path() {
+        // Absent PATH → false rather than a panic.
+        assert!(!pwsh_in_path(None));
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!pwsh_in_path(Some(dir.path().as_os_str().to_os_string())));
+        std::fs::write(dir.path().join("pwsh.exe"), "").unwrap();
+        assert!(pwsh_in_path(Some(dir.path().as_os_str().to_os_string())));
+        // A different executable with the same stem is not PowerShell.
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join("pwsh"), "").unwrap();
+        assert!(!pwsh_in_path(Some(other.path().as_os_str().to_os_string())));
+    }
+
+    /// Every backend receipt reaches `boundary_json`, and the identity string
+    /// is what the UI keys the "inside sandbox" badge off — an unknown backend
+    /// must never be reported as `none` (which means "open").
+    #[test]
+    fn boundary_json_names_each_backend() {
+        use linux::probe::{BwrapIdentity, LinuxSandboxProbe, LinuxSandboxProbeCode};
+        let ws = temp_workspace("boundary-backends");
+        // `disabled` is the Unavailable receipt by construction (the host's own
+        // probe decides what `resolve` returns, which is what makes the
+        // per-backend arms below worth asserting explicitly).
+        let off = ResolvedSandbox::disabled(&ws);
+        assert_eq!(off.boundary_json(None, false)["backend"], "none");
+        assert_eq!(off.boundary_json(None, false)["sandbox_available"], false);
+
+        let mut s = enabled(&ws);
+        s.backend_receipt = SandboxBackendReceipt::MacosSeatbelt {
+            executable: PathBuf::from("/usr/bin/sandbox-exec"),
+        };
+        let json = s.boundary_json(None, true);
+        assert_eq!(json["backend"], "macos_seatbelt");
+        assert_eq!(json["sandbox_available"], true);
+
+        s.backend_receipt = SandboxBackendReceipt::LinuxBubblewrap {
+            probe: LinuxSandboxProbe {
+                available: true,
+                code: LinuxSandboxProbeCode::Available,
+                path: None,
+                version: None,
+                identity: Some(BwrapIdentity {
+                    device: 1,
+                    inode: 2,
+                    size: 3,
+                    modified_nanos: 4,
+                }),
+                capabilities: None,
+                expires_at_unix_ms: None,
+                diagnostic: None,
+            },
+        };
+        assert_eq!(
+            s.boundary_json(Some("denied"), false)["backend"],
+            "linux_bubblewrap"
+        );
+
+        s.backend_receipt = SandboxBackendReceipt::WindowsRestricted;
+        assert_eq!(s.boundary_json(None, true)["backend"], "windows_restricted");
+    }
+
+    /// `sandbox_violation` is the Linux-helper classifier and nothing else: a
+    /// non-Linux receipt must return `None` even for text that looks exactly
+    /// like a bwrap denial, while a Linux receipt classifies it.
+    #[test]
+    fn sandbox_violation_classifies_only_linux_receipts() {
+        let ws = temp_workspace("violation-scope");
+        let manual = enabled(&ws);
+        assert!(sandbox_violation(&manual, 1, "touch: /x: Permission denied").is_none());
+        assert!(sandbox_violation(&manual, 1, "Read-only file system").is_none());
+
+        let mut linux = enabled(&ws);
+        linux.set_linux_backend_available_for_test();
+        let violation = sandbox_violation(&linux, 1, "touch: /x: Permission denied")
+            .expect("Linux receipt classifies the denial");
+        assert!(!violation.policy_digest.is_empty());
+    }
+
     #[test]
     fn unavailable_backend_explicitly_falls_back_to_manual() {
         assert_eq!(
@@ -1304,10 +1456,22 @@ mod tests {
     #[test]
     #[cfg(not(target_os = "windows"))]
     fn legacy_bash_probe_runs_real_bash_version_check() {
+        // The name gate is checked first: any shell whose file name is not
+        // exactly `bash` is refused without spawning anything.
+        assert!(!legacy_bash_probe("sh"));
+        assert!(!legacy_bash_probe("/bin/zsh"));
+
         // "bash" resolves via PATH; the probe spawns the real binary which
         // exits promptly with a classified status. The boolean outcome
         // depends on the host bash version — either way the probe arm ran.
-        let _ = legacy_bash_probe("bash");
+        let legacy = legacy_bash_probe("bash");
+        // A `false` verdict is only reachable through a probe that actually
+        // ran and reported a bash 4+ version, which needs bash on PATH; a
+        // missing bash stays on the conservative `unwrap_or(true)` side.
+        assert!(
+            legacy || on_path("bash"),
+            "a non-legacy verdict must come from a bash that actually ran"
+        );
     }
 
     #[test]
@@ -1602,11 +1766,21 @@ mod tests {
     // ─── rule_set ──────────────────────────────────────────────────────────
 
     #[test]
-    fn rule_set_returns_reference() {
+    fn rule_set_returns_the_live_rule_set_by_reference() {
         let ws = temp_workspace("ruleset");
         let s = enabled(&ws);
-        let _rs = s.rule_set();
-        // Just verify it doesn't panic and returns a reference
+        let rs = s.rule_set();
+        // The same resolved object is handed out, not re-resolved per call:
+        // a per-call resolve would silently drop same-run session injections.
+        assert!(std::ptr::eq(rs, s.rule_set()));
+        // And it is the session's own rule set, not an empty default.
+        assert_eq!(
+            rs.evaluate(
+                std::path::Path::new(&ws).join("notes.txt").as_path(),
+                Op::Read
+            ),
+            Decision::Allow
+        );
     }
 
     // ─── is_secret_path ────────────────────────────────────────────────────
@@ -1680,8 +1854,11 @@ mod tests {
     }
 
     #[test]
-    fn shell_supports_chain_operators_returns_bool() {
-        let _ = shell_supports_chain_operators();
+    fn shell_supports_chain_operators_is_true_for_posix_shells() {
+        // POSIX shells accept `&&`/`||`, so the fallback arm must report
+        // support. On Windows the value is derived from the detected shell
+        // (see the shell-detection tests), and this arm is a no-op claim.
+        assert!(shell_supports_chain_operators() || cfg!(windows));
     }
 
     // ─── evaluate with enabled sandbox ─────────────────────────────────────
@@ -1891,7 +2068,16 @@ mod tests {
         // No pre-existing SHELL → the guard's remove-on-drop arm runs.
         std::env::remove_var("SHELL");
         let _guard = ShellEnvGuard::set(std::path::Path::new("/future-no-such-shell-xyz"));
+        let path_before = std::env::var_os("PATH");
         hydrate_from_login_shell(); // must return, not panic
+
+        // The spawn-failure arm returns before `plan_env_merge` / `set_var`, so
+        // the inherited environment must come back byte-identical.
+        assert_eq!(
+            std::env::var_os("PATH"),
+            path_before,
+            "a failed shell spawn must not rewrite PATH"
+        );
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -1902,10 +2088,18 @@ mod tests {
         let original = std::env::var_os("SHELL");
         std::env::set_var("SHELL", "/bin/sh");
         let (_dir, shell) = fake_shell("printf 'no markers in this output'");
+        let path_before = std::env::var_os("PATH");
         {
             let _guard = ShellEnvGuard::set(&shell);
             hydrate_from_login_shell(); // dump lacks the marker → nothing applied
         }
+        // A marker-less dump yields `(None, vec![])` from `plan_env_merge`, so
+        // no `set_var` may run at all — PATH in particular must be untouched.
+        assert_eq!(
+            std::env::var_os("PATH"),
+            path_before,
+            "a dump with no env markers must not rewrite PATH"
+        );
         // Leave the process env as we found it (parallel suites read $SHELL).
         crate::test_support::restore_env("SHELL", &original);
     }
@@ -1920,8 +2114,24 @@ mod tests {
                 .finish(),
         );
         let (_dir, shell) = fake_shell("exec sleep 30");
+        let path_before = std::env::var_os("PATH");
         let _guard = ShellEnvGuard::set(&shell);
+        let started = std::time::Instant::now();
         hydrate_from_login_shell(); // 5s timeout → kill → return
+
+        // The timeout arm returns before any env is applied, so PATH must be
+        // untouched; and the call must not wait out the 30s the fake shell
+        // would otherwise keep its stdout open for.
+        assert_eq!(
+            std::env::var_os("PATH"),
+            path_before,
+            "a timed-out hydration must not rewrite PATH"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "the 5s timeout must fire instead of waiting for the hung shell: {:?}",
+            started.elapsed()
+        );
     }
 
     #[cfg(not(target_os = "windows"))]

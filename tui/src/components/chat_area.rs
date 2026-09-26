@@ -2169,10 +2169,13 @@ mod tests {
             "every message has a range"
         );
         for (start, end) in &chat.message_line_ranges {
+            // Bound eagerly: `assert!`'s message is evaluated only on failure, so
+            // calling `len()` inside it would leave this line permanently
+            // "uncovered" and hide a real gap behind an artifact.
+            let line_count = chat.rendered_lines.len();
             assert!(
-                *end < chat.rendered_lines.len() as i64,
-                "range ({start}, {end}) is outside {} lines",
-                chat.rendered_lines.len()
+                *end < line_count as i64,
+                "range ({start}, {end}) is outside {line_count} lines"
             );
             assert!(
                 *end >= *start as i64 - 1,
@@ -2591,16 +2594,93 @@ mod tests {
         );
     }
 
+    /// A terminal too narrow for the layout's minimum — one content column
+    /// plus the one-column gutter — must clamp the width, not underflow it.
+    /// An underflowing `width - 2` would pad every row out to ~`usize::MAX`
+    /// cells (`apply_background_to_line` pads with `" ".repeat(padding)`), and
+    /// an underflowing viewport index would slice out of range.
+    ///
+    /// The observable bound is `width.max(3)`: at or below two columns the
+    /// layout bottoms out at gutter + one content column, and a wide (CJK)
+    /// glyph fills both of those columns, so even a 0-column terminal may emit
+    /// a 3-cell row. From three columns up each row is padded to exactly
+    /// `width`. `usize::MAX` itself is not exercised: a genuine underflow there
+    /// would try to allocate that many spaces, so the largest sane width is
+    /// the useful end of the table.
     #[test]
     fn tiny_terminal_width_does_not_underflow() {
-        for width in 0..=2 {
+        let mut clamped_rows: Vec<Vec<String>> = Vec::new();
+        for width in [0usize, 1, 2, 3, 4, 40, 1000] {
             let mut chat = ChatArea::new(width, None);
-            chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "hello"));
-            let mut assistant = ChatMessage::new("a".into(), ChatRole::Assistant, "answer");
+            chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "hello world"));
+            let mut assistant = ChatMessage::new("a".into(), ChatRole::Assistant, "答案 ok");
             assistant.thinking = Some("thinking".into());
             chat.add_message(assistant);
-            let _ = chat.render(width);
+
+            let all = chat.render_all(width);
+            let view = chat.render(width);
+
+            assert!(!all.is_empty(), "width {width}: no rows at all");
+            assert!(
+                !view.is_empty(),
+                "width {width}: the viewport rendered no rows"
+            );
+            // The viewport is a window onto the full transcript: an underflowed
+            // `viewport_top` would slice out of range and return nothing, or
+            // rows that never existed.
+            assert!(
+                all.len() >= view.len()
+                    && all
+                        .windows(view.len())
+                        .any(|window| window == view.as_slice()),
+                "width {width}: viewport {view:?} is not a window of the transcript"
+            );
+
+            for line in &all {
+                let plain = crate::utils::strip_ansi_codes(line);
+                let cols = visible_width_of(&plain);
+                assert!(
+                    cols <= width.max(3),
+                    "width {width}: row is {cols} cells wide, expected <= {}: {plain:?}",
+                    width.max(3)
+                );
+                assert!(
+                    plain.is_empty() || plain.starts_with(' '),
+                    "width {width}: row lost its 1-column gutter: {plain:?}"
+                );
+            }
+
+            // Clamping wraps the text, it never drops or reorders it: squashing
+            // the rows back together must recover every message.
+            let squashed = all
+                .iter()
+                .map(|line| crate::utils::strip_ansi_codes(line))
+                .collect::<Vec<_>>()
+                .join("");
+            let squashed: String = squashed.split_whitespace().collect();
+            for needle in ["helloworld", "thinking", "答案ok"] {
+                assert!(
+                    squashed.contains(needle),
+                    "width {width}: {needle:?} missing from the rendered rows: {squashed:?}"
+                );
+            }
+
+            if width <= 2 {
+                clamped_rows.push(all);
+            }
         }
+
+        // Below the 3-column floor every width lays out identically, because
+        // the content column clamps to 1 — that is what shows the width is
+        // clamped in the maths rather than silently propagated (or truncated).
+        assert_eq!(
+            clamped_rows[0], clamped_rows[1],
+            "0- and 1-column layouts must clamp to the same rows"
+        );
+        assert_eq!(
+            clamped_rows[1], clamped_rows[2],
+            "1- and 2-column layouts must clamp to the same rows"
+        );
     }
 
     #[test]
@@ -4086,5 +4166,196 @@ mod tests {
         chat.update_last_message("completely different content");
         let plain: Vec<String> = chat.render(W).into_iter().map(|l| strip(&l)).collect();
         assert!(plain.iter().any(|l| l.contains("completely different")));
+    }
+
+    /// `set_compact_activity` is a *setter*, called from the key handler on
+    /// every toggle and from state restoration on every layout pass. Re-setting
+    /// it to the value it already holds must leave the layout exactly as it is,
+    /// while a real change must refold the run. Asserted on the rendered rows
+    /// (the only thing a caller can see), not on an internal counter.
+    #[test]
+    fn set_compact_activity_ignores_a_repeated_value_and_refolds_on_a_change() {
+        let mut chat = new_chat();
+        chat.render(W);
+        for path in ["/a.rs", "/b.rs", "/c.rs"] {
+            chat.add_message(read_of(path));
+        }
+        let call_rows = |chat: &mut ChatArea| {
+            compact_lines(chat)
+                .iter()
+                .filter(|line| line.contains("read"))
+                .count()
+        };
+
+        assert_eq!(call_rows(&mut chat), 3, "unfolded by default");
+
+        chat.set_compact_activity(true);
+        assert!(chat.compact_activity());
+        let folded = call_rows(&mut chat);
+        assert_eq!(folded, 1, "a run of three calls folds to one row");
+
+        // Setting the same value again must not undo or duplicate the fold.
+        chat.set_compact_activity(true);
+        assert!(chat.compact_activity());
+        assert_eq!(call_rows(&mut chat), folded, "a repeated set is a no-op");
+
+        // A real change refolds in the other direction, and repeats no-op too.
+        chat.set_compact_activity(false);
+        assert!(!chat.compact_activity());
+        assert_eq!(call_rows(&mut chat), 3, "unfolding restores every call");
+        chat.set_compact_activity(false);
+        assert!(!chat.compact_activity());
+        assert_eq!(call_rows(&mut chat), 3, "a repeated unset is a no-op");
+    }
+
+    /// Prepending history shifts the viewport by the height of the inserted
+    /// block, and that shift is a **layout change**: the app that owns the
+    /// scrollback has to be told, or its own idea of the visible window drifts
+    /// from the rendered one. Asserted on the callback the app registers plus
+    /// the returned height.
+    #[test]
+    fn prepending_history_shifts_the_viewport_and_notifies_the_owner() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_message(read_of("/later.rs"));
+        let rendered_before = chat.render(W).len();
+
+        let notified = Rc::new(Cell::new(0usize));
+        let counter = Rc::clone(&notified);
+        chat.set_on_change(move || counter.set(counter.get() + 1));
+
+        let height = chat.prepend_messages(vec![read_of("/older.rs")]);
+        assert!(height > 0, "the inserted block occupies rows");
+        assert_eq!(
+            notified.get(),
+            1,
+            "the owner must be notified exactly once per prepend"
+        );
+
+        let after = chat.render(W);
+        let after_len = after.len();
+        assert!(
+            after_len > rendered_before,
+            "the older message added rows: {rendered_before} -> {after_len}"
+        );
+        let plain = after.iter().map(|l| strip(l)).collect::<Vec<_>>();
+        let older = plain
+            .iter()
+            .position(|l| l.contains("older.rs"))
+            .expect("the prepended message is visible");
+        let later = plain
+            .iter()
+            .position(|l| l.contains("later.rs"))
+            .expect("the original message is still there");
+        assert!(older < later, "prepended history goes above");
+
+        // Prepending nothing is not a change and must not notify.
+        assert_eq!(chat.prepend_messages(Vec::new()), 0);
+        assert_eq!(notified.get(), 1, "an empty prepend notifies nobody");
+    }
+
+    /// The folded thinking marker carries an in-progress ellipsis *only* while
+    /// the message is still pending: in the compact view the marker is the only
+    /// signal that reasoning is still arriving, so it must appear while
+    /// streaming and disappear the moment the run completes (otherwise a
+    /// finished run still looks busy).
+    #[test]
+    fn the_thinking_marker_shows_an_ellipsis_only_while_streaming() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.set_compact_activity(true);
+        chat.start_thinking();
+        chat.append_thinking_delta("reasoning in flight");
+
+        let streaming = chat.render_all(W).join("\n");
+        assert!(
+            streaming.contains("thinking\u{2026}"),
+            "an in-flight block must be marked in progress: {streaming:?}"
+        );
+
+        chat.append_to_last_message("answer");
+        chat.mark_last_message_complete();
+        let done = chat.render_all(W).join("\n");
+        assert!(
+            done.contains("thinking"),
+            "the finished run still keeps the marker row: {done:?}"
+        );
+        assert!(
+            !done.contains("thinking\u{2026}"),
+            "a completed run must not look busy: {done:?}"
+        );
+    }
+
+    /// In the compact view a folded run's rows live in the run's *summary* row,
+    /// so a member message has no rows of its own to splice — re-rendering one
+    /// must leave the transcript untouched rather than inserting or dropping
+    /// lines for a message that renders nothing.
+    #[test]
+    fn rerendering_a_folded_member_changes_no_rows() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.set_compact_activity(true);
+        for path in ["/a.rs", "/b.rs", "/c.rs"] {
+            chat.add_message(read_of(path));
+        }
+        let before = chat.render_all(W);
+        let last = chat.messages.len() - 1;
+        assert!(
+            chat.is_folded(last),
+            "a member of the folded run must report as folded"
+        );
+
+        chat.rerender_message(last);
+        let after = chat.render_all(W);
+        assert_eq!(
+            before, after,
+            "a folded member has no rows, so re-rendering it changes nothing"
+        );
+
+        // The run is still one summary row, not one row per call.
+        let summary_rows = after.iter().filter(|line| line.contains("read")).count();
+        assert_eq!(summary_rows, 1, "{after:?}");
+    }
+
+    /// Shrinking the transcript (folding a run, `/clear`) can leave the
+    /// viewport scrolled past the new end. `render` must clamp it, or the next
+    /// frame slices out of range and the view jumps to a line that no longer
+    /// exists.
+    #[test]
+    fn render_clamps_a_viewport_left_past_the_end_by_shrinking_content() {
+        let mut chat = new_chat();
+        // Enough messages that the transcript is taller than the viewport, so
+        // scrolling to the bottom really moves `viewport_top`.
+        for index in 0..24 {
+            chat.add_message(read_of(&format!("/file-{index}.rs")));
+        }
+        chat.render(W);
+        let (line_count, viewport_rows) = (chat.rendered_lines.len(), chat.viewport_height);
+        assert!(
+            line_count > viewport_rows,
+            "the transcript must exceed the viewport ({line_count} lines, {viewport_rows} rows)"
+        );
+        chat.scroll_to_bottom();
+        assert!(
+            chat.viewport_top > 0,
+            "the transcript must be longer than one screen for this test"
+        );
+
+        // Compacting folds the run of calls into a single summary row, which
+        // shortens the transcript under the scrolled viewport.
+        chat.set_compact_activity(true);
+        let lines = chat.render(W);
+        assert!(!lines.is_empty(), "the clamped view still has content");
+        // The clamp is observable: the viewport is back inside the transcript,
+        // so the rendered window is real content rather than an out-of-range
+        // slice. `viewport_top` is unsigned, so only the upper bound needs
+        // checking.
+        let (top, total) = (chat.viewport_top, chat.rendered_lines.len());
+        assert!(
+            top <= total,
+            "viewport_top {top} must be inside {total} lines"
+        );
     }
 }
