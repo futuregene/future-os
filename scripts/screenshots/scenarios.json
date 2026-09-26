@@ -287,38 +287,84 @@
       "usage-icon-variants": {
         "variantsTitle": "会话花费入口 · 图标候选（桌面端头部右侧）",
         "variants": [
-          { "label": "A · 硬币 Coins", "inject": "injects/usage-icon-coins.js" },
-          { "label": "B · 账单 ReceiptText（采用）", "inject": "injects/usage-icon-receipt-text.js" },
-          { "label": "C · 钱包 Wallet", "inject": "injects/usage-icon-wallet.js" },
-          { "label": "D · 圆形钱币 CircleDollarSign", "inject": "injects/usage-icon-circle-dollar-sign.js" },
-          { "label": "E · 饼图 ChartPie", "inject": "injects/usage-icon-chart-pie.js" },
-          { "label": "F · 仪表 Gauge", "inject": "injects/usage-icon-gauge.js" }
+          {
+            "label": "A · 硬币 Coins",
+            "inject": "injects/usage-icon-coins.js"
+          },
+          {
+            "label": "B · 账单 ReceiptText（采用）",
+            "inject": "injects/usage-icon-receipt-text.js"
+          },
+          {
+            "label": "C · 钱包 Wallet",
+            "inject": "injects/usage-icon-wallet.js"
+          },
+          {
+            "label": "D · 圆形钱币 CircleDollarSign",
+            "inject": "injects/usage-icon-circle-dollar-sign.js"
+          },
+          {
+            "label": "E · 饼图 ChartPie",
+            "inject": "injects/usage-icon-chart-pie.js"
+          },
+          {
+            "label": "F · 仪表 Gauge",
+            "inject": "injects/usage-icon-gauge.js"
+          }
         ],
         "steps": [
-          { "wait": 1200 },
-          { "inject": "{variantInject}" },
-          { "shot": "d-usage-icon.png" }
+          {
+            "wait": 1200
+          },
+          {
+            "inject": "{variantInject}"
+          },
+          {
+            "shot": "d-usage-icon.png"
+          }
         ]
       },
       "custom-model-prices": {
         "steps": [
-          { "wait": 900 },
-          { "tapText": "lixin" },
-          { "wait": 1500 },
-          { "tapText": "设置" },
-          { "wait": 2000 },
-          { "tapText": "提供商" },
-          { "wait": 2000 },
-          { "tap": "编辑" },
-          { "wait": 2000 },
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "lixin"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "设置"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tapText": "提供商"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "编辑"
+          },
+          {
+            "wait": 2000
+          },
           {
             "eval": "(() => { const sc = [...document.querySelectorAll('div')].find(n => n.className.toString().includes('overflow-y-auto') && n.scrollHeight > n.clientHeight + 4); if (!sc) throw new Error('no scrollable dialog body'); sc.scrollTop = sc.scrollHeight; return sc.scrollTop; })()"
           },
-          { "wait": 600 },
+          {
+            "wait": 600
+          },
           {
             "eval": "{ if (!document.body.innerText.includes('价格（每 100 万 Token）')) throw new Error('price fields not in the DOM'); }"
           },
-          { "shot": "d-custom-model-prices.png" }
+          {
+            "shot": "d-custom-model-prices.png"
+          }
         ]
       },
       "thread-usage": {
@@ -741,25 +787,63 @@
       "compact-context-delayed": {
         "url": "http://localhost:8099/?compactionDelay=1",
         "steps": [
-          { "wait": 900 },
-          { "tap": "稍后再说" },
-          { "wait": 1200 },
-          { "tap": "工作区" },
-          { "wait": 1200 },
-          { "tapText": "整理两篇文献的结论对比表" },
-          { "wait": 2500 },
-          { "eval": "document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').focus()" },
-          { "type": "keep /压缩" },
-          { "wait": 500 },
-          { "eval": "document.querySelector('[aria-label=\"压缩上下文\"]').click()" },
-          { "wait": 100 },
-          { "eval": "{ const b = document.querySelector('[aria-label=\"正在压缩上下文…\"]'); if (!b || b.getAttribute('aria-disabled') !== 'true') throw new Error('no immediate pending feedback'); if (document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').value !== 'keep ') throw new Error('draft not preserved'); }" },
-          { "shot": "m-compaction-requesting.png" },
-          { "wait": 2000 },
-          { "eval": "{ const b = document.querySelector('[aria-label=\"正在压缩上下文…\"]'); if (!b || b.getAttribute('aria-disabled') !== 'true') throw new Error('ACK incorrectly unlocked sends'); window.dispatchEvent(new Event('shot:complete-compaction')); }" },
-          { "wait": 500 },
-          { "eval": "{ const b = document.querySelector('[aria-label=\"发送\"]'); if (!b || b.getAttribute('aria-disabled') === 'true') throw new Error('send did not recover'); if (document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').value !== 'keep ') throw new Error('completion consumed draft'); if (document.body.innerText.includes('正在生成')) throw new Error('compaction revived reply'); if (!document.body.innerText.includes('已手动压缩上下文 · 33,064 → 9,250')) throw new Error('batch dropped checkpoint'); }" },
-          { "shot": "m-compaction-ready.png" }
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').focus()"
+          },
+          {
+            "type": "keep /压缩"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"压缩上下文\"]').click()"
+          },
+          {
+            "wait": 100
+          },
+          {
+            "eval": "{ const b = document.querySelector('[aria-label=\"正在压缩上下文…\"]'); if (!b || b.getAttribute('aria-disabled') !== 'true') throw new Error('no immediate pending feedback'); if (document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').value !== 'keep ') throw new Error('draft not preserved'); }"
+          },
+          {
+            "shot": "m-compaction-requesting.png"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "{ const b = document.querySelector('[aria-label=\"正在压缩上下文…\"]'); if (!b || b.getAttribute('aria-disabled') !== 'true') throw new Error('ACK incorrectly unlocked sends'); window.dispatchEvent(new Event('shot:complete-compaction')); }"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "{ const b = document.querySelector('[aria-label=\"发送\"]'); if (!b || b.getAttribute('aria-disabled') === 'true') throw new Error('send did not recover'); if (document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').value !== 'keep ') throw new Error('completion consumed draft'); if (document.body.innerText.includes('正在生成')) throw new Error('compaction revived reply'); if (!document.body.innerText.includes('已手动压缩上下文 · 33,064 → 9,250')) throw new Error('batch dropped checkpoint'); }"
+          },
+          {
+            "shot": "m-compaction-ready.png"
+          }
         ]
       },
       "compact-context-outcome": {
@@ -866,115 +950,278 @@
         "_comment": "Lean 车道渲染验证（#844/#846 的客户端一半）。载荷由发货 Rust trim 从全量 fixture 生成（scripts/screenshots/gen-lean-render-fixtures.mjs + desktop/src-tauri 的 generate_render_fixtures 测试），走真实移动端 UI 与真实投影。断言：① 无正文的 reasoning 块仍渲染出思考行；② 工具行 target = shell 全命令 / 文件类 basename；③ tool_end 无 text 时 exit_code≠0 判失败、=0 判完成、裸 grep exit 1 由客户端软失败豁免放行。第 8 行是『旧 agent 只有 [exit: N] 页脚』的形状：它没有 outcome 可读，lean 车道为此保留输出（页脚就是唯一信号），所以与全量页一致读作运行失败。",
         "url": "http://localhost:8099/?leanRender=live",
         "steps": [
-          { "wait": 900 },
-          { "tap": "稍后再说" },
-          { "wait": 1200 },
-          { "tap": "工作区" },
-          { "wait": 1200 },
-          { "tapText": "整理两篇文献的结论对比表" },
-          { "wait": 2500 },
-          { "shot": "m-lean-live.png" },
-          { "eval": "(async () => { const buttons = [...document.querySelectorAll('[role=button]')]; const expandable = buttons.find(el => (el.innerText || '').trim() === '已思考'); if (expandable) throw new Error('a lean reasoning row carries no body, so it must not be expandable'); if (!document.body.innerText.includes('已思考')) throw new Error('the reasoning label is missing from the lean lane'); return 'thinking row is a bodyless label, not a disclosure'; })()" },
-          { "eval": "(async () => { const failed = [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === '运行失败'); if (failed.length !== 2) throw new Error('both failure shapes must read 运行失败 (structured exit_code 127 + legacy footer-only exit 2), got ' + failed.length); const details = []; for (const row of failed) { row.click(); await new Promise(r => setTimeout(r, 250)); details.push((row.parentElement.innerText || '').replace('运行失败', '').trim()); } for (const command of ['future nosuch-subcommand --verbose', 'ls /nonexistent-workspace-path']) { if (!details.includes(command)) throw new Error('a failed row lost its command: ' + command + ' not in ' + JSON.stringify(details)); } return details; })()" },
-          { "eval": "(async () => { const pick = label => [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === label); const want = { '已读取': ['frank-summary.md', 'dreher-summary.md'], '已写入': ['compare-table.md'], '已编辑': ['compare-table.md'] }; const seen = {}; for (const label of Object.keys(want)) { const rows = pick(label); if (rows.length !== want[label].length) throw new Error(label + ': expected ' + want[label].length + ' row(s), got ' + rows.length); seen[label] = []; for (const row of rows) { row.click(); await new Promise(r => setTimeout(r, 200)); seen[label].push((row.parentElement.innerText || '').replace(label, '').trim()); } if (JSON.stringify(seen[label]) !== JSON.stringify(want[label])) throw new Error(label + ' target(s): expected the basename(s) ' + JSON.stringify(want[label]) + ', got ' + JSON.stringify(seen[label])); } return seen; })()" },
-          { "eval": "(async () => { const soft = [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === '已运行'); if (soft.length !== 2) throw new Error('only the two soft-fail rows read 已运行, got ' + soft.length); const details = []; for (const row of soft) { row.click(); await new Promise(r => setTimeout(r, 200)); details.push((row.parentElement.innerText || '').replace('已运行', '').trim()); } for (const command of ['grep -c dopamine notes/compare-table.md', 'diff notes/frank-summary.md notes/dreher-summary.md']) { if (!details.includes(command)) throw new Error('a soft-fail row lost its target: ' + command + ' not in ' + JSON.stringify(details)); } return details; })()" },
-          { "eval": "(() => { const text = document.body.innerText; for (const leaked of ['[exit: 127]', '[exit: 2]', 'bash: future: command not found', '效应量 d = 0.42']) { if (text.includes(leaked)) throw new Error('the lean lane leaked a payload it does not carry: ' + leaked); } return 'no dropped payload reached the screen'; })()" },
-          { "shot": "m-lean-live-expanded.png" }
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "shot": "m-lean-live.png"
+          },
+          {
+            "eval": "(async () => { const buttons = [...document.querySelectorAll('[role=button]')]; const expandable = buttons.find(el => (el.innerText || '').trim() === '已思考'); if (expandable) throw new Error('a lean reasoning row carries no body, so it must not be expandable'); if (!document.body.innerText.includes('已思考')) throw new Error('the reasoning label is missing from the lean lane'); return 'thinking row is a bodyless label, not a disclosure'; })()"
+          },
+          {
+            "eval": "(async () => { const failed = [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === '运行失败'); if (failed.length !== 2) throw new Error('both failure shapes must read 运行失败 (structured exit_code 127 + legacy footer-only exit 2), got ' + failed.length); const details = []; for (const row of failed) { row.click(); await new Promise(r => setTimeout(r, 250)); details.push((row.parentElement.innerText || '').replace('运行失败', '').trim()); } for (const command of ['future nosuch-subcommand --verbose', 'ls /nonexistent-workspace-path']) { if (!details.includes(command)) throw new Error('a failed row lost its command: ' + command + ' not in ' + JSON.stringify(details)); } return details; })()"
+          },
+          {
+            "eval": "(async () => { const pick = label => [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === label); const want = { '已读取': ['frank-summary.md', 'dreher-summary.md'], '已写入': ['compare-table.md'], '已编辑': ['compare-table.md'] }; const seen = {}; for (const label of Object.keys(want)) { const rows = pick(label); if (rows.length !== want[label].length) throw new Error(label + ': expected ' + want[label].length + ' row(s), got ' + rows.length); seen[label] = []; for (const row of rows) { row.click(); await new Promise(r => setTimeout(r, 200)); seen[label].push((row.parentElement.innerText || '').replace(label, '').trim()); } if (JSON.stringify(seen[label]) !== JSON.stringify(want[label])) throw new Error(label + ' target(s): expected the basename(s) ' + JSON.stringify(want[label]) + ', got ' + JSON.stringify(seen[label])); } return seen; })()"
+          },
+          {
+            "eval": "(async () => { const soft = [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === '已运行'); if (soft.length !== 2) throw new Error('only the two soft-fail rows read 已运行, got ' + soft.length); const details = []; for (const row of soft) { row.click(); await new Promise(r => setTimeout(r, 200)); details.push((row.parentElement.innerText || '').replace('已运行', '').trim()); } for (const command of ['grep -c dopamine notes/compare-table.md', 'diff notes/frank-summary.md notes/dreher-summary.md']) { if (!details.includes(command)) throw new Error('a soft-fail row lost its target: ' + command + ' not in ' + JSON.stringify(details)); } return details; })()"
+          },
+          {
+            "eval": "(() => { const text = document.body.innerText; for (const leaked of ['[exit: 127]', '[exit: 2]', 'bash: future: command not found', '效应量 d = 0.42']) { if (text.includes(leaked)) throw new Error('the lean lane leaked a payload it does not carry: ' + leaked); } return 'no dropped payload reached the screen'; })()"
+          },
+          {
+            "shot": "m-lean-live-expanded.png"
+          }
         ]
       },
       "lean-render-live-mid": {
         "_comment": "Lean 车道运行中：调用还没有 tool_end（没有 exit_code），思考块只开了头。行必须仍然出现，标签是流式的『思考中』/『正在读取』，且运行中的行也有 target。",
         "url": "http://localhost:8099/?leanRender=live-mid",
         "steps": [
-          { "wait": 900 },
-          { "tap": "稍后再说" },
-          { "wait": 1200 },
-          { "tap": "工作区" },
-          { "wait": 1200 },
-          { "tapText": "整理两篇文献的结论对比表" },
-          { "wait": 2500 },
-          { "eval": "(async () => { const rows = [...document.querySelectorAll('[role=button]')]; const labels = rows.map(el => (el.innerText || '').trim()); if (labels.includes('思考中')) throw new Error('a lean reasoning row carries no body, so it must not be expandable'); if (!document.body.innerText.includes('思考中')) throw new Error('the open reasoning row must read 思考中, got ' + JSON.stringify(labels)); if (document.body.innerText.includes('已思考')) throw new Error('a reasoning row settled while its block is still open'); const running = rows.find(el => (el.innerText || '').trim() === '正在读取'); if (!running) throw new Error('the in-flight read row must read 正在读取, got ' + JSON.stringify(labels)); running.click(); await new Promise(r => setTimeout(r, 250)); const detail = (running.parentElement.innerText || '').replace('正在读取', '').trim(); if (detail !== 'frank-summary.md') throw new Error('a running row still shows its target basename, got ' + JSON.stringify(detail)); return '思考中(label) + 正在读取(' + detail + ')'; })()" },
-          { "shot": "m-lean-live-mid.png" }
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(async () => { const rows = [...document.querySelectorAll('[role=button]')]; const labels = rows.map(el => (el.innerText || '').trim()); if (labels.includes('思考中')) throw new Error('a lean reasoning row carries no body, so it must not be expandable'); if (!document.body.innerText.includes('思考中')) throw new Error('the open reasoning row must read 思考中, got ' + JSON.stringify(labels)); if (document.body.innerText.includes('已思考')) throw new Error('a reasoning row settled while its block is still open'); const running = rows.find(el => (el.innerText || '').trim() === '正在读取'); if (!running) throw new Error('the in-flight read row must read 正在读取, got ' + JSON.stringify(labels)); running.click(); await new Promise(r => setTimeout(r, 250)); const detail = (running.parentElement.innerText || '').replace('正在读取', '').trim(); if (detail !== 'frank-summary.md') throw new Error('a running row still shows its target basename, got ' + JSON.stringify(detail)); return '思考中(label) + 正在读取(' + detail + ')'; })()"
+          },
+          {
+            "shot": "m-lean-live-mid.png"
+          }
         ]
       },
       "lean-render-full": {
         "_comment": "对照组：同一段运行、未修剪的全量载荷。三条渲染结论不变；全量的额外能力也没有回归——思考行展开有正文、[exit: N] 页脚仍能把失败/软失败判出来（第 8 行只有页脚，全量读作失败）。",
         "url": "http://localhost:8099/?leanRender=full-live",
         "steps": [
-          { "wait": 900 },
-          { "tap": "稍后再说" },
-          { "wait": 1200 },
-          { "tap": "工作区" },
-          { "wait": 1200 },
-          { "tapText": "整理两篇文献的结论对比表" },
-          { "wait": 2500 },
-          { "shot": "m-lean-full.png" },
-          { "eval": "(async () => { const rows = [...document.querySelectorAll('[role=button]')]; const row = rows.find(el => (el.innerText || '').trim() === '已思考'); if (!row) throw new Error('the reasoning row is missing from the full lane'); row.click(); await new Promise(r => setTimeout(r, 250)); const body = (row.parentElement.innerText || '').replace('已思考', '').trim(); if (!body.startsWith('用户要的是一张对比表')) throw new Error('the full feed must still render the reasoning body, got ' + JSON.stringify(body.slice(0, 60))); if (!body.includes('Dreher 2025 报的却是条件效应')) throw new Error('the full reasoning body is truncated: ' + JSON.stringify(body)); row.click(); return body.length + ' chars of reasoning rendered'; })()" },
-          { "eval": "(async () => { const failed = [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === '运行失败'); if (failed.length !== 2) throw new Error('the full feed reads both failure shapes (structured exit_code 127 + footer-only exit 2), got ' + failed.length); const details = []; for (const row of failed) { row.click(); await new Promise(r => setTimeout(r, 200)); details.push((row.parentElement.innerText || '').replace('运行失败', '').trim()); } for (const command of ['future nosuch-subcommand --verbose', 'ls /nonexistent-workspace-path']) { if (!details.includes(command)) throw new Error('a failed row lost its target: ' + command + ' not in ' + JSON.stringify(details)); } return details; })()" },
-          { "eval": "(async () => { const pick = label => [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === label); const want = { '已读取': ['frank-summary.md', 'dreher-summary.md'], '已写入': ['compare-table.md'], '已编辑': ['compare-table.md'] }; const seen = {}; for (const label of Object.keys(want)) { seen[label] = []; for (const row of pick(label)) { row.click(); await new Promise(r => setTimeout(r, 200)); seen[label].push((row.parentElement.innerText || '').replace(label, '').trim()); } if (JSON.stringify(seen[label]) !== JSON.stringify(want[label])) throw new Error(label + ' target(s): expected ' + JSON.stringify(want[label]) + ', got ' + JSON.stringify(seen[label])); } const soft = pick('已运行').length; if (soft !== 2) throw new Error('the full feed still exempts the two soft failures, got ' + soft); return seen; })()" },
-          { "eval": "(() => { const text = document.body.innerText; for (const leaked of ['[exit: 127]', \"[exit: 2]\"]) { if (text.includes(leaked)) throw new Error('tool output must not be rendered even in the full feed: ' + leaked); } return 'tool output stays off screen in the full feed too'; })()" },
-          { "shot": "m-lean-full-expanded.png" }
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "shot": "m-lean-full.png"
+          },
+          {
+            "eval": "(async () => { const rows = [...document.querySelectorAll('[role=button]')]; const row = rows.find(el => (el.innerText || '').trim() === '已思考'); if (!row) throw new Error('the reasoning row is missing from the full lane'); row.click(); await new Promise(r => setTimeout(r, 250)); const body = (row.parentElement.innerText || '').replace('已思考', '').trim(); if (!body.startsWith('用户要的是一张对比表')) throw new Error('the full feed must still render the reasoning body, got ' + JSON.stringify(body.slice(0, 60))); if (!body.includes('Dreher 2025 报的却是条件效应')) throw new Error('the full reasoning body is truncated: ' + JSON.stringify(body)); row.click(); return body.length + ' chars of reasoning rendered'; })()"
+          },
+          {
+            "eval": "(async () => { const failed = [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === '运行失败'); if (failed.length !== 2) throw new Error('the full feed reads both failure shapes (structured exit_code 127 + footer-only exit 2), got ' + failed.length); const details = []; for (const row of failed) { row.click(); await new Promise(r => setTimeout(r, 200)); details.push((row.parentElement.innerText || '').replace('运行失败', '').trim()); } for (const command of ['future nosuch-subcommand --verbose', 'ls /nonexistent-workspace-path']) { if (!details.includes(command)) throw new Error('a failed row lost its target: ' + command + ' not in ' + JSON.stringify(details)); } return details; })()"
+          },
+          {
+            "eval": "(async () => { const pick = label => [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === label); const want = { '已读取': ['frank-summary.md', 'dreher-summary.md'], '已写入': ['compare-table.md'], '已编辑': ['compare-table.md'] }; const seen = {}; for (const label of Object.keys(want)) { seen[label] = []; for (const row of pick(label)) { row.click(); await new Promise(r => setTimeout(r, 200)); seen[label].push((row.parentElement.innerText || '').replace(label, '').trim()); } if (JSON.stringify(seen[label]) !== JSON.stringify(want[label])) throw new Error(label + ' target(s): expected ' + JSON.stringify(want[label]) + ', got ' + JSON.stringify(seen[label])); } const soft = pick('已运行').length; if (soft !== 2) throw new Error('the full feed still exempts the two soft failures, got ' + soft); return seen; })()"
+          },
+          {
+            "eval": "(() => { const text = document.body.innerText; for (const leaked of ['[exit: 127]', \"[exit: 2]\"]) { if (text.includes(leaked)) throw new Error('tool output must not be rendered even in the full feed: ' + leaked); } return 'tool output stays off screen in the full feed too'; })()"
+          },
+          {
+            "shot": "m-lean-full-expanded.png"
+          }
         ]
       },
       "lean-render-history": {
         "_comment": "历史页（持久读）的 lean 形状：reasoning 块没有正文、tool_result 没有输出、shell 的 arguments 整体裁掉（行在点开时按身份取回，mock 从全量页应答）、文件类 arguments 只剩 path。断言思考行照旧出现、文件类 target 仍是 basename；#848 记录真实结局后失败行（exit 127）带 isError:true 读作运行失败，它的命令靠点开取回；软失败的 grep（exit 1）不记录为错误、读作已运行（#849 起成功行也不再带 isError:false）。",
         "url": "http://localhost:8099/?leanRender=history",
         "steps": [
-          { "wait": 900 },
-          { "tap": "稍后再说" },
-          { "wait": 1200 },
-          { "tap": "工作区" },
-          { "wait": 1200 },
-          { "tapText": "整理两篇文献的结论对比表" },
-          { "wait": 2500 },
-          { "shot": "m-lean-history.png" },
-          { "eval": "(async () => { const rows = [...document.querySelectorAll('[role=button]')]; const row = rows.find(el => (el.innerText || '').trim() === '已思考'); if (row) throw new Error('a lean history reasoning row carries no body, so it must not be expandable'); if (!document.body.innerText.includes('已思考')) throw new Error('the reasoning label is missing from a lean history page'); return 'thinking row is a bodyless label, not a disclosure'; })()" },
-          { "eval": "(async () => { const pick = label => [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === label); const read = pick('已读取'); if (read.length !== 1) throw new Error('expected one read row, got ' + read.length); read[0].click(); await new Promise(r => setTimeout(r, 200)); const readTarget = (read[0].parentElement.innerText || '').replace('已读取', '').trim(); if (readTarget !== 'frank-summary.md') throw new Error('the trimmed arguments must still yield the basename, got ' + JSON.stringify(readTarget)); const write = pick('已写入'); if (write.length !== 1) throw new Error('expected one write row, got ' + write.length); write[0].click(); await new Promise(r => setTimeout(r, 200)); const writeTarget = (write[0].parentElement.innerText || '').replace('已写入', '').trim(); if (writeTarget !== 'compare-table.md') throw new Error('the write target must be the basename, got ' + JSON.stringify(writeTarget)); return readTarget + ' / ' + writeTarget; })()" },
-          { "eval": "(async () => { const rows = [...document.querySelectorAll('[role=button]')]; const labels = rows.map(el => (el.innerText || '').trim()); const ran = rows.filter(el => (el.innerText || '').trim() === '已运行'); const failed = rows.filter(el => (el.innerText || '').trim() === '运行失败'); if (failed.length !== 1) throw new Error('the recorded failure (exit 127) must be the one failing history row, got ' + failed.length + ' of ' + JSON.stringify(labels)); if (ran.length !== 1) throw new Error('the soft-fail grep row carries no flag and must read 已运行, got ' + JSON.stringify(labels)); failed[0].click(); await new Promise(r => setTimeout(r, 250)); const command = (failed[0].parentElement.innerText || '').replace('运行失败', '').trim(); ran[0].click(); await new Promise(r => setTimeout(r, 250)); const soft = (ran[0].parentElement.innerText || '').replace('已运行', '').trim(); if (command !== 'future nosuch-subcommand --verbose') throw new Error('the failing row must fetch its dropped command on open, got ' + JSON.stringify(command)); if (soft !== 'grep -c dopamine notes/compare-table.md') throw new Error('the soft-fail row must fetch its dropped command on open, got ' + JSON.stringify(soft)); return 'shell(127)=' + command + ' 运行失败; grep(1)=' + soft + ' 已运行'; })()" },
-          { "eval": "(() => { const text = document.body.innerText; for (const leaked of ['效应量 d = 0.42', '# Dreher 2025', '| 维度 |', 'timeout', 'offset']) { if (text.includes(leaked)) throw new Error('a trimmed payload reached the screen: ' + leaked); } return 'no trimmed payload reached the screen'; })()" },
-          { "shot": "m-lean-history-expanded.png" }
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "shot": "m-lean-history.png"
+          },
+          {
+            "eval": "(async () => { const rows = [...document.querySelectorAll('[role=button]')]; const row = rows.find(el => (el.innerText || '').trim() === '已思考'); if (row) throw new Error('a lean history reasoning row carries no body, so it must not be expandable'); if (!document.body.innerText.includes('已思考')) throw new Error('the reasoning label is missing from a lean history page'); return 'thinking row is a bodyless label, not a disclosure'; })()"
+          },
+          {
+            "eval": "(async () => { const pick = label => [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === label); const read = pick('已读取'); if (read.length !== 1) throw new Error('expected one read row, got ' + read.length); read[0].click(); await new Promise(r => setTimeout(r, 200)); const readTarget = (read[0].parentElement.innerText || '').replace('已读取', '').trim(); if (readTarget !== 'frank-summary.md') throw new Error('the trimmed arguments must still yield the basename, got ' + JSON.stringify(readTarget)); const write = pick('已写入'); if (write.length !== 1) throw new Error('expected one write row, got ' + write.length); write[0].click(); await new Promise(r => setTimeout(r, 200)); const writeTarget = (write[0].parentElement.innerText || '').replace('已写入', '').trim(); if (writeTarget !== 'compare-table.md') throw new Error('the write target must be the basename, got ' + JSON.stringify(writeTarget)); return readTarget + ' / ' + writeTarget; })()"
+          },
+          {
+            "eval": "(async () => { const rows = [...document.querySelectorAll('[role=button]')]; const labels = rows.map(el => (el.innerText || '').trim()); const ran = rows.filter(el => (el.innerText || '').trim() === '已运行'); const failed = rows.filter(el => (el.innerText || '').trim() === '运行失败'); if (failed.length !== 1) throw new Error('the recorded failure (exit 127) must be the one failing history row, got ' + failed.length + ' of ' + JSON.stringify(labels)); if (ran.length !== 1) throw new Error('the soft-fail grep row carries no flag and must read 已运行, got ' + JSON.stringify(labels)); failed[0].click(); await new Promise(r => setTimeout(r, 250)); const command = (failed[0].parentElement.innerText || '').replace('运行失败', '').trim(); ran[0].click(); await new Promise(r => setTimeout(r, 250)); const soft = (ran[0].parentElement.innerText || '').replace('已运行', '').trim(); if (command !== 'future nosuch-subcommand --verbose') throw new Error('the failing row must fetch its dropped command on open, got ' + JSON.stringify(command)); if (soft !== 'grep -c dopamine notes/compare-table.md') throw new Error('the soft-fail row must fetch its dropped command on open, got ' + JSON.stringify(soft)); return 'shell(127)=' + command + ' 运行失败; grep(1)=' + soft + ' 已运行'; })()"
+          },
+          {
+            "eval": "(() => { const text = document.body.innerText; for (const leaked of ['效应量 d = 0.42', '# Dreher 2025', '| 维度 |', 'timeout', 'offset']) { if (text.includes(leaked)) throw new Error('a trimmed payload reached the screen: ' + leaked); } return 'no trimmed payload reached the screen'; })()"
+          },
+          {
+            "eval": "(async () => { const buttons = () => [...document.querySelectorAll('[role=button]')]; const burst = buttons().find(el => (el.innerText || '').trim() === '运行 2 次'); if (!burst) throw new Error('the folded burst row is missing, got ' + JSON.stringify(buttons().map(el => (el.innerText || '').trim()))); const container = burst.parentElement; burst.click(); await new Promise(r => setTimeout(r, 250)); const kids = () => [...container.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === '已运行'); if (kids().length !== 2) throw new Error('the burst must list its two calls, got ' + kids().length); if (container.innerText.includes('diff notes/frank-summary.md')) throw new Error('a burst command reached the screen before its own row was opened'); kids()[0].click(); await new Promise(r => setTimeout(r, 350)); if (!container.innerText.includes('diff notes/frank-summary.md notes/dreher-summary.md')) throw new Error('opening a burst child must fetch its own command'); if (container.innerText.includes('wc -l notes/compare-table.md')) throw new Error('opening one child must not fetch its sibling'); if (!container.innerText.includes('已运行')) throw new Error('the sibling must still be a label'); return 'burst 运行 2 次: one child fetched its command, its sibling stayed a label'; })()"
+          },
+          {
+            "shot": "m-lean-history-expanded.png"
+          }
         ]
       },
       "lean-render-full-history": {
         "_comment": "对照组：同一历史页、全量载荷（reasoning 有正文、tool_result 有输出、arguments 完整）。思考正文照旧可展开；#848 后失败行（exit 127）读作运行失败、软失败 grep 行读作已运行（#849 起成功行不再带 isError）；完整 arguments 里那些客户端不读的键（content/timeout/offset）仍然不上屏。",
         "url": "http://localhost:8099/?leanRender=full-history",
         "steps": [
-          { "wait": 900 },
-          { "tap": "稍后再说" },
-          { "wait": 1200 },
-          { "tap": "工作区" },
-          { "wait": 1200 },
-          { "tapText": "整理两篇文献的结论对比表" },
-          { "wait": 2500 },
-          { "eval": "(async () => { const rows = [...document.querySelectorAll('[role=button]')]; const row = rows.find(el => (el.innerText || '').trim() === '已思考'); if (!row) throw new Error('the reasoning row is missing'); row.click(); await new Promise(r => setTimeout(r, 250)); const body = (row.parentElement.innerText || '').replace('已思考', '').trim(); if (!body.startsWith('用户要的是一张对比表')) throw new Error('the full history reasoning body is missing, got ' + JSON.stringify(body.slice(0, 60))); row.click(); return body.length + ' chars of reasoning rendered'; })()" },
-          { "eval": "(async () => { const pick = label => [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === label); const read = pick('已读取'); read[0].click(); await new Promise(r => setTimeout(r, 200)); const readTarget = (read[0].parentElement.innerText || '').replace('已读取', '').trim(); if (readTarget !== 'frank-summary.md') throw new Error('read target: ' + JSON.stringify(readTarget)); const write = pick('已写入'); write[0].click(); await new Promise(r => setTimeout(r, 200)); const writeTarget = (write[0].parentElement.innerText || '').replace('已写入', '').trim(); if (writeTarget !== 'compare-table.md') throw new Error('write target: ' + JSON.stringify(writeTarget)); const failed = pick('运行失败'); if (failed.length !== 1) throw new Error('the recorded failure (exit 127) must be the one failing row, got ' + failed.length); failed[0].click(); await new Promise(r => setTimeout(r, 200)); const failedTarget = (failed[0].parentElement.innerText || '').replace('运行失败', '').trim(); if (failedTarget !== 'future nosuch-subcommand --verbose') throw new Error('the failing row target is wrong: ' + JSON.stringify(failedTarget)); const ran = pick('已运行'); if (ran.length !== 1) throw new Error('the soft-fail grep row must read 已运行, got ' + ran.length); return readTarget + ' / ' + writeTarget + '; failed=' + failedTarget; })()" },
-          { "eval": "(() => { const text = document.body.innerText; for (const leaked of ['| 维度 |', 'timeout', 'offset', 'cwd']) { if (text.includes(leaked)) throw new Error('an unread argument reached the screen: ' + leaked); } return 'unread arguments stay off screen in the full page too'; })()" },
-          { "shot": "m-lean-full-history.png" }
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(async () => { const rows = [...document.querySelectorAll('[role=button]')]; const row = rows.find(el => (el.innerText || '').trim() === '已思考'); if (!row) throw new Error('the reasoning row is missing'); row.click(); await new Promise(r => setTimeout(r, 250)); const body = (row.parentElement.innerText || '').replace('已思考', '').trim(); if (!body.startsWith('用户要的是一张对比表')) throw new Error('the full history reasoning body is missing, got ' + JSON.stringify(body.slice(0, 60))); row.click(); return body.length + ' chars of reasoning rendered'; })()"
+          },
+          {
+            "eval": "(async () => { const pick = label => [...document.querySelectorAll('[role=button]')].filter(el => (el.innerText || '').trim() === label); const read = pick('已读取'); read[0].click(); await new Promise(r => setTimeout(r, 200)); const readTarget = (read[0].parentElement.innerText || '').replace('已读取', '').trim(); if (readTarget !== 'frank-summary.md') throw new Error('read target: ' + JSON.stringify(readTarget)); const write = pick('已写入'); write[0].click(); await new Promise(r => setTimeout(r, 200)); const writeTarget = (write[0].parentElement.innerText || '').replace('已写入', '').trim(); if (writeTarget !== 'compare-table.md') throw new Error('write target: ' + JSON.stringify(writeTarget)); const failed = pick('运行失败'); if (failed.length !== 1) throw new Error('the recorded failure (exit 127) must be the one failing row, got ' + failed.length); failed[0].click(); await new Promise(r => setTimeout(r, 200)); const failedTarget = (failed[0].parentElement.innerText || '').replace('运行失败', '').trim(); if (failedTarget !== 'future nosuch-subcommand --verbose') throw new Error('the failing row target is wrong: ' + JSON.stringify(failedTarget)); const ran = pick('已运行'); if (ran.length !== 1) throw new Error('the soft-fail grep row must read 已运行, got ' + ran.length); return readTarget + ' / ' + writeTarget + '; failed=' + failedTarget; })()"
+          },
+          {
+            "eval": "(() => { const text = document.body.innerText; for (const leaked of ['| 维度 |', 'timeout', 'offset', 'cwd']) { if (text.includes(leaked)) throw new Error('an unread argument reached the screen: ' + leaked); } return 'unread arguments stay off screen in the full page too'; })()"
+          },
+          {
+            "shot": "m-lean-full-history.png"
+          }
         ]
       },
       "qn-nav-variants": {
         "variantsTitle": "提问导航 · 已采用样式（A）与两个仍然开放的加法",
         "url": "http://localhost:8099/?multiTurn=1",
         "variants": [
-          { "label": "A · 右缘竖排两枚圆形按钮（已实现）", "inject": "injects/qn-nav-a-stacked.js" },
-          { "label": "B · 备选：第三枚接口「回到最新」（真机上它会与输入框上方胶囊共存）", "inject": "injects/qn-nav-b-latest.js" },
-          { "label": "C · 备选：加一个提问序号读数", "inject": "injects/qn-nav-c-counter.js" }
+          {
+            "label": "A · 右缘竖排两枚圆形按钮（已实现）",
+            "inject": "injects/qn-nav-a-stacked.js"
+          },
+          {
+            "label": "B · 备选：第三枚接口「回到最新」（真机上它会与输入框上方胶囊共存）",
+            "inject": "injects/qn-nav-b-latest.js"
+          },
+          {
+            "label": "C · 备选：加一个提问序号读数",
+            "inject": "injects/qn-nav-c-counter.js"
+          }
         ],
         "steps": [
-          { "wait": 900 },
-          { "tap": "稍后再说" },
-          { "wait": 1200 },
-          { "tap": "工作区" },
-          { "wait": 1200 },
-          { "tapText": "整理两篇文献的结论对比表" },
-          { "wait": 2500 },
-          { "scroll": [0, -600] },
-          { "wait": 800 },
-          { "eval": "if (!document.querySelector('[aria-label=\"上一个提问\"]')) throw new Error('the question control is not on screen after scrolling away from the tail');" },
-          { "inject": "{variantInject}" },
-          { "wait": 600 },
-          { "eval": "(() => { const stack = document.querySelector('[aria-label=\"下一个提问\"]').parentElement; return [...stack.children].map(el => { const r = el.getBoundingClientRect(); return [(el.getAttribute('aria-label') || el.textContent || '').slice(0, 4), Math.round(r.left), Math.round(r.right), Math.round(r.width), Math.round(r.height)]; }); })()" },
-          { "shot": "m-qn-nav.png" }
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "scroll": [
+              0,
+              -600
+            ]
+          },
+          {
+            "wait": 800
+          },
+          {
+            "eval": "if (!document.querySelector('[aria-label=\"上一个提问\"]')) throw new Error('the question control is not on screen after scrolling away from the tail');"
+          },
+          {
+            "inject": "{variantInject}"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => { const stack = document.querySelector('[aria-label=\"下一个提问\"]').parentElement; return [...stack.children].map(el => { const r = el.getBoundingClientRect(); return [(el.getAttribute('aria-label') || el.textContent || '').slice(0, 4), Math.round(r.left), Math.round(r.right), Math.round(r.width), Math.round(r.height)]; }); })()"
+          },
+          {
+            "shot": "m-qn-nav.png"
+          }
         ]
       },
       "qn-jump-states": {
@@ -982,67 +1229,174 @@
         "variantsTitle": "提问导航：滚动后出现 · 按 ↑ 之后 · 按 ↓ 之后（内容对齐方式相同）",
         "url": "http://localhost:8099/?multiTurn=1",
         "variants": [
-          { "label": "① 滚动离开最新：控件出现", "inject": "injects/qn-state-idle.js" },
-          { "label": "② 按 ↑：正在读的这一轮，提问顶部对齐", "inject": "injects/qn-state-up.js" },
-          { "label": "③ 按 ↓：下一个提问，同样是顶部对齐", "inject": "injects/qn-state-down.js" }
+          {
+            "label": "① 滚动离开最新：控件出现",
+            "inject": "injects/qn-state-idle.js"
+          },
+          {
+            "label": "② 按 ↑：正在读的这一轮，提问顶部对齐",
+            "inject": "injects/qn-state-up.js"
+          },
+          {
+            "label": "③ 按 ↓：下一个提问，同样是顶部对齐",
+            "inject": "injects/qn-state-down.js"
+          }
         ],
         "steps": [
-          { "wait": 900 },
-          { "tap": "稍后再说" },
-          { "wait": 1200 },
-          { "tap": "工作区" },
-          { "wait": 1200 },
-          { "tapText": "整理两篇文献的结论对比表" },
-          { "wait": 2500 },
-          { "scroll": [0, -600] },
-          { "wait": 800 },
-          { "eval": "if (!document.querySelector('[aria-label=\"上一个提问\"]')) throw new Error('the question control is not on screen after scrolling away from the tail');" },
-          { "inject": "{variantInject}" },
-          { "wait": 1000 },
-          { "eval": "(() => { const read = label => { const el = document.querySelector(`[aria-label=\"${label}\"]`); return el ? (el.getAttribute('aria-disabled') === 'true' ? 'disabled' : 'enabled') : 'missing'; }; const stack = document.querySelector('[aria-label=\"下一个提问\"]'); return { up: read('上一个提问'), down: read('下一个提问'), buttons: stack ? stack.parentElement.children.length : 0 }; })()" },
-          { "shot": "m-qn-jump.png" }
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "scroll": [
+              0,
+              -600
+            ]
+          },
+          {
+            "wait": 800
+          },
+          {
+            "eval": "if (!document.querySelector('[aria-label=\"上一个提问\"]')) throw new Error('the question control is not on screen after scrolling away from the tail');"
+          },
+          {
+            "inject": "{variantInject}"
+          },
+          {
+            "wait": 1000
+          },
+          {
+            "eval": "(() => { const read = label => { const el = document.querySelector(`[aria-label=\"${label}\"]`); return el ? (el.getAttribute('aria-disabled') === 'true' ? 'disabled' : 'enabled') : 'missing'; }; const stack = document.querySelector('[aria-label=\"下一个提问\"]'); return { up: read('上一个提问'), down: read('下一个提问'), buttons: stack ? stack.parentElement.children.length : 0 }; })()"
+          },
+          {
+            "shot": "m-qn-jump.png"
+          }
         ]
       },
       "qn-align-check": {
         "_comment": "把「内容是怎么对齐的」变成可失败的断言：↑ 之后，落点那一行的顶边距列表视口顶边 12px（±2），且视口里出现的就是正在读的那一轮提问。定位靠提问气泡本身——用户提问是实心 accent 气泡，行内在它上方没有留白，所以气泡顶边就是行顶边——不再依赖跳转落点的高亮底色（那层底色已去掉）。数字口径是 CSS 像素，和设计稿一致。",
         "url": "http://localhost:8099/?multiTurn=1",
         "steps": [
-          { "wait": 900 },
-          { "tap": "稍后再说" },
-          { "wait": 1200 },
-          { "tap": "工作区" },
-          { "wait": 1200 },
-          { "tapText": "整理两篇文献的结论对比表" },
-          { "wait": 2500 },
-          { "scroll": [0, -600] },
-          { "wait": 800 },
-          { "eval": "document.querySelector('[aria-label=\"上一个提问\"]').click()" },
-          { "wait": 900 },
-          { "eval": "(() => { const inView = el => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.top < 800 && r.width > 0 && r.height > 0; }; const scrollers = [...document.querySelectorAll('div')].filter(el => el.scrollHeight > el.clientHeight + 10 && el.clientHeight > 400); const scroller = scrollers.sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height)[0]; const viewport = scroller.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - viewport.top); const marked = [...document.querySelectorAll('div')].filter(el => getComputedStyle(el).backgroundColor === 'rgb(37, 99, 235)').filter(inView).sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top); if (marked.length === 0) throw new Error('no question bubble in view after the jump'); const landed = marked[0]; const inset = rel(landed); const question = (landed.innerText || '').trim().slice(0, 8); if (Math.abs(inset - 12) > 2) throw new Error(`the landed question sits ${inset}px below the list viewport, expected 12`); if (!question.startsWith('把 Dreher')) throw new Error(`landed on the wrong question: ${question}`); return { inset, question }; })()" },
-          { "eval": "(() => { const scrollers = [...document.querySelectorAll('div')].filter(el => el.scrollHeight > el.clientHeight + 10 && el.clientHeight > 400); const viewport = scrollers.sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height)[0].getBoundingClientRect(); const inView = el => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.top < 800 && r.width > 0 && r.height > 0; }; const marked = [...document.querySelectorAll('div')].filter(el => getComputedStyle(el).backgroundColor === 'rgb(37, 99, 235)').filter(inView).sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0]; const inset = Math.round(marked.getBoundingClientRect().top - viewport.top); const edge = document.createElement('div'); edge.style.cssText = `position:fixed;left:0;right:0;top:${Math.round(viewport.top)}px;border-top:1px dashed rgba(37,99,235,.85);z-index:9999`; const span = document.createElement('div'); span.style.cssText = `position:fixed;left:22px;top:${Math.round(viewport.top + inset)}px;height:${inset}px;border-left:2px solid #2563eb;z-index:9999`; const tag = document.createElement('div'); tag.textContent = `${inset}px`; tag.style.cssText = `position:fixed;left:28px;top:${Math.round(viewport.top + 1)}px;background:#2563eb;color:#fff;font:600 12px/16px system-ui,sans-serif;padding:1px 5px;border-radius:4px;z-index:9999`; document.body.append(edge, span, tag); return `drew the ${inset}px gap under the list top edge`; })()" },
-          { "shot": "m-qn-align.png" }
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "scroll": [
+              0,
+              -600
+            ]
+          },
+          {
+            "wait": 800
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"上一个提问\"]').click()"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const inView = el => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.top < 800 && r.width > 0 && r.height > 0; }; const scrollers = [...document.querySelectorAll('div')].filter(el => el.scrollHeight > el.clientHeight + 10 && el.clientHeight > 400); const scroller = scrollers.sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height)[0]; const viewport = scroller.getBoundingClientRect(); const rel = el => Math.round(el.getBoundingClientRect().top - viewport.top); const marked = [...document.querySelectorAll('div')].filter(el => getComputedStyle(el).backgroundColor === 'rgb(37, 99, 235)').filter(inView).sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top); if (marked.length === 0) throw new Error('no question bubble in view after the jump'); const landed = marked[0]; const inset = rel(landed); const question = (landed.innerText || '').trim().slice(0, 8); if (Math.abs(inset - 12) > 2) throw new Error(`the landed question sits ${inset}px below the list viewport, expected 12`); if (!question.startsWith('把 Dreher')) throw new Error(`landed on the wrong question: ${question}`); return { inset, question }; })()"
+          },
+          {
+            "eval": "(() => { const scrollers = [...document.querySelectorAll('div')].filter(el => el.scrollHeight > el.clientHeight + 10 && el.clientHeight > 400); const viewport = scrollers.sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height)[0].getBoundingClientRect(); const inView = el => { const r = el.getBoundingClientRect(); return r.top >= 0 && r.top < 800 && r.width > 0 && r.height > 0; }; const marked = [...document.querySelectorAll('div')].filter(el => getComputedStyle(el).backgroundColor === 'rgb(37, 99, 235)').filter(inView).sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0]; const inset = Math.round(marked.getBoundingClientRect().top - viewport.top); const edge = document.createElement('div'); edge.style.cssText = `position:fixed;left:0;right:0;top:${Math.round(viewport.top)}px;border-top:1px dashed rgba(37,99,235,.85);z-index:9999`; const span = document.createElement('div'); span.style.cssText = `position:fixed;left:22px;top:${Math.round(viewport.top + inset)}px;height:${inset}px;border-left:2px solid #2563eb;z-index:9999`; const tag = document.createElement('div'); tag.textContent = `${inset}px`; tag.style.cssText = `position:fixed;left:28px;top:${Math.round(viewport.top + 1)}px;background:#2563eb;color:#fff;font:600 12px/16px system-ui,sans-serif;padding:1px 5px;border-radius:4px;z-index:9999`; document.body.append(edge, span, tag); return `drew the ${inset}px gap under the list top edge`; })()"
+          },
+          {
+            "shot": "m-qn-align.png"
+          }
         ]
       },
       "usage-icon-variants": {
         "variantsTitle": "会话花费入口 · 图标候选（手机端顶栏右侧）",
         "variants": [
-          { "label": "A · 硬币 Coins", "inject": "injects/usage-icon-coins.js" },
-          { "label": "B · 账单 ReceiptText（采用）", "inject": "injects/usage-icon-receipt-text.js" },
-          { "label": "C · 钱包 Wallet", "inject": "injects/usage-icon-wallet.js" },
-          { "label": "D · 圆形钱币 CircleDollarSign", "inject": "injects/usage-icon-circle-dollar-sign.js" },
-          { "label": "E · 饼图 ChartPie", "inject": "injects/usage-icon-chart-pie.js" },
-          { "label": "F · 仪表 Gauge", "inject": "injects/usage-icon-gauge.js" }
+          {
+            "label": "A · 硬币 Coins",
+            "inject": "injects/usage-icon-coins.js"
+          },
+          {
+            "label": "B · 账单 ReceiptText（采用）",
+            "inject": "injects/usage-icon-receipt-text.js"
+          },
+          {
+            "label": "C · 钱包 Wallet",
+            "inject": "injects/usage-icon-wallet.js"
+          },
+          {
+            "label": "D · 圆形钱币 CircleDollarSign",
+            "inject": "injects/usage-icon-circle-dollar-sign.js"
+          },
+          {
+            "label": "E · 饼图 ChartPie",
+            "inject": "injects/usage-icon-chart-pie.js"
+          },
+          {
+            "label": "F · 仪表 Gauge",
+            "inject": "injects/usage-icon-gauge.js"
+          }
         ],
         "steps": [
-          { "wait": 900 },
-          { "tap": "稍后再说" },
-          { "wait": 1200 },
-          { "tap": "工作区" },
-          { "wait": 1200 },
-          { "tapText": "整理两篇文献的结论对比表" },
-          { "wait": 2500 },
-          { "inject": "{variantInject}" },
-          { "shot": "m-usage-icon.png" }
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "inject": "{variantInject}"
+          },
+          {
+            "shot": "m-usage-icon.png"
+          }
         ]
       },
       "usage-sheet": {
@@ -1103,19 +1457,33 @@
       },
       "usage-sheet-unpriced": {
         "steps": [
-          { "wait": 900 },
-          { "tap": "稍后再说" },
-          { "wait": 1200 },
-          { "tapText": "解释一下 p 值的常见误用" },
-          { "wait": 2500 },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "解释一下 p 值的常见误用"
+          },
+          {
+            "wait": 2500
+          },
           {
             "eval": "document.querySelector('[role=button][aria-label=\"Token 用量与金额\"]').click()"
           },
-          { "wait": 1200 },
+          {
+            "wait": 1200
+          },
           {
             "eval": "{ if (!document.body.innerText.includes('该模型未配置价格')) throw new Error('unpriced hint missing'); }"
           },
-          { "shot": "m-usage-sheet-unpriced.png" }
+          {
+            "shot": "m-usage-sheet-unpriced.png"
+          }
         ]
       },
       "steps-folded": {

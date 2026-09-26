@@ -64,6 +64,12 @@ function rowButton(text: string) {
     typeof node.props.onPress === "function"
     && node.findAll(inner => inner.props.children === text).length > 0)[0]!;
 }
+/** Every tappable row carrying `text` — a burst's children share one label. */
+function rowButtons(text: string) {
+  return tree.root.findAll(node =>
+    typeof node.props.onPress === "function"
+    && node.findAll(inner => inner.props.children === text).length > 0);
+}
 const prose = (id: string, text = "answer"): TimelineSegment => ({ id, kind: "text", text });
 const thinking = (id: string, text = id): TimelineSegment => ({ id, kind: "thinking", text });
 const tool = (id: string, fields: Partial<TimelineToolRow> = {}): TimelineSegment => ({
@@ -589,5 +595,78 @@ describe("a tool row whose target the lean page omitted", () => {
     const row = rowButton("chat.runCompleted");
     expect(row.props.disabled).toBe(true);
     expect(resolveToolTarget).not.toHaveBeenCalled();
+  });
+
+  // A burst folds several shell calls into "运行 2 次". On a lean page none of
+  // them carries its command, and the group row has no call identity of its
+  // own — so without a per-child affordance the whole burst read "已运行" twice
+  // with no way to find out what ran.
+  const shellBurst = (children: TimelineToolRow[]): TimelineSegment =>
+    tool("c1", { count: children.length, children });
+  const child = (fields: Partial<TimelineToolRow>): TimelineToolRow => ({
+    name: "shell", complete: true, status: "completed", ...fields,
+  });
+
+  test("a burst child whose command the page dropped fetches its own", async () => {
+    const resolveToolTarget = jest.fn(async (id: string) => `cmd from ${id}`);
+    render(
+      reply({ segments: [shellBurst([
+        child({ toolCallId: "call_a", runId: "run_1" }),
+        child({ toolCallId: "call_b", runId: "run_1" }),
+      ])] }),
+      { onResolveToolTarget: resolveToolTarget },
+    );
+    act(() => rowButton("chat.stepRun 2×").props.onPress());
+    // Both children are labels: the page carried no command, and nothing is
+    // asked for until the reader opens one.
+    expect(rowButtons("chat.runCompleted")).toHaveLength(2);
+    expect(resolveToolTarget).not.toHaveBeenCalled();
+
+    const rows = rowButtons("chat.runCompleted");
+    await act(async () => { rows[0]!.props.onPress(); });
+    expect(resolveToolTarget).toHaveBeenCalledWith("call_a", "run_1");
+    expect(hasText("cmd from call_a")).toBe(true);
+    // The sibling is untouched — each child pays for its own command.
+    expect(resolveToolTarget).toHaveBeenCalledTimes(1);
+    expect(hasText("cmd from call_b")).toBe(false);
+
+    // The fetched child now shows its command, so the remaining label is the
+    // sibling's.
+    const remaining = rowButtons("chat.runCompleted");
+    expect(remaining).toHaveLength(1);
+    await act(async () => { remaining[0]!.props.onPress(); });
+    expect(resolveToolTarget).toHaveBeenLastCalledWith("call_b", "run_1");
+    expect(hasText("cmd from call_b")).toBe(true);
+    expect(rowButtons("chat.runCompleted")).toHaveLength(0);
+  });
+
+  test("a burst child that already carries its command is a plain line", () => {
+    const resolveToolTarget = jest.fn(async () => "never");
+    render(
+      reply({ segments: [shellBurst([
+        child({ detail: "cmd one", toolCallId: "call_a", runId: "run_1" }),
+        child({ detail: "cmd two", toolCallId: "call_b", runId: "run_1" }),
+      ])] }),
+      { onResolveToolTarget: resolveToolTarget },
+    );
+    act(() => rowButton("chat.stepRun 2×").props.onPress());
+    expect(hasText("cmd one")).toBe(true);
+    expect(hasText("cmd two")).toBe(true);
+    expect(rowButtons("chat.runCompleted")).toHaveLength(0);
+    expect(resolveToolTarget).not.toHaveBeenCalled();
+  });
+
+  test("a burst child with no call identity stays a label", () => {
+    render(
+      reply({ segments: [shellBurst([
+        child({ toolCallId: "call_a", runId: "run_1" }),
+        child({}),
+      ])] }),
+      { onResolveToolTarget: jest.fn(async () => "never") },
+    );
+    act(() => rowButton("chat.stepRun 2×").props.onPress());
+    expect(countText("chat.runCompleted")).toBe(2);
+    // Only the child that carries an identity can ask for anything.
+    expect(rowButtons("chat.runCompleted")).toHaveLength(1);
   });
 });

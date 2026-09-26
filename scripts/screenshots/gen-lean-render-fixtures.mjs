@@ -338,6 +338,26 @@ const fullHistoryEntries = [
         name: "shell",
         arguments: { command: "grep -c dopamine notes/compare-table.md", timeout: 30 },
       },
+      { kind: "text", text: "顺手把两份笔记差也跑一下。" },
+      {
+        // A burst: two consecutive completed shell calls with no prose between
+        // them, which the phone folds into one "运行 2 次" row. A lean page
+        // carries neither command, and the folded row has no call identity of
+        // its own — so each child has to be able to fetch its own.
+        kind: "tool_call",
+        toolCallId: "htc_5",
+        name: "shell",
+        arguments: {
+          command: "diff notes/frank-summary.md notes/dreher-summary.md",
+          timeout: 30,
+        },
+      },
+      {
+        kind: "tool_call",
+        toolCallId: "htc_6",
+        name: "shell",
+        arguments: { command: "wc -l notes/compare-table.md", timeout: 30 },
+      },
     ],
   },
   {
@@ -372,6 +392,16 @@ const fullHistoryEntries = [
         kind: "tool_result",
         toolCallId: "htc_4",
         text: "0\n\n[exit: 1]",
+      },
+      {
+        kind: "tool_result",
+        toolCallId: "htc_5",
+        text: "1,3c1,3\n< - 效应量 d = 0.42\n---\n> - 不确定性高时效应反转\n\n[exit: 1]",
+      },
+      {
+        kind: "tool_result",
+        toolCallId: "htc_6",
+        text: "12 notes/compare-table.md\n\n[exit: 0]",
       },
     ],
   },
