@@ -52,7 +52,7 @@ directly comparable — only the per-file figures are.
 | | module lines | uncovered | files with gaps |
 |---|---|---|---|
 | previous run (mirror, 96.8223%) | 15387/15892 | 505 | 28 |
-| now (`coverage/tauri-tau-remote-report.json`) | **16678/17108 = 97.4866%** | **430** | **26** |
+| then (`coverage/tauri-tau-remote-report.json`) — **superseded post-merge, see below** | 16678/17108 = 97.4866% | 430 | 26 |
 
 Per-file, for the nine files this run targeted (JSON summary; the LCOV figure in
 brackets):
@@ -284,9 +284,11 @@ this run are the two `#[cfg(test)]`-module refactors named under *weak-tests-fix
 ## Post-merge registrations — files `origin/main` brought into this group's scope (2026-09-26)
 
 The branch merged `origin/main`, and re-measuring on the merged tree moved this group from 97.4866%
-to **94.7059%** (18068/19078 across 42 files, 1010 uncovered in 29 files). The drop is not a
+to **94.7349%** (18137/19145 across 42 files, **1008 uncovered in 28 files**). The drop is not a
 regression in the tests: it is that the merged tree contains code the previous report did not cover.
-Three files are new to this ledger, and each is registered by what its code actually is:
+Three files are new to this ledger, and each is registered by what its code actually is. The third one
+was closed by a **test** while this PR was open, which is why the count below is 1008 and not the 1010
+the same re-measurement first reported:
 
 | file | uncovered | category | reason |
 |---|---|---|---|
