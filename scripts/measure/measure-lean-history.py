@@ -194,8 +194,8 @@ def main() -> int:
         raise SystemExit("build the desktop test binary first "
                          "(cd desktop/src-tauri && cargo test --lib lean --no-run)")
 
-    print(f"{'session':<9}{'entries':>9}{'before MiB':>12}{'after MiB':>11}{'saved':>8}"
-          f"   blocks (count)")
+    print(f"{'session':<9}{'entries':>9}{'untrimmed':>12}{'trimmed':>11}{'saved':>8}"
+          f"{'gzipped':>10}{'saved(gz)':>10}   wire (the reply a phone receives)")
     for index, (session, _count) in enumerate(rows, 1):
         if args.phone_page:
             with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
@@ -217,17 +217,25 @@ def main() -> int:
                 data = json.loads(line[line.index("VERIFY_E2E_PHONE_PAGE ")
                                        + len("VERIFY_E2E_PHONE_PAGE "):])
                 un, de = data["undeclared"], data["declared"]
-                # `saved` is the trim on the same entries (no budget), which is
-                # the only like-for-like comparison. What each client receives is
-                # reported beside it, because the budget lets the lean page keep
-                # the exchanges the undeclared one had to drop — so its byte count
-                # can legitimately be the larger of the two.
+                # Three numbers, because they answer three different questions:
+                #  - `saved` / `saved(gz)`: the trim on the same entries, without
+                #    the budget — the only like-for-like comparison.
+                #  - `gzipped`: what the reply actually weighs. The phone declares
+                #    `reply_gzip_v1`, so a page at or above 32 KiB goes out
+                #    compressed and its plain size is not what it pays.
+                #  - the delivered counts: the budget lets a lean page keep the
+                #    exchanges the undeclared one had to drop, so its byte count
+                #    can legitimately be the larger of the two.
                 whole = "整页" if data.get("declaredWhole") else "被削减"
-                print(f"top{index:<6}{count:>9}{raw_bytes/2**20:>12.2f}"
-                      f"{data['trimmedBytes']/2**20:>11.2f}{data['saved']*100:>7.1f}%"
-                      f"   裁剪后 {whole}；实收 未声明 {un['entries']} 条/"
-                      f"{un['wireBytes']/1024:.0f} KiB vs lean {de['entries']} 条/"
-                      f"{de['wireBytes']/1024:.0f} KiB")
+                saved_gz = data.get("savedGzip")
+                # `savedGzip` is absent when the untrimmed page exceeded the
+                # decoded-reply limit, so the two sides are not comparable.
+                gz_column = f"{saved_gz*100:>9.1f}%" if saved_gz is not None else f"{'n/a':>10}"
+                print(f"top{index:<6}{count:>9}{data['plainBytes']:>12,}"
+                      f"{data['trimmedBytes']:>11,}{data['saved']*100:>7.1f}%"
+                      f"{data['leanReplyGzip']:>10,}"
+                      + gz_column
+                      + f"   {whole}；实收 未声明 {un['entries']} 条 vs lean {de['entries']} 条")
             finally:
                 page_path.unlink(missing_ok=True)
             continue

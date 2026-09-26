@@ -433,27 +433,35 @@ expanded.
 
 What a phone actually pays is smaller than the whole session, and it is measured
 on **the page the phone asks for** (the newest `HISTORY_PAGE_USER_EXCHANGES`
-exchanges, selected by the agent) rather than on a whole session. Two effects
-have to be read apart, because they act on different things:
+exchanges, selected by the agent) rather than on a whole session. Three numbers
+have to be read apart, because they answer three different questions:
 
-| requested page | trim, same entries | undeclared receives | lean receives |
+| requested page | trim, same entries (plain) | trim (gzip) | the reply a phone receives |
 | ---: | ---: | ---: | ---: |
-| 236 entries | 391,543 → **104,417 B** (−73.3%) | 236 entries / 382 KiB | 236 entries / **102 KiB** |
-| 805 entries | 1,179,569 → **286,665 B** (−75.7%) | **77** entries / 130 KiB | **805** entries / 280 KiB |
-| 120 entries | 189,488 → **51,105 B** (−73.0%) | 120 entries / 185 KiB | 120 entries / **50 KiB** |
+| 236 entries | 391,543 → 104,417 B (−73.3%) | 149,107 → **32,446 B** (−78.2%) | 32,446 B |
+| 154 entries | 388,069 → 65,859 B (−83.0%) | 164,421 → **19,488 B** (−88.1%) | 19,488 B |
+| 1,094 entries | 1,027,973 → 353,228 B (−65.6%) | 240,513 → **64,550 B** (−73.2%) | 64,550 B |
+
+Across the ten heaviest sessions the page a phone receives is **14.7–64.6 KB
+gzipped** (median ≈ 32 KB), from 51–354 KB of trimmed JSON. **The plain-JSON
+figure is not what the phone pays**: the client declares `reply_gzip_v1`, so a
+reply at or above 32 KiB goes out compressed with `Compression::fast()`, and the
+remaining page compresses *better* than what the trim removed — which is why the
+trim's share rises under compression rather than falling. `wireBytes` in the
+measurement still counts plain JSON plus crypto overhead, so read `leanReplyGzip`
+for the byte a phone is billed.
 
 The trim removes bytes from every entry it touches, and applied to a whole
 session that is −76.8% / −76.6% / −80.1% (11.61 → 2.69 MiB, 9.29 → 2.17, 4.52 →
 0.90). But the *page* passes through the 512 KiB budget afterwards, which sheds
 whole oldest exchanges — so the two clients do not receive the same content, and
-comparing their byte counts measures nothing. The middle row above is why: the
-undeclared client's page is cut to 77 of the 805 entries the phone asked for,
-while the lean page fits and is delivered whole. The lean page is *larger* there
-(280 vs 130 KiB) precisely because it still holds the exchanges the other had to
-drop. That is the outcome the trim is for — the phone gets the history it asked
-for — and it is not a byte claim.
+comparing their byte counts measures nothing. The 1,094-entry row above is why:
+the undeclared client's page is cut to 72 entries while the lean page is delivered
+whole. The lean page is *larger* there precisely because it still holds the
+exchanges the other had to drop. That is the outcome the trim is for — the phone
+gets the history it asked for — and it is not a byte claim.
 
-A corrected instrument matters here, and went through two rounds. The first fed
+A corrected instrument matters here, and went through three rounds. The first fed
 the bridge a *whole session* and let the budget reduce it, reporting "as many
 newest exchanges as fit in 512 KiB" rather than the requested page — overstating
 a lean page about three-fold. `verify_e2e.rs` now pages its scripted agent's
@@ -462,9 +470,10 @@ replies like the agent does (`paginate_backward`), and
 shipping trim and budget. The second round is the table above: that measurement
 originally asserted `lean ≤ undeclared` on bytes, which is false whenever the
 budget cuts one page and not the other, and reported a negative "saved" as if the
-trim had cost bytes. It now measures the trim with and without the budget
-separately and asserts the invariant that actually holds — the lean page never
-delivers *fewer entries*.
+trim had cost bytes. The third is compression: the instrument reported plain JSON
+plus crypto overhead as the wire size, which overstates what a `reply_gzip_v1`
+client pays by up to 12× (1.49 MB "wire" for a page that leaves as 50 KB). It now
+runs the real reply through the shipping encoder and reports the compressed size.
 
 Nothing in this trim adds, removes or reorders an entry or a block — entries keep
 their identity and count — so a page's `nextOffset`/`hasMore`/flush-cursor
