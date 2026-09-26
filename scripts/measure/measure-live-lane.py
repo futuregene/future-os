@@ -60,8 +60,14 @@ def main() -> int:
             WHERE r.status='completed' GROUP BY 1,2 ORDER BY n DESC LIMIT ?""",
             (args.runs,)).fetchall()
 
-    binary = next((path for path in sorted((ROOT / "desktop" / "src-tauri" / "target" / "debug" / "deps").glob("futureos_lib-*"))
-                   if path.is_file() and os.access(path, os.X_OK)), None)
+    # Newest by mtime, not alphabetically first: `target/debug/deps` keeps every
+    # historical build of the test binary, and picking a stale one silently
+    # measures an older revision of the trims — the numbers look plausible and
+    # are simply from another commit.
+    candidates = [path for path in
+                  (ROOT / "desktop" / "src-tauri" / "target" / "debug" / "deps").glob("futureos_lib-*")
+                  if path.is_file() and os.access(path, os.X_OK)]
+    binary = max(candidates, key=lambda path: path.stat().st_mtime, default=None)
     if binary is None:
         raise SystemExit("build the desktop test binary first "
                          "(cd desktop/src-tauri && cargo test --no-default-features --lib publish --no-run)")

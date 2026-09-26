@@ -433,20 +433,38 @@ expanded.
 
 What a phone actually pays is smaller than the whole session, and it is measured
 on **the page the phone asks for** (the newest `HISTORY_PAGE_USER_EXCHANGES`
-exchanges, selected by the agent) rather than on a whole session:
+exchanges, selected by the agent) rather than on a whole session. Two effects
+have to be read apart, because they act on different things:
 
-| | undeclared | lean | saved |
-| --- | ---: | ---: | ---: |
-| newest 3-exchange page (wire) | 495,618 / 424,391 / 1,037,043 | 151,629 / 98,112 / 118,369 | **69.4% / 76.9% / 88.6%** |
-| 100-entry full read | 262,613 / 275,875 / 356,328 | 34,547 / 35,258 / 34,830 | 86.8% / 87.2% / 90.2% |
+| requested page | trim, same entries | undeclared receives | lean receives |
+| ---: | ---: | ---: | ---: |
+| 236 entries | 391,543 → **104,417 B** (−73.3%) | 236 entries / 382 KiB | 236 entries / **102 KiB** |
+| 805 entries | 1,179,569 → **286,665 B** (−75.7%) | **77** entries / 130 KiB | **805** entries / 280 KiB |
+| 120 entries | 189,488 → **51,105 B** (−73.0%) | 120 entries / 185 KiB | 120 entries / **50 KiB** |
 
-A corrected instrument matters here: the earlier measurement fed the bridge a
-*whole session* and let the byte budget reduce it, which reports "as many newest
-exchanges as fit in 512 KiB" rather than the requested page — overstating a lean
-page about three-fold (511,841 vs 147,735 bytes on the first session above).
-`verify_e2e.rs` now pages its scripted agent's replies like the agent does
-(`paginate_backward`), and `measure-lean-history.py --phone-page N` measures the
-real page through the shipping trim and budget.
+The trim removes bytes from every entry it touches, and applied to a whole
+session that is −76.8% / −76.6% / −80.1% (11.61 → 2.69 MiB, 9.29 → 2.17, 4.52 →
+0.90). But the *page* passes through the 512 KiB budget afterwards, which sheds
+whole oldest exchanges — so the two clients do not receive the same content, and
+comparing their byte counts measures nothing. The middle row above is why: the
+undeclared client's page is cut to 77 of the 805 entries the phone asked for,
+while the lean page fits and is delivered whole. The lean page is *larger* there
+(280 vs 130 KiB) precisely because it still holds the exchanges the other had to
+drop. That is the outcome the trim is for — the phone gets the history it asked
+for — and it is not a byte claim.
+
+A corrected instrument matters here, and went through two rounds. The first fed
+the bridge a *whole session* and let the budget reduce it, reporting "as many
+newest exchanges as fit in 512 KiB" rather than the requested page — overstating
+a lean page about three-fold. `verify_e2e.rs` now pages its scripted agent's
+replies like the agent does (`paginate_backward`), and
+`measure-lean-history.py --phone-page N` measures the real page through the
+shipping trim and budget. The second round is the table above: that measurement
+originally asserted `lean ≤ undeclared` on bytes, which is false whenever the
+budget cuts one page and not the other, and reported a negative "saved" as if the
+trim had cost bytes. It now measures the trim with and without the budget
+separately and asserts the invariant that actually holds — the lean page never
+delivers *fewer entries*.
 
 Nothing in this trim adds, removes or reorders an entry or a block — entries keep
 their identity and count — so a page's `nextOffset`/`hasMore`/flush-cursor
