@@ -18,12 +18,6 @@
     "type": "text_chunk"
   },
   {
-    "data": "{\"type\":\"tool_start\",\"phase\":\"input\",\"tool_name\":\"read\",\"tool_id\":\"call_mid_1\",\"tool_args\":\"{\\\"path\\\":\\\"/Users/lixin/Research/dopamine-decision/notes/frank-summ\"}",
-    "idx": 3,
-    "runId": "run_verify_lean",
-    "type": "tool_start"
-  },
-  {
     "data": "{\"type\":\"tool_start\",\"phase\":\"execution\",\"tool_name\":\"read\",\"tool_id\":\"call_mid_1\",\"tool_args\":{\"path\":\"/Users/lixin/Research/dopamine-decision/notes/frank-summary.md\"}}",
     "idx": 5,
     "runId": "run_verify_lean",
