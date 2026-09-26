@@ -334,25 +334,42 @@ receives the same event lane with the content it never renders removed.
 Measured on the three heaviest completed runs, the two capabilities the phone
 declares contribute in sequence — which is the only way to read them, because
 coalescing shipped first and the phone's before/after is coalesced-vs-
-coalesced+lean:
+coalesced+lean. Through `scripts/measure/measure-live-lane.py` at the commit
+that dropped the shell command:
 
 | Sample, as the phone receives it | Messages | Wire bytes |
 | --- | ---: | ---: |
-| 1 undeclared | 174,791 | 70,330,622 |
-| 1 coalesced only (`event_coalescing_v1`) | 4,174 | 3,115,440 |
-| 1 coalesced + `lean_events_v1` | **1,320** | **818,013** |
-| 2 undeclared → coalesced → + lean | 166,685 → 4,127 → **1,409** | 66,634,886 → 2,967,307 → **819,590** |
-| 3 undeclared → coalesced → + lean | 154,907 → 3,383 → **896** | 60,876,773 → 2,437,683 → **472,645** |
+| 1 undeclared, unmerged | 174,791 | 77.21 MB |
+| 1 coalesced only (`event_coalescing_v1`) | 8,713 | 5.33 MB |
+| 1 coalesced + `lean_events_v1` | **1,085** | **0.19 MB** |
+| 2 undeclared → coalesced → + lean | 166,685 → 8,472 → **1,167** | 73.19 → 5.07 → **0.21 MB** |
+| 3 undeclared → coalesced → + lean | 154,907 → 8,689 → **750** | 66.96 → 4.92 → **0.13 MB** |
 
-So the trim's own contribution to a phone is **-72% to -81%** on top of
-coalescing (3.1 / 3.0 / 2.4 MB → 0.82 / 0.82 / 0.47 MB), not the ~-98% the
+So the trim's own contribution to a phone is **-96% to -97%** on top of
+coalescing (5.3 / 5.1 / 4.9 MB → 0.19 / 0.21 / 0.13 MB), not the ~-98% the
 raw-to-lean ratio suggests: that ratio credits the trim with merging it did not
-do. Re-measured through the real Noise+AEAD channel by
+do. What is left is per-call metadata (`tool_start` ~30%, `tool_end` ~26%),
+usage counters (~13%), thinking boundaries (~15%) and the visible reply text.
+
+That lane no longer carries a shell call's command at all: the row keeps the
+call's identity and fetches the command through `get_tool_call_args` when it is
+opened — the same round trip, and the same cache, the history page already uses
+(it drops the arguments for the same reason). One consequence is priced in
+deliberately and asserted by the render checks: the client exempts a bare
+`grep`/`diff`/`test` exiting 1 from being shown as a failure, and its own
+predicate reads the command. The agent sends that verdict as `is_soft_fail` on
+the outcome, so the exemption normally needs nothing else; a row whose outcome
+predates that field reads as failed instead. See `FETCHED_LABEL_TOOLS` in
+`remote_host::lean`.
+
+Re-measured through the real Noise+AEAD channel by
 `scripts/measure/verify-e2e-bytes.py`, which installs the live-lane capability
 flags the way the supervisor does — a harness that skips that step silently
 measures the *undeclared* lane and reports it as "coalesced", which is exactly
 the mistake that produced a wrong marginal figure once. The measurement now
-asserts the flag and the merging, so that cannot pass unnoticed again.
+asserts the flag and the merging, so that cannot pass unnoticed again. It also
+builds each event's `eventId` the way the agent does: an empty one there
+understates every body by ~96 bytes.
 
 | Event | Without the declaration | With it |
 | --- | --- | --- |

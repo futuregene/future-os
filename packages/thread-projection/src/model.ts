@@ -24,11 +24,11 @@ export interface AgentActivityItem {
    */
   children?: AgentActivityItem[];
   /**
-   * The tool call's own identity and the run it belongs to, set when the item
-   * is projected from a persisted entry. A lean history page drops a shell
-   * call's arguments, so this is what lets the row fetch its command back when
-   * it is opened (`get_tool_call_args`) and cache it. Absent on live-lane
-   * items, which carry their target from the streamed `tool_start` already.
+   * The tool call's own identity and the run it belongs to. Set on both paths:
+   * a persisted entry carries them already, and the live lane attaches them as
+   * a call starts, because the lean feed omits a shell call's arguments on
+   * either one. This is what lets the row fetch its command back when it is
+   * opened (`get_tool_call_args`) and cache it.
    */
   toolCallId?: string;
   runId?: string;

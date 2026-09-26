@@ -30,7 +30,7 @@
     "type": "text_chunk"
   },
   {
-    "data": "{\"type\":\"tool_start\",\"phase\":\"execution\",\"tool_name\":\"shell\",\"tool_id\":\"call_1\",\"tool_args\":{\"command\":\"future nosuch-subcommand --verbose\"}}",
+    "data": "{\"phase\":\"execution\",\"tool_id\":\"call_1\",\"tool_name\":\"shell\",\"type\":\"tool_start\"}",
     "idx": 10,
     "runId": "run_verify_lean",
     "type": "tool_start"
@@ -120,7 +120,7 @@
     "type": "text_chunk"
   },
   {
-    "data": "{\"type\":\"tool_start\",\"phase\":\"execution\",\"tool_name\":\"shell\",\"tool_id\":\"call_6\",\"tool_args\":{\"command\":\"grep -c dopamine notes/compare-table.md\"}}",
+    "data": "{\"phase\":\"execution\",\"tool_id\":\"call_6\",\"tool_name\":\"shell\",\"type\":\"tool_start\"}",
     "idx": 35,
     "runId": "run_verify_lean",
     "type": "tool_start"
@@ -138,7 +138,7 @@
     "type": "text_chunk"
   },
   {
-    "data": "{\"type\":\"tool_start\",\"phase\":\"execution\",\"tool_name\":\"shell\",\"tool_id\":\"call_7\",\"tool_args\":{\"command\":\"diff notes/frank-summary.md notes/dreher-summary.md\"}}",
+    "data": "{\"phase\":\"execution\",\"tool_id\":\"call_7\",\"tool_name\":\"shell\",\"type\":\"tool_start\"}",
     "idx": 40,
     "runId": "run_verify_lean",
     "type": "tool_start"
@@ -156,7 +156,7 @@
     "type": "text_chunk"
   },
   {
-    "data": "{\"type\":\"tool_start\",\"phase\":\"execution\",\"tool_name\":\"shell\",\"tool_id\":\"call_8\",\"tool_args\":{\"command\":\"ls /nonexistent-workspace-path\"}}",
+    "data": "{\"phase\":\"execution\",\"tool_id\":\"call_8\",\"tool_name\":\"shell\",\"type\":\"tool_start\"}",
     "idx": 45,
     "runId": "run_verify_lean",
     "type": "tool_start"

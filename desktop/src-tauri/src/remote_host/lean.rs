@@ -44,11 +44,35 @@ const DROPPED_EVENTS: [&str; 3] = ["thinking_delta", "tool_delta", "toolcall_del
 /// Tools whose arguments carry a body the phone never renders: a `write` its
 /// whole file, an `edit` the text it replaces.
 ///
-/// `read` keeps everything (its `offset`/`limit` are a few bytes) and `shell`
-/// keeps its `command`, which *is* the row's label. A tool this build has never
-/// heard of keeps its arguments too: nothing here can tell which of them a
-/// client might read.
+/// `read` keeps everything (its `offset`/`limit` are a few bytes). A tool this
+/// build has never heard of keeps its arguments too: nothing here can tell
+/// which of them a client might read.
 const BODY_BEARING_TOOLS: [&str; 2] = ["write", "edit"];
+
+/// Tools whose whole argument list *is* the row's label, and therefore goes:
+/// the client fetches it by identity when the row is opened.
+///
+/// `shell`'s arguments are its command (plus a timeout). The row's label is that
+/// command, and the history page has dropped it for the same reason since the
+/// history trim shipped: it is the page's most expensive unread payload. The row
+/// keeps `tool_id`, which is what `get_tool_call_args` answers by, so the command
+/// is one tap away -- and measured at ~18% of the lean live lane, it is the
+/// largest single thing left on it.
+///
+/// The price, measured rather than assumed: the client exempts a bare
+/// `grep`/`diff`/`test` exiting 1 from being reported as a failure, and its own
+/// predicate reads the command. The agent sends the same verdict as
+/// `is_soft_fail` on the outcome (both predicates agree, and the field has been
+/// on the wire since 2026-08-19), so the exemption normally needs nothing else.
+/// An agent predating that field sends neither the command (it is not on this
+/// lane) nor the verdict, so such a row reads as failed. Over 20,332 real shell
+/// results every `exit_code: 1` without the flag was a genuine failure -- a
+/// piped or `&&` chain, or a program outside the soft-fail set -- so the shape
+/// this costs is one the running agent does not produce.
+///
+/// `read` is deliberately not here: its target is a path the row shows as its
+/// label, and its other keys are two small integers.
+const FETCHED_LABEL_TOOLS: [&str; 1] = ["shell"];
 
 /// Argument keys a tool row's label is built from, mirroring the client's
 /// `targetFromArgs`. Anything else a body-bearing tool passes is dropped.
@@ -136,9 +160,10 @@ pub(crate) fn lean_event_data<'a>(event_type: &str, data: &'a str) -> Option<Cow
             if is_tool_input_phase(data) {
                 None
             } else {
-                // The row's label comes from `path` (read/write/edit) or
-                // `command` (shell) -- the file bodies a `write`/`edit` carries
-                // are never rendered, and the history page drops them too.
+                // What survives depends on the row's label: a `read` keeps its
+                // path, a `write`/`edit` the path alone (their file bodies are
+                // never rendered), and a `shell` keeps nothing but its identity,
+                // because its command is fetched when the row is opened.
                 Some(without_tool_bodies(data))
             }
         }
@@ -239,8 +264,21 @@ fn without_tool_bodies(data: &str) -> Cow<'_, str> {
     let Ok(mut value) = serde_json::from_str::<Value>(data) else {
         return Cow::Borrowed(data);
     };
-    let name = value["tool_name"].as_str().unwrap_or_default();
-    if !BODY_BEARING_TOOLS.contains(&name) {
+    let name = value["tool_name"].as_str().unwrap_or_default().to_string();
+    // A shell row's whole argument list is the command it will show once the
+    // row is opened, so it goes the same way a body does.
+    if FETCHED_LABEL_TOOLS.contains(&name.as_str()) {
+        return if value
+            .as_object_mut()
+            .map(|root| root.remove("tool_args").is_some())
+            .unwrap_or(false)
+        {
+            Cow::Owned(value.to_string())
+        } else {
+            Cow::Borrowed(data)
+        };
+    }
+    if !BODY_BEARING_TOOLS.contains(&name.as_str()) {
         return Cow::Borrowed(data);
     }
     let Some(args) = value
@@ -564,18 +602,37 @@ mod tests {
             serde_json::from_str(&lean_event_data("tool_start", &alias).unwrap()).unwrap();
         assert_eq!(lean["tool_args"], json!({"file_path": "b.ts"}));
 
-        // A shell row's label is its command: nothing may go.
+        // A shell row's whole argument list is its label, and the row fetches it
+        // by identity when opened -- so it goes, exactly as the history page
+        // drops it. The identity must survive, which is what the fetch answers by.
         let shell = json!({
             "type": "tool_start",
             "tool_name": "shell",
+            "tool_id": "call_9",
             "tool_args": {"command": "ls -la", "timeout": 5000},
         })
         .to_string();
-        let lean = lean_event_data("tool_start", &shell).unwrap();
+        let lean: Value =
+            serde_json::from_str(&lean_event_data("tool_start", &shell).unwrap()).unwrap();
+        assert!(
+            lean.get("tool_args").is_none(),
+            "a shell command is fetched on open, not streamed"
+        );
         assert_eq!(
-            lean.as_ref(),
-            shell.as_str(),
-            "a shell command is the row's label, so it stays"
+            lean["tool_id"],
+            json!("call_9"),
+            "the fetch needs the identity"
+        );
+        assert_eq!(lean["tool_name"], json!("shell"));
+
+        // A shell event already without arguments is returned borrowed rather
+        // than rewritten.
+        let bare_shell =
+            json!({"type": "tool_start", "tool_name": "shell", "tool_id": "c"}).to_string();
+        let lean = lean_event_data("tool_start", &bare_shell).unwrap();
+        assert!(
+            matches!(lean, Cow::Borrowed(_)),
+            "nothing to drop means no rewrite"
         );
 
         // `read`'s arguments are a path and two small numbers.
