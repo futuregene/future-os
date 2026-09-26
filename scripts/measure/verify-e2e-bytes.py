@@ -244,13 +244,14 @@ def measure(journal: Path, session: str, run: str, entries: Path,
            "VERIFY_E2E_ENTRIES": str(entries)}
     result = run_test(test, env)
     lines = markers(result, [("VERIFY_E2E_LIVE ", "live"),
+                             ("VERIFY_E2E_LIVE_PHONE ", "livePhone"),
                              ("VERIFY_E2E_HISTORY ", "history"),
                              ("VERIFY_E2E_NATS_ACCOUNTING ", "accounting"),
                              ("VERIFY_E2E_LAZY_FETCH ", "lazyFetch")])
     # The markers are printed before the accounting assertion runs, so a
     # crashing test would still look like it reported numbers. The exit code is
     # the only proof the whole test ran.
-    if result.returncode != 0 or set(lines) < {"live", "history", "lazyFetch"}:
+    if result.returncode != 0 or set(lines) < {"live", "livePhone", "history", "lazyFetch"}:
         print(result.stdout[-6000:], file=sys.stderr)
         print(result.stderr[-3000:], file=sys.stderr)
         raise SystemExit(f"{test} failed (exit {result.returncode})")
@@ -360,6 +361,15 @@ def main() -> int:
                       f"{lane(undeclared):>34}  {lane(declared):>33}  "
                       f"{hf_un['plaintextBytes']}/{hf_de['plaintextBytes']:<7}"
                       f"  {hp_un['plaintextBytes']}/{hp_de['plaintextBytes']:<8}")
+
+                phone = primary["livePhone"]
+                print(f"{'':<7}live lane as the phone negotiates it (coalescing, then "
+                      f"coalescing + lean): "
+                      f"{phone['coalesced']['messages']} msgs/"
+                      f"{phone['coalesced']['wireBytes']} B -> "
+                      f"{phone['coalescedLean']['messages']} msgs/"
+                      f"{phone['coalescedLean']['wireBytes']} B "
+                      f"(lean marginal {phone['leanMarginal'] * 100:.1f}%)")
 
                 fetch = primary["lazyFetch"]
                 print(f"{'':<7}lazy shell: {fetch['shellRows']} rows / "
