@@ -54,6 +54,21 @@ const BODY_BEARING_TOOLS: [&str; 2] = ["write", "edit"];
 /// `targetFromArgs`. Anything else a body-bearing tool passes is dropped.
 const TARGET_ARG_KEYS: [&str; 3] = ["path", "file_path", "filePath"];
 
+/// Body keys a lane subscriber reads. Everything else in the envelope is
+/// dropped on the lean lane.
+///
+/// Verified against every consumer of this subject: the phone's `StreamEvent`
+/// type and its `normalizeReplayEvents` copy `type`/`data`/`runId`/`idx`, the
+/// desktop's own web verification client reads `type`/`runId`/`idx`/`data`, and
+/// `coalescedCount` is the merge marker. The desktop does not subscribe to this
+/// subject at all (it only publishes), and the TUI speaks gRPC instead.
+///
+/// The dropped keys stay recoverable from the agent, whose `get_events_since`
+/// carries `event_id`/`timestamp`/`session_id`/`epoch`/`session_idx`/
+/// `run_sequence` on every event -- the lane is a projection of that stream, not
+/// the only copy of it.
+const EVENT_BODY_KEYS: [&str; 5] = ["type", "data", "runId", "idx", "coalescedCount"];
+
 /// Token counters a client reads out of a `usage` event.
 ///
 /// The phone sums these into the settled reply's "N tokens" footer. The
@@ -109,12 +124,24 @@ pub(crate) fn lean_event_data<'a>(event_type: &str, data: &'a str) -> Option<Cow
         // The client treats this event as a "resync me" signal and never reads
         // them, so the whole array goes.
         "run_snapshot" => Some(without(data, &["snapshotEvents"])),
-        // A tool call announces itself twice: an `input` phase with no arguments
-        // at all, then an `execution` phase carrying them. The row's label comes
-        // from `path` (read/write/edit) or `command` (shell) -- the file bodies a
-        // `write`/`edit` carries are never rendered, and the history page drops
-        // them for the same reason.
-        "tool_start" | "toolcall_start" => Some(without_tool_bodies(data)),
+        // A tool call announces itself twice: an `input` phase when the model
+        // begins writing the call, then an `execution` phase when the arguments
+        // are complete and the tool runs. The first one goes entirely: it carries
+        // no arguments (measured across six real runs, 1,608 input phases, none
+        // with arguments) and therefore no label, so all it can do is make an
+        // empty row appear ~331ms earlier (median; the row's target is unknown
+        // until `execution` either way). An approval wait, the one case where
+        // that gap is long, has its own `approval_request` event.
+        "tool_start" | "toolcall_start" => {
+            if is_tool_input_phase(data) {
+                None
+            } else {
+                // The row's label comes from `path` (read/write/edit) or
+                // `command` (shell) -- the file bodies a `write`/`edit` carries
+                // are never rendered, and the history page drops them too.
+                Some(without_tool_bodies(data))
+            }
+        }
         // The client reads one number out of a usage event; every provider
         // counter beside it is dead weight on this lane.
         "usage" => Some(without_extra_usage(data)),
@@ -170,6 +197,35 @@ fn without<'a>(data: &'a str, keys: &[&str]) -> Cow<'a, str> {
         fields.remove(*key);
     }
     Cow::Owned(serde_json::to_string(&Value::Object(fields)).expect("a Value always serializes"))
+}
+
+/// Whether this `tool_start` is the `input` phase (the model still writing the
+/// call) rather than the `execution` phase (arguments complete, tool running).
+///
+/// An unparsable payload answers `false`: an unrecognised shape is forwarded
+/// untouched rather than dropped, here as everywhere else in this module.
+fn is_tool_input_phase(data: &str) -> bool {
+    serde_json::from_str::<Value>(data)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("phase")
+                .and_then(Value::as_str)
+                .map(|phase| phase == "input")
+        })
+        .unwrap_or(false)
+}
+
+/// Reduce a lane body to the keys a subscriber reads.
+///
+/// Measured on the three heaviest runs: the envelope was 72.9% of the lean lane
+/// and 56.1% of the lane was fields no subscriber reads -- `eventId` alone
+/// (a `{session}:{run}:{epoch}:{idx}` string, ~96 B per event) was 20.3%.
+pub(crate) fn lean_event_body(body: &mut Value) {
+    let Some(fields) = body.as_object_mut() else {
+        return;
+    };
+    fields.retain(|key, _| EVENT_BODY_KEYS.contains(&key.as_str()));
 }
 
 /// A `tool_start`'s arguments, minus the bodies the phone never renders.
@@ -546,7 +602,9 @@ mod tests {
             unknown.as_str()
         );
 
-        // The `input` phase carries no arguments at all and is left alone.
+        // The `input` phase goes entirely: it never carries arguments (measured
+        // across six real runs: 1,608 input phases, none with arguments), so it
+        // can only make an empty row appear earlier.
         let input = json!({
             "type": "tool_start",
             "phase": "input",
@@ -554,10 +612,25 @@ mod tests {
             "tool_args": "",
         })
         .to_string();
-        assert_eq!(
-            lean_event_data("tool_start", &input).unwrap().as_ref(),
-            input.as_str()
+        assert!(
+            lean_event_data("tool_start", &input).is_none(),
+            "the argument-less input phase goes entirely"
         );
+
+        // The `execution` phase is the one that carries the label, so it stays.
+        let execution = json!({
+            "type": "tool_start",
+            "phase": "execution",
+            "tool_name": "write",
+            "tool_args": {"path": "f.ts"},
+        })
+        .to_string();
+        assert!(lean_event_data("tool_start", &execution).is_some());
+
+        // A `tool_start` with no phase is not the input phase, so it is
+        // forwarded rather than dropped: an unrecognised shape never vanishes.
+        let phaseless = json!({"type": "tool_start", "tool_name": "shell"}).to_string();
+        assert!(lean_event_data("tool_start", &phaseless).is_some());
 
         // A body-less `write` (already trimmed, or a shape that never had one)
         // is returned borrowed rather than rewritten.
@@ -625,6 +698,51 @@ mod tests {
     /// The tool row's outcome must survive: dropping the captured output is only
     /// safe because these fields replace the `[exit: N]` footer the text used to
     /// carry, and because `target_path` is the row's target on a result event.
+    /// The lean envelope keeps the keys a subscriber reads and nothing else.
+    /// Every dropped key is recoverable from the agent's own event stream, so
+    /// the lane stays a projection rather than the only copy.
+    #[test]
+    fn lean_event_body_keeps_only_the_keys_a_subscriber_reads() {
+        let mut body = json!({
+            "schemaVersion": 2,
+            "sessionId": "s-1",
+            "type": "tool_end",
+            "data": "{\"tool_id\":\"c1\"}",
+            "runId": "r-1",
+            "idx": 42,
+            "epoch": 1,
+            "eventId": "s-1:r-1:1:42",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "sessionIdx": -1,
+            "runSequence": 3,
+        });
+        lean_event_body(&mut body);
+        assert_eq!(
+            body,
+            json!({"type": "tool_end", "data": "{\"tool_id\":\"c1\"}", "runId": "r-1", "idx": 42})
+        );
+
+        // The coalescer's merge marker must survive: the client reads it to know
+        // `idx` ends a range instead of stepping by one.
+        let mut merged = json!({
+            "sessionId": "s-1",
+            "type": "text_chunk",
+            "data": "{}",
+            "runId": "r-1",
+            "idx": 50,
+            "coalescedCount": 7,
+            "eventId": "s-1:r-1:1:50",
+        });
+        lean_event_body(&mut merged);
+        assert_eq!(merged["coalescedCount"], json!(7));
+        assert!(merged.get("eventId").is_none());
+
+        // A non-object body is left alone rather than replaced.
+        let mut scalar = json!("not an object");
+        lean_event_body(&mut scalar);
+        assert_eq!(scalar, json!("not an object"));
+    }
+
     #[test]
     fn tool_end_keeps_its_outcome_and_identity() {
         let data = json!({
@@ -1068,6 +1186,10 @@ mod tests {
                 if let Cow::Owned(trimmed) = rewritten {
                     copy["data"] = Value::String(trimmed);
                 }
+                // Same envelope the publisher sends: a fixture that kept keys
+                // production drops would verify the client against a payload the
+                // phone never receives.
+                lean_event_body(&mut copy);
                 lean_events.push(copy);
             }
             assert!(
@@ -1080,6 +1202,12 @@ mod tests {
                     !is_dropped(event_type),
                     "{event_type} is streamed-only content and must not survive {input}"
                 );
+                for key in event.as_object().into_iter().flatten().map(|(key, _)| key) {
+                    assert!(
+                        EVENT_BODY_KEYS.contains(&key.as_str()),
+                        "{input}: the lean envelope must not carry {key}"
+                    );
+                }
             }
             std::fs::write(
                 dir.join(output),

@@ -109,7 +109,8 @@ pub fn publish_event(
     // Lean feed: reasoning and streamed tool arguments never reach the lane.
     // Dropping here (rather than later in the drain) keeps the queue and the
     // coalescer from ever holding them.
-    let data = if crate::remote_host::lean::enabled() {
+    let lean = crate::remote_host::lean::enabled();
+    let data = if lean {
         match crate::remote_host::lean::lean_event_data(event_type, data) {
             Some(data) => data,
             None => return,
@@ -120,7 +121,7 @@ pub fn publish_event(
     // Guard the NATS payload cap: an oversized event is published with a
     // truncated `data` marker (type/runId/idx preserved) rather than dropped,
     // so the client's dedup cursor doesn't get a permanent hole.
-    let body = build_event_body(
+    let mut body = build_event_body(
         session_id,
         event_type,
         &data,
@@ -132,6 +133,13 @@ pub fn publish_event(
         session_idx,
         run_sequence,
     );
+    // The envelope is the lean lane's largest remaining cost, and most of it is
+    // fields no subscriber reads. Trimmed under the same gate as the payload, so
+    // a client that did not declare lean still gets the byte-identical legacy
+    // body it always did.
+    if lean {
+        crate::remote_host::lean::lean_event_body(&mut body);
+    }
     // A serde_json::Value always serializes, so this cannot fail.
     let payload = serde_json::to_vec(&body).expect("an event Value always serializes");
     let event = EventPublish {

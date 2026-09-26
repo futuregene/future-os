@@ -315,6 +315,17 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
+    /// The event id the agent would have assigned this event
+    /// (`agent/src/rpc/protocol.rs`: `{session}:{run}:{epoch}:{idx}`).
+    ///
+    /// These measurements used to pass an empty string, which understated every
+    /// body by the id's ~96 bytes and made `eventId` look like a free field to
+    /// drop. It is one of the lane's largest single keys, so the harness has to
+    /// build it the way production does or the envelope numbers are fiction.
+    fn agent_event_id(session: &str, run: &str, epoch: i64, idx: i64) -> String {
+        format!("{session}:{run}:{epoch}:{idx}")
+    }
+
     fn body(kind: &str, data: Value, idx: i64) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "schemaVersion": 2,
@@ -887,7 +898,7 @@ mod tests {
                 &run,
                 idx,
                 raw["epoch"].as_i64().unwrap_or(0),
-                "",
+                &agent_event_id(&session, &run, raw["epoch"].as_i64().unwrap_or(0), idx),
                 raw["timestamp"].as_str().unwrap_or_default(),
                 raw["session_idx"].as_i64().unwrap_or(-1),
                 raw["run_sequence"].as_i64().unwrap_or(0),
@@ -1008,6 +1019,7 @@ mod tests {
         let mut published = Vec::new();
         let mut full_bytes = 0usize;
         let mut lean_bytes = 0usize;
+        let mut lean_data_bytes = 0usize;
         // Per-type totals, so a report can say which event types still carry the
         // lane rather than only how big it is.
         let mut full_by_type: std::collections::BTreeMap<String, usize> = Default::default();
@@ -1030,7 +1042,7 @@ mod tests {
                 &run,
                 idx,
                 raw["epoch"].as_i64().unwrap_or(0),
-                "",
+                &agent_event_id(&session, &run, raw["epoch"].as_i64().unwrap_or(0), idx),
                 raw["timestamp"].as_str().unwrap_or_default(),
                 raw["session_idx"].as_i64().unwrap_or(-1),
                 raw["run_sequence"].as_i64().unwrap_or(0),
@@ -1043,18 +1055,24 @@ mod tests {
                 continue;
             };
             delivered += 1;
-            let payload = super::super::build_event_body(
+            let mut payload = super::super::build_event_body(
                 &session,
                 event_type,
                 &lean,
                 &run,
                 idx,
                 raw["epoch"].as_i64().unwrap_or(0),
-                "",
+                &agent_event_id(&session, &run, raw["epoch"].as_i64().unwrap_or(0), idx),
                 raw["timestamp"].as_str().unwrap_or_default(),
                 raw["session_idx"].as_i64().unwrap_or(-1),
                 raw["run_sequence"].as_i64().unwrap_or(0),
             );
+            // The payload trim alone, before the envelope goes: this is what the
+            // lane cost before the envelope was trimmed, so the report can show
+            // the two separately.
+            lean_data_bytes += serde_json::to_vec(&payload).expect("body serializes").len();
+            // Then the envelope, exactly as `publish_event` trims it.
+            crate::remote_host::lean::lean_event_body(&mut payload);
             let lean_body = serde_json::to_vec(&payload).expect("body serializes");
             *lean_by_type.entry(event_type.to_string()).or_default() += lean_body.len();
             lean_bytes += lean_body.len();
@@ -1102,6 +1120,7 @@ mod tests {
                 "delivered": delivered,
                 "fullBytes": full_bytes,
                 "leanBytes": lean_bytes,
+                "leanDataBytes": lean_data_bytes,
                 "fullByType": full_by_type,
                 "leanByType": lean_by_type,
                 "publishedByType": published_by_type,

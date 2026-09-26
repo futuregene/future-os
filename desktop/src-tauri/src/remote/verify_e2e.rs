@@ -562,7 +562,10 @@ impl E2e {
                 run,
                 event.idx,
                 event.epoch,
-                "",
+                // The id the agent would have assigned. An empty string here
+                // would understate every body by the id's ~96 bytes, which is
+                // how `eventId` came to look like a free field to drop.
+                &format!("{session}:{run}:{}:{}", event.epoch, event.idx),
                 &event.timestamp,
                 event.session_idx,
                 event.run_sequence,
