@@ -1057,6 +1057,305 @@ async fn queued_follow_ups_keep_independent_runs() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn coalescing_follow_ups_fold_into_one_run_in_queue_order() {
+    let provider = ScriptedProvider::new(vec![
+        Script::Stall(vec![text_event("stalled")]),
+        text_turn("merged answer"),
+    ]);
+    let fixture = run_fixture(provider, "coalesce-follow-ups");
+    let mut session = fixture.session;
+
+    let first = session.prompt("first", &[], &[], None, None).unwrap();
+    for _ in 0..200 {
+        if session.runtime.snapshot().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let a = session
+        .enqueue_prompt(
+            "second question",
+            &[],
+            &[],
+            None,
+            "req-2",
+            crate::runtime::BusyPolicy::EnqueueCoalescing,
+        )
+        .unwrap();
+    let b = session
+        .enqueue_prompt(
+            "third question",
+            &[],
+            &[],
+            None,
+            "req-3",
+            crate::runtime::BusyPolicy::EnqueueCoalescing,
+        )
+        .unwrap();
+    assert_eq!(a.accepted_state, crate::runtime::RunAcceptedState::Queued);
+    assert_eq!(b.accepted_state, crate::runtime::RunAcceptedState::Queued);
+    assert_eq!(session.scheduler.queued().len(), 2);
+
+    // Interrupt the stalled run so its queued work can drain.
+    session.abort_run(Some(&first.run_id)).unwrap();
+    for _ in 0..500 {
+        if session.runtime.snapshot().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(session.runtime.snapshot().is_none());
+
+    let started = session.start_next_scheduled().unwrap();
+    assert_eq!(
+        started.accepted_state,
+        crate::runtime::RunAcceptedState::Running
+    );
+    // One run absorbed both follow-ups: nothing is left queued behind it.
+    assert_eq!(started.run_id, a.run_id);
+    assert!(session.scheduler.queued().is_empty());
+
+    let user_texts: Vec<String> = session
+        .messages
+        .read()
+        .iter()
+        .filter(|m| m.role == "user")
+        .map(|m| m.text())
+        .collect();
+    // The questions arrive as ONE user message, in queue order — never as two
+    // separate messages, and never reordered.
+    assert!(
+        user_texts
+            .iter()
+            .any(|t| t == "second question\n\nthird question"),
+        "folded user message not found in {user_texts:?}"
+    );
+    assert!(!user_texts.iter().any(|t| t == "second question"));
+    assert!(!user_texts.iter().any(|t| t == "third question"));
+
+    // The folded submission never runs, so its client learns it was merged
+    // rather than watching a queued run that never starts.
+    let merged: Vec<String> = session
+        .scheduler
+        .recent_terminal_acks()
+        .into_iter()
+        .filter(|ack| ack.reason == "merged")
+        .map(|ack| ack.run_id)
+        .collect();
+    assert_eq!(merged, vec![b.run_id.clone()]);
+
+    // The fold is recorded on the accepted message (history + journal audit).
+    let coalesced = session
+        .messages
+        .read()
+        .iter()
+        .find(|m| m.text() == "second question\n\nthird question")
+        .and_then(|m| m.metadata.clone())
+        .and_then(|metadata| metadata.get("coalesced_run_ids").cloned())
+        .expect("coalesced_run_ids metadata");
+    assert_eq!(coalesced, serde_json::json!([b.run_id.clone()]));
+
+    session.abort_run(Some(&started.run_id)).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn coalescing_uses_the_last_folded_requests_execution_settings() {
+    // The user's LATEST instruction decides how the combined turn runs: the
+    // front request's own execution settings must not be reused for it.
+    let provider = ScriptedProvider::new(vec![
+        Script::Stall(vec![text_event("stalled")]),
+        text_turn("merged answer"),
+    ]);
+    let fixture = run_fixture(provider, "coalesce-last-settings");
+    let valid_workspace = fixture.workspace().clone();
+    let mut session = fixture.session;
+
+    let first = session.prompt("first", &[], &[], None, None).unwrap();
+    for _ in 0..200 {
+        if session.runtime.snapshot().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let not_a_directory = valid_workspace.join("not-a-directory");
+    std::fs::write(&not_a_directory, b"x").unwrap();
+    // The front request is accepted with a cwd that cannot be a workspace, so a
+    // run that reused its settings could not start at all.
+    session.set_cwd(not_a_directory.to_string_lossy().as_ref());
+    session
+        .enqueue_prompt(
+            "front",
+            &[],
+            &[],
+            None,
+            "req-2",
+            crate::runtime::BusyPolicy::EnqueueCoalescing,
+        )
+        .unwrap();
+    session.set_cwd(valid_workspace.to_string_lossy().as_ref());
+    session
+        .enqueue_prompt(
+            "last",
+            &[],
+            &[],
+            None,
+            "req-3",
+            crate::runtime::BusyPolicy::EnqueueCoalescing,
+        )
+        .unwrap();
+
+    session.abort_run(Some(&first.run_id)).unwrap();
+    for _ in 0..500 {
+        if session.runtime.snapshot().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let started = session.start_next_scheduled().unwrap();
+    assert_eq!(
+        started.accepted_state,
+        crate::runtime::RunAcceptedState::Running
+    );
+    session.abort_run(Some(&started.run_id)).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn coalescing_stops_at_a_request_that_did_not_opt_in() {
+    let provider = ScriptedProvider::new(vec![
+        Script::Stall(vec![text_event("stalled")]),
+        Script::Stall(vec![text_event("second")]),
+    ]);
+    let fixture = run_fixture(provider, "coalesce-mixed-policies");
+    let mut session = fixture.session;
+
+    let first = session.prompt("first", &[], &[], None, None).unwrap();
+    for _ in 0..200 {
+        if session.runtime.snapshot().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    session
+        .enqueue_prompt(
+            "folded question",
+            &[],
+            &[],
+            None,
+            "req-2",
+            crate::runtime::BusyPolicy::EnqueueCoalescing,
+        )
+        .unwrap();
+    // A caller that streams its own run keeps its own run: it is never folded
+    // into another submission's answer.
+    let independent = session
+        .enqueue_prompt(
+            "independent question",
+            &[],
+            &[],
+            None,
+            "req-3",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+
+    session.abort_run(Some(&first.run_id)).unwrap();
+    for _ in 0..500 {
+        if session.runtime.snapshot().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let started = session.start_next_scheduled().unwrap();
+    let user_texts: Vec<String> = session
+        .messages
+        .read()
+        .iter()
+        .filter(|m| m.role == "user")
+        .map(|m| m.text())
+        .collect();
+    assert!(user_texts.iter().any(|t| t == "folded question"));
+    assert!(!user_texts.iter().any(|t| t == "independent question"));
+    // The non-coalescing request still owns its own queued run.
+    let queued = session.scheduler.queued();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].run_id, independent.run_id);
+
+    session.abort_run(Some(&started.run_id)).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn coalescing_joins_model_context_sidecars_in_order() {
+    let provider = ScriptedProvider::new(vec![
+        Script::Stall(vec![text_event("stalled")]),
+        text_turn("merged answer"),
+    ]);
+    let fixture = run_fixture(provider, "coalesce-model-context");
+    let mut session = fixture.session;
+
+    let first = session.prompt("first", &[], &[], None, None).unwrap();
+    for _ in 0..200 {
+        if session.runtime.snapshot().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let ctx2 = "context-two".to_string();
+    let ctx3 = "context-three".to_string();
+    for (text, context, request) in [
+        ("second question", &ctx2, "req-2"),
+        ("third question", &ctx3, "req-3"),
+    ] {
+        session
+            .enqueue_prompt_with_model_context(
+                PromptText::new(text, context),
+                &[],
+                &[],
+                None,
+                request,
+                crate::runtime::BusyPolicy::EnqueueCoalescing,
+            )
+            .unwrap();
+    }
+
+    session.abort_run(Some(&first.run_id)).unwrap();
+    for _ in 0..500 {
+        if session.runtime.snapshot().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let started = session.start_next_scheduled().unwrap();
+    let user_messages: Vec<crate::types::AgentMessage> = session
+        .messages
+        .read()
+        .iter()
+        .filter(|m| m.role == "user")
+        .cloned()
+        .collect();
+    // Both the visible text and the non-display sidecar fold in the same order.
+    let folded = user_messages
+        .iter()
+        .find(|m| m.display_text() == "second question\n\nthird question")
+        .expect("folded user message");
+    let text = folded.text();
+    assert!(text.contains("context-two"), "{text}");
+    assert!(text.contains("context-three"), "{text}");
+    assert!(
+        text.find("context-two") < text.find("context-three"),
+        "sidecars keep queue order: {text}"
+    );
+
+    session.abort_run(Some(&started.run_id)).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn queued_follow_ups_keep_model_context_sidecars_independent() {
     let provider = ScriptedProvider::new(vec![
         Script::Stall(vec![text_event("stalled")]),

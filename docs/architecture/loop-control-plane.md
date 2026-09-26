@@ -197,10 +197,14 @@ channel. Both directions ride the same event-sourced state:
 - **Up (worker → supervisor, persistent batched reports):**
   Gate/completion/failure/infra notes are ledgered first, including while the agent
   is offline. An independent watchdog coalesces up to 32 notes into an immutable
-  batch and sends with `enqueue_if_busy`. Failed pushes retry the same request key
-  and payload. Queue acceptance is not proof of supervisor action; reconcile current
-  state before reacting to old notifications. `supervisor events` includes delivery
-  pending state and control/batch receipts.
+  batch and sends with `enqueue_coalescing`. Failed pushes retry the same request
+  key and payload. Because a batch is a fire-and-forget state sync rather than a
+  question, the batches that queue behind a busy orchestrator fold into ONE next
+  turn instead of each starting (and usually being superseded) on its own; a batch
+  arriving while the orchestrator is idle still runs immediately. Queue acceptance
+  is not proof of supervisor action; reconcile current state before reacting to old
+  notifications. `supervisor events` includes delivery pending state and
+  control/batch receipts.
 
 - **Infra stops + dead workers:** a worker that exits before reaching a
   turn-boundary writeback (gRPC transport loss, incomplete-retry budget
