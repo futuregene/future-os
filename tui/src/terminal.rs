@@ -1149,7 +1149,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn drain_input_with_and_without_protocols() {
         let _g = terminal_test_lock();
