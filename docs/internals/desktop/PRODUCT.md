@@ -119,8 +119,9 @@ directory, a data-analysis directory, a writing directory, or a temporary
 directory FutureOS auto-creates.
 
 A Workspace can hold multiple child conversations. Deleting a workspace
-conversation only deletes the conversation itself, never the workspace
-directory or files inside it.
+conversation deletes that conversation together with its descendant
+conversations (the delete is recursive), but never the workspace directory or
+files inside it.
 
 The Workspace itself supports rename and delete (the operation menu on the
 workspace group header in the left navigation). Workspace deletion is a **soft
@@ -602,8 +603,10 @@ sessions use the same relations. Child conversations group with their root even
 when their working directories differ; pinned children enter the pinned section
 independently and keep their own subtree. Missing, archived, or deleted parents
 do not hide surviving children; deeper historical levels are flattened into the
-third level, with no Agent relations deleted or rewritten. Batch select-all
-includes collapsed children in the current group; delete does not auto-cascade.
+third level, with no Agent relations deleted or rewritten. Deleting a
+conversation is recursive: its descendants go with it (a pinned child included —
+the pin moves it in the sidebar, not in the lineage). Batch select-all
+includes collapsed children in the current group.
 A pinned conversation belongs to the pinned section rather than to any group,
 so it is never part of a batch: it carries no checkbox and select-all (in a
 workspace group or in Chat) skips it on both desktop and mobile.

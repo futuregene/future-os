@@ -117,7 +117,7 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 | `pinned` | 是否置顶 |
 | `readonly` | 是否只读 |
 | `agent_session_id` | GUI Thread ↔ Agent SQLite session 映射；非空值全局唯一，一个 Agent session 只能绑定一个 Desktop Thread；通过 RPC 查询，不跨数据库建立外键（`store/schema.rs`） |
-| `parent_session_id` | 父 Agent session ID 的本地投影；为空表示根对话。由启动同步、运行时发现和分叉写入；不设外键，允许父会话晚于子会话导入或已删除。Agent 仍是关系真源。 |
+| `parent_session_id` | 父 Agent session ID 的本地投影；为空表示根对话。由启动同步、运行时发现和分叉写入；不设外键，允许父会话晚于子会话导入或已删除。Agent 仍是关系真源。用户删除对话时沿该谱系递归删除（`store::threads::delete_thread_tree`）；孤儿清扫与外部删除反应走单线程删除，保留存活子对话。 |
 | `asset_root_id` | 共享附件原件/缩略图的稳定归属；分叉继承它，删除祖先不会使子会话历史失效（已发布迁移 `v1.1.9-thread-asset-root`） |
 | `last_message_at` | 最近消息时间 |
 | `last_opened_at` | 最近打开时间 |

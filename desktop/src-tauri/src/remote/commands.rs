@@ -3722,7 +3722,10 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(false));
 
-        // delete_session: missing id, success, and unknown-thread failure.
+        // delete_session: missing id, success, and idempotent success for a
+        // thread that is already gone (a child of a parent this phone deleted,
+        // or a row removed in the meantime) — the phone walks a selection one
+        // session at a time, so "already gone" must not read as a failure.
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "delete_session" }))
             .await;
@@ -3736,9 +3739,17 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(true));
         let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "delete_session", "threadId": thread.id }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "repeat delete is idempotent");
+        let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "delete_session", "threadId": "missing-thread" }))
             .await;
-        assert_eq!(reply["success"], json!(false));
+        assert_eq!(
+            reply["success"],
+            json!(true),
+            "already gone is not a failure"
+        );
 
         // Unknown command type.
         let reply = bridge
