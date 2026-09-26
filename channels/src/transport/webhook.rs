@@ -623,10 +623,15 @@ mod tests {
         let server = WebhookServer::bind("127.0.0.1:0").await.unwrap();
         let (addr, shutdown, serving) = serve(server).await;
         let mut stream = TcpStream::connect(addr).await.unwrap();
-        let filler = format!("X-Pad: {}\r\n", "a".repeat(1024));
-        for _ in 0..20 {
-            stream.write_all(filler.as_bytes()).await.unwrap();
-        }
+        // Exactly one byte past the limit, and no more: the server reads
+        // everything it was sent before answering, so its receive buffer is
+        // empty when it closes. Closing with unread data is an abortive close
+        // on Windows, and that aborts the client's read too — the 431 would
+        // never be observed.
+        let filler = format!("X-Pad: {}\r\n", "a".repeat(MAX_HEAD_BYTES - 8));
+        assert_eq!(filler.len(), MAX_HEAD_BYTES + 1);
+        stream.write_all(filler.as_bytes()).await.unwrap();
+        stream.flush().await.unwrap();
         let mut response = Vec::new();
         let _ =
             tokio::time::timeout(Duration::from_secs(3), stream.read_to_end(&mut response)).await;

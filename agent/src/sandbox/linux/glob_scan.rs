@@ -326,9 +326,12 @@ fn scan_with_budget(
     ))
 }
 
-// Glob patterns are matched against POSIX-spelled absolute paths (the Linux
-// helper's view of the filesystem), so the fixtures only hold on Unix hosts.
-#[cfg(all(test, unix))]
+// Glob patterns are matched against the host-spelled absolute paths the walk
+// yields, and every fixture below builds its pattern with `Path::join` from a
+// tempdir, so the same separator lands in both the pattern and the walked
+// path on every platform. Only the symlink fixtures need POSIX privileges and
+// stay `cfg(unix)`.
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -414,9 +417,14 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("pkg-a/secrets")).unwrap();
         std::fs::create_dir_all(dir.path().join("other/more/deep")).unwrap();
         std::fs::write(dir.path().join("pkg-a/secrets/a.key"), "secret").unwrap();
+        // Built segment by segment: `join("pkg-*/secrets/*.key")` would keep
+        // the literal `/` separators from the argument on Windows, and the
+        // matcher compares literal pattern bytes against walked path bytes.
         let pattern = dir
             .path()
-            .join("pkg-*/secrets/*.key")
+            .join("pkg-*")
+            .join("secrets")
+            .join("*.key")
             .to_string_lossy()
             .into_owned();
         let (found, visited) =

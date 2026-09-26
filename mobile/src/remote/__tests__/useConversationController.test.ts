@@ -214,6 +214,16 @@ describe("installed skills", () => {
     }
   });
 
+  it("refuses to ask a disconnected desktop for the skill list", async () => {
+    const h = await mountController({ client: null });
+    // The skills page stays reachable while the pairing is down (its list is
+    // cached), so the call has to fail with its own named error instead of
+    // dereferencing a null client.
+    await expect(h.result.current!.listSkills()).rejects.toThrow("skills_not_connected");
+    expect(h.request).not.toHaveBeenCalled();
+    act(() => h.renderer.unmount());
+  });
+
   it("does not mistake a malformed response for an empty skill list", async () => {
     const h = await mountController({ request: jest.fn(async () => ({ data: {} })) });
     await expect(h.result.current!.listSkills()).rejects.toThrow("skills_invalid_response");
@@ -350,6 +360,24 @@ describe("navigation races", () => {
 });
 
 describe("desktop session setting synchronization", () => {
+  test("only the two settings notifications change model or thinking level", async () => {
+    const h = await mountController({ selected: "s1" });
+    await act(async () => {
+      // A frame that is not a settings notification must not be parsed as one:
+      // an agent_end payload carrying `model` would otherwise silently retarget
+      // the composer to another model.
+      current(h).handleSessionSettingsEvent({ type: "agent_end", data: '{"model":"p/rogue"}' }, "s1");
+      // …and a payload that is not an object (a bare number, a bare string) has
+      // no field to read, so it is ignored before any `in` check runs.
+      current(h).handleSessionSettingsEvent({ type: "model_changed", data: "123" }, "s1");
+      current(h).handleSessionSettingsEvent({ type: "thinking_level_changed", data: '"high"' }, "s1");
+    });
+    expect(current(h).modelId).not.toBe("p/rogue");
+    expect(current(h).thinkingLevel).not.toBe("high");
+    expect(h.request).not.toHaveBeenCalled();
+    act(() => h.renderer.unmount());
+  });
+
   test("live model/thinking changes update only the active conversation, without sending commands back", async () => {
     const h = await mountController({ selected: "s1" });
     await act(async () => {
@@ -640,6 +668,28 @@ describe("attachment helpers", () => {
     act(() => h.renderer.unmount());
   });
 
+  it("a failed best-effort cancel does not replace the cancellation error", async () => {
+    const deferredInfo = deferred<DownloadInfo>();
+    mockedPrepareDownload.mockReturnValueOnce(deferredInfo.promise);
+    // The conversation moved on, and the desktop is unreachable again, so the
+    // cancel RPC itself fails.
+    const h = await mountController({
+      selected: "s1",
+      request: jest.fn(async () => { throw new Error("socket closed"); }),
+    });
+    const pending = current(h).prepareAttachment(historyAttachment);
+    h.selectedRef.current = "s2";
+    deferredInfo.resolve(downloadInfo);
+    // The caller must see the cancellation it caused, not the transport failure
+    // of a cleanup nobody is waiting for.
+    await expect(pending).rejects.toThrow("transfer_cancelled");
+    expect(h.request).toHaveBeenCalledWith(
+      { type: "download_cancel", transferId: downloadInfo.transferId },
+      "transfer",
+    );
+    act(() => h.renderer.unmount());
+  });
+
   it("downloadAttachment throws without a client", async () => {
     const h = await mountController({ client: null });
     await expect(current(h).downloadAttachment(downloadInfo)).rejects.toThrow(
@@ -819,6 +869,28 @@ describe("command dispatchers", () => {
     const h = await mountController({ closeConversation, removeSession });
     await act(async () => {
       await current(h).deleteSession("s1", "thread-1");
+    });
+    expect(closeConversation).not.toHaveBeenCalled();
+  });
+
+  it("deleteWorkspace closes the conversation the deletion just removed", async () => {
+    // Deleting a workspace takes every thread inside it, so a conversation the
+    // user is reading can be gone with it: the open thread must not stay on a
+    // session the desktop no longer serves.
+    const closeConversation = jest.fn();
+    const h = await mountController({ closeConversation });
+    await act(async () => {
+      await current(h).deleteWorkspace("w1");
+    });
+    expect(closeConversation).toHaveBeenCalled();
+  });
+
+  it("deleteWorkspace keeps the open conversation when the desktop refused", async () => {
+    const closeConversation = jest.fn();
+    const removeWorkspace = jest.fn(async () => false);
+    const h = await mountController({ closeConversation, removeWorkspace });
+    await act(async () => {
+      await current(h).deleteWorkspace("w1");
     });
     expect(closeConversation).not.toHaveBeenCalled();
   });

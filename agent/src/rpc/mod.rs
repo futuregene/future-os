@@ -337,6 +337,19 @@ impl AppState {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Arc<RwLock<ServerSession>>> {
+        #[cfg(test)]
+        {
+            // Test-only: simulate a hydrate that fails *after* the caller
+            // committed the session. Nothing is hydrated, inserted into the
+            // live registry or announced, so a test can assert the caller
+            // reports the failure and the committed session stays readable.
+            let mut slot = ACTIVATE_PERSISTED_SESSION_FAIL_HOOK.lock();
+            if matches!(slot.as_ref(), Some(armed) if armed == session_id) {
+                slot.take();
+                drop(slot);
+                anyhow::bail!("injected activation failure after the session was committed");
+            }
+        }
         let was_resident = self.sessions.read().contains_key(session_id);
         let session = self
             .try_get_session(session_id)?
@@ -470,6 +483,22 @@ static RELOAD_RACE_HOOK: parking_lot::Mutex<
 /// reconcile_provider_references_reselects_invalid_model_installed_mid_check).
 #[cfg(test)]
 static TEST_RELOAD_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// Test-only hook that makes `activate_persisted_session` fail the way a
+/// hydrate failure does: before anything is registered or announced, but only
+/// for a session whose row has already crossed the caller's durable commit
+/// boundary. Id-gated and consumed once, so an unrelated activation in a
+/// parallel test is never affected. In a non-test build neither the hook nor
+/// the check inside `activate_persisted_session` exists.
+#[cfg(test)]
+static ACTIVATE_PERSISTED_SESSION_FAIL_HOOK: parking_lot::Mutex<Option<String>> =
+    parking_lot::Mutex::new(None);
+
+/// Arm [`ACTIVATE_PERSISTED_SESSION_FAIL_HOOK`] for one session id.
+#[cfg(test)]
+fn fail_next_session_activation_for_test(session_id: &str) {
+    *ACTIVATE_PERSISTED_SESSION_FAIL_HOOK.lock() = Some(session_id.to_string());
+}
 
 fn get_state_internal(
     state: &AppState,
@@ -1285,6 +1314,50 @@ mod tests {
             }
         }
         panic!("session_created for announce-me never arrived on the global stream");
+    }
+
+    #[test]
+    fn publish_session_created_wrapper_announces_with_an_empty_creator() {
+        // The three-argument wrapper is the legacy surface; it must keep
+        // emitting the same event with an empty creator id.
+        let mut rx = global_events_broadcaster().subscribe();
+        publish_session_created("wrapper-session", "cli", "/tmp/wrapper");
+        for _ in 0..64 {
+            match rx.try_recv() {
+                Ok(event)
+                    if event.event_type == "session_created"
+                        && event.data.contains("wrapper-session") =>
+                {
+                    let data: serde_json::Value = serde_json::from_str(&event.data).unwrap();
+                    assert_eq!(data["sessionId"], "wrapper-session");
+                    assert_eq!(data["createdBy"], "cli");
+                    assert_eq!(data["creatorId"], "");
+                    assert_eq!(data["cwd"], "/tmp/wrapper");
+                    return;
+                }
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => panic!(
+                    "publish_session_created must announce on the global control-plane stream"
+                ),
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    panic!("global broadcaster channel closed before the announcement arrived")
+                }
+            }
+        }
+        panic!("session_created for wrapper-session never arrived on the global stream");
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn global_config_broadcaster_is_the_global_events_broadcaster() {
+        // The deprecated alias must resolve to the *same* broadcaster: a
+        // second instance would silently split config-event consumers from
+        // the ones on the session stream.
+        assert!(std::sync::Arc::ptr_eq(
+            &global_config_broadcaster(),
+            &global_events_broadcaster()
+        ));
     }
 
     #[test]

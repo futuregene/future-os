@@ -1355,39 +1355,60 @@ async fn a_drained_close_handshake_ends_the_message_stream_with_none() {
     // FIN ends the stream with `None`, which the session maps to the
     // end-of-stream arm. Driving the handshake directly keeps that mapping
     // deterministic.
+    //
+    // The server half-closes its write side only after it has read the
+    // client's close reply. A full close (dropping the socket) would send an
+    // RST on Windows, whose abort replaces the queued end-of-stream with a
+    // socket error; a FIN keeps the end-of-stream arm reachable there too.
     let (url, _) = crate::test_support::spawn_ws(vec![
         crate::test_support::WsAction::SendClose,
-        crate::test_support::WsAction::Delay(Duration::from_millis(200)),
+        // Let the client answer the close frame before the handshake is
+        // finished from the server side.
+        crate::test_support::WsAction::WaitForReceived {
+            count: 1,
+            timeout: Duration::from_secs(1),
+        },
+        crate::test_support::WsAction::ShutdownWrite,
+        // Hold the socket open after the FIN: the client must be able to
+        // observe the end of the stream before the server's teardown closes
+        // the socket, whose abortive close would turn it into an RST.
+        crate::test_support::WsAction::Delay(Duration::from_millis(700)),
     ])
     .await;
     let mut socket = crate::transport::ws::connect(&url, &[]).await.unwrap();
-    // The close frame arrives; tungstenite queues the reply.
-    let mut saw_close = false;
     use futures_util::StreamExt;
-    for _ in 0..100 {
-        match tokio::time::timeout(Duration::from_millis(50), socket.next()).await {
+    // The close frame arrives; tungstenite queues the reply. A read timeout
+    // means "nothing yet" — only an error or an early end is a failure.
+    let mut saw_close = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), socket.next()).await {
             Ok(Some(Ok(WsMessage::Close(_)))) => {
                 saw_close = true;
                 break;
             }
             Ok(Some(Ok(_))) => {}
-            _ => break,
+            Ok(Some(Err(error))) => panic!("the stream failed before the close: {error}"),
+            Ok(None) => panic!("the stream ended before the close frame arrived"),
+            Err(_) => {}
         }
     }
     assert!(saw_close, "the close frame must arrive");
-    // Sending any frame flushes the queued close reply, completing the
-    // handshake; the server's FIN then ends the stream.
-    use futures_util::SinkExt;
-    let _ = socket.send(WsMessage::Ping(vec![])).await;
+    // Nothing is written from here on: reading the close frame already
+    // flushed the close reply, and a frame sent after the server's FIN would
+    // be answered with an RST on Windows — which loses the end-of-stream the
+    // test is here to observe.
     let mut ended = false;
-    for _ in 0..100 {
-        match tokio::time::timeout(Duration::from_millis(50), socket.next()).await {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(100), socket.next()).await {
             Ok(None) => {
                 ended = true;
                 break;
             }
             Ok(Some(Ok(_))) => {}
-            _ => break,
+            Ok(Some(Err(error))) => panic!("the drained stream must end cleanly: {error}"),
+            Err(_) => {}
         }
     }
     assert!(ended, "after the handshake the stream ends with None");
@@ -1406,7 +1427,7 @@ async fn socket_mode_fails_when_the_ack_cannot_be_written() {
     let ctx = ProviderCtx::offline(&DEFINITION);
     let socket = crate::transport::ws::connect(&url, &[]).await.unwrap();
     // Kill the write half up front: the ack send fails when it flushes.
-    super::kill_write_half(&socket);
+    crate::test_support::kill_write_half(&socket);
     let sender: Arc<dyn ChannelSender> = Arc::new(RecordingSender::new());
     let error = tokio::time::timeout(
         Duration::from_secs(5),
@@ -1432,7 +1453,7 @@ async fn socket_mode_fails_when_the_pong_cannot_be_written() {
     let ctx = ProviderCtx::offline(&DEFINITION);
     let socket = crate::transport::ws::connect(&url, &[]).await.unwrap();
     // Kill the write half up front: the pong send fails when it flushes.
-    super::kill_write_half(&socket);
+    crate::test_support::kill_write_half(&socket);
     let sender: Arc<dyn ChannelSender> = Arc::new(RecordingSender::new());
     let error = tokio::time::timeout(
         Duration::from_secs(5),

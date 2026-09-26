@@ -189,11 +189,65 @@ mod tests {
 
     #[test]
     fn launcher_lookup_platform_discovery_runs() {
-        // Platform discovery (no explicit path) — outcome depends on the
-        // host; just exercise the lookup both ways.
-        let _ = find_browser_launcher(None);
-        let _ = launcher_from_executable(None);
-        let _ = Launcher::discover(None);
+        // Platform discovery (no explicit path) — the outcome depends on the
+        // host: a launcher on a dev machine, none on a bare CI image. Each
+        // entry point is judged on its own answer: a hit must be a real
+        // executable whose kind is reported, and the convenience wrappers must
+        // agree with *that* call (`Launcher::discover` carries no args).
+        //
+        // Deliberately no cross-call equality: discovery reads the environment
+        // (`LOCALAPPDATA`/`PROGRAMFILES`), and in this shared checkout another
+        // agent's test can legitimately change those between two calls, which
+        // would make "both calls agree" a claim about the machine rather than
+        // about this code. The deterministic version of that claim is
+        // `launcher_lookup_misses_when_the_roots_are_unset`.
+        match find_browser_launcher(None) {
+            Some((command, kind)) => {
+                assert!(
+                    std::path::Path::new(&command).is_file(),
+                    "a discovered launcher must be a file: {command}"
+                );
+                assert!(!kind.is_empty(), "the discovered kind is reported");
+                // The wrappers resolve through the same discovery, so on a host
+                // with a browser they too find *a* real launcher.
+                if let Some(wrapped) = launcher_from_executable(None) {
+                    assert!(
+                        std::path::Path::new(&wrapped).is_file(),
+                        "the wrapper must also name a file: {wrapped}"
+                    );
+                }
+                if let Some(discovered) = Launcher::discover(None) {
+                    assert!(std::path::Path::new(&discovered.command).is_file());
+                    assert!(discovered.args.is_empty());
+                }
+            }
+            None => {
+                assert!(
+                    launcher_from_executable(None).is_none(),
+                    "the wrappers agree on a miss"
+                );
+                assert!(Launcher::discover(None).is_none());
+            }
+        }
+    }
+
+    /// The miss arm, reached deterministically on any Windows host: the
+    /// candidate list is built from `LOCALAPPDATA`/`PROGRAMFILES`, so removing
+    /// those roots makes discovery report no launcher even where Chrome exists.
+    /// All three entry points have to agree, which is what makes
+    /// `launcher_from_executable`/`Launcher::discover` more than aliases.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn launcher_lookup_misses_when_the_roots_are_unset() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = crate::test_env::EnvGuard::remove(&[
+            "LOCALAPPDATA",
+            "PROGRAMFILES",
+            "PROGRAMFILES(X86)",
+        ]);
+        assert!(find_browser_launcher(None).is_none());
+        assert!(launcher_from_executable(None).is_none());
+        assert!(Launcher::discover(None).is_none());
     }
 
     #[test]

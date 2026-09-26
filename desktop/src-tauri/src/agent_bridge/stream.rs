@@ -1226,4 +1226,90 @@ mod tests {
         let input = crate::store::get_tool_call_input(&run.id, "tc1").expect("projection");
         assert_eq!(input.as_deref(), Some("{}"));
     }
+
+    /// The two `agent_end` classifiers are total over the strings the Agent can
+    /// emit, and every kind `agent_end_termination_kind` produces has its own
+    /// operator-facing message. A kind that fell through to the default would
+    /// silently downgrade a specific truncation reason to "unconfirmed", which
+    /// is exactly the regression this pins.
+    #[test]
+    fn agent_end_classifiers_are_total_and_every_kind_has_a_message() {
+        use super::{agent_end_termination_kind, termination_error};
+
+        // `reason: "incomplete"` and each non-clean `state` mark a truncated reply.
+        assert!(agent_end_incomplete(r#"{"reason":"incomplete"}"#));
+        for state in ["incomplete", "interrupted", "error", "failed"] {
+            let data = serde_json::json!({ "state": state }).to_string();
+            assert!(
+                agent_end_incomplete(&data),
+                "state {state} is not a clean end"
+            );
+            assert!(
+                agent_end_termination_kind(&data).is_some(),
+                "state {state} must carry a termination kind"
+            );
+        }
+        // A clean finish is clean, and a reply we cannot parse is treated as a
+        // truncated prefix rather than as a confirmed completion.
+        assert!(!agent_end_incomplete(r#"{"state":"complete"}"#));
+        assert!(agent_end_incomplete("not json"));
+        assert_eq!(agent_end_termination_kind(r#"{"state":"complete"}"#), None);
+        assert_eq!(agent_end_termination_kind("not json"), None);
+        // Truncated with no `detected_by` at all: still unconfirmed, never `None`.
+        assert_eq!(
+            agent_end_termination_kind(r#"{"state":"incomplete"}"#).as_deref(),
+            Some("response_unconfirmed")
+        );
+
+        // Every `detected_by` the Agent can report maps to a kind whose message
+        // is dedicated, not the fallback.
+        for (detected_by, kind) in [
+            ("upstream_disconnected", "upstream_disconnected"),
+            ("request_timeout", "response_timeout"),
+            ("idle_timeout", "response_timeout"),
+            ("finish_length", "output_limit"),
+            ("finish_content_filter", "model_content_filter"),
+            ("finish_error", "model_response_error"),
+            ("model_response_error", "model_response_error"),
+            ("model_paused", "model_paused"),
+            ("provider_cancelled", "provider_cancelled"),
+        ] {
+            let data = serde_json::json!({
+                "state": "incomplete",
+                "truncation": { "detected_by": detected_by }
+            })
+            .to_string();
+            assert_eq!(
+                agent_end_termination_kind(&data).as_deref(),
+                Some(kind),
+                "detected_by {detected_by}"
+            );
+            let message = termination_error(Some(kind));
+            assert!(message.starts_with('['), "{kind} -> {message}");
+            assert!(
+                !message.starts_with("[RESPONSE_UNCONFIRMED]"),
+                "{kind} fell through to the default message"
+            );
+        }
+        // An unrecognised `detected_by` is reported as unconfirmed.
+        assert_eq!(
+            agent_end_termination_kind(
+                r#"{"state":"incomplete","truncation":{"detected_by":"something_new"}}"#
+            )
+            .as_deref(),
+            Some("response_unconfirmed")
+        );
+        // The queue notice and the two "no kind" inputs keep their meanings.
+        assert_eq!(
+            termination_error(Some("run_queued")),
+            "[RUN_QUEUED] run accepted and queued behind an older run"
+        );
+        for fallback in [None, Some("no_such_kind"), Some("response_unconfirmed")] {
+            assert_eq!(
+                termination_error(fallback),
+                "[RESPONSE_UNCONFIRMED] response ended without confirmed completion",
+                "{fallback:?}"
+            );
+        }
+    }
 }

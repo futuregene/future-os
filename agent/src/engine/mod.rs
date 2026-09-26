@@ -285,6 +285,56 @@ mod tests {
         assert_eq!(engine.agent_loop.config.max_turns, 10);
     }
 
+    #[tokio::test]
+    async fn engine_with_tools_replaces_the_default_set_and_mirrors_it_into_the_loop() {
+        fn handler(
+            args: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>> {
+            Box::pin(async move { Ok(args.to_string()) })
+        }
+
+        let engine = Engine::new(
+            "https://api.test.com",
+            "key",
+            "model",
+            EngineConfig::with_defaults(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(engine.tools.len() >= 4, "coding tools load by default");
+
+        let only = crate::types::AgentTool {
+            def: crate::types::ToolDef {
+                tool_type: "function".to_string(),
+                function: crate::types::FunctionDef {
+                    name: "only_tool".to_string(),
+                    description: "the sole tool".to_string(),
+                    parameters: serde_json::json!({"type": "object"}),
+                },
+            },
+            handler,
+            guidelines: vec!["call it once".to_string()],
+        };
+        let engine = engine.with_tools(vec![only]);
+
+        assert_eq!(engine.tools.len(), 1);
+        assert_eq!(engine.tools[0].def.function.name, "only_tool");
+        assert_eq!(engine.tools[0].guidelines, ["call it once".to_string()]);
+        // The loop runs from its own copy, so a replacement that only updated
+        // one side would silently keep calling the default tools.
+        assert_eq!(engine.agent_loop.tools.len(), 1);
+        assert_eq!(engine.agent_loop.tools[0].def.function.name, "only_tool");
+        assert_eq!(
+            engine.agent_loop.tools[0].guidelines,
+            ["call it once".to_string()]
+        );
+        // The handler is what the agent actually invokes: prove the re-registered
+        // tool still answers, not just that its definition was copied.
+        let echoed = (engine.tools[0].handler)(serde_json::json!({"path": "a.rs"})).await;
+        assert_eq!(echoed.unwrap(), "{\"path\":\"a.rs\"}");
+    }
+
     #[test]
     fn engine_builder_chaining() {
         let engine = Engine::new(

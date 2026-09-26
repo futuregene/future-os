@@ -1120,6 +1120,158 @@ mod tests {
     }
 
     #[test]
+    fn finish_stream_skips_unknown_blocks_and_closes_the_known_ones() {
+        let adapter = AnthropicMessagesAdapter;
+        let mut state = adapter.new_stream_state();
+        // An unknown block type (tracked so its deltas can be ignored) next to a
+        // real tool block. The unknown block carries no wire identity to close,
+        // so finish_stream must not invent a TextEnd/ToolInputEnd for it.
+        for (index, block) in [
+            (1_u64, json!({"type": "server_tool_use", "id": "srv"})),
+            (
+                2_u64,
+                json!({"type": "tool_use", "id": "tool-1", "name": "echo"}),
+            ),
+        ] {
+            adapter
+                .decode_frame(
+                    &frame(
+                        "content_block_start",
+                        json!({
+                            "type": "content_block_start",
+                            "index": index,
+                            "content_block": block,
+                        }),
+                    ),
+                    state.as_mut(),
+                )
+                .unwrap();
+        }
+        assert!(!adapter.is_stream_complete(state.as_ref()));
+
+        let finished = adapter.finish_stream(state.as_mut()).unwrap();
+        assert_eq!(finished.len(), 2, "got {finished:?}");
+        match &finished[0] {
+            ModelStreamEvent::ToolInputEnd {
+                index,
+                id,
+                name,
+                arguments,
+                ..
+            } => {
+                assert_eq!(*index, 2);
+                assert_eq!(id, "tool-1");
+                assert_eq!(name, "echo");
+                // Nothing was streamed, so the arguments are the empty string,
+                // not a spuriously empty object.
+                assert_eq!(arguments, &json!(""));
+            }
+            other => panic!("expected ToolInputEnd for the tool block, got {other:?}"),
+        }
+        assert!(
+            matches!(
+                finished[1],
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::Incomplete,
+                    ..
+                }
+            ),
+            "got {:?}",
+            finished[1]
+        );
+        // The synthetic finish settles the state: a second drain is empty, so a
+        // reconnect cannot replay the same block ends twice.
+        assert!(adapter.is_stream_complete(state.as_ref()));
+        assert!(adapter.finish_stream(state.as_mut()).unwrap().is_empty());
+    }
+
+    /// Anthropic reports cache counters on their own delta frames, sometimes
+    /// without repeating `input_tokens`. `prompt_tokens` therefore has to be
+    /// recomposed as (already-recorded prompt minus the cache it contained)
+    /// plus the counters from this frame — never summed, which would inflate
+    /// the context size on every frame.
+    #[test]
+    fn usage_without_input_tokens_recomposes_the_prompt_count_without_double_counting() {
+        let mut usage = Usage {
+            prompt_tokens: 1_000,
+            completion_tokens: 5,
+            ..Default::default()
+        };
+
+        update_usage(
+            &mut usage,
+            &json!({"cache_read_input_tokens": 100, "cache_creation_input_tokens": 50}),
+        );
+        assert_eq!(usage.prompt_tokens, 1_150);
+        assert_eq!(usage.cache_read_tokens, Some(100));
+        assert_eq!(usage.cache_write_tokens, Some(50));
+
+        // The next frame repeats the read counter and omits the write one; the
+        // write total must be carried over, not dropped.
+        update_usage(&mut usage, &json!({"cache_read_input_tokens": 200}));
+        assert_eq!(usage.prompt_tokens, 1_250);
+        assert_eq!(usage.cache_read_tokens, Some(200));
+        assert_eq!(usage.cache_write_tokens, Some(50));
+        assert_eq!(usage.total_tokens, 1_255);
+
+        // A frame that does repeat `input_tokens` takes it verbatim and adds
+        // the cache split of the same frame.
+        usage.prompt_tokens = 0;
+        update_usage(
+            &mut usage,
+            &json!({
+                "input_tokens": 7,
+                "cache_read_input_tokens": 3,
+                "output_tokens": 11,
+                "output_tokens_details": {"thinking_tokens": 2},
+            }),
+        );
+        assert_eq!(usage.prompt_tokens, 60); // 7 + 3 + carried-over 50
+        assert_eq!(usage.completion_tokens, 11);
+        assert_eq!(usage.reasoning_tokens, Some(2));
+        assert_eq!(usage.total_tokens, 71);
+
+        // Boundary: a prompt smaller than the cache it is claimed to contain.
+        // `update_usage` recomposes the uncached remainder with
+        // `i64::saturating_sub`, which only clamps at `i64::MIN` — it does not
+        // clamp at zero, so the count is left as the provider reported it rather
+        // than panicking or wrapping. (The binding this comment used to describe
+        // was dead: nothing read it, and the assertion below is the one that
+        // pins the behaviour.)
+        // A frame that reports only the write counter still recomposes the read
+        // side from the value recorded by the previous frame, and leaves that
+        // read total in place.
+        let mut write_only = Usage {
+            prompt_tokens: 1_000,
+            cache_read_tokens: Some(100),
+            cache_write_tokens: Some(50),
+            ..Default::default()
+        };
+        update_usage(&mut write_only, &json!({"cache_creation_input_tokens": 80}));
+        assert_eq!(write_only.prompt_tokens, 1_030); // 1000 - 150 + 100 + 80
+        assert_eq!(write_only.cache_read_tokens, Some(100));
+        assert_eq!(write_only.cache_write_tokens, Some(80));
+
+        // Boundary: the uncached remainder is `i64::saturating_sub`, which only
+        // clamps at i64::MIN — it does not clamp at zero. A gateway whose cache
+        // counters exceed the prompt it recorded therefore produces a signed,
+        // internally inconsistent count (10 - 150 + 200 + 50 = 110) instead of
+        // panicking or wrapping; anything-but-silent arithmetic is the contract
+        // worth pinning here, and the count is left as the provider reported it.
+        let mut inverted = Usage {
+            prompt_tokens: 10,
+            cache_read_tokens: Some(100),
+            cache_write_tokens: Some(50),
+            ..Default::default()
+        };
+        update_usage(&mut inverted, &json!({"cache_read_input_tokens": 200}));
+        assert_eq!(inverted.prompt_tokens, 110);
+        assert_eq!(inverted.cache_read_tokens, Some(200));
+        assert_eq!(inverted.cache_write_tokens, Some(50));
+        assert_eq!(inverted.total_tokens, 110);
+    }
+
+    #[test]
     fn content_block_stop_on_other_and_missing_blocks() {
         let adapter = AnthropicMessagesAdapter;
         let mut state = adapter.new_stream_state();

@@ -80,3 +80,12 @@ test("thinking choices remain selectable after redesign", () => {
   act(() => options()[5]!.props.onPress());
   expect(remote.setThinkingLevel).toHaveBeenCalledWith("xhigh");
 });
+
+test("tapping the scrim outside the sheet dismisses it without changing a setting", () => {
+  const scrim = tree.root.findAll(node =>
+    node.props.accessible === false && typeof node.props.onPress === "function")[0]!;
+  act(() => scrim.props.onPress());
+  expect(setSelector).toHaveBeenCalledWith(null);
+  expect(remote.setModel).not.toHaveBeenCalled();
+  expect(remote.setThinkingLevel).not.toHaveBeenCalled();
+});

@@ -215,6 +215,32 @@ mod tests {
         (executable_path, home_dir)
     }
 
+    /// `is_not_found` decides whether a `realpath` failure means "the sibling
+    /// agent binary is absent" (fall back to no link) or is a real error. It
+    /// reads the OS message, so both spellings must be recognised — and an
+    /// unrelated failure must not be mistaken for a missing file.
+    ///
+    /// Cross-platform on purpose: the POSIX link flow that calls it is
+    /// `#[cfg(unix)]`, but the discriminator itself is ordinary code.
+    ///
+    /// NOTE (not fixed here, out of this task's scope): Windows renders a
+    /// missing *directory* component as `os error 3`
+    /// (ERROR_PATH_NOT_FOUND), which this helper does not recognise — a real
+    /// `realpath` of a missing sibling under a missing parent would be
+    /// reported as a hard error instead of "no sibling agent". The call site
+    /// cannot hit it (`executable_dir` is where the running binary lives), so
+    /// the assertion below pins the current contract rather than a wrong one.
+    #[test]
+    fn is_not_found_recognises_only_a_missing_path() {
+        assert!(is_not_found("No such file or directory (os error 2)"));
+        assert!(is_not_found("no such file or directory"));
+        assert!(!is_not_found("Access is denied (os error 5)"));
+        assert!(!is_not_found(
+            "too many levels of symbolic links (os error 40)"
+        ));
+        assert!(!is_not_found(""));
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn realpath_non_enoent_error_propagates() {
@@ -270,6 +296,82 @@ mod tests {
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
         (code, stdout, stderr)
+    }
+
+    /// The POSIX link flow also runs on Windows when the platform is
+    /// overridden: only *creating the symlink* needs a privilege this host
+    /// does not have (no administrator/developer mode — probed). Everything
+    /// before it must therefore execute here — the home directory, the
+    /// `realpath` of the executable, the basename check, the sibling-agent
+    /// probe and the `~/.future/bin` creation — and the failure must be the
+    /// link step, not one of the earlier refusals.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn posix_link_flow_reaches_symlink_creation() {
+        let _guard = crate::test_env::lock_env().await;
+        let root = tempfile::tempdir().unwrap();
+        let (executable_path, home_dir) = create_unix_fixture(root.path()).await;
+        let install_count = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let (code, stdout, stderr) =
+            run_init(&executable_path, &home_dir, install_count.clone(), "darwin").await;
+
+        // The install hook ran, so the flow is past the platform gate …
+        assert_eq!(install_count.load(std::sync::atomic::Ordering::Relaxed), 1);
+        // … the bin directory was created before the link step …
+        let bin_dir = home_dir.join(".future").join("bin");
+        assert!(bin_dir.is_dir(), "the bin dir is created before linking");
+        // … and the command failed at the symlink step rather than earlier:
+        // each earlier refusal has its own message and none of them appeared.
+        assert_eq!(code, 1, "stdout: {stdout}");
+        assert!(
+            !stderr.contains("Cannot initialize command links from"),
+            "the executable was accepted: {stderr}"
+        );
+        assert!(
+            !stderr.contains("already exists and is not a symbolic link"),
+            "the destination was free: {stderr}"
+        );
+        assert!(!stderr.is_empty(), "the link failure is reported");
+        assert!(
+            !stdout.contains("Linked future"),
+            "nothing claims the link was made: {stdout}"
+        );
+    }
+
+    /// A missing sibling `future-agent` is "no agent to link", not an error:
+    /// the `is_not_found` arm must swallow it and carry on with `future`
+    /// itself. Nothing may be created for the absent sibling on any platform.
+    #[tokio::test]
+    async fn missing_sibling_agent_is_not_an_error() {
+        let _guard = crate::test_env::lock_env().await;
+        let root = tempfile::tempdir().unwrap();
+        let (executable_path, home_dir) = create_unix_fixture(root.path()).await;
+        tokio::fs::remove_file(root.path().join("app").join("future-agent"))
+            .await
+            .unwrap();
+        let install_count = Arc::new(std::sync::atomic::AtomicI32::new(0));
+        let (code, stdout, stderr) =
+            run_init(&executable_path, &home_dir, install_count, "darwin").await;
+
+        let bin_dir = home_dir.join(".future").join("bin");
+        assert!(
+            tokio::fs::symlink_metadata(bin_dir.join("future-agent"))
+                .await
+                .is_err(),
+            "no link is attempted for an absent sibling"
+        );
+        assert!(
+            !stderr.contains("future-agent"),
+            "the absent sibling never becomes its own error: {stderr}"
+        );
+        if cfg!(windows) {
+            // The `future` link is the step Windows cannot do without the
+            // symlink privilege — the flow got all the way there.
+            assert_eq!(code, 1, "stdout: {stdout}");
+        } else {
+            assert_eq!(code, 0, "stderr: {stderr}");
+            assert!(stdout.contains("Linked future into"), "{stdout}");
+        }
     }
 
     // Unix-only: the simulated darwin/linux install creates real symlinks,

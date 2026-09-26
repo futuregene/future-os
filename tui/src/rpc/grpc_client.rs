@@ -3705,4 +3705,176 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(300)).await;
         client.disconnect();
     }
+
+    // ─── suggest_skill (best-effort by contract) ────────────────────────
+
+    fn suggest_candidates() -> Vec<(String, String)> {
+        vec![
+            ("alpha".to_string(), "first".to_string()),
+            ("beta".to_string(), "second".to_string()),
+        ]
+    }
+
+    /// A client for the sessionless suggestion call. Like the other unary-API
+    /// tests it dials on demand rather than waiting for the stream manager (that
+    /// only attaches once something subscribes to events); the event receiver is
+    /// handed back so the caller keeps it alive for the test's lifetime.
+    async fn suggest_client(addr: &str) -> (GrpcClient, mpsc::UnboundedReceiver<AgentEvent>) {
+        let (client, events, _conn) = GrpcClient::new(addr);
+        let client = client.with_no_context_files(true);
+        client.set_current_session_id("suggest-session");
+        (client, events)
+    }
+
+    /// A recommendation reaches the caller verbatim, and the request carries
+    /// the query plus the candidate set in order — the agent sees exactly what
+    /// the UI showed the user.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn suggest_skill_returns_the_recommendation_and_sends_the_candidates() {
+        let mock = ApiMock::default();
+        let requests = mock.requests.clone();
+        let data = mock.data_by_type.clone();
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events) = suggest_client(&addr).await;
+
+        data.lock().unwrap().insert(
+            "suggest_skill".to_string(),
+            r#"{"skill":{"name":"alpha","description":"does a thing"}}"#.to_string(),
+        );
+        assert_eq!(
+            client
+                .suggest_skill("format code", &suggest_candidates())
+                .await,
+            Some(("alpha".to_string(), "does a thing".to_string()))
+        );
+        let sent = last_request(&requests, "suggest_skill");
+        assert_eq!(sent.suggest_query, "format code");
+        assert_eq!(sent.suggest_candidates.len(), 2);
+        assert_eq!(sent.suggest_candidates[0].name, "alpha");
+        assert_eq!(sent.suggest_candidates[0].description, "first");
+        assert_eq!(sent.suggest_candidates[1].name, "beta");
+        assert_eq!(sent.suggest_candidates[1].description, "second");
+    }
+
+    /// An absent or non-string description is not a failure: the name is still
+    /// usable, so the recommendation survives with an empty description.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn suggest_skill_tolerates_a_missing_or_untyped_description() {
+        let mock = ApiMock::default();
+        let data = mock.data_by_type.clone();
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events) = suggest_client(&addr).await;
+
+        for body in [
+            r#"{"skill":{"name":"alpha"}}"#,
+            r#"{"skill":{"name":"alpha","description":7}}"#,
+            r#"{"skill":{"name":"alpha","description":null}}"#,
+        ] {
+            data.lock()
+                .unwrap()
+                .insert("suggest_skill".to_string(), body.to_string());
+            assert_eq!(
+                client.suggest_skill("q", &suggest_candidates()).await,
+                Some(("alpha".to_string(), String::new())),
+                "body={body}"
+            );
+        }
+    }
+
+    /// Every way of *declining* is the same answer — `None` — because the
+    /// caller is a prompt being typed and a recommendation may never surface an
+    /// error or hold the send.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn suggest_skill_declines_a_null_unshaped_or_untyped_answer() {
+        let mock = ApiMock::default();
+        let data = mock.data_by_type.clone();
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events) = suggest_client(&addr).await;
+
+        for body in [
+            r#"{"skill":null}"#,                      // the agent declined
+            r#"{}"#,                                  // no skill key at all
+            r#"{"skill":{}}"#,                        // a skill with no name
+            r#"{"skill":{"description":"no name"}}"#, // name missing
+            r#"{"skill":{"name":42}}"#,               // name not a string
+            r#"{"skill":{"name":null}}"#,             // name explicitly null
+        ] {
+            data.lock()
+                .unwrap()
+                .insert("suggest_skill".to_string(), body.to_string());
+            assert_eq!(
+                client.suggest_skill("q", &suggest_candidates()).await,
+                None,
+                "body={body}"
+            );
+        }
+    }
+
+    /// The two transport-level failures — a tonic status and a `success:false`
+    /// answer — are swallowed as well: the best-effort contract covers the
+    /// network, not just the payload.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn suggest_skill_declines_on_transport_and_agent_failures() {
+        let mock = ApiMock {
+            status_errors: StdHashMap::from([(
+                "suggest_skill".to_string(),
+                tonic::Status::unavailable("agent down"),
+            )]),
+            ..Default::default()
+        };
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events) = suggest_client(&addr).await;
+        assert_eq!(client.suggest_skill("q", &suggest_candidates()).await, None);
+
+        let mock = ApiMock {
+            fail_with: StdHashMap::from([(
+                "suggest_skill".to_string(),
+                "no api key configured".to_string(),
+            )]),
+            ..Default::default()
+        };
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events) = suggest_client(&addr).await;
+        assert_eq!(client.suggest_skill("q", &suggest_candidates()).await, None);
+    }
+
+    /// Boundary: no candidates at all is a legal request (the catalogue minus
+    /// the installed set can be empty), and an empty query is passed through
+    /// rather than treated as an error here — the agent owns that decision.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn suggest_skill_sends_an_empty_candidate_set_and_query_verbatim() {
+        let mock = ApiMock::default();
+        let requests = mock.requests.clone();
+        let data = mock.data_by_type.clone();
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events) = suggest_client(&addr).await;
+
+        data.lock().unwrap().insert(
+            "suggest_skill".to_string(),
+            r#"{"skill":{"name":"solo","description":"d"}}"#.to_string(),
+        );
+        assert_eq!(
+            client.suggest_skill("", &[]).await,
+            Some(("solo".to_string(), "d".to_string()))
+        );
+        let sent = last_request(&requests, "suggest_skill");
+        assert!(sent.suggest_candidates.is_empty());
+        assert_eq!(sent.suggest_query, "");
+
+        // Unicode + CJK survive the round trip unescaped.
+        data.lock().unwrap().insert(
+            "suggest_skill".to_string(),
+            r#"{"skill":{"name":"技能","description":"中文描述 — ok"}}"#.to_string(),
+        );
+        assert_eq!(
+            client
+                .suggest_skill("中文 query", &suggest_candidates())
+                .await,
+            Some(("技能".to_string(), "中文描述 — ok".to_string()))
+        );
+        assert_eq!(
+            last_request(&requests, "suggest_skill").suggest_query,
+            "中文 query"
+        );
+    }
 }

@@ -1,4 +1,6 @@
 import { Linking, Platform } from "react-native";
+import { File } from "expo-file-system";
+import * as IntentLauncher from "expo-intent-launcher";
 import {
   buildChannel,
   checkAndroidUpdate,
@@ -11,6 +13,26 @@ import {
   RELEASE_MANIFEST_URL,
   shouldOfferAndroidUpdate,
 } from "../update";
+
+jest.mock("expo-file-system", () => ({
+  File: Object.assign(
+    class MockFile {
+      uri: string;
+      constructor(...parts: unknown[]) {
+        this.uri = parts.length ? String(parts[0]) : "file:///cache/futureos-update.apk";
+      }
+    },
+    { downloadFileAsync: jest.fn(async () => ({ uri: "file:///cache/futureos-update.apk" })) },
+  ),
+  Paths: { cache: "cache" },
+}));
+jest.mock("expo-file-system/legacy", () => ({
+  getContentUriAsync: jest.fn(async (uri: string) => uri.replace("file://", "content://local/")),
+}));
+jest.mock("expo-intent-launcher", () => ({ startActivityAsync: jest.fn(async () => {}) }));
+
+/** The platform this suite started on, restored by the platform-flipping cases. */
+const originalPlatformValue = Platform.OS;
 
 function mockFetch(body: unknown, ok = true): jest.Mock {
   return jest.fn(async () => ({
@@ -195,4 +217,106 @@ describe("checkIosUpdate", () => {
     );
     expect(status.hasUpdate).toBe(false);
   });
+
+  test("a failing lookup is surfaced instead of being read as 'no update'", async () => {
+    await expect(checkIosUpdate("1.0.0", mockFetch({}, false))).rejects.toThrow("lookup failed: 500");
+  });
+
+  test("a lookup with no results array at all is treated as not published", async () => {
+    const status = await checkIosUpdate("1.0.0", mockFetch({}));
+    expect(status).toMatchObject({ appStoreUrl: null, hasUpdate: false, latestVersion: "1.0.0" });
+  });
 });
+
+describe("the Android channel decision", () => {
+  test.each([
+    // A release build only takes a release.
+    ["1.0.0", "1.1.0", true],
+    ["1.0.0", "0.0.2-100+nightly", false],
+    ["1.0.0", "1.0.0", false],
+    // A test/nightly build only follows the nightly stream forward.
+    ["0.0.2-100+test", "0.0.2-101+nightly", true],
+    ["0.0.2-100+test", "0.0.2-100+nightly", false],
+    ["0.0.2-100+test", "0.0.2-99+nightly", false],
+    ["0.0.2-100+test", "0.0.2-101+test", false],
+    // A newer core wins outright, whatever the run numbers say.
+    ["0.0.2-500+nightly", "0.0.3-1+nightly", true],
+    ["0.0.3-1+nightly", "0.0.2-500+nightly", false],
+    // A dev/local build follows any nightly it is not already identical to.
+    ["0.0.2-abcdef+local", "0.0.2-121+nightly", true],
+    ["0.0.2-abcdef+local", "0.0.2-abcdef+local", false],
+    ["0.0.2-abcdef+dev", "1.0.0", false],
+  ])("current %s against latest %s offers an update: %s", (current, latest, expected) => {
+    expect(shouldOfferAndroidUpdate(current, latest)).toBe(expected);
+  });
+
+  test("a nightly build without a run number cannot be ordered against another", () => {
+    // Same core, both on the nightly channel, but one carries no %+suffix run
+    // number: there is nothing to compare, so no update is offered rather than
+    // reinstalling the same build.
+    expect(shouldOfferAndroidUpdate("0.0.2-100+nightly", "0.0.2+nightly")).toBe(false);
+    expect(shouldOfferAndroidUpdate("0.0.2+nightly", "0.0.2-100+nightly")).toBe(false);
+    expect(shouldOfferAndroidUpdate("0.0.2-100x+nightly", "0.0.2-200+nightly")).toBe(false);
+  });
+});
+
+describe("installUpdate", () => {
+  const restorePlatform = (value: typeof Platform.OS) =>
+    Object.defineProperty(Platform, "OS", { configurable: true, value });
+  const base = {
+    currentVersion: "1.0.0",
+    latestVersion: "1.1.0",
+    hasUpdate: true,
+    appStoreUrl: null,
+    downloadUrl: null,
+    canInstallInApp: false,
+  };
+
+  test.each(["ios", "android"] as const)("on %s an update with no store URL is an error", async os => {
+    restorePlatform(os);
+    try {
+      await expect(installUpdate(base)).rejects.toThrow(/URL is unavailable/);
+    } finally {
+      restorePlatform(originalPlatformValue);
+    }
+  });
+
+  test("iOS opens the App Store and never the APK path", async () => {
+    restorePlatform("ios");
+    const openUrl = jest.spyOn(Linking, "openURL").mockResolvedValueOnce(true);
+    try {
+      await installUpdate({ ...base, appStoreUrl: "https://apps.apple.com/app/id1" });
+      expect(openUrl).toHaveBeenCalledWith("https://apps.apple.com/app/id1");
+    } finally {
+      restorePlatform(originalPlatformValue);
+      openUrl.mockRestore();
+    }
+  });
+
+  test("Android downloads the APK in-app and hands it to the installer", async () => {
+    restorePlatform("android");
+    const download = jest.mocked(File.downloadFileAsync);
+    const startActivity = jest.mocked(IntentLauncher.startActivityAsync);
+    download.mockResolvedValueOnce({ uri: "file:///cache/futureos-update.apk" } as never);
+    try {
+      await installUpdate({
+        ...base,
+        downloadUrl: "https://dl.future-os.cn/releases/1.1.0/FutureOS.apk",
+        canInstallInApp: true,
+      });
+      expect(download).toHaveBeenCalledWith(
+        "https://dl.future-os.cn/releases/1.1.0/FutureOS.apk",
+        expect.anything(),
+        { idempotent: true },
+      );
+      expect(startActivity).toHaveBeenCalledWith("android.intent.action.VIEW", expect.objectContaining({
+        data: "content://local//cache/futureos-update.apk",
+        flags: 1,
+        type: "application/vnd.android.package-archive",
+      }));
+    } finally {
+      restorePlatform(originalPlatformValue);
+    }
+  });
+});
+

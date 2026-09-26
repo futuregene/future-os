@@ -30,3 +30,14 @@ test("display and inline formulas use separate layouts", () => {
   const code = String.raw`\frac{1}{2}`;
   expect(renderMathSvg(code, true)!.height).toBeGreaterThan(renderMathSvg(code, false)!.height);
 });
+
+test("the layout cache is bounded, so a long session cannot grow it without limit", () => {
+  const code = String.raw`\frac{1}{2}`;
+  const first = renderMathSvg(code, true);
+  expect(first).not.toBeNull();
+  // Cheap failures still take a cache slot; 129 of them push the oldest out.
+  for (let index = 0; index < 129; index += 1) renderMathSvg(`\\unknown${index}{`, true);
+  const again = renderMathSvg(code, true);
+  expect(again).toEqual(first);
+  expect(again).not.toBe(first);
+});

@@ -554,4 +554,29 @@ mod tests {
         }
         assert_eq!(normalize_tier("anything-else"), "off");
     }
+
+    #[test]
+    fn auto_title_first_turn_round_trips_and_unknown_languages_are_refused() {
+        let (_home, conn) = guarded_conn("settings_title_language");
+        drop(conn);
+
+        let settings = update_app_settings(UpdateAppSettingsInput {
+            auto_title_first_turn: Some(false),
+            ..Default::default()
+        })
+        .expect("write auto-title preference");
+        assert!(!settings.auto_title_first_turn);
+        assert!(!get_app_settings().expect("read back").auto_title_first_turn);
+
+        // Only the languages the model prompt itself supports may be stored;
+        // anything else would silently fall back to a mixed-language title.
+        let error = update_app_settings(UpdateAppSettingsInput {
+            title_language: Some("fr".to_string()),
+            ..Default::default()
+        })
+        .expect_err("an unsupported title language must be refused")
+        .to_string();
+        assert!(error.contains("Unsupported title language"), "{error}");
+        assert_eq!(get_app_settings().expect("read back").title_language, "en");
+    }
 }

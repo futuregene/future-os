@@ -2472,10 +2472,15 @@ mod pipeline_tests {
             .expect("exists");
         // Stored canonicalized, so the agent's spelling and every other
         // client's map to this one workspace (the temp HOME sits behind
-        // macOS's `/var` → `/private/var` symlink).
-        assert_eq!(
-            created.path,
-            new_dir.canonicalize().expect("canon").display().to_string()
+        // macOS's `/var` → `/private/var` symlink), and in the ordinary
+        // spelling — Windows' `\\?\` form must not leak into the row the GUI
+        // renders and a shell is pointed at.
+        let canonical = crate::store::strip_verbatim_prefix(new_dir.canonicalize().expect("canon"));
+        assert_eq!(created.path, canonical.display().to_string());
+        assert!(
+            !created.path.starts_with(r"\\?\"),
+            "the verbatim prefix must not leak into a stored workspace path: {}",
+            created.path
         );
         assert_eq!(created.name, "brand-new");
     }

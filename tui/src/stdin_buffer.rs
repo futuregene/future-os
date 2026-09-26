@@ -444,6 +444,51 @@ mod tests {
         assert!(!buf.pending());
     }
 
+    /// An incomplete escape followed by a **multi-byte UTF-8 character**: the
+    /// scanner walks byte offsets forward looking for a boundary where the
+    /// sequence becomes complete, and every offset inside the character's
+    /// encoding is not a char boundary. It must step over those offsets instead
+    /// of slicing the string there (which would panic), and it must not lose a
+    /// byte: whatever is not emitted stays pending until `flush`.
+    #[test]
+    fn an_incomplete_escape_before_multibyte_text_never_splits_a_character() {
+        for head in ["\x1b", "\x1b[", "\x1b[1;", "\x1b]"] {
+            let mut buf = StdinBuffer::new();
+            let mut emitted: Vec<String> = Vec::new();
+            for chunk in [head, "技"] {
+                let events = buf.process(chunk);
+                emitted.extend(data_events(&events).iter().map(|s| s.to_string()));
+            }
+            let flushed = buf.flush();
+            emitted.extend(data_events(&flushed).iter().map(|s| s.to_string()));
+
+            assert!(
+                !buf.pending(),
+                "flush must drain the buffer for head {head:?}"
+            );
+            let joined = emitted.concat();
+            assert!(
+                joined.starts_with(head),
+                "the escape head must survive intact: {head:?} -> {emitted:?}"
+            );
+            assert!(
+                joined.contains('技'),
+                "the CJK character must survive whole: {head:?} -> {emitted:?}"
+            );
+            assert_eq!(
+                joined.chars().filter(|c| *c == '技').count(),
+                1,
+                "the character must be emitted exactly once: {emitted:?}"
+            );
+            for chunk in &emitted {
+                assert!(
+                    !chunk.is_empty(),
+                    "no empty chunks for head {head:?}: {emitted:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn complete_csi_and_osc_sequences() {
         let mut buf = StdinBuffer::new();

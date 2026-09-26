@@ -525,6 +525,9 @@ pub async fn bind_local() -> io::Result<LocalIncoming> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `StreamExt::next` is driven from the unix-only IPC accept test; importing
+    // it unconditionally makes the Windows build fail on an unused import.
+    #[cfg(unix)]
     use tokio_stream::StreamExt;
 
     #[test]
@@ -650,5 +653,199 @@ mod tests {
         let accepted = std::pin::Pin::new(&mut incoming).next().await.unwrap();
         assert!(accepted.is_ok());
         drop(client);
+    }
+
+    /// The named pipe is keyed by the user's SID, and an instance with its own
+    /// FutureOS home gets its own pipe. Two isolated instances on one account must
+    /// not share an endpoint - otherwise the second one steals the first's traffic.
+    #[cfg(windows)]
+    #[test]
+    fn a_redirected_future_home_gets_its_own_named_pipe() {
+        let default = local_pipe_name_for("S-1-5-21-100".to_string(), None);
+        assert_eq!(default, r"\\.\pipe\future-agent-S-1-5-21-100");
+
+        let home = std::path::PathBuf::from(r"C:\tmp\futureos-home");
+        let tagged = local_pipe_name_for("S-1-5-21-100".to_string(), Some(home.clone()));
+        assert_ne!(
+            tagged, default,
+            "an instance with its own home must not reuse the default pipe"
+        );
+        assert_eq!(
+            tagged,
+            format!(
+                r"\\.\pipe\future-agent-S-1-5-21-100-{}",
+                crate::home::home_tag(&home)
+            ),
+            "the tag must be derived from the home, so the name is stable across restarts"
+        );
+        // A different home yields a different pipe (the tag is not a constant).
+        let other = local_pipe_name_for(
+            "S-1-5-21-100".to_string(),
+            Some(std::path::PathBuf::from(r"C:\tmp\other-home")),
+        );
+        assert_ne!(tagged, other);
+    }
+
+    /// The pipe is created with a DACL that grants only SYSTEM and the current user,
+    /// so a local process running as someone else cannot connect. That rests on
+    /// `current_user_sid_string` actually resolving a SID - if it silently returned an
+    /// empty string, the SDDL would be built around `;;;` and the ACL would be wrong.
+    #[cfg(windows)]
+    #[test]
+    fn the_current_user_sid_is_resolved_to_a_real_sid_string() {
+        let sid = current_user_sid_string().expect("the process token must yield a SID");
+        assert!(
+            sid.starts_with("S-1-"),
+            "a SID string starts with S-1-, got {sid:?}"
+        );
+        assert!(sid.len() > 4, "the SID must not be empty: {sid:?}");
+    }
+
+    /// End-to-end over a REAL named pipe, with an isolated `FUTURE_HOME` so the test
+    /// never binds the default instance's endpoint (a running agent owns that one, and
+    /// `first_pipe_instance` would make this fail or, worse, interfere).
+    ///
+    /// This is the only thing that executes the Windows accept loop, the protected
+    /// pipe creation, and `LocalIo`'s four `poll_*` delegations - the unix test covers
+    /// the same shapes on the other platform, but neither platform's test compiles for
+    /// the other, so the Windows half cannot be inferred from the unix one.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn named_pipe_accepts_the_current_user_and_round_trips_bytes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_stream::StreamExt;
+
+        // Unique per run: the pipe name is derived from this path.
+        let home = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os(crate::home::FUTURE_HOME_ENV);
+        std::env::set_var(crate::home::FUTURE_HOME_ENV, home.path());
+
+        let mut incoming = bind_local().await.expect("the pipe must bind");
+        let pipe = local_pipe_name();
+        assert!(
+            pipe.contains(&crate::home::home_tag(home.path())),
+            "the test must bind its OWN pipe, not the default instance's: {pipe}"
+        );
+
+        let mut client = tokio::net::windows::named_pipe::ClientOptions::new()
+            .open(&pipe)
+            .expect("a client of the current user must be accepted");
+
+        let accepted = std::pin::Pin::new(&mut incoming)
+            .next()
+            .await
+            .expect("the server must accept the connection")
+            .expect("the accepted IO must be usable");
+        let mut server = accepted;
+
+        // tonic asks for the connect info before it serves the stream; the value is
+        // `()` here (the pipe is already scoped to this user), and the arm must still
+        // be present or tonic cannot use this IO at all.
+        assert_eq!(
+            <LocalIo as tonic::transport::server::Connected>::connect_info(&server),
+            ()
+        );
+
+        // client -> server (poll_read) and server -> client (poll_write),
+        // with an explicit flush so `poll_flush` is driven too.
+        client.write_all(b"ping from the client").await.unwrap();
+        client.flush().await.unwrap();
+        let mut buf = [0_u8; 20];
+        server.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"ping from the client");
+
+        server.write_all(b"pong").await.unwrap();
+        server.flush().await.unwrap();
+        let mut reply = [0_u8; 4];
+        client.read_exact(&mut reply).await.unwrap();
+        assert_eq!(&reply, b"pong");
+
+        // An orderly shutdown: the server's poll_shutdown path.
+        server.shutdown().await.unwrap();
+        drop(client);
+
+        match previous {
+            Some(value) => std::env::set_var(crate::home::FUTURE_HOME_ENV, value),
+            None => std::env::remove_var(crate::home::FUTURE_HOME_ENV),
+        }
+    }
+
+    /// A configured `request_timeout` must be applied to the endpoint. Both arms of
+    /// the `match` exist for the same reason - without the `Some` arm a long request
+    /// would hang forever on a pipe that never answers - and the timeout rides on the
+    /// channel, so it is set before the connection is attempted (and must therefore be
+    /// observable even when the connection fails).
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_request_timeout_is_applied_before_the_local_pipe_is_opened() {
+        let home = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os(crate::home::FUTURE_HOME_ENV);
+        std::env::set_var(crate::home::FUTURE_HOME_ENV, home.path());
+
+        // No server is listening on this run's pipe, so the open fails with
+        // ERROR_FILE_NOT_FOUND. That is the NON-retryable arm: only ERROR_PIPE_BUSY
+        // (231) is retried, because retrying a missing pipe would spin forever.
+        let error = connect_local(Some(Duration::from_secs(5)))
+            .await
+            .expect_err("a pipe with no server must not connect");
+        // Note the detail: tonic reports the connector's io failure as a bare
+        // "transport error", so the OS error code does not reach the caller. What we
+        // can pin is that it is NOT a timeout - i.e. the fast fail, not the retry loop.
+        let text = error.to_string();
+        assert!(
+            !text.contains("timed out") && !text.contains("deadline"),
+            "a missing pipe must fail immediately, not by exhausting a deadline: {text}"
+        );
+        let started = std::time::Instant::now();
+        let _ = connect_local(Some(Duration::from_secs(5))).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "a missing pipe must not be retried until the timeout"
+        );
+
+        // The no-timeout arm is the other half of the same `match`.
+        assert!(connect_local(None).await.is_err());
+
+        match previous {
+            Some(value) => std::env::set_var(crate::home::FUTURE_HOME_ENV, value),
+            None => std::env::remove_var(crate::home::FUTURE_HOME_ENV),
+        }
+    }
+
+    /// A channel that cannot be built must fail with every endpoint it tried, so the
+    /// operator can see WHICH one is misconfigured. This is also the only path that
+    /// exercises the per-request-timeout arm of the TCP endpoint.
+    ///
+    /// The failure text is deliberately not asserted beyond the endpoint name: a connect
+    /// to a closed local port can elapse a short budget (measured: a 500 ms budget timed
+    /// out before the refusal surfaced on this loaded box), so "refused" vs "timed out"
+    /// is not a stable discriminator. The endpoint label is.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_channel_that_cannot_be_built_names_every_endpoint_it_tried() {
+        let error = connect_channel(
+            Some("http://127.0.0.1:1"),
+            Duration::from_millis(1),
+            Some(Duration::from_secs(5)),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(
+            error.details.contains("connection timed out"),
+            "a 1 ms budget cannot accommodate a TCP attempt, so the deadline must \
+             fire first: {}",
+            error.details
+        );
+        assert!(
+            error.details.contains("unable to connect to Future Agent"),
+            "the failure must say what could not be reached: {}",
+            error.details
+        );
+        assert!(
+            error.details.contains("127.0.0.1:1"),
+            "the timed-out endpoint must be named: {}",
+            error.details
+        );
     }
 }

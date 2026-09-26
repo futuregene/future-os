@@ -1281,4 +1281,67 @@ mod tests {
         POOL.clear_poison();
         drop(home);
     }
+
+    /// A database whose `threads` table predates the binding column cannot be
+    /// repaired: the migration must surface that instead of recording itself as
+    /// applied (which would leave the unique index missing forever).
+    #[test]
+    fn agent_session_binding_migration_reports_and_rolls_back_a_failing_repair() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at INTEGER NOT NULL);
+             CREATE TABLE threads (id TEXT PRIMARY KEY);",
+        )
+        .unwrap();
+
+        let error = apply_agent_session_binding_migration(&conn)
+            .expect_err("an unreparable database must not report success")
+            .to_string();
+        assert!(error.contains("agent_session_id"), "{error}");
+
+        // The whole transaction rolled back, marker row included, so the next
+        // startup retries the repair rather than skipping it.
+        let markers: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(markers, 0, "a failed migration must not record itself");
+    }
+
+    /// Same contract for the receipt backfill: a `runs` table with no
+    /// `trigger_message_id` cannot be backfilled, and the `ALTER TABLE` that ran
+    /// before the failing statement must roll back with it.
+    #[test]
+    fn remote_prompt_receipt_migration_reports_and_rolls_back_a_failing_backfill() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at INTEGER NOT NULL);
+             CREATE TABLE runs (id TEXT PRIMARY KEY, updated_at INTEGER NOT NULL);",
+        )
+        .unwrap();
+
+        let error = apply_remote_prompt_receipt_migration(&conn)
+            .expect_err("a runs table without trigger_message_id cannot be backfilled")
+            .to_string();
+        assert!(error.contains("trigger_message_id"), "{error}");
+
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(runs)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            !columns.iter().any(|column| column == "remote_accepted_at"),
+            "the added column must roll back with the failed migration: {columns:?}"
+        );
+        let markers: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(markers, 0, "a failed migration must not record itself");
+    }
 }

@@ -329,4 +329,124 @@ mod tests {
             .unwrap()
             .contains("history search"));
     }
+
+    /// The subcommand is the first argument and nothing else is accepted: a
+    /// missing or unknown one is a usage error, not a default read.
+    #[test]
+    fn a_missing_or_unknown_subcommand_is_refused() {
+        for values in [vec![], vec!["--json"], vec!["list"], vec!["searchx"]] {
+            assert_eq!(
+                parse(&args(&values)).unwrap_err(),
+                "expected history search or get",
+                "{values:?}"
+            );
+        }
+    }
+
+    /// A flag whose value is missing *or* is itself another flag is a missing
+    /// value, so `--query --json` never searches for the literal `--json`.
+    #[test]
+    fn a_dangling_or_flag_shaped_value_is_a_missing_value() {
+        for values in [
+            vec!["search", "--session"],
+            vec!["search", "--session", "s", "--query"],
+            vec!["search", "--session", "s", "--query", "--json"],
+            vec!["get", "--session", "s", "--entry", "--json"],
+            vec!["search", "--session", "", "--query", "x"],
+        ] {
+            let err = parse(&args(&values)).unwrap_err();
+            assert!(err.contains("missing value for"), "{values:?} → {err}");
+        }
+    }
+
+    /// The query boundary: 200 characters is the last accepted length, 201 the
+    /// first refused, a blank query is refused even though it is short, and a
+    /// NUL is refused before anything reaches the agent.
+    #[test]
+    fn the_query_length_and_content_boundary_is_exact() {
+        let ok = "a".repeat(200);
+        assert!(parse(&args(&["search", "--session", "s", "--query", &ok])).is_ok());
+        let long = "a".repeat(201);
+        assert!(parse(&args(&["search", "--session", "s", "--query", &long])).is_err());
+        // An all-whitespace or NUL-bearing query is short but still illegitimate;
+        // the empty string never gets this far (it is a missing value first).
+        for bad in ["   ", "\t", "with\0nul"] {
+            let err = parse(&args(&["search", "--session", "s", "--query", bad])).unwrap_err();
+            assert_eq!(
+                err, "query must contain 1..200 characters without NUL",
+                "{bad:?}"
+            );
+        }
+        // 200 CJK characters are 200 *characters*, not 600 bytes.
+        let cjk = "中".repeat(200);
+        assert!(parse(&args(&["search", "--session", "s", "--query", &cjk])).is_ok());
+        // `--entry` has no length rule (it is an id, not a query).
+        assert!(parse(&args(&["get", "--session", "s", "--entry", "e"])).is_ok());
+    }
+
+    /// A search result is rendered one block per match, with the continuation
+    /// hint only when `hasMore` is set — and no hint when the server says it is
+    /// the last page.
+    #[test]
+    fn the_search_table_renders_every_match_and_the_continuation_hint() {
+        let v = serde_json::json!({
+            "matches": [
+                {"entryId":"e1","blockIndex":0,"kind":"text","byteOffset":0,"snippet":"first"},
+                {"entryId":"e2","blockIndex":3,"kind":"tool_result","byteOffset":17,"snippet":"第二个 匹配"},
+            ],
+            "hasMore": true
+        });
+        let text = format_result(&v, true);
+        assert!(
+            text.contains("entry=e1 block=0 kind=text offset=0\nfirst"),
+            "{text}"
+        );
+        assert!(
+            text.contains("entry=e2 block=3 kind=tool_result offset=17\n第二个 匹配"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n\n"),
+            "matches are separated by a blank line: {text}"
+        );
+        assert!(
+            text.contains("More matches exist; refine the query or increase --limit (max 20)."),
+            "{text}"
+        );
+        let text = format_result(
+            &serde_json::json!({"matches":[{"entryId":"e"}],"hasMore":false}),
+            true,
+        );
+        assert!(text.contains("entry=e"), "{text}");
+        assert!(!text.contains("More matches exist"), "{text}");
+    }
+
+    /// A successful search renders as text (not JSON) when `--json` is absent,
+    /// through the same `format_result` the tests above pin. The agent is the
+    /// in-process mock, so the whole `run` path is exercised.
+    #[tokio::test]
+    async fn a_search_without_json_prints_the_rendered_table() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = crate::test_server::MockAgent::respond(
+            "search_session_history",
+            r#"{"matches":[{"entryId":"e9","blockIndex":1,"kind":"text","byteOffset":4,"snippet":"中文 snippet"}],"hasMore":true}"#,
+        );
+        let address = crate::test_server::spawn_mock(agent).await;
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from(address),
+        )]);
+        let (out, cap) = Output::memory();
+        run(&args(&["search", "--session", "s", "--query", "中"]), &out)
+            .await
+            .expect("search succeeds");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(
+            stdout.contains("entry=e9 block=1 kind=text offset=4"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("中文 snippet"), "{stdout}");
+        assert!(stdout.contains("More matches exist"), "{stdout}");
+        assert!(!stdout.trim_start().starts_with('{'), "not JSON: {stdout}");
+    }
 }

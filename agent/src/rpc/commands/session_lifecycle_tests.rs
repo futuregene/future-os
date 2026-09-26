@@ -11,6 +11,58 @@ use crate::rpc::commands::test_support::*;
 use crate::rpc::handle_command_internal;
 
 #[test]
+fn switch_session_reports_an_unreadable_store_as_retryable() {
+    // `agent.db` is a directory, so the store cannot be opened: switching must
+    // fail with the retryable storage code rather than a bare "not found".
+    let dir = test_session_dir();
+    std::fs::create_dir_all(dir.join("agent.db")).unwrap();
+    let state = make_app_state_with(dir, Arc::new(crate::runtime::GlobalQueueBudget::defaults()));
+
+    let mut cmd = make_cmd("switch_session");
+    cmd.session_id = "damaged-store".into();
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], false, "{response}");
+    assert_eq!(response["error_code"], "session_storage_unavailable");
+    assert_eq!(response["error_data"]["retryable"], true);
+    assert!(response["error"]
+        .as_str()
+        .unwrap()
+        .contains("unable to load session"));
+}
+
+#[test]
+fn delete_session_refuses_while_compaction_holds_the_session() {
+    let state = make_app_state();
+    let session = state.sessions.read().get("default").cloned().unwrap();
+    session
+        .read()
+        .compaction_in_progress
+        .store(true, std::sync::atomic::Ordering::Release);
+
+    let mut cmd = make_cmd("delete_session");
+    cmd.session_id = "default".into();
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], false, "{response}");
+    assert_eq!(response["error_code"], "session_busy");
+    assert_eq!(response["error_data"]["busy_reason"], "compaction");
+    assert_eq!(response["error_data"]["retryable"], true);
+    // The session survives the refusal — nothing was deleted or cancelled.
+    assert!(state.sessions.read().contains_key("default"));
+    assert!(!session.read().deleting);
+
+    // Once compaction finishes the same request is accepted.
+    session
+        .read()
+        .compaction_in_progress
+        .store(false, std::sync::atomic::Ordering::Release);
+    let mut cmd = make_cmd("delete_session");
+    cmd.session_id = "default".into();
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(response["success"], true, "{response}");
+    assert!(!state.sessions.read().contains_key("default"));
+}
+
+#[test]
 fn history_cli_reads_persisted_sessions_without_loading_a_runtime() {
     let state = make_app_state();
     state.session_manager.storage().unwrap().replace("history-only",vec![serde_json::json!({"id":"entry-1","type":"user","role":"user","timestamp":"2026-01-01T00:00:00Z","content":"saved history 中文"})]).unwrap();
@@ -538,6 +590,79 @@ fn get_fork_messages_extracts_first_text_block_only() {
     assert_eq!(messages[0]["blocks"][0]["text"], "plain");
     assert_eq!(messages[1]["blocks"][0]["text"], "visible question");
     assert!(messages[0]["createdAtMs"].is_i64());
+}
+
+#[test]
+fn paged_history_reports_a_skipped_migration_as_unreadable() {
+    // `contains` succeeds (the row exists) but the paged read refuses: the
+    // session was recorded as a skipped legacy migration, so serving a page
+    // would present an incomplete history as complete. Deterministic: the
+    // marker row is written directly, the same way the importer writes it.
+    let state = make_app_state();
+    save_via(
+        &state,
+        "migrated-skip",
+        "mock",
+        vec![crate::session::SessionEntry::new_user(
+            "user",
+            serde_json::json!("imported"),
+        )],
+    );
+    state
+        .session_manager
+        .test_execute("INSERT INTO legacy_imports(session_id,status,fingerprint) VALUES('migrated-skip','skipped','hash')");
+
+    let mut cmd = make_cmd("get_session_entries");
+    cmd.session_id = "migrated-skip".into();
+    cmd.offset = Some(0);
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(resp["error_code"], "session_history_unreadable");
+    assert!(resp["error"]
+        .as_str()
+        .unwrap()
+        .contains("Unable to load session history"));
+    assert_eq!(resp["error_data"]["sessionId"], "migrated-skip");
+
+    // Without a page cursor the same session is served from the cached
+    // projection — the refusal is specific to paged reads, not the session.
+    let cmd = make_cmd_for("get_session_entries", "migrated-skip");
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+}
+
+#[test]
+fn repeated_entry_reads_are_served_from_the_cached_projection() {
+    // The first read projects and caches; the second must hit that cache
+    // (same revision) and return identical entries. Asserting the cache
+    // directly is what proves the second read took the cached branch instead
+    // of re-projecting and merely producing equal output.
+    let state = make_app_state();
+    save_via(
+        &state,
+        "cache-me",
+        "mock",
+        vec![
+            crate::session::SessionEntry::new_user("user", serde_json::json!("缓存我")),
+            crate::session::SessionEntry::new_assistant(serde_json::json!("cached"), vec![]),
+        ],
+    );
+
+    let cmd = make_cmd_for("get_session_entries", "cache-me");
+    let first = parse_response(&handle_command_internal(&state, cmd.clone()));
+    assert_eq!(first["success"], true, "{first}");
+    let entries = first["data"]["entries"].as_array().unwrap();
+    assert!(!entries.is_empty(), "{first}");
+    assert!(state
+        .session_manager
+        .cached_display_entries(
+            "cache-me",
+            &state.session_manager.session_revision("cache-me").unwrap()
+        )
+        .is_some());
+
+    let second = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(second["data"], first["data"]);
 }
 
 #[test]
@@ -1250,6 +1375,42 @@ fn fork_propagates_created_by_from_the_forking_client() {
 }
 
 #[test]
+fn clone_uses_the_requesting_clients_provenance_when_it_is_supplied() {
+    // `child_created_by` and the idempotency key both prefer the client's own
+    // values over the parent's / the RPC id; the clone must be attributable.
+    let state = make_app_state();
+    let user = crate::session::SessionEntry::new_user("user", serde_json::json!("clone me"));
+    save_via(&state, "default", "mock", vec![user]);
+    {
+        let session = state.get_session("default").unwrap();
+        session
+            .read()
+            .messages
+            .write()
+            .push(crate::types::AgentMessage::new_user(
+                "user",
+                serde_json::json!("clone me"),
+            ));
+        session.write().created_by = "tui".to_string();
+    }
+
+    let mut cmd = make_cmd("clone");
+    cmd.created_by = "desktop".to_string();
+    cmd.creator_id = "desktop-creator".to_string();
+    cmd.client_request_id = "desktop-request-1".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    let clone_id = resp["data"]["sessionId"].as_str().unwrap();
+    assert_ne!(clone_id, "default");
+
+    // The recorded provenance is the client's, not the parent's.
+    let recorded = state.sessions.read().get(clone_id).cloned().unwrap();
+    let recorded = recorded.read();
+    assert_eq!(recorded.created_by, "desktop");
+    assert_eq!(recorded.creator_id, "desktop-creator");
+}
+
+#[test]
 fn clone_propagates_the_parent_created_by() {
     let state = make_app_state();
     let user = crate::session::SessionEntry::new_user("user", serde_json::json!("clone me"));
@@ -1749,4 +1910,239 @@ fn new_session_with_invalid_settings_file_uses_defaults() {
     let cmd = make_cmd_for("new_session", "ns-bad-settings");
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
+}
+
+// ── post-commit activation: cold activation, and activation failing after
+//    the caller's durable commit boundary ─────────────────────────────────
+
+#[test]
+fn activating_a_cold_persisted_session_announces_the_first_activation() {
+    // A session committed by an earlier process is not resident yet; the first
+    // activation must hydrate it, register it, and announce it exactly once.
+    let state = make_app_state();
+    save_via(
+        &state,
+        "cold-committed-child",
+        "mock",
+        vec![crate::session::SessionEntry::new_user(
+            "user",
+            serde_json::json!("committed before the restart"),
+        )],
+    );
+    assert!(!state.sessions.read().contains_key("cold-committed-child"));
+
+    let mut rx = crate::rpc::global_events_broadcaster().subscribe();
+    let activated = state
+        .activate_persisted_session("cold-committed-child")
+        .expect("a committed session activates");
+    assert_eq!(activated.read().session_id, "cold-committed-child");
+    assert!(state.sessions.read().contains_key("cold-committed-child"));
+
+    // The announcement is observable on the global stream and names the session.
+    let mut announced = None;
+    for _ in 0..64 {
+        match rx.try_recv() {
+            Ok(event)
+                if event.event_type == "session_created"
+                    && event.data.contains("cold-committed-child") =>
+            {
+                announced = Some(serde_json::from_str::<serde_json::Value>(&event.data).unwrap());
+                break;
+            }
+            Ok(_) => continue,
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                panic!("global broadcaster channel closed before session_created arrived")
+            }
+        }
+    }
+    let announced = announced.expect("activating a cold session announces it");
+    assert_eq!(announced["sessionId"], "cold-committed-child");
+
+    // Activation is idempotent: the second call sees a resident session and
+    // must not announce it again.
+    let again = state
+        .activate_persisted_session("cold-committed-child")
+        .expect("a resident session activates");
+    assert!(Arc::ptr_eq(&activated, &again));
+    // No SECOND announcement for this session. Assert the claim rather than "the channel is
+    // empty": the broadcaster is a process-wide singleton and the rest of the suite publishes
+    // to it in parallel, so emptiness is not a property of this code (that over-broad form
+    // passed alone and failed in the full run). Drain a bounded number of pending events and
+    // require that none of them announces this session again.
+    for _ in 0..64 {
+        match rx.try_recv() {
+            Ok(event) => assert!(
+                !(event.event_type == "session_created"
+                    && event.data.contains("cold-committed-child")),
+                "the second activation must not announce the session again: {event:?}"
+            ),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+        }
+    }
+}
+
+#[test]
+fn activate_persisted_session_reports_a_post_commit_failure_and_keeps_the_session_readable() {
+    let state = make_app_state();
+    save_via(
+        &state,
+        "post-commit-child",
+        "mock",
+        vec![crate::session::SessionEntry::new_user(
+            "user",
+            serde_json::json!("committed child"),
+        )],
+    );
+    let before = state.session_manager.load("post-commit-child").unwrap();
+    let revision_before = state
+        .session_manager
+        .session_revision("post-commit-child")
+        .unwrap();
+    assert!(!state.sessions.read().contains_key("post-commit-child"));
+
+    // The commit already happened; activation fails the way a hydrate failure
+    // does — reported, not swallowed.
+    crate::rpc::fail_next_session_activation_for_test("post-commit-child");
+    let error = match state.activate_persisted_session("post-commit-child") {
+        Ok(_) => panic!("an activation failure must be reported"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("injected activation failure"),
+        "{error}"
+    );
+
+    // Nothing was advanced by the failure: no half-registered session ...
+    assert!(!state.sessions.read().contains_key("post-commit-child"));
+    // ... and no durable row changed (same entries, same revision).
+    let after = state.session_manager.load("post-commit-child").unwrap();
+    assert_eq!(after.entries.len(), before.entries.len());
+    let revision_after = state
+        .session_manager
+        .session_revision("post-commit-child")
+        .unwrap();
+    assert!(
+        revision_before == revision_after,
+        "the failed activation must not advance the durable revision"
+    );
+
+    // A later read serves the committed session, consistently and completely.
+    let resumed = state
+        .activate_persisted_session("post-commit-child")
+        .expect("the committed session is still activatable");
+    assert_eq!(resumed.read().session_id, "post-commit-child");
+    // Activation hydrates metadata; loading the history then yields exactly the
+    // committed transcript, so the failed activation left no gap behind it.
+    resumed.write().ensure_history_loaded().unwrap();
+    let messages = resumed.read().messages.read().clone();
+    assert!(
+        messages
+            .iter()
+            .any(|message| message.text().contains("committed child")),
+        "the committed transcript is readable after the failed activation"
+    );
+}
+
+#[test]
+fn fork_reports_a_post_commit_activation_failure_and_keeps_the_committed_child() {
+    let state = make_app_state();
+    let user = crate::session::SessionEntry::new_user("user", serde_json::json!("fork once"));
+    let entry_id = user.id.clone();
+    save_via(&state, "default", "mock", vec![user]);
+    let request = || {
+        let mut cmd = make_cmd("fork");
+        cmd.entry_id = entry_id.clone();
+        cmd.client_request_id = "post-commit-fork".to_string();
+        cmd
+    };
+
+    let committed = parse_response(&handle_command_internal(&state, request()));
+    assert_eq!(committed["success"], true, "{committed}");
+    let fork_id = committed["data"]["sessionId"].as_str().unwrap().to_string();
+
+    // Activation fails after the child crossed its commit boundary.
+    crate::rpc::fail_next_session_activation_for_test(&fork_id);
+    let refused = parse_response(&handle_command_internal(&state, request()));
+    assert_eq!(refused["success"], false, "{refused}");
+    let message = refused["error"].as_str().unwrap();
+    assert!(
+        message.contains("fork committed but could not be activated"),
+        "the caller must name the commit/activation split: {message}"
+    );
+    assert!(message.contains("injected activation failure"), "{message}");
+
+    // The committed child is not lost and not duplicated: its durable history
+    // is intact, and the retry replays the same commit instead of making a
+    // second one.
+    let persisted = state
+        .session_manager
+        .load(&fork_id)
+        .expect("child stays committed");
+    assert!(persisted.entries.iter().any(|entry| entry
+        .content
+        .as_ref()
+        .is_some_and(|content| content.to_string().contains("fork once"))));
+    let resumed = parse_response(&handle_command_internal(&state, request()));
+    assert_eq!(resumed["success"], true, "{resumed}");
+    assert_eq!(resumed["data"]["sessionId"].as_str().unwrap(), fork_id);
+    assert_eq!(resumed["data"]["created"], false);
+    assert_eq!(
+        state.session_manager.load(&fork_id).unwrap().entries.len(),
+        persisted.entries.len()
+    );
+}
+
+#[test]
+fn clone_reports_a_post_commit_activation_failure_and_keeps_the_committed_child() {
+    let state = make_app_state();
+    let user = crate::session::SessionEntry::new_user("user", serde_json::json!("clone me"));
+    save_via(&state, "default", "mock", vec![user]);
+    {
+        let session = state.get_session("default").unwrap();
+        session
+            .read()
+            .messages
+            .write()
+            .push(crate::types::AgentMessage::new_user(
+                "user",
+                serde_json::json!("clone me"),
+            ));
+    }
+    let request = || {
+        let mut cmd = make_cmd("clone");
+        cmd.client_request_id = "post-commit-clone".to_string();
+        cmd
+    };
+
+    let committed = parse_response(&handle_command_internal(&state, request()));
+    assert_eq!(committed["success"], true, "{committed}");
+    let clone_id = committed["data"]["sessionId"].as_str().unwrap().to_string();
+    assert_ne!(clone_id, "default");
+
+    crate::rpc::fail_next_session_activation_for_test(&clone_id);
+    let refused = parse_response(&handle_command_internal(&state, request()));
+    assert_eq!(refused["success"], false, "{refused}");
+    let message = refused["error"].as_str().unwrap();
+    assert!(
+        message.contains("clone committed but could not be activated"),
+        "{message}"
+    );
+    assert!(message.contains("injected activation failure"), "{message}");
+
+    let persisted = state
+        .session_manager
+        .load(&clone_id)
+        .expect("child stays committed");
+    assert!(persisted.entries.iter().any(|entry| entry
+        .content
+        .as_ref()
+        .is_some_and(|content| content.to_string().contains("clone me"))));
+    let resumed = parse_response(&handle_command_internal(&state, request()));
+    assert_eq!(resumed["success"], true, "{resumed}");
+    assert_eq!(resumed["data"]["sessionId"].as_str().unwrap(), clone_id);
+    assert_eq!(resumed["data"]["created"], false);
 }

@@ -347,4 +347,112 @@ mod tests {
         engine.remove_override("oc_chat");
         assert_eq!(engine.check_group("oc_chat", false), Access::Allowed);
     }
+
+    // ─── Defaults: the security posture ────────────────────────────────────
+    //
+    // A channel configured without an explicit policy block must not become
+    // reachable by strangers. These three values ARE that posture, and every
+    // one of them used to be unpinned: `cargo mutants` replaced
+    // `default_dm_policy` / `default_group_policy` with another string and
+    // `default_require_mention` with `false`, and the whole suite stayed green.
+    // Line coverage cannot see this — the helpers are *executed* by every test
+    // that uses an unconfigured engine, they are just never *asserted*. So each
+    // default is pinned twice: the literal value, and the behaviour it buys
+    // (which is what a regression would actually cost).
+
+    #[test]
+    fn default_dm_policy_is_the_allowlist_safe_default() {
+        assert_eq!(default_dm_policy(), "allowlist");
+        assert_eq!(AccessPolicyConfig::default().dm_policy, "allowlist");
+    }
+
+    #[test]
+    fn default_group_policy_is_disabled() {
+        assert_eq!(default_group_policy(), "disabled");
+        assert_eq!(AccessPolicyConfig::default().group_policy, "disabled");
+    }
+
+    #[test]
+    fn default_require_mention_is_true() {
+        assert!(default_require_mention());
+        assert!(AccessPolicyConfig::default().require_mention);
+    }
+
+    #[test]
+    fn an_empty_config_object_carries_the_safe_defaults_through_serde() {
+        // Pins the `#[serde(default = ...)]` wiring itself, not just the helper
+        // functions: a channel whose config.json has no policy keys at all is
+        // exactly the case that must fall back to the safe posture.
+        let parsed: AccessPolicyConfig = serde_json::from_str("{}").expect("empty object");
+        assert_eq!(parsed.dm_policy, "allowlist");
+        assert_eq!(parsed.group_policy, "disabled");
+        assert!(parsed.require_mention);
+        assert!(parsed.dm_allowlist.is_empty());
+        assert!(parsed.group_allowlist.is_empty());
+    }
+
+    #[test]
+    fn a_partial_config_only_overrides_the_policy_keys_it_names() {
+        let parsed: AccessPolicyConfig =
+            serde_json::from_str(r#"{"dm_policy":"open","dm_allowlist":["ou_alice"]}"#)
+                .expect("partial config");
+        assert_eq!(parsed.dm_policy, "open");
+        assert_eq!(parsed.dm_allowlist, vec!["ou_alice".to_string()]);
+        // Opening DMs must not silently open group chats or drop the mention
+        // gate.
+        assert_eq!(parsed.group_policy, "disabled");
+        assert!(parsed.require_mention);
+
+        // Round-trip: what a channel writes back is what it will read again.
+        let json = serde_json::to_string(&parsed).expect("serialize");
+        let back: AccessPolicyConfig = serde_json::from_str(&json).expect("re-read");
+        assert_eq!(back.dm_policy, "open");
+        assert_eq!(back.dm_allowlist, vec!["ou_alice".to_string()]);
+        assert_eq!(back.group_policy, "disabled");
+        assert!(back.require_mention);
+    }
+
+    #[test]
+    fn an_unconfigured_engine_refuses_a_stranger_in_dm() {
+        // Default posture: a DM from someone who is not on the allowlist is
+        // refused — and refused the *allowlist* way. The message hands the
+        // sender their id so an admin can add it, which also proves the DM
+        // default did not degrade to `disabled` (silent) or `open` (unrestricted).
+        let engine = PolicyEngine::new(AccessPolicyConfig::default());
+        match engine.check_dm("ou_stranger") {
+            Access::Denied(reason) => {
+                assert!(reason.contains("ou_stranger"), "reason: {reason}");
+                assert!(reason.contains("dm_allowlist"), "reason: {reason}");
+            }
+            other => panic!("an unconfigured channel must refuse a stranger, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unconfigured_engine_has_group_chats_disabled() {
+        // Default posture: a group is off even when the bot is addressed, and
+        // the refusal is the "disabled" one rather than the allowlist one.
+        let engine = PolicyEngine::new(AccessPolicyConfig::default());
+        assert_eq!(
+            engine.check_group("oc_unconfigured", true),
+            Access::Denied("Group chat is disabled".into())
+        );
+
+        // Enabling a chat explicitly is still gated by the default mention rule
+        // — this is the behavioural half of `default_require_mention`, and it
+        // is the only path that observes that default once group chats are off.
+        let mut enabled = PolicyEngine::new(AccessPolicyConfig::default());
+        enabled.set_override("oc_unconfigured".into(), override_with(Some(true), None));
+        assert!(
+            matches!(
+                enabled.check_group("oc_unconfigured", false),
+                Access::Denied(_)
+            ),
+            "the default mention gate must survive an explicit per-chat enable"
+        );
+        assert_eq!(
+            enabled.check_group("oc_unconfigured", true),
+            Access::Allowed
+        );
+    }
 }

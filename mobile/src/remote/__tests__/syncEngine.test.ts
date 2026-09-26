@@ -50,6 +50,22 @@ class Harness {
   /** Emit replay events with snake_case run_id (legacy desktop wire). */
   snakeCaseReplay = false;
   replayFailures = 0;
+  /** Mark every replay reply as byte-truncated by the desktop. */
+  truncateReplay = false;
+  /** Drives `isSessionVisible`; hidden lanes keep their cache but defer work. */
+  visible = true;
+  /** Fires between a failed reconcile and its scheduled retry, exactly like the
+   * provider's failure hook (a good place to hide the session or drop the lane). */
+  onFailure: (() => void) | null = null;
+  failures: unknown[] = [];
+  /** When set, `requestGetState` waits for it before answering. */
+  stateBlocked: Promise<void> | null = null;
+  /** When set, the next `fetchReplay` holds its already-computed reply until
+   * this resolves (one shot). Lets a test keep a replay in flight while
+   * something else happens to the lane — the race a resend creates. */
+  replayBlocked: Promise<void> | null = null;
+  /** Every get_state request, so a test can assert a reconcile never asked. */
+  stateCalls = 0;
   /**
    * Whether the connected Desktop agreed to a feed that omits source indices
    * (the client declared `lean_events_v1`). Such a hole is by design, so the
@@ -66,12 +82,19 @@ class Harness {
   constructor(activeRunId = "") {
     this.activeRunId = activeRunId;
     this.engine = new SyncEngine({
+      isSessionVisible: (sessionId) => sessionId === "" || this.visible,
       requestGetState: async () => {
+        this.stateCalls += 1;
+        if (this.stateBlocked) await this.stateBlocked;
         const state: { activeRun?: { runId: string }; isCompacting: boolean } = { isCompacting: this.isCompacting };
         if (this.activeRunId) state.activeRun = { runId: this.activeRunId };
         return state;
       },
       requestHistory: async () => this.history,
+      onFailure: () => {
+        this.failures.push(this.failures.length);
+        this.onFailure?.();
+      },
       feedOmitsIndices: () => this.feedOmitsIndices,
       fetchReplay: async (_sessionId, run, since) => {
         this.replayCalls.push({ run, since });
@@ -85,6 +108,12 @@ class Harness {
         const events = this.journal
           .since(run, since)
           .map((e) => ({ type: e.type, data: e.data, [runKey]: e.runId, idx: e.idx }));
+        // The reply is fixed from here on; hold it in flight if asked.
+        if (this.replayBlocked) {
+          const blocked = this.replayBlocked;
+          this.replayBlocked = null;
+          await blocked;
+        }
         if (this.projection) {
           // Folded projections carry NO run_id per event (whole-run coalesced
           // deltas) — exactly the wire shape that reproduced the ghost item.
@@ -95,10 +124,14 @@ class Harness {
           const result: ReplayResult = {
             events: [],
             projection,
+            ...(this.truncateReplay ? { truncated: true } : {}),
           };
           return result;
         }
-        const result: ReplayResult = { events };
+        const result: ReplayResult = {
+          events,
+          ...(this.truncateReplay ? { truncated: true } : {}),
+        };
         return result;
       },
     });
@@ -161,6 +194,52 @@ describe("SyncEngine", () => {
       // The compaction frames are session fan-out stamped with the settled
       // run's identity: they must apply without ever re-reading that run.
       expect(h.replayCalls.filter(call => call.run === "r")).toHaveLength(1);
+    } finally { h.engine.clear(); }
+  });
+
+  test("a resend that lands while the replay is in flight discards that pass instead of committing it", async () => {
+    // `resend` is a fresh-prefix reason, so enqueueing it bumps the lane's
+    // baseline version synchronously even though the lane is already
+    // reconciling. The pass in flight captured that version before its awaits,
+    // so it has to notice the bump and abandon its replay rather than commit a
+    // snapshot that predates the resend. Production reaches this through the
+    // compaction poll, which reconciles with exactly this reason.
+    const textOf = (timeline: ReturnType<typeof emptyTimeline>): string =>
+      timeline.items
+        .filter(item => item.kind === "message")
+        .map(item => (item as { text?: string }).text ?? "")
+        .join("|");
+    const h = new Harness("r");
+    h.journal.add(agentStart("r"));
+    h.journal.add(textChunk("r", 1, "first"));
+    let release!: () => void;
+    h.replayBlocked = new Promise<void>((resolve) => { release = resolve; });
+    const committedText: string[] = [];
+    h.engine.subscribe((commit) => { committedText.push(textOf(commit.timeline)); });
+    try {
+      const opened = h.engine.open("s");
+      await h.settle();
+      // The replay for run "r" is parked, its reply already computed from the
+      // journal as it stood *before* the resend.
+      expect(h.replayCalls).toEqual([{ run: "r", since: -1 }]);
+      const beforeResend = committedText.length;
+      h.journal.add(textChunk("r", 2, "second"));
+      h.engine.reconcile("s", "resend");
+      release();
+      await opened.catch(() => undefined);
+      await h.settle();
+      // Nothing may be committed from the abandoned reply: a snapshot the
+      // resend already invalidated must never reach the UI.
+      expect(committedText.slice(beforeResend)).toEqual([]);
+      // The abandoned pass arms a 500ms retry backoff, after which the resend
+      // runs (settle() only waits 100ms, so wait past the backoff explicitly).
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      expect(h.replayCalls.length).toBe(2);
+      const after = committedText.slice(beforeResend);
+      expect(after.length).toBeGreaterThan(0);
+      // Every snapshot that did reach the UI reflects the resend.
+      for (const text of after) expect(text).toContain("second");
+      expect(textOf(h.timelineOf("s"))).toBe("firstsecond");
     } finally { h.engine.clear(); }
   });
 
@@ -708,6 +787,28 @@ describe("SyncEngine", () => {
     expect(h.textOf("s1")).toBe("full reply");
   });
 
+  test("a reconcile that finds no active run clears a stale generating flag and adopts the fence", async () => {
+    // The desktop reports no active run (the process restarted, or the run was
+    // evicted from state) while the phone still shows this run as generating.
+    // Nothing will ever send the terminal frame, so the reconcile has to drop
+    // the flag itself or the composer stays locked forever.
+    const run = nextRunId();
+    const h = new Harness("");
+    h.journal.add(agentStart(run, 0));
+    h.engine.event("s1", agentStart(run, 0));
+    await h.settle();
+    expect(h.timelineOf("s1").streaming).toBe(true);
+
+    // The same state carries the authoritative compaction fence, which the
+    // replayed timeline disagrees with: the snapshot wins.
+    h.isCompacting = true;
+    h.engine.reconcile("s1", "snapshot-flip", run);
+    await h.settle();
+
+    expect(h.timelineOf("s1").streaming).toBe(false);
+    expect(h.timelineOf("s1").compacting).toBe(true);
+  });
+
   test("out-of-order first delivery still converges to the full text", async () => {
     const run = nextRunId();
     const h = new Harness(run);
@@ -1092,6 +1193,249 @@ describe("SyncEngine", () => {
       // 20ms wall-clock sleep, is the relevant assertion boundary.
       await jest.runAllTimersAsync();
       expect(h.textOf("s1")).toBe("a".repeat(4200));
+    } finally { h.engine.clear(); jest.useRealTimers(); }
+  });
+});
+
+/**
+ * Lane lifecycle guards: what a lane does when it is hidden, replaced, or
+ * evicted while work is queued, and the two integrity cases that recover from
+ * the durable journal instead of the live lane.
+ */
+describe("lane lifecycle guards", () => {
+  test("a single oversized live frame is dropped and recovered from the journal", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    try {
+      h.journal.add(agentStart(run, 0));
+      // The journal holds the truth; the live frame below carries a different
+      // text of a size no NATS reply could have delivered.
+      h.journal.add(textChunk(run, 1, "durable"));
+      h.engine.reconcile("s1", "open");
+      await h.settle();
+      const oversized = textChunk(run, 2, "x".repeat(4 * 1024 * 1024));
+      h.engine.event("s1", oversized);
+      await h.settle();
+      // The frame is dropped without buffering 8 MiB of it, and its content is
+      // still readable — the durable replay is what carries it.
+      expect(h.textOf("s1")).toBe("durable");
+      expect(h.engine.timelineFor("s1")!.streaming).toBe(true);
+    } finally { h.engine.clear(); }
+  });
+
+  test("a run id is required to call a cached run complete", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    try {
+      h.journal.add(agentStart(run, 0));
+      h.journal.add(agentEnd(run, 1));
+      h.engine.reconcile("s1", "open");
+      await h.settle();
+      expect(h.engine.runCompleteLocally("s1", run)).toBe(true);
+      // No run named: there is nothing to be complete, and a lane that happens
+      // to hold a whole run must not answer yes for it.
+      expect(h.engine.runCompleteLocally("s1", "")).toBe(false);
+    } finally { h.engine.clear(); }
+  });
+
+  test("a truncated replay marks the timeline so the hole is visible", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    try {
+      h.journal.add(agentStart(run, 0));
+      h.journal.add(textChunk(run, 1, "partial"));
+      h.truncateReplay = true;
+      h.engine.reconcile("s1", "open");
+      await h.settle();
+      // Silently rendering a prefix would look like the run only said "partial".
+      expect(h.timelineOf("s1").items.some(
+        (item) => item.kind === "notice" && item.text === "truncated",
+      )).toBe(true);
+      expect(h.textOf("s1")).toBe("partial");
+    } finally { h.engine.clear(); }
+  });
+
+  test("the draft lane reconciles nothing", async () => {
+    const h = new Harness();
+    try {
+      h.engine.reconcile("", "open");
+      await h.settle();
+      // The optimistic draft has no desktop state: asking for one would show a
+      // session the desktop never opened, and would hold a lane open for it.
+      expect(h.stateCalls).toBe(0);
+      expect(h.replayCalls).toHaveLength(0);
+      expect(h.engine.timelineFor("")).toBeNull();
+    } finally { h.engine.clear(); }
+  });
+
+  test("a reconcile with no run to tail does not spend a replay", async () => {
+    const h = new Harness();
+    try {
+      h.history = {
+        ...emptyTimeline(),
+        items: [{ id: "h1", kind: "message", role: "user", text: "hello" }],
+      };
+      h.engine.reconcile("s1", "open");
+      await h.settle();
+      const replays = h.replayCalls.length;
+      // The session is settled and idle, and this reconcile names no run: there
+      // is no tail to fold, so nothing may be fetched.
+      h.engine.reconcile("s1", "snapshot-flip");
+      await h.settle();
+      expect(h.replayCalls).toHaveLength(replays);
+      expect(h.textOf("s1")).toBe("hello");
+    } finally { h.engine.clear(); }
+  });
+
+  test("the queued reconcile instruction list is bounded", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    try {
+      h.journal.add(agentStart(run, 0));
+      h.journal.add(textChunk(run, 1, "one"));
+      // Hold the first request open so every later instruction queues behind it
+      // instead of draining.
+      let unblock!: () => void;
+      h.stateBlocked = new Promise<void>(resolve => { unblock = resolve; });
+      h.engine.reconcile("s1", "open");
+      await h.settle();
+      for (let index = 0; index < 40; index += 1) {
+        h.engine.reconcile("s1", "gap", `run-${index}`);
+      }
+      const stateCalls = h.stateCalls;
+      unblock();
+      h.stateBlocked = null;
+      await h.settle();
+      await h.settle();
+      // A desktop that keeps announcing gaps must not grow the queue without
+      // bound: the lane drains its capped backlog and stops, rather than
+      // fetching once per announcement it ever received.
+      expect(h.replayCalls.length).toBeLessThanOrEqual(7);
+      expect(h.stateCalls).toBeLessThanOrEqual(stateCalls + 6);
+      expect(h.engine.timelineFor("s1")).not.toBeNull();
+    } finally { h.engine.clear(); }
+  });
+
+  test("a lane hidden while a retry is armed neither fires it nor retries again", async () => {
+    jest.useFakeTimers();
+    const run = nextRunId();
+    const h = new Harness(run);
+    try {
+      h.journal.add(agentStart(run, 0));
+      h.engine.reconcile("s1", "open");
+      await jest.runAllTimersAsync();
+      h.replayFailures = 1;
+      h.engine.reconcile("s1", "resend");
+      // One tick is enough for the failing request to complete and for its
+      // retry to be armed (the first backoff is hundreds of milliseconds, so it
+      // is still pending below).
+      await jest.advanceTimersByTimeAsync(1);
+      expect(h.failures.length).toBeGreaterThan(0);
+      // The user left the conversation while the retry was pending.
+      h.visible = false;
+      const replays = h.replayCalls.length;
+      await jest.advanceTimersByTimeAsync(60_000);
+      // A hidden session has no visible timeline to repair: the armed retry and
+      // any later backoff must both end without touching the desktop again.
+      expect(h.replayCalls).toHaveLength(replays);
+      expect(h.failures).toHaveLength(1);
+    } finally { h.engine.clear(); jest.useRealTimers(); }
+  });
+
+  test("a failure that is reported as the session is hidden does not arm a retry", async () => {
+    jest.useFakeTimers();
+    const run = nextRunId();
+    const h = new Harness(run);
+    try {
+      h.journal.add(agentStart(run, 0));
+      h.engine.reconcile("s1", "open");
+      await jest.runAllTimersAsync();
+      h.replayFailures = 1;
+      // Hiding the session from inside the failure hook is what the provider
+      // does when navigation happens mid-request: the lane is already gone from
+      // the visible set when the retry would be armed.
+      h.onFailure = () => { h.visible = false; };
+      h.engine.reconcile("s1", "resend");
+      await jest.advanceTimersByTimeAsync(1);
+      expect(h.failures).toHaveLength(1);
+      const afterFailure = h.replayCalls.length;
+      // Neither the instruction that just failed nor a backoff timer may spend
+      // another request on a session that is no longer on screen.
+      await jest.advanceTimersByTimeAsync(200_000);
+      expect(h.replayCalls).toHaveLength(afterFailure);
+      expect(h.failures).toHaveLength(1);
+    } finally { h.engine.clear(); jest.useRealTimers(); }
+  });
+
+  test("a clock jump past a pending retry cancels it instead of replaying twice", async () => {
+    jest.useFakeTimers();
+    const run = nextRunId();
+    const h = new Harness(run);
+    try {
+      h.journal.add(agentStart(run, 0));
+      h.journal.add(textChunk(run, 1, "text"));
+      h.engine.reconcile("s1", "open");
+      await jest.runAllTimersAsync();
+      h.replayFailures = 1;
+      h.engine.reconcile("s1", "resend");
+      await jest.advanceTimersByTimeAsync(1);
+      expect(h.failures).toHaveLength(1);
+      // The device's wall clock jumps past the retry's due time (a suspended
+      // JS VM, or a manual clock change) without the timer callback running.
+      jest.setSystemTime(Date.now() + 120_000);
+      const replays = h.replayCalls.length;
+      h.engine.reconcile("s1", "gap", run);
+      await jest.advanceTimersByTimeAsync(0);
+      const settled = h.replayCalls.length;
+      expect(settled).toBeGreaterThan(replays);
+      // The now-overdue timer must not fire a second reconcile on top of the
+      // one that just succeeded.
+      await jest.advanceTimersByTimeAsync(200_000);
+      expect(h.replayCalls).toHaveLength(settled);
+    } finally { h.engine.clear(); jest.useRealTimers(); }
+  });
+
+  test("clearing the engine cancels a live flush that is still waiting", async () => {
+    jest.useFakeTimers();
+    const run = nextRunId();
+    const h = new Harness(run);
+    try {
+      h.journal.add(agentStart(run, 0));
+      h.journal.add(textChunk(run, 1, "first"));
+      h.engine.reconcile("s1", "open");
+      await jest.runAllTimersAsync();
+      expect(h.textOf("s1")).toBe("first");
+      // A token queues a deferred frame commit, then the user unpairs before
+      // the display frame elapses.
+      h.engine.event("s1", textChunk(run, 2, " late"));
+      h.engine.clear();
+      await jest.advanceTimersByTimeAsync(1_000);
+      // The deferred frame belongs to the discarded pairing: it must not commit
+      // into a lane the engine has already dropped.
+      expect(h.engine.timelineFor("s1")).toBeNull();
+      expect(h.textOf("s1")).toBe("first");
+    } finally { h.engine.clear(); jest.useRealTimers(); }
+  });
+
+  test("evicting a lane cancels its pending retry", async () => {
+    jest.useFakeTimers();
+    const run = nextRunId();
+    const h = new Harness(run);
+    try {
+      h.journal.add(agentStart(run, 0));
+      h.engine.reconcile("s1", "open");
+      await jest.runAllTimersAsync();
+      h.replayFailures = 1;
+      h.engine.reconcile("s1", "resend");
+      await jest.advanceTimersByTimeAsync(1);
+      expect(h.failures).toHaveLength(1);
+      const replays = h.replayCalls.length;
+      // The cache budget forces this lane out while its retry is still armed.
+      h.engine.pruneCache("other", 0, 0);
+      expect(h.engine.timelineFor("s1")).toBeNull();
+      await jest.advanceTimersByTimeAsync(120_000);
+      // An evicted lane must not keep probing the desktop from the background.
+      expect(h.replayCalls).toHaveLength(replays);
     } finally { h.engine.clear(); jest.useRealTimers(); }
   });
 });

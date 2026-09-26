@@ -66,6 +66,28 @@ test("a failed auto-load offers retry, duplicate taps do not start duplicate wor
   expect(button("attachment.retryImage")).toBeDefined();
 });
 
+test("a double tap on the load button starts only one transfer", async () => {
+  let resolveLoad!: (uri: string) => void;
+  const loader = {
+    scope: "one",
+    cached: () => null,
+    load: jest.fn(() => new Promise<string>(resolve => { resolveLoad = resolve; })),
+  };
+  await act(async () => { tree = create(render(loader)); });
+  // The auto-start already owns a transfer; the taps land in the same frame,
+  // before the disabled state has been rendered.
+  expect(loader.load).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    button("attachment.loadImage").props.onPress();
+    button("attachment.loadImage").props.onPress();
+  });
+  // A second controller would race the first one's abort and could leave the
+  // placeholder spinning forever with both transfers cancelled.
+  expect(loader.load).toHaveBeenCalledTimes(1);
+  await act(async () => resolveLoad("file:///a.png"));
+  expect(tree.root.findByType(Image).props.source.uri).toBe("file:///a.png");
+});
+
 // A reply re-projects on every streaming delta; the image must not be
 // re-requested on each one.
 test("a streaming re-projection does not re-request the image", async () => {

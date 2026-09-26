@@ -1181,6 +1181,82 @@ mod tests {
         assert_eq!(agent.seen_of("set_thinking_level")[0].level, "high");
     }
 
+    /// One option failing does not roll back the others: the title, cwd and
+    /// thinking-level failures land in `failed` (with the agent's
+    /// "session not found" message mapped to the target id) while the model
+    /// that succeeded stays in `updated`, the JSON report carries both maps,
+    /// and the command exits 1.
+    #[tokio::test]
+    async fn set_reports_each_failed_option_and_keeps_the_successful_ones() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert("get_state".into(), "{}".into());
+        agent.fail_types.insert("set_session_name".into());
+        agent.fail_types.insert("set_thinking_level".into());
+        agent
+            .fail_with
+            .insert("set_cwd".into(), "session not found".into());
+        let (agent, _env) = mock_env(agent).await;
+
+        let (out, cap) = Output::memory();
+        let result = session(
+            Some("set"),
+            &[
+                "sess-1".into(),
+                "--title".into(),
+                "T".into(),
+                "--cwd".into(),
+                "/work".into(),
+                "--model".into(),
+                "m1".into(),
+                "--thinking".into(),
+                "high".into(),
+                "--json".into(),
+            ],
+            &out,
+        )
+        .await;
+        assert_eq!(result, Err(crate::HANDLED_EXIT.to_string()));
+
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let doc: Value = serde_json::from_str(&stdout).expect("json report");
+        assert_eq!(doc["sessionId"], "sess-1");
+        assert_eq!(doc["updated"]["model"], "m1", "{doc}");
+        assert_eq!(doc["failed"]["title"], "boom", "{doc}");
+        assert_eq!(doc["failed"]["cwd"], "Session not found: sess-1", "{doc}");
+        assert_eq!(doc["failed"]["thinkingLevel"], "boom", "{doc}");
+        assert!(
+            doc["updated"].get("title").is_none() && doc["updated"].get("cwd").is_none(),
+            "a failed option is not reported as applied: {doc}"
+        );
+
+        // Every option was still attempted (a failure is per-option, not fatal).
+        for cmd in [
+            "set_session_name",
+            "set_cwd",
+            "set_model",
+            "set_thinking_level",
+        ] {
+            assert_eq!(agent.seen_of(cmd).len(), 1, "{cmd}");
+        }
+        // The human report names each failure on stderr, one line per option.
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        for expected in [
+            "Failed to set title: boom",
+            "Failed to set cwd: Session not found: sess-1",
+            "Failed to set thinkingLevel: boom",
+        ] {
+            assert!(
+                stderr.contains(expected),
+                "missing {expected:?} in {stderr}"
+            );
+        }
+        assert!(
+            !stderr.contains("Failed to set model"),
+            "the successful option is not reported as failed: {stderr}"
+        );
+    }
+
     #[tokio::test]
     async fn set_only_touches_the_options_given() {
         let _guard = crate::test_env::lock_env().await;

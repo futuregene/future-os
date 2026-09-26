@@ -763,10 +763,15 @@ mod tests {
         .expect("create");
         // Stored canonicalized: `~` expands to HOME, and a HOME sitting behind
         // a symlink (macOS `/var` → `/private/var`) is stored as resolved so
-        // every client's spelling maps to this one workspace.
-        assert_eq!(
-            created.path,
-            dir.canonicalize().unwrap().display().to_string()
+        // every client's spelling maps to this one workspace. The stored form
+        // is the ordinary spelling, never Windows' `\\?\` extended-length one
+        // (a workspace path is handed to shells and to the UI).
+        let canonical = crate::store::strip_verbatim_prefix(dir.canonicalize().unwrap());
+        assert_eq!(created.path, canonical.display().to_string());
+        assert!(
+            !created.path.starts_with(r"\\?\"),
+            "a stored workspace path must not keep the verbatim prefix: {}",
+            created.path
         );
         drop(home);
     }
@@ -864,5 +869,29 @@ mod tests {
 
         assert_eq!(purge_soft_deleted_workspaces().expect("purge"), 1);
         assert!(get_workspace("ws_dead").expect("get").is_none());
+    }
+
+    /// A row stored under an older spelling of the same directory must still be
+    /// found instead of a duplicate workspace being created for it.
+    #[test]
+    fn find_user_workspace_matches_an_aliased_spelling_by_canonical_path() {
+        let conn = test_conn();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let canonical = dir.path().canonicalize().expect("canonicalize");
+        let aliased = format!("{}{}", canonical.display(), std::path::MAIN_SEPARATOR);
+        conn.execute(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws-alias', 'W', 'user', ?1, 1, 1)",
+            rusqlite::params![aliased],
+        )
+        .expect("seed aliased workspace");
+
+        // The indexed spelling lookup cannot match the stored alias, so the
+        // canonical comparison has to resolve it.
+        let found = find_user_workspace_in(&conn, &canonical)
+            .expect("query")
+            .expect("an aliased spelling must resolve to its workspace");
+        assert_eq!(found.id, "ws-alias");
+        assert_eq!(found.path, aliased);
     }
 }

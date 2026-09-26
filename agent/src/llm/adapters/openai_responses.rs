@@ -2307,4 +2307,342 @@ mod tests {
             })
         ));
     }
+
+    /// The provider announces each summary part before streaming its deltas. The
+    /// announcement is bookkeeping (it must not put text on the wire), and a
+    /// second part must be separated from the first — otherwise two distinct
+    /// summary paragraphs stream into one run-on line.
+    #[test]
+    fn reasoning_summary_parts_announce_silently_and_are_separated() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = ResponsesState::default();
+        let announced = adapter
+            .decode_frame(
+                &frame(
+                    "response.reasoning_summary_part.added",
+                    json!({
+                        "type": "response.reasoning_summary_part.added",
+                        "output_index": 0,
+                        "item_id": "rs_0",
+                        "summary_index": 1,
+                        "part": {"type": "summary_text", "text": ""}
+                    }),
+                ),
+                &mut state,
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                announced.as_slice(),
+                [ModelStreamEvent::ReasoningStart { .. }]
+            ),
+            "opening the part must start the reasoning and emit no text: {announced:?}"
+        );
+        assert!(state.reasoning_open[&0].summary_parts.contains_key(&1));
+
+        let mut events = Vec::new();
+        for (summary_index, text) in [(0usize, "step one"), (1usize, "step two")] {
+            events.extend(
+                adapter
+                    .decode_frame(
+                        &frame(
+                            "response.reasoning_summary_text.delta",
+                            json!({
+                                "type": "response.reasoning_summary_text.delta",
+                                "output_index": 0,
+                                "item_id": "rs_0",
+                                "summary_index": summary_index,
+                                "delta": text
+                            }),
+                        ),
+                        &mut state,
+                    )
+                    .unwrap(),
+            );
+        }
+        let mut deltas: Vec<&str> = Vec::new();
+        for event in &events {
+            if let ModelStreamEvent::ReasoningDelta { text, .. } = event {
+                deltas.push(text.as_str());
+            }
+        }
+        assert_eq!(
+            deltas,
+            ["step one", "\n\n", "step two"],
+            "the blank separator belongs between the parts"
+        );
+        assert_eq!(state.reasoning_open[&0].summary_parts[&0], "step one");
+        assert_eq!(state.reasoning_open[&0].summary_parts[&1], "step two");
+    }
+
+    /// `reasoning_text.done` is the only frame that carries the raw (non-summary)
+    /// chain of thought, and it can arrive without any delta before it. It must be
+    /// adopted under its own `content_index` — and replayed unchanged when the
+    /// finished item repeats it — or a stateless follow-up turn loses the exact
+    /// bytes the provider expects back.
+    #[test]
+    fn reasoning_text_done_records_raw_content_and_replays_it_on_the_finished_item() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = ResponsesState::default();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.reasoning_text.done",
+                    json!({
+                        "type": "response.reasoning_text.done",
+                        "output_index": 0,
+                        "item_id": "rs_0",
+                        "content_index": 0,
+                        "text": "raw chain"
+                    }),
+                ),
+                &mut state,
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::ReasoningStart { .. }]
+        ));
+        assert_eq!(state.reasoning_open[&0].content_parts[&0], "raw chain");
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ModelStreamEvent::ReasoningDelta { .. })),
+            "a completed block that was never streamed must not be re-streamed"
+        );
+
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "output_index": 0,
+                        "item": {
+                            "type": "reasoning",
+                            "id": "rs_0",
+                            "content": [{"type": "reasoning_text", "text": "raw chain"}],
+                            "encrypted_content": "cipher"
+                        }
+                    }),
+                ),
+                &mut state,
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [ModelStreamEvent::ReasoningEnd { provider_metadata, .. }]
+                    if provider_metadata["openai"]["content"]
+                        == json!([{"type": "reasoning_text", "text": "raw chain"}])
+                        && provider_metadata["openai"]["encrypted_content"] == "cipher"
+            ),
+            "{events:?}"
+        );
+    }
+
+    /// A refusal is a first-class output item. It has to reach the caller as text
+    /// *and* as `FinishReason::Refusal` — folding it into a plain stop would let an
+    /// orchestrator treat a declined request as a completed one.
+    #[test]
+    fn a_refusal_output_item_streams_its_text_and_reports_a_refusal_finish() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = ResponsesState::default();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.completed",
+                    json!({
+                        "type": "response.completed",
+                        "response": {
+                            "status": "completed",
+                            "output": [{
+                                "type": "refusal",
+                                "id": "msg_refusal",
+                                "refusal": "I cannot help with that."
+                            }]
+                        }
+                    }),
+                ),
+                &mut state,
+            )
+            .unwrap();
+        let texts: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelStreamEvent::TextDelta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["I cannot help with that."]);
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::TextEnd { .. })));
+        assert!(
+            matches!(
+                events.last(),
+                Some(ModelStreamEvent::Finish {
+                    reason: FinishReason::Refusal,
+                    ..
+                })
+            ),
+            "{events:?}"
+        );
+    }
+
+    /// Gateways do resend an authoritative `done` text that does not extend the
+    /// deltas they already sent (a retried or normalised block). Re-emitting it
+    /// would duplicate the assistant text, so the adapter replaces the partial
+    /// text with the authoritative one instead.
+    #[test]
+    fn a_done_frame_that_does_not_extend_the_deltas_replaces_instead_of_duplicating() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = ResponsesState::default();
+        adapter
+            .decode_frame(
+                &frame(
+                    "response.output_text.delta",
+                    json!({
+                        "type": "response.output_text.delta",
+                        "output_index": 0,
+                        "item_id": "msg_0",
+                        "delta": "partial"
+                    }),
+                ),
+                &mut state,
+            )
+            .unwrap();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.output_text.done",
+                    json!({
+                        "type": "response.output_text.done",
+                        "output_index": 0,
+                        "item_id": "msg_0",
+                        "text": "authoritative"
+                    }),
+                ),
+                &mut state,
+            )
+            .unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, ModelStreamEvent::TextDelta { .. })),
+            "the contradictory text must not be appended to the visible stream: {events:?}"
+        );
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::TextEnd { .. })));
+        // The authoritative value won: a later delta extends *it*, not "partial".
+        assert_eq!(state.texts[&0].text, "authoritative");
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.output_text.delta",
+                    json!({
+                        "type": "response.output_text.delta",
+                        "output_index": 0,
+                        "item_id": "msg_0",
+                        "delta": "!"
+                    }),
+                ),
+                &mut state,
+            )
+            .unwrap();
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::TextDelta { text, .. } if text == "!")));
+        assert_eq!(state.texts[&0].text, "authoritative!");
+    }
+
+    /// A `done` frame whose text does not extend what the deltas already
+    /// delivered must not splice new text into the stream: the model saw the
+    /// deltas, and appending a divergent rewrite would leave the assistant turn
+    /// disagreeing with itself. The recorded part stays, and the delta emitted
+    /// for the repeat is empty.
+    #[test]
+    fn a_divergent_summary_done_frame_appends_nothing() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.reasoning_summary_text.delta",
+                    json!({
+                        "type": "response.reasoning_summary_text.delta",
+                        "output_index": 0,
+                        "item_id": "rs_9",
+                        "summary_index": 0,
+                        "delta": "abc"
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [ModelStreamEvent::ReasoningStart { .. }, ModelStreamEvent::ReasoningDelta { text, .. }]
+                if text == "abc"
+        ));
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.reasoning_summary_text.done",
+                    json!({
+                        "type": "response.reasoning_summary_text.done",
+                        "output_index": 0,
+                        "item_id": "rs_9",
+                        "summary_index": 0,
+                        "text": "xyz"
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        assert!(
+            events.is_empty(),
+            "a done frame that contradicts the delivered deltas must not append text: {events:?}"
+        );
+    }
+
+    /// Content parts the adapter does not consume (an `input_text` echo, an
+    /// image) are skipped rather than stringified into the assistant text, and a
+    /// following refusal/update part is still honoured.
+    #[test]
+    fn unknown_message_content_parts_are_skipped_without_swallowing_later_text() {
+        let adapter = OpenAiResponsesAdapter;
+        let mut state = adapter.new_stream_state();
+        let events = adapter
+            .decode_frame(
+                &frame(
+                    "response.output_item.done",
+                    json!({
+                        "type": "response.output_item.done",
+                        "output_index": 0,
+                        "item": {
+                            "type": "message",
+                            "id": "msg_7",
+                            "content": [
+                                {"type": "input_text", "text": "ECHOED_INPUT"},
+                                {"type": "image_url", "image_url": {"url": "https://example.com/x.png"}},
+                                {"type": "output_text", "text": "real answer"}
+                            ]
+                        }
+                    }),
+                ),
+                state.as_mut(),
+            )
+            .unwrap();
+        let text: String = events
+            .iter()
+            .filter_map(|event| match event {
+                ModelStreamEvent::TextDelta { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "real answer");
+        assert!(!text.contains("ECHOED_INPUT") && !text.contains("example.com"));
+    }
 }

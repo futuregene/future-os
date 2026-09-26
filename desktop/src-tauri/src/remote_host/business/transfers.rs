@@ -87,3 +87,21 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
         _ => unreachable!("transfer handler received {}", cmd.cmd_type),
     }
 }
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    /// The transfer family is a closed set of six commands; a name from another
+    /// family must not be answered with a plausible-looking reply.
+    #[tokio::test]
+    #[should_panic(expected = "handler received")]
+    async fn a_command_from_another_family_is_not_answered() {
+        let sink = crate::remote::test_support::RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "get_settings".into(),
+            ..Default::default()
+        };
+        execute(&cmd, &sink).await;
+    }
+}

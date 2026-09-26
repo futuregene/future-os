@@ -70,6 +70,22 @@ pub(crate) mod test_support {
         std::env::temp_dir().join(format!("futureos-{tag}-{stamp}-{seq}"))
     }
 
+    /// An absolute path in the *host's* spelling from a POSIX-spelled
+    /// argument. The Linux-helper protocol is POSIX, but the code under test
+    /// validates host paths (`Path::is_absolute`), so a fixture that is
+    /// absolute on unix has to gain a drive prefix on Windows to reach the
+    /// same accept branch. On unix the string is returned unchanged.
+    pub(crate) fn host_absolute_path(path: &str) -> std::path::PathBuf {
+        if cfg!(windows) {
+            std::path::PathBuf::from(format!(
+                "C:\\{}",
+                path.trim_start_matches('/').replace('/', "\\")
+            ))
+        } else {
+            std::path::PathBuf::from(path)
+        }
+    }
+
     /// Redirect HOME/USERPROFILE to an isolated directory for the duration of
     /// a test. The directory is anchored under the workspace target/ dir —
     /// never the system temp dir, whose writes sandbox rules allow (a temp

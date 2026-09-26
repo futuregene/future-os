@@ -618,6 +618,103 @@ fn get_events_since_returns_projection_over_truncated_ring() {
     assert!(!resp["data"]["projection"].is_null());
 }
 
+/// Replace the resident test session's messages with `messages`. The resident
+/// session is constructed with `history_loaded = true`, so the dispatcher's
+/// hydration gate is a no-op and the handler projects exactly these.
+fn seed_messages(state: &crate::rpc::AppState, messages: Vec<crate::types::AgentMessage>) {
+    let session = state.sessions.read().get("default").cloned().unwrap();
+    *session.read().messages.write() = messages;
+}
+
+fn user_message(text: &str, metadata: serde_json::Value) -> crate::types::AgentMessage {
+    crate::types::AgentMessage {
+        role: "user".to_string(),
+        content: vec![crate::types::ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        metadata: metadata.as_object().cloned(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn get_messages_lifts_the_run_id_out_of_the_metadata_blob() {
+    let state = make_app_state();
+    seed_messages(
+        &state,
+        vec![user_message(
+            "怎么导出？",
+            serde_json::json!({"run_id": "run-7", "custom": "kept"}),
+        )],
+    );
+
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("get_messages")));
+    assert_eq!(resp["success"], true, "{resp}");
+    let messages = resp["data"]["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1, "{resp}");
+    assert_eq!(messages[0]["role"], "user");
+    // The run id is projected into its own field...
+    assert_eq!(messages[0]["runId"], "run-7");
+    // ...and removed from the metadata blob, which keeps everything else so a
+    // client cannot tell "no run" from "field dropped".
+    let metadata = &messages[0]["metadata"];
+    assert!(metadata.get("run_id").is_none(), "metadata: {metadata}");
+    assert_eq!(metadata["custom"], "kept");
+    // The message body arrives as typed blocks (CJK preserved byte-for-byte).
+    let blocks = messages[0]["blocks"].as_array().unwrap();
+    assert!(
+        blocks
+            .iter()
+            .any(|block| block["kind"] == "text" && block["text"] == "怎么导出？"),
+        "blocks: {blocks:?}"
+    );
+}
+
+#[test]
+fn export_html_writes_the_transcript_to_the_configured_directory() {
+    // `export_html_writes_file` is `cfg(not(windows))` because the production
+    // base directory is `/tmp`; driving the same success path through the
+    // test-only override exercises it on every platform.
+    let _gate = EXPORT_TEST_LOCK.lock();
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = ExportDirGuard::new(dir.path().to_path_buf());
+
+    let state = make_app_state();
+    seed_messages(
+        &state,
+        vec![
+            user_message("怎么导出？", serde_json::json!({})),
+            crate::types::AgentMessage {
+                role: "assistant".to_string(),
+                content: vec![crate::types::ContentBlock::Text {
+                    text: "用 export_html".to_string(),
+                }],
+                ..Default::default()
+            },
+        ],
+    );
+
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("export_html")));
+    assert_eq!(resp["success"], true, "{resp}");
+    let path = std::path::PathBuf::from(resp["data"]["path"].as_str().unwrap());
+    assert_eq!(
+        path.parent().unwrap(),
+        dir.path(),
+        "export landed elsewhere"
+    );
+    assert!(path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("future_agent_export_default_"));
+    let html = std::fs::read_to_string(&path).unwrap();
+    assert!(html.contains("怎么导出？"), "user turn missing from export");
+    assert!(
+        html.contains("用 export_html"),
+        "answer missing from export"
+    );
+}
+
 #[test]
 fn export_html_reports_write_failure() {
     let _gate = EXPORT_TEST_LOCK.lock();

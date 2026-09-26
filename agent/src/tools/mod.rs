@@ -1703,7 +1703,7 @@ fn ensure_workspace_access(_workspace: &Path, path: &Path) -> Result<()> {
     }
 }
 
-fn is_approved_outside_path(path: &Path) -> bool {
+pub(crate) fn is_approved_outside_path(path: &Path) -> bool {
     TOOL_SCOPE
         .try_with(|scope| {
             scope
@@ -2004,9 +2004,11 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn windows_shell_reports_exit_status_and_timeout_kills_descendants() {
-        let output = run_shell("cmd /c exit /b 7", 5, false, "").await.unwrap();
+        let output = run_shell("cmd /c exit /b 7", 15, false, "").await.unwrap();
         assert!(output.contains("[exit: 7]"), "{output}");
-        let output = run_shell("$p = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 30' -PassThru; Write-Output ('child_pid=' + $p.Id); Start-Sleep -Seconds 30", 2, false, "").await.unwrap();
+        // 10s against a 30s sleep: the deadline must not encode how fast a
+        // loaded machine can spawn PowerShell + a child (2s did).
+        let output = run_shell("$p = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 30' -PassThru; Write-Output ('child_pid=' + $p.Id); Start-Sleep -Seconds 30", 10, false, "").await.unwrap();
         assert!(output.contains("[exit: signal]"), "{output}");
         let pid: u32 = output
             .lines()
@@ -2022,11 +2024,194 @@ mod tests {
             };
             let handle = OpenProcess(0x0010_0000, 0, pid); // SYNCHRONIZE
             if !handle.is_null() {
-                let waited = WaitForSingleObject(handle, 2000);
+                // 15s: WAIT_OBJECT_0 is only ever returned once the child has
+                // actually exited, so a leaked descendant still fails the
+                // assertion — the wait length only absorbs a loaded machine's
+                // cleanup latency (2s was not enough under a saturated suite).
+                let waited = WaitForSingleObject(handle, 15_000);
                 CloseHandle(handle);
                 assert_eq!(waited, 0, "test descendant survived Job cleanup");
             }
         }
+    }
+
+    // ── Windows restricted runner (tools → ACL/token/Job end to end) ───────
+
+    /// A tool scope whose resolved sandbox is the real Windows write
+    /// restriction, or `None` on a host where the capability is unavailable
+    /// (the same precondition `sandbox::windows::integration_tests` runs
+    /// under). Resolving through the production probe is what makes this a
+    /// real end-to-end path: the tools layer only forwards to the restricted
+    /// runner when the receipt says the sandbox is usable.
+    #[cfg(windows)]
+    fn restricted_tool_scope(workspace: &str) -> Option<ScopeOptions> {
+        let sandbox = ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy {
+                tier: crate::sandbox::SandboxTier::Sandbox,
+            },
+            workspace,
+        );
+        sandbox.wraps_shell().then(|| ScopeOptions {
+            workspace: workspace.to_string(),
+            permission_level: "all".to_string(),
+            interrupt_flag: Arc::new(AtomicBool::new(false)),
+            sandbox: Arc::new(sandbox),
+            escalation: None,
+            on_sandboxed: None,
+        })
+    }
+
+    /// `runner::spawn` fails with this when another process already holds the
+    /// machine-global write-restriction capability lock — a sibling test run on
+    /// this shared checkout, or the release script. The lock serializes a
+    /// host-wide resource, so contention is an environment precondition rather
+    /// than behaviour under test; any other error is a real failure.
+    #[cfg(windows)]
+    fn capability_lock_contended(error: &str) -> bool {
+        error.contains("permissions are in use") || error.contains("os error 33")
+    }
+
+    /// Run one restricted command, briefly retrying while the machine-global
+    /// capability lock is held by a sibling test that runs in parallel in this
+    /// same binary (its sandbox job only holds the lock for its own lifetime).
+    /// A non-contention error is returned immediately — it is a real result
+    /// (timeout, abort) or a real failure, never turned into a skip.
+    #[cfg(windows)]
+    async fn run_restricted(command: &str, timeout_secs: u64) -> Result<String, String> {
+        let mut last = String::new();
+        for _ in 0..20 {
+            match run_shell(command, timeout_secs, false, "").await {
+                Ok(output) => return Ok(output),
+                Err(error) => {
+                    last = error.to_string();
+                    if !capability_lock_contended(&last) {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+            }
+        }
+        Err(last)
+    }
+
+    /// The Windows sandbox tier must run the command through the restricted
+    /// runner — a WRITE_RESTRICTED token in a Job Object — and still report
+    /// the child's exit code, while in-workspace writes keep working.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_restricted_runner_runs_and_reports_the_child_exit_code() {
+        let workspace = test_path("restricted-runner");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace_string = workspace.to_string_lossy().to_string();
+        let Some(options) = restricted_tool_scope(&workspace_string) else {
+            eprintln!(
+                "Windows write restriction unavailable on this host; restricted runner not exercised"
+            );
+            return;
+        };
+        let output = with_tool_scope(options, async {
+            match run_restricted(
+                "Set-Content -Path restricted.txt -Value sandboxed-ok; Write-Output done; exit 3",
+                60,
+            )
+            .await
+            {
+                Ok(output) => Some(output),
+                Err(error) if capability_lock_contended(&error) => {
+                    eprintln!("capability lock held by another process; skipped");
+                    None
+                }
+                Err(error) => panic!("restricted run failed: {error}"),
+            }
+        })
+        .await;
+        let Some(output) = output else {
+            return;
+        };
+        assert!(output.contains("done"), "{output}");
+        assert!(output.contains("[exit: 3]"), "{output}");
+        // The write really reached the workspace through the ACE + token path
+        // (the policy grants the workspace root as a writable carve-out).
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("restricted.txt"))
+                .unwrap()
+                .trim(),
+            "sandboxed-ok"
+        );
+    }
+
+    /// Timeout, partial-output, empty-output and interrupt arms of the
+    /// restricted runner. Each returns a distinct error shape, and the killed
+    /// child must not keep the drain tasks waiting.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_restricted_runner_reports_timeout_partial_output_and_abort() {
+        let workspace = test_path("restricted-timeout");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let workspace_string = workspace.to_string_lossy().to_string();
+        let Some(options) = restricted_tool_scope(&workspace_string) else {
+            eprintln!(
+                "Windows write restriction unavailable on this host; restricted runner not exercised"
+            );
+            return;
+        };
+        let outcome = with_tool_scope(options, async {
+            // Deadline with output already drained → partial output is kept.
+            // 20s (against a 60s sleep): a shorter deadline measures how fast a
+            // loaded machine starts PowerShell and flushes its first write, not
+            // the drain behaviour — at 5s this failed while the suite ran under
+            // a heavily loaded shared machine.
+            let error = match run_restricted(
+                "Write-Output partial-restricted; Start-Sleep -Seconds 60",
+                20,
+            )
+            .await
+            {
+                Ok(output) => panic!("expected a deadline, got {output:?}"),
+                Err(error) => error,
+            };
+            if capability_lock_contended(&error) {
+                eprintln!("capability lock held by another process; skipped");
+                return None;
+            }
+            assert!(error.contains("timed out"), "{error}");
+            assert!(error.contains("Partial output"), "{error}");
+            assert!(error.contains("partial-restricted"), "{error}");
+
+            // Deadline with nothing captured → the shorter error form.
+            let error = match run_restricted("Start-Sleep -Seconds 60", 5).await {
+                Ok(output) => panic!("expected a deadline, got {output:?}"),
+                Err(error) => error,
+            };
+            assert!(error.contains("no output captured"), "{error}");
+            Some(())
+        })
+        .await;
+        if outcome.is_none() {
+            return;
+        }
+
+        // A pre-set abort flag cancels the wait without waiting for the deadline.
+        let Some(mut options) = restricted_tool_scope(&workspace_string) else {
+            return;
+        };
+        options.interrupt_flag = Arc::new(AtomicBool::new(true));
+        let outcome = with_tool_scope(options, async {
+            let error = match run_restricted("Start-Sleep -Seconds 60", 60).await {
+                Ok(output) => panic!("expected an abort, got {output:?}"),
+                Err(error) => error,
+            };
+            if capability_lock_contended(&error) {
+                eprintln!("capability lock held by another process; skipped");
+                return None;
+            }
+            assert!(error.contains("interrupted by abort"), "{error}");
+            Some(())
+        })
+        .await;
+        // `None` means the shared capability lock was contended (already
+        // reported above); the assertions ran whenever the lock was free.
+        let _ = outcome;
     }
 
     #[test]
@@ -2677,6 +2862,49 @@ mod tests {
         assert!(output.contains("[exit: signal]"));
     }
 
+    /// Truncation keeps the *last* `MAX_KEEP` bytes, the boundary is `>` (not
+    /// `>=`), and a cut that would land inside a multi-byte character is
+    /// pushed to the next char boundary instead of panicking or emitting a
+    /// replacement character. (`human_size` floors, so the 500 000-byte keep
+    /// window is reported as "488KB".)
+    #[test]
+    fn format_shell_output_truncates_at_the_max_keep_boundary() {
+        const MAX_KEEP: usize = 500_000;
+
+        // Exactly at the limit: shown in full, no header, verbatim body.
+        let exact = "a".repeat(MAX_KEEP);
+        let shown = format_shell_output(&exact, exact.len(), 0);
+        assert!(!shown.contains("truncated"));
+        assert_eq!(shown, format!("{exact}\n[exit: 0]"));
+
+        // One byte over: the head byte is dropped, everything else survives.
+        let over = format!("0{}", "a".repeat(MAX_KEEP));
+        let shown = format_shell_output(&over, over.len(), 0);
+        assert!(
+            shown.starts_with("[output: 488KB total, showing last 488KB; 1B truncated]\n"),
+            "{shown:.80}"
+        );
+        // The retained slice is exactly the last MAX_KEEP bytes — the leading
+        // '0' sentinel is gone, not merely somewhere past the header.
+        let body = shown.split_once('\n').expect("header line").1;
+        assert_eq!(body, format!("{}\n[exit: 0]", "a".repeat(MAX_KEEP)));
+
+        // The cut lands strictly inside the leading 2-byte 'é' (its byte range
+        // is 0..2 and `raw.len() - MAX_KEEP == 1`), so the retained slice must
+        // start at byte 2 — dropping the character whole, never half of it.
+        let straddling = format!("é{}", "b".repeat(MAX_KEEP - 1));
+        let shown = format_shell_output(&straddling, straddling.len(), 0);
+        assert_eq!(
+            shown,
+            format!(
+                "[output: 488KB total, showing last 488KB; 1B truncated]\n{}\n[exit: 0]",
+                "b".repeat(MAX_KEEP - 1)
+            ),
+            "a straddled character must be dropped whole"
+        );
+        assert!(!shown.contains('\u{fffd}'), "no replacement character");
+    }
+
     // ─── truncate_for_error ────────────────────────────────────────────────
 
     #[test]
@@ -2790,10 +3018,63 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn approve_outside_path_adds_to_approved_list() {
-        // Without a scope, this is a no-op (should not panic)
-        approve_outside_path("/tmp/test");
+    #[tokio::test]
+    async fn approve_outside_path_adds_to_approved_list() {
+        let approved = crate::sandbox::paths::canonicalize_lenient(
+            &std::env::temp_dir().join("futureos-cov100-approved-outside.txt"),
+        );
+        let approved_str = approved.to_string_lossy().to_string();
+
+        // Outside any tool scope there is no list to record into (the
+        // `try_with` + `unwrap_or(false)` arm): the call must stay a no-op
+        // instead of panicking or leaking into a later scope.
+        approve_outside_path(&approved_str);
+        assert!(
+            !is_approved_outside_path(&approved),
+            "a path approved with no active scope must not be visible to a later one"
+        );
+
+        let workspace = std::env::temp_dir().to_string_lossy().to_string();
+        let sandbox = Arc::new(ResolvedSandbox::disabled(&workspace));
+        let never_approved = std::env::temp_dir().join("futureos-cov100-never-approved.txt");
+        with_tool_scope(
+            ScopeOptions {
+                workspace,
+                permission_level: "all".to_string(),
+                interrupt_flag: Arc::new(AtomicBool::new(false)),
+                sandbox,
+                escalation: None,
+                on_sandboxed: None,
+            },
+            async {
+                // A fresh scope starts with nothing approved.
+                assert!(!is_approved_outside_path(&approved));
+                approve_outside_path(&approved_str);
+                assert!(
+                    is_approved_outside_path(&approved),
+                    "approve_outside_path must record the path in the active scope"
+                );
+                // Approval is per path, not a blanket "anything goes".
+                assert!(!is_approved_outside_path(&never_approved));
+
+                // The stored path is normalized, so a `..`-spelled spelling of
+                // the same file is matched by its plain spelling afterwards.
+                let normalized = crate::sandbox::paths::canonicalize_lenient(
+                    &std::env::temp_dir().join("futureos-cov100-dotted.txt"),
+                );
+                let dotted = std::env::temp_dir()
+                    .join("cov100-sub")
+                    .join("..")
+                    .join("futureos-cov100-dotted.txt");
+                assert!(!is_approved_outside_path(&normalized));
+                approve_outside_path(&dotted.to_string_lossy());
+                assert!(
+                    is_approved_outside_path(&normalized),
+                    "approve_outside_path must store the normalized path, not the raw spelling"
+                );
+            },
+        )
+        .await;
     }
 
     #[test]
@@ -2955,9 +3236,14 @@ mod tests {
         // they differ in the return shape. Unix reports a timeout error;
         // Windows returns the killed run's output with an `[exit: signal]`
         // footer (see `windows_shell_reports_exit_status_and_timeout_kills_descendants`).
+        //
+        // The deadline is 10s against a 30s sleep: a 1s deadline measured how
+        // fast a loaded CI box can spawn PowerShell, not the kill-and-drain
+        // behaviour under test (it failed when the suite ran at full
+        // parallelism next to other work).
         #[cfg(unix)]
         {
-            let result = run_shell("echo partial-out; sleep 30", 1, false, "").await;
+            let result = run_shell("echo partial-out; sleep 30", 10, false, "").await;
             let error = result.unwrap_err().to_string();
             assert!(error.contains("timed out"), "{error}");
             assert!(error.contains("partial-out"), "{error}");
@@ -2966,7 +3252,7 @@ mod tests {
         {
             let result = run_shell(
                 "Write-Output partial-out; Start-Sleep -Seconds 30",
-                1,
+                10,
                 false,
                 "",
             )
@@ -2978,27 +3264,55 @@ mod tests {
 
         // No output at all → the shorter error form.
         #[cfg(unix)]
-        let silent = run_shell("sleep 30", 1, false, "").await;
+        let silent = run_shell("sleep 30", 10, false, "").await;
         #[cfg(windows)]
-        let silent = run_shell("Start-Sleep -Seconds 30", 1, false, "").await;
+        let silent = run_shell("Start-Sleep -Seconds 30", 10, false, "").await;
         let error = silent.unwrap_err().to_string();
         assert!(error.contains("no output captured"), "{error}");
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn shell_output_is_truncated_beyond_max_keep() {
-        // Output ≈ 0.7-1 MB > MAX_KEEP (500 KB); the last line is the marker
-        // the tail must still carry.
+        // Output ≈ 0.6 MB > MAX_KEEP (500 KB); the tail marker is what the
+        // kept slice must still carry.
+        //
+        // Windows emits the payload as ONE expression (`'y' * 600000`) rather
+        // than a 40 000-line `cmd /c for` loop: under a loaded parallel suite
+        // the loop could still be running when the command deadline hit, and
+        // the deadline arm returns the partial output with no truncation
+        // header — which made this assertion flaky on a busy machine. A single
+        // string allocation makes the amount produced independent of machine
+        // load, so the test measures truncation, not CPU contention.
+        // Both platforms emit a HEAD marker first and a TAIL marker last, so the two
+        // assertions below prove WHICH END survived without depending on the payload's
+        // characters. (The previous form counted 'y' bytes, which only exist in the
+        // PowerShell payload -- the unix command produces digits, so the assertion could
+        // never hold on Linux. CI caught it; only a Windows build could not.)
         #[cfg(unix)]
-        let (command, last_line) = ("seq 1 120000", "120000");
+        let command = "echo HEAD-MARKER; seq 1 120000; echo TAIL-MARKER";
         #[cfg(windows)]
-        let (command, last_line) = (
-            "cmd /c \"for /L %i in (1,1,40000) do @echo xxxxxxxxxxxxxxxxxx%i\"",
-            "40000",
-        );
-        let result = run_shell(command, 30, false, "").await.unwrap();
+        let command = "'HEAD-MARKER' + ('y' * 600000) + 'TAIL-MARKER'";
+        let result = run_shell(command, 120, false, "").await.unwrap();
         assert!(result.contains("truncated"), "{result:.200}");
-        assert!(result.contains(last_line), "tail kept: {result:.200}");
+        assert!(result.contains("TAIL-MARKER"), "tail kept: {result:.200}");
+        assert!(
+            !result.contains("HEAD-MARKER"),
+            "the head must be dropped, but it survived: {result:.200}"
+        );
+        // Sanity bound on top of the marker evidence: the retained slice is the last
+        // MAX_KEEP (500_000) bytes, so the body must be close to that. It also has to be
+        // smaller than the full payload (600_024+ bytes on unix, 600_024 on Windows),
+        // which independently confirms the head was removed.
+        assert!(
+            result.len() >= 490_000,
+            "kept too little: {} bytes kept",
+            result.len()
+        );
+        assert!(
+            result.len() < 600_000,
+            "head not dropped: {} bytes kept",
+            result.len()
+        );
     }
 
     #[test]

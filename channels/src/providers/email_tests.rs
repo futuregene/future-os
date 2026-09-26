@@ -2857,7 +2857,25 @@ async fn the_poller_answers_mail_and_skips_what_it_must_not() {
 
     // Only the allowlisted sender produced a turn; the other two were read and
     // marked seen without becoming prompts.
+    //
+    // `ProviderCtx::handle` only *queues* the turn and returns, so the prompt
+    // the mock agent records is written by the bridge's worker task. Reading the
+    // count straight after `shutdown` is therefore a race the test can lose on a
+    // busy machine — it did: a mutation run reported `left: 0, right: 1` for a
+    // mutant of `policy.rs`, which cannot affect this. Waiting for the prompt the
+    // allowlisted sender must produce, and only then asserting there is exactly
+    // one, keeps the claim ("one prompt, not three") entirely: a second or third
+    // prompt would still fail the equality below.
+    let prompted = wait_until(
+        || !crate::test_support::recorded_of(&state, "prompt").is_empty(),
+        Duration::from_secs(10),
+    )
+    .await;
     let prompts = crate::test_support::recorded_of(&state, "prompt");
+    assert!(
+        prompted,
+        "the allowlisted message must reach the agent: {prompts:?}"
+    );
     assert_eq!(prompts.len(), 1, "{prompts:?}");
     // Every message is remembered, refused ones included, so a restart does not
     // read them again.
@@ -2959,7 +2977,21 @@ async fn a_message_already_delivered_under_another_uid_is_marked_without_a_turn(
     let _ = tokio::time::timeout(Duration::from_secs(10), running).await;
     imap.assert_clean();
     // One turn for the first copy, none for the second.
-    assert_eq!(crate::test_support::recorded_of(&state, "prompt").len(), 1);
+    //
+    // The prompt is recorded by the bridge's worker task, which `handle` starts
+    // and does not await, so asserting the count immediately is a race — it lost
+    // one under mutation load (`left: 0, right: 1`). The store for the *second*
+    // copy (waited for above) also proves the duplicate was classified without
+    // being dispatched, so nothing can add a prompt after this wait except a
+    // real regression, which the equality still catches.
+    let prompted = wait_until(
+        || !crate::test_support::recorded_of(&state, "prompt").is_empty(),
+        Duration::from_secs(10),
+    )
+    .await;
+    let prompts = crate::test_support::recorded_of(&state, "prompt");
+    assert!(prompted, "the first copy must reach the agent: {prompts:?}");
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
 }
 
 // ─── MIME depth and address escapes ────────────────────────────────────────

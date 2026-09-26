@@ -111,4 +111,34 @@ mod tests {
         let _a = InstanceGuard::at(first.path()).unwrap();
         let _b = InstanceGuard::at(second.path()).unwrap();
     }
+
+    /// `acquire()` resolves the data directory from the process-global HOME, so
+    /// this is the only test that needs the same fixture the store tests use.
+    #[test]
+    fn acquire_resolves_the_home_directory_and_keeps_its_lock() {
+        let home = crate::auth_store::test_support::HomeGuard::new("instance-acquire");
+        let root = std::env::var("HOME").expect("HomeGuard publishes HOME");
+        let data_directory = Path::new(&root).join(".future").join("app");
+        let guard = InstanceGuard::acquire().expect("acquire under the override HOME");
+        assert!(
+            data_directory.join("desktop.lock").is_file(),
+            "acquire must create the lock file under HOME/.future/app"
+        );
+
+        let error = InstanceGuard::acquire()
+            .err()
+            .expect("the data directory is already owned")
+            .to_string();
+        assert!(error.contains("Desktop is already running"), "{error}");
+        assert!(
+            error.contains(&data_directory.display().to_string()),
+            "the message must name the contended directory: {error}"
+        );
+
+        drop(guard);
+        // Releasing the only owner makes the same directory available again.
+        let reacquired = InstanceGuard::acquire().expect("reacquire after release");
+        drop(reacquired);
+        drop(home);
+    }
 }

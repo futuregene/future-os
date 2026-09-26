@@ -930,4 +930,36 @@ mod tests {
         assert_ne!(first, second, "monotonic sequence separates same-ms ids");
         assert!(first.starts_with("desktop_"));
     }
+
+    /// A half-filled readiness handshake is not readiness. Reporting it as ready
+    /// would let login persist a credential for a build this Desktop cannot talk
+    /// to, so an empty version — or an empty instance id — must be rejected.
+    #[tokio::test]
+    async fn get_agent_readiness_rejects_a_half_filled_payload() {
+        let mock = mock_agent();
+        for payload in [
+            serde_json::json!({"version": "", "agentInstanceId": "mock-agent"}),
+            serde_json::json!({"version": "0.9.0", "agentInstanceId": ""}),
+        ] {
+            mock.push_typed_data("get_agent_readiness", payload.clone());
+            let error = get_agent_readiness()
+                .await
+                .expect_err("an incomplete readiness payload must not read as ready");
+            assert!(
+                error.to_string().contains("incomplete readiness response"),
+                "{payload} produced {error}"
+            );
+        }
+        // The complete handshake still reads as ready, version and all.
+        mock.push_typed_data(
+            "get_agent_readiness",
+            serde_json::json!({"version": "0.9.0", "agentInstanceId": "mock-agent"}),
+        );
+        let info = get_agent_readiness()
+            .await
+            .expect("complete payload")
+            .expect("an Agent that answers the handshake is ready");
+        assert_eq!(info.version, "0.9.0");
+        assert_eq!(info.agent_instance_id, "mock-agent");
+    }
 }

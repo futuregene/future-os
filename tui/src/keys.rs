@@ -2295,4 +2295,89 @@ mod tests {
             MOD_CTRL
         ));
     }
+
+    /// Terminals spell the same key several ways, and the app dispatches on the
+    /// id — so *every* documented spelling in the legacy table must resolve
+    /// through `parse_key` to the same id. A spelling that only the table knows
+    /// (an arm never matched) would leave that key dead on the terminals using
+    /// it, which is exactly the class of bug the Home/End comment in the table
+    /// records.
+    ///
+    /// Table-driven over the whole documented input space rather than
+    /// spot-checked: the families below are every distinct spelling the table
+    /// lists.
+    #[test]
+    fn every_documented_spelling_of_a_key_resolves_to_the_same_id() {
+        let families: &[(&str, &[&str])] = &[
+            ("up", &["\x1bOA", "\x1b[A"]),
+            ("down", &["\x1bOB", "\x1b[B"]),
+            ("right", &["\x1bOC", "\x1b[C"]),
+            ("left", &["\x1bOD", "\x1b[D"]),
+            ("home", &["\x1bOH", "\x1b[H"]),
+            ("end", &["\x1bOF", "\x1b[F"]),
+            ("clear", &["\x1b[E", "\x1bOE"]),
+            ("ctrl+clear", &["\x1bOe"]),
+            ("shift+clear", &["\x1b[e"]),
+            ("insert", &["\x1b[2~"]),
+            ("shift+insert", &["\x1b[2$"]),
+            ("ctrl+insert", &["\x1b[2^"]),
+            ("delete", &["\x1b[3~"]),
+            ("shift+delete", &["\x1b[3$"]),
+            ("ctrl+delete", &["\x1b[3^"]),
+            ("shift+up", &["\x1b[a"]),
+            ("shift+down", &["\x1b[b"]),
+            ("shift+right", &["\x1b[c"]),
+            ("shift+left", &["\x1b[d"]),
+            ("ctrl+up", &["\x1bOa"]),
+            ("ctrl+down", &["\x1bOb"]),
+            ("ctrl+right", &["\x1bOc"]),
+            ("ctrl+left", &["\x1bOd"]),
+            ("pageUp", &["\x1b[[5~", "\x1b[5~"]),
+            ("pageDown", &["\x1b[[6~", "\x1b[6~"]),
+            ("shift+pageUp", &["\x1b[5$"]),
+            ("shift+pageDown", &["\x1b[6$"]),
+            ("shift+home", &["\x1b[7$"]),
+            ("shift+end", &["\x1b[8$"]),
+            ("ctrl+pageUp", &["\x1b[5^"]),
+            ("ctrl+pageDown", &["\x1b[6^"]),
+            ("ctrl+home", &["\x1b[7^"]),
+            ("ctrl+end", &["\x1b[8^"]),
+            ("f1", &["\x1bOP", "\x1b[11~", "\x1b[[A"]),
+            ("f2", &["\x1bOQ", "\x1b[12~", "\x1b[[B"]),
+            ("f3", &["\x1bOR", "\x1b[13~", "\x1b[[C"]),
+            ("f4", &["\x1bOS", "\x1b[14~", "\x1b[[D"]),
+            ("f5", &["\x1b[[E", "\x1b[15~"]),
+            ("f6", &["\x1b[17~"]),
+            ("f7", &["\x1b[18~"]),
+            ("f8", &["\x1b[19~"]),
+            ("f9", &["\x1b[20~"]),
+            ("f10", &["\x1b[21~"]),
+            ("f11", &["\x1b[23~"]),
+            ("f12", &["\x1b[24~"]),
+            ("alt+left", &["\x1bb"]),
+            ("alt+right", &["\x1bf"]),
+            ("alt+up", &["\x1bp"]),
+            ("alt+down", &["\x1bn"]),
+        ];
+
+        for (expected, spellings) in families {
+            for spelling in *spellings {
+                // Bind eagerly: `assert_eq!`'s message is only evaluated on
+                // failure, so a lazily-formatted spelling would leave the
+                // diagnostic line permanently "uncovered" (and a reader of the
+                // report would see a gap where there is none).
+                let decoded = parse_key(spelling);
+                let shown = spelling.escape_debug().to_string();
+                assert_eq!(
+                    decoded.as_deref(),
+                    Some(*expected),
+                    "spelling {shown} must decode to {expected:?}"
+                );
+            }
+        }
+
+        // An undocumented sequence is still no key at all (the table's
+        // fallthrough), so the table cannot be hiding a catch-all arm.
+        assert!(parse_key("\x1b[99~").is_none());
+    }
 }

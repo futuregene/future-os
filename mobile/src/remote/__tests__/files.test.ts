@@ -1081,6 +1081,34 @@ describe("prepareAlbumImages", () => {
       prepareAlbumImages(existing, [albumImage(1, "one.jpg", "image/jpeg")]),
     ).rejects.toThrow("attachment_image_count");
   });
+
+  test("a conversion failure removes the copy it just made of a granted library photo", async () => {
+    // `ACTION_PICK` grants read access to one photo, not a durable file, so the
+    // pick is copied into the cache first. If the pipeline then fails, that copy
+    // must not be left behind: it is a full-size photo the user never chose to
+    // keep, and nothing else knows its generated name.
+    mockFS.__set("content://media/external/images/media/7", {
+      bytes: new Uint8Array(10),
+      type: "image/jpeg",
+    });
+    const cached: string[] = [];
+    const originalCopy = mockFS.File.prototype.copy;
+    const copy = jest.spyOn(mockFS.File.prototype, "copy")
+      .mockImplementation(async function (this: FS.File, destination: unknown) {
+        cached.push((destination as FS.File).uri);
+        return originalCopy.call(this, destination as FS.File);
+      } as never);
+    mockedManipulate.mockRejectedValue(new Error("converter boom"));
+    try {
+      await expect(
+        prepareAlbumImages([], [albumImage(7, "IMG_0001.jpg", "image/jpeg")]),
+      ).rejects.toThrow("attachment_image_decode");
+      expect(cached).toHaveLength(1);
+      expect(new mockFS.File(cached[0] as never).exists).toBe(false);
+    } finally {
+      copy.mockRestore();
+    }
+  });
 });
 
 describe("remainingImageSlots", () => {
@@ -1121,6 +1149,198 @@ describe("recoverPendingImagePickerAttachments", () => {
   test("surfaces a pending native picker error", async () => {
     mockedPendingResult.mockResolvedValue({ code: "E_PICKER", message: "picker failed" });
     await expect(recoverPendingImagePickerAttachments([])).rejects.toThrow("attachment_failed");
+  });
+
+  test("a pending result that carries no asset is a cancel, not a failure", async () => {
+    // Android can answer with an explicit cancel, or with a result whose asset
+    // list is empty. Neither is an error, and neither may start a prepare.
+    mockedPendingResult.mockResolvedValue({ canceled: true, assets: [] });
+    const existing = [attachment()];
+    expect(await recoverPendingImagePickerAttachments(existing)).toBe(existing);
+    mockedPendingResult.mockResolvedValue({ canceled: false, assets: [] });
+    expect(await recoverPendingImagePickerAttachments(existing)).toBe(existing);
+  });
+});
+
+/**
+ * Guards that only fire for inputs the happy path never produces: an SVG the
+ * phone must not treat as an image, a file whose real length disagrees with its
+ * reported size, a batch over the shared quota, and a cache entry left over
+ * from a previous version of the same file.
+ */
+describe("limit and integrity guards", () => {
+  test("an SVG is a file, never an inline image", async () => {
+    // SVG can carry script, so it must not take the image path (which would
+    // hand it to the preview renderer) even when it is declared as one.
+    const file = fsFile("file:///docs/logo.svg", {
+      bytes: new Uint8Array(10),
+      type: "image/svg+xml",
+    });
+    const result = await prepareOne(file);
+    expect(result[0]).toMatchObject({ kind: "file", mimeType: "image/svg+xml" });
+    expect(mockedManipulate).not.toHaveBeenCalled();
+  });
+
+  test("a png whose reported size runs past its real bytes is static, not a hang", async () => {
+    // The chunk walk advances by the length each chunk declares. A file shorter
+    // than it claims must end the walk at the first short read instead of
+    // looping on a non-advancing offset.
+    const file = fsFile("file:///docs/short.png", {
+      bytes: concat(PNG_SIGNATURE, PNG_IHDR),
+      size: 100,
+      type: "image/png",
+    });
+    const result = await prepareOne(file);
+    expect(result[0]).toMatchObject({ kind: "image", mobilePreviewUnsupported: false });
+  });
+
+  test("an upload batch over the shared quota is refused before anything is sent", async () => {
+    const client = mockClient();
+    const many = Array.from({ length: MAX_ATTACHMENTS + 1 }, (_, i) =>
+      attachment({ localUri: `file:///docs/${i}.txt`, name: `${i}.txt` }),
+    );
+    await expect(uploadAttachments(client as unknown as RemoteClient, many))
+      .rejects.toThrow("attachment_count");
+    // The quota check exists to avoid a partial upload the desktop would then
+    // have to roll back, so no init may have been sent.
+    expect(client.request).not.toHaveBeenCalled();
+  });
+
+  test("an upload batch over the total byte quota is refused before anything is sent", async () => {
+    const client = mockClient();
+    const huge = [
+      attachment({ localUri: "file:///docs/a.bin", name: "a.bin", originalSize: 11 * 1024 * 1024, transferSize: 11 * 1024 * 1024 }),
+      attachment({ localUri: "file:///docs/b.bin", name: "b.bin", originalSize: 11 * 1024 * 1024, transferSize: 11 * 1024 * 1024 }),
+    ];
+    await expect(uploadAttachments(client as unknown as RemoteClient, huge))
+      .rejects.toThrow("attachment_total_size");
+    expect(client.request).not.toHaveBeenCalled();
+  });
+
+  test("the album reports itself unavailable when nothing here can present a photo picker", async () => {
+    Platform.OS = "android";
+    Object.assign(Platform, { Version: 31 });
+    mockedResolveRoutes.mockResolvedValue({
+      sdkInt: 31,
+      album: [{ package: "com.huawei.hidisk", activity: "a" }],
+      imageContent: [{ package: "com.huawei.hidisk", activity: "a" }],
+      photoPicker: [],
+      photoPickerFallback: [],
+      photoPickerPlayServices: [],
+      document: [{ package: "com.huawei.hidisk", activity: "a" }],
+    });
+    // No gallery answers the intent, no photo picker exists and this build has
+    // no in-app grid: the caller has to be told so it can offer "Choose files".
+    mockedSupportsAlbumGrid.mockReturnValue(false);
+    try {
+      expect(await albumSource()).toBe("unavailable");
+    } finally {
+      Platform.OS = "ios";
+      Object.assign(Platform, { Version: 0 });
+      mockedResolveRoutes.mockResolvedValue(null);
+      mockedSupportsAlbumGrid.mockReturnValue(true);
+    }
+  });
+
+  test("a gallery photo in an unsupported format is refused before it is copied", async () => {
+    Platform.OS = "android";
+    Object.assign(Platform, { Version: 31 });
+    mockedResolveRoutes.mockResolvedValue({
+      sdkInt: 31,
+      album: [],
+      imageContent: [{ package: "com.miui.gallery", activity: "g" }],
+      photoPicker: [],
+      photoPickerFallback: [],
+      photoPickerPlayServices: [],
+      document: [],
+    });
+    mockedLaunchLibrary.mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: "content://photos/1", mimeType: "image/tiff", fileName: "scan.tiff" }],
+    });
+    mockFS.__set("content://photos/1", { bytes: new Uint8Array(10), type: "image/tiff" });
+    try {
+      // Without a known encoder there is no size to declare and no bytes to
+      // send, so the pick fails loudly rather than producing a 0-byte item.
+      await expect(pickFromAlbum([])).rejects.toThrow("attachment_image_format");
+      expect(mockedManipulate).not.toHaveBeenCalled();
+    } finally {
+      Platform.OS = "ios";
+      Object.assign(Platform, { Version: 0 });
+      mockedResolveRoutes.mockResolvedValue(null);
+    }
+  });
+
+  test("prepareDownload exhausts its bounded retry ladder instead of looping", async () => {
+    const client = mockClient();
+    client.request.mockRejectedValue(new Error("timeout"));
+    const waiting = jest.fn();
+    await expect(
+      prepareDownload(
+        client as unknown as RemoteClient,
+        "s1",
+        { path: "/tmp/a.jpg", name: "a.jpg" },
+        "preview",
+        undefined,
+        waiting,
+      ),
+    ).rejects.toThrow("timeout");
+    // Two timeouts, two attempts, one waiting notification between them: the
+    // ladder must end rather than re-arming itself on every failure.
+    expect(client.request).toHaveBeenCalledTimes(2);
+    expect(waiting).toHaveBeenCalledTimes(1);
+  });
+
+  test("a file too large to hash is rejected before any read", async () => {
+    const file = fsFile("/huge.bin", { size: 10 * 1024 * 1024 + 1 });
+    await expect(fileSha256(file)).rejects.toThrow("invalid_hash_size");
+  });
+
+  test("a native hash that is not a sha256 digest is rejected rather than trusted", async () => {
+    const file = fsFile("/native.bin", { bytes: new Uint8Array([1, 2, 3]) });
+    jest.mocked(nativeFileSha256).mockResolvedValueOnce("not-a-digest");
+    // The value goes on the wire as the transfer's identity; a truncated or
+    // non-hex answer would make the desktop verify a hash nobody computed.
+    await expect(fileSha256(file)).rejects.toThrow("invalid_native_hash");
+    jest.mocked(nativeFileSha256).mockResolvedValueOnce(sha256Hex(new Uint8Array([1, 2, 3])).toUpperCase());
+    await expect(fileSha256(file)).rejects.toThrow("invalid_native_hash");
+  });
+
+  test("a js hash read that returns nothing is rejected instead of hashing a short file", async () => {
+    // The native path is unavailable, and the JS reader answers with zero bytes
+    // while the file claims a length: the digest would then cover a prefix.
+    const file = fsFile("/stalled.bin", { bytes: new Uint8Array(0), size: 10 });
+    jest.mocked(nativeFileSha256).mockResolvedValueOnce(null);
+    await expect(fileSha256(file)).rejects.toThrow("hash_read_size_mismatch");
+  });
+
+  test("a stale cache entry of another size is removed before the download is written", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const i: DownloadInfo = {
+      transferId: "t1",
+      name: "result.jpg",
+      mimeType: "image/jpeg",
+      size: bytes.length,
+      contentHash: sha256Hex(bytes),
+      previewKind: "image",
+      variant: "preview",
+      chunkBytes: 4,
+    };
+    // A previous, larger file sits at the content-addressed path (its size no
+    // longer matches, so it is not a cache hit). Writing into it would leave a
+    // file longer than the hash describes — the size check would then reject a
+    // download that actually succeeded.
+    mockedDigest.mockImplementation(async (_alg: unknown, data: Uint8Array) =>
+      new Uint8Array(createHash("sha256").update(Buffer.from(data)).digest()),
+    );
+    jest.mocked(nativeFileSha256).mockResolvedValue(null);
+    mockFS.__set(`/mock/cache/futureos-previews/${i.contentHash}.jpg`, { size: 4096 });
+    const client = mockClient();
+    client.downloadChunk.mockResolvedValue(bytes);
+    client.request.mockResolvedValue({ success: true, data: {} });
+    const file = await downloadPrepared(client as unknown as RemoteClient, i);
+    expect(file.size).toBe(bytes.length);
+    expect(await file.bytes()).toEqual(bytes);
   });
 });
 
@@ -1627,6 +1847,30 @@ describe("download & preview cache", () => {
     client.request.mockResolvedValue({ success: true, data: {} });
     await expect(downloadPrepared(client as unknown as RemoteClient, i)).rejects.toThrow(
       "download_size_mismatch",
+    );
+  });
+
+  test("downloadPrepared rejects a file that lands short even when every chunk was the right length", async () => {
+    // The per-chunk length check cannot catch a writer that drops bytes: this is
+    // the final integrity check on what actually reached the disk. Without it a
+    // short file would be cached, hashed, and served as if it were complete.
+    const i: DownloadInfo = { ...info, size: 8, contentHash: "x" };
+    const client = mockClient();
+    client.downloadChunk.mockImplementation(async () => {
+      // First wave settles, then the file on disk is shorter than what the
+      // chunks claimed to carry (a lying or truncated write).
+      mockFS.__set(cacheUri(i), { bytes: new Uint8Array(8), size: 3 });
+      return new Uint8Array(4);
+    });
+    client.request.mockResolvedValue({ success: true, data: {} });
+    await expect(downloadPrepared(client as unknown as RemoteClient, i)).rejects.toThrow(
+      "download_size_mismatch",
+    );
+    // The short file is removed and the transfer released on the desktop.
+    expect(new mockFS.File(cacheUri(i) as never).exists).toBe(false);
+    expect(client.request).toHaveBeenCalledWith(
+      { type: "download_cancel", transferId: "t1" },
+      "transfer",
     );
   });
 

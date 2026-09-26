@@ -681,6 +681,32 @@ fn set_model_fails_while_loop_is_locked() {
 }
 
 #[test]
+fn shell_timeout_is_clamped_to_the_documented_bounds() {
+    // `0` means "policy default"; anything else is clamped into 5 s … 30 min so
+    // a client cannot ask for an unbounded or sub-second shell RPC. Both clamp
+    // directions must still run the command.
+    let state = make_app_state();
+    std::fs::create_dir_all(&state.welcome_cwd).unwrap();
+    let exit_ok = if cfg!(windows) { "exit 0" } else { "true" };
+    for timeout_ms in [1_u64, 60_000, u64::MAX] {
+        let mut cmd = make_cmd("shell");
+        cmd.command = exit_ok.to_string();
+        cmd.shell_timeout_ms = timeout_ms;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true, "timeout_ms={timeout_ms}: {resp}");
+        assert_eq!(resp["data"]["exitCode"], 0, "timeout_ms={timeout_ms}");
+    }
+
+    // The zero case takes the shared RPC policy timeout instead of clamping.
+    let mut cmd = make_cmd("shell");
+    cmd.command = exit_ok.to_string();
+    cmd.shell_timeout_ms = 0;
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    assert_eq!(resp["data"]["exitCode"], 0);
+}
+
+#[test]
 fn shell_fails_with_missing_cwd() {
     let state = make_app_state(); // test_workspace() is never created
     let mut cmd = make_cmd("shell");

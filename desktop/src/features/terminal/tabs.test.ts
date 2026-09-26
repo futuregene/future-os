@@ -7,6 +7,7 @@ import {
   loadTabsState,
   migrateTabsState,
   nextTitleNumber,
+  patchTab,
   saveTabsState,
   selectTabAfterClose,
   tabsStorageKey,
@@ -166,5 +167,81 @@ describe("labels", () => {
   it("numbers default titles", () => {
     expect(defaultTitle(1)).toBe("Terminal 1");
     expect(defaultTitle(12)).toBe("Terminal 12");
+  });
+
+  it("reuses the smallest free label number", () => {
+    expect(nextTitleNumber([{ id: "a", title: "A", titleNumber: 2 }])).toBe(1);
+    expect(nextTitleNumber([
+      { id: "a", title: "A", titleNumber: 1 },
+      { id: "b", title: "B", titleNumber: 3 },
+    ])).toBe(2);
+    expect(nextTitleNumber([])).toBe(1);
+  });
+
+  it("never reuses a number while every candidate is taken", () => {
+    const all = [1, 2, 3, 4, 5].map(number => ({ id: `t${number}`, title: `T${number}`, titleNumber: number }));
+    expect(nextTitleNumber(all)).toBe(6);
+    // Adopted tabs may carry 0 (unknown) — they never reserve a number.
+    expect(nextTitleNumber([{ id: "z", title: "Z", titleNumber: 0 }, ...all])).toBe(6);
+  });
+});
+
+describe("patchTab", () => {
+  it("updates one tab's view state and leaves the others alone", () => {
+    const state = {
+      active: "term_2",
+      all: [
+        { id: "term_1", title: "Terminal 1", titleNumber: 1, buffer: "one", cursor: 1 },
+        { id: "term_2", title: "Terminal 2", titleNumber: 2, buffer: "two", cursor: 2 },
+      ],
+    };
+    const next = patchTab(state, "term_2", { buffer: "two-updated", cursor: 99 });
+    expect(next.active).toBe("term_2");
+    expect(next.all[0]).toEqual(state.all[0]);
+    expect(next.all[1]).toMatchObject({ buffer: "two-updated", cursor: 99 });
+    // The updated tab keeps everything the patch did not mention.
+    expect(next.all[1]?.title).toBe("Terminal 2");
+    expect(next.all[1]?.titleNumber).toBe(2);
+    // A new object, so callers can rely on identity changes.
+    expect(next).not.toBe(state);
+  });
+
+  it("returns an equivalent state for an unknown id", () => {
+    const state = { all: [{ id: "term_1", title: "Terminal 1", titleNumber: 1 }] };
+    const next = patchTab(state, "term_9", { buffer: "ignored" });
+    expect(next.all).toEqual(state.all);
+    expect(next.active).toBeUndefined();
+  });
+});
+
+describe("selectTabAfterClose", () => {
+  const all = [
+    { id: "a", title: "A", titleNumber: 1 },
+    { id: "b", title: "B", titleNumber: 2 },
+    { id: "c", title: "C", titleNumber: 3 },
+  ];
+
+  it("falls back to the tab before the closed one", () => {
+    expect(selectTabAfterClose(all, "b")).toBe("a");
+  });
+
+  it("falls forward when the first tab closes", () => {
+    expect(selectTabAfterClose(all, "a")).toBe("b");
+  });
+
+  it("returns undefined once the last tab is gone", () => {
+    expect(selectTabAfterClose([all[1]!], "b")).toBeUndefined();
+  });
+
+  it("falls back to the first tab for an id that is not there", () => {
+    expect(selectTabAfterClose(all, "gone")).toBe("a");
+    expect(selectTabAfterClose([], "gone")).toBeUndefined();
+  });
+});
+
+describe("empty state", () => {
+  it("is an empty list with no active tab", () => {
+    expect(EMPTY_TABS.all).toEqual([]);
+    expect(EMPTY_TABS.active).toBeUndefined();
   });
 });

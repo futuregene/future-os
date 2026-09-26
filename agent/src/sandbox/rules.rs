@@ -786,6 +786,96 @@ impl Access {
 mod tests {
     use super::*;
 
+    /// The user approval-rule file is the one rule source a user writes by
+    /// hand, so its whole vocabulary is a contract: every `action` must map to
+    /// the documented decision, an omitted `access` must mean `both`, an
+    /// omitted or unknown `action` must be REJECTED (fail closed — never a
+    /// silent allow), and an unusable entry must be dropped with a diagnostic
+    /// rather than widening or narrowing the sandbox silently.
+    #[test]
+    fn rule_file_parses_every_action_and_reports_unusable_entries() {
+        let workspace = ws();
+        let mut errors = Vec::new();
+        let rules = parse_rule_file_diagnostics(
+            r#"{"rules":[
+                {"path":"a/**","access":"read","action":"ask"},
+                {"path":"b/**","access":"write","action":"allow"},
+                {"path":"c/**","access":"both","action":"deny"},
+                {"path":"d/**","access":"read"},
+                {"path":"e/**","access":"Execute","action":"ALLOW"},
+                {"path":"f/**","access":"read","action":"maybe"},
+                {"path":"","access":"read","action":"deny"},
+                {"access":"read","action":"deny"}
+            ]}"#,
+            &workspace,
+            &mut errors,
+        )
+        .unwrap();
+
+        // Three usable rules, one per action; `access` may be absent (→ both).
+        assert_eq!(rules.len(), 3, "errors: {errors:?}");
+        assert_eq!(rules[0].decision(), Decision::Ask);
+        assert_eq!(rules[0].access(), Access::Read);
+        assert_eq!(rules[1].decision(), Decision::Allow);
+        assert_eq!(rules[1].access(), Access::Write);
+        assert_eq!(rules[2].decision(), Decision::Deny);
+        assert_eq!(rules[2].access(), Access::Both);
+
+        // An omitted `access` means `both`: a write-denying rule must not
+        // silently degrade into a read-only one.
+        let omitted_access =
+            parse_rule_file(r#"{"rules":[{"path":"f/**","action":"deny"}]}"#, &workspace).unwrap();
+        assert_eq!(omitted_access.len(), 1);
+        assert_eq!(omitted_access[0].access(), Access::Both);
+        assert_eq!(omitted_access[0].decision(), Decision::Deny);
+
+        // Every rejected entry is reported by its 1-based position: omitted
+        // action, unknown access (case-folded, so "Execute" ≠ "read|write"),
+        // unknown action, empty path, absent path. Nothing is silently dropped.
+        assert_eq!(errors.len(), 5, "errors: {errors:?}");
+        for index in [4, 5, 6, 7, 8] {
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains(&format!("approval rule {index} "))),
+                "rule {index} rejection not reported: {errors:?}"
+            );
+        }
+        // A rule whose action is unknown can never become an Allow.
+        assert!(!rules
+            .iter()
+            .any(|rule| rule.decision() == Decision::Allow && rule.access() == Access::Read));
+    }
+
+    /// A rule file that is not valid JSON yields no layer at all — a
+    /// half-parsed layer must never be applied. Valid JSON without a `rules`
+    /// key is an empty layer (the file simply lists no rules), and an empty
+    /// list is likewise a usable empty layer, never an `Err`.
+    #[test]
+    fn malformed_rule_file_json_yields_no_layer() {
+        let workspace = ws();
+        assert!(parse_rule_file("{ not json", &workspace).is_none());
+        assert!(parse_rule_file(r#"{"rules": 7}"#, &workspace).is_none());
+        assert_eq!(
+            parse_rule_file("{}", &workspace).map(|rules| rules.len()),
+            Some(0),
+            "missing rules key is an empty layer, not a parse failure"
+        );
+        assert_eq!(
+            parse_rule_file(r#"{"rules":[]}"#, &workspace).map(|rules| rules.len()),
+            Some(0)
+        );
+        // Unknown fields are ignored rather than failing the layer.
+        assert_eq!(
+            parse_rule_file(
+                r#"{"future_field":true,"rules":[{"path":"g/**","action":"allow","extra":1}]}"#,
+                &workspace
+            )
+            .map(|rules| rules.len()),
+            Some(1)
+        );
+    }
+
     fn ws() -> PathBuf {
         let dir = crate::test_support::unique_temp_path("rules");
         std::fs::create_dir_all(&dir).unwrap();

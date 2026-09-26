@@ -48,6 +48,287 @@ fn run_missing_goal_fails() {
 
 // ── run turn loop against the mock ─────────────────────────────────────────
 
+/// `--model` and `--thinking-level` are applied to the session before the first
+/// prompt, so a run's model choice cannot be inherited from whatever the session
+/// default happened to be. Both are optional and must stay optional: an unset
+/// flag must issue no call at all.
+/// The live-log tee and the sentence-boundary text join, both driven by the
+/// stream's payload shape rather than by the run's outcome.
+///
+/// - A `tool_start` carrying `phase` must copy it into the live line (consumers
+///   dedup input-vs-execution starts on it), a `usage` event must tee its usage
+///   object, and a `text_chunk` must tee its text.
+/// - Two consecutive `text_chunk` events where the first ends a sentence and the
+///   second begins a letter must be joined with a space; mid-word and
+///   `3.14`/`example.com` must not.
+#[test]
+fn live_log_tees_phases_usage_and_joins_sentence_boundaries() {
+    let cr = cli_root();
+    let (_rt, _shared) = mock_env(MockState {
+        events: vec![
+            ev("mock-run-1", 0, "agent_start", "{}"),
+            // Both tool phases: `input` then `execution`.
+            ev(
+                "mock-run-1",
+                1,
+                "tool_start",
+                r#"{"tool_name":"shell","phase":"input"}"#,
+            ),
+            ev(
+                "mock-run-1",
+                2,
+                "tool_start",
+                r#"{"tool_name":"shell","phase":"execution"}"#,
+            ),
+            // A sentence end followed by a letter: the join must add a space.
+            ev(
+                "mock-run-1",
+                3,
+                "text_chunk",
+                r#"{"text":"first sentence."}"#,
+            ),
+            ev(
+                "mock-run-1",
+                4,
+                "text_chunk",
+                r#"{"text":"Second sentence"}"#,
+            ),
+            // A "sentence end" followed by a digit must NOT get a space.
+            ev("mock-run-1", 5, "text_chunk", r#"{"text":"pi is 3."}"#),
+            ev("mock-run-1", 6, "text_chunk", r#"{"text":"14 exactly"}"#),
+            // Usage is teed for the dashboard.
+            ev(
+                "mock-run-1",
+                7,
+                "usage",
+                r#"{"usage":{"total_tokens":42,"credit_cost":0.25}}"#,
+            ),
+            ev(
+                "mock-run-1",
+                8,
+                "agent_end",
+                r#"{"state":"completed","tokens_in":1,"tokens_out":2}"#,
+            ),
+        ],
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "stream shaping");
+    cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "2"]);
+
+    // The live log is the tee target; the mock's first prompt mints `mock-run-1`.
+    let live = std::path::Path::new(&cr.root)
+        .join("runs")
+        .join("mock-run-1.live.jsonl");
+    let text = std::fs::read_to_string(&live)
+        .unwrap_or_else(|e| panic!("the run must write {}: {e}", live.display()));
+    assert!(
+        text.contains(r#""phase":"input""#),
+        "the input phase must be teed: {text}"
+    );
+    assert!(
+        text.contains(r#""phase":"execution""#),
+        "the execution phase must be teed: {text}"
+    );
+    assert!(
+        text.contains(r#""usage""#) && text.contains("42"),
+        "the usage object must be teed for the dashboard: {text}"
+    );
+    assert!(
+        text.contains("Second sentence") && text.contains("14 exactly"),
+        "text chunks must be teed verbatim: {text}"
+    );
+
+    // The join is observable in the run's evidence (the assistant summary).
+    let store = open_store(&cr);
+    let record = store
+        .replay(&goal)
+        .unwrap()
+        .unwrap()
+        .history
+        .last()
+        .cloned()
+        .expect("the run must record a history entry");
+    let summary = record.evidence;
+    assert!(
+        summary.contains("first sentence. Second sentence"),
+        "a sentence end followed by a letter must be joined with a space: {summary}"
+    );
+    assert!(
+        summary.contains("pi is 3.14"),
+        "a period followed by a digit must NOT be spaced: {summary}"
+    );
+}
+
+/// A turn whose first prompt returns `duplicate_request_conflict` must be
+/// retried once with a **suffixed** client_request_id, and the retried turn must
+/// complete normally. This is the recovery path for a worker that was stopped and
+/// restarted inside the same turn: its previous aborted prompt still holds the
+/// run-queue key with a different payload digest.
+#[test]
+fn a_duplicate_request_conflict_is_retried_with_a_suffixed_key() {
+    let cr = cli_root();
+    let (_rt, shared) = mock_env(MockState {
+        events: completed_events("mock-run-1"),
+        // Exactly one failure, then the retry succeeds.
+        fail_once: [(
+            "prompt".to_string(),
+            "agent error: duplicate_request_conflict (mock)".to_string(),
+        )]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "conflict retry");
+
+    cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "2"]);
+
+    // Two prompt attempts: the rejected one and the retry. `recorded` counts
+    // every command (including failures), which `prompt_calls` does not.
+    let attempts = shared
+        .lock()
+        .unwrap()
+        .recorded
+        .iter()
+        .filter(|c| c.as_str() == "prompt")
+        .count();
+    assert_eq!(attempts, 2, "one retry, not a storm: {attempts} attempts");
+    // The retry's idempotency key differs from the original (a genuinely new
+    // request) and keeps the turn/todo prefix — which is what preserves dedup
+    // protection while letting the relaunch survive.
+    let ids = shared.lock().unwrap().prompt_request_ids.clone();
+    assert_eq!(
+        ids.len(),
+        1,
+        "only the accepted attempt is recorded: {ids:?}"
+    );
+    let accepted = &ids[0];
+    assert!(
+        accepted.contains("-r"),
+        "the accepted key must carry the retry suffix: {accepted}"
+    );
+    assert!(
+        accepted.starts_with("turn-1-"),
+        "the suffixed key keeps the turn/todo prefix: {accepted}"
+    );
+    let store = open_store(&cr);
+    let recorded = store.replay(&goal).unwrap().unwrap().history.len();
+    assert!(recorded >= 1, "the retried turn must record its run");
+}
+
+/// When the RETRY itself fails, the error must carry the whole story: the
+/// retry's own failure plus the original key it replaced. Losing that context
+/// would leave an operator staring at a bare conflict message with no hint that
+/// a retry happened or which original key is stuck in the agent's run queue.
+#[test]
+fn a_failed_retry_reports_the_original_key_it_replaced() {
+    let cr = cli_root();
+    let (_rt, shared) = mock_env(MockState {
+        events: completed_events("mock-run-1"),
+        // Both the original prompt and its retry are rejected.
+        fail_queue: [(
+            "prompt".to_string(),
+            vec![
+                "agent error: duplicate_request_conflict (first)".to_string(),
+                "agent error: duplicate_request_conflict (retry also failed)".to_string(),
+            ],
+        )]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "failed retry");
+
+    let err = cli(&["run", "--goal", &goal, "--anonymous", "--max-turns", "2"])
+        .expect_err("a doubly-failed prompt must surface as an error");
+    assert!(
+        err.contains("prompt retry with suffixed client_request_id"),
+        "the retry's failure must be labelled as a retry: {err}"
+    );
+    assert!(
+        err.contains("original key: turn-"),
+        "the message must name the original key that was replaced: {err}"
+    );
+    // Exactly two attempts were made: the original and one retry, not a loop.
+    let attempts = shared
+        .lock()
+        .unwrap()
+        .recorded
+        .iter()
+        .filter(|c| c.as_str() == "prompt")
+        .count();
+    assert_eq!(attempts, 2, "one retry, never a retry storm: {attempts}");
+}
+
+/// A prompt failure that is NOT the duplicate-conflict must propagate: retrying
+/// an arbitrary agent error would double-execute a turn that may have run.
+#[test]
+fn a_non_conflict_prompt_failure_is_not_retried() {
+    let cr = cli_root();
+    let (_rt, shared) = mock_env(MockState {
+        events: completed_events("mock-run-1"),
+        fail_commands: ["prompt".to_string()].into_iter().collect(),
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "no blind retry");
+    let _ = cli(&["run", "--goal", &goal, "--anonymous", "--max-turns", "2"]);
+    let attempts = shared
+        .lock()
+        .unwrap()
+        .recorded
+        .iter()
+        .filter(|c| c.as_str() == "prompt")
+        .count();
+    assert_eq!(
+        attempts, 1,
+        "a generic prompt failure must fail fast, not retry: {attempts} attempts"
+    );
+}
+
+#[test]
+fn run_applies_model_and_thinking_level_only_when_asked() {
+    let cr = cli_root();
+    let (_rt, shared) = mock_env(MockState {
+        events: completed_events("mock-run-1"),
+        ..Default::default()
+    });
+    let goal = init_goal(&cr, "model selection");
+
+    // Neither flag set: no selection command reaches the agent.
+    cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "2"]);
+    let recorded = shared.lock().unwrap().recorded.clone();
+    assert!(
+        !recorded.iter().any(|c| c == "set_model"),
+        "an unset --model must not issue a selection call: {recorded:?}"
+    );
+    assert!(
+        !recorded.iter().any(|c| c == "set_thinking_level"),
+        "an unset --thinking-level must not issue a selection call: {recorded:?}"
+    );
+
+    // Both set: each is applied for the run.
+    cli_ok(&[
+        "run",
+        "--goal",
+        &goal,
+        "--anonymous",
+        "--model",
+        "future/test-model",
+        "--thinking-level",
+        "high",
+        "--max-turns",
+        "2",
+    ]);
+    let recorded = shared.lock().unwrap().recorded.clone();
+    assert!(
+        recorded.iter().any(|c| c == "set_model"),
+        "--model must reach the agent: {recorded:?}"
+    );
+    assert!(
+        recorded.iter().any(|c| c == "set_thinking_level"),
+        "--thinking-level must reach the agent: {recorded:?}"
+    );
+}
+
 #[test]
 fn run_anonymous_single_todo_to_terminal() {
     let cr = cli_root();

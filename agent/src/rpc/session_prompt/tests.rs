@@ -417,13 +417,20 @@ struct RunFixture {
 }
 
 fn run_fixture(provider: Arc<dyn LLMProvider>, name: &str) -> RunFixture {
+    run_fixture_with_id(provider, name, "s1")
+}
+
+/// The same fixture with a caller-chosen session id. Tests that need to find
+/// their own run's wiring (e.g. the captured run callbacks) use a unique id so
+/// they cannot consume a parallel test's capture.
+fn run_fixture_with_id(provider: Arc<dyn LLMProvider>, name: &str, session_id: &str) -> RunFixture {
     let dir = test_path(name);
     let workspace = dir.join("ws");
     std::fs::create_dir_all(&workspace).unwrap();
     let manager = Arc::new(crate::session::Manager::new(dir.join("sessions")));
     let agent_loop = Loop::new(provider, "mock").with_tools(coding_tools());
     let session = crate::rpc::ServerSession::new_with_queue_budget(
-        "s1".to_string(),
+        session_id.to_string(),
         Arc::new(tokio::sync::RwLock::new(agent_loop)),
         manager,
         workspace.to_string_lossy().as_ref(),
@@ -435,6 +442,16 @@ fn run_fixture(provider: Arc<dyn LLMProvider>, name: &str) -> RunFixture {
     RunFixture { workspace, session }
 }
 
+/// Remove the run wiring `prompt_internal` captured for `session_id`.
+fn take_run_callbacks(session_id: &str) -> RunCallbacksForTest {
+    // The wiring is installed by the run's own `prompt_internal` call, so this
+    // is reached only after a run for this id started.
+    RUN_CALLBACKS_FOR_TEST
+        .lock()
+        .remove(session_id)
+        .expect("the run captured its callbacks")
+}
+
 impl RunFixture {
     fn workspace(&self) -> &PathBuf {
         &self.workspace
@@ -443,7 +460,11 @@ impl RunFixture {
 
 async fn wait_for_run_end(session: &crate::rpc::ServerSession) {
     use std::sync::atomic::Ordering;
-    for _ in 0..500 {
+    // A liveness wait, not a speed claim: the assertion is "the run finishes".
+    // The bound is generous because an instrumented parallel run of the whole
+    // crate is several times slower than a single-test run, and a tight bound
+    // flaked (observed "run did not finish within 5s" at 5s under llvm-cov).
+    for _ in 0..3000 {
         let active = session.runtime.snapshot().is_some();
         let streaming = session.is_streaming.load(Ordering::Relaxed);
         if !active && !streaming {
@@ -451,7 +472,7 @@ async fn wait_for_run_end(session: &crate::rpc::ServerSession) {
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    panic!("run did not finish within 5s");
+    panic!("run did not finish within 30s");
 }
 
 fn text_turn(text: &str) -> Script {
@@ -2445,4 +2466,177 @@ fn rewrite_snapshot_reinserts_compaction_checkpoints() {
         .entries
         .iter()
         .any(|e| e.entry_type == ENTRY_TYPE_COMPACTION && e.id == legacy_cp.id));
+}
+
+// ── run callbacks: the wiring `prompt_internal` installs ───────────────────
+
+/// A checkpoint the size of the ones the compaction path produces: the same
+/// shape `checkpoint_to_entry` consumes.
+fn test_checkpoint(entry_id: &str, checkpoint_id: &str) -> crate::compaction::ContextCheckpoint {
+    crate::compaction::ContextCheckpoint {
+        entry_id: entry_id.to_string(),
+        checkpoint_id: checkpoint_id.to_string(),
+        covered_from_entry_id: None,
+        cutoff_entry_id: None,
+        summary: vec![crate::types::ContentBlock::Text {
+            text: "handoff summary".to_string(),
+        }],
+        protected_entry_ids: vec![],
+        tokens_before: 1000,
+        tokens_after: 100,
+        trigger: crate::compaction::CompactionTrigger::Automatic,
+        phase: Some(crate::compaction::CompactionPhase::PreTurn),
+        algorithm_version: "test-v1".to_string(),
+        summary_outcome: None,
+        model: "mock".to_string(),
+        context_window: 64_000,
+        created_at: chrono::Utc::now(),
+    }
+}
+
+/// Start a run, wait for it, and hand back the wiring it captured. The run
+/// itself is what builds the closures, so this is the production path.
+async fn run_and_take_callbacks(name: &str) -> (crate::rpc::ServerSession, RunCallbacksForTest) {
+    let session_id = format!("{name}-session");
+    let fixture = run_fixture_with_id(
+        ScriptedProvider::new(vec![text_turn("wired")]),
+        name,
+        &session_id,
+    );
+    let mut session = fixture.session;
+    session.prompt("hello", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    let callbacks = take_run_callbacks(&session.session_id);
+    (session, callbacks)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn checkpoint_callback_commits_the_checkpoint_durably_and_reports_a_failed_commit() {
+    let (session, callbacks) = run_and_take_callbacks("checkpoint-wiring").await;
+    let checkpoint = test_checkpoint("wiring-cp-entry", "wiring-cp");
+
+    (callbacks.on_checkpoint)(&checkpoint).expect("the checkpoint commits");
+    // The effect, not the line: the checkpoint is a durable journal entry that
+    // a reloaded session sees, with the checkpoint's own identity in its body.
+    let reloaded = session.session_manager.load(&session.session_id).unwrap();
+    let committed = reloaded
+        .entries
+        .iter()
+        .find(|entry| entry.id == "wiring-cp-entry")
+        .expect("the committed checkpoint is in the journal");
+    assert_eq!(committed.entry_type, crate::session::ENTRY_TYPE_COMPACTION);
+    let content = committed.content.as_ref().expect("checkpoint body");
+    assert_eq!(content["checkpoint_id"], "wiring-cp");
+    assert_eq!(content["summary"][0]["text"], "handoff summary");
+
+    // A commit that cannot land must be reported to the run, which treats it as
+    // a run failure — never swallowed.
+    session.persistence.close().unwrap();
+    let error = (callbacks.on_checkpoint)(&checkpoint)
+        .expect_err("a failed checkpoint commit must be reported");
+    assert!(
+        error.to_string().contains("closed") || error.to_string().contains("unavailable"),
+        "{error}"
+    );
+    // The failed commit wrote nothing: the journal still holds exactly one
+    // checkpoint entry.
+    let after = session.session_manager.load(&session.session_id).unwrap();
+    assert_eq!(
+        after
+            .entries
+            .iter()
+            .filter(|entry| entry.entry_type == crate::session::ENTRY_TYPE_COMPACTION)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn escalation_callback_publishes_a_decidable_sandbox_request_on_the_session_stream() {
+    let (session, callbacks) = run_and_take_callbacks("escalation-wiring").await;
+    let session_id = session.session_id.clone();
+    let mut rx = session.broadcaster.subscribe();
+
+    // The decision arrives from the user's side of the same gate the session
+    // owns, exactly as the GUI would answer it.
+    let gate = session.approval_gate.clone();
+    let decider_session = session_id.clone();
+    let decider = std::thread::spawn(move || {
+        for _ in 0..2000 {
+            if let Some(first) = gate.pending_for_session(&decider_session).first() {
+                let request_id = first["approval_request_id"].as_str().unwrap().to_string();
+                let kind = first["kind"].as_str().unwrap().to_string();
+                let _ = gate.decide(
+                    &request_id,
+                    &decider_session,
+                    crate::rpc::ApprovalDecision {
+                        approved: true,
+                        note: String::new(),
+                        status: crate::rpc::ApprovalDecisionStatus::Approved,
+                    },
+                );
+                return kind;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("escalation request never appeared");
+    });
+
+    let decision = (callbacks.escalation)(&crate::sandbox::EscalationRequest {
+        trigger: crate::sandbox::EscalationTrigger::SandboxFailure,
+        command: "touch outside-workspace".to_string(),
+        justification: "the sandbox blocked it".to_string(),
+        failure_summary: "touch: outside-workspace: Operation not permitted".to_string(),
+    });
+    assert!(matches!(
+        decision,
+        crate::sandbox::EscalationDecision::Approved
+    ));
+    assert_eq!(decider.join().unwrap(), "sandbox_escalation");
+
+    // Both halves of the exchange reached this session's stream, so the GUI can
+    // render the prompt and then clear it.
+    let mut requested = None;
+    let mut decided = None;
+    while let Ok(event) = rx.try_recv() {
+        match event.event_type.as_str() {
+            "approval_request" => requested = Some(event.data.clone()),
+            "approval_decision" => decided = Some(event.data.clone()),
+            _ => continue,
+        }
+    }
+    let requested: serde_json::Value =
+        serde_json::from_str(&requested.expect("the escalation request is published")).unwrap();
+    assert_eq!(requested["session_id"], session_id);
+    assert_eq!(requested["kind"], "sandbox_escalation");
+    assert_eq!(
+        requested["requested_action"]["command"],
+        "touch outside-workspace"
+    );
+    let decided: serde_json::Value =
+        serde_json::from_str(&decided.expect("the decision is published")).unwrap();
+    assert_eq!(decided["status"], "approved");
+    assert_eq!(
+        decided["approval_request_id"],
+        requested["approval_request_id"]
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sandboxed_notifier_broadcasts_tool_sandboxed_for_the_run() {
+    let (session, callbacks) = run_and_take_callbacks("sandboxed-wiring").await;
+    let mut rx = session.broadcaster.subscribe();
+
+    (callbacks.on_sandboxed)("printf sandboxed-run");
+
+    let mut published = None;
+    while let Ok(event) = rx.try_recv() {
+        if event.event_type == "tool_sandboxed" {
+            published = Some(event.data.clone());
+        }
+    }
+    let published: serde_json::Value =
+        serde_json::from_str(&published.expect("tool_sandboxed is published")).unwrap();
+    assert_eq!(published["type"], "tool_sandboxed");
+    assert_eq!(published["command"], "printf sandboxed-run");
 }

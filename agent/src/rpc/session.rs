@@ -1547,6 +1547,63 @@ mod tests {
 
     struct UsageSummaryProvider(FinishReason);
 
+    /// Reports real token usage but, like an unpriced gateway, no authoritative
+    /// `credit_cost` — the session must price the request from the model's own
+    /// rates instead of recording a free call.
+    struct EstimatedCostSummaryProvider;
+
+    /// `UsageSummaryProvider` that also counts how many times the model was
+    /// asked, so a refusal can be shown to happen before a second charge.
+    struct CountingUsageSummaryProvider(Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl LLMProvider for CountingUsageSummaryProvider {
+        async fn stream_model(
+            &self,
+            request: ModelRequest,
+        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            UsageSummaryProvider(FinishReason::Stop)
+                .stream_model(request)
+                .await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for EstimatedCostSummaryProvider {
+        async fn stream_model(
+            &self,
+            request: ModelRequest,
+        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
+            use tokio_stream::StreamExt;
+            let events = SummaryProvider
+                .stream_model(request)
+                .await?
+                .collect::<Vec<_>>()
+                .await;
+            let (tx, rx) = mpsc::channel(events.len() + 1);
+            let usage = crate::types::Usage {
+                prompt_tokens: 100,
+                completion_tokens: 20,
+                cache_read_tokens: Some(80),
+                cache_write_tokens: Some(10),
+                credit_cost: None,
+                ..Default::default()
+            };
+            for event in events {
+                let event = match event {
+                    ModelStreamEvent::Finish { .. } => ModelStreamEvent::Finish {
+                        reason: FinishReason::Stop,
+                        usage: Some(usage.clone()),
+                    },
+                    event => event,
+                };
+                tx.try_send(event).unwrap();
+            }
+            Ok(ReceiverStream::new(rx))
+        }
+    }
+
     #[async_trait::async_trait]
     impl LLMProvider for UsageSummaryProvider {
         async fn stream_model(
@@ -2188,6 +2245,60 @@ mod tests {
         assert_eq!(result["exitCode"], 1);
     }
 
+    /// A canceller that already bumped the generation must win over a long
+    /// timeout: the child is spawned, immediately killed, and the caller gets
+    /// the cancellation error rather than waiting for the command.
+    #[test]
+    fn execute_shell_cancellation_wins_over_a_long_timeout() {
+        let session = make_test_session("shell-cancel-before-first-poll");
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        let cancellation = std::sync::atomic::AtomicU64::new(7);
+        let started = std::time::Instant::now();
+        let error = ServerSession::execute_shell_at(
+            &session.cwd,
+            if cfg!(windows) {
+                "Start-Sleep -Seconds 60"
+            } else {
+                "sleep 60"
+            },
+            std::time::Duration::from_secs(30),
+            &cancellation,
+            0, // the caller's generation is stale: this run was cancelled
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cancelled"), "{error}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "cancellation must not wait for the command to finish"
+        );
+    }
+
+    /// Windows has no process-group kill; the timeout path terminates the
+    /// job object instead. Non-unix CI (the authoritative platform for the
+    /// Windows branch) runs this test.
+    #[test]
+    #[cfg(windows)]
+    fn execute_shell_timeout_terminates_a_windows_child() {
+        let session = make_test_session("shell-timeout-windows");
+        std::fs::create_dir_all(&session.cwd).unwrap();
+        let started = std::time::Instant::now();
+        // The child would run for 300 s. Returning at all — with a timeout
+        // error — well inside that window is what proves the timeout branch
+        // terminated it instead of waiting for the command.
+        let error = session
+            .execute_shell(
+                "Start-Sleep -Seconds 300",
+                std::time::Duration::from_millis(200),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out after"), "{error}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(120),
+            "the timeout must terminate the child, not wait for it (took {:?})",
+            started.elapsed()
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn execute_shell_timeout_kills_the_process_group() {
@@ -2809,17 +2920,110 @@ mod tests {
     // ─── set_thinking_level ─────────────────────────────────────────────────
 
     #[test]
-    fn set_thinking_level_updates_field() {
-        let mut session = make_test_session("s1");
-        session.set_thinking_level("high");
-        assert_eq!(session.thinking_level, "high");
+    fn set_thinking_level_maps_every_level_to_its_budget() {
+        // Table-driven over the whole vocabulary plus an unknown value. The
+        // budget is what actually reaches the provider, so assert the live
+        // loop config rather than only the echoed string.
+        for (level, budget) in [
+            ("off", 0),
+            ("minimal", 2000),
+            ("low", 4000),
+            ("medium", 8000),
+            ("high", 16000),
+            ("xhigh", 24000),
+            // An unknown level is stored verbatim but must disable thinking
+            // instead of inheriting the previous budget.
+            ("bogus", 0),
+        ] {
+            let mut session = make_test_session("s1");
+            session.set_thinking_level("high");
+            assert_eq!(
+                session
+                    .agent_loop
+                    .try_read()
+                    .unwrap()
+                    .config
+                    .thinking_budget,
+                16000
+            );
+            session.set_thinking_level(level);
+            assert_eq!(session.thinking_level, level);
+            assert_eq!(
+                session
+                    .agent_loop
+                    .try_read()
+                    .unwrap()
+                    .config
+                    .thinking_budget,
+                budget,
+                "thinking budget for {level:?}"
+            );
+        }
+    }
+
+    // ─── reconcile_model_reference ──────────────────────────────────────────
+
+    /// Credential a user-defined provider under the redirected home so the
+    /// Registry can actually call `demo/model-x`.
+    fn write_available_model(home: &crate::test_support::TestHome) {
+        std::fs::create_dir_all(home.path().join(".future/agent")).unwrap();
+        std::fs::write(
+            home.models_path(),
+            r#"{"providers":{"demo":{"baseUrl":"http://127.0.0.1:9/v1","apiKey":"sk-test","api":"openai",
+                "models":[{"id":"model-x","name":"X","contextWindow":8000,"maxTokens":1024}]}}}"#,
+        )
+        .unwrap();
     }
 
     #[test]
-    fn set_thinking_level_off() {
-        let mut session = make_test_session("s1");
-        session.set_thinking_level("off");
-        assert_eq!(session.thinking_level, "off");
+    fn reconcile_model_reference_keeps_an_available_identity_and_swaps_a_ghost() {
+        let home = crate::test_support::TestHome::new();
+        write_available_model(&home);
+
+        // A model the registry can call is left exactly as it is — reconcile
+        // must not rewrite the identity or the live loop behind it.
+        let mut session = make_test_session("reconcile-keep");
+        session.set_model("demo/model-x").unwrap();
+        assert_eq!(
+            session.agent_loop.try_read().unwrap().model_ref,
+            "demo/model-x"
+        );
+        assert!(session.reconcile_model_reference().is_ok());
+        assert_eq!(session.model, "demo/model-x");
+        assert_eq!(
+            session.agent_loop.try_read().unwrap().model_ref,
+            "demo/model-x"
+        );
+
+        // An identity no provider can serve is replaced by the one that is
+        // configured, and the live loop must follow the replacement.
+        let mut session = make_test_session("reconcile-swap");
+        session.set_model("gone/vanished").unwrap();
+        assert_eq!(session.model, "gone/vanished");
+        assert!(session.reconcile_model_reference().is_ok());
+        assert_eq!(session.model, "demo/model-x");
+        assert_eq!(
+            session.agent_loop.try_read().unwrap().model_ref,
+            "demo/model-x"
+        );
+    }
+
+    #[test]
+    fn reconcile_model_reference_without_any_provider_is_an_error_that_changes_nothing() {
+        let _home = crate::test_support::TestHome::new();
+        let mut session = make_test_session("reconcile-none");
+        session.model = "ghost/model".to_string();
+        let error = session.reconcile_model_reference().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("no configured provider has an available model"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            session.model, "ghost/model",
+            "a failed reconcile must not silently drop the stored identity"
+        );
     }
 
     // ─── new (per-session loop) ─────────────────────────────────────────
@@ -2902,7 +3106,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_provider_failure_broadcasts_and_errors() {
+    fn compact_provider_failure_degrades_to_the_evidence_index() {
         let mut session = make_test_session("compact-fail");
         session.agent_loop.try_write().unwrap().provider = Arc::new(FailingProvider);
         session.model = "glm-4.5v".to_string();
@@ -2943,9 +3147,48 @@ mod tests {
                 message.ensure_journal_entry_id();
             }
         }
-        // The compaction summarizer fails → the error is broadcast and returned.
-        let result = session.compact("");
-        assert!(result.is_err());
+        // The claim must succeed for the summarizer to be consulted at all:
+        // without the persisted journal this test would pass on "session does
+        // not exist" and never reach the provider it is named for.
+        persist_transcript(&session);
+        let mut events = session.broadcaster.subscribe();
+        // A summarizer outage degrades the compaction to its deterministic
+        // evidence index; it must not fail the command or silently drop the
+        // history it was asked to compact.
+        let result = session.compact("").unwrap();
+        assert_eq!(result["summaryOutcome"]["status"], "evidence_only");
+        assert!(
+            result["summaryOutcome"]["fallback_reason"]
+                .as_str()
+                .unwrap()
+                .contains("compaction provider failed"),
+            "{}",
+            result["summaryOutcome"]
+        );
+        assert!(
+            result["checkpointId"].as_str().is_some(),
+            "the degraded compaction must still commit a checkpoint"
+        );
+        assert_eq!(
+            session.tokens_in.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "a failed summary request must not be charged"
+        );
+        let stored = session.session_manager.load(&session.session_id).unwrap();
+        assert!(
+            crate::session::latest_context_checkpoint(&stored.entries).is_some(),
+            "the degraded checkpoint must be durable"
+        );
+        let mut failed = false;
+        let mut committed = false;
+        for event in std::iter::from_fn(|| events.try_recv().ok()) {
+            failed |= event.event_type == "compaction_failed";
+            committed |= event.event_type == "compaction_committed";
+        }
+        assert!(
+            committed && !failed,
+            "a degraded compaction reports committed, not failed"
+        );
     }
 
     #[test]
@@ -2991,18 +3234,438 @@ mod tests {
             }
         }
         // Compaction produces a checkpoint, but persisting it fails.
+        persist_transcript(&session);
         session.persistence.fail_next_commit();
+        let mut events = session.broadcaster.subscribe();
         let result = session.compact("");
-        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(
+            error.to_string().contains("injected run commit failure"),
+            "{error}"
+        );
+        assert!(
+            !session
+                .compaction_in_progress
+                .load(std::sync::atomic::Ordering::Acquire),
+            "a failed receipt must reopen the compaction admission fence"
+        );
+        let mut failed = false;
+        let mut committed = false;
+        for event in std::iter::from_fn(|| events.try_recv().ok()) {
+            failed |= event.event_type == "compaction_failed";
+            committed |= event.event_type == "compaction_committed";
+        }
+        assert!(failed, "the failure must be broadcast");
+        assert!(
+            !committed,
+            "a checkpoint that was never committed must not be announced"
+        );
+        let stored = session.session_manager.load(&session.session_id).unwrap();
+        assert!(
+            crate::session::latest_context_checkpoint(&stored.entries).is_none(),
+            "the preparation must not advance the journal past its failed receipt"
+        );
+    }
+
+    /// The failed receipt is durable bookkeeping, not a hint: once the ticket
+    /// was marked failed, the same compaction is refused outright instead of
+    /// silently re-running the summary (which would charge the model twice for
+    /// the same history).
+    /// The model was already paid for by the time the summary usage is written
+    /// back. If that write cannot land, the command must fail loudly, mark its
+    /// receipt failed and refuse a retry — silently continuing would lose the
+    /// charge, and retrying would pay for the same history twice.
+    #[test]
+    fn a_usage_write_that_cannot_land_fails_the_compaction_receipt() {
+        let mut session = make_test_session("compact-usage-persist-fail");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        session.agent_loop.try_write().unwrap().provider =
+            Arc::new(CountingUsageSummaryProvider(calls.clone()));
+        session.model = "glm-4.5v".to_string();
+        session
+            .last_prompt_tokens
+            .store(50_000, std::sync::atomic::Ordering::Relaxed);
+        let mut messages = Vec::new();
+        for i in 0..5 {
+            messages.push(crate::types::AgentMessage::new_user(
+                "user",
+                serde_json::json!(format!("question {i}")),
+            ));
+            messages.push(crate::types::AgentMessage {
+                role: "assistant".into(),
+                content: vec![
+                    crate::types::ContentBlock::text(format!("answer {i}")),
+                    crate::types::ContentBlock::tool_call(
+                        format!("read-{i}"),
+                        "read",
+                        serde_json::json!({"path":"large.rs"}),
+                        Default::default(),
+                    ),
+                ],
+                ..Default::default()
+            });
+            messages.push(crate::types::AgentMessage {
+                role: "tool".into(),
+                content: vec![crate::types::ContentBlock::tool_result(
+                    format!("read-{i}"),
+                    format!("tool result {i} ").repeat(2000),
+                    false,
+                )],
+                ..Default::default()
+            });
+        }
+        for message in messages.iter_mut() {
+            message.ensure_journal_entry_id();
+        }
+        *session.messages.write() = messages.clone();
+        // The store can be written to and claimed from, but its latest
+        // session_info is not an object, so the usage merge has nowhere to land.
+        let mut entries = vec![crate::session::SessionEntry::session_info(
+            serde_json::json!("not an object"),
+            session.model.clone(),
+            session.thinking_level.clone(),
+        )];
+        entries.extend(messages.iter().map(crate::session::agent_message_to_entry));
+        session
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                session.model.clone(),
+                String::new(),
+                String::new(),
+                entries,
+            ))
+            .unwrap();
+
+        let mut events = session.broadcaster.subscribe();
+        let error = session.compact("").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("could not persist manual compaction usage"),
+            "{error}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the summary ran once"
+        );
+        assert_eq!(
+            session.tokens_in.load(std::sync::atomic::Ordering::Relaxed),
+            100,
+            "the paid-for request must stay charged even when its write failed"
+        );
+        assert!(
+            !session
+                .compaction_in_progress
+                .load(std::sync::atomic::Ordering::Acquire),
+            "the admission fence must be released"
+        );
+        let mut failed = false;
+        let mut committed = false;
+        for event in std::iter::from_fn(|| events.try_recv().ok()) {
+            failed |= event.event_type == "compaction_failed";
+            committed |= event.event_type == "compaction_committed";
+        }
+        assert!(failed && !committed);
+
+        // The receipt was closed as failed, so the retry is refused before any
+        // second summary call (the barrier's sticky error is cleared first).
+        session.persistence.reset_error();
+        let retry = session.compact("").unwrap_err();
+        assert!(
+            retry.to_string().contains("compaction_previous_failed"),
+            "{retry}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "a refused retry must not pay for the summary twice"
+        );
+    }
+
+    #[test]
+    fn manual_compaction_receipt_failure_is_remembered_and_not_retried() {
+        let mut session = make_test_session("compact-receipt-failed");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        session.agent_loop.try_write().unwrap().provider =
+            Arc::new(CountingSummaryProvider(calls.clone()));
+        session.model = "glm-4.5v".to_string();
+        session
+            .last_prompt_tokens
+            .store(50_000, std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut messages = session.messages.write();
+            for i in 0..5 {
+                messages.push(crate::types::AgentMessage::new_user(
+                    "user",
+                    serde_json::json!(format!("question {i}")),
+                ));
+                messages.push(crate::types::AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![
+                        crate::types::ContentBlock::text(format!("answer {i}")),
+                        crate::types::ContentBlock::tool_call(
+                            format!("read-{i}"),
+                            "read",
+                            serde_json::json!({"path":"large.rs"}),
+                            Default::default(),
+                        ),
+                    ],
+                    ..Default::default()
+                });
+                messages.push(crate::types::AgentMessage {
+                    role: "tool".into(),
+                    content: vec![crate::types::ContentBlock::tool_result(
+                        format!("read-{i}"),
+                        format!("tool result {i} ").repeat(2000),
+                        false,
+                    )],
+                    ..Default::default()
+                });
+            }
+            for message in messages.iter_mut() {
+                message.ensure_journal_entry_id();
+            }
+        }
+        persist_transcript(&session);
+
+        session.persistence.fail_next_commit();
+        let error = session
+            .compact_with_operation_id("", "op-receipt-fail".to_string())
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("injected run commit failure"),
+            "{error}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the summary runs once and is charged once"
+        );
+
+        // The receipt now records the failure, so the identical operation is
+        // refused before any model call. (reset_error clears only the writer's
+        // sticky last-error, which the barrier would otherwise report first.)
+        session.persistence.reset_error();
+        let retry = session
+            .compact_with_operation_id("", "op-receipt-retry".to_string())
+            .unwrap_err();
+        assert!(
+            retry.to_string().contains("compaction_previous_failed"),
+            "a failed receipt must be reported, not replayed or retried: {retry}"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "a refused retry must not call the summary model again"
+        );
+    }
+
+    /// A manual compaction that finds nothing left to compact is still an
+    /// admitted, receipt-bearing operation: the projection is the previous
+    /// checkpoint, so the preparation is a no-op — but its receipt must still be
+    /// closed out, and failing to close it must not be reported as success.
+    #[test]
+    fn manual_compaction_with_nothing_left_to_compact_fails_its_receipt() {
+        let mut session = make_test_session("compact-noop-receipt");
+        session.model = "glm-4.5v".to_string();
+        let mut messages = [
+            crate::types::AgentMessage::new_user(
+                "user",
+                serde_json::json!("the earlier requirement"),
+            ),
+            crate::types::AgentMessage {
+                role: "assistant".into(),
+                content: vec![crate::types::ContentBlock::text("the earlier answer")],
+                ..Default::default()
+            },
+        ];
+        for message in messages.iter_mut() {
+            message.ensure_journal_entry_id();
+        }
+        let covered_from = messages[0].journal_entry_id().unwrap().to_string();
+        let cutoff = messages[1].journal_entry_id().unwrap().to_string();
+        let checkpoint = crate::compaction::ContextCheckpoint {
+            entry_id: "cp-noop-receipt".to_string(),
+            checkpoint_id: "cp-noop-receipt".to_string(),
+            covered_from_entry_id: Some(covered_from),
+            cutoff_entry_id: Some(cutoff),
+            summary: vec![crate::types::ContentBlock::text("earlier history")],
+            protected_entry_ids: Vec::new(),
+            tokens_before: 100,
+            tokens_after: 20,
+            trigger: crate::compaction::CompactionTrigger::Manual,
+            phase: Some(crate::compaction::CompactionPhase::Standalone),
+            algorithm_version: "deterministic-evidence-v1".to_string(),
+            summary_outcome: None,
+            model: session.model.clone(),
+            context_window: 64_000,
+            created_at: chrono::Utc::now(),
+        };
+        let mut entries = vec![crate::session::SessionEntry::session_info(
+            serde_json::json!({"cwd": session.cwd, "model": session.model}),
+            session.model.clone(),
+            session.thinking_level.clone(),
+        )];
+        entries.extend(messages.iter().map(crate::session::agent_message_to_entry));
+        entries.push(crate::session::checkpoint_to_entry(&checkpoint));
+        session
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                session.model.clone(),
+                String::new(),
+                String::new(),
+                entries,
+            ))
+            .unwrap();
+
+        // Nothing to compact: the summarizer is never asked, so the provider
+        // would be a failure if it were reached.
+        session.agent_loop.try_write().unwrap().provider = Arc::new(FailingProvider);
+        session.persistence.fail_next_commit();
+        let error = session
+            .compact_with_operation_id("", "op-noop-receipt".to_string())
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("injected run commit failure"),
+            "{error}"
+        );
+        assert!(
+            !session
+                .compaction_in_progress
+                .load(std::sync::atomic::Ordering::Acquire),
+            "the no-op receipt failure must reopen the admission fence"
+        );
+
+        // The ticket failed; the no-op must not be replayed as if it had
+        // succeeded, so the retry is refused by the recorded failure.
+        session.persistence.reset_error();
+        let retry = session
+            .compact_with_operation_id("", "op-noop-retry".to_string())
+            .unwrap_err();
+        assert!(
+            retry.to_string().contains("compaction_previous_failed"),
+            "{retry}"
+        );
+        let stored = session.session_manager.load(&session.session_id).unwrap();
+        assert_eq!(
+            stored
+                .entries
+                .iter()
+                .filter(|entry| entry.entry_type == crate::session::ENTRY_TYPE_COMPACTION)
+                .count(),
+            1,
+            "the failed no-op must not append a second checkpoint entry"
+        );
+    }
+
+    /// An ephemeral session has no compaction journal, so its checkpoint is
+    /// committed through the plain persistence boundary instead of a ticket —
+    /// and a failure there must surface the same way, not be swallowed.
+    #[test]
+    fn ephemeral_session_checkpoint_commit_failure_is_reported() {
+        let mut session = make_test_session("ephemeral-checkpoint-fail");
+        session.set_ephemeral(true);
+        session.agent_loop.try_write().unwrap().provider = Arc::new(SummaryProvider);
+        session.model = "glm-4.5v".to_string();
+        session
+            .last_prompt_tokens
+            .store(50_000, std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut messages = session.messages.write();
+            for i in 0..5 {
+                messages.push(crate::types::AgentMessage::new_user(
+                    "user",
+                    serde_json::json!(format!("question {i}")),
+                ));
+                messages.push(crate::types::AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![
+                        crate::types::ContentBlock::text(format!("answer {i}")),
+                        crate::types::ContentBlock::tool_call(
+                            format!("read-{i}"),
+                            "read",
+                            serde_json::json!({"path":"large.rs"}),
+                            Default::default(),
+                        ),
+                    ],
+                    ..Default::default()
+                });
+                messages.push(crate::types::AgentMessage {
+                    role: "tool".into(),
+                    content: vec![crate::types::ContentBlock::tool_result(
+                        format!("read-{i}"),
+                        format!("tool result {i} ").repeat(2000),
+                        false,
+                    )],
+                    ..Default::default()
+                });
+            }
+            for message in messages.iter_mut() {
+                message.ensure_journal_entry_id();
+            }
+        }
+        let mut events = session.broadcaster.subscribe();
+        session.persistence.fail_next_commit();
+        let error = session.compact("").unwrap_err();
+        assert!(
+            error.to_string().contains("injected run commit failure"),
+            "{error}"
+        );
+        assert!(
+            !session
+                .compaction_in_progress
+                .load(std::sync::atomic::Ordering::Acquire),
+            "the admission fence must be released when the checkpoint cannot land"
+        );
+        let mut failed = false;
+        let mut committed = false;
+        for event in std::iter::from_fn(|| events.try_recv().ok()) {
+            failed |= event.event_type == "compaction_failed";
+            committed |= event.event_type == "compaction_committed";
+        }
+        assert!(failed, "an ephemeral checkpoint failure must be broadcast");
+        assert!(!committed);
     }
 
     // ─── add_session_rule ───────────────────────────────────────────────────
 
     #[test]
-    fn add_session_rule_does_not_panic() {
+    fn add_session_rule_records_a_read_only_allow_and_reaches_the_live_rule_set() {
+        use crate::sandbox::rules::{Decision, RuleSet};
+
         let session = make_test_session("s1");
-        session.add_session_rule("/tmp/**", "read");
-        // Just verify no panic — the rule goes into the session_rules mutex
+        assert!(session.session_rules.lock().is_empty());
+        session.add_session_rule("secrets/**", "read");
+        {
+            let rules = session.session_rules.lock();
+            assert_eq!(rules.len(), 1);
+            assert_eq!(rules[0].decision(), Decision::Allow);
+            assert!(rules[0].access().covers_read());
+            assert!(!rules[0].access().covers_write());
+        }
+        // The injected rule must reach the layer the sandbox compiler reads,
+        // not just the session vector (index 2 is the session layer).
+        let rule_set = RuleSet::resolve_with_session(
+            std::path::Path::new(&session.cwd),
+            session.session_rules.clone(),
+        );
+        assert_eq!(rule_set.profile_layers()[2].len(), 1);
+        // A second injection appends; it must not replace the first grant.
+        session.add_session_rule("other/**", "write");
+        assert_eq!(session.session_rules.lock().len(), 2);
+        let rule_set = RuleSet::resolve_with_session(
+            std::path::Path::new(&session.cwd),
+            session.session_rules.clone(),
+        );
+        let session_layer = &rule_set.profile_layers()[2];
+        assert_eq!(session_layer.len(), 2);
+        assert!(!session_layer[0].access().covers_write());
+        assert!(session_layer[1].access().covers_write());
     }
 
     // ─── default_workspace ──────────────────────────────────────────────────
@@ -3025,10 +3688,14 @@ mod tests {
     }
 
     #[test]
-    fn set_permission_level_invalid() {
+    fn set_permission_level_invalid_value_is_stored_verbatim() {
         let mut session = make_test_session("s1");
         session.set_permission_level("invalid");
-        // Should not crash, permission stays as-is or reverts
+        // No validation happens here — the RPC layer owns the vocabulary, and
+        // whatever it accepted is what a later prompt reads back.
+        assert_eq!(session.get_permission_level(), "invalid");
+        session.set_permission_level("plan");
+        assert_eq!(session.get_permission_level(), "plan");
     }
 
     #[test]
@@ -3057,7 +3724,11 @@ mod tests {
     fn set_system_prompt_updates() {
         let mut session = make_test_session("s1");
         session.set_system_prompt("custom prompt");
-        // Verify the prompt was set (indirect check via the loop)
+        let loop_ = session.agent_loop.try_read().unwrap();
+        assert_eq!(loop_.system_prompt, "custom prompt");
+        // The per-run config copy must agree with the live field: the prompt
+        // sent to the provider comes from `config`.
+        assert_eq!(loop_.config.system_prompt, "custom prompt");
     }
 
     #[test]
@@ -3065,47 +3736,69 @@ mod tests {
         let mut session = make_test_session("s1");
         session.set_system_prompt("base");
         session.append_system_prompt("appended");
-        // Verify no panic
+        assert_eq!(
+            session.agent_loop.try_read().unwrap().system_prompt,
+            "base\nappended"
+        );
+        // Appending to an empty prompt must not leave a leading newline.
+        let mut empty = make_test_session("s2");
+        empty.set_system_prompt("");
+        empty.append_system_prompt("first");
+        assert_eq!(empty.agent_loop.try_read().unwrap().system_prompt, "first");
     }
 
     #[test]
-    fn set_ephemeral_toggles() {
+    fn set_tools_keeps_only_the_requested_catalogue_entries() {
         let mut session = make_test_session("s1");
-        session.set_ephemeral(true);
-        // Field should be updated
-    }
-
-    #[test]
-    fn set_tools_filters() {
-        let mut session = make_test_session("s1");
-        session.set_tools(&["shell".to_string(), "read".to_string()]);
-        // Should not panic
+        let requested = ["shell".to_string(), "read".to_string()];
+        session.set_tools(&requested);
+        let names: Vec<String> = session
+            .agent_loop
+            .try_read()
+            .unwrap()
+            .tools
+            .iter()
+            .map(|tool| tool.def.function.name.clone())
+            .collect();
+        assert!(
+            !names.is_empty(),
+            "'shell' and 'read' must both exist in the tool catalogue"
+        );
+        assert!(names.iter().all(|name| requested.contains(name)));
+        // A name that is not in the catalogue cannot smuggle a tool in.
+        session.set_tools(&["not-a-tool".to_string()]);
+        assert!(session.agent_loop.try_read().unwrap().tools.is_empty());
     }
 
     #[test]
     fn disable_tools_clears() {
         let mut session = make_test_session("s1");
+        session.set_tools(&["shell".to_string(), "read".to_string()]);
+        assert!(!session.agent_loop.try_read().unwrap().tools.is_empty());
         session.disable_tools();
-        // Should not panic
+        assert!(session.agent_loop.try_read().unwrap().tools.is_empty());
     }
 
     #[test]
     fn disable_builtin_tools() {
         let mut session = make_test_session("s1");
+        session.set_tools(&["shell".to_string(), "read".to_string()]);
+        assert!(!session.agent_loop.try_read().unwrap().tools.is_empty());
         session.disable_builtin_tools();
-        // Should not panic
+        assert!(session.agent_loop.try_read().unwrap().tools.is_empty());
     }
 
     #[test]
-    fn fork_does_not_panic() {
+    fn fork_and_delete_leave_the_live_session_untouched() {
+        // Both are Tier-1 compatibility helpers: forking and deleting are the
+        // persistence layer's job, so the live session must be unchanged.
         let mut session = make_test_session("s1");
-        let _ = session.fork("entry_id");
-    }
-
-    #[test]
-    fn delete_session_does_not_panic() {
-        let session = make_test_session("s1");
-        let _ = session.delete_session("other_id");
+        let before = session.messages.read().len();
+        assert_eq!(session.messages.read().len(), before);
+        assert!(session.fork("entry_id").is_ok());
+        assert_eq!(session.messages.read().len(), before);
+        assert!(session.delete_session("other_id").is_ok());
+        assert_eq!(session.messages.read().len(), before);
     }
 
     #[test]
@@ -3118,10 +3811,22 @@ mod tests {
     #[test]
     fn set_sandbox_policy_updates() {
         let mut session = make_test_session("s1");
+        assert!(session.sandbox_policy.is_none());
         session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
             tier: crate::sandbox::SandboxTier::Off,
         });
-        // Should not panic
+        assert_eq!(
+            session.sandbox_policy.as_ref().map(|policy| policy.tier),
+            Some(crate::sandbox::SandboxTier::Off)
+        );
+        // A later policy replaces the previous one instead of being ignored.
+        session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
+            tier: crate::sandbox::SandboxTier::Sandbox,
+        });
+        assert_eq!(
+            session.sandbox_policy.as_ref().map(|policy| policy.tier),
+            Some(crate::sandbox::SandboxTier::Sandbox)
+        );
     }
 
     #[test]
@@ -3568,6 +4273,221 @@ mod tests {
     }
 
     #[test]
+    fn a_journal_with_rows_it_cannot_read_still_prices_the_rows_it_can() {
+        // The replay walks rows written by older builds and by the platform, so
+        // an unreadable row must be skipped rather than abort the whole replay:
+        // one malformed event must not turn a session with real spend into a
+        // session reported as free.
+        let mut session = make_test_session("noisy-cost-journal");
+        session.model = "test/cheap".to_string();
+        session.model_registry = two_priced_models();
+        session
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                session.model.clone(),
+                String::new(),
+                String::new(),
+                vec![crate::session::SessionEntry::session_info(
+                    serde_json::json!({"cwd": session.cwd, "model": session.model}),
+                    session.model.clone(),
+                    session.thinking_level.clone(),
+                )],
+            ))
+            .unwrap();
+        let storage = session.session_manager.storage().unwrap();
+        let row = |idx: i64, payload: serde_json::Value| {
+            serde_json::json!({
+                "run_id": "run-1",
+                "epoch": 1,
+                "idx": idx,
+                "event_type": payload["event_type"],
+                "data": payload["data"],
+            })
+        };
+        // A priced request this replay must keep.
+        storage
+            .append_event(
+                &session.session_id,
+                serde_json::json!({
+                    "run_id": "run-1",
+                    "epoch": 1,
+                    "idx": 0,
+                    "event_type": "usage",
+                    "data": serde_json::json!({
+                        "type": "usage",
+                        "usage": {"prompt_tokens": 1_000_000, "completion_tokens": 0}
+                    })
+                    .to_string(),
+                }),
+            )
+            .unwrap();
+        // A switch to a model with no prices on file: its requests contribute
+        // nothing rather than being billed at the previous model's rate.
+        storage
+            .append_event(
+                &session.session_id,
+                row(
+                    1,
+                    serde_json::json!({
+                        "event_type": "model_changed",
+                        "data": serde_json::json!({"model": "ghost/unpriced"}).to_string()
+                    }),
+                ),
+            )
+            .unwrap();
+        for (idx, payload) in [
+            // A usage frame with no usage body.
+            (
+                2,
+                serde_json::json!({
+                    "event_type": "usage",
+                    "data": serde_json::json!({"type": "usage"}).to_string()
+                }),
+            ),
+            // `data` arriving as a non-object value.
+            (
+                3,
+                serde_json::json!({
+                    "event_type": "usage",
+                    "data": serde_json::json!("a bare string")
+                }),
+            ),
+            // A well-formed usage frame from the unpriced model: it must be
+            // skipped by the price lookup, not billed at the old rate.
+            (
+                4,
+                serde_json::json!({
+                    "event_type": "usage",
+                    "data": serde_json::json!({
+                        "type": "usage",
+                        "usage": {"prompt_tokens": 1_000_000, "completion_tokens": 0}
+                    })
+                    .to_string()
+                }),
+            ),
+            // An event type this build does not price.
+            (
+                5,
+                serde_json::json!({
+                    "event_type": "future_metric",
+                    "data": serde_json::json!({"prompt_tokens": 5}).to_string()
+                }),
+            ),
+            // A row whose `data` field is absent entirely.
+            (6, serde_json::json!({"event_type": "usage"})),
+        ] {
+            let payload = if idx == 6 {
+                // No `data` key at all, rather than a null one.
+                serde_json::json!({
+                    "run_id": "run-1",
+                    "epoch": 1,
+                    "idx": idx,
+                    "event_type": payload["event_type"],
+                })
+            } else {
+                row(idx, payload)
+            };
+            storage.append_event(&session.session_id, payload).unwrap();
+        }
+
+        let id = session.session_id.clone();
+        session.switch_session(&id).unwrap();
+        assert!(
+            (session.cumulative_cost_split.lock().input - 1.0).abs() < 1e-9,
+            "the readable request must still be priced: {:?}",
+            *session.cumulative_cost_split.lock()
+        );
+    }
+
+    #[test]
+    fn a_replayed_cost_split_still_applies_when_its_cache_write_fails() {
+        // Caching the replayed split is an optimisation: a session whose store
+        // cannot take the cache row must still open with the correct split, and
+        // must not be left claiming a cache it never wrote.
+        let mut session = make_test_session("replay-persist-failure");
+        session.model = "test/cheap".to_string();
+        session.model_registry = two_priced_models();
+        session
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                session.model.clone(),
+                String::new(),
+                String::new(),
+                vec![crate::session::SessionEntry::session_info(
+                    serde_json::json!({"cwd": session.cwd, "model": session.model}),
+                    session.model.clone(),
+                    session.thinking_level.clone(),
+                )],
+            ))
+            .unwrap();
+        seed_switching_cost_journal(&session);
+        session.persistence.close().unwrap();
+
+        let id = session.session_id.clone();
+        session
+            .switch_session(&id)
+            .expect("a failed cache write must not fail the session open");
+        assert!(
+            (session.cumulative_cost_split.lock().input - 101.0).abs() < 1e-9,
+            "the replayed split applies even when it cannot be cached: {:?}",
+            *session.cumulative_cost_split.lock()
+        );
+        // Nothing was cached: the store still has no split for this session, so
+        // the next open replays the journal again rather than trusting a row that
+        // was never written.
+        let stored = session.session_manager.load(&id).unwrap();
+        let info = stored.get_session_info().unwrap();
+        assert!(info.get("cost_split").is_none(), "{info}");
+        assert!(info.get("cost_split_complete").is_none(), "{info}");
+    }
+
+    #[test]
+    fn a_failed_setting_write_still_applies_in_memory_and_is_not_swallowed() {
+        // The live session must not be blocked by a store it cannot update, but a
+        // failed durable write must not be reported as success either: the value
+        // stays changed in memory and the disk keeps what it had.
+        let mut session = make_test_session("auto-compaction-persist-failure");
+        let info = crate::session::SessionEntry::session_info(
+            serde_json::json!("not an object"),
+            session.model.clone(),
+            session.thinking_level.clone(),
+        );
+        session
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                session.session_id.clone(),
+                session.cwd.clone(),
+                session.model.clone(),
+                String::new(),
+                String::new(),
+                vec![info],
+            ))
+            .unwrap();
+        assert!(session.auto_compaction);
+        session.set_auto_compaction(false);
+        assert!(
+            !session.auto_compaction,
+            "the live toggle must apply even when its write fails"
+        );
+        // The store still carries the unreadable row: the failed update left no
+        // half-written metadata behind, and the next read sees no auto_compaction
+        // key at all (so a reload falls back to the default, not to `false`).
+        let stored = session.session_manager.load(&session.session_id).unwrap();
+        let persisted = stored
+            .entries
+            .iter()
+            .rev()
+            .find(|entry| entry.entry_type == crate::session::ENTRY_TYPE_SESSION_INFO)
+            .and_then(|entry| entry.content.clone())
+            .unwrap();
+        assert!(persisted.get("auto_compaction").is_none(), "{persisted}");
+    }
+
+    #[test]
     fn a_legacy_session_prices_its_journal_instead_of_its_totals() {
         // A session recorded before the split was accumulated carries token
         // totals but no per-category amounts. Pricing those totals at the model
@@ -3843,6 +4763,105 @@ mod tests {
         assert_eq!(*restarted.cumulative_cost.lock(), 0.25);
         let stored = restarted.session_manager.load(&session.session_id).unwrap();
         assert_eq!(stored.get_session_info().unwrap()["total_cost"], 0.25);
+    }
+
+    /// A provider that reports tokens without an authoritative `credit_cost`
+    /// (an unpriced gateway) must still be charged from the model's own rates —
+    /// both the session totals and the per-category split — instead of being
+    /// recorded as a free call.
+    #[test]
+    fn manual_summary_without_a_reported_price_is_priced_from_the_model_rates() {
+        let mut session = make_test_session("manual-summary-estimated-cost");
+        {
+            let mut registry = session.model_registry.write();
+            registry.test_insert(crate::models::Model {
+                id: "priced".to_string(),
+                name: "priced".to_string(),
+                provider: "test".to_string(),
+                api: "openai-completions".to_string(),
+                base_url: "http://127.0.0.1:1/v1".to_string(),
+                input: vec!["text".to_string()],
+                output: vec!["text".to_string()],
+                context_window: 1_000_000,
+                max_tokens: 4_096,
+                cost: crate::models::Cost {
+                    input: 1_000.0,
+                    output: 2_000.0,
+                    cache_read: 500.0,
+                    cache_write: 250.0,
+                },
+                ..Default::default()
+            });
+        }
+        session.model = "test/priced".to_string();
+        session.agent_loop.try_write().unwrap().provider = Arc::new(EstimatedCostSummaryProvider);
+        session
+            .last_prompt_tokens
+            .store(50_000, std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut messages = session.messages.write();
+            for i in 0..5 {
+                messages.push(crate::types::AgentMessage::new_user(
+                    "user",
+                    serde_json::json!(format!("question {i}")),
+                ));
+                messages.push(crate::types::AgentMessage {
+                    role: "assistant".into(),
+                    content: vec![
+                        crate::types::ContentBlock::text(format!("answer {i}")),
+                        crate::types::ContentBlock::tool_call(
+                            format!("read-{i}"),
+                            "read",
+                            serde_json::json!({"path":"large.rs"}),
+                            Default::default(),
+                        ),
+                    ],
+                    ..Default::default()
+                });
+                messages.push(crate::types::AgentMessage {
+                    role: "tool".into(),
+                    content: vec![crate::types::ContentBlock::tool_result(
+                        format!("read-{i}"),
+                        format!("tool result {i} ").repeat(2000),
+                        false,
+                    )],
+                    ..Default::default()
+                });
+            }
+            for message in messages.iter_mut() {
+                message.ensure_journal_entry_id();
+            }
+        }
+        persist_transcript(&session);
+        session.compact("").unwrap();
+
+        // Rates are per 1M tokens, and prompt_tokens already contains the cached
+        // subset: 10 uncached in, 20 out, 80 cache-read, 10 cache-write.
+        let expected = 10.0 / 1_000_000.0 * 1_000.0
+            + 20.0 / 1_000_000.0 * 2_000.0
+            + 80.0 / 1_000_000.0 * 500.0
+            + 10.0 / 1_000_000.0 * 250.0;
+        assert_eq!(
+            session.tokens_in.load(std::sync::atomic::Ordering::Relaxed),
+            100,
+            "the unpriced request's tokens must still be charged"
+        );
+        assert!(
+            (*session.cumulative_cost.lock() - expected).abs() < 1e-12,
+            "the request was not priced from the model rates: {}",
+            *session.cumulative_cost.lock()
+        );
+        let split = *session.cumulative_cost_split.lock();
+        assert!((split.input - 0.01).abs() < 1e-12, "{split:?}");
+        assert!((split.output - 0.04).abs() < 1e-12, "{split:?}");
+        assert!((split.cache_read - 0.04).abs() < 1e-12, "{split:?}");
+        assert!((split.cache_write - 0.0025).abs() < 1e-12, "{split:?}");
+        let stored = session.session_manager.load(&session.session_id).unwrap();
+        let info = stored.get_session_info().unwrap();
+        assert!(
+            (info["total_cost"].as_f64().unwrap() - expected).abs() < 1e-12,
+            "the estimate must be what the session persisted: {info}"
+        );
     }
 
     #[test]
@@ -4300,7 +5319,10 @@ mod tests {
         let lease = session
             .prompt("next interaction", &[], &[], Some("run-after-switch"), None)
             .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        // Liveness only: this asserts the run reaches a terminal state, and an
+        // instrumented parallel run of the whole crate can take far longer
+        // than the 2 s that flaked here (observed `Elapsed(())` under llvm-cov).
+        tokio::time::timeout(std::time::Duration::from_secs(60), async {
             while session.runtime.snapshot().is_some() {
                 tokio::task::yield_now().await;
             }

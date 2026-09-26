@@ -518,6 +518,36 @@ mod util_tests {
         assert!(ensure_workspace_accessible(dir.path(), false).is_ok());
     }
 
+    /// The repair path is entered for any blocked managed directory: the write
+    /// test fails because `.future_write_test` is an existing directory, the
+    /// repair runs (a no-op when the owner bits are already intact), and the
+    /// retry fails the same way — so the caller gets the write error instead of
+    /// a false "the workspace is fine".
+    #[test]
+    fn ensure_workspace_accessible_repair_retry_reports_the_same_blockage() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".future_write_test")).unwrap();
+        let error = ensure_workspace_accessible(dir.path(), true).unwrap_err();
+        assert_ne!(
+            error.kind(),
+            std::io::ErrorKind::NotFound,
+            "a blocked existing directory is not a missing one: {error:?}"
+        );
+        assert!(dir.path().join(".future_write_test").is_dir());
+    }
+
+    /// Without `auto_repair` the blocked directory is returned as-is: a user
+    /// workspace must never be chmod'ed, rebuilt or removed.
+    #[test]
+    fn ensure_workspace_accessible_reports_a_blocked_dir_without_repair() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".future_write_test")).unwrap();
+        let error = ensure_workspace_accessible(dir.path(), false).unwrap_err();
+        assert_ne!(error.kind(), std::io::ErrorKind::NotFound, "{error:?}");
+        assert!(dir.path().is_dir(), "the caller's directory is left alone");
+        assert!(dir.path().join(".future_write_test").is_dir());
+    }
+
     #[cfg(unix)]
     #[test]
     fn ensure_workspace_accessible_repairs_readonly_dir() {
@@ -745,9 +775,12 @@ mod util_tests {
     }
 
     #[test]
-    fn is_tty_returns_bool() {
-        // Just verify it doesn't panic
-        let _ = is_tty();
+    fn is_tty_inspects_standard_input() {
+        use std::io::IsTerminal;
+        // Pins *which* stream the helper reads: a redirect of stdout (how cargo
+        // test runs) must not change the answer, so this cannot be replaced by
+        // `stdout().is_terminal()`. A discriminating test needs a pty.
+        assert_eq!(is_tty(), std::io::stdin().is_terminal());
     }
 
     #[test]

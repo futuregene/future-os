@@ -352,3 +352,76 @@ describe("crash-consistent credentials and revoke ownership", () => {
     expect(values.get("futureos.remote.pending-revoke.v1")).not.toContain("userJwt");
   });
 });
+
+describe("legacy credentials and registry corruption", () => {
+  test("a legacy 'cleared' commit marker means no credentials, not a parse attempt", async () => {
+    seedLegacy("a");
+    values.set("futureos.remote.credential-commit.v2", "cleared");
+    // The marker is the record of a completed sign-out: the fields may still be
+    // on disk, and resurrecting them would log the user back in.
+    expect(await loadCredentials()).toBeNull();
+    expect(await loadPairedDesktops()).toEqual([]);
+  });
+
+  test.each(["c", "ab", "A", ""])(
+    "an unrecognized legacy commit marker (%j) is a storage error, not a silent reseed",
+    async marker => {
+      seedLegacy("a");
+      values.set("futureos.remote.credential-commit.v2", marker);
+      await expect(loadCredentials()).rejects.toThrow("invalid_credential_commit");
+    },
+  );
+
+  test("a legacy bundle without a commit marker still loads from the unsuffixed slots", async () => {
+    seedLegacy();
+    expect((await loadCredentials())?.pairId).toBe("pair_1");
+  });
+
+  test("a non-bundle credential whose bundle belongs to another desktop is refused", async () => {
+    await saveCredentials(credentials);
+    const registry = JSON.parse(values.get(registryKey)!) as {
+      activeDesktopId: string;
+      desktops: { desktopId: string; slot: string }[];
+    };
+    const entry = registry.desktops[0]!;
+    // The active pointer names this desktop, but the bundle under it carries a
+    // different pairing: trusting it would address another user's inbox.
+    values.set(storedFieldKey(entry.desktopId, "pairId", entry.slot), "pair_from_elsewhere");
+    await expect(loadCredentials()).rejects.toThrow("desktop_credential_mismatch");
+    // The selection is dropped so the desktop picker shows instead of a broken
+    // active conversation…
+    expect(JSON.parse(values.get(registryKey)!).activeDesktopId).toBeNull();
+    // …while the pairing itself is preserved for the user to re-select. The
+    // picker reads the registry, not the bundle it just refused to trust.
+    expect(await loadPairedDesktops()).toEqual([
+      { desktopId: credentials.expectedDesktopId, pairId: credentials.pairId },
+    ]);
+  });
+
+  test.each([
+    ["duplicate desktop ids", { activeDesktopId: "d1", desktops: [
+      { desktopId: "d1", pairId: "p1", slot: "a" }, { desktopId: "d1", pairId: "p2", slot: "b" }] }],
+    ["an entry with no pair id", { activeDesktopId: "d1", desktops: [{ desktopId: "d1", slot: "a" }] }],
+    ["an unknown slot", { activeDesktopId: "d1", desktops: [{ desktopId: "d1", pairId: "p1", slot: "c" }] }],
+    ["a non-string name", { activeDesktopId: "d1", desktops: [{ desktopId: "d1", pairId: "p1", slot: "a", name: 7 }] }],
+    ["a null entry", { activeDesktopId: "d1", desktops: [null] }],
+    ["desktops not a list", { activeDesktopId: "d1", desktops: {} }],
+  ])("a registry with %s is rejected whole rather than partially trusted", async (_label, registry) => {
+    const raw = JSON.stringify(registry);
+    values.set(registryKey, raw);
+    await expect(loadPairedDesktops()).rejects.toThrow("invalid_desktop_registry");
+    // Left exactly as found: reporting corruption must not destroy the evidence.
+    expect(values.get(registryKey)).toBe(raw);
+  });
+
+  test.each([
+    ["no entries list", { entries: null }],
+    ["a missing field", { entries: [{ pairId: "p", deviceId: "d", seed: "s", refreshToken: "r" }] }],
+    ["an empty required field", { entries: [{ pairId: "p", deviceId: "d", seed: "", refreshToken: "r", tokenUrl: "t" }] }],
+    ["a non-string field", { entries: [{ pairId: "p", deviceId: "d", seed: 1, refreshToken: "r", tokenUrl: "t" }] }],
+  ])("a queued revoke with %s is reported as corrupt", async (_label, body) => {
+    values.set("futureos.remote.pending-revoke.v1", JSON.stringify(body));
+    await expect(loadPendingRevoke()).rejects.toThrow("invalid_pending_revoke");
+  });
+});
+

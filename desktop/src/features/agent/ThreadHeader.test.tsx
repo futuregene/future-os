@@ -111,6 +111,73 @@ it("omits the button without an agent session and reports missing usage honestly
   expect(document.body.textContent).toContain("No usage recorded for this conversation yet.");
 });
 
+it("closes the usage dialog without unmounting the header", async () => {
+  // interaction: the dialog's own close path (`onClose` -> `setUsageOpen(false)`).
+  // Without it the panel could only ever be opened, and the header's open state
+  // would have no way back.
+  const container = render(
+    <ThreadHeader
+      leftPanelExpanded
+      onToggleLeftPanel={() => {}}
+      thread={thread}
+      usage={usage}
+    />,
+  );
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-testid=thread-usage]")!.click());
+  expect(document.body.textContent).toContain("Token usage and amount");
+
+  // Escape is the overlay's close gesture.
+  await act(async () => {
+    document.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }));
+  });
+
+  expect(document.body.textContent).not.toContain("Token usage and amount");
+  // The header itself is still there, and can open it again.
+  expect(container.querySelector("[data-testid=thread-usage]")).not.toBeNull();
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-testid=thread-usage]")!.click());
+  expect(document.body.textContent).toContain("Token usage and amount");
+});
+
+it("falls back to the default title and renders with no shell action", async () => {
+  // boundary: `thread?.title ?? t("thread.defaultTitle")` (twice - the heading and the
+  // usage dialog's own title) and the optional `action` slot. An untitled thread and
+  // an absent action are both ordinary: a conversation created before it was named,
+  // and a caller that passes no shell action. Neither may render an empty heading.
+  const untitled = { ...thread, title: null } as unknown as typeof thread;
+  const container = render(
+    <ThreadHeader
+      leftPanelExpanded
+      onToggleLeftPanel={() => {}}
+      thread={untitled}
+      usage={usage}
+    />,
+  );
+
+  // The heading falls back to the product's neutral name rather than nothing.
+  expect(container.textContent).toContain("FutureOS");
+
+  // Opening the dialog shows the same fallback in its title.
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-testid=thread-usage]")!.click());
+  expect(document.body.textContent).toContain("FutureOS");
+  expect(document.body.textContent).toContain("Token usage and amount");
+
+  // The dialog is named after the conversation, and with no `action` prop the
+  // trailing slot contributes no element at all.
+  expect(container.querySelector("[data-action]")).toBeNull();
+
+  // Supplying an action renders it in the trailing slot.
+  const withAction = render(
+    <ThreadHeader
+      action={<span data-action="yes">Compact</span>}
+      leftPanelExpanded
+      onToggleLeftPanel={() => {}}
+      thread={thread}
+      usage={usage}
+    />,
+  );
+  expect(withAction.querySelector("[data-action]")?.textContent).toBe("Compact");
+});
+
 it("shows tokens only when the model has no prices configured", async () => {
   const container = render(
     <ThreadHeader

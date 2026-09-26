@@ -183,10 +183,25 @@ pub fn suggest_skill(query: &str, candidates: &[SkillCandidate]) -> Option<Skill
 /// Runs one attempt and reports how it ended, with the token usage when the
 /// call actually reached Jev.
 fn attempt(query: &str, candidates: &[SkillCandidate]) -> (Outcome, Attempt) {
-    let query_bytes = query.trim().len();
     let Some(endpoint) = endpoint() else {
         return (Outcome::NoKey, Attempt::default());
     };
+    attempt_call(&HTTP_CLIENT, &endpoint, query, candidates)
+}
+
+/// One attempt against an already-resolved endpoint, over a given client.
+///
+/// Split out of [`attempt`] for the same reason as [`resolve`]: every transport
+/// outcome (a non-2xx body, an unreadable body, a refused connection, a
+/// timeout) is decided here, and the only alternative to driving them through a
+/// local socket is a live gateway, which no test may depend on.
+fn attempt_call(
+    client: &reqwest::blocking::Client,
+    endpoint: &Endpoint,
+    query: &str,
+    candidates: &[SkillCandidate],
+) -> (Outcome, Attempt) {
+    let query_bytes = query.trim().len();
     // Defensive cap: the caller is expected to pre-truncate, but a Choice
     // would hard-400 above 255 options, so clamp here too.
     let candidates = &candidates[..candidates.len().min(MAX_CANDIDATES)];
@@ -201,7 +216,7 @@ fn attempt(query: &str, candidates: &[SkillCandidate]) -> (Outcome, Attempt) {
     }
 
     let request = build_request(query, candidates, &endpoint.model);
-    let response = match HTTP_CLIENT
+    let response = match client
         .post(&endpoint.url)
         .bearer_auth(&endpoint.key)
         .json(&request)
@@ -459,6 +474,7 @@ struct JevAnswer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     fn cand(name: &str) -> SkillCandidate {
         SkillCandidate {
@@ -566,6 +582,10 @@ mod tests {
         }
 
         let buffer = Capture::default();
+        // The capture double is what the subscriber stores behind `Write`; its
+        // `flush` is part of that contract and must succeed without emitting.
+        let mut sink = buffer.clone();
+        assert!(std::io::Write::flush(&mut sink).is_ok());
         let subscriber = tracing_subscriber::fmt()
             .with_writer({
                 let buffer = buffer.clone();
@@ -612,6 +632,15 @@ mod tests {
                 elapsed,
             );
             log_outcome(&Outcome::NoKey, Attempt::default(), "whatever", elapsed);
+            log_outcome(
+                &Outcome::NoInput {
+                    query_bytes: 6,
+                    candidates: 0,
+                },
+                Attempt::default(),
+                "  你好  ",
+                elapsed,
+            );
         });
 
         let logged = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
@@ -629,6 +658,12 @@ mod tests {
             // Which backend answered, and the fallback when none reported.
             "served_by=typesafe/jev-1.13-20260917",
             "no Future account credential",
+            // The "feature is off / nothing to ask" arm is debug-level, so it
+            // would otherwise fire on every message; its fields still have to
+            // be there when it does.
+            "skill reco: nothing to ask (blank query or no candidates)",
+            "query_bytes=6",
+            "candidates=0",
         ] {
             assert!(
                 logged.contains(expected),
@@ -874,5 +909,453 @@ mod tests {
         ))
         .expect("resolves");
         assert_eq!(staging.url, "https://staging.example.com/gw/v1/systemone");
+    }
+
+    // ── Transport outcomes, driven against a local socket ──────────────────
+    //
+    // The live gateway cannot be part of a test: these five outcomes (a 2xx, a
+    // 4xx carrying Jev's own error, a body that does not decode, a refused
+    // connection, a silent peer) are what an operator has to tell apart in the
+    // log, and each is decided by a branch in `attempt_call`.
+
+    /// Read one HTTP request completely — headers plus the body `Content-Length`
+    /// promises — so a test can assert what the call actually put on the wire.
+    ///
+    /// Generic over the reader (a real socket in the transport tests) so the
+    /// framing rules below can be driven with a reader that hands the request
+    /// over in chosen pieces, including a peer that hangs up mid-body.
+    fn read_request(stream: &mut impl std::io::Read) -> String {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let mut expected = None;
+        loop {
+            let read = stream.read(&mut chunk).unwrap();
+            if read == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..read]);
+            if expected.is_none() {
+                if let Some(head) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&buf[..head]).to_ascii_lowercase();
+                    let length = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    expected = Some(head + 4 + length);
+                }
+            }
+            if expected.is_some_and(|total| buf.len() >= total) {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&buf).into_owned()
+    }
+
+    /// The reader frames a request by its `Content-Length`, and every stopping
+    /// rule is observable rather than assumed: headers split across reads are
+    /// joined before the length is taken, a body that arrives after the length
+    /// is already known is reassembled instead of being cut at the first read,
+    /// and a peer that hangs up before the promised bytes exist ends the read
+    /// with what it got instead of spinning on EOF.
+    #[test]
+    fn read_request_frames_a_request_across_reads_and_stops_at_eof() {
+        /// Hands out the request in the given pieces, then EOF. A piece is
+        /// drained across reads if the caller's buffer is smaller than it.
+        struct Pieces {
+            pieces: Vec<Vec<u8>>,
+            next: usize,
+            offset: usize,
+        }
+        impl std::io::Read for Pieces {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                while let Some(piece) = self.pieces.get(self.next) {
+                    if self.offset < piece.len() {
+                        let take = (piece.len() - self.offset).min(buf.len());
+                        buf[..take].copy_from_slice(&piece[self.offset..self.offset + take]);
+                        self.offset += take;
+                        return Ok(take);
+                    }
+                    self.next += 1;
+                    self.offset = 0;
+                }
+                Ok(0)
+            }
+        }
+        fn pieces(pieces: Vec<&[u8]>) -> Pieces {
+            Pieces {
+                pieces: pieces.into_iter().map(<[u8]>::to_vec).collect(),
+                next: 0,
+                offset: 0,
+            }
+        }
+
+        // The head arrives in two reads: the length cannot be known until the
+        // second one completes it.
+        let mut headers = pieces(vec![
+            b"POST /v1/systemone HTTP/1.1\r\nContent-Len",
+            b"gth: 4\r\n\r\nabcd",
+        ]);
+        let request = read_request(&mut headers);
+        assert!(
+            request.starts_with("POST /v1/systemone HTTP/1.1"),
+            "{request:?}"
+        );
+        assert!(
+            request.ends_with("abcd"),
+            "a head split across reads must be reassembled: {request:?}"
+        );
+
+        // The length is known after the first read; the body arrives in a
+        // second one, and the reader must keep going until it is complete.
+        let mut split = pieces(vec![
+            b"POST /v1/systemone HTTP/1.1\r\nContent-Length: 5\r\n\r\nab",
+            b"cde",
+        ]);
+        let request = read_request(&mut split);
+        assert!(
+            request.ends_with("abcde"),
+            "a body split across reads must be reassembled: {request:?}"
+        );
+
+        // The peer promised 64 bytes and hung up after 5: the reader returns
+        // what it received rather than waiting for bytes that never come.
+        let mut truncated = pieces(vec![b"POST / HTTP/1.1\r\nContent-Length: 64\r\n\r\nshort"]);
+        let request = read_request(&mut truncated);
+        assert!(
+            request.ends_with("short"),
+            "EOF before the promised length must end the read: {request:?}"
+        );
+
+        // A peer that says nothing at all is an empty request, not a hang.
+        assert_eq!(read_request(&mut pieces(vec![])), "");
+    }
+
+    /// A one-shot HTTP server: it answers with `status` + `body` and reports the
+    /// request it received back to the test.
+    fn one_shot_server(
+        status: &'static str,
+        body: String,
+    ) -> (String, std::sync::mpsc::Receiver<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_request(&mut stream);
+            let _ = sender.send(request);
+            let header = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(body.as_bytes());
+        });
+        (address, receiver)
+    }
+
+    /// A peer that completes the TCP handshake and then says nothing, so only
+    /// the client's own deadline can end the call.
+    fn silent_server() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(30));
+        });
+        address
+    }
+
+    fn gateway(url: &str) -> Endpoint {
+        Endpoint {
+            url: url.to_string(),
+            key: "acct-key".to_string(),
+            model: JEV_MODEL.to_string(),
+        }
+    }
+
+    /// A gateway reply that picks `pick`, with the usage and attribution a live
+    /// response carried.
+    fn gateway_response(pick: &str) -> String {
+        let mut probabilities = serde_json::Map::new();
+        probabilities.insert(pick.to_string(), serde_json::json!(0.9));
+        probabilities.insert(NONE_OPTION.to_string(), serde_json::json!(0.01));
+        serde_json::json!({
+            "answers": { "chunk_0": { "probabilities": probabilities } },
+            "usage": { "input_tokens": 447, "output_tokens": 54, "cost": 1.8774e-05 },
+            "model": "typesafe/jev-1.13-20260917",
+        })
+        .to_string()
+    }
+
+    /// A 2xx body is decoded, the pick and its billing are reported, and the
+    /// request that produced them is the gateway's documented shape.
+    #[test]
+    fn a_successful_call_reports_the_pick_its_usage_and_what_it_sent() {
+        let candidates = vec![cand("future-web"), cand("future-paper")];
+        let (url, request) = one_shot_server("200 OK", gateway_response("future-web"));
+        let (outcome, attempt) = attempt_call(
+            &HTTP_CLIENT,
+            &gateway(&format!("{url}/v1/systemone")),
+            "帮我把这张照片转成水彩风格",
+            &candidates,
+        );
+        assert_eq!(
+            outcome,
+            Outcome::Recommended {
+                skill: "future-web".to_string(),
+                probability: 0.9,
+                none_probability: 0.01,
+            }
+        );
+        let usage = attempt.usage.expect("the response reported usage");
+        assert_eq!((usage.input_tokens, usage.output_tokens), (447, 54));
+        assert_eq!(usage.cost, Some(1.8774e-05));
+        assert_eq!(
+            attempt.served_by.as_deref(),
+            Some("typesafe/jev-1.13-20260917"),
+            "which backend answered is invisible in the reply's shape"
+        );
+
+        let sent = request
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        let (head, body) = sent.split_once("\r\n\r\n").expect("a body was sent");
+        assert!(head.starts_with("POST /v1/systemone "), "{head}");
+        assert!(
+            head.lines()
+                .any(|line| line.eq_ignore_ascii_case("authorization: Bearer acct-key")),
+            "the account credential must authenticate the call: {head}"
+        );
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(body["model"], serde_json::json!("jev"));
+        assert_eq!(
+            body["state"]["request"],
+            serde_json::json!("帮我把这张照片转成水彩风格")
+        );
+        assert_eq!(
+            body["questions"]["chunk_0"]["type"],
+            serde_json::json!("choice")
+        );
+    }
+
+    /// Jev's own error text is the most useful thing in a 4xx, and it is an
+    /// upstream payload: trimmed of surrounding whitespace and capped at 300
+    /// display columns so one bad gateway cannot flood the log.
+    #[test]
+    fn a_non_success_status_reports_the_trimmed_truncated_upstream_body() {
+        let (url, _request) =
+            one_shot_server("402 Payment Required", format!("   {}   ", "x".repeat(500)));
+        let (outcome, attempt) =
+            attempt_call(&HTTP_CLIENT, &gateway(&url), "hello", &[cand("future-web")]);
+        assert_eq!(
+            outcome,
+            Outcome::Failed {
+                reason: format!("HTTP 402 Payment Required: {}", "x".repeat(300)),
+            },
+            "a day of log lines must not be one gateway error"
+        );
+        assert_eq!(attempt, Attempt::default(), "a 402 never reached Jev");
+    }
+
+    /// A 2xx whose body is not the gateway's JSON is a failure, not a pick: an
+    /// HTML error page must not be mistaken for "no recommendation".
+    #[test]
+    fn an_unreadable_body_is_reported_instead_of_being_taken_as_an_answer() {
+        let (url, _request) = one_shot_server("200 OK", "<html>gateway</html>".to_string());
+        let (outcome, _) = attempt_call(&HTTP_CLIENT, &gateway(&url), "hello", &[cand("a")]);
+        assert!(
+            matches!(&outcome, Outcome::Failed { reason }
+                if reason.starts_with("unreadable response: ")),
+            "{outcome:?}"
+        );
+    }
+
+    /// Nothing listening is a connection failure, not a refusal by the model —
+    /// the two look identical to the client (no card either way).
+    #[test]
+    fn a_refused_connection_is_reported_as_a_failure() {
+        let url = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = format!("http://{}", listener.local_addr().unwrap());
+            drop(listener); // the port is now closed
+            address
+        };
+        let (outcome, _) = attempt_call(&HTTP_CLIENT, &gateway(&url), "hello", &[cand("a")]);
+        assert!(
+            matches!(&outcome, Outcome::Failed { reason }
+                if reason.starts_with("connection failed: ")),
+            "{outcome:?}"
+        );
+    }
+
+    /// A peer that accepts the connection and never answers must not occupy a
+    /// dispatcher thread: the client's deadline ends the call, and the failure
+    /// reports that deadline rather than a generic transport error.
+    #[test]
+    fn a_silent_gateway_hits_the_client_deadline() {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_millis(250))
+            .build()
+            .unwrap();
+        let (outcome, _) = attempt_call(&client, &gateway(&silent_server()), "hello", &[cand("a")]);
+        assert_eq!(
+            outcome,
+            Outcome::Failed {
+                reason: format!("timeout after {}ms", TIMEOUT.as_millis()),
+            }
+        );
+    }
+
+    /// The two promises this function makes to its caller: a blank query or an
+    /// empty candidate list never reaches the wire, and the byte count it
+    /// reports is the *trimmed* one (an ideographic space is whitespace too).
+    #[test]
+    fn a_blank_query_or_an_empty_candidate_list_never_reaches_the_wire() {
+        let (url, request) = one_shot_server("200 OK", gateway_response("future-web"));
+        let endpoint = gateway(&url);
+        for (query, candidates) in [
+            ("   ", vec![cand("a")]),
+            ("\u{3000}\u{3000}", vec![cand("a")]),
+            ("hello", vec![]),
+        ] {
+            let (outcome, attempt) = attempt_call(&HTTP_CLIENT, &endpoint, query, &candidates);
+            assert_eq!(
+                outcome,
+                Outcome::NoInput {
+                    query_bytes: query.trim().len(),
+                    candidates: candidates.len(),
+                },
+                "query {query:?}"
+            );
+            assert_eq!(attempt, Attempt::default());
+        }
+        // Nothing was sent, so the server never answered: the receiver must time
+        // out rather than yield a request.
+        assert!(request
+            .recv_timeout(std::time::Duration::from_millis(300))
+            .is_err());
+    }
+
+    /// The defensive cap. A Choice holds at most 255 options and
+    /// `none_of_these` is one of them, so 300 candidates must reach the gateway
+    /// as 254 candidates + none — not as a request the gateway hard-400s.
+    #[test]
+    fn a_catalogue_larger_than_the_choice_limit_is_clamped_to_255_options() {
+        let candidates: Vec<SkillCandidate> = (0..300)
+            .map(|index| SkillCandidate {
+                name: format!("skill-{index:03}"),
+                description: "does a thing".to_string(),
+            })
+            .collect();
+        let (url, request) = one_shot_server("200 OK", gateway_response("skill-000"));
+        let (outcome, _) = attempt_call(
+            &HTTP_CLIENT,
+            &gateway(&format!("{url}/v1/systemone")),
+            "hello",
+            &candidates,
+        );
+        assert!(
+            matches!(outcome, Outcome::Recommended { .. }),
+            "{outcome:?}"
+        );
+        let sent = request
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(sent.split_once("\r\n\r\n").unwrap().1).unwrap();
+        let options = body["questions"]["chunk_0"]["criteria"]
+            .as_object()
+            .expect("criteria is the option map");
+        assert_eq!(options.len(), MAX_CANDIDATES + 1);
+        assert!(options.contains_key("skill-000") && options.contains_key("skill-253"));
+        assert!(
+            !options.contains_key("skill-254"),
+            "the 255th candidate would push the Choice past its option cap"
+        );
+        assert!(options.contains_key(NONE_OPTION));
+    }
+
+    /// Probabilities that name only `none_of_these`, below the gate, leave
+    /// nothing to pick. That is a malformed answer, not a refusal — and the two
+    /// are distinguishable in the log.
+    #[test]
+    fn probabilities_naming_only_none_are_a_failure_not_a_refusal() {
+        let outcome = decide(
+            &response_with(&[(NONE_OPTION, 0.05)]),
+            &[cand("future-web")],
+        );
+        assert_eq!(
+            outcome,
+            Outcome::Failed {
+                reason: "response carried no candidate probabilities".to_string()
+            }
+        );
+    }
+
+    /// The whole path a signed-in install takes: the credential store is read
+    /// from an isolated `$HOME`, its `base_url` points at a local socket, the
+    /// call is made, and the candidate the gateway picked is returned to the
+    /// caller. This is the only test that goes through `suggest_skill` itself
+    /// with an endpoint, so it is what pins the pick-mapping arm.
+    #[test]
+    fn a_signed_in_install_returns_the_candidate_the_gateway_picked() {
+        let home = crate::test_support::TestHome::new();
+        let (url, request) = one_shot_server("200 OK", gateway_response("future-web"));
+        let auth_path = home.auth_path();
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth_path,
+            serde_json::json!({
+                "future": {
+                    "type": "api_key",
+                    "key": "acct-key",
+                    "base_url": url,
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let picked = suggest_skill(
+            "帮我把这张照片转成水彩风格",
+            &[cand("future-web"), cand("future-paper")],
+        );
+        assert_eq!(
+            picked.as_ref().map(|candidate| candidate.name.as_str()),
+            Some("future-web")
+        );
+        // The account credential authenticated the call, and the gateway URL was
+        // derived from the configured base rather than the built-in default.
+        let sent = request
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        let head = sent.split_once("\r\n\r\n").unwrap().0;
+        assert!(head.starts_with("POST /v1/systemone "), "{head}");
+        assert!(
+            head.lines()
+                .any(|line| line.eq_ignore_ascii_case("authorization: Bearer acct-key")),
+            "{head}"
+        );
+    }
+
+    /// A URL reqwest cannot even build a request for is neither a timeout nor a
+    /// refused connection, and the operator still gets the reason.
+    #[test]
+    fn a_request_that_cannot_be_built_is_reported_as_a_transport_failure() {
+        let (outcome, attempt) =
+            attempt_call(&HTTP_CLIENT, &gateway("http://["), "hello", &[cand("a")]);
+        match outcome {
+            Outcome::Failed { reason } => {
+                assert!(!reason.is_empty(), "a failure must carry a reason");
+                assert!(
+                    !reason.starts_with("timeout after")
+                        && !reason.starts_with("connection failed"),
+                    "a malformed URL is neither a timeout nor a connect failure: {reason}"
+                );
+            }
+            other => panic!("expected a failure, got {other:?}"),
+        }
+        assert_eq!(attempt, Attempt::default());
     }
 }

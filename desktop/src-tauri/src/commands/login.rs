@@ -182,6 +182,85 @@ mod tests {
         assert_eq!(balance.credits, 1.0);
     }
 
+    /// `get_future_auth_state` is a three-way classification, not a boolean: a
+    /// home with no credential is `signed_out`, a stored key whose platform
+    /// cannot be reached is `unavailable` (not `invalid` — the key itself was
+    /// never judged), and a key that fetches a profile is `authenticated`.
+    #[tokio::test]
+    async fn auth_state_distinguishes_signed_out_unavailable_and_authenticated() {
+        let _home = HomeGuard::new("cmd-login-state");
+
+        let before = get_future_auth_state().await;
+        assert!(
+            matches!(before.status, future_login::FutureAuthStatus::SignedOut),
+            "a fresh home has no credential: {before:?}"
+        );
+        assert!(before.profile.is_none());
+
+        // A stored key, but a platform that refuses the connection: the key was
+        // never judged, so this is `unavailable` rather than `invalid`.
+        point_auth_with_key("http://127.0.0.1:9");
+        let unreachable = get_future_auth_state().await;
+        assert!(
+            matches!(
+                unreachable.status,
+                future_login::FutureAuthStatus::Unavailable
+            ),
+            "an unreachable platform is not an invalid credential: {unreachable:?}"
+        );
+        assert!(unreachable.profile.is_none());
+
+        let url = mock_http_server(vec![(
+            200,
+            "application/json",
+            b"{\"email\":\"a@b.c\",\"user_id\":\"u1\"}".to_vec(),
+        )]);
+        point_auth_with_key(&url);
+        let authenticated = get_future_auth_state().await;
+        assert!(
+            matches!(
+                authenticated.status,
+                future_login::FutureAuthStatus::Authenticated
+            ),
+            "a key that fetches a profile is authenticated: {authenticated:?}"
+        );
+        assert_eq!(
+            authenticated.profile.map(|profile| profile.email),
+            Some("a@b.c".to_string())
+        );
+    }
+
+    /// Both login commands gate on the agent being ready, and both must say so
+    /// rather than half-start a flow: `start` refuses and `poll` answers
+    /// `retry` *with the same device code*, so the UI can keep waiting instead
+    /// of restarting the flow.
+    #[tokio::test]
+    async fn login_commands_refuse_to_run_without_a_ready_agent() {
+        let _lock = mock_agent_lock();
+        let _home = HomeGuard::new("cmd-login-not-ready");
+        let app = mock_app_with_main_window();
+        let handle = app.handle().clone();
+
+        let started = crate::commands::agent_mock::with_broken_endpoint(|| {
+            start_future_login(handle.clone())
+        })
+        .await;
+        let error = started.expect_err("login must not begin without the agent");
+        assert!(
+            error.to_string().contains("authorization has not begun"),
+            "the refusal must tell the user to retry: {error}"
+        );
+
+        let polled = crate::commands::agent_mock::with_broken_endpoint(|| {
+            poll_future_login(handle, "dc-1".into())
+        })
+        .await
+        .expect("a not-yet-ready agent is a transient poll, not an error");
+        assert_eq!(polled.status, "retry");
+        assert!(polled.message.is_none());
+        assert!(polled.retry_after_seconds.is_none());
+    }
+
     fn mock_app_with_main_window() -> tauri::App<tauri::test::MockRuntime> {
         let app = tauri::test::mock_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))

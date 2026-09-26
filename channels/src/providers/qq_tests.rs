@@ -207,7 +207,12 @@ async fn heartbeats_echo_the_last_sequence_and_stop_after_a_missed_ack() {
     let (url, received) = spawn_ws(vec![
         WsAction::SendText(hello.to_string()),
         WsAction::SendText(dispatch.to_string()),
-        // Never ack: the second interval notices and reconnects.
+        // Close only after the client's first heartbeat has been recorded;
+        // the second interval then notices the missing ack and reconnects.
+        WsAction::WaitForReceived {
+            count: 2,
+            timeout: Duration::from_secs(10),
+        },
         WsAction::Delay(Duration::from_millis(700)),
     ])
     .await;
@@ -254,7 +259,15 @@ async fn an_ack_clears_the_heartbeat_flag_and_the_connection_survives() {
         // Ack before the second interval fires.
         WsAction::Delay(Duration::from_millis(130)),
         WsAction::SendText(json!({"op": 11}).to_string()),
-        WsAction::Delay(Duration::from_millis(120)),
+        // Hold the connection open until the client has sent IDENTIFY and two
+        // heartbeats. Waiting on the recorded frames instead of on a delay is
+        // what makes "the second interval heartbeated" deterministic: if the
+        // ack had not cleared the flag, the gateway would have died at the
+        // second interval and the wait would time out with one heartbeat sent.
+        WsAction::WaitForReceived {
+            count: 3,
+            timeout: Duration::from_secs(2),
+        },
         WsAction::SendClose,
     ])
     .await;

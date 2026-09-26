@@ -170,15 +170,23 @@ mod tests {
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n{")
                 .await
                 .unwrap();
-            std::future::pending::<()>().await;
+            // Hold the incomplete body past the client's 50 ms deadline, then
+            // let the task finish: an abandoned `pending()` future would leave
+            // this closure's end (and the socket's drop) for the abort, which
+            // is where the line-coverage artifact came from.
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            drop(socket);
         });
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             resolve_cdp_endpoint(&format!("http://{address}"), 50),
         )
         .await;
-        server.abort();
         assert!(result.expect("body read must terminate").is_err());
+        // Let the server finish rather than leaving the task suspended: its
+        // read loop runs to its end (and closes the socket) only if someone
+        // waits for it.
+        server.await.expect("server task completes");
     }
 
     #[tokio::test]

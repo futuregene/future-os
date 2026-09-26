@@ -1354,6 +1354,30 @@ mod tests {
         script_mock_agent(MockScript::default());
     }
 
+    /// A conversation that has never been prompted has no agent session yet, so
+    /// there is nothing to page through: the command answers an **empty page**
+    /// without calling the agent at all. The distinction from the sibling test
+    /// (`…treats_a_vanished_session_as_an_empty_page`) is the shape of the
+    /// answer, not the shape of the failure — this arm must not depend on the
+    /// agent being reachable, which is why the mock is left unreachable here.
+    #[tokio::test]
+    async fn get_session_entries_page_is_empty_for_a_thread_without_a_session() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_entries_page_nosession");
+        let thread = make_thread(&_home, None);
+        crate::commands::agent_mock::ensure_mock_agent();
+        // Nothing is scripted. If this arm called the agent, the default mock
+        // answer would not produce this payload, so the assertions below would
+        // fail rather than pass by accident.
+        let page = get_session_entries_page(thread.id.clone(), None, 10)
+            .await
+            .expect("a session-less thread is an empty page");
+        assert_eq!(page["entries"], serde_json::json!([]));
+        assert_eq!(page["hasMore"], serde_json::json!(false));
+        assert_eq!(page["nextOffset"], serde_json::json!(0));
+        script_mock_agent(MockScript::default());
+    }
+
     #[tokio::test]
     async fn update_thread_thinking_level_with_blank_level_skips_the_agent() {
         let _lock = mock_agent_lock();
@@ -1399,6 +1423,76 @@ mod tests {
         });
         let err = get_thread_agent_state(thread.id.clone()).await.unwrap_err();
         assert!(!err.to_string().is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn get_thread_agent_state_errors_when_the_typed_payload_is_null() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_agent_state_null");
+        let thread = make_thread(&_home, Some("sess_state_null"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        // `success = true` with a null payload: the reply is well-formed at the
+        // RPC level but carries no state. A client that treated that as "no
+        // state" would render an empty panel; it is an error instead, because
+        // `get_state` always answers with an object.
+        script_mock_agent(MockScript {
+            data: HashMap::from([("get_state".to_string(), "null".to_string())]),
+            ..Default::default()
+        });
+        let error = get_thread_agent_state(thread.id.clone())
+            .await
+            .expect_err("a null typed payload must not be mistaken for state");
+        assert!(
+            error.to_string().contains("typed payload"),
+            "the error must name the payload as the problem: {error}"
+        );
+        script_mock_agent(MockScript::default());
+    }
+
+    /// A session the agent no longer knows about is an **empty page**, not an
+    /// error: the conversation row outlives its agent session (the session can
+    /// be reaped while the desktop is closed), and a client that surfaced that
+    /// as a failure would show a toast for a thread whose history is simply
+    /// gone. The distinction matters because the alternative arm right below it
+    /// (`result => result`) propagates every *other* agent error.
+    #[tokio::test]
+    async fn get_session_entries_page_treats_a_vanished_session_as_an_empty_page() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_entries_page_gone");
+        let thread = make_thread(&_home, Some("sess_entries_gone"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([(
+                "get_session_entries".to_string(),
+                "session not found".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let page = get_session_entries_page(thread.id.clone(), None, 10)
+            .await
+            .expect("a vanished session is an empty page, not a failure");
+        assert_eq!(page["entries"], serde_json::json!([]));
+        assert_eq!(page["hasMore"], serde_json::json!(false));
+        assert_eq!(page["nextOffset"], serde_json::json!(0));
+
+        // The sibling arm: any other rejection is still an error, so the
+        // empty-page answer above cannot be the accidental result of the
+        // command failing for an unrelated reason.
+        script_mock_agent(MockScript {
+            errors: HashMap::from([(
+                "get_session_entries".to_string(),
+                "disk exploded".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let error = get_session_entries_page(thread.id.clone(), None, 10)
+            .await
+            .expect_err("an unrelated agent failure must propagate");
+        assert!(
+            error.to_string().contains("disk exploded"),
+            "the agent's own message must survive: {error}"
+        );
         script_mock_agent(MockScript::default());
     }
 
@@ -1477,6 +1571,54 @@ mod tests {
             .await
             .expect("missing session is a benign empty history");
         assert_eq!(value["entries"], serde_json::json!([]));
+        script_mock_agent(MockScript::default());
+    }
+
+    /// The deletion is *cancelled*, not merely reported, when the agent will not
+    /// confirm that the session stopped. That is the whole point of the guard:
+    /// deleting the row while a run is still writing would orphan the JSONL the
+    /// agent is appending to, and the transcript would come back corrupted on
+    /// the next launch. The last assertion is what makes this a cancellation
+    /// claim rather than an error-path claim.
+    #[tokio::test]
+    async fn deleting_a_thread_is_cancelled_when_the_agent_will_not_confirm_the_stop() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_delete_unconfirmed");
+        let thread = make_thread(&_home, Some("sess_delete_unconf"));
+        // A live run is what makes the session active, so the delete path takes
+        // the abort-then-confirm branch instead of the no-op one.
+        crate::store::create_run(store::CreateRunInput {
+            id: Some("run_unconfirmed".into()),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create run");
+        crate::commands::agent_mock::ensure_mock_agent();
+        // `abort_session` is accepted (the default mock answer), but `get_state`
+        // never decodes into a state, so the agent never confirms idle.
+        script_mock_agent(MockScript {
+            data: HashMap::from([("get_state".to_string(), "null".to_string())]),
+            ..Default::default()
+        });
+
+        let error = delete_thread(store::DeleteThreadInput {
+            thread_id: thread.id.clone(),
+            delete_files: false,
+        })
+        .await
+        .expect_err("an unconfirmed stop must refuse the deletion");
+        assert!(
+            error.to_string().contains("did not confirm"),
+            "the refusal must say the agent did not confirm: {error}"
+        );
+        assert!(
+            crate::store::get_thread(&thread.id)
+                .expect("lookup")
+                .is_some(),
+            "the cancellation must leave the conversation row in place"
+        );
         script_mock_agent(MockScript::default());
     }
 

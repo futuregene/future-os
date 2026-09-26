@@ -1187,26 +1187,50 @@ mod tests {
 
     #[test]
     fn path_candidates_cover_the_five_paste_shapes() {
-        assert_eq!(path_candidates("/tmp/a.png"), vec!["/tmp/a.png"]);
-        assert_eq!(path_candidates("\"/tmp/a b.png\""), vec!["/tmp/a b.png"]);
-        assert_eq!(path_candidates("'/tmp/a b.png'"), vec!["/tmp/a b.png"]);
-        assert_eq!(path_candidates("file:///tmp/a.png"), vec!["/tmp/a.png"]);
+        // The *shapes* are what this test is about; whether `/tmp/a.png`
+        // counts as absolute is the host's business (`Path::is_absolute`
+        // requires a drive on Windows), so the fixtures are spelled for the
+        // host instead of assuming POSIX.
+        let root = if cfg!(windows) { "C:/tmp" } else { "/tmp" };
+        // A `file://` URL spells a Windows drive as `file:///C:/…`: the slash
+        // the URL adds before the drive letter is not part of the path.
+        let drive_slash = if cfg!(windows) { "/" } else { "" };
+        let png = format!("{root}/a.png");
+        let spaced = format!("{root}/a b.png");
+        let escaped = format!("{root}/a\\ b.png");
+
+        assert_eq!(path_candidates(&png), vec![png.clone()]);
         assert_eq!(
-            path_candidates("file:///tmp/a%20b.png"),
-            vec!["/tmp/a b.png"]
+            path_candidates(&format!("\"{spaced}\"")),
+            vec![spaced.clone()]
         );
         assert_eq!(
-            path_candidates("file://localhost/tmp/a.png"),
-            vec!["/tmp/a.png"]
+            path_candidates(&format!("'{spaced}'")),
+            vec![spaced.clone()]
+        );
+        assert_eq!(
+            path_candidates(&format!("file://{drive_slash}{png}")),
+            vec![png.clone()]
+        );
+        assert_eq!(
+            path_candidates(&format!(
+                "file://{drive_slash}{}",
+                spaced.replace(' ', "%20")
+            )),
+            vec![spaced.clone()]
+        );
+        assert_eq!(
+            path_candidates(&format!("file://localhost{drive_slash}{png}")),
+            vec![png.clone()]
         );
         // Backslash-escaped spaces: the literal reading first, then the
         // unescaped one.
         assert_eq!(
-            path_candidates("/tmp/a\\ b.png"),
-            vec!["/tmp/a\\ b.png", "/tmp/a b.png"]
+            path_candidates(&escaped),
+            vec![escaped.clone(), spaced.clone()]
         );
         // Surrounding whitespace (a copy that picked up a newline) is trimmed.
-        assert_eq!(path_candidates("  /tmp/a.png\n"), vec!["/tmp/a.png"]);
+        assert_eq!(path_candidates(&format!("  {png}\n")), vec![png.clone()]);
     }
 
     #[test]
@@ -1562,7 +1586,13 @@ mod tests {
         assert!(parts.is_some(), "expected an image, got {outcome:?}");
         let (path, name) = parts.unwrap_or_default();
         assert!(path.ends_with(".png"), "{path}");
-        assert_eq!(name, path.rsplit('/').next().unwrap());
+        assert_eq!(
+            name,
+            Path::new(&path)
+                .file_name()
+                .and_then(|file| file.to_str())
+                .expect("the captured path has a file name")
+        );
         assert!(name.starts_with("clipboard-1700000000000-4321-0"), "{name}");
         assert!(is_image_file(Path::new(&path)), "{path} must be the image");
         assert!(
@@ -2030,5 +2060,34 @@ mod tests {
         let error =
             spawn_capture("future-tui-no-such-clipboard-tool", &[]).expect_err("spawn must fail");
         assert!(error.contains("failed to spawn"), "{error}");
+    }
+
+    /// The Windows half of the pair above. `spawn_capture` is the **real**
+    /// capture path — every other test injects a capture function — so without
+    /// this the production path would only ever run on POSIX. It must report
+    /// the exit status together with both captured streams.
+    #[test]
+    #[cfg(windows)]
+    fn the_real_spawner_runs_a_program_and_reports_a_missing_one() {
+        let args: Vec<String> = vec!["/c".into(), "exit 0".into()];
+        let (code, stdout, stderr) = spawn_capture("cmd", &args).expect("cmd /c exit 0 runs");
+        assert_eq!(code, 0);
+        assert_eq!(stdout, "");
+        assert_eq!(stderr, "");
+
+        // Output on both streams comes back separated, so a caller can tell a
+        // tool's answer from its diagnostics.
+        let args: Vec<String> = vec!["/c".into(), "echo out & echo err 1>&2".into()];
+        let (code, stdout, stderr) = spawn_capture("cmd", &args).expect("cmd runs");
+        assert_eq!(code, 0);
+        assert!(stdout.contains("out"), "{stdout:?}");
+        assert!(stderr.contains("err"), "{stderr:?}");
+
+        let error =
+            spawn_capture("future-tui-no-such-clipboard-tool", &[]).expect_err("spawn must fail");
+        assert!(
+            error.contains("no-such-clipboard-tool") || error.contains("failed to spawn"),
+            "the failure must name the tool or the spawn: {error}"
+        );
     }
 }

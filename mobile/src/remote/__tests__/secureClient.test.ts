@@ -36,15 +36,20 @@ function fixture() {
   let serverChannel: SecureChannel | undefined;
   let pinned: string | undefined;
   let loseConfirmation = false;
+  let omitConfirmation = false;
   let corruptReply = false;
+  let breakConfirmation = false;
   const commands: unknown[] = [];
   const wires: Uint8Array[] = [];
   const confirmation = () => {
     if (!pending?.complete || !pending.hash || !pending.tx || !pending.rx) throw new Error("incomplete");
     serverChannel = new SecureChannel(pending.tx, pending.rx, pending.hash.subarray(0, 16));
     pinned = encodeBase64Url(pending.rs!);
-    return encodeBase64Url(serverChannel.seal("handshake-confirm", encode({ confirmed: true, pairId: "pair_1",
-      bridgeInstanceId: "bridge_1", presence: { bridgeInstanceId: "bridge_1", online: true }, features: ["e2ee_v2"] })));
+    return encodeBase64Url(serverChannel.seal("handshake-confirm", encode(breakConfirmation
+      ? { confirmed: false, pairId: "pair_1", bridgeInstanceId: "bridge_1",
+          presence: { bridgeInstanceId: "bridge_1", online: true }, features: ["e2ee_v2"] }
+      : { confirmed: true, pairId: "pair_1",
+          bridgeInstanceId: "bridge_1", presence: { bridgeInstanceId: "bridge_1", online: true }, features: ["e2ee_v2"] })));
   };
   const request = jest.fn(async (subject: string, data: Uint8Array) => {
     wires.push(data.slice());
@@ -66,14 +71,18 @@ function fixture() {
       pending.recv(decodeBase64Url(body.message)!);
       if (!body.pairing && (!pinned || encodeBase64Url(pending.rs!) !== pinned)) throw new Error("wrong peer");
       const message = encodeBase64Url(pending.send());
+      // The desktop identity is pinned by a real confirmation even when the
+      // reply under test omits it, so the client's refusal is about the missing
+      // field and not about an unknown peer.
+      const confirmed = body.pairing ? undefined : confirmation();
       return { data: encode({ success: true, data: { id: "challenge", message,
-        ...(!body.pairing ? { confirmation: confirmation() } : {}) } }) } as Msg;
+        ...(confirmed && !omitConfirmation ? { confirmation: confirmed } : {}) } }) } as Msg;
     }
     if (body.type === "secure_finish") {
       pending!.recv(decodeBase64Url(body.message)!);
       const confirmed = confirmation();
       if (loseConfirmation) { loseConfirmation = false; throw new Error("lost response"); }
-      return { data: encode({ success: true, data: { confirmation: confirmed } }) } as Msg;
+      return { data: encode({ success: true, data: { ...(omitConfirmation ? {} : { confirmation: confirmed }) } }) } as Msg;
     }
     throw new Error("plaintext business command");
   });
@@ -109,7 +118,9 @@ function fixture() {
       return result;
     },
     loseConfirmation: () => { loseConfirmation = true; },
+    omitConfirmation: () => { omitConfirmation = true; },
     corruptReply: () => { corruptReply = true; },
+    mismatchConfirmation: () => { breakConfirmation = true; },
     serverChannel: () => serverChannel!,
     restartDesktop: () => { serverChannel?.destroy(); serverChannel = undefined; },
   };
@@ -282,5 +293,90 @@ test("rejects a substituted desktop key even when the attacker relays the real h
   await expect(f.pair()).rejects.toThrow();
   expect(f.internal.secureChannels.get(f.connection)).toBeUndefined();
   expect(f.commands).toHaveLength(0);
+  await f.client.close();
+});
+
+test("a refused handshake carries the desktop's own reason, not just the stable token", async () => {
+  const f = fixture();
+  const base = f.request.getMockImplementation()!;
+  f.request.mockImplementation(async (subject: string, data: Uint8Array) => {
+    const body = JSON.parse(decoder.decode(data)) as { type?: string };
+    if (body.type === "secure_open") {
+      // The phone holds a code the desktop will not accept. The stable
+      // `pairing_signature_invalid` token is what the credential classifier and
+      // the connection presentation match on; the detail is the only statement
+      // of *why*, so it has to survive into the error.
+      return natsMessage("untrusted-inbox", encode({ success: false, error: "invitation_expired" }));
+    }
+    return base(subject, data);
+  });
+  await expect(f.pair()).rejects.toThrow("pairing_signature_invalid:invitation_expired");
+  expect(f.internal.secureChannels.get(f.connection)).toBeUndefined();
+  await f.client.close();
+});
+
+test("a confirmation whose binding does not match the pairing is refused", async () => {
+  const f = fixture();
+  // Every other field is well-formed and the AEAD is genuine; only the
+  // `confirmed` flag disagrees. A phone that accepted this would hand the
+  // desktop keys to whoever produced the frame.
+  f.mismatchConfirmation();
+  await expect(f.pair()).rejects.toThrow("pairing_confirmation_mismatch");
+  expect(f.internal.secureChannels.get(f.connection)).toBeUndefined();
+  await f.client.close();
+});
+
+/** Handshake frames are plaintext JSON; the sealed business/secure frames start
+ * with the FRE2 magic, so this counts only identity exchanges. */
+const jsonRequests = (f: ReturnType<typeof fixture>) =>
+  f.request.mock.calls.filter(([, data]) => decoder.decode(data.subarray(0, 1)) === "{").length;
+
+test("a handshake reply with no message is refused instead of pairing on nothing", async () => {
+  const f = fixture();
+  // A successful first pairing drops the invitation secret, so this is the
+  // reconnect path: one IK exchange, whose answer carries no key exchange.
+  await f.pair();
+  const base = f.request.getMockImplementation()!;
+  f.request.mockImplementation(async (subject: string, data: Uint8Array) => {
+    const body = JSON.parse(decoder.decode(data)) as { type?: string; pairing?: boolean };
+    if (body.type === "secure_open" && !body.pairing) {
+      return natsMessage("untrusted-inbox", encode({ success: true, data: { id: "challenge" } }));
+    }
+    return base(subject, data);
+  });
+  await expect(f.internal.performHandshake(f.connection)).rejects.toThrow("pairing_signature_invalid");
+  await f.client.close();
+});
+
+test("a handshake reply with no confirmation is refused instead of trusting the socket", async () => {
+  const f = fixture();
+  // The desktop answers the key exchange but never states which identity it
+  // bound: with nothing to verify, the phone must not keep the channel. The
+  // second, secretless attempt gets the same silent answer.
+  f.omitConfirmation();
+  await expect(f.pair()).rejects.toThrow("pairing_confirmation_mismatch");
+  expect(f.internal.secureChannels.get(f.connection)).toBeUndefined();
+  await f.client.close();
+});
+
+test("a pairing that closes after the confirmation is not retried without the secret", async () => {
+  const f = fixture();
+  Object.assign(f.internal, { stopped: true });
+  await expect(f.internal.performHandshake(f.connection)).rejects.toThrow("not_connected");
+  // Exactly the two frames of one attempt (open + finish): a client the user
+  // closed must not start the second, unauthenticated exchange.
+  expect(jsonRequests(f)).toBe(2);
+  expect(f.internal.secureChannels.get(f.connection)).toBeUndefined();
+  await f.client.close();
+});
+
+test("a pairing that closes while writing the rotated identity is not retried", async () => {
+  const f = fixture();
+  jest.mocked(f.callbacks.onCredentials).mockImplementation(async () => {
+    Object.assign(f.internal, { stopped: true });
+  });
+  await expect(f.internal.performHandshake(f.connection)).rejects.toThrow("not_connected");
+  expect(jsonRequests(f)).toBe(2);
+  expect(f.internal.secureChannels.get(f.connection)).toBeUndefined();
   await f.client.close();
 });

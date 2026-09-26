@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import * as Network from "expo-network";
 import { AppState } from "react-native";
-import type { ConnectionState } from "../connectionState";
+import { RemoteApiError, type ConnectionState } from "../connectionState";
 import {
   beginNativePresentation,
   endNativePresentation,
@@ -17,6 +17,7 @@ import {
   loadCredentials,
   loadPairedDesktops,
   loadPendingRevoke,
+  renameDesktop,
   saveCredentials,
   savePendingRevoke,
 } from "../storage";
@@ -37,6 +38,7 @@ jest.mock("../storage", () => ({
   loadCredentials: jest.fn(async () => null),
   loadPairedDesktops: jest.fn(async () => []),
   loadPendingRevoke: jest.fn(async () => null),
+  renameDesktop: jest.fn(async () => {}),
   saveCredentials: jest.fn(async () => {}),
   savePendingRevoke: jest.fn(async () => {}),
 }));
@@ -116,9 +118,10 @@ interface MockClientCallbacks {
   onCredentials(c: RemoteCredentials): Promise<void>;
   onEvent(e: StreamEvent, sessionId: string): void;
   onEventDecodeFailure(sessionId: string, error: Error): void;
+  onCatalogEpoch(epoch: string | undefined): void;
   onPresence(p: Presence): void;
   onSessions(s: PresenceSession[]): void;
-  onWorkspaces(w: RemoteSession[]): void;
+  onWorkspaces(w: RemoteSession[], version: number): void;
   onFeatures(f: string[]): void;
   onConnectionState(s: ConnectionState): void;
   onReconnected(): void;
@@ -1194,6 +1197,551 @@ describe("useRemoteConnection", () => {
       } finally {
         jest.useRealTimers();
       }
+    });
+  });
+
+  describe("transport callbacks, revoke retries and desktop bookkeeping", () => {
+    async function mountConnected(): Promise<void> {
+      cast<jest.Mock>(loadCredentials).mockResolvedValue(credentials);
+      render();
+      await flush();
+    }
+
+    test("live events, catalogue epochs and workspace lists reach their sinks on the current generation only", async () => {
+      const setCatalogEpoch = jest.fn();
+      options.setCatalogEpoch = setCatalogEpoch;
+      await mountConnected();
+      const current = client();
+      const event = { type: "agent_end", data: "{}" } as StreamEvent;
+      act(() => current.callbacks.onEvent(event, "s1"));
+      expect(options.handleEvent).toHaveBeenCalledWith(event, "s1");
+      act(() => current.callbacks.onCatalogEpoch("epoch-1"));
+      expect(setCatalogEpoch).toHaveBeenCalledWith("epoch-1");
+      const workspaces = [{ sessionId: "s1" } as RemoteSession];
+      act(() => current.callbacks.onWorkspaces(workspaces, 3));
+      expect(options.setWorkspaces).toHaveBeenCalledWith(workspaces, 3);
+
+      // A fresh connect bumps the generation. The replaced client can still be
+      // draining its socket, and every frame it delivers belongs to the
+      // connection that is gone.
+      await act(async () => {
+        await result.current.reconnect();
+        await drain();
+      });
+      expect(client()).not.toBe(current);
+      cast<jest.Mock>(options.handleEvent).mockClear();
+      cast<jest.Mock>(options.setWorkspaces).mockClear();
+      setCatalogEpoch.mockClear();
+      act(() => current.callbacks.onEvent(event, "s1"));
+      act(() => current.callbacks.onCatalogEpoch("stale"));
+      act(() => current.callbacks.onWorkspaces(workspaces, 4));
+      expect(options.handleEvent).not.toHaveBeenCalled();
+      expect(setCatalogEpoch).not.toHaveBeenCalled();
+      expect(options.setWorkspaces).not.toHaveBeenCalled();
+    });
+
+    test("an agent that comes back while connected restarts the lanes and re-reads state", async () => {
+      const restartAll = jest.fn();
+      options.syncEngineRef.current = cast({ restartAll });
+      await mountConnected();
+      const c = client();
+      act(() => c.callbacks.onPresence({ ...presence, agentAvailable: false }));
+      await flush();
+      restartAll.mockClear();
+      cast<jest.Mock>(options.refreshSessions).mockClear();
+      act(() => c.callbacks.onPresence({
+        ...presence, agentAvailable: true, lastHeartbeatTs: Date.now(),
+      }));
+      await flush();
+      // The agent going away and coming back invalidates every lane the phone
+      // was holding: recovering only the catalogue would leave the timeline
+      // pinned to the process that died.
+      expect(restartAll).toHaveBeenCalledWith("reconnect");
+      expect(options.refreshSessions).toHaveBeenCalled();
+    });
+
+    test("a 4xx revoke failure is terminal and is not re-sent", async () => {
+      jest.useFakeTimers();
+      try {
+        cast<jest.Mock>(loadPendingRevoke).mockResolvedValue({ pairId: "pair" });
+        cast<jest.Mock>(attemptPendingRevoke).mockRejectedValue(
+          new RemoteApiError("forbidden", "PA002", 403),
+        );
+        render();
+        await flush();
+        expect(attemptPendingRevoke).toHaveBeenCalledTimes(1);
+        // The drainer runs again on its interval. A 4xx the server will keep
+        // refusing must not be re-sent forever; a transport error must be,
+        // which the next test pins.
+        await act(async () => { jest.advanceTimersByTime(30_000); await drain(); });
+        expect(attemptPendingRevoke).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test("a transport revoke failure is retried on the next drain", async () => {
+      jest.useFakeTimers();
+      try {
+        cast<jest.Mock>(loadPendingRevoke).mockResolvedValue({ pairId: "pair" });
+        cast<jest.Mock>(attemptPendingRevoke).mockRejectedValue(new Error("offline"));
+        render();
+        await flush();
+        expect(attemptPendingRevoke).toHaveBeenCalledTimes(1);
+        await act(async () => { jest.advanceTimersByTime(30_000); await drain(); });
+        expect(attemptPendingRevoke).toHaveBeenCalledTimes(2);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    test("a recovery that fails after a reconnect is reported rather than swallowed", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        options.syncEngineRef.current = cast({
+          restartAll: () => { throw new RemoteApiError("recovery exploded", "invalid_remote_credential", 401); },
+        });
+        await mountConnected();
+        act(() => client().callbacks.onReconnected());
+        await flush();
+        // The reconnect is only complete once the lanes it restarts are
+        // actually rebuilt; a failure there must reach the user.
+        expect(result.current.error).toBe("recovery exploded");
+        expect(warn).toHaveBeenCalledWith("[remote] unexpected non-transport error", expect.anything());
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    test("reconnect with known desktops but no stored credentials reports the incomplete pairing", async () => {
+      const saved = [{ desktopId: "desktop-1", pairId: "pair-1" }];
+      cast<jest.Mock>(loadPairedDesktops).mockResolvedValue(saved);
+      render();
+      await flush();
+      expect(result.current.desktops).toEqual(saved);
+      await act(async () => {
+        await result.current.reconnect();
+        await drain();
+      });
+      // A desktop is listed but nothing can open it: saying so beats silently
+      // returning to the unpaired screen, which reads as a lost pairing.
+      expect(result.current.error).toBe("incomplete_desktop_credentials");
+      expect(result.current.phase).toBe("failed");
+    });
+
+    test("renaming a desktop persists it and re-reads the list", async () => {
+      const saved = [{ desktopId: "desktop-1", pairId: "pair-1" }];
+      cast<jest.Mock>(loadPairedDesktops).mockResolvedValue(saved);
+      render();
+      await flush();
+      const renamed = [{ desktopId: "desktop-1", pairId: "pair-1", name: "Lab" }];
+      cast<jest.Mock>(loadPairedDesktops).mockResolvedValue(renamed);
+      await act(async () => {
+        await result.current.renameDesktop("desktop-1", "Lab");
+        await drain();
+      });
+      expect(renameDesktop).toHaveBeenCalledWith("desktop-1", "Lab");
+      expect(loadPairedDesktops).toHaveBeenCalledTimes(2);
+      expect(result.current.desktops).toEqual(renamed);
+    });
+  });
+
+  /**
+   * A connection attempt is not a transaction: the user can unpair, switch
+   * desktop, or leave the screen at any await. Every one of those has to stop
+   * the attempt where it is, and the callbacks of the replaced client must not
+   * be able to drive the new state.
+   */
+  describe("interrupted and superseded attempts", () => {
+    function deferred<T>() {
+      let resolve!: (value: T) => void;
+      let reject!: (reason?: unknown) => void;
+      const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+      return { promise, resolve, reject };
+    }
+
+    async function mountConnected(): Promise<void> {
+      cast<jest.Mock>(loadCredentials).mockResolvedValue(credentials);
+      render();
+      await flush();
+    }
+
+    test("an unpair that lands while the previous client is closing stops the reconnect", async () => {
+      await mountConnected();
+      const previous = client();
+      const closing = deferred<void>();
+      previous.close.mockReturnValue(closing.promise);
+      cast<jest.Mock>(saveCredentials).mockClear();
+      let reconnecting: Promise<void> | undefined;
+      await act(async () => {
+        reconnecting = result.current.reconnect();
+        await drain();
+      });
+      // The user unpairs while the old socket is still being closed.
+      await act(async () => { await result.current.unpair(); await drain(); });
+      closing.resolve();
+      await act(async () => { await reconnecting; await drain(); });
+      // The superseded attempt must not persist or adopt credentials for a
+      // pairing the user just removed.
+      expect(cast<jest.Mock>(saveCredentials)).not.toHaveBeenCalled();
+      expect(options.credentialsRef.current).toBeNull();
+      expect(result.current.phase).toBe("unpaired");
+    });
+
+    test("an unpair that lands while credentials are being saved stops the reconnect", async () => {
+      await mountConnected();
+      const saving = deferred<void>();
+      cast<jest.Mock>(saveCredentials).mockReturnValue(saving.promise);
+      let reconnecting: Promise<void> | undefined;
+      await act(async () => {
+        reconnecting = result.current.reconnect();
+        await drain();
+      });
+      await act(async () => { await result.current.unpair(); await drain(); });
+      saving.resolve();
+      await act(async () => { await reconnecting; await drain(); });
+      // Nothing may re-enter the connecting phase after the unpair.
+      expect(result.current.phase).toBe("unpaired");
+      expect(options.credentialsRef.current).toBeNull();
+      expect(options.clientRef.current).toBeNull();
+    });
+
+    test("an unpair that lands while the desktop list reloads stops the reconnect", async () => {
+      await mountConnected();
+      const listed = deferred<unknown>();
+      cast<jest.Mock>(loadPairedDesktops).mockReturnValueOnce(listed.promise);
+      let reconnecting: Promise<void> | undefined;
+      await act(async () => {
+        reconnecting = result.current.reconnect();
+        await drain();
+      });
+      await act(async () => { await result.current.unpair(); await drain(); });
+      listed.resolve([]);
+      await act(async () => { await reconnecting; await drain(); });
+      expect(result.current.phase).toBe("unpaired");
+      expect(options.credentialsRef.current).toBeNull();
+    });
+
+    test("a replaced client cannot write credentials or reconcile sessions", async () => {
+      await mountConnected();
+      const stale = client();
+      await act(async () => { await result.current.reconnect(); await drain(); });
+      expect(client()).not.toBe(stale);
+      cast<jest.Mock>(saveCredentials).mockClear();
+      await act(async () => {
+        await stale.callbacks.onCredentials({ ...credentials, userJwt: "rotated" });
+        await drain();
+      });
+      // The replaced client is still draining its socket; its token rotation
+      // belongs to a pairing this screen no longer shows.
+      expect(cast<jest.Mock>(saveCredentials)).not.toHaveBeenCalled();
+      act(() => stale.callbacks.onEventDecodeFailure("s1", new Error("bad frame")));
+      expect(options.reconcileSession).not.toHaveBeenCalled();
+    });
+
+    test("a replaced client cannot publish connection state or recovery", async () => {
+      await mountConnected();
+      const stale = client();
+      act(() => stale.callbacks.onConnectionState("ready"));
+      await act(async () => { await result.current.reconnect(); await drain(); });
+      const phase = result.current.phase;
+      cast<jest.Mock>(options.refreshSessions).mockClear();
+      cast<jest.Mock>(options.refreshModels).mockClear();
+      act(() => stale.callbacks.onConnectionState("failed"));
+      act(() => stale.callbacks.onReconnected());
+      await flush();
+      // A late phase would flip the screen to a failure the user's desktop did
+      // not report, and a late recovery would pull against the new socket.
+      expect(result.current.phase).toBe(phase);
+      expect(options.refreshSessions).not.toHaveBeenCalled();
+      expect(options.refreshModels).not.toHaveBeenCalled();
+    });
+
+    test("a snapshot the catalogue rejects does not touch the conversation", async () => {
+      await mountConnected();
+      options.selectedRef.current = "s1";
+      cast<jest.Mock>(options.applySessionSnapshot).mockReturnValue(false);
+      act(() => client().callbacks.onSessions([presenceSession("s2")]));
+      // `false` means the snapshot was a duplicate or out of order: acting on it
+      // would close a conversation that is still current.
+      expect(options.closeConversation).not.toHaveBeenCalled();
+      expect(options.applySessionStreaming).not.toHaveBeenCalled();
+    });
+
+    test("a bootstrap superseded while reading the desktop registry never loads credentials", async () => {
+      const listed = deferred<unknown>();
+      cast<jest.Mock>(loadPairedDesktops).mockReturnValue(listed.promise);
+      render();
+      await flush();
+      await act(async () => { renderer!.unmount(); renderer = null; await drain(); });
+      listed.resolve([]);
+      await flush();
+      expect(loadCredentials).not.toHaveBeenCalled();
+    });
+
+    test("a bootstrap failure that lands after it was superseded is not reported", async () => {
+      const listed = deferred<unknown>();
+      cast<jest.Mock>(loadPairedDesktops).mockReturnValueOnce(listed.promise);
+      render();
+      await flush();
+      // The bootstrap is parked on the registry read. A new callbacks identity
+      // supersedes it (connect/recoverState are rebuilt), so the effect tears
+      // down and starts a fresh attempt that finishes unpaired.
+      options.refreshSessions = jest.fn(async () => {});
+      act(() => { renderer!.update(createElement(Harness)); });
+      await flush();
+      expect(result.current.phase).toBe("unpaired");
+      expect(result.current.error).toBeNull();
+      // The abandoned attempt's read now fails. Its failure belongs to a
+      // bootstrap that no longer owns the screen: reporting it would paint an
+      // error over the healthy (unpaired) state the current attempt produced.
+      listed.reject(new Error("registry unreadable"));
+      await flush();
+      expect(result.current.error).toBeNull();
+      expect(result.current.phase).toBe("unpaired");
+    });
+
+    test("a bootstrap superseded while loading credentials never connects", async () => {
+      cast<jest.Mock>(loadPairedDesktops).mockResolvedValue([]);
+      const stored = deferred<RemoteCredentials | null>();
+      cast<jest.Mock>(loadCredentials).mockReturnValue(stored.promise);
+      render();
+      await flush();
+      await act(async () => { renderer!.unmount(); renderer = null; await drain(); });
+      stored.resolve(credentials);
+      await flush();
+      expect(options.clientRef.current).toBeNull();
+    });
+
+    test("a network event that lands on a superseded listener cannot drive recovery", async () => {
+      await mountConnected();
+      const stale = networkListeners()[0]!;
+      const connected = client();
+      // A new callbacks identity rebuilds recoverState/recoverLifecycle, so the
+      // network effect tears down and installs a fresh listener.
+      options.refreshSessions = jest.fn(async () => {});
+      act(() => { renderer!.update(createElement(Harness)); });
+      await flush();
+      connected.recoverNow.mockClear();
+      // The retired listener still fires — offline, then back online. It must
+      // not restart recovery: the effect that owned it is gone, and letting a
+      // dead listener act would double every native reachability event.
+      await act(async () => {
+        stale(noneState);
+        stale(wifiState);
+        await drain();
+      });
+      expect(connected.recoverNow).not.toHaveBeenCalledWith("network-restored");
+    });
+
+    test("a foreground event after the network listener was torn down does not start a query", async () => {
+      await mountConnected();
+      const listener = appStateListeners()[0]!;
+      listener("background");
+      await act(async () => { renderer!.unmount(); renderer = null; await drain(); });
+      cast<jest.Mock>(Network.getNetworkStateAsync).mockClear();
+      // A queued AppState event can still arrive after the screen is gone (the
+      // native subscription removes asynchronously). The platform query belongs
+      // to the effect that was torn down; the fallback reports the last known
+      // availability instead of opening a new probe nobody will read.
+      act(() => listener("active"));
+      await flush();
+      expect(Network.getNetworkStateAsync).not.toHaveBeenCalled();
+    });
+
+    test("a foreground recovery with no client never becomes an error", async () => {
+      // No stored credentials: the screen is unpaired and owns no client.
+      render();
+      await flush();
+      expect(client()).toBeNull();
+      cast<jest.Mock>(Network.getNetworkStateAsync).mockClear();
+      await act(async () => {
+        appStateListeners()[0]!("background");
+        appStateListeners()[0]!("active");
+        await drain();
+      });
+      // The advisory radio refresh still runs, but the recovery itself must not
+      // treat a missing client as a failure to report.
+      expect(Network.getNetworkStateAsync).toHaveBeenCalled();
+      expect(result.current.error).toBeNull();
+      expect(result.current.phase).toBe("unpaired");
+    });
+
+    test("a foreground recovery that lands after the app left again is dropped", async () => {
+      await mountConnected();
+      const pending = deferred<void>();
+      client().recoverNow.mockReturnValue(pending.promise);
+      cast<jest.Mock>(options.refreshSessions).mockClear();
+      cast<jest.Mock>(options.refreshModels).mockClear();
+      await act(async () => {
+        appStateListeners()[0]!("background");
+        appStateListeners()[0]!("active");
+        await drain();
+      });
+      expect(client().recoverNow).toHaveBeenCalledWith("foreground");
+      // The app is backgrounded again before the probe answers.
+      cast<{ currentState: string }>(AppState).currentState = "background";
+      pending.resolve();
+      await flush();
+      // Recalling state now would race the suspension that is about to close
+      // the socket.
+      expect(options.refreshSessions).not.toHaveBeenCalled();
+      expect(options.refreshModels).not.toHaveBeenCalled();
+    });
+
+    test("a credential rotation that lands while the pairing is being removed is not adopted", async () => {
+      await mountConnected();
+      const saving = deferred<void>();
+      cast<jest.Mock>(saveCredentials).mockReturnValue(saving.promise);
+      const rotating = client().callbacks.onCredentials({ ...credentials, userJwt: "rotated" });
+      await drain();
+      await act(async () => { await result.current.unpair(); await drain(); });
+      saving.resolve();
+      await act(async () => { await rotating; await drain(); });
+      // The rotated token was written before the unpair, but the client it
+      // belongs to is gone: re-adopting it would restore a deleted pairing.
+      expect(options.credentialsRef.current).toBeNull();
+      expect(result.current.credentials).toBeNull();
+      expect(result.current.phase).toBe("unpaired");
+    });
+
+    test("a superseded pairing claim whose answer never comes is not reported", async () => {
+      render();
+      await flush();
+      const claim = deferred<RemoteCredentials>();
+      cast<jest.Mock>(claimPairingCode).mockReturnValueOnce(claim.promise);
+      let first: Promise<void> | undefined;
+      await act(async () => {
+        first = result.current.pair("111111").catch(() => undefined);
+        await drain();
+      });
+      cast<jest.Mock>(claimPairingCode).mockResolvedValueOnce(credentials);
+      await act(async () => { await result.current.pair("222222"); await drain(); });
+      expect(result.current.phase).toBe("ready");
+      // The abandoned code finally fails. It must not surface as the error of
+      // the pairing the user is now connected to.
+      claim.reject(new Error("invalid_pairing_code"));
+      await act(async () => { await first; await drain(); });
+      expect(result.current.error).toBeNull();
+      expect(result.current.phase).toBe("ready");
+    });
+
+    test("a failed network snapshot that lands after the screen closed is not logged", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        await mountConnected();
+        warn.mockClear();
+        const probe = deferred<unknown>();
+        cast<jest.Mock>(Network.getNetworkStateAsync).mockReturnValue(probe.promise);
+        await act(async () => {
+          appStateListeners()[0]!("background");
+          appStateListeners()[0]!("active");
+          await drain();
+        });
+        await act(async () => { renderer!.unmount(); renderer = null; await drain(); });
+        // The radio query fails after the screen is gone; the failure of a
+        // refresh nobody is waiting for is not worth a support log line.
+        probe.reject(new Error("network_probe_timeout"));
+        await flush();
+        expect(warn).not.toHaveBeenCalled();
+      } finally { warn.mockRestore(); }
+    });
+
+    test("a successful network snapshot that lands after the screen closed recovers nothing", async () => {
+      await mountConnected();
+      const probe = deferred<unknown>();
+      cast<jest.Mock>(Network.getNetworkStateAsync).mockReturnValue(probe.promise);
+      await act(async () => {
+        appStateListeners()[0]!("background");
+        appStateListeners()[0]!("active");
+        await drain();
+      });
+      cast<jest.Mock>(options.refreshSessions).mockClear();
+      cast<jest.Mock>(options.refreshModels).mockClear();
+      await act(async () => { renderer!.unmount(); renderer = null; await drain(); });
+      // The radio answers after the screen is gone: a snapshot that arrived for
+      // a dead effect must not restart history or catalogue work.
+      probe.resolve(wifiState);
+      await flush();
+      expect(options.refreshSessions).not.toHaveBeenCalled();
+      expect(options.refreshModels).not.toHaveBeenCalled();
+      expect(consoleError).not.toHaveBeenCalled();
+    });
+
+    test("a desktop switch superseded by a second switch never connects the first", async () => {
+      render();
+      await flush();
+      const stored = deferred<RemoteCredentials | null>();
+      cast<jest.Mock>(loadCredentials).mockReturnValueOnce(stored.promise);
+      let first: Promise<void> | undefined;
+      await act(async () => {
+        first = result.current.switchDesktop("desktop-1").catch(() => undefined);
+        await drain();
+      });
+      cast<jest.Mock>(loadCredentials).mockResolvedValueOnce(credentials);
+      await act(async () => { await result.current.switchDesktop("desktop-2"); await drain(); });
+      expect(client()).not.toBeNull();
+      const current = client();
+      stored.resolve(credentials);
+      await act(async () => { await first; await drain(); });
+      // The first switch must not replace the connection the second one built.
+      expect(client()).toBe(current);
+    });
+
+    test("switching to a desktop with no stored credentials fails loudly", async () => {
+      render();
+      await flush();
+      cast<jest.Mock>(loadCredentials).mockResolvedValueOnce(null);
+      await expect(result.current.switchDesktop("gone")).rejects.toThrow("desktop_not_paired");
+    });
+
+    test("a pairing claim superseded by a second attempt never connects the first", async () => {
+      render();
+      await flush();
+      const claim = deferred<RemoteCredentials>();
+      cast<jest.Mock>(claimPairingCode).mockReturnValueOnce(claim.promise);
+      let first: Promise<void> | undefined;
+      await act(async () => {
+        first = result.current.pair("111111").catch(() => undefined);
+        await drain();
+      });
+      cast<jest.Mock>(claimPairingCode).mockResolvedValueOnce(credentials);
+      await act(async () => { await result.current.pair("222222"); await drain(); });
+      const current = client();
+      expect(current).not.toBeNull();
+      claim.resolve(credentials);
+      await act(async () => { await first; await drain(); });
+      // Only the code the user actually submitted last may open a connection.
+      expect(client()).toBe(current);
+    });
+
+    test("unpair survives a desktop that never answers the unpair command", async () => {
+      await mountConnected();
+      const answered = client();
+      answered.request.mockRejectedValue(new Error("offline"));
+      await act(async () => { await result.current.unpair(); await drain(); });
+      // A best-effort notification must not leave the local pairing stuck: the
+      // rejection is swallowed and the local teardown still completes.
+      expect(result.current.phase).toBe("unpaired");
+      expect(answered.close).toHaveBeenCalledWith("Unpair");
+      expect(clearCredentials).toHaveBeenCalledWith("pair");
+    });
+
+    test("removing the active desktop unpairs it", async () => {
+      await mountConnected();
+      await act(async () => { await result.current.removeDesktop("desktop"); await drain(); });
+      expect(result.current.phase).toBe("unpaired");
+      expect(clearCredentials).toHaveBeenCalledWith("pair");
+    });
+
+    test("removing a desktop that is not paired locally changes nothing", async () => {
+      await mountConnected();
+      cast<jest.Mock>(loadCredentials).mockResolvedValueOnce(null);
+      const listed = result.current.desktops;
+      await act(async () => { await result.current.removeDesktop("desktop-9"); await drain(); });
+      expect(clearCredentials).not.toHaveBeenCalled();
+      expect(savePendingRevoke).not.toHaveBeenCalled();
+      expect(result.current.desktops).toBe(listed);
     });
   });
 });

@@ -1,4 +1,5 @@
 use super::*;
+use crate::compaction::is_protected;
 
 struct CancelledSummary(Option<std::sync::Arc<AtomicBool>>);
 
@@ -134,6 +135,76 @@ fn rows(text: &str) -> Vec<serde_json::Value> {
     text.lines()
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect()
+}
+
+fn checkpoint(entry_id: &str, cutoff: &str, protected: &[&str]) -> ContextCheckpoint {
+    ContextCheckpoint {
+        entry_id: entry_id.into(),
+        checkpoint_id: format!("cp_{entry_id}"),
+        covered_from_entry_id: Some("u0".into()),
+        cutoff_entry_id: Some(cutoff.into()),
+        summary: vec![ContentBlock::text("earlier handoff")],
+        protected_entry_ids: protected.iter().map(|id| id.to_string()).collect(),
+        tokens_before: 400,
+        tokens_after: 200,
+        trigger: CompactionTrigger::Manual,
+        phase: Some(CompactionPhase::Standalone),
+        algorithm_version: ALGORITHM_DETERMINISTIC.into(),
+        summary_outcome: None,
+        model: "m".into(),
+        context_window: 8000,
+        created_at: chrono::Utc::now(),
+    }
+}
+
+/// The continuation of a session that was compacted once already: the raw
+/// transcript still holds all six messages, and the checkpoint that covered the
+/// first three lived in its own journal entry (which `raw` does not contain).
+fn compacted_once_history() -> Vec<AgentMessage> {
+    vec![
+        message(
+            "u0",
+            "user",
+            vec![ContentBlock::text("keep this requirement ".repeat(60))],
+        ),
+        message("a0", "assistant", vec![call("x", "config.json")]),
+        message("t0", "tool", vec![result("x", "cap=128MiB", false)]),
+        message("u1", "user", vec![ContentBlock::text("continue")]),
+        message("a1", "assistant", vec![call("y", "notes.md")]),
+        message("t1", "tool", vec![result("y", "done", false)]),
+    ]
+}
+
+/// The fork remap rewrites only the generated index. Every other block — a
+/// reasoning trace, an image, a tool result — must come back byte-identical, or
+/// a fork would silently alter the historical record it is supposed to preserve.
+#[test]
+fn fork_remap_skips_blocks_that_carry_no_generated_index() {
+    let ids = HashMap::from([("old".to_string(), "new".to_string())]);
+    let reasoning = ContentBlock::reasoning("THINKING", Default::default());
+    let image = ContentBlock::image("https://example.com/x.png");
+    let index = serde_json::json!({"entryId":"old","head":"old","tail":"old","target":"old"});
+    let mut blocks = vec![
+        reasoning.clone(),
+        ContentBlock::text(format!("{HEADER}\nCoverage cutoff: \"old\"\n{index}")),
+        image.clone(),
+    ];
+    remap_evidence_references(&mut blocks, &ids).unwrap();
+    for (block, expected) in [(&blocks[0], &reasoning), (&blocks[2], &image)] {
+        assert_eq!(
+            serde_json::to_value(block).unwrap(),
+            serde_json::to_value(expected).unwrap(),
+            "a non-text block must circulate unchanged"
+        );
+    }
+    let ContentBlock::Text { text } = &blocks[1] else {
+        panic!("the index block is still text")
+    };
+    assert!(text.contains("\"entryId\":\"new\""), "{text}");
+    assert!(
+        text.contains("\"head\":\"old\""),
+        "excerpt references are historical text and must not be rebound: {text}"
+    );
 }
 
 #[test]
@@ -810,4 +881,433 @@ async fn evidence_header_states_whether_a_summary_actually_accompanied_it() {
         "{text}"
     );
     assert!(!text.contains(HANDOFF_SUMMARY_HEADER));
+}
+
+/// The index is built from provider-supplied text, so every bound is applied in
+/// *characters*, never bytes: `&text[..n]` on CJK would panic or split a
+/// character. Both the field clamp and the head/tail excerpt have to keep the
+/// text valid and report honestly whether they elided anything.
+#[test]
+fn cjk_fields_and_excerpts_are_truncated_on_character_boundaries() {
+    let long = "汉".repeat(10);
+    let clamped = field(&long, 4);
+    assert_eq!(clamped, "汉汉汉汉… [metadata truncated]");
+    assert_eq!(
+        clamped.chars().filter(|c| *c == '汉').count(),
+        4,
+        "the limit counts characters, not UTF-8 bytes"
+    );
+    // Exactly at the limit nothing is dropped and no marker is added.
+    assert_eq!(field(&"汉".repeat(4), 4), "汉汉汉汉");
+    assert_eq!(field("", 4), "");
+    // A multi-byte string that fits must come back byte-identical.
+    assert_eq!(field("配置 📦", 8), "配置 📦");
+
+    let (head, tail, omitted) = excerpt(&"汉".repeat(20), 3, 2);
+    assert_eq!(
+        (head.as_str(), tail.as_str(), omitted),
+        ("汉汉汉", "汉汉", true)
+    );
+    // A text within head+tail is returned whole, with nothing claimed as omitted.
+    let (head, tail, omitted) = excerpt("汉汉汉", 3, 2);
+    assert_eq!(
+        (head.as_str(), tail.as_str(), omitted),
+        ("汉汉汉", "", false)
+    );
+}
+
+/// Two ways the deterministic index has to refuse instead of degrading quietly:
+/// a cancelled run must stop immediately (its caller is about to be reclaimed),
+/// and instructions that cannot fit the fixed budget must be reported so the
+/// caller can shorten them rather than have them silently dropped.
+#[test]
+fn a_cancelled_or_over_budget_index_build_is_refused() {
+    let raw = vec![
+        message("u", "user", vec![ContentBlock::text("keep my requirement")]),
+        message("a", "assistant", vec![call("x", "config.json")]),
+        message("t", "tool", vec![result("x", "cap=128MiB", false)]),
+    ];
+
+    let cancelled = AtomicBool::new(true);
+    assert!(matches!(
+        build(&raw, "t", None, 1000, &cancelled),
+        Err(ContextError::Cancelled)
+    ));
+
+    let running = AtomicBool::new(false);
+    // The note alone costs ~600 tokens; a budget of 10 cannot hold it.
+    let long_note = "汉".repeat(400);
+    assert!(matches!(
+        build(&raw, "t", Some(&long_note), 10, &running),
+        Err(ContextError::BudgetExceeded(_))
+    ));
+    // A cutoff entry that is not in the transcript is not a boundary.
+    assert!(matches!(
+        build(&raw, "missing-entry", None, 1000, &running),
+        Err(ContextError::NoValidBoundary)
+    ));
+    // The same input with a workable budget builds a usable index.
+    let index = build(&raw, "t", None, 1000, &running).unwrap();
+    assert!(index.starts_with("Coverage cutoff: \"t\""));
+    assert!(rows(&index)
+        .iter()
+        .any(|row| row["target"] == "config.json"));
+}
+
+/// Runs the summarised preparation for one scripted provider.
+async fn prepare_with_provider(
+    provider: &dyn crate::types::LLMProvider,
+    raw: &[AgentMessage],
+) -> ContextPreparation {
+    let manager = ContextManager {
+        enabled: true,
+        reserve_tokens: 1600,
+        keep_recent_tokens: 1000,
+        context_window: 128_000,
+        model: "m".into(),
+    };
+    manager
+        .prepare_evidence_with_summary(
+            crate::compaction::project_prompt_context(raw, None, None, 128_000),
+            raw,
+            CompactionTrigger::Manual,
+            CompactionPhase::Standalone,
+            None,
+            &AtomicBool::new(false),
+            None,
+            Some(provider),
+            None,
+            &[],
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+}
+
+fn summarisable_history() -> Vec<AgentMessage> {
+    vec![
+        message(
+            "u",
+            "user",
+            vec![ContentBlock::text("keep this requirement")],
+        ),
+        message("a", "assistant", vec![call("x", "config.json")]),
+        message("t", "tool", vec![result("x", "cap=128MiB", false)]),
+    ]
+}
+
+/// A rate-limited summary request is a *transient* failure: the compaction must
+/// retry it and adopt the retry's summary rather than silently degrading to a
+/// deterministic checkpoint on the first 429 — a degraded checkpoint is a much
+/// worse outcome than one extra request.
+struct RateLimitedThenOkSummary {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LLMProvider for RateLimitedThenOkSummary {
+    async fn stream_model(
+        &self,
+        _: crate::llm::schema::ModelRequest,
+    ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>>
+    {
+        use crate::llm::schema::{FinishReason, ModelStreamEvent};
+        if self
+            .calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            == 0
+        {
+            anyhow::bail!("status 429 too many requests");
+        }
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        let _ = tx
+            .send(ModelStreamEvent::TextDelta {
+                id: "s".into(),
+                text: "## Objective\n- recovered on retry".into(),
+            })
+            .await;
+        let _ = tx
+            .send(ModelStreamEvent::Finish {
+                reason: FinishReason::Stop,
+                usage: None,
+            })
+            .await;
+        Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+    }
+}
+
+#[tokio::test]
+async fn a_rate_limited_summary_is_retried_and_then_adopted() {
+    let provider = RateLimitedThenOkSummary {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let ContextPreparation::Compacted { checkpoint, .. } =
+        prepare_with_provider(&provider, &summarisable_history()).await
+    else {
+        panic!("checkpoint expected")
+    };
+
+    assert_eq!(
+        provider.calls.load(std::sync::atomic::Ordering::Relaxed),
+        2,
+        "the 429 must be retried exactly once"
+    );
+    assert_eq!(checkpoint.algorithm_version, ALGORITHM_SUMMARIZED);
+    assert!(summary_text(&checkpoint).contains("recovered on retry"));
+}
+
+/// A summary that comes back with no text is not a summary. Accepting it would
+/// replace the compacted middle with an empty handoff, so the deterministic index
+/// must win instead and the header must say so.
+struct EmptySummary;
+
+#[async_trait::async_trait]
+impl LLMProvider for EmptySummary {
+    async fn stream_model(
+        &self,
+        _: crate::llm::schema::ModelRequest,
+    ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>>
+    {
+        use crate::llm::schema::{FinishReason, ModelStreamEvent};
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        let _ = tx
+            .send(ModelStreamEvent::TextDelta {
+                id: "s".into(),
+                text: String::new(),
+            })
+            .await;
+        let _ = tx
+            .send(ModelStreamEvent::Finish {
+                reason: FinishReason::Stop,
+                usage: None,
+            })
+            .await;
+        Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+    }
+}
+
+#[tokio::test]
+async fn an_empty_summary_is_rejected_in_favour_of_the_deterministic_index() {
+    let ContextPreparation::Compacted { checkpoint, .. } =
+        prepare_with_provider(&EmptySummary, &summarisable_history()).await
+    else {
+        panic!("checkpoint expected")
+    };
+
+    assert_eq!(checkpoint.algorithm_version, ALGORITHM_DETERMINISTIC);
+    let text = summary_text(&checkpoint);
+    assert!(
+        text.starts_with("Deterministic tool-evidence index; no model summary was generated."),
+        "{text}"
+    );
+    assert!(!text.contains(HANDOFF_SUMMARY_HEADER));
+    // The empty response is refused by the summary request loop, not after it:
+    // pinning the reason keeps that guard's existence visible. (`write_handoff_summary`
+    // also rejects an empty text, but `call_summary_request` can only return
+    // `Ok` for a complete, non-empty answer, so that arm is unreachable — see the
+    // module record. If this reason ever changes, revisit that claim.)
+    assert_eq!(
+        checkpoint
+            .summary_outcome
+            .as_ref()
+            .and_then(|outcome| outcome.fallback_reason.as_deref()),
+        Some("summary stream ended before a complete response")
+    );
+}
+
+struct CountingProvider {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl LLMProvider for CountingProvider {
+    async fn stream_model(
+        &self,
+        _: crate::llm::schema::ModelRequest,
+    ) -> anyhow::Result<tokio_stream::wrappers::ReceiverStream<crate::llm::schema::ModelStreamEvent>>
+    {
+        use crate::llm::schema::{FinishReason, ModelStreamEvent};
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        let _ = tx
+            .send(ModelStreamEvent::TextDelta {
+                id: "s".into(),
+                text: "## Objective\n- never used".into(),
+            })
+            .await;
+        let _ = tx
+            .send(ModelStreamEvent::Finish {
+                reason: FinishReason::Stop,
+                usage: None,
+            })
+            .await;
+        Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+    }
+}
+
+/// A window smaller than 16 tokens yields `window / 16 == 0`, so the summary
+/// slot gets no reserve at all — and the very same window cannot hold the fixed
+/// `required` budget (evidence slot + 64-token framing) either, so the planner
+/// refuses before a summary is ever considered. The observable consequence is
+/// that no model call is made: a provider handed such a session must not be
+/// called at all, and the failure must be a budget failure rather than a
+/// silently degraded checkpoint.
+#[tokio::test]
+async fn a_window_without_a_summary_slot_fails_before_calling_the_model() {
+    let raw = summarisable_history();
+    for window in 1..16_i32 {
+        let provider = CountingProvider {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let manager = ContextManager {
+            enabled: true,
+            reserve_tokens: 0,
+            keep_recent_tokens: 1,
+            context_window: window,
+            model: "m".into(),
+        };
+        let result = manager
+            .prepare_evidence_with_summary(
+                crate::compaction::project_prompt_context(&raw, None, None, window as u64),
+                &raw,
+                CompactionTrigger::Manual,
+                CompactionPhase::Standalone,
+                None,
+                &AtomicBool::new(false),
+                None,
+                Some(&provider),
+                None,
+                &[],
+                None,
+                None,
+            )
+            .await;
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "window {window}: a session with no summary slot must not pay for a model call"
+        );
+        assert!(
+            matches!(result, Err(ContextError::BudgetExceeded(_))),
+            "window {window}: {result:?}"
+        );
+    }
+}
+
+/// `fit_messages` is handed a window too small for the history it is asked to
+/// fit. The head (the protected originals) is the whole history, so the tail loop
+/// must stop instead of splicing the same messages in twice: a provider rejects a
+/// request that repeats a turn, and the summary would be computed from a history
+/// that never happened.
+#[test]
+fn fit_messages_sends_the_head_once_when_the_window_cannot_hold_the_history() {
+    let manager = ContextManager {
+        enabled: true,
+        reserve_tokens: 1,
+        keep_recent_tokens: 1,
+        context_window: 16,
+        model: "m".into(),
+    };
+    let history = vec![
+        message("u0", "user", vec![ContentBlock::text("中".repeat(60))]),
+        message("a0", "assistant", vec![ContentBlock::text("中".repeat(60))]),
+    ];
+    let fitted = fit_messages(history, &manager, 2);
+    assert_eq!(
+        fitted
+            .iter()
+            .map(|m| m.journal_entry_id().unwrap())
+            .collect::<Vec<_>>(),
+        ["u0", "a0"],
+        "the head is sent exactly once"
+    );
+}
+
+/// The invariant that makes `stage`'s "the cached cutoff is not in the raw view"
+/// branch unreachable: `project_prompt_context` places the internal checkpoint
+/// message immediately after the protected originals, and every entry before it
+/// carries the anchor flag. A cut that leaves the checkpoint as the last removed
+/// entry therefore removes anchors only — and `has_compactable_content` rejects
+/// that as `Unchanged` before the cutoff is ever re-anchored. If a future change
+/// lets a non-anchor entry sit before the checkpoint, this test fails and the
+/// `unreachable-by-construction` claim in the module record must be revisited.
+#[test]
+fn a_projection_places_the_checkpoint_after_anchors_only() {
+    let raw = compacted_once_history();
+    for protected in [vec!["u0"], vec!["u0", "a0"], vec!["a0"], vec![]] {
+        let projected = crate::compaction::project_prompt_context(
+            &raw,
+            Some(&checkpoint("cp-entry", "t0", &protected)),
+            None,
+            8000,
+        );
+        let index = projected
+            .messages
+            .iter()
+            .position(|item| internal_summary(&item.message).is_some())
+            .expect("the checkpoint is projected");
+        for item in &projected.messages[..index] {
+            assert!(
+                is_protected(&item.message),
+                "every entry before the checkpoint is an anchor: {item:?}"
+            );
+        }
+        assert!(
+            projected.messages[index + 1..]
+                .iter()
+                .all(|item| internal_summary(&item.message).is_none()
+                    && !is_protected(&item.message)),
+            "the checkpoint is the last projected entry that is not plain history"
+        );
+    }
+}
+
+/// The same restore, with the covered range starting at the checkpoint itself:
+/// the first removed entry's only source id is the checkpoint's, which the raw
+/// transcript does not contain. Coverage must then be reported from the first raw
+/// entry that does exist, instead of from an id nothing can resolve.
+#[test]
+fn a_restored_checkpoint_reports_coverage_from_a_raw_entry() {
+    let raw = compacted_once_history();
+    let manager = ContextManager {
+        enabled: true,
+        reserve_tokens: 1600,
+        keep_recent_tokens: 150,
+        context_window: 8000,
+        model: "m".into(),
+    };
+    let projected = crate::compaction::project_prompt_context(
+        &raw,
+        Some(&checkpoint("cp-entry", "t0", &[])),
+        None,
+        8000,
+    );
+    assert_eq!(projected.messages.len(), 4, "checkpoint summary + the tail");
+    let ContextPreparation::Compacted {
+        checkpoint: committed,
+        ..
+    } = prepare(
+        &manager,
+        projected,
+        &raw,
+        CompactionTrigger::Manual,
+        CompactionPhase::Standalone,
+        None,
+        &AtomicBool::new(false),
+        None,
+    )
+    .unwrap()
+    else {
+        panic!("checkpoint expected")
+    };
+    assert_eq!(
+        committed.covered_from_entry_id.as_deref(),
+        Some("u0"),
+        "coverage starts at the first raw entry, not at the checkpoint entry the raw view omits"
+    );
+    // The user message inside the compacted range is retained verbatim; the
+    // assistant tool call and the tool result are not text originals.
+    assert_eq!(committed.protected_entry_ids, vec!["u1"]);
 }

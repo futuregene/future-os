@@ -62,6 +62,41 @@ export default defineConfig({
   },
   test: {
     setupFiles: ["./src/test/i18nTestSetup.ts"],
+    // Cap the worker pool below the machine's core count. Vitest's default is
+    // `cpus - 1`, which assumes the whole box belongs to this suite; on a shared
+    // machine (a developer's laptop also running a Rust build, or CI running
+    // several jobs) it oversubscribes and a worker can fail to COLLECT its file
+    // at all — observed here as
+    //   "Error: No test suite found in file .../SettingsDialog.test.tsx"
+    // with the other 244 files green and 3152 tests passing, i.e. one file's
+    // tests never registered. It reproduced only under load (≈1 run in 4 while
+    // two other Node workers were busy; 6/6 green when that file ran alone) and
+    // the failing run was the slowest of the four, so the mechanism is
+    // contention rather than anything the file does. Halving the pool removes
+    // the oversubscription instead of papering over it. Same shape as the
+    // `maxWorkers: "50%"` cap in mobile/jest.config.js, which fixed the same
+    // class of failure there.
+    maxWorkers: "50%",
+    coverage: {
+      // Vitest 4 dropped `coverage.all`; `include` is now the way to pull in
+      // files no test imported, so the summary reports the whole `src/` tree
+      // instead of only the modules a test happened to touch.
+      //
+      // The sibling `packages/*` sources are NOT listable here: a `**` include
+      // glob cannot ascend out of the project root (verified empirically —
+      // adding `../packages/*/src/**` yields zero packages entries). Those
+      // packages have their own runner at packages/markdown/vitest.config.ts,
+      // which writes desktop/coverage/d-pkgs/.
+      provider: "v8",
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: [
+        "src/**/*.test.{ts,tsx}",
+        "src/test/**",
+        "src/**/*.d.ts",
+      ],
+      reporter: ["text", "json-summary", "json"],
+      reportsDirectory: "./coverage",
+    },
   },
   build: {
     cssMinify: "esbuild",

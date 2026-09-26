@@ -346,49 +346,26 @@ fn session_members_via_ps(sid: i32) -> Vec<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::test_support;
     use std::path::PathBuf;
+    use std::time::Instant;
 
-    fn shell_path() -> PathBuf {
-        PathBuf::from("/bin/sh")
-    }
-
-    fn spawn_sh(script: &str) -> PtySession {
-        let args = vec!["-c".to_string(), script.to_string()];
+    fn spawn_with(command: (PathBuf, Vec<String>)) -> PtySession {
+        let (program, args) = command;
         PtySession::spawn(&SpawnRequest {
-            program: &shell_path(),
+            program: &program,
             args: &args,
             cwd: &std::env::temp_dir(),
             cols: 80,
             rows: 24,
         })
-        .expect("spawn /bin/sh")
+        .expect("spawn child")
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn spawns_a_real_pty_and_reports_exit_code() {
-        let mut session = spawn_sh("exit 7");
-        let mut reader = session.reader().expect("reader");
-        std::thread::spawn(move || {
-            let mut sink = [0_u8; 1024];
-            while matches!(reader.read(&mut sink), Ok(n) if n > 0) {}
-        });
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut code = None;
-        while Instant::now() < deadline {
-            if let Some(status) = session.try_wait() {
-                code = Some(status);
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(code, Some(7), "the real exit code must survive the PTY");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn output_is_readable_through_the_master() {
-        let session = spawn_sh("printf 'hello-pty\\n'");
+    /// Drain the master on a background thread, publishing the accumulated
+    /// bytes after every read so a test can wait for a marker instead of
+    /// sleeping for a fixed time.
+    fn drained(session: &PtySession) -> std::sync::mpsc::Receiver<Vec<u8>> {
         let mut reader = session.reader().expect("reader");
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -402,18 +379,103 @@ mod tests {
                 let _ = tx.send(buf.clone());
             }
         });
-        let deadline = Instant::now() + Duration::from_secs(5);
+        rx
+    }
+
+    /// Every byte the reader thread has published so far, or `None` while it
+    /// has published nothing (draining the channel keeps the *last* cumulative
+    /// buffer, which is the one that holds the whole output).
+    fn latest(rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> Option<Vec<u8>> {
+        let mut newest = None;
+        while let Ok(buf) = rx.try_recv() {
+            newest = Some(buf);
+        }
+        newest
+    }
+
+    /// Answer the child's cursor-position query when it asks.
+    ///
+    /// Without this the child emits `ESC [ 6 n` and waits: measured on this
+    /// host, `cmd /C echo hello` produced exactly that query and nothing else
+    /// for the whole deadline, and `cmd /C exit 7` stayed alive. The end-to-end
+    /// test in `server.rs` answers the same query.
+    fn answer_dsr(session: &mut PtySession, seen: &[u8]) -> bool {
+        if !test_support::asks_for_the_cursor(seen) {
+            return false;
+        }
+        session
+            .write(test_support::DSR_REPLY)
+            .expect("answer the child's cursor-position query");
+        true
+    }
+
+    /// Wait for `needle` in the child's output, answering the cursor query as
+    /// it arrives.
+    fn wait_for(
+        session: &mut PtySession,
+        rx: &std::sync::mpsc::Receiver<Vec<u8>>,
+        needle: &str,
+    ) -> String {
+        let deadline = Instant::now() + Duration::from_secs(20);
         let mut text = String::new();
+        let mut answered = false;
         while Instant::now() < deadline {
-            if let Ok(buf) = rx.try_recv() {
+            if let Some(buf) = latest(rx) {
+                if !answered {
+                    answered = answer_dsr(session, &buf);
+                }
                 text = String::from_utf8_lossy(&buf).into_owned();
-                if text.contains("hello-pty") {
-                    break;
+                if text.contains(needle) {
+                    return text;
                 }
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(text.contains("hello-pty"), "pty output: {text:?}");
+        text
+    }
+
+    /// Reap the child, answering its cursor query first (it will not reach its
+    /// command's exit without the answer).
+    fn wait_for_exit(
+        session: &mut PtySession,
+        rx: &std::sync::mpsc::Receiver<Vec<u8>>,
+    ) -> Option<i32> {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut answered = false;
+        while Instant::now() < deadline {
+            if !answered {
+                if let Some(buf) = latest(rx) {
+                    answered = answer_dsr(session, &buf);
+                }
+            }
+            if let Some(status) = session.try_wait() {
+                return Some(status);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
+    }
+
+    #[test]
+    fn spawns_a_real_pty_and_reports_the_exit_code() {
+        let mut session = spawn_with(test_support::exit_command(7));
+        let rx = drained(&session);
+        assert_eq!(
+            wait_for_exit(&mut session, &rx),
+            Some(7),
+            "the real exit code must survive the PTY"
+        );
+    }
+
+    #[test]
+    fn output_is_readable_through_the_master() {
+        let mut session = spawn_with(test_support::echo_command("hello-pty"));
+        let rx = drained(&session);
+        let text = wait_for(&mut session, &rx, "hello-pty");
+        assert!(
+            test_support::visible_text(text.as_bytes()).contains("hello-pty"),
+            "pty output: {text:?}"
+        );
     }
 
     /// FINDING-2 regression: a job-control background job lives in its own
@@ -423,12 +485,10 @@ mod tests {
     fn teardown_reaches_background_jobs() {
         // `setsid`-like behaviour comes from the PTY; `sleep 60 &` is a
         // background job in its own process group.
-        let mut session = spawn_sh("sleep 60 & echo started; wait");
-        let mut reader = session.reader().expect("reader");
-        std::thread::spawn(move || {
-            let mut sink = [0_u8; 1024];
-            while matches!(reader.read(&mut sink), Ok(n) if n > 0) {}
-        });
+        let mut session = spawn_with(test_support::script_command(
+            "sleep 60 & echo started; wait",
+        ));
+        let _rx = drained(&session);
         let pid = session.pid().expect("pid");
         // Give the shell a moment to fork the background job.
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -452,37 +512,115 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    /// A written line must be *executed* by the child, not merely accepted by
+    /// the PTY: `exit 5` proves the bytes reached the shell's input.
+    /// WINDOWS-ONLY. The child's cursor query is the Windows interactive-shell fixture's handshake
+    /// (`test_support::interactive_command()`); a unix shell in a PTY does not emit one, so the
+    /// "must ask for the cursor" premise cannot hold there. Windows-only.
+    #[cfg(windows)]
     #[test]
     fn writing_to_the_pty_reaches_the_shell() {
-        // `cat` echoes stdin back; write a marker and read it.
-        let mut session = spawn_sh("cat");
-        let mut reader = session.reader().expect("reader");
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let mut chunk = [0_u8; 256];
-            while let Ok(n) = reader.read(&mut chunk) {
-                if n == 0 {
-                    break;
-                }
-                buf.extend_from_slice(&chunk[..n]);
-                let _ = tx.send(buf.clone());
-            }
-        });
-        session.write(b"marker-42\n").expect("write");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut text = String::new();
-        while Instant::now() < deadline {
-            if let Ok(buf) = rx.try_recv() {
-                text = String::from_utf8_lossy(&buf).into_owned();
-                if text.contains("marker-42") {
-                    break;
-                }
+        let mut session = spawn_with(test_support::interactive_command());
+        let rx = drained(&session);
+        // The interactive shell asks where the cursor is before it will read a
+        // line, so the reply has to go out before the line itself.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut answered = false;
+        while !answered && Instant::now() < deadline {
+            if let Some(buf) = latest(&rx) {
+                answered = answer_dsr(&mut session, &buf);
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+        assert!(answered, "the interactive shell must ask for the cursor");
+        let line: &[u8] = if cfg!(windows) {
+            b"exit 5\r\n"
+        } else {
+            b"exit 5\n"
+        };
+        session.write(line).expect("write");
+        assert_eq!(
+            wait_for_exit(&mut session, &rx),
+            Some(5),
+            "the shell must have run the line it was given"
+        );
+    }
+
+    /// `pid` and `resize` work on a live session; `kill_tree` then tears the
+    /// child down without hanging (each wait is bounded).
+    #[test]
+    fn pid_resize_and_teardown_work_on_a_live_session() {
+        let mut session = spawn_with(test_support::idle_command());
+        let _rx = drained(&session);
+        let pid = session.pid().expect("a spawned child has a pid");
+        assert!(pid > 0);
+        session.resize(132, 43).expect("resize a live pty");
+        // A zero-sized window is rejected by the platform rather than
+        // corrupting the session; either way the session stays usable.
+        let _ = session.resize(1, 1);
+        session.kill_tree(Duration::from_millis(500));
+        assert!(
+            wait_for_exit(&mut session, &_rx).is_some(),
+            "teardown must leave a reaped child"
+        );
+    }
+
+    /// `kill_tree` after the child was already reaped must not hang or panic:
+    /// every wait in the teardown path is bounded and reaping an already-reaped
+    /// child is a no-op on both platforms.
+    #[test]
+    fn teardown_of_an_exited_child_is_harmless() {
+        let mut session = spawn_with(test_support::exit_command(0));
+        let rx = drained(&session);
+        assert_eq!(wait_for_exit(&mut session, &rx), Some(0));
         session.kill_tree(Duration::from_millis(200));
-        assert!(text.contains("marker-42"), "echoed output: {text:?}");
+    }
+
+    /// The child environment carries the terminal identity and none of the
+    /// desktop's own plumbing variables.
+    #[test]
+    fn the_child_environment_is_scrubbed_and_tagged() {
+        let mut command = CommandBuilder::new("echo");
+        // Plant a sentinel for every denied key first: the assertion below has
+        // to prove the removal happened, not that the variable was simply
+        // absent from this process.
+        for key in ENV_DENYLIST {
+            command.env(key, "sentinel");
+        }
+        apply_environment(&mut command).expect("environment");
+
+        for key in ENV_DENYLIST {
+            assert!(
+                command.get_env(key).is_none(),
+                "{key} must not leak into the child"
+            );
+        }
+        assert_eq!(
+            command.get_env("TERM"),
+            Some(std::ffi::OsStr::new("xterm-256color"))
+        );
+        assert_eq!(
+            command.get_env("COLORTERM"),
+            Some(std::ffi::OsStr::new("truecolor"))
+        );
+        assert_eq!(
+            command.get_env("TERM_PROGRAM"),
+            Some(std::ffi::OsStr::new("FutureOS"))
+        );
+        assert_eq!(
+            command.get_env("TERM_PROGRAM_VERSION"),
+            Some(std::ffi::OsStr::new(env!("CARGO_PKG_VERSION")))
+        );
+        assert_eq!(
+            command.get_env("FUTURE_TERMINAL"),
+            Some(std::ffi::OsStr::new("1"))
+        );
+        if cfg!(windows) {
+            // ConPTY does not imply a UTF-8 code page; these keep CJK output
+            // from being mangled.
+            for key in ["LC_ALL", "LC_CTYPE", "LANG"] {
+                assert_eq!(command.get_env(key), Some(std::ffi::OsStr::new("C.UTF-8")));
+            }
+        }
     }
 }

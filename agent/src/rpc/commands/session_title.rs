@@ -469,4 +469,180 @@ mod tests {
                 .is_err());
         }
     }
+
+    #[tokio::test]
+    async fn suggestion_rejects_oversized_tool_calling_and_contentless_answers() {
+        // A stream that never stops producing text must not become a title.
+        let provider = Provider {
+            request: Mutex::new(None),
+            events: Mutex::new(vec![
+                ModelStreamEvent::TextDelta {
+                    id: "1".into(),
+                    text: "长".repeat(3000),
+                },
+                ModelStreamEvent::TextDelta {
+                    id: "1".into(),
+                    text: "长".repeat(3000),
+                },
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::Stop,
+                    usage: None,
+                },
+            ]),
+        };
+        let error = suggest(&provider, "m", "pairs".into(), "English")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("too long"), "{error}");
+
+        // Quotes and whitespace only: the model answered, but not with a name.
+        let provider = Provider {
+            request: Mutex::new(None),
+            events: Mutex::new(vec![
+                ModelStreamEvent::TextDelta {
+                    id: "1".into(),
+                    text: "  \"\"  ".into(),
+                },
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::Stop,
+                    usage: None,
+                },
+            ]),
+        };
+        let error = suggest(&provider, "m", "pairs".into(), "English")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("empty title"), "{error}");
+
+        // A tool call is never an acceptable title response.
+        let provider = Provider {
+            request: Mutex::new(None),
+            events: Mutex::new(vec![ModelStreamEvent::ToolInputStart {
+                index: 0,
+                id: "call-1".into(),
+                name: "shell".into(),
+                arguments: None,
+                provider_metadata: Default::default(),
+            }]),
+        };
+        let error = suggest(&provider, "m", "pairs".into(), "English")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("must not call tools"), "{error}");
+
+        // Reasoning-only output ends without a title rather than echoing the
+        // reasoning as one.
+        let provider = Provider {
+            request: Mutex::new(None),
+            events: Mutex::new(vec![ModelStreamEvent::ReasoningDelta {
+                id: "1".into(),
+                text: "thinking out loud".into(),
+            }]),
+        };
+        let error = suggest(&provider, "m", "pairs".into(), "English")
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("without a complete response"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_real_title_request_selects_the_configured_provider_and_fails_closed() {
+        // End-to-end through the handler's model-selection block: a credentialed
+        // provider (pointed at a closed local port, so no network is involved)
+        // must be resolved, the provider client built, and the request attempted
+        // on a runtime thread. The failure is the transport, not the selector —
+        // asserting that is what proves the selection block ran.
+        use super::super::{handle_command_internal, test_support};
+        use crate::rpc::commands::test_support::parse_response;
+        use crate::session::{Session, SessionEntry};
+
+        let home = crate::test_support::TestHome::new();
+        std::fs::create_dir_all(home.path().join(".future/agent")).unwrap();
+        std::fs::write(
+            home.models_path(),
+            r#"{"providers":{"demo":{"baseUrl":"http://127.0.0.1:9/v1","apiKey":"sk-test","api":"openai",
+                "models":[{"id":"model-x","name":"X","contextWindow":8000,"maxTokens":1024}]}}}"#,
+        )
+        .unwrap();
+
+        let state = test_support::make_app_state();
+        let mut session = Session::new("workspace", "demo/model-x");
+        session.entries = vec![
+            SessionEntry::session_info(
+                serde_json::json!({"model":"demo/model-x","session_name":"Untitled"}),
+                "demo/model-x".into(),
+                "low".into(),
+            ),
+            SessionEntry::new_user("user", serde_json::json!("How do I export a session?")),
+            SessionEntry::new_assistant(serde_json::json!("Use export_html."), vec![]),
+        ];
+        state.session_manager.save(&session).unwrap();
+
+        let mut command = test_support::make_cmd("generate_session_title");
+        command.session_id = session.id.clone();
+        command.mode = "en".into();
+
+        // `execute_command` dispatches on spawn_blocking: a runtime handle must
+        // be present on this thread, which spawn_blocking provides.
+        let raw = tokio::task::spawn_blocking(move || handle_command_internal(&state, command))
+            .await
+            .unwrap();
+        let response = parse_response(&raw);
+        assert_eq!(response["success"], false, "{response}");
+        let error = response["error"].as_str().unwrap();
+        assert!(
+            !error.contains("Session model is unavailable"),
+            "the configured provider must resolve: {error}"
+        );
+        assert!(
+            error.contains("127.0.0.1:9"),
+            "the failure must come from the request to the configured provider: {error}"
+        );
+    }
+
+    #[test]
+    fn title_requests_reject_an_unsupported_locale_and_content_free_sessions() {
+        use super::super::{handle_command_internal, test_support};
+        use crate::rpc::commands::test_support::parse_response;
+        use crate::session::{Session, SessionEntry};
+
+        let state = test_support::make_app_state();
+        // The generic `mode` field carries the locale; anything else is a bug
+        // in the caller, not a title request.
+        let mut command = test_support::make_cmd("generate_session_title");
+        command.mode = "fr".into();
+        let response = parse_response(&handle_command_internal(&state, command));
+        assert_eq!(response["success"], false);
+        assert!(response["error"]
+            .as_str()
+            .unwrap()
+            .contains("Unsupported title language"));
+
+        // A session with only its session_info has nothing to name — in both
+        // locales, with the message the UI shows.
+        let mut session = Session::new("workspace", "mock");
+        session.entries = vec![SessionEntry::session_info(
+            serde_json::json!({"model": "mock", "session_name": "Untitled"}),
+            "mock".into(),
+            "low".into(),
+        )];
+        state.session_manager.save(&session).unwrap();
+        for (mode, expected) in [
+            ("en", "no text to base a name on"),
+            ("zh", "暂时没有可用的文字内容"),
+        ] {
+            let mut command = test_support::make_cmd("generate_session_title");
+            command.session_id = session.id.clone();
+            command.mode = mode.into();
+            let response = parse_response(&handle_command_internal(&state, command));
+            assert_eq!(response["success"], false, "{mode}: {response}");
+            assert!(
+                response["error"].as_str().unwrap().contains(expected),
+                "{mode}: {response}"
+            );
+        }
+    }
 }

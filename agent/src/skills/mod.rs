@@ -621,6 +621,70 @@ version: "1.0.0"
         assert!(frontmatter("no frontmatter here").is_none());
     }
 
+    /// A skill file without frontmatter is still a skill: the name falls back to
+    /// the install directory (so the desktop's delete-by-name targets the right
+    /// folder) and the invocation policy is "not disabled" rather than an error.
+    #[test]
+    fn a_skill_without_frontmatter_is_named_by_its_directory_and_stays_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let entry = skill_dir.join("SKILL.md");
+        std::fs::write(&entry, "# Just a body\n\nNo frontmatter at all.\n").unwrap();
+        let skill = parse_skill(&entry).unwrap();
+        assert_eq!(skill.name, "my-skill");
+        assert!(!skill.disable_model_invocation);
+        assert!(!skill.location.contains('\\'), "{}", skill.location);
+    }
+
+    /// A block-style `metadata:` map is scanned only while it stays indented:
+    /// blank lines inside it are skipped, and the first line that dedents ends
+    /// the block — so a nested `version` is found, a top-level one is not.
+    #[test]
+    fn metadata_block_scan_skips_blanks_and_stops_at_the_first_dedent() {
+        assert_eq!(
+            extract_metadata_version("---\nmetadata:\n\n  version: 2.1\nname: x\n---\n"),
+            Some("2.1".to_string()),
+            "a blank line inside the block is skipped"
+        );
+        assert_eq!(
+            extract_metadata_version("---\nmetadata:\n\nversion: 9\n---\n"),
+            None,
+            "the scan stops at the first line that dedents out of the block"
+        );
+        // The block can also simply run out of lines: a nested note with no
+        // version at all is a miss, and the scan must finish rather than fall
+        // through into the next key.
+        assert_eq!(
+            extract_metadata_version("---\nmetadata:\n\n  note: nothing\n---\n"),
+            None,
+            "a block that ends without a nested version is a miss, not a panic"
+        );
+    }
+
+    /// A `metadata:` value that is neither empty nor JSON is a plain scalar,
+    /// and a scalar has no nested map to scan: `metadata: classic` cannot
+    /// declare a version, and an indented `version:` under it is not one. The
+    /// top-level `version` field stays authoritative next to it.
+    #[test]
+    fn a_scalar_metadata_value_is_not_scanned_for_a_nested_version() {
+        assert_eq!(
+            extract_metadata_version("---\nmetadata: classic\n  version: 9.9.9\n---\n"),
+            None,
+            "a non-empty scalar metadata value has no nested map to scan"
+        );
+        assert_eq!(
+            extract_package_version("---\nmetadata: classic\nname: x\n---\n"),
+            None,
+            "a scalar metadata value declares no version"
+        );
+        assert_eq!(
+            extract_package_version("---\nmetadata: classic\nversion: 3.4.5\n---\n"),
+            Some("3.4.5".to_string()),
+            "a top-level version beside a scalar metadata value still wins"
+        );
+    }
+
     #[test]
     fn yaml_block_scalar_style_literal() {
         assert_eq!(yaml_block_scalar_style("|  "), Some('|'));

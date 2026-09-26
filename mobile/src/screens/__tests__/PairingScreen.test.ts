@@ -5,6 +5,31 @@ import { BackHandler, Modal, ScrollView, StyleSheet, Text, TextInput, View } fro
 import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
 import { PairingScreen } from "../PairingScreen";
+import { pairingCodeFromQr } from "../../remote/codec";
+import { RemoteApiError } from "../../remote/connectionState";
+
+let mockDimensions = { width: 402, height: 874, scale: 3, fontScale: 1 };
+const mockAppStateHandlers = new Set<(state: string) => void>();
+jest.mock("react-native", () => {
+  const actual = jest.requireActual("react-native");
+  return new Proxy(actual, {
+    get: (target, key) => {
+      if (key === "useWindowDimensions") return () => mockDimensions;
+      // A real AppState only emits from the native side; the fake lets a test
+      // drive the foreground transition without spying on (and restoring) the
+      // library's own object.
+      if (key === "AppState") {
+        return {
+          addEventListener: (_type: string, callback: (state: string) => void) => {
+            mockAppStateHandlers.add(callback);
+            return { remove: () => { mockAppStateHandlers.delete(callback); } };
+          },
+        };
+      }
+      return Reflect.get(target, key);
+    },
+  });
+});
 
 let mockPermission = { granted: true, canAskAgain: true };
 const mockPair = jest.fn();
@@ -15,7 +40,7 @@ jest.mock("expo-camera", () => ({
   useCameraPermissions: () => [mockPermission, mockRequest, mockGetPermission],
 }));
 jest.mock("../../remote/RemoteContext", () => ({ useRemote: () => ({ pair: mockPair }) }));
-jest.mock("../../remote/codec", () => ({ pairingCodeFromQr: (code: string) => code }));
+jest.mock("../../remote/codec", () => ({ pairingCodeFromQr: jest.fn((code: string) => code) }));
 jest.mock("lucide-react-native", () => ({ ArrowLeft: "ArrowLeft", Clipboard: "Clipboard", ScanLine: "ScanLine" }));
 jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",
@@ -25,6 +50,7 @@ jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) =>
 jest.mock("../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
 
 let tree: ReactTestRenderer;
+const mockPairingCodeFromQr = pairingCodeFromQr as jest.MockedFunction<typeof pairingCodeFromQr>;
 const onBack = jest.fn();
 const onPaired = jest.fn();
 const button = (label: string) => tree.root.findAll(node =>
@@ -32,8 +58,10 @@ const button = (label: string) => tree.root.findAll(node =>
 )[0]!;
 beforeEach(() => {
   jest.clearAllMocks();
+  mockAppStateHandlers.clear();
   mockPermission = { granted: true, canAskAgain: true };
   mockPair.mockResolvedValue(undefined);
+  mockDimensions = { width: 402, height: 874, scale: 3, fontScale: 1 };
   act(() => { tree = create(createElement(PairingScreen, { onBack, onPaired })); });
 });
 afterEach(() => act(() => tree.unmount()));
@@ -98,7 +126,7 @@ test("a pairing failure names the action the user can take", async () => {
   expect(await pairFailing(new Error("desktop_handshake_failed: TIMEOUT"))).toContain(
     "pairing.network",
   );
-  // The desktop refused the handshake — the code is spent, used, or describes an
+  // The desktop refused the handshake 鈥?the code is spent, used, or describes an
   // identity the bridge no longer serves. Recovery is a fresh code.
   expect(
     await pairFailing(
@@ -123,4 +151,144 @@ test("permission instructions can grow instead of being clipped inside a square 
   const permissionButton = tree.root.findAllByType(Button).find(node => node.props.label === "pairing.continue")!;
   act(() => permissionButton.props.onPress());
   expect(mockRequest).toHaveBeenCalledTimes(1);
+});
+
+const shownText = () =>
+  tree.root.findAllByType(Text).map(node => node.props.children).join("|");
+const submitManual = async (value: string) => {
+  act(() => tree.root.findByType(TextInput).props.onChangeText(value));
+  await act(async () => { await tree.root.findByType(TextInput).props.onSubmitEditing(); });
+};
+
+// The desktop folds a failure into {message, code, status}; the phone owns the
+// mapping from each shape to the one action a user can take.
+test.each([
+  [new RemoteApiError("rejected", "invalid_pairing_code", 400), "pairing.invalid"],
+  [new RemoteApiError("rejected", "invalid_jwt", 401), "pairing.invalid"],
+  [new RemoteApiError("rejected", undefined, 403), "pairing.invalid"],
+  [new RemoteApiError("rejected", undefined, 429), "pairing.service"],
+  [new RemoteApiError("rejected", undefined, 503), "pairing.service"],
+  [new RemoteApiError("rejected", undefined, 400), "pairing.failed"],
+])("a structured API failure (%#) names the action the user can take", async (error, expected) => {
+  mockPair.mockRejectedValueOnce(error);
+  act(() => button("pairing.manual").props.onPress());
+  await submitManual("some-code");
+  expect(shownText()).toContain(expected);
+});
+
+test.each([
+  ["unexpected_pairing_host", "pairing.host"],
+  ["nats_ws_not_tls", "pairing.secureEndpoint"],
+  ["desktop_handshake_failed: pairing_identity_mismatch", "pairing.invalid"],
+  ["econnrefused", "pairing.network"],
+  ["HTTP 502 from the bridge", "pairing.service"],
+  // A handshake that fails for an unrecognised reason still means the two
+  // builds disagree, which is checked before the transport vocabulary.
+  ["desktop_handshake_failed: econnrefused", "pairing.verification"],
+  ["who knows", "pairing.failed"],
+  ["", "pairing.failed"],
+])("a raw transport failure (%s) names the action the user can take", async (message, expected) => {
+  mockPair.mockRejectedValueOnce(new Error(message));
+  act(() => button("pairing.manual").props.onPress());
+  await submitManual("some-code");
+  expect(shownText()).toContain(expected);
+});
+
+test("scanning a code pairs, and a second frame cannot start a parallel pairing", async () => {
+  jest.useFakeTimers();
+  try {
+    const scanned = () => tree.root.findByType(CameraView).props.onBarcodeScanned({ data: "scanned-code" });
+    await act(async () => { await scanned(); });
+    expect(mockPair).toHaveBeenCalledWith("scanned-code");
+    expect(onPaired).toHaveBeenCalledTimes(1);
+    // The camera keeps delivering frames while the request is in flight; the
+    // lock must absorb them rather than fire a second pairing.
+    await act(async () => { await scanned(); });
+    expect(mockPair).toHaveBeenCalledTimes(1);
+    act(() => { jest.advanceTimersByTime(1_300); });
+    await act(async () => { await scanned(); });
+    expect(mockPair).toHaveBeenCalledTimes(2);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("a frame the codec cannot parse is rejected without contacting the desktop", async () => {
+  mockPairingCodeFromQr.mockReturnValueOnce("");
+  await act(async () => {
+    await tree.root.findByType(CameraView).props.onBarcodeScanned({ data: "not a pairing code" });
+  });
+  expect(mockPair).not.toHaveBeenCalled();
+  expect(shownText()).toContain("pairing.invalid");
+});
+
+test("the pairing toast clears itself instead of sticking on screen", async () => {
+  jest.useFakeTimers();
+  try {
+    await act(async () => {
+      await tree.root.findByType(CameraView).props.onBarcodeScanned({ data: "" });
+    });
+    expect(shownText()).toContain("pairing.invalid");
+    act(() => { jest.advanceTimersByTime(5_000); });
+    expect(shownText()).not.toContain("pairing.invalid");
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("manual entry ignores blank input and refuses an unparseable code", async () => {
+  act(() => button("pairing.manual").props.onPress());
+  await submitManual("   ");
+  expect(mockPair).not.toHaveBeenCalled();
+  mockPairingCodeFromQr.mockReturnValueOnce("");
+  await submitManual("not-a-code");
+  expect(mockPair).not.toHaveBeenCalled();
+  expect(shownText()).toContain("pairing.invalid");
+});
+
+test("the manual dialog's own buttons submit and dismiss", async () => {
+  act(() => button("pairing.manual").props.onPress());
+  act(() => tree.root.findByType(TextInput).props.onChangeText("typed-code"));
+  await act(async () => { button("pairing.manualSubmit").props.onPress(); });
+  expect(mockPair).toHaveBeenCalledWith("typed-code");
+  expect(tree.root.findAllByType(DialogSurface)).toHaveLength(0);
+  act(() => button("pairing.manual").props.onPress());
+  act(() => button("chat.cancel").props.onPress());
+  expect(tree.root.findAllByType(DialogSurface)).toHaveLength(0);
+});
+
+test("a short screen keeps the compact manual affordance and its pressed state", () => {
+  mockDimensions = { width: 320, height: 480, scale: 2, fontScale: 1.6 };
+  act(() => tree.update(createElement(PairingScreen, { onBack, onPaired })));
+  const compact = tree.root.findAll(node =>
+    node.props.accessibilityLabel === "pairing.manual" && typeof node.props.style === "function");
+  expect(compact).toHaveLength(1);
+  const idle = StyleSheet.flatten(compact[0]!.props.style({ pressed: false }));
+  const pressed = StyleSheet.flatten(compact[0]!.props.style({ pressed: true }));
+  expect(idle.backgroundColor).toBeUndefined();
+  expect(pressed.backgroundColor).toBeDefined();
+});
+
+const emitAppState = (state: string) => {
+  act(() => { for (const handler of [...mockAppStateHandlers]) handler(state); });
+};
+
+test("returning to the foreground re-checks the camera permission", () => {
+  expect(mockAppStateHandlers.size).toBe(1);
+  mockGetPermission.mockClear();
+  emitAppState("active");
+  expect(mockGetPermission).toHaveBeenCalledTimes(1);
+  emitAppState("background");
+  expect(mockGetPermission).toHaveBeenCalledTimes(1);
+});
+
+test("a screen with no back handler registers no hardware-back listener", () => {
+  const back = jest.spyOn(BackHandler, "addEventListener")
+    .mockReturnValue({ remove: jest.fn() } as never);
+  try {
+    act(() => tree.update(createElement(PairingScreen, { onPaired })));
+    expect(back).not.toHaveBeenCalled();
+  } finally {
+    back.mockRestore();
+  }
 });

@@ -409,4 +409,41 @@ mod tests {
         // The session store's connection still serves requests afterwards.
         assert!(manager.import_records().unwrap().is_empty());
     }
+
+    /// A v3 database is adopted in place: its tables are kept, and only the
+    /// schema version moves — opening it must never drop or recreate anything.
+    #[test]
+    fn a_v3_database_is_migrated_in_place_without_losing_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.db");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(SKILLS_TABLE_SQL).unwrap();
+        connection
+            .execute_batch(&format!(
+                "PRAGMA application_id = {APPLICATION_ID};\n PRAGMA user_version = 3;"
+            ))
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO skills(name,version,deleted,installed_at_ms,updated_at_ms)
+                 VALUES('legacy','0.9.0',0,1,1)",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let migrated = open_registry(&path).unwrap();
+        let version: i64 = migrated
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+        let name: String = migrated
+            .query_row("SELECT name FROM skills", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(name, "legacy", "the upgrade must keep the existing rows");
+
+        // And a v4 database is accepted as-is on the next open.
+        drop(migrated);
+        assert!(open_registry(&path).is_ok());
+    }
 }

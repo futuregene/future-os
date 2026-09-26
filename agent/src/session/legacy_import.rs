@@ -521,3 +521,308 @@ fn parse_sources(sources: &[Source], session: &str) -> std::result::Result<Impor
     }
     Ok(result)
 }
+
+/// Every import-level failure mode that a legacy directory can present, one
+/// case per rejection kind. The legacy reader is the only path that ingests
+/// foreign bytes, so its error classification is what keeps a malformed old
+/// session from blocking a whole migration.
+#[cfg(test)]
+mod import_paths {
+    use super::*;
+
+    fn store_in(dir: &Path) -> SqliteStore {
+        SqliteStore::open(&dir.join("agent.db")).unwrap()
+    }
+
+    fn write(dir: &Path, name: &str, body: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join(name), body).unwrap();
+    }
+
+    fn entry_line(id: &str) -> String {
+        format!(
+            "{{\"id\":\"{id}\",\"type\":\"user\",\"role\":\"user\",\"content\":[{{\"type\":\"text\",\"text\":\"question\"}}],\"timestamp\":\"2026-01-01T00:00:00Z\"}}\n"
+        )
+    }
+
+    fn event_line(run: &str, session_idx: i64, idx: i64) -> String {
+        format!(
+            "{{\"event_type\":\"text_chunk\",\"data\":\"{{\\\"text\\\":\\\"synthetic\\\"}}\",\"session_id\":\"\",\"run_id\":\"{run}\",\"epoch\":1,\"idx\":{idx},\"session_idx\":{session_idx},\"run_sequence\":1,\"timestamp\":\"2026-01-01T00:00:00Z\"}}\n"
+        )
+    }
+
+    fn checkpoint_line(id: &str, from: &str, cutoff: &str, protected: &str) -> String {
+        format!(
+            "{{\"id\":\"{id}\",\"type\":\"compaction\",\"content\":{{\"schema_version\":3,\"covered_from_entry_id\":\"{from}\",\"cutoff_entry_id\":\"{cutoff}\",\"protected_entry_ids\":{protected}}},\"timestamp\":\"2026-01-01T00:00:00Z\"}}\n"
+        )
+    }
+
+    /// Import one synthetic legacy session (and optional run-event file) into a
+    /// fresh store. The store is returned even when the session was skipped, so
+    /// the caller can assert the recorded rejection kind.
+    fn import_case(
+        entries: &str,
+        events: Option<(&str, &str)>,
+    ) -> (tempfile::TempDir, SqliteStore) {
+        let temp = tempfile::tempdir().unwrap();
+        let sessions = temp.path().join("sessions");
+        write(&sessions, "s.jsonl", entries);
+        if let Some((run, body)) = events {
+            write(
+                &temp.path().join("run-events/s"),
+                &format!("{run}.jsonl"),
+                body,
+            );
+        }
+        let store = store_in(temp.path());
+        store.import_legacy(&sessions, None).unwrap();
+        (temp, store)
+    }
+
+    fn kind_of(store: &SqliteStore, id: &str) -> Option<String> {
+        store
+            .import_records()
+            .unwrap()
+            .into_iter()
+            .find(|record| record.session_id == id)
+            .and_then(|record| record.error_kind)
+    }
+
+    #[test]
+    fn unreadable_sources_and_missing_retry_targets_are_reported_not_imported() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store_in(temp.path());
+        // A file where the legacy root should be: read_dir fails with something
+        // other than NotFound, which is an operator error, not "no sessions yet".
+        let not_a_directory = temp.path().join("sessions.jsonl");
+        std::fs::write(&not_a_directory, entry_line("e")).unwrap();
+        let error = store
+            .import_legacy(&not_a_directory, None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("enumerate legacy sessions"), "{error}");
+
+        // A directory named like a transcript is unreadable as bytes, so the
+        // session is skipped with that category instead of aborting the run.
+        let legacy = temp.path().join("legacy");
+        write(&legacy, "good.jsonl", &entry_line("good-entry"));
+        std::fs::create_dir_all(legacy.join("bad.jsonl")).unwrap();
+        store.import_legacy(&legacy, None).unwrap();
+        assert_eq!(store.ids(false).unwrap(), ["good"]);
+        assert_eq!(kind_of(&store, "bad").as_deref(), Some("source_unreadable"));
+
+        // Retrying a session whose source file disappeared is rejected. A
+        // fresh store is needed: the import above already marked this home
+        // complete, and a complete home short-circuits an automatic re-import.
+        let retry_store = store_in(&temp.path().join("retry-home"));
+        let retry_dir = temp.path().join("retry");
+        write(&retry_dir, "s.jsonl", "{broken}\n");
+        retry_store.import_legacy(&retry_dir, None).unwrap();
+        assert_eq!(kind_of(&retry_store, "s").as_deref(), Some("invalid_json"));
+        std::fs::remove_file(retry_dir.join("s.jsonl")).unwrap();
+        let error = retry_store
+            .import_legacy(&retry_dir, Some("s"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("legacy retry source is missing"), "{error}");
+    }
+
+    #[test]
+    fn a_second_import_skips_committed_sessions_and_finishes_the_rest() {
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = temp.path().join("sessions");
+        write(&legacy, "a.jsonl", &entry_line("a"));
+        write(&legacy, "z.jsonl", &entry_line("z"));
+        let path = temp.path().join("agent.db");
+        let store = SqliteStore::open(&path).unwrap();
+        let trigger = rusqlite::Connection::open(&path).unwrap();
+        trigger
+            .execute_batch(
+                "CREATE TRIGGER fail_z BEFORE INSERT ON sessions WHEN NEW.id='z' \
+                 BEGIN SELECT RAISE(ABORT,'synthetic storage failure'); END;",
+            )
+            .unwrap();
+        assert!(store.import_legacy(&legacy, None).is_err());
+        assert_eq!(
+            store.ids(false).unwrap(),
+            ["a"],
+            "a committed, z rolled back"
+        );
+        assert_eq!(kind_of(&store, "z"), None, "the failed row is not recorded");
+
+        trigger.execute_batch("DROP TRIGGER fail_z;").unwrap();
+        // The retry re-walks the directory: the already-imported session is
+        // skipped in place, and the run reaches its completion marker.
+        store.import_legacy(&legacy, None).unwrap();
+        assert_eq!(store.ids(false).unwrap(), ["a", "z"]);
+    }
+
+    #[test]
+    fn a_legacy_file_never_overwrites_an_existing_sqlite_session() {
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = temp.path().join("sessions");
+        write(&legacy, "s.jsonl", &entry_line("legacy-entry"));
+        let store = store_in(temp.path());
+        store
+            .replace(
+                "s",
+                vec![serde_json::json!({
+                    "id":"sqlite-entry","type":"user","role":"user",
+                    "content":[{"type":"text","text":"kept"}],
+                    "timestamp":"2026-01-01T00:00:00Z"
+                })],
+            )
+            .unwrap();
+        store.import_legacy(&legacy, None).unwrap();
+        assert_eq!(
+            kind_of(&store, "s").as_deref(),
+            Some("existing_sqlite_session")
+        );
+        assert_eq!(store.entries("s").unwrap()[0]["id"], "sqlite-entry");
+    }
+
+    #[test]
+    fn entry_shapes_are_rejected_with_their_reported_kind() {
+        let duplicate_id = format!("{}{}", entry_line("e"), entry_line("e"));
+        let conflicting_id = format!(
+            "{}{}",
+            "{\"id\":\"e\",\"type\":\"user\",\"content\":\"one\",\"timestamp\":\"2026-01-01T00:00:00Z\"}\n",
+            "{\"id\":\"e\",\"type\":\"user\",\"content\":\"two\",\"timestamp\":\"2026-01-01T00:00:00Z\"}\n"
+        );
+        let cases = [
+            (
+                "missing_entry_id",
+                "{\"type\":\"user\",\"timestamp\":\"2026-01-01T00:00:00Z\"}\n".to_string(),
+            ),
+            (
+                "invalid_entry_metadata",
+                "{\"id\":\"e\",\"type\":\"user\",\"meta\":7,\"timestamp\":\"2026-01-01T00:00:00Z\"}\n"
+                    .to_string(),
+            ),
+            (
+                "missing_run_identity",
+                "{\"id\":\"e\",\"type\":\"run_started\",\"content\":{},\"timestamp\":\"2026-01-01T00:00:00Z\"}\n"
+                    .to_string(),
+            ),
+            (
+                "missing_terminal_state",
+                "{\"id\":\"e\",\"type\":\"run_terminal\",\"content\":{\"run_id\":\"r\"},\"timestamp\":\"2026-01-01T00:00:00Z\"}\n"
+                    .to_string(),
+            ),
+            ("conflicting_entry_id", conflicting_id),
+            ("empty_session", "\n   \n".to_string()),
+        ];
+        for (expected, body) in cases {
+            let (_temp, store) = import_case(&body, None);
+            assert_eq!(
+                kind_of(&store, "s").as_deref(),
+                Some(expected),
+                "body: {body}"
+            );
+        }
+
+        // An identical repeated line is only a warning: the session imports.
+        let (_temp, store) = import_case(&duplicate_id, None);
+        assert_eq!(store.entries("s").unwrap().len(), 1);
+        assert_eq!(store.import_records().unwrap()[0].warnings, 1);
+    }
+
+    #[test]
+    fn events_are_validated_for_identity_sequence_and_duplicates() {
+        let session_scoped = event_line("", 3, 0);
+        let (_temp, store) = import_case(&entry_line("e"), Some(("_session", &session_scoped)));
+        assert_eq!(store.import_records().unwrap()[0].status, "imported");
+        let stored = store.events("s", "").unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0]["event_id"], "s:session:3");
+
+        let (_temp, store) = import_case(
+            &entry_line("e"),
+            Some(("_session", &event_line("", -1, -2))),
+        );
+        assert_eq!(
+            kind_of(&store, "s").as_deref(),
+            Some("invalid_event_sequence")
+        );
+
+        let (_temp, store) =
+            import_case(&entry_line("e"), Some(("r", &event_line("other", -1, 0))));
+        assert_eq!(
+            kind_of(&store, "s").as_deref(),
+            Some("event_identity_mismatch")
+        );
+
+        // Two events that claim the same wire id for different identities.
+        let mut first = serde_json::from_str::<Value>(&session_scoped).unwrap();
+        let mut second = serde_json::from_str::<Value>(&event_line("", 4, 0)).unwrap();
+        first["event_id"] = Value::String("same".into());
+        second["event_id"] = Value::String("same".into());
+        let body = format!("{first}\n{second}\n");
+        let (_temp, store) = import_case(&entry_line("e"), Some(("_session", &body)));
+        assert_eq!(
+            kind_of(&store, "s").as_deref(),
+            Some("conflicting_event_id")
+        );
+
+        // Same identity, different payload.
+        let mut conflicting = serde_json::from_str::<Value>(&event_line("r", -1, 0)).unwrap();
+        conflicting["data"] = Value::String("different".into());
+        let body = format!("{}{}\n", event_line("r", -1, 0), conflicting);
+        let (_temp, store) = import_case(&entry_line("e"), Some(("r", &body)));
+        assert_eq!(
+            kind_of(&store, "s").as_deref(),
+            Some("conflicting_event_identity")
+        );
+
+        // An identical repeated event is only a warning.
+        let body = format!("{}{}", event_line("r", -1, 0), event_line("r", -1, 0));
+        let (_temp, store) = import_case(&entry_line("e"), Some(("r", &body)));
+        assert_eq!(store.events("s", "r").unwrap().len(), 1);
+        assert_eq!(store.import_records().unwrap()[0].warnings, 1);
+    }
+
+    #[test]
+    fn timestamp_repairs_are_warnings_and_unparsable_time_is_a_skip() {
+        // Space-separated local time: repaired, and recorded as a warning.
+        let body =
+            "{\"id\":\"e\",\"type\":\"user\",\"content\":\"q\",\"timestamp\":\"2026-06-15 12:00:00\"}\n";
+        let (_temp, store) = import_case(body, None);
+        assert_eq!(store.entries("s").unwrap().len(), 1);
+        assert_eq!(store.import_records().unwrap()[0].warnings, 1);
+
+        // Missing timestamp: taken from the transcript's mtime.
+        let body = "{\"id\":\"e\",\"type\":\"user\",\"content\":\"q\"}\n";
+        let (_temp, store) = import_case(body, None);
+        assert_eq!(store.entries("s").unwrap().len(), 1);
+        assert_eq!(store.import_records().unwrap()[0].warnings, 1);
+
+        // An unparsable timestamp cannot be repaired.
+        let body =
+            "{\"id\":\"e\",\"type\":\"user\",\"content\":\"q\",\"timestamp\":\"yesterday\"}\n";
+        let (_temp, store) = import_case(body, None);
+        assert_eq!(kind_of(&store, "s").as_deref(), Some("invalid_timestamp"));
+    }
+
+    #[test]
+    fn checkpoint_ranges_must_resolve_to_real_user_and_assistant_entries() {
+        // A protected id that resolves to a run marker is not a protected message.
+        let body = format!(
+            "{}{}{}",
+            entry_line("e"),
+            "{\"id\":\"started\",\"type\":\"run_started\",\"content\":{\"run_id\":\"r\"},\"timestamp\":\"2026-01-01T00:00:00Z\"}\n",
+            checkpoint_line("cp", "e", "started", "[\"started\"]"),
+        );
+        let (_temp, store) = import_case(&body, None);
+        assert_eq!(kind_of(&store, "s").as_deref(), Some("dangling_checkpoint"));
+
+        // A fully resolvable range imports, checkpoint included.
+        let body = format!(
+            "{}{}",
+            entry_line("e"),
+            checkpoint_line("cp", "e", "e", "[\"e\"]")
+        );
+        let (_temp, store) = import_case(&body, None);
+        assert_eq!(store.ids(false).unwrap(), ["s"]);
+        assert_eq!(store.entries("s").unwrap().len(), 2);
+    }
+}

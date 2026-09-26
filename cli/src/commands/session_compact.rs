@@ -142,6 +142,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_flag_shaped_value_is_a_missing_value_not_a_session_name() {
+        // `--session --json` must not read `--json` as the session name (and
+        // then complain about an unknown option further along): the `--`
+        // prefix is the boundary between "missing value" and "a value".
+        assert_eq!(
+            parse(&args(&["--session", "--json"])).unwrap_err(),
+            "missing value for --session"
+        );
+        assert_eq!(
+            parse(&args(&["--instructions", "--json", "--session", "s"])).unwrap_err(),
+            "missing value for --instructions"
+        );
+        // …while a *session id* that merely contains dashes is a value.
+        assert_eq!(parse(&args(&["--session", "s-1"])).unwrap().session, "s-1");
+    }
+
     #[tokio::test]
     async fn help_needs_no_server() {
         let (out, cap) = Output::memory();

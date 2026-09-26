@@ -2511,6 +2511,78 @@ mod runtime_tests {
         assert_eq!(live_data, replay_data);
     }
 
+    /// The coalescing lane is the one a modern client opts into. It must still
+    /// publish a burst (merged, never dropped) and it must end when the queue
+    /// closes, so a generation swap does not leak the drain.
+    #[tokio::test]
+    async fn the_coalescing_lane_merges_a_burst_and_ends_on_a_closed_queue() {
+        let _home = HomeGuard::new("remote-coalesce-drain");
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        let (tx, rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
+        let drain = spawn_secure_event_publisher(
+            client.clone(),
+            rx,
+            secure::Transport::legacy_fixture(),
+            Arc::new(AtomicBool::new(true)),
+        );
+        let mut tap = nats.tap();
+
+        for (idx, text) in [(1, "a"), (2, "b")] {
+            let body = build_event_body(
+                "s1",
+                "text_chunk",
+                &json!({ "text": text }).to_string(),
+                "r1",
+                idx,
+                1,
+                "e",
+                "",
+                -1,
+                idx,
+            );
+            tx.send(EventPublish {
+                subject: "p.pair_coal.evt.s1".to_string(),
+                payload: serde_json::to_vec(&body).unwrap(),
+                status_subject: None,
+            })
+            .await
+            .unwrap();
+        }
+
+        // Collect everything the lane emits for the burst. Whether the two
+        // fragments merge is a timing decision; "no character lost or
+        // duplicated" is the invariant either way.
+        let deadline = std::time::Instant::now() + Duration::from_millis(600);
+        let mut merged_text = String::new();
+        let mut published = 0usize;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, tap.recv()).await {
+                Ok(Ok(message)) if message.subject == "p.pair_coal.evt.s1" => {
+                    published += 1;
+                    let payload = message.json();
+                    let data: serde_json::Value =
+                        serde_json::from_str(payload["data"].as_str().unwrap()).unwrap();
+                    merged_text.push_str(data["text"].as_str().unwrap());
+                }
+                Ok(Ok(_)) => {}
+                _ => break,
+            }
+        }
+        assert!(published >= 1, "the coalescing lane must publish the burst");
+        assert_eq!(merged_text, "ab", "no fragment may be lost or duplicated");
+
+        drop(tx);
+        tokio::time::timeout(Duration::from_secs(2), drain)
+            .await
+            .expect("a closed queue must end the drain")
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn start_once_returns_empty_when_not_requested() {
         let _home = HomeGuard::new("remote-start-not-requested");
@@ -2922,5 +2994,84 @@ mod runtime_tests {
         assert_eq!(body["online"], json!(false));
         assert_eq!(body["unpaired"], json!(true));
         stop();
+    }
+
+    /// A wake-from-sleep recovery that is in flight must be presented as
+    /// *reconnecting*, even though the stored error code is the same
+    /// `system_sleep` that produced it. The phase is what the UI indicator reads:
+    /// the identical code with no worker running is a finished sleep, reported as
+    /// a failure attributed to sleep rather than as an in-flight reconnect.
+    #[tokio::test]
+    async fn status_presents_an_in_flight_sleep_recovery_as_reconnecting() {
+        let _home = HomeGuard::new("remote-status-sleep");
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
+        SUPERVISOR
+            .resume_recovery_running
+            .store(true, Ordering::Release);
+        *SUPERVISOR.last_error_code.lock().unwrap() = Some("system_sleep".to_string());
+        let reconnecting = status();
+        assert!(
+            matches!(reconnecting.phase, RemotePhase::Reconnecting),
+            "{reconnecting:?}"
+        );
+        assert_eq!(reconnecting.reason, Some(RemoteFailureReason::SystemSleep));
+
+        // The same error code with the recovery worker stopped is not an
+        // in-flight reconnect; both keep the reason, because the cause is the
+        // same sleep.
+        SUPERVISOR
+            .resume_recovery_running
+            .store(false, Ordering::Release);
+        let settled = status();
+        assert!(matches!(settled.phase, RemotePhase::Failed), "{settled:?}");
+        assert_eq!(settled.reason, Some(RemoteFailureReason::SystemSleep));
+
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
+    }
+
+    /// `spawn_runtime_reconnect` is the recovery for a subscription task that
+    /// died. In the test build it is deliberately a no-op: it must not arm the
+    /// singleton flag or record a failure attempt, because the tests that drive
+    /// the supervisor own that state themselves.
+    #[tokio::test]
+    async fn spawning_a_runtime_reconnect_is_a_noop_under_test() {
+        let _home = HomeGuard::new("remote-runtime-reconnect-noop");
+        SUPERVISOR
+            .runtime_reconnect_running
+            .store(false, Ordering::Release);
+        SUPERVISOR
+            .runtime_reconnect_attempts
+            .store(0, Ordering::Release);
+        spawn_runtime_reconnect();
+        assert!(
+            !SUPERVISOR.runtime_reconnect_running.load(Ordering::Acquire),
+            "the test build must not arm the real reconnect worker"
+        );
+        assert_eq!(
+            SUPERVISOR
+                .runtime_reconnect_attempts
+                .load(Ordering::Acquire),
+            0
+        );
+    }
+
+    /// A `get_read_chunk` for a snapshot the desktop no longer holds is answered
+    /// with the transport's own error code, which the phone already branches on.
+    #[tokio::test]
+    async fn an_expired_read_chunk_is_answered_with_the_transport_error() {
+        let _home = HomeGuard::new("remote-read-chunk-expired");
+        let sink = crate::remote::test_support::RecordingSink::default();
+        host()
+            .execute(
+                crate::remote::protocol::IncomingCmd {
+                    cmd_type: "get_read_chunk".into(),
+                    reply_id: unique("read"),
+                    ..Default::default()
+                },
+                &sink,
+            )
+            .await;
+        assert_eq!(sink.error_text(), "remote_read_expired");
     }
 }

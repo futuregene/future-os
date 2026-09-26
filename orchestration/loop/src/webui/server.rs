@@ -446,6 +446,64 @@ mod tests {
     }
 
     #[test]
+    fn non_finite_costs_serialize_to_null_and_do_not_break_the_snapshot() {
+        // Serialization boundary: `cost_delta` is an f64 fed by agent reports.
+        // `serde_json` maps a non-finite float to `null` rather than failing, so
+        // a NaN/Infinity cost degrades one field instead of killing the whole
+        // dashboard projection. Asserted explicitly because the alternative
+        // (a `to_value` error) would be a completely different failure mode.
+        //
+        // This also settles a question the `snapshot()` fallbacks raise: see the
+        // waiver ledger - a NaN cost canNOT reach `.unwrap_or_else(|| {"error":
+        // "projection failed"})`, because `to_value` does not fail here.
+        let mut record = crate::state::RunRecord {
+            agent_id: Some("w1".into()),
+            turn: 1,
+            todo_id: "t1".into(),
+            run_id: "run-nan".into(),
+            terminal_state: "completed".into(),
+            error: None,
+            tokens_in_delta: 0,
+            tokens_out_delta: 0,
+            cost_delta: f64::NAN,
+            tools: vec![],
+            evidence: "artifact".into(),
+            recorded_at: crate::state::now_epoch(),
+            spend_source: Some("run".into()),
+            validation: None,
+            failure_kind: Some(crate::state::FailureKind::None),
+            truncation: None,
+        };
+        let value = serde_json::to_value(&record).expect("a NaN cost must not fail serialization");
+        assert!(
+            value.get("cost_delta").is_some_and(|v| v.is_null()),
+            "a non-finite cost must become null, not an error: {value}"
+        );
+        for infinite in [f64::INFINITY, f64::NEG_INFINITY] {
+            record.cost_delta = infinite;
+            let value = serde_json::to_value(&record).expect("infinity must serialize");
+            assert!(
+                value.get("cost_delta").is_some_and(|v| v.is_null()),
+                "{value}"
+            );
+        }
+
+        // The snapshot therefore still projects, with the goal present.
+        let (root, _dir) = store_root();
+        let store = Store::open(&root).unwrap();
+        store.append_run("g1", &record).unwrap();
+        let snap = snapshot(&store);
+        assert!(
+            snap.overview.is_object() && snap.overview.get("error").is_none(),
+            "a non-finite cost must not degrade the whole projection: {}",
+            snap.overview
+        );
+        // The fingerprint stays stable across identical reads (the property the
+        // change detector depends on).
+        assert_eq!(fingerprint(&snap), fingerprint(&snapshot(&store)));
+    }
+
+    #[test]
     fn snapshot_and_fingerprint() {
         let (root, _dir) = store_root();
         let store = Store::open(&root).unwrap();
@@ -745,6 +803,106 @@ mod tests {
         assert!(String::from_utf8_lossy(&runs500).contains("500"));
     }
 
+    /// The events route reads the ledger through `Store::raw_ledger_lines`, and
+    /// that function ends in `Ok(fs::read_to_string(..).unwrap_or_default()…)` -
+    /// it has **no `Err` path**. Two consequences, both pinned here:
+    ///
+    /// 1. Behaviour: a ledger that cannot be read degrades to an EMPTY events
+    ///    page (200), not a server error. The dashboard is read-only and
+    ///    advisory, so showing nothing beats 500-ing the whole page.
+    /// 2. Consequence for coverage: the route's `Err(e) => error_response(500)`
+    ///    arm for this sub-route is **unreachable by construction** (there is no
+    ///    input that can make it run), which is why it is registered as
+    ///    `unreachable-by-construction` in docs/testing/module-loop.md rather
+    ///    than left as "open work".
+    #[test]
+    fn events_route_degrades_to_an_empty_page_when_the_ledger_is_unreadable() {
+        let (root, _dir) = store_root();
+        let store = Store::open(&root).unwrap();
+        let ledger = store.goal_dir("g1").join("events.jsonl");
+        assert!(ledger.is_file(), "the fixture must have a ledger");
+        // A healthy ledger has rows.
+        let healthy = route(
+            &Request {
+                method: "GET".into(),
+                path: "/api/goals/g1/events".into(),
+                query: String::new(),
+            },
+            &root,
+        );
+        assert!(String::from_utf8_lossy(&healthy).contains("200"));
+
+        // Replace the ledger FILE with a directory: the path still exists (so
+        // the early `!path.exists()` return does not apply) but the read fails.
+        std::fs::remove_file(&ledger).unwrap();
+        std::fs::create_dir(&ledger).unwrap();
+
+        let events = route(
+            &Request {
+                method: "GET".into(),
+                path: "/api/goals/g1/events".into(),
+                query: String::new(),
+            },
+            &root,
+        );
+        let text = String::from_utf8_lossy(&events);
+        assert!(
+            text.contains("200"),
+            "an unreadable ledger degrades to an empty page: {text}"
+        );
+        assert!(!text.contains("404"), "the goal is registered: {text}");
+        // And the same tolerance holds at the store level: no error, no rows.
+        assert!(
+            store.raw_ledger_lines("g1").unwrap().is_empty(),
+            "raw_ledger_lines must degrade to empty rather than error"
+        );
+    }
+
+    /// `api::overview` has NO failure path - it contains neither an `Err(` nor a
+    /// `?` (verified by inspection and re-checked in
+    /// docs/testing/module-loop.md). So `route`'s `Err(e) => error_response(500,
+    /// …)` arm for the overview route is unreachable by construction: there is no
+    /// input that can make that match arm run. This test documents the positive
+    /// half - every overview request, including one over a broken state root,
+    /// answers 200 or the earlier open-store 500, never the projection 500.
+    #[test]
+    fn overview_route_never_takes_its_projection_error_arm() {
+        let (root, _dir) = store_root();
+        let ok = route(
+            &Request {
+                method: "GET".into(),
+                path: "/api/overview".into(),
+                query: String::new(),
+            },
+            &root,
+        );
+        let text = String::from_utf8_lossy(&ok);
+        assert!(
+            text.contains("200"),
+            "a healthy overview must answer 200: {text}"
+        );
+        assert!(
+            text.contains("\"ok\":true") || text.contains("\"ok\": true"),
+            "{text}"
+        );
+
+        // A state root that cannot be opened fails EARLIER, at the store-open
+        // guard - still not through the projection arm.
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, "x").unwrap();
+        let broken = route(
+            &Request {
+                method: "GET".into(),
+                path: "/api/overview".into(),
+                query: String::new(),
+            },
+            blocker.to_str().unwrap(),
+        );
+        let text = String::from_utf8_lossy(&broken);
+        assert!(text.contains("open store"), "{text}");
+    }
+
     #[tokio::test]
     async fn send_snapshot_writes_a_frame() {
         let (root, _dir) = store_root();
@@ -923,14 +1081,24 @@ mod tests {
         let (stream, _) = listener.accept().await.unwrap();
         drop(tx);
         // Invalid root → the initial send_snapshot's Store::open fails.
-        let server = tokio::spawn(async move {
-            serve_sse(stream, Arc::new("/nonexistent/not/a/store".to_string()), rx).await
-        });
+        //
+        // The root must be a path that CANNOT be a store. A bare
+        // `/nonexistent/not/a/store` does not work as a fixture on Windows: the
+        // path is relative there and `Store::open` simply creates it, so this
+        // test would never take the branch it is named for. A regular FILE is
+        // the portable blocker (same fixture as `route_reports_open_store_failure`).
+        let blocker_dir = tempfile::tempdir().unwrap();
+        let blocker = blocker_dir.path().join("not-a-store");
+        std::fs::write(&blocker, "x").unwrap();
+        let bad_root = blocker.to_string_lossy().into_owned();
+        let server = tokio::spawn(async move { serve_sse(stream, Arc::new(bad_root), rx).await });
         let mut buf = Vec::new();
         client.read_to_end(&mut buf).await.unwrap();
         // The SSE head is still written before the snapshot attempt.
         assert!(String::from_utf8_lossy(&buf).contains("text/event-stream"));
         let _ = server.await;
+        // Keep the blocker alive until the server has finished with it.
+        drop(blocker_dir);
     }
 
     #[tokio::test]

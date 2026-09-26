@@ -304,6 +304,13 @@ enum EventWriteCommand {
     },
     Flush(std::sync::mpsc::SyncSender<Result<(), String>>),
     Shutdown(std::sync::mpsc::SyncSender<Result<(), String>>),
+    /// Test-only gate: the worker blocks inside the command loop until the
+    /// test releases the barrier. It lets a test act on the command channel
+    /// (queue an event without flushing it, drop the last sender) at a known
+    /// point in the worker's lifecycle instead of racing a wall-clock batch
+    /// window. Compiled out of production builds entirely.
+    #[cfg(test)]
+    Hold(std::sync::Arc<std::sync::Barrier>),
 }
 
 struct PendingEvent {
@@ -397,6 +404,46 @@ impl EventBatchWriter {
     #[cfg(test)]
     fn commit_count(&self) -> u64 {
         self.commits.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Test-only gate command: parks the worker inside the command loop until
+    /// the barrier is released. The barrier is waited on twice ("arrived" and
+    /// "released") so the test knows the worker has consumed every command
+    /// queued ahead of the gate before it manipulates the channel.
+    #[cfg(test)]
+    fn hold_worker_for_test(&self) -> std::sync::Arc<std::sync::Barrier> {
+        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+        self.sender
+            .send(EventWriteCommand::Hold(gate.clone()))
+            .expect("hold command is accepted while the worker runs");
+        gate
+    }
+
+    /// Test-only: drop every command sender while the worker is parked in
+    /// `Hold`, so the worker's next `recv`/`recv_timeout` observes a
+    /// disconnected channel. The replacement sender's receiver is already
+    /// gone, which means the writer's own `Drop` handshake is skipped instead
+    /// of blocking on a worker that has exited.
+    #[cfg(test)]
+    fn disconnect_worker_for_test(&mut self) {
+        let (dead, receiver) = std::sync::mpsc::sync_channel(1);
+        drop(receiver);
+        let sender = std::mem::replace(&mut self.sender, dead);
+        drop(sender);
+    }
+
+    /// Test-only: retire the worker through its real `Shutdown` handshake and
+    /// join the thread, so "the worker is gone" is an observed fact rather
+    /// than a sleep-and-hope wait. A later `append` must then fail closed.
+    #[cfg(test)]
+    fn stop_worker_for_test(&mut self) {
+        let (reply, receiver) = std::sync::mpsc::sync_channel(1);
+        if self.sender.send(EventWriteCommand::Shutdown(reply)).is_ok() {
+            let _ = receiver.recv();
+        }
+        if let Some(thread) = self.thread.take() {
+            thread.join().expect("event batch worker exits on shutdown");
+        }
     }
 }
 
@@ -533,6 +580,11 @@ fn run_event_batch_writer(
                 };
                 let _ = reply.send(result);
                 break;
+            }
+            #[cfg(test)]
+            EventWriteCommand::Hold(gate) => {
+                gate.wait(); // arrived inside the command loop
+                gate.wait(); // released by the test
             }
         }
     }
@@ -1937,6 +1989,233 @@ mod tests {
         assert!(interrupt.load(std::sync::atomic::Ordering::SeqCst));
         assert!(b.persistence_error().is_some());
         assert_eq!(b.last_idx(), 0, "failed append must not advance the cursor");
+    }
+
+    /// The batch writer's own contract, driven directly: it commits when the
+    /// journal is healthy, refuses with the recorded error once the journal is
+    /// unhealthy (without touching the store), and detects a dead worker.
+    #[test]
+    fn event_batch_writer_refuses_appends_when_unhealthy_or_when_its_worker_is_gone() {
+        let directory = tempfile::tempdir().unwrap();
+        let store =
+            crate::session::sqlite_store::SqliteStore::open(&directory.path().join("agent.db"))
+                .unwrap();
+        store.bind_events("session-direct").unwrap();
+        let health = std::sync::Arc::new(EventJournalHealth::default());
+        let mut writer =
+            EventBatchWriter::new(store, "session-direct".to_string(), health.clone()).unwrap();
+        let event =
+            serde_json::to_value(SseEvent::new("agent_end", serde_json::json!({}))).unwrap();
+
+        // Healthy: a durable append is committed and acknowledged.
+        writer.append(event.clone(), true).unwrap();
+        assert_eq!(writer.commit_count(), 1);
+
+        // Unhealthy: the recorded failure is the error, and nothing is written.
+        health.fail("injected journal failure".to_string());
+        let error = writer.append(event.clone(), true).unwrap_err();
+        assert!(
+            error.to_string().contains("injected journal failure"),
+            "{error}"
+        );
+        assert_eq!(
+            writer.commit_count(),
+            1,
+            "a refused append must not reach the store"
+        );
+
+        // Worker gone: the enqueue fails and the writer records the loss so
+        // later callers get the same error instead of silently dropping events.
+        // The retirement is joined, not slept on: after `stop_worker_for_test`
+        // the thread has provably dropped its receiver, so the failure below is
+        // deterministic on any machine speed.
+        health.clear();
+        writer.stop_worker_for_test();
+        let error = writer.append(event, true).unwrap_err();
+        assert!(
+            error.to_string().contains("worker is unavailable"),
+            "{error}"
+        );
+        assert!(
+            health.error().is_some(),
+            "losing the worker must mark the journal unhealthy"
+        );
+    }
+
+    /// Once a batch commit has failed, the worker itself must refuse later
+    /// durable writes — and an explicit flush must report the failure — even if
+    /// the shared health flag was cleared in the meantime. Reporting success
+    /// there would acknowledge durability that did not happen.
+    #[test]
+    fn event_batch_writer_refuses_durable_writes_after_a_failed_batch() {
+        let directory = tempfile::tempdir().unwrap();
+        let manager = crate::session::Manager::new(directory.path().to_path_buf());
+        let store = manager.storage().unwrap().clone();
+        store.bind_events("session-failed-batch").unwrap();
+        let health = std::sync::Arc::new(EventJournalHealth::default());
+        let writer =
+            EventBatchWriter::new(store, "session-failed-batch".to_string(), health.clone())
+                .unwrap();
+        let event =
+            serde_json::to_value(SseEvent::new("agent_end", serde_json::json!({}))).unwrap();
+        writer.append(event.clone(), true).unwrap();
+        assert_eq!(writer.commit_count(), 1);
+
+        // The table the batch writes to is gone: the durable append reports the
+        // store failure, records it, and the batch is now failed.
+        manager.test_execute("DROP TABLE run_events");
+        let error = writer.append(event.clone(), true).unwrap_err();
+        assert!(
+            error.to_string().contains("event batch commit failed"),
+            "{error}"
+        );
+        assert_eq!(
+            writer.commit_count(),
+            1,
+            "a failed batch must not count as a commit"
+        );
+
+        // Clearing the shared health flag must not make the worker accept a
+        // durable append it cannot commit: it answers with the failure instead.
+        health.clear();
+        let error = writer.append(event.clone(), true).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("event persistence is unavailable"),
+            "a rejected durable append must say why: {error}"
+        );
+        assert_eq!(writer.commit_count(), 1);
+
+        // An explicit flush with a still-pending event must fail the same way
+        // rather than answer Ok. The worker is held first so the queued event
+        // is provably still pending when the flush runs (no batch-window race).
+        // The error is the store failure: the flush records the reason it could
+        // not answer before reporting it.
+        health.clear();
+        let gate = writer.hold_worker_for_test();
+        gate.wait(); // worker is parked inside the command loop
+        writer.append(event.clone(), false).unwrap();
+        std::thread::scope(|scope| {
+            let gate = gate.clone();
+            scope.spawn(move || gate.wait());
+            let error = writer.flush().unwrap_err();
+            assert!(
+                error.to_string().contains("no such table: run_events"),
+                "a flush the store could not satisfy must report why: {error}"
+            );
+        });
+        assert_eq!(writer.commit_count(), 1);
+        assert!(
+            health
+                .error()
+                .is_some_and(|error| error.contains("no such table: run_events")),
+            "the failed flush must leave the journal unhealthy"
+        );
+    }
+
+    /// Both ways a worker can find its command channel gone: parked in `recv()`
+    /// with an empty batch, and parked in `recv_timeout` with a batch still
+    /// pending. The second must drop that batch instead of committing it late,
+    /// and both must leave the writer failing closed rather than hanging.
+    #[test]
+    fn event_batch_worker_exits_when_its_last_sender_disappears() {
+        let event =
+            serde_json::to_value(SseEvent::new("agent_end", serde_json::json!({}))).unwrap();
+
+        // (a) Empty batch: the worker is blocked in `recv()`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let store =
+                crate::session::sqlite_store::SqliteStore::open(&directory.path().join("agent.db"))
+                    .unwrap();
+            store.bind_events("session-empty-batch").unwrap();
+            let health = std::sync::Arc::new(EventJournalHealth::default());
+            let mut writer =
+                EventBatchWriter::new(store, "session-empty-batch".to_string(), health.clone())
+                    .unwrap();
+            let gate = writer.hold_worker_for_test();
+            gate.wait();
+            writer.disconnect_worker_for_test();
+            gate.wait();
+            // The worker left through the disconnected `recv()`; nothing else
+            // can have consumed the command, and the writer now fails closed.
+            let error = writer.append(event.clone(), true).unwrap_err();
+            assert!(
+                error.to_string().contains("worker is unavailable"),
+                "{error}"
+            );
+            assert!(health.error().is_some());
+        }
+
+        // (b) Pending batch: the worker is blocked in `recv_timeout()`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let manager = crate::session::Manager::new(directory.path().to_path_buf());
+            let store = manager.storage().unwrap().clone();
+            store.bind_events("session-pending-batch").unwrap();
+            let before = store.event_cursors("session-pending-batch").unwrap();
+            let health = std::sync::Arc::new(EventJournalHealth::default());
+            let mut writer =
+                EventBatchWriter::new(store.clone(), "session-pending-batch".to_string(), health)
+                    .unwrap();
+            writer.append(event.clone(), false).unwrap();
+            let gate = writer.hold_worker_for_test();
+            gate.wait();
+            writer.disconnect_worker_for_test();
+            gate.wait();
+            // Dropping the writer joins the worker, so the "nothing was
+            // committed" claim below is about a thread that has provably
+            // finished, not about a sleep that happened to be long enough.
+            drop(writer);
+            assert_eq!(
+                store.event_cursors("session-pending-batch").unwrap(),
+                before,
+                "a worker that died with a pending batch must not commit it late"
+            );
+        }
+    }
+
+    /// A store that cannot accept the batch must fail the durable caller, mark
+    /// the journal unhealthy, and make the read path report it rather than
+    /// return a silently short history.
+    #[test]
+    fn a_failed_batch_commit_is_reported_and_blocks_the_read_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let manager = crate::session::Manager::new(directory.path().to_path_buf());
+        let b = SseBroadcaster::new();
+        b.configure_journal("session-broken", &manager).unwrap();
+        b.start_run("run-broken".to_string(), 1);
+        b.broadcast(SseEvent::new("agent_end", serde_json::json!({})));
+        assert_eq!(b.journal_commit_count(), 1, "the healthy commit must land");
+        assert_eq!(b.read_journal("run-broken").unwrap().len(), 1);
+
+        // The table the event batch writes to is gone, so the next commit fails
+        // exactly as it would on a corrupt store.
+        manager.test_execute("DROP TABLE run_events");
+        b.broadcast(SseEvent::new("agent_end", serde_json::json!({})));
+
+        let error = b
+            .persistence_error()
+            .expect("a failed commit must be recorded as a persistence error");
+        assert!(
+            error.contains("event batch commit failed") || error.contains("persistence"),
+            "{error}"
+        );
+        assert!(
+            b.read_journal("run-broken").is_err(),
+            "the read path must surface the failure, not a truncated history"
+        );
+        // The snapshot resume path reads the same journal, so it must refuse too: a
+        // client resuming from an unhealthy journal would otherwise be handed a
+        // prefix the store never durably held.
+        let snapshot = b.run_snapshot("run-broken").unwrap_err();
+        assert!(
+            snapshot
+                .to_string()
+                .contains("run snapshot persistence is unhealthy"),
+            "{snapshot}"
+        );
     }
 
     #[test]

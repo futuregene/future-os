@@ -131,6 +131,43 @@ fn quota_projection_annotates_replan_stall() {
 
 // ── CLI projection: scheduler state + cadence plan ─────────────────────────
 #[test]
+fn cadence_plan_names_the_default_interval_for_each_schedule_class() {
+    // An empty progression means "the class's own default", so each named class
+    // must resolve to one concrete interval — never to the `once` fallback.
+    for (class, minutes) in [("hourly", 60), ("daily", 1440), ("weekly", 10080)] {
+        let plan = render_cadence_plan(class, &[], 0);
+        assert!(
+            plan.contains(&format!("INTERVAL={minutes}")),
+            "{class} default interval: {plan}"
+        );
+        assert!(
+            plan.contains(&format!("interval     : {minutes}m")),
+            "{class} interval line: {plan}"
+        );
+        assert!(!plan.contains("none"), "{class} must not degrade: {plan}");
+    }
+    // An unknown class has no default: it degrades to a single execution.
+    let unknown = render_cadence_plan("occasionally", &[], 0);
+    assert!(unknown.contains("rrule        : none"), "{unknown}");
+    assert!(!unknown.contains("interval     :"), "{unknown}");
+}
+
+#[test]
+fn cadence_plan_announces_the_next_step_and_wraps_at_the_end() {
+    let first = render_cadence_plan("monitor_backoff", &[15, 30, 60], 0);
+    assert!(first.contains("progression"), "{first}");
+    assert!(first.contains("30m"), "next step named: {first}");
+    // A single-step progression has nothing to progress to.
+    let single = render_cadence_plan("monitor_backoff", &[15], 0);
+    assert!(!single.contains("progression"), "{single}");
+    // An out-of-range index clamps to the last step and wraps instead of
+    // panicking on `intervals[i + 1]`.
+    let past_the_end = render_cadence_plan("monitor_backoff", &[15, 30, 60], 99);
+    assert!(past_the_end.contains("60m"), "{past_the_end}");
+    assert!(past_the_end.contains("wraps to start"), "{past_the_end}");
+}
+
+#[test]
 fn scheduler_state_projection_renders_progression_and_failures() {
     use future_loop::scheduler::state::*;
     let identity = identity_signature("g1", "a", CODEX_APP_SURFACE);

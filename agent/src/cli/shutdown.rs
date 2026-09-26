@@ -244,7 +244,13 @@ mod tests {
                 .env(CHILD_MODE, mode)
                 .spawn()
                 .unwrap();
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            // Generous on purpose. The watchdog's own grace is 100 ms, so this
+            // only has to distinguish "the watchdog exited the child" from "the
+            // watchdog is stuck". It is NOT a speed assertion: under coverage
+            // instrumentation the child flushes a multi-megabyte profile on
+            // `process::exit`, and a loaded build machine (several workers
+            // measuring the same crate at once) made a 10 s bound flake.
+            let deadline = std::time::Instant::now() + Duration::from_secs(60);
             let status = loop {
                 if let Some(status) = child.try_wait().unwrap() {
                     break status;

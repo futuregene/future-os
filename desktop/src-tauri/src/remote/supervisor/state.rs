@@ -234,3 +234,141 @@ pub(in crate::remote) const RUNTIME_FAILURE_WINDOW_MS: u64 = 10 * 60 * 1_000;
 #[cfg(not(test))]
 pub(in crate::remote) const RUNTIME_HEALTHY_RESET_SECS: u8 = 60;
 pub(in crate::remote) const MAX_WEB_RECONNECT_ATTEMPTS: u8 = 3;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::remote::test_support::HomeGuard;
+
+    /// A supervisor nobody asked to start, built by hand so the process-global
+    /// [`SUPERVISOR`] (which other tests share) is untouched.
+    fn stopped_supervisor() -> Supervisor {
+        Supervisor {
+            access: lifecycle::AccessEpoch::new(),
+            state: std::sync::Mutex::new(None),
+            bridge_shared: std::sync::Mutex::new(None),
+            last_error_code: std::sync::Mutex::new(None),
+            start_lock: tokio::sync::Mutex::const_new(()),
+            start_requested: AtomicBool::new(false),
+            suspended: AtomicBool::new(false),
+            resume_recovery_running: AtomicBool::new(false),
+            start_retry_running: AtomicBool::new(false),
+            start_retry_attempts: AtomicU64::new(0),
+            start_retry_since: AtomicU64::new(0),
+            start_retry_next_at: AtomicU64::new(0),
+            credential_refreshing: AtomicBool::new(false),
+            runtime_reconnect_running: AtomicBool::new(false),
+            runtime_reconnect_attempts: AtomicU8::new(0),
+            runtime_failure_window_started: AtomicU64::new(0),
+            web_reconnect_running: AtomicBool::new(false),
+            web_reconnect_attempts: AtomicU8::new(0),
+            tasks: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn creds(pair_id: &str, seed: String) -> pairing::PairingCreds {
+        pairing::PairingCreds {
+            handshake_version: 2,
+            secure: None,
+            pair_id: pair_id.to_string(),
+            desktop_id: format!("desktop_{pair_id}"),
+            nkey_seed: seed,
+            user_jwt: "jwt".to_string(),
+            nats_url: "nats://127.0.0.1:4222".to_string(),
+            nats_ws_url: "ws://127.0.0.1:4222".to_string(),
+            jwt_expires_at: 0,
+        }
+    }
+
+    /// The runtime these tasks land on is process-lifetime, so a supervisor
+    /// that was never asked to run (or was suspended mid-flight) must schedule
+    /// nothing: a stray task would outlive its caller and the pairing that
+    /// armed it.
+    #[tokio::test]
+    async fn a_stopped_or_suspended_supervisor_schedules_no_background_work() {
+        let inert = stopped_supervisor();
+        inert.spawn(std::future::pending());
+        assert!(
+            inert.tasks.lock().unwrap().is_empty(),
+            "an unrequested supervisor must not schedule"
+        );
+
+        inert.start_requested.store(true, Ordering::Release);
+        inert.spawn(std::future::pending());
+        assert_eq!(
+            inert.tasks.lock().unwrap().len(),
+            1,
+            "a requested supervisor schedules the task"
+        );
+
+        inert.suspended.store(true, Ordering::Release);
+        inert.spawn(std::future::pending());
+        assert_eq!(
+            inert.tasks.lock().unwrap().len(),
+            1,
+            "suspension refuses new work"
+        );
+
+        inert.cancel_tasks();
+        assert!(
+            inert.tasks.lock().unwrap().is_empty(),
+            "cancel_tasks drains the registry"
+        );
+    }
+
+    /// A *confirmed* pairing must latch onto the reused runtime. The phone is
+    /// already paired; if a credential refresh rebuilt the runtime's
+    /// confirmation flag instead of reusing it, the next claim flow would ask a
+    /// paired user to pair again.
+    #[test]
+    fn a_confirmed_pairing_latches_onto_the_reused_runtime() {
+        let _home = HomeGuard::new("remote-runtime-latch");
+        *SUPERVISOR.bridge_shared.lock().unwrap() = None;
+        let key_pair = nkeys::KeyPair::new_user();
+        let creds = creds("pair_latch", key_pair.seed().unwrap().to_string());
+
+        let first = shared_runtime(&creds, false, false);
+        assert!(
+            !first.pairing_confirmed.load(Ordering::Acquire),
+            "an unconfirmed start must not report a paired phone"
+        );
+
+        let second = shared_runtime(&creds, true, true);
+        assert!(
+            std::sync::Arc::ptr_eq(&first.reply_slots, &second.reply_slots),
+            "a refresh serving the same invitation keeps the reply slots"
+        );
+        assert!(
+            second.pairing_confirmed.load(Ordering::Acquire),
+            "the confirmation must survive the generation swap"
+        );
+        assert_ne!(
+            first.bridge_instance_id, second.bridge_instance_id,
+            "and the bridge id must still rotate with the generation"
+        );
+        *SUPERVISOR.bridge_shared.lock().unwrap() = None;
+    }
+
+    /// Credentials whose NKey seed cannot be read describe no invitation, so
+    /// the cached runtime — reply single-flight, pairing confirmation, bridge
+    /// id — must never be inherited by them: the QR could never authenticate
+    /// against it.
+    #[test]
+    fn an_unreadable_nkey_seed_never_reuses_a_cached_runtime() {
+        let _home = HomeGuard::new("remote-unreadable-seed");
+        *SUPERVISOR.bridge_shared.lock().unwrap() = None;
+        let unreadable = creds("pair_unreadable", "not-an-nkey-seed".to_string());
+
+        let first = shared_runtime(&unreadable, false, false);
+        let second = shared_runtime(&unreadable, false, false);
+        assert!(
+            !std::sync::Arc::ptr_eq(&first.reply_slots, &second.reply_slots),
+            "no provable invitation means a fresh runtime every time"
+        );
+        assert!(
+            !std::sync::Arc::ptr_eq(&first.pairing_confirmed, &second.pairing_confirmed),
+            "a previous pairing's confirmation must not carry over"
+        );
+        *SUPERVISOR.bridge_shared.lock().unwrap() = None;
+    }
+}

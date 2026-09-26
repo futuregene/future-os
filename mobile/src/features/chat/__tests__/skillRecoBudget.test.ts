@@ -148,6 +148,55 @@ describe("emptyDay", () => {
   });
 });
 
+describe("the message hash is over UTF-8 bytes, not UTF-16 code units", () => {
+  /** An independent FNV-1a over an explicit byte list. */
+  function fnvBytes(bytes: number[]): string {
+    let hash = 0xcbf29ce484222325n;
+    const mask = 0xffffffffffffffffn;
+    for (const byte of bytes) hash = ((hash ^ BigInt(byte)) * 0x100000001b3n) & mask;
+    return hash.toString(16).padStart(16, "0");
+  }
+  const utf8 = (text: string) => Array.from(new TextEncoder().encode(text.trim()));
+
+  // Two-byte, three-byte and four-byte code points take three different arms of
+  // the hand-rolled encoder; each must match the platform encoder byte for byte.
+  test.each([
+    ["ascii", "please search the web"],
+    ["two-byte", "café résumé"],
+    ["three-byte", "请帮我搜索一下这个内容"],
+    ["four-byte", "check this out 🙂🙃"],
+    ["mixed with astral", "a🙂中é z"],
+    ["trimmed", "  spaced  "],
+  ])("%s text hashes identically to a byte-wise FNV-1a over its UTF-8 bytes", (_label, text) => {
+    expect(messageHash(text)).toBe(fnvBytes(utf8(text)));
+  });
+
+  test("a two-byte character contributes its two UTF-8 bytes, not one Latin-1 byte", () => {
+    // "é" is U+00E9 → 0xC3 0xA9. Hashing the code unit instead would give the
+    // single byte 0xE9 and silently collide different messages.
+    expect(utf8("é")).toEqual([0xc3, 0xa9]);
+    expect(messageHash("é")).toBe(fnvBytes([0xc3, 0xa9]));
+    expect(messageHash("é")).not.toBe(fnvBytes([0xe9]));
+    expect(messageHash("é")).not.toBe(messageHash("e"));
+  });
+
+  test("a four-byte code point contributes four UTF-8 bytes, not two surrogates", () => {
+    expect(utf8("🙂")).toEqual([0xf0, 0x9f, 0x99, 0x82]);
+    expect(messageHash("🙂")).toBe(fnvBytes([0xf0, 0x9f, 0x99, 0x82]));
+    // The surrogate pair U+1F642 is encoded in UTF-16 as ED A0 BD ED B9 82 under
+    // a naive unit-wise encoder — neither surrogate's own bytes may appear.
+    expect(messageHash("🙂")).not.toBe(fnvBytes([0xd8, 0x3d, 0xde, 0x42]));
+    expect(messageHash("🙂")).not.toBe(fnvBytes([0xed, 0xa0, 0xbd, 0xed, 0xb9, 0x82]));
+  });
+
+  test("a three-byte character contributes three UTF-8 bytes", () => {
+    expect(utf8("中")).toEqual([0xe4, 0xb8, 0xad]);
+    expect(messageHash("中")).toBe(fnvBytes([0xe4, 0xb8, 0xad]));
+    // A two-byte reading of the same string would give a different digest.
+    expect(messageHash("中")).not.toBe(fnvBytes([0x4e, 0x2d]));
+  });
+});
+
 /**
  * The budget resets on the user's local midnight, not UTC's. This distinction is
  * invisible for most of the day — UTC and a positive-offset local date agree

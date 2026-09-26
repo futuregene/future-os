@@ -1186,6 +1186,302 @@ mod tests {
         ));
     }
 
+    /// Every value-taking flag has a `if i + 1 < args.len()` guard in front of
+    /// its assignment. A test that only ever passes the flag *with* a value (or
+    /// only bare) leaves the other side of that guard unexecuted — and the bare
+    /// side is exactly the "user typed `--model` at the end of the line" case,
+    /// where the flag must be accepted and simply stay unset rather than panic.
+    ///
+    /// Table-driven over the whole flag set, asserting the parsed field both
+    /// ways. Note the two families, because they differ on purpose (TS parity):
+    /// most flags take the next argument **unconditionally** (so `--session
+    /// --verbose` stores `"--verbose"`), while `--print` refuses a following flag
+    /// or `@file`. `--list-models` has its own tri-state and is asserted
+    /// separately below.
+    #[test]
+    fn every_value_taking_flag_accepts_its_value_and_tolerates_none() {
+        // (flag, value, getter, next-arg-is-consumed-as-the-value)
+        #[allow(clippy::type_complexity)]
+        let cases: Vec<(&str, &str, fn(&CliArgs) -> Option<String>, bool)> = vec![
+            ("--session", "s-1", |a| a.session.clone(), true),
+            ("--fork", "s-2", |a| a.fork.clone(), true),
+            ("--model", "m-1", |a| a.model.clone(), true),
+            ("--provider", "p-1", |a| a.provider.clone(), true),
+            ("--api-key", "k-1", |a| a.api_key.clone(), true),
+            ("--thinking", "high", |a| a.thinking.clone(), true),
+            (
+                "--system-prompt",
+                "be terse",
+                |a| a.system_prompt.clone(),
+                true,
+            ),
+            ("--mode", "json", |a| a.mode.clone(), true),
+        ];
+        for (flag, value, get, consumes_next) in cases {
+            let with = args(&[flag, value]);
+            assert_eq!(
+                get(&with).as_deref(),
+                Some(value),
+                "{flag} must store its value"
+            );
+
+            // Bare, as the last argument: accepted, field left unset.
+            let bare = args(&[flag]);
+            assert_eq!(
+                get(&bare),
+                None,
+                "{flag} with no value must leave the field unset"
+            );
+
+            // A following flag: consumed as the value by the unconditional
+            // flags, refused by the guarded ones.
+            let followed = args(&[flag, "--verbose"]);
+            if consumes_next {
+                assert_eq!(
+                    get(&followed).as_deref(),
+                    Some("--verbose"),
+                    "{flag} takes the next argument verbatim"
+                );
+                assert!(!followed.verbose, "so the flag it swallowed is not set");
+            } else {
+                assert_eq!(
+                    get(&followed),
+                    None,
+                    "{flag} must not swallow a following flag"
+                );
+                assert!(followed.verbose, "the following flag still parsed");
+            }
+        }
+
+        // The flags whose value is a list or a repeatable entry. `--models` and
+        // `--tools` split on commas; the repeatable ones store the argument
+        // verbatim and accumulate per occurrence.
+        #[allow(clippy::type_complexity)]
+        let list_cases: Vec<(&str, &str, fn(&CliArgs) -> Option<Vec<String>>, bool, bool)> = vec![
+            // (flag, value, getter, splits on comma, allocates an empty list when bare)
+            ("--models", "a,b", |a| a.models.clone(), true, false),
+            ("--tools", "read,write", |a| a.tools.clone(), true, false),
+            (
+                "--append-system-prompt",
+                "extra",
+                |a| a.append_system_prompt.clone(),
+                false,
+                true,
+            ),
+            (
+                "--prompt-template",
+                "tpl",
+                |a| a.prompt_template.clone(),
+                false,
+                true,
+            ),
+            ("--skill", "sk", |a| a.skill.clone(), false, true),
+        ];
+        for (flag, value, get, splits, allocates_empty_when_bare) in list_cases {
+            let expected: Vec<String> = if splits {
+                value.split(',').map(|s| s.to_string()).collect()
+            } else {
+                vec![value.to_string()]
+            };
+            let with = args(&[flag, value]);
+            assert_eq!(
+                get(&with).as_deref(),
+                Some(expected.as_slice()),
+                "{flag} must store its value"
+            );
+
+            // `--models`/`--tools` only call `split_csv` after the guard, so a
+            // bare flag leaves `None`; the repeatable flags call
+            // `get_or_insert_with(Vec::new)` first, so a bare flag leaves an
+            // empty list (the TS `?? []` behaviour).
+            let bare = args(&[flag]);
+            if allocates_empty_when_bare {
+                assert_eq!(
+                    get(&bare),
+                    Some(Vec::new()),
+                    "{flag} with no value allocates an empty list"
+                );
+            } else {
+                assert_eq!(get(&bare), None, "{flag} with no value must stay unset");
+            }
+
+            // These are unconditional too: the next argument is the value.
+            let followed = args(&[flag, "--verbose"]);
+            assert_eq!(
+                get(&followed).as_deref(),
+                Some(vec!["--verbose".to_string()].as_slice()),
+                "{flag} takes the next argument verbatim"
+            );
+        }
+
+        // `--print` is the guarded one: a flag or `@file` after it is not a
+        // message, so the message list stays empty.
+        let printed = args(&["-p", "--verbose"]);
+        assert!(printed.print);
+        assert!(printed.messages.is_empty());
+        assert!(printed.verbose);
+        assert_eq!(
+            args(&["-p", "@notes.md"]).messages.len(),
+            0,
+            "an @file is not a message"
+        );
+        assert_eq!(args(&["-p", "hello"]).messages.as_slice(), ["hello"]);
+
+        // A repeatable flag accumulates across occurrences, in order.
+        let repeated = args(&[
+            "--append-system-prompt",
+            "one",
+            "--append-system-prompt",
+            "two",
+            "--skill",
+            "s1",
+            "--skill",
+            "s2",
+            "--models",
+            "a,b,c",
+        ]);
+        assert_eq!(
+            repeated.append_system_prompt.as_deref(),
+            Some(vec!["one".to_string(), "two".to_string()].as_slice())
+        );
+        assert_eq!(
+            repeated.skill.as_deref(),
+            Some(vec!["s1".to_string(), "s2".to_string()].as_slice())
+        );
+        assert_eq!(
+            repeated.models.as_deref(),
+            Some(vec!["a".to_string(), "b".to_string(), "c".to_string()].as_slice()),
+            "a comma list splits, and a single entry is still a list"
+        );
+
+        // `--list-models` keeps its documented tri-state: absent (None), present
+        // with no search (Some("")), present with a search (Some(query)).
+        assert_eq!(args(&[]).list_models, None);
+        assert_eq!(args(&["--list-models"]).list_models.as_deref(), Some(""));
+        assert_eq!(
+            args(&["--list-models", "gpt"]).list_models.as_deref(),
+            Some("gpt")
+        );
+        // An `@file` after it is not a search term — it parses as a file arg.
+        let with_file = args(&["--list-models", "@notes.md"]);
+        assert_eq!(with_file.list_models.as_deref(), Some(""));
+        assert_eq!(with_file.file_args.as_slice(), ["notes.md"]);
+        // A flag after it is not swallowed either: it is parsed on its own and,
+        // being unknown, rejects the whole command line.
+        assert!(matches!(
+            parse_args(&["--list-models".into(), "-x".into()]),
+            ParseOutcome::UnknownOption(option) if option == "-x"
+        ));
+
+        // The boolean flags need no value and are not affected by the guards.
+        let booleans = args(&[
+            "--no-tools",
+            "-nt",
+            "--no-builtin-tools",
+            "-nbt",
+            "--no-session",
+            "--no-prompt-templates",
+            "-np",
+            "--no-context-files",
+            "-nc",
+            "--offline",
+            "--verbose",
+            "--no-skills",
+            "-ns",
+            "--continue",
+            "-c",
+            "--resume",
+            "-r",
+        ]);
+        assert!(booleans.no_tools && booleans.no_builtin_tools && booleans.no_session);
+        assert!(booleans.no_prompt_templates && booleans.no_context_files);
+        assert!(booleans.offline && booleans.verbose && booleans.no_skills);
+        assert!(booleans.r#continue && booleans.resume);
+    }
+
+    /// `ExitCode` exposes no accessor, so the only in-process way to compare it
+    /// is its `Debug` form — which does distinguish the success variant from a
+    /// failure one, which is the claim being asserted.
+    fn exit_code_is_one(code: ExitCode) -> bool {
+        format!("{code:?}") == format!("{:?}", ExitCode::from(1))
+    }
+
+    /// `run` with a flag but no prompt exits 1 and touches no network — the
+    /// branch that has to be right before any gRPC call is attempted.
+    #[test]
+    fn run_without_a_prompt_exits_one_and_reports_usage() {
+        assert!(exit_code_is_one(run(&["-p".to_string()])));
+        assert!(
+            !exit_code_is_one(run(&["--version".to_string()])),
+            "a successful run is not exit 1"
+        );
+    }
+
+    /// The `--list-models` failure tail: an endpoint with nothing listening is
+    /// reported as an error and exits 1. Port 1 is used explicitly so no real
+    /// agent can be reached — the test must never talk to a running one.
+    #[test]
+    fn run_reports_a_list_models_failure() {
+        assert!(exit_code_is_one(run(&[
+            "--list-models".to_string(),
+            "--grpc-addr".to_string(),
+            "127.0.0.1:1".to_string(),
+        ])));
+    }
+
+    /// Print mode with a prompt but an unreachable agent exits 1 through the
+    /// `Err` arm of `run_print_mode` (silently in `json` mode, with the error on
+    /// stderr otherwise). Port 1 is explicit for the same reason as above.
+    #[test]
+    fn run_reports_a_print_mode_failure() {
+        for extra in [vec![], vec!["--mode".to_string(), "json".to_string()]] {
+            let mut argv = vec![
+                "-p".to_string(),
+                "hello".to_string(),
+                "--grpc-addr".to_string(),
+                "127.0.0.1:1".to_string(),
+            ];
+            argv.extend(extra.iter().cloned());
+            assert!(
+                exit_code_is_one(run(&argv)),
+                "an unreachable agent must exit 1: {argv:?}"
+            );
+        }
+    }
+
+    /// With no mode flags at all, `run` falls through to the interactive TUI.
+    /// A test must **not** drive that: the event loop would talk to a real agent
+    /// and never return. Only the pre-connection path is asserted, and only where
+    /// no console exists — in a redirected runner like CI, `Terminal::new` fails
+    /// and `run` reports 1 instead of entering the loop. Where a console *is*
+    /// available the test declines rather than risk the user's session.
+    #[test]
+    fn run_without_flags_reports_a_missing_console_instead_of_entering_the_loop() {
+        // Drain the injected-failure seam so this probe reflects reality.
+        crate::terminal::FORCE_NEW_FAILURE.swap(false, std::sync::atomic::Ordering::SeqCst);
+        if crate::terminal::Terminal::new().is_ok() {
+            eprintln!(
+                "[skip] a console is available here; the interactive loop must not be \
+                 driven from a test"
+            );
+            return;
+        }
+        assert!(exit_code_is_one(run(&[])));
+    }
+
+    /// `-p --mode json` with no prompt is the machine-readable path: it must
+    /// still exit 1, but *silently* — the caller parses the output as JSON, so a
+    /// usage line would corrupt it. Covered here by taking the false side of the
+    /// `mode != json` guard on the usage line.
+    #[test]
+    fn run_without_a_prompt_stays_silent_in_json_mode() {
+        assert!(exit_code_is_one(run(&[
+            "-p".to_string(),
+            "--mode".to_string(),
+            "json".to_string()
+        ])));
+    }
+
     #[test]
     fn parse_model_thinking_colon_split() {
         let a = args(&["--model", "sonnet:high"]);

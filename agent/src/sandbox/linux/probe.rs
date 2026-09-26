@@ -578,6 +578,23 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
+    /// Off Linux the host probe must answer "not this platform" with a
+    /// machine-readable code — never `available`, and never an error that the
+    /// UI would have to treat as a transient failure.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn host_probe_reports_platform_not_linux_off_linux() {
+        let probe = probe_linux_sandbox_host();
+        assert!(!probe.available);
+        assert_eq!(probe.code, LinuxSandboxProbeCode::PlatformNotLinux);
+        assert!(probe.path.is_none());
+        assert!(probe.identity.is_none());
+        assert_eq!(
+            serde_json::to_value(probe.code).unwrap(),
+            serde_json::json!("platform_not_linux")
+        );
+    }
+
     struct FakeHost {
         now: SystemTime,
         outputs: Mutex<VecDeque<ProbeCommandOutput>>,

@@ -135,6 +135,30 @@ describe("session draft storage", () => {
     expect(await loadSessionDraft("")).toBeNull();
   });
 
+  test("scheduling and a match-clear for no session are no-ops", async () => {
+    jest.useFakeTimers();
+    try {
+      scheduleSessionDraft("", { text: "typed", attachments: [] });
+      await clearSessionDraftIfMatches("", { text: "typed", attachments: [] });
+      await jest.advanceTimersByTimeAsync(2_000);
+      // The composer's new-conversation slot has its own key; an empty id must
+      // not be written under a shared one or resurrected by a timer.
+      expect(mockedAsync.setItem).not.toHaveBeenCalled();
+      expect(mockedAsync.removeItem).not.toHaveBeenCalled();
+    } finally { jest.useRealTimers(); }
+  });
+
+  test("a stored draft with no text and no usable attachment reads as absent", async () => {
+    // Exactly what a draft whose only attachment was pruned looks like: the
+    // record is still on disk but there is nothing left to restore, and
+    // handing the composer a whitespace draft would show an empty edit box as
+    // if the user had typed something.
+    mockedAsync.getItem.mockResolvedValueOnce(
+      JSON.stringify({ version: 1, text: "   ", attachments: [] }),
+    );
+    expect(await loadSessionDraft("s1")).toBeNull();
+  });
+
   test("attachments whose backing file was pruned are dropped", async () => {
     const pruned = { ...attachment, localUri: "file:///cache/pruned.jpg" };
     const live = { ...attachment, localUri: "file:///docs/keep.png", name: "keep.png" };

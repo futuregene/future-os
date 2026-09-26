@@ -31,6 +31,8 @@ mod run_control_tests;
 mod session_lifecycle_tests;
 #[cfg(test)]
 mod settings_tests;
+#[cfg(test)]
+mod skills_tests;
 
 use super::{AppState, RpcCommand, RpcResponse};
 

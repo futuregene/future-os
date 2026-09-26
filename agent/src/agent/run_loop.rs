@@ -1874,6 +1874,12 @@ mod tests {
         requests: parking_lot::Mutex<Vec<Vec<AgentMessage>>>,
         request_times: parking_lot::Mutex<Vec<tokio::time::Instant>>,
         fail_summary: std::sync::atomic::AtomicBool,
+        /// Opt-in: the summary request reports a final usage chunk, so the
+        /// caller's `on_usage` observer really is invoked.
+        summary_usage: std::sync::atomic::AtomicBool,
+        /// Opt-in: that usage chunk carries no `credit_cost`, so the caller has to
+        /// fall back to pricing it from the catalog.
+        summary_unpriced: std::sync::atomic::AtomicBool,
         summary_calls: std::sync::atomic::AtomicUsize,
     }
 
@@ -1885,6 +1891,8 @@ mod tests {
                 requests: parking_lot::Mutex::new(vec![]),
                 request_times: parking_lot::Mutex::new(vec![]),
                 fail_summary: std::sync::atomic::AtomicBool::new(false),
+                summary_usage: std::sync::atomic::AtomicBool::new(false),
+                summary_unpriced: std::sync::atomic::AtomicBool::new(false),
                 summary_calls: std::sync::atomic::AtomicUsize::new(0),
             })
         }
@@ -1917,10 +1925,38 @@ mod tests {
                         "summary provider unavailable (test script)"
                     ));
                 }
-                let events = vec![
+                let mut events = vec![
                     ev_text("## Objective\n- Continue the test.\n\n## Important Details\n- Preserve history.\n\n## Work State\n### Completed\n- Earlier work.\n\n### Active\n- Current run.\n\n### Blocked\n- (none)\n\n## Next Move\n1. Continue.\n\n## Relevant Files\n- (none)"),
                     ev_stop(),
                 ];
+                if self
+                    .summary_usage
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    // A summary is a billed model call like any other: it reports
+                    // a final usage chunk that the caller must charge once.
+                    events.pop();
+                    events.push(ModelStreamEvent::Finish {
+                        reason: FinishReason::Stop,
+                        usage: Some(crate::types::Usage {
+                            prompt_tokens: 1_000_000,
+                            completion_tokens: 500_000,
+                            total_tokens: 1_500_000,
+                            cache_read_tokens: Some(4),
+                            cache_write_tokens: Some(6),
+                            reasoning_tokens: None,
+                            credit_cost: if self
+                                .summary_unpriced
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                None
+                            } else {
+                                Some(0.5)
+                            },
+                            provider_metadata: None,
+                        }),
+                    });
+                }
                 let (tx, rx) = mpsc::channel(events.len());
                 for event in events {
                     let _ = tx.try_send(event);
@@ -2266,13 +2302,48 @@ mod tests {
     /// Install a thread-local tracing subscriber that discards output. The
     /// verbose log macros only evaluate their arguments when a subscriber
     /// enables the callsite — without one, argument lines never execute.
-    fn tracing_sink() -> tracing::subscriber::DefaultGuard {
-        tracing::subscriber::set_default(
+    ///
+    /// It also rebuilds the callsite interest cache: `tracing` caches each
+    /// callsite's interest **globally** and only rebuilds it when a *global*
+    /// default is installed. A thread-local `set_default` therefore inherits the
+    /// `Interest::never` cached by whichever test first reached the callsite with
+    /// no subscriber — which is what happened here: the `run_verbose_*` tests
+    /// took the verbose branches while evaluating none of their fields, and
+    /// neither raising the level nor setting `RUST_LOG` changed that.
+    fn install_tracing_sink(level: tracing::Level) -> tracing::subscriber::DefaultGuard {
+        let guard = tracing::subscriber::set_default(
             tracing_subscriber::fmt()
+                .with_max_level(level)
                 .with_writer(std::io::sink)
                 .with_ansi(false)
                 .finish(),
-        )
+        );
+        tracing::callsite::rebuild_interest_cache();
+        guard
+    }
+
+    fn tracing_sink() -> tracing::subscriber::DefaultGuard {
+        install_tracing_sink(tracing::Level::INFO)
+    }
+
+    /// As `tracing_sink`, but at `DEBUG` so the `debug!` sites (generation ended,
+    /// truncation) are enabled too.
+    fn tracing_sink_at(level: tracing::Level) -> tracing::subscriber::DefaultGuard {
+        install_tracing_sink(level)
+    }
+
+    /// The scaffolding above is only meaningful if the subscriber really is the
+    /// current max level, because a `tracing` callsite evaluates its fields only
+    /// when it is. This pins that, so a future change that silently disables the
+    /// sink cannot leave the `run_verbose_*` tests looking as if they exercised
+    /// the logging code while evaluating none of it.
+    #[test]
+    fn the_log_sink_really_raises_the_enabled_level() {
+        let _tracing = tracing_sink_at(tracing::Level::DEBUG);
+        assert!(
+            tracing::level_filters::LevelFilter::current() >= tracing::Level::DEBUG,
+            "the sink must enable every log level the run loop reports"
+        );
     }
 
     // ── run_streaming_with_messages ─────────────────────────────────────────
@@ -4183,7 +4254,7 @@ mod tests {
             model: "mock".into(),
         });
         let messages = compactable_messages(26_000);
-        let failed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let outcome = Arc::new(parking_lot::Mutex::new(None));
         let (text, final_messages) = loop_
             .run_streaming_with_messages(
@@ -4191,15 +4262,13 @@ mod tests {
                 &StreamContext::default(),
                 noop_on_text,
                 {
-                    let failed = failed.clone();
+                    let events = events.clone();
                     let outcome = outcome.clone();
                     move |event| {
                         if let RunEvent::CompactionCommitted { checkpoint, .. } = &event {
                             *outcome.lock() = checkpoint.summary_outcome.clone();
                         }
-                        if matches!(event, RunEvent::CompactionFailed { .. }) {
-                            failed.store(true, std::sync::atomic::Ordering::Relaxed);
-                        }
+                        record_compaction_event(&events, event);
                     }
                 },
                 None,
@@ -4207,7 +4276,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(text, "ok");
-        assert!(!failed.load(std::sync::atomic::Ordering::Relaxed));
+        // The summary failed, so the deterministic fallback is committed and no
+        // failure is announced: the recorded sequence is the assertion. (The
+        // predecessor of this line was a `failed` flag whose store only ran inside
+        // a `matches!(event, CompactionFailed)` arm that this scenario — by
+        // construction — never reaches, so `assert!(!failed)` could not fail.)
+        assert_eq!(
+            events.lock().as_slice(),
+            ["compaction_started", "compaction_committed"],
+            "a failed summary falls back to evidence instead of failing the run"
+        );
         let outcome = outcome.lock();
         let outcome = outcome.as_ref().expect("committed outcome is observable");
         assert_eq!(
@@ -4261,6 +4339,105 @@ mod tests {
         assert_eq!(
             events.lock().as_slice(),
             ["compaction_started", "compaction_failed"]
+        );
+    }
+
+    /// The same commit failure, but with a durable journal: the failure is
+    /// recorded on the receipt, announced once, and the checkpoint is *not*
+    /// adopted. The recorded failure is durable — a later attempt over the same
+    /// history refuses with `compaction_previous_failed` instead of replaying a
+    /// receipt that was never written or paying for the compaction again.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_automatic_compaction_whose_receipt_cannot_be_committed_fails_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::session::Manager::new(dir.path().to_owned()));
+        let messages = compactable_messages(26_000);
+        let entries = messages
+            .iter()
+            .map(crate::session::agent_message_to_entry)
+            .map(|entry| serde_json::to_value(entry).unwrap())
+            .collect::<Vec<_>>();
+        store.storage().unwrap().replace("s", entries).unwrap();
+
+        let manager = || crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 2000,
+            keep_recent_tokens: 1,
+            context_window: 8192,
+            model: "mock".into(),
+        };
+        let journal = |manager: &std::sync::Arc<crate::session::Manager>| {
+            crate::compaction::CompactionJournal::new(
+                manager.clone(),
+                crate::session::SessionPersistence::new(manager.clone(), "s".into()),
+                "s".into(),
+                serde_json::json!({"model": "mock"}),
+            )
+        };
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        let mut loop_ = Loop::new(provider, "mock");
+        loop_.context_manager = Some(manager());
+        let persistence = crate::session::SessionPersistence::new(store.clone(), "s".into());
+        persistence.fail_next_commit();
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let result = loop_
+            .run_streaming_with_messages(
+                messages,
+                &StreamContext {
+                    compaction_journal: Some(crate::compaction::CompactionJournal::new(
+                        store.clone(),
+                        persistence,
+                        "s".into(),
+                        serde_json::json!({"model": "mock"}),
+                    )),
+                    on_checkpoint: Some(Arc::new(|_| Ok(()))),
+                    ..Default::default()
+                },
+                noop_on_text,
+                {
+                    let events = events.clone();
+                    move |event| record_compaction_event(&events, event)
+                },
+                None,
+            )
+            .await;
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("injected run commit failure"), "{error}");
+        assert_eq!(
+            events.lock().as_slice(),
+            ["compaction_started", "compaction_failed"],
+            "the uncommitted checkpoint must be announced as failed, not committed"
+        );
+        assert!(
+            loop_.active_checkpoint.lock().is_none(),
+            "a checkpoint whose receipt could not be committed must not be adopted"
+        );
+
+        // Reopen the session store: the failure has to be on disk, not just in
+        // the failed run's in-memory error slot.
+        let reopened = std::sync::Arc::new(crate::session::Manager::new(dir.path().to_owned()));
+        let retry_provider =
+            ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        let mut retry = Loop::new(retry_provider, "mock");
+        retry.context_manager = Some(manager());
+        let retry_error = retry
+            .run_streaming_with_messages(
+                compactable_messages(26_000),
+                &StreamContext {
+                    compaction_journal: Some(journal(&reopened)),
+                    on_checkpoint: Some(Arc::new(|_| Ok(()))),
+                    ..Default::default()
+                },
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            retry_error.contains("compaction_previous_failed"),
+            "a failed receipt must refuse a retry instead of replaying it: {retry_error}"
         );
     }
 
@@ -5598,5 +5775,1049 @@ mod tests {
             )
             .await;
         assert!(result.unwrap_err().to_string().contains("no progress"));
+    }
+
+    // ─── batch 3: projection fallbacks, evaluated log fields, catalog window ──
+
+    /// Compatibility streams may omit a start frame or an id, so a block can
+    /// exist with no matching (or an out-of-range) order entry, and an order
+    /// entry can name an id that was never accumulated. Nothing may be dropped:
+    /// the assistant message must stay API-valid for the next turn.
+    #[test]
+    fn assemble_assistant_content_keeps_blocks_that_the_event_order_could_not_place() {
+        let reasoning = vec![
+            AccumulatedReasoningBlock {
+                id: "r-kept".into(),
+                text: "thought".into(),
+                ..Default::default()
+            },
+            // Declared but never given text or metadata.
+            AccumulatedReasoningBlock {
+                id: "r-empty".into(),
+                ..Default::default()
+            },
+        ];
+        let text = vec![
+            AccumulatedTextBlock {
+                id: "t-kept".into(),
+                text: "answer".into(),
+            },
+            AccumulatedTextBlock {
+                id: "t-empty".into(),
+                text: String::new(),
+            },
+        ];
+        let tools = vec![AgentToolCall {
+            id: "c1".into(),
+            name: "echo".into(),
+            args: serde_json::json!({}),
+            provider_metadata: Default::default(),
+        }];
+        let order = vec![
+            AssistantBlockOrder::Reasoning("r-empty".into()),
+            AssistantBlockOrder::Text("t-empty".into()),
+            // Ids that were never accumulated, and an index past the tool list.
+            AssistantBlockOrder::Reasoning("r-missing".into()),
+            AssistantBlockOrder::Text("t-missing".into()),
+            AssistantBlockOrder::Tool(9),
+        ];
+
+        let content = assemble_assistant_content(&order, &reasoning, &text, &tools);
+
+        assert_eq!(
+            content.len(),
+            3,
+            "empty blocks are skipped, unplaceable ones are kept: {content:?}"
+        );
+        assert!(matches!(content[0], ContentBlock::Reasoning { .. }));
+        assert!(matches!(content[1], ContentBlock::Text { .. }));
+        assert!(matches!(&content[2], ContentBlock::ToolCall { id, .. } if id == "c1"));
+    }
+
+    // ─── batch 3: projection fallbacks, evaluated log fields, catalog window ──
+
+    /// Every verbose log field must be evaluable on the paths that report them:
+    /// run start, every turn request, generation end, tool execution, per-turn
+    /// usage and the final completion. Drives two turns (one with a tool) whose
+    /// usage carries cache counters, so the accumulation assertions below are a
+    /// real check of `process_usage_event`, not just a line visit.
+    #[tokio::test(flavor = "current_thread")]
+    async fn verbose_log_fields_are_evaluated_for_a_tool_turn_and_a_final_turn() {
+        let _tracing = tracing_sink_at(tracing::Level::DEBUG);
+        let usage = |prompt: i64, completion: i64, read: i64, write: i64| crate::types::Usage {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: prompt + completion,
+            cache_read_tokens: Some(read),
+            cache_write_tokens: Some(write),
+            reasoning_tokens: None,
+            credit_cost: Some(0.0),
+            provider_metadata: None,
+        };
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ev_text("working"),
+                ev_toolcall_start(0, "c1", "echo", "{}"),
+                ev_toolcall_end(),
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::ToolCalls,
+                    usage: Some(usage(3, 5, 7, 11)),
+                },
+            ]),
+            Script::Events(vec![
+                ev_text("final"),
+                ModelStreamEvent::Finish {
+                    reason: FinishReason::Stop,
+                    usage: Some(usage(13, 17, 19, 23)),
+                },
+            ]),
+        ]);
+        let mut loop_ = Loop::new(provider, "mock").with_tools(vec![echo_tool()]);
+        loop_.verbose = true;
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(text, "final");
+        let read = |counter: &std::sync::atomic::AtomicI64| {
+            counter.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        // Both turns are reported and accumulated, cache counters included.
+        assert_eq!(read(&loop_.cumulative_input_tokens), 3 + 13);
+        assert_eq!(read(&loop_.cumulative_output_tokens), 5 + 17);
+        assert_eq!(read(&loop_.cumulative_cache_read_tokens), 7 + 19);
+        assert_eq!(read(&loop_.cumulative_cache_write_tokens), 11 + 23);
+    }
+
+    /// A mid-stream provider failure must log the accumulated prefix and record a
+    /// stable client-visible category. A gateway timeout is `request_timeout`,
+    /// *not* the generic `model_response_error`: an orchestrator decides whether
+    /// to resume from that code.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_stream_error_logs_its_fields_and_records_a_timeout_category() {
+        let _tracing = tracing_sink_at(tracing::Level::DEBUG);
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_text("partial"),
+            ModelStreamEvent::Error {
+                message: "[RESPONSE_TIMEOUT] the gateway gave up".to_string(),
+            },
+        ])]);
+        let mut loop_ = Loop::new(provider, "mock");
+        loop_.verbose = true;
+        let (text, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .expect("a hard stream error ends the run with a partial answer, not an Err");
+
+        // The partial prefix reaches the conversation (so the next run can
+        // continue from it) and is measured in the truncation record, while the
+        // run's return value stays empty: `text` is the *completed* answer.
+        assert!(text.is_empty());
+        let last = messages.last().expect("the partial assistant message");
+        assert_eq!(last.role, "assistant");
+        assert!(last.text().contains("partial"), "{:?}", last.text());
+        let truncation = loop_
+            .stream_truncation
+            .lock()
+            .clone()
+            .expect("the truncated run records why");
+        assert_eq!(truncation.detected_by, "request_timeout");
+        assert_eq!(truncation.output_len, "partial".len());
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// The catalog window is provider authority: a session template can be stale
+    /// (the user just switched to a model with a different window), and the loop
+    /// must refresh the compaction budget from the registry before every request.
+    /// With the stale 8 k template a 26 k-token conversation needs a checkpoint;
+    /// the catalog's 200 k window means none is written and no summary is bought.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_catalog_context_window_replaces_a_stale_session_template() {
+        let registry = std::sync::Arc::new(parking_lot::RwLock::new(
+            crate::models::Registry::from_models_and_auth(
+                vec![crate::models::Model {
+                    id: "deepseek-chat".to_string(),
+                    name: "DeepSeek Chat".to_string(),
+                    provider: "deepseek".to_string(),
+                    api: "chat".to_string(),
+                    base_url: "https://api.deepseek.com".to_string(),
+                    context_window: 200_000,
+                    max_tokens: 32_000,
+                    input: vec!["text".to_string()],
+                    output: vec!["text".to_string()],
+                    cost: crate::models::Cost {
+                        input: 1.0,
+                        output: 2.0,
+                        cache_read: 0.0,
+                        cache_write: 0.0,
+                    },
+                    ..Default::default()
+                }],
+                r#"{"deepseek":{"type":"api_key","key":"k"}}"#,
+            ),
+        ));
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        let mut loop_ = Loop::new(provider.clone(), "deepseek-chat");
+        loop_.model_ref = "deepseek/deepseek-chat".to_string();
+        loop_.model_registry = Some(registry.clone());
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 1,
+            keep_recent_tokens: 1,
+            context_window: 1_000,
+            model: "stale-template".into(),
+        });
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                compactable_messages(120_000),
+                &StreamContext::default(),
+                noop_on_text,
+                {
+                    let events = events.clone();
+                    move |event| record_compaction_event(&events, event)
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(text, "ok");
+        let observed = events.lock().clone();
+        assert!(
+            observed.is_empty(),
+            "the 200k catalog window must replace the stale 8k template: {observed:?}"
+        );
+        assert_eq!(
+            provider
+                .summary_calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "no checkpoint means no handoff summary"
+        );
+
+        // The other direction, and the discriminating one: the *same* conversation
+        // against a tiny catalog entry is refused, because the guard compares against
+        // the window the catalog reports. With the 200k template still in force the
+        // request would fit, so this can only pass if the refresh ran.
+        let tiny = std::sync::Arc::new(parking_lot::RwLock::new(
+            crate::models::Registry::from_models_and_auth(
+                vec![crate::models::Model {
+                    id: "deepseek-chat".to_string(),
+                    name: "DeepSeek Chat".to_string(),
+                    provider: "deepseek".to_string(),
+                    api: "chat".to_string(),
+                    base_url: "https://api.deepseek.com".to_string(),
+                    context_window: 1_000,
+                    max_tokens: 512,
+                    input: vec!["text".to_string()],
+                    output: vec!["text".to_string()],
+                    cost: crate::models::Cost {
+                        input: 1.0,
+                        output: 2.0,
+                        cache_read: 0.0,
+                        cache_write: 0.0,
+                    },
+                    ..Default::default()
+                }],
+                r#"{"deepseek":{"type":"api_key","key":"k"}}"#,
+            ),
+        ));
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        let mut loop_ = Loop::new(provider.clone(), "deepseek-chat");
+        loop_.model_ref = "deepseek/deepseek-chat".to_string();
+        loop_.model_registry = Some(tiny);
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 2000,
+            keep_recent_tokens: 1,
+            context_window: 200_000,
+            model: "large-template".into(),
+        });
+        let result = loop_
+            .run_streaming_with_messages(
+                compactable_messages(26_000),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await;
+        let error = result.expect_err(
+            "the 1k catalog window must replace the 200k template, so the same \
+             conversation no longer fits",
+        );
+        // The refresh shrinks the budget, so the run now refuses through the
+        // compaction/capacity guards instead of sending the oversized request.
+        let message = error.to_string();
+        assert!(
+            message.contains("budget exceeded") || message.contains("exceeds model capacity"),
+            "expected a budget/capacity refusal, got: {message}"
+        );
+
+        // An empty canonical reference resolves to nothing, so the manager's own
+        // numbers stay in force and the run still has to work end to end.
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        let mut loop_ = Loop::new(provider, "deepseek-chat");
+        loop_.model_ref = String::new();
+        loop_.model_registry = Some(registry.clone());
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 1,
+            keep_recent_tokens: 1,
+            context_window: 200_000,
+            model: "template".into(),
+        });
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                compactable_messages(26_000),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "ok");
+        // The empty reference is resolved through the registry's own default, so
+        // the fallback line above is what makes this run still get a real budget
+        // instead of silently keeping the template's numbers.
+        assert!(
+            registry.read().resolve_request_target("").is_some(),
+            "the registry resolves an empty reference to its default model"
+        );
+    }
+
+    /// A direct/ephemeral `Loop` has no canonical model reference, so pricing must
+    /// fall back to the loop's own model name — otherwise a one-off run reports a
+    /// zero cost for a model the catalog prices.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_empty_model_reference_prices_the_loop_model_name() {
+        let provider = ScriptedProvider::new(vec![usage_script(1_000_000, 1_000_000)]);
+        let mut loop_ = Loop::new(provider, "deepseek-chat");
+        loop_.model_ref = String::new();
+        loop_.model_registry = Some(priced_registry(vec![crate::models::Model {
+            id: "deepseek-chat".to_string(),
+            name: "DeepSeek Chat".to_string(),
+            provider: "deepseek".to_string(),
+            api: "chat".to_string(),
+            base_url: "https://api.deepseek.com".to_string(),
+            input: vec!["text".to_string()],
+            output: vec!["text".to_string()],
+            cost: crate::models::Cost {
+                input: 1.0,
+                output: 2.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            },
+            ..Default::default()
+        }]));
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(text, "answer");
+        // 1M input at 1.0/M + 1M output at 2.0/M.
+        let cost = *loop_.cumulative_cost.lock();
+        assert!((cost - 3.0).abs() < 1e-9, "estimated cost was {cost}");
+        assert!(loop_.cumulative_cost_split.lock().input > 0.0);
+    }
+
+    /// The post-preparation capacity guard is the last line of defence: automatic
+    /// compaction may be gated off, and a projection that still does not fit the
+    /// window must be refused here rather than sent to the provider.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_projection_that_still_exceeds_the_window_is_refused() {
+        let provider = ScriptedProvider::new(vec![]);
+        let mut loop_ = Loop::new(provider, "mock");
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: false,
+            reserve_tokens: 1,
+            keep_recent_tokens: 1,
+            context_window: 8_192,
+            model: "mock".into(),
+        });
+        let error = loop_
+            .run_streaming_with_messages(
+                compactable_messages(400_000),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains("exceeds model capacity"),
+            "{error}"
+        );
+    }
+
+    /// A handoff summary is a billed model call: its final usage chunk must reach
+    /// the session's counters once (prompt, completion and the cache split), even
+    /// when the model has no price on file — a zero-priced summary must not look
+    /// like no request was made. The main call reports no usage here, so every
+    /// counter holds exactly the summary's chunk.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_compaction_summary_usage_is_charged_once() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        provider
+            .summary_usage
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut loop_ = Loop::new(provider.clone(), "mock");
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 2000,
+            keep_recent_tokens: 1,
+            context_window: 8192,
+            model: "mock".into(),
+        });
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                compactable_messages(26_000),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(text, "ok");
+        assert_eq!(
+            provider
+                .summary_calls
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the compaction asked for exactly one handoff summary"
+        );
+        let read = |counter: &std::sync::atomic::AtomicI64| {
+            counter.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        assert_eq!(read(&loop_.cumulative_input_tokens), 1_000_000);
+        assert_eq!(read(&loop_.cumulative_output_tokens), 500_000);
+        assert_eq!(read(&loop_.cumulative_cache_read_tokens), 4);
+        assert_eq!(read(&loop_.cumulative_cache_write_tokens), 6);
+        // The provider's own `credit_cost` is authoritative and is charged once,
+        // never per progressive chunk.
+        assert_eq!(*loop_.cumulative_cost.lock(), 0.5);
+    }
+
+    /// A summary whose provider reports usage *without* a price still has to be
+    /// priced from the catalog: dropping it would make a paid summarisation look
+    /// free. With no registry entry the estimate is zero, so the run must not
+    /// invent a cost either — the counters are the evidence the request happened.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_summary_without_a_credit_cost_is_estimated_from_the_catalog() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        provider
+            .summary_usage
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        provider
+            .summary_unpriced
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut loop_ = Loop::new(provider, "mock");
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 2000,
+            keep_recent_tokens: 1,
+            context_window: 8192,
+            model: "mock".into(),
+        });
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                compactable_messages(26_000),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(text, "ok");
+        // No price on file for the model: the estimate is zero rather than a
+        // made-up charge, but the summary's tokens are still accounted for.
+        assert_eq!(*loop_.cumulative_cost.lock(), 0.0);
+        assert_eq!(
+            loop_
+                .cumulative_input_tokens
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1_000_000
+        );
+    }
+
+    /// A provider that ends its stream with `FinishReason::Error` is a truncated
+    /// run whose category is `finish_error` — not the generic model-response
+    /// error — so an orchestrator can tell a provider-side failure from a
+    /// malformed payload.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_finish_error_reason_is_classified_as_finish_error() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![
+            ev_text("cut"),
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Error,
+                usage: None,
+            },
+        ])]);
+        let loop_ = Loop::new(provider, "mock");
+        let (_, _) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        let truncation = loop_
+            .stream_truncation
+            .lock()
+            .clone()
+            .expect("the error finish is a truncation");
+        assert_eq!(truncation.detected_by, "finish_error");
+        assert!(loop_
+            .stream_incomplete
+            .load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// The pump task must notice that the consumer dropped the stream: a send
+    /// into a closed channel ends the task instead of leaving it waiting for a
+    /// reader that will never come back. The interrupt drops the receiver while a
+    /// timed event is still pending, then the runtime is advanced so the task
+    /// really reaches the failing send.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn a_timed_stream_stops_sending_when_the_run_drops_the_receiver() {
+        let provider = ScriptedProvider::new(vec![Script::TimedEvents(vec![
+            (Duration::from_millis(0), ev_text("early")),
+            (Duration::from_secs(30), ev_text("never delivered")),
+        ])]);
+        let loop_ = Loop::new(provider, "mock");
+        let flag = loop_.interrupt_flag.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let (text, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("hi"),
+                &StreamContext::default(),
+                noop_on_text,
+                |_| {},
+                None,
+            )
+            .await
+            .unwrap();
+
+        // The interrupted stream delivers no completed answer, but the prefix it
+        // had already received survives in the conversation.
+        assert!(text.is_empty());
+        assert_eq!(messages[1].text(), "early");
+        // Let the pump task reach its second send into the dropped receiver.
+        tokio::time::advance(Duration::from_secs(31)).await;
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    /// A journal-backed compaction records a receipt the first time and *replays*
+    /// it the second: the loop must adopt the cached preparation and must not
+    /// announce a second `CompactionCommitted`. This is the only place the loop
+    /// consumes an `Admission::Replayed` ticket, so without it the idempotency
+    /// contract is untested at its real call site.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_replayed_compaction_receipt_is_adopted_without_a_second_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::session::Manager::new(dir.path().to_owned()));
+        let messages = compactable_messages(26_000);
+        let entries = messages
+            .iter()
+            .map(crate::session::agent_message_to_entry)
+            .map(|entry| serde_json::to_value(entry).unwrap())
+            .collect::<Vec<_>>();
+        store.storage().unwrap().replace("s", entries).unwrap();
+        let manager = || crate::compaction::ContextManager {
+            enabled: true,
+            reserve_tokens: 2000,
+            keep_recent_tokens: 1,
+            context_window: 8192,
+            model: "mock".into(),
+        };
+
+        let run = |label: &'static str| {
+            let provider =
+                ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+            let mut loop_ = Loop::new(provider, "mock");
+            loop_.context_manager = Some(manager());
+            let messages = messages.clone();
+            let journal = crate::compaction::CompactionJournal::new(
+                store.clone(),
+                crate::session::SessionPersistence::new(store.clone(), "s".into()),
+                "s".into(),
+                serde_json::json!({"model": "mock"}),
+            );
+            let committed = Arc::new(parking_lot::Mutex::new(0usize));
+            let counter = committed.clone();
+            async move {
+                let (text, _) = loop_
+                    .run_streaming_with_messages(
+                        messages,
+                        &StreamContext {
+                            compaction_journal: Some(journal),
+                            on_checkpoint: Some(Arc::new(|_| Ok(()))),
+                            ..Default::default()
+                        },
+                        noop_on_text,
+                        move |event| {
+                            if matches!(event, RunEvent::CompactionCommitted { .. }) {
+                                *counter.lock() += 1;
+                            }
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap_or_else(|error| panic!("{label} run failed: {error}"));
+                (text, *committed.lock())
+            }
+        };
+
+        let (text, committed) = run("first").await;
+        assert_eq!(text, "ok");
+        assert_eq!(committed, 1, "the first run commits its checkpoint");
+
+        // Same history, same policy: the receipt is replayed, so the second run
+        // must not pay for a second summary or announce a second commit.
+        let (text, committed) = run("second").await;
+        assert_eq!(text, "ok");
+        assert_eq!(committed, 0, "a replayed receipt is not a new commit");
+    }
+
+    /// A prompt can cross the *journal* gating threshold while still fitting the
+    /// model: `effective_trigger = min(window - reserve, input_limit)` is below
+    /// `input_limit` whenever `reserve_tokens` exceeds the output reserve plus the
+    /// margin, and a lone oversized user input has no compactable boundary. The
+    /// receipt must then be closed with `checkpoint: null` so a second run does not
+    /// replay a compaction that never produced a checkpoint.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_ticket_is_closed_without_a_checkpoint_when_nothing_could_be_compacted() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::session::Manager::new(dir.path().to_owned()));
+        // One lone user input: there is no older turn to summarise.
+        let mut lone =
+            crate::types::AgentMessage::new_user("user", serde_json::json!("x".repeat(27_000)));
+        lone.ensure_journal_entry_id();
+        let messages = vec![lone];
+        let entries = messages
+            .iter()
+            .map(crate::session::agent_message_to_entry)
+            .map(|entry| serde_json::to_value(entry).unwrap())
+            .collect::<Vec<_>>();
+        store.storage().unwrap().replace("s", entries).unwrap();
+
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        let mut loop_ = Loop::new(provider, "mock");
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: true,
+            // Above the 512-token margin, so the economic trigger sits below the
+            // hard input limit and the receipt is claimed.
+            reserve_tokens: 2000,
+            keep_recent_tokens: 1,
+            context_window: 8192,
+            model: "mock".into(),
+        });
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                messages,
+                &StreamContext {
+                    compaction_journal: Some(crate::compaction::CompactionJournal::new(
+                        store.clone(),
+                        crate::session::SessionPersistence::new(store.clone(), "s".into()),
+                        "s".into(),
+                        serde_json::json!({"model": "mock"}),
+                    )),
+                    on_checkpoint: Some(Arc::new(|_| Ok(()))),
+                    ..Default::default()
+                },
+                noop_on_text,
+                {
+                    let events = events.clone();
+                    move |event| record_compaction_event(&events, event)
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(text, "ok");
+        // No checkpoint was needed, so nothing was adopted and nothing announced.
+        assert!(loop_.active_checkpoint.lock().is_none());
+        let observed = events.lock().clone();
+        assert!(
+            observed.is_empty(),
+            "a receipt closed without a checkpoint must not announce one: {observed:?}"
+        );
+
+        // A second run over the same journal and policy replays that receipt. The
+        // recorded answer was "nothing to compact", so the replay must stay a
+        // no-op — no checkpoint, no lifecycle event — while the turn itself still
+        // runs (the receipt answers the compaction question, not the request).
+        let mut lone_again =
+            crate::types::AgentMessage::new_user("user", serde_json::json!("x".repeat(27_000)));
+        lone_again.ensure_journal_entry_id();
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_text("ok"), ev_stop()])]);
+        let mut again = Loop::new(provider, "mock");
+        again.context_manager = loop_.context_manager.clone();
+        let replayed_events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (text, _) = again
+            .run_streaming_with_messages(
+                vec![lone_again],
+                &StreamContext {
+                    compaction_journal: Some(crate::compaction::CompactionJournal::new(
+                        store.clone(),
+                        crate::session::SessionPersistence::new(store.clone(), "s".into()),
+                        "s".into(),
+                        serde_json::json!({"model": "mock"}),
+                    )),
+                    on_checkpoint: Some(Arc::new(|_| Ok(()))),
+                    ..Default::default()
+                },
+                noop_on_text,
+                {
+                    let replayed_events = replayed_events.clone();
+                    move |event| record_compaction_event(&replayed_events, event)
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            text, "ok",
+            "a replayed 'nothing to compact' receipt still runs the turn"
+        );
+        assert!(again.active_checkpoint.lock().is_none());
+        let replayed = replayed_events.lock().clone();
+        assert!(
+            replayed.is_empty(),
+            "a replayed receipt must not announce a compaction: {replayed:?}"
+        );
+        // The discriminating check: a *fresh* claim would insert its own receipt
+        // row (and a replay is the only other way this run can succeed, since the
+        // row for this key already exists). One completed receipt means the second
+        // run read the recorded answer instead of claiming again.
+        assert_eq!(
+            store
+                .storage()
+                .unwrap()
+                .db
+                .call(|db| {
+                    Ok(db.query_row(
+                        "SELECT COUNT(*) FROM compaction_operations WHERE session_id='s' \
+                         AND state='completed'",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )?)
+                })
+                .unwrap(),
+            1,
+            "the replay must reuse the recorded receipt, not claim a second one"
+        );
+    }
+
+    /// The provider-limit recovery path with a durable journal: the checkpoint
+    /// computed for the retry must be committed through its *ticket* and announced,
+    /// and the recovery receipt is what makes the retry idempotent. Without a
+    /// journal (the existing test) none of that exists, which is why these arms
+    /// were never reached.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_provider_limit_recovery_commits_its_checkpoint_through_the_ticket() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::session::Manager::new(dir.path().to_owned()));
+        let messages = compactable_messages(20_000);
+        let entries = messages
+            .iter()
+            .map(crate::session::agent_message_to_entry)
+            .map(|entry| serde_json::to_value(entry).unwrap())
+            .collect::<Vec<_>>();
+        store.storage().unwrap().replace("s", entries).unwrap();
+
+        let provider = ScriptedProvider::new(vec![
+            Script::Fail(
+                "[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400)."
+                    .to_string(),
+            ),
+            Script::Events(vec![ev_text("recovered"), ev_stop()]),
+        ]);
+        let config = crate::types::AgentConfig {
+            max_retries: 1,
+            ..Default::default()
+        };
+        let mut loop_ = Loop::new(provider, "mock").with_config(config);
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: false,
+            reserve_tokens: 1,
+            keep_recent_tokens: 1,
+            context_window: 8192,
+            model: "mock".into(),
+        });
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (text, _) = loop_
+            .run_streaming_with_messages(
+                messages,
+                &StreamContext {
+                    compaction_journal: Some(crate::compaction::CompactionJournal::new(
+                        store.clone(),
+                        crate::session::SessionPersistence::new(store.clone(), "s".into()),
+                        "s".into(),
+                        serde_json::json!({"model": "mock"}),
+                    )),
+                    on_checkpoint: Some(Arc::new(|_| Ok(()))),
+                    ..Default::default()
+                },
+                noop_on_text,
+                {
+                    let events = events.clone();
+                    move |event| record_compaction_event(&events, event)
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(text, "recovered");
+        assert_eq!(
+            events.lock().as_slice(),
+            ["compaction_started", "compaction_committed"],
+            "the recovered checkpoint is committed and announced once"
+        );
+        assert!(
+            loop_.active_checkpoint.lock().is_some(),
+            "the loop adopts the checkpoint it just committed"
+        );
+    }
+
+    /// A provider-limit recovery that computes a checkpoint it cannot commit:
+    /// the receipt is marked failed, the failure is announced once, and the loop
+    /// returns the error without adopting the checkpoint. The retry after the
+    /// failure must refuse on the recorded receipt and announce nothing, so a
+    /// broken store can never be turned into a silent duplicate compaction.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_provider_limit_recovery_whose_receipt_cannot_be_committed_fails_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::session::Manager::new(dir.path().to_owned()));
+        let entries = compactable_messages(20_000)
+            .iter()
+            .map(crate::session::agent_message_to_entry)
+            .map(|entry| serde_json::to_value(entry).unwrap())
+            .collect::<Vec<_>>();
+        store.storage().unwrap().replace("s", entries).unwrap();
+
+        let ctx_limit =
+            "[CTX_LIMIT] Request exceeds the model's maximum context length (HTTP 400)."
+                .to_string();
+        let provider = ScriptedProvider::new(vec![
+            Script::Fail(ctx_limit.clone()),
+            Script::Events(vec![ev_text("recovered"), ev_stop()]),
+        ]);
+        let config = crate::types::AgentConfig {
+            max_retries: 1,
+            ..Default::default()
+        };
+        let mut loop_ = Loop::new(provider, "mock").with_config(config);
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: false,
+            reserve_tokens: 1,
+            keep_recent_tokens: 1,
+            context_window: 8192,
+            model: "mock".into(),
+        });
+        let persistence = crate::session::SessionPersistence::new(store.clone(), "s".into());
+        persistence.fail_next_commit();
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let error = loop_
+            .run_streaming_with_messages(
+                compactable_messages(20_000),
+                &StreamContext {
+                    compaction_journal: Some(crate::compaction::CompactionJournal::new(
+                        store.clone(),
+                        persistence,
+                        "s".into(),
+                        serde_json::json!({"model": "mock"}),
+                    )),
+                    on_checkpoint: Some(Arc::new(|_| Ok(()))),
+                    ..Default::default()
+                },
+                noop_on_text,
+                {
+                    let events = events.clone();
+                    move |event| record_compaction_event(&events, event)
+                },
+                None,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("injected run commit failure"), "{error}");
+        assert_eq!(
+            events.lock().as_slice(),
+            ["compaction_started", "compaction_failed"]
+        );
+        assert!(
+            loop_.active_checkpoint.lock().is_none(),
+            "the recovery must not adopt a checkpoint it could not commit"
+        );
+
+        // A fresh store handle over the same database: the failure is durable, so
+        // the next recovery refuses on the receipt and announces no new attempt.
+        let reopened = std::sync::Arc::new(crate::session::Manager::new(dir.path().to_owned()));
+        let retry_provider = ScriptedProvider::new(vec![
+            Script::Fail(ctx_limit),
+            Script::Events(vec![ev_text("recovered"), ev_stop()]),
+        ]);
+        let mut retry = Loop::new(retry_provider, "mock").with_config(crate::types::AgentConfig {
+            max_retries: 1,
+            ..Default::default()
+        });
+        retry.context_manager = Some(crate::compaction::ContextManager {
+            enabled: false,
+            reserve_tokens: 1,
+            keep_recent_tokens: 1,
+            context_window: 8192,
+            model: "mock".into(),
+        });
+        let retry_events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let retry_error = retry
+            .run_streaming_with_messages(
+                compactable_messages(20_000),
+                &StreamContext {
+                    compaction_journal: Some(crate::compaction::CompactionJournal::new(
+                        reopened.clone(),
+                        crate::session::SessionPersistence::new(reopened.clone(), "s".into()),
+                        "s".into(),
+                        serde_json::json!({"model": "mock"}),
+                    )),
+                    on_checkpoint: Some(Arc::new(|_| Ok(()))),
+                    ..Default::default()
+                },
+                noop_on_text,
+                {
+                    let retry_events = retry_events.clone();
+                    move |event| record_compaction_event(&retry_events, event)
+                },
+                None,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            retry_error.contains("compaction_previous_failed"),
+            "a failed receipt must refuse a retry instead of replaying it: {retry_error}"
+        );
+        assert_eq!(
+            retry_events.lock().as_slice(),
+            ["compaction_failed"],
+            "a refused recovery announces the failure but never a compaction it did not start"
+        );
+    }
+
+    /// A provider-limit retry whose history offers no boundary at all must stop
+    /// with a specific error rather than retrying the same oversized request until
+    /// the retry budget runs out. (This is the *other* outcome of the recovery
+    /// step: the committed case is above, this is the refusal. The
+    /// `Unchanged`-with-a-ticket arm is unreachable from here — see the module
+    /// record's `unreachable-by-construction` row — because a `ProviderContextLimit`
+    /// trigger is not threshold-gated, so the planner refuses with
+    /// `NoValidBoundary` instead of returning `Unchanged`.)
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_provider_limit_recovery_without_a_boundary_refuses_instead_of_looping() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::session::Manager::new(dir.path().to_owned()));
+        let mut lone =
+            crate::types::AgentMessage::new_user("user", serde_json::json!("x".repeat(27_000)));
+        lone.ensure_journal_entry_id();
+        let messages = vec![lone];
+        let entries = messages
+            .iter()
+            .map(crate::session::agent_message_to_entry)
+            .map(|entry| serde_json::to_value(entry).unwrap())
+            .collect::<Vec<_>>();
+        store.storage().unwrap().replace("s", entries).unwrap();
+
+        let provider = ScriptedProvider::new(vec![Script::Fail(
+            "[CTX_LIMIT] maximum context length".to_string(),
+        )]);
+        let config = crate::types::AgentConfig {
+            max_retries: 1,
+            ..Default::default()
+        };
+        let mut loop_ = Loop::new(provider, "mock").with_config(config);
+        loop_.context_manager = Some(crate::compaction::ContextManager {
+            enabled: false,
+            reserve_tokens: 2000,
+            keep_recent_tokens: 1,
+            context_window: 8192,
+            model: "mock".into(),
+        });
+        let events = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let error = loop_
+            .run_streaming_with_messages(
+                messages,
+                &StreamContext {
+                    compaction_journal: Some(crate::compaction::CompactionJournal::new(
+                        store.clone(),
+                        crate::session::SessionPersistence::new(store.clone(), "s".into()),
+                        "s".into(),
+                        serde_json::json!({"model": "mock"}),
+                    )),
+                    on_checkpoint: Some(Arc::new(|_| Ok(()))),
+                    ..Default::default()
+                },
+                noop_on_text,
+                {
+                    let events = events.clone();
+                    move |event| record_compaction_event(&events, event)
+                },
+                None,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains("no valid journal boundary"),
+            "a history with no boundary must be refused with a specific reason: {error}"
+        );
+        // A refusal that never got as far as a plan announces only the failure —
+        // no phantom "started" for work that was never attempted.
+        assert_eq!(
+            events.lock().as_slice(),
+            ["compaction_failed"],
+            "a refused receipt is announced as a failure, not a commit"
+        );
+        assert!(loop_.active_checkpoint.lock().is_none());
     }
 }

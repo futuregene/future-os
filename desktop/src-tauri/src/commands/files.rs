@@ -1271,4 +1271,30 @@ mod tests {
         assert_eq!(safe_file_name("你好"), "image");
         assert_eq!(safe_file_name("report.md"), "report.md");
     }
+
+    /// The Windows extended-length spellings are rewritten to the ordinary ones
+    /// every other Windows tool prints — including the UNC form, which maps onto
+    /// a double-backslash share path rather than onto a bare `UNC\...`, and the
+    /// plain form, which drops the `\\?\` marker.
+    #[test]
+    fn ordinary_path_rewrites_the_extended_length_spellings() {
+        assert_eq!(
+            ordinary_path(Path::new(r"\\?\D:\work\proj")),
+            PathBuf::from(r"D:\work\proj")
+        );
+        assert_eq!(
+            ordinary_path(Path::new(r"\\?\UNC\server\share\file.txt")),
+            PathBuf::from(r"\\server\share\file.txt")
+        );
+        // A path that was never canonicalized is returned untouched, so POSIX
+        // paths and hand-built ones are unaffected.
+        assert_eq!(
+            ordinary_path(Path::new("/tmp/plain")),
+            PathBuf::from("/tmp/plain")
+        );
+        assert_eq!(
+            ordinary_path(Path::new(r"\\.\pipe\x")),
+            PathBuf::from(r"\\.\pipe\x")
+        );
+    }
 }

@@ -2231,6 +2231,27 @@ mod tests {
         assert!(err.contains("Not logged in"), "err: {err}");
     }
 
+    /// A read failure that is *not* `NotFound` is reported as the IO error
+    /// itself: an `auth.json` that exists but cannot be read (here it is a
+    /// directory) is a different failure from a missing credential, and the
+    /// "run future auth login" advice would be wrong for it.
+    #[tokio::test]
+    async fn load_api_key_reports_a_non_not_found_read_error() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let _env = crate::test_env::EnvGuard::remove(&["FUTURE_API_KEY", "FUTURE_API_TEST_KEY"]);
+        let path = auth_file();
+        tokio::fs::create_dir_all(&path)
+            .await
+            .expect("create a directory where auth.json is expected");
+        let err = load_api_key().await.unwrap_err();
+        assert!(
+            !err.contains("Not logged in"),
+            "an unreadable auth.json is not a missing credential: {err}"
+        );
+        assert!(!err.is_empty(), "the io error text is propagated");
+    }
+
     // ── MCP-backed list/describe/call ───────────────────────────────
 
     /// Auth env: FUTURE_API_KEY set + platform pointed at the mock.

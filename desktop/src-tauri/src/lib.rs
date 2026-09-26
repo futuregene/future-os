@@ -485,10 +485,21 @@ mod gui {
     /// created outside the GUI (TUI/CLI/channels) were imported into the store —
     /// so the sidebar re-lists threads. No payload: a bare invalidation signal.
     pub(crate) fn emit_threads_updated() {
-        if let Some(handle) = APP_HANDLE.get() {
-            use tauri::Emitter;
-            let _ = handle.emit("threads-updated", ());
+        emit_threads_updated_via(APP_HANDLE.get());
+    }
+
+    /// Route the invalidation through an optional handle (see
+    /// [`emit_review_updated_via`]).
+    fn emit_threads_updated_via<R: tauri::Runtime>(handle: Option<&tauri::AppHandle<R>>) {
+        if let Some(handle) = handle {
+            emit_threads_updated_on(handle);
         }
+    }
+
+    /// Emit the "threads-updated" invalidation on a caller-supplied handle.
+    fn emit_threads_updated_on<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) {
+        use tauri::Emitter;
+        let _ = handle.emit("threads-updated", ());
     }
 
     #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -1175,6 +1186,7 @@ mod gui {
             apply_main_window_geometry, coalesce_runtime_updates, emit_approvals_updated_on,
             emit_approvals_updated_via, emit_remote_activity_on, emit_remote_activity_via,
             emit_review_updated_on, emit_review_updated_via, emit_runtime_updates_on,
+            emit_threads_updated, emit_threads_updated_on, emit_threads_updated_via,
             main_window_geometry, runtime_update_drain_loop, sample_thread_streaming,
             sample_thread_streaming_with, size_main_window_to_screen,
             thread_streaming_monitor_loop, ThreadRuntimeUpdate, ThreadRuntimeUpdateBatch,
@@ -1369,10 +1381,16 @@ mod gui {
             emit_review_updated_via(Some(handle), "thread-1");
             emit_remote_activity_via(Some(handle), "thread-1");
             emit_approvals_updated_via(Some(handle), "thread-1", "approval-1");
+            emit_threads_updated_via(Some(handle));
             // None arm: process-global APP_HANDLE unset in tests.
             emit_review_updated_via::<tauri::test::MockRuntime>(None, "thread-1");
             emit_remote_activity_via::<tauri::test::MockRuntime>(None, "thread-1");
             emit_approvals_updated_via::<tauri::test::MockRuntime>(None, "thread-1", "approval-1");
+            emit_threads_updated_via::<tauri::test::MockRuntime>(None);
+            emit_threads_updated_on(handle);
+            // The public entry point reads the process-global handle, which no
+            // test populates, so it takes the None arm without panicking.
+            emit_threads_updated();
         }
 
         #[test]

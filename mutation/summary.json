@@ -1,0 +1,341 @@
+{
+  "schema": "future-cov100-mutation-summary-v1",
+  "generated": "2026-09-26",
+  "owner": "w-mut (this turn: revision-stability re-runs + compat.rs sample)",
+  "tool": "cargo-mutants 27.1.0",
+
+  "run_mode": {
+    "copy_mode": "DEFAULT (one scratch copy and one scratch target per job). --in-place was NEVER used on any invocation in this item or any previous one.",
+    "tree_copy": "--gitignore true (gitignored trees such as target/ are not copied); cargo-mutants additionally copies target/debug into its scratch tree, which is why a per-mutant build is 13-100s here rather than minutes.",
+    "cargo_target_dir": "NOT set on any invocation -- the previous round's shared CARGO_TARGET_DIR caused LNK1104 (no verdict) and a test phase that ran another mutant's binary. cargo-mutants' per-job default is what fixes that.",
+    "scratch_parent": "TEMP/TMP are pointed at D:\\cov100-mut-tmp because %TEMP% lives on C:, which hit disk-full (os error 112) on the first attempt.",
+    "jobs": "-j 2 for the two channels runs (the box was carrying other work at 19:43); -j 3 for both future-loop runs, taken after verifying no other cargo/rustc/cargo-llvm-cov was alive and that -j 2 would not fit the wall-clock box.",
+    "timeout": "--timeout 300 per mutant",
+    "witness_sets": {
+      "channels/src/policy.rs (out-policy-stable)": "cargo test --lib -- NO module filter: the full lib target, 1461 tests. Deliberate: the earlier run's `policy:: bridge::` filter is what the supervisor flagged as possibly hiding an artifact.",
+      "channels/src/bridge/queue.rs (out-queue-full)": "cargo test --lib -- NO module filter, same full lib target. Same reason.",
+      "orchestration/loop/src/compat.rs (out-compat)": "cargo test --lib --test compat_projection_contract. The contract test is REQUIRED for this file: the lib target never asserts rendered markdown, so a bare --lib witness set would report the 20 projection mutants MISSED for a witness-set reason (all their measured catches come from the contract test).",
+      "orchestration/loop/src/compat.rs (out-compat-recheck)": "the same, plus --test misc_drive --test bughunt_regressions --test backfill_drive --test monitor_poll_contract --test run_loop_notes_drive --test console_drive_b. This is a survivor re-check (29 mutants), not a second score for the file."
+    },
+    "integration_tests": "channels/tests/*.rs were NOT run per mutant. For compat.rs, integration targets WERE run: that is where its rendering witnesses live."
+  },
+
+  "scope_statement": "PARTIAL AND NON-EXHAUSTIVE, over 3 files that are each complete. (1) channels/src/policy.rs: 24 listed, 24 executed on the frozen suite -> 22 caught, 0 missed, 2 unviable = 22/22 viable = 100%. (2) channels/src/bridge/queue.rs: 37 listed, 37 executed in ONE measurement of ONE revision -> 32 caught, 2 missed, 3 unviable = 32/34 = 94.12%; one of the two misses (220:26) is a PROVEN equivalent mutant excluded from nothing but not a gap, the other (232:54) is a boundary-only survivor. (3) orchestration/loop/src/compat.rs: 72 listed, 72 executed (primary, witness set --lib + compat_projection_contract) -> 46 caught, 23 missed, 3 unviable = 46/69 = 66.67%; all 23 survivors were then re-tested with the crate's compat-referencing integration targets, which converted 5 of them to CAUGHT (each with a named witness) and left 18 survivors under both witness sets. DECIDED compat verdict: 51 caught, 18 missed. DECLARED SAMPLE TOTAL: 133 listed, 133 executed, 105 caught, 20 missed (54+51 over 56+69 viable), 8 unviable excluded by definition, 0 timeouts, 0 no-verdict-flaky -> 105/125 = 84.00%; 105/124 = 84.68% if the one proven-equivalent mutant is excluded too, and 105/117 = 89.74% if the 8 platform-unmeasured mutants (code not compiled on Windows) are also excluded. The 18 compat survivors are adjudicated one by one in docs/testing/mutation-report.md: 8 platform-unmeasured (their Windows/Unix mirror arms ARE caught), 9 genuine test gaps with the missing assertion named, 1 latency-only survivor. One caught verdict (360:61) is NON-DETERMINISTIC: the same mutant was MISSED in the primary run and CAUGHT in the re-check by the same 150-round race witness; it is counted as caught and flagged. NEVER EXECUTED: 158 mutants in the two other ordered loop files (orchestration/loop/src/backfill.rs 74, orchestration/loop/src/quota/usage_summary.rs 84) plus the 10 of desktop/src-tauri/src/windows_power.rs, which stays skipped because that crate was never frozen. Measured loop cost was 72 mutants in 49 min and 29 mutants in 24 min at -j 3, i.e. ~0.68 min/mutant of wall clock, so the two un-sampled loop files are ~108 minutes of wall clock -- deliberately not attempted under this item's cap. This is a THREE-FILE SAMPLE: it is NOT a crate-wide, workspace-wide or repository-wide mutation score, and no file's percentage may be quoted as another file's or as the crate's.",
+
+  "revision_attestation": {
+    "channels/src/policy.rs": {
+      "sha256": "9E746D4FE5E349D313D5AE01C932FFB36631439D067205EA1C0C9D25F538DE42",
+      "mtime": "2026-09-26 15:13:36",
+      "run": "mutation/out-policy-stable/ (19:43:17 -> 20:11:48, 24 mutants in 28m at -j 2)",
+      "verified": "hash read before the launch and re-read after the run -- identical, and identical to the hash every earlier round attested, so this run and the previous ones measured the same bytes",
+      "why_this_run_exists": "the suite the earlier policy verdicts rested on was unstable (a shared literal port 127.0.0.1:18787 in channels fixtures; w-flake removed it -- the literal is gone from channels/src and every fixture binds 127.0.0.1:0). This run re-derives the verdict on the fixed suite with the UNFILTERED lib target."
+    },
+    "channels/src/bridge/queue.rs": {
+      "sha256": "FE40F333828A44A8BF6A157A2FEA9C890AB750BCC8007AF6D76C6792616BA5C9",
+      "mtime": "2026-09-26 19:29:08",
+      "run": "mutation/out-queue-full/ (19:43:18 -> 20:24:25, 37 mutants in 41m at -j 2)",
+      "verified": "hash read before the launch and re-read after the run -- identical; the mtime predates the launch by 14 minutes, so the run measured exactly the bytes on disk",
+      "why_this_run_exists": "the previous '32 caught' was NOT one measurement: 23 came from the first full run and 9 from a targeted re-run of the survivors only. Adding tests can in principle flip a previously-caught mutant, so all 37 were re-run on one revision under one witness set. Nothing flipped: the same 32 mutants are caught, the same 3 are unviable, and the same 2 survive."
+    },
+    "orchestration/loop/src/compat.rs": {
+      "sha256": "22D63EBF83ABC5C5C21D6BE1ED90DB21C635759476D09DEE7F9C2876366027C1",
+      "mtime": "2026-09-26 01:42:42",
+      "runs": [
+        "mutation/out-compat/ (20:24:56 -> 21:13:35, all 72 mutants in 49m at -j 3)",
+        "mutation/out-compat-recheck/ (21:13:59 -> 21:37:41, the 21 survivor addresses = 29 mutants in 24m at -j 3)"
+      ],
+      "verified": "hash read before the first launch and re-read after the second run -- identical; mtime 01:42:42 predates both runs by ~19 hours, and no source or test line was edited in this item"
+    }
+  },
+
+  "counts": {
+    "files_ordered_by_the_supervisor": 6,
+    "files_sampled": 3,
+    "files_sampled_completely": 3,
+    "mutants_listed_across_the_three_sampled_files": 133,
+    "mutants_executed_on_attested_revisions": 133,
+    "mutant_executions_including_the_survivor_recheck": 162,
+    "caught": 105,
+    "missed": 20,
+    "demonstrated_survivors": 20,
+    "survivors_excluded_as_provably_equivalent": 1,
+    "survivors_converted_to_caught_by_the_recheck": 5,
+    "survivors_that_are_platform_unmeasured": 8,
+    "survivors_that_are_latency_only": 1,
+    "non_viable_excluded": 8,
+    "no_verdict_flaky": 0,
+    "timeouts": 0,
+    "non_deterministic_caught_verdicts": 1,
+    "percent_declared_sample_counted": 84.0,
+    "percent_declared_sample_if_equivalent_counted_as_survivor": 84.0,
+    "percent_declared_sample_equivalent_excluded": 84.68,
+    "percent_declared_sample_platform_unmeasured_excluded": 89.74,
+    "percent_channels_src_policy_rs": 100.0,
+    "percent_channels_src_bridge_queue_rs": 94.12,
+    "percent_loop_src_compat_rs_decided": 73.91,
+    "percent_loop_src_compat_rs_primary": 66.67,
+    "mutants_never_executed_in_the_sample": 158
+  },
+
+  "score_basis": "105 caught / (105 caught + 20 demonstrated survivors) = 84.00%. The denominator excludes 8 mutants that DO NOT COMPILE (E0277 / E0369 -- a mutant no test can kill is excluded by definition). It INCLUDES every demonstrated survivor, including the 8 that are platform-unmeasured: excluding those (105/117 = 89.74%) and the one proven-equivalent mutant (105/124 = 84.68%) is offered as an additional reading, not as the headline. A survivor counts as missed unless the mutation is (a) provably equivalent with a written proof, or (b) decided caught by the re-check with a named failing assertion. Every verdict in all four runs is derived from its own per-mutant log (mutation/analyze-queue.py + mutation/dump-fails.py, mapping mutant -> log through outcomes.json because the log-file `_NNN` suffix is a run-order dedup counter, not the --list order). Zero verdicts are flake-driven: all four baselines were GREEN, and mutation/verify-attribution.py reports 0 catches whose only failing test is on the pre-fix flake list (and 0 that touch such a test at all for compat.rs). One caught verdict is non-deterministic and is flagged rather than smoothed over: compat.rs:360:61 was MISSED in the primary run and CAUGHT in the re-check by the same 150-round race witness.",
+
+  "caught": 105,
+  "missed": 20,
+
+  "uncaught": [
+    {
+      "name": "channels/src/bridge/queue.rs:220:26: replace < with > in Conversations::evict_idle",
+      "counted_as": "excluded (PROVEN equivalent mutant)",
+      "verdict": "MISSED by the tests, but no test can or should kill it -- excluded from the denominator",
+      "reason": "evict_idle is private with exactly ONE caller, Conversations::submit, which calls it with the locked table immediately before inserting exactly one entry. At that point entries.len() <= self.max_conversations is an invariant (the table starts empty; its only writers are evict_idle's own loop, which exits at len <= max - 1, and submit's single insert; get_mut replaces an existing entry without changing the size; with_limits consumes self so max_conversations can no longer change). entries.len() > self.max_conversations is therefore FALSE IN EVERY REACHABLE CALL -- both the original and the mutant return early on exactly the same condition.",
+      "why_this_is_not_a_licence_to_weaken_anything": "the sibling mutants < -> == and < -> <= ARE caught (by the_table_evicts_instead_of_growing_without_bound and an_idle_conversation_is_evicted_and_its_worker_stops); only the > DIRECTION is dead. Nothing was deleted or weakened to obtain this exclusion.",
+      "evidence": "mutation/out-queue-full/mutants.out/log/... (no failing test); the killed siblings are in mutation/out-queue-full/mutants.out/caught.txt"
+    },
+    {
+      "name": "channels/src/bridge/queue.rs:232:54: replace > with >= in Conversations::evict_idle",
+      "counted_as": "missed (boundary-only survivor; NOT claimed equivalent)",
+      "verdict": "MISSED in both the stitched earlier measurement and this single complete measurement",
+      "reason": "Differs from the original ONLY when entry.last_used.elapsed() == self.idle_timeout exactly. For the only timeout a test can set (Duration::ZERO) that means reading last_used == Instant::now() inside evict_idle; production calls Instant::now() itself and injects no clock, so no test can construct that equality deterministically. Stated as a survivor rather than waived as equivalent, because the bytes DO differ on that input.",
+      "what_to_add": "nothing honest: an assertion cannot close this. It needs a clock seam (an injectable `now`) in production code, which is outside this item's write scope.",
+      "evidence": "mutation/out-queue-full/mutants.out/log/... (no failing test)"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:24:5: replace url_encode -> String with String::new()",
+      "counted_as": "caught in the re-check (primary MISS was a witness-set artifact)",
+      "verdict": "primary MISSED (witness set --lib + compat_projection_contract only), re-check CAUGHT",
+      "witness": "bughunt_regressions::unicode_truncation_and_metadata_roundtrip (bughunt_regressions.rs:329; it sets todo.note = \"first\\nstatus=done --> %20\" at line 336 and asserts the round-trip at line 347)",
+      "evidence": "mutation/out-compat-recheck/mutants.out/caught.txt; compare with mutation/compare-runs.py"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:24:5: replace url_encode -> String with \"xyzzy\".into()",
+      "counted_as": "caught in the re-check (primary MISS was a witness-set artifact)",
+      "verdict": "primary MISSED, re-check CAUGHT",
+      "witness": "bughunt_regressions::unicode_truncation_and_metadata_roundtrip",
+      "evidence": "mutation/out-compat-recheck/mutants.out/caught.txt"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:492:28: replace == with != in render_active_state",
+      "counted_as": "caught in the re-check (primary MISS was a witness-set artifact)",
+      "verdict": "primary MISSED, re-check CAUGHT",
+      "witness": "bughunt_regressions::unicode_truncation_and_metadata_roundtrip -- the `<cwd>/GOAL.md` existence branch, i.e. the goal-document line IS asserted somewhere, just not in the primary witness set",
+      "evidence": "mutation/out-compat-recheck/mutants.out/caught.txt"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:378:5: replace write_run -> Result<()> with Ok(())",
+      "counted_as": "caught in the re-check (primary MISS was a witness-set artifact)",
+      "verdict": "primary MISSED, re-check CAUGHT",
+      "witness": "bughunt_regressions::rapid_run_mirrors_do_not_overwrite_each_other (bughunt_regressions.rs:251)",
+      "evidence": "mutation/out-compat-recheck/mutants.out/caught.txt"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:360:61: replace && with || in pid_alive",
+      "counted_as": "caught in the re-check -- NON-DETERMINISTIC witness",
+      "verdict": "MISSED in the primary run, CAUGHT in the re-check, by the SAME witness (compat::tests::concurrent_acquires_all_succeed)",
+      "reason": "the witness is a 150-round x 4-thread race; whether the mutant dies depends on the interleaving it happens to hit. The kill is real but not reproducible on demand, so this verdict is flagged as unstable rather than counted silently. The difference the mutant makes (GetExitCodeProcess succeeding while the exit code is no longer STILL_ACTIVE) needs a Windows process object that still opens after exit, which an in-process test cannot construct on purpose.",
+      "evidence": "mutation/out-compat/mutants.out/missed.txt vs mutation/out-compat-recheck/mutants.out/caught.txt"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:330:5: replace pid_alive -> bool with true / with false; 331:11: == -> !=; 335:52: == -> !=",
+      "counted_as": "missed (platform-unmeasured -- the mutated function is not compiled on this host)",
+      "verdict": "MISSED on Windows because these are the `#[cfg(unix)]` probe; the mirror `#[cfg(windows)]` arms (344:5 -> true/false, 356:35, 360:56, 360:74) were all CAUGHT by the same two unit tests",
+      "classification": "NEITHER a test gap NOR an equivalent mutant: a mutant in code that the platform cfg removes cannot be killed on this host. The repo's waiver vocabulary calls this platform-unmeasured. On unix these four would be caught by live_holder_pid_is_rejected (a false-negative pid_alive reclassifies the live lock as Dead and takes it over).",
+      "evidence": "mutation/out-compat/mutants.out/missed.txt (both witness sets)"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:370:5: replace pid_alive -> bool with false",
+      "counted_as": "missed (platform-unmeasured)",
+      "verdict": "MISSED -- this is the `#[cfg(not(any(unix, windows)))]` fallback probe, which is not compiled on Windows",
+      "evidence": "mutation/out-compat/mutants.out/missed.txt"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:184:5: replace delete_pending_retry -> bool with true",
+      "counted_as": "missed (platform-unmeasured)",
+      "verdict": "MISSED -- this is the `#[cfg(not(windows))]` body (`false`), which is not compiled on Windows; the `-> false` mutation of it is the identity and cargo-mutants does not list it",
+      "evidence": "mutation/out-compat/mutants.out/missed.txt"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:152:5: replace create_is_contention -> bool with true",
+      "counted_as": "missed (platform-gated witness, not a gap)",
+      "verdict": "MISSED on Windows under both witness sets",
+      "reason": "the only test that can observe the create-error path is compat::tests::create_in_unwritable_dir_reports_contextual_error, which is `#[cfg(unix)]` -- a read-only directory does not make create_new fail on Windows. On unix the mutant is caught: with contention always true the PermissionDenied error falls through to classify_lock (Released) and the acquire spins to the attempt bound, returning `could not acquire ... (contended)` instead of the asserted `create ACTIVE_GOAL_STATE.md.lock` context.",
+      "evidence": "mutation/out-compat/mutants.out/missed.txt and .../out-compat-recheck/missed.txt"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:231:27: replace match guard create_is_contention(&error) with true in acquire_active_state_lock_with",
+      "counted_as": "missed (platform-gated witness, not a gap)",
+      "verdict": "MISSED on Windows under both witness sets",
+      "reason": "same function as 152:5, and the same `#[cfg(unix)]` test is the only witness",
+      "evidence": "mutation/out-compat/missed.txt (both witness sets)"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:314:5: replace home_dir -> String with \"xyzzy\".into(); 318:41: replace && with || in home_dir",
+      "counted_as": "missed (TEST GAP -- assertion missing)",
+      "verdict": "MISSED under both witness sets (including six integration targets)",
+      "reason": "home_dir is pub and feeds `~` expansion in console.rs, state.rs, workspace_guard.rs and boundary.rs, but no test controls HOME/USERPROFILE and asserts the resolved value or the is_absolute() && !is_empty() filter. The only test that sets USERPROFILE (tests/write_scope_dependencies.rs:40) never reads home_dir.",
+      "what_to_add": "a unit test that sets a relative HOME and an absolute one and asserts the filter (kills 318:41), plus one that asserts the `~`-expansion of a todo/project path (kills 314:5)",
+      "evidence": "mutation/out-compat/missed.txt and .../out-compat-recheck/missed.txt"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:535:32 and 537:24: replace == with != in todo_line (the `- [-]` / `- [x]` checkboxes)",
+      "counted_as": "missed (TEST GAP -- assertion missing)",
+      "verdict": "MISSED under both witness sets",
+      "reason": "the anchor renders `- [-]` for TodoStatus::Deferred and `- [x]` for Done; `grep '\\[-\\] \\[' tests/*.rs` finds no assertion, and the fixtures that carry such lines (backfill_drive.rs:16-17, console_drive_b.rs:164) are PARSE inputs, not assertions on rendered output",
+      "what_to_add": "render a deferred todo and a done todo through write_active_state and assert the two checkboxes",
+      "evidence": "mutation/out-compat/missed.txt and .../out-compat-recheck/missed.txt"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:560:23: replace == with != in todo_line (the user-gate action_kind)",
+      "counted_as": "missed (TEST GAP -- assertion missing)",
+      "verdict": "MISSED under both witness sets",
+      "reason": "action_kind=goal_decision is asserted nowhere in tests/*.rs; compat_projection_contract only checks task_class=user_gate, which the mutation leaves intact",
+      "what_to_add": "assert that a Todo::user_gate anchor carries action_kind=goal_decision",
+      "evidence": "mutation/out-compat/missed.txt"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:591:17: replace == with != in todo_line; 593:60: delete ! in todo_line (done-todo evidence rendering)",
+      "counted_as": "missed (TEST GAP -- assertion missing)",
+      "verdict": "MISSED under both witness sets",
+      "reason": "nothing asserts that a done todo with non-empty evidence renders evidence=.../completed_at=...; and with 593:60 an EMPTY evidence string renders a bare `evidence=` -- the filter exists to suppress exactly that and no test covers it either",
+      "what_to_add": "render a done todo with evidence (assert both fields) and one with an empty evidence string (assert no `evidence=` appears)",
+      "evidence": "mutation/out-compat/missed.txt and .../out-compat-recheck/missed.txt"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:172:5: replace delete_pending_retry -> bool with false; 172:70: replace >= with < in delete_pending_retry",
+      "counted_as": "missed (TEST GAP, narrow and Windows-only)",
+      "verdict": "MISSED in both the primary run and the re-check",
+      "reason": "the retry-SUCCESS path (a delete-pending ERROR_ACCESS_DENIED that clears inside the 64-poll budget) is exercised only PROBABILISTICALLY, by compat::tests::concurrent_acquires_all_succeed (150 rounds x 4 threads). The deterministic tests that do exist cover the opposite case: a_lock_held_closed_to_delete_names_the_removal asserts that a sharing violation must NOT be retried (and passes under both mutants, because they end in the same error).",
+      "what_to_add": "a deterministic test that holds a FILE_SHARE_DELETE handle on the lock name briefly while another acquirer creates it, so the transient window is guaranteed inside the retry budget",
+      "evidence": "mutation/out-compat/missed.txt and .../out-compat-recheck/missed.txt"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:278:23: replace match guard error.kind() == NotFound with false in classify_lock",
+      "counted_as": "missed (latency-only survivor; not claimed equivalent)",
+      "verdict": "MISSED under both witness sets",
+      "reason": "with the guard disabled a missing-but-unreadable lock file is classified Empty instead of Released: the acquirer waits out EMPTY_LOCK_WAIT (250 ms), removes the (absent) file and acquires. Every path still converges to acquisition, so the observable difference is the WAIT, and no test asserts which branch was taken. Stated as a survivor with that reasoning rather than as a proven equivalence -- the bytes do differ.",
+      "what_to_add": "nothing that asserts behaviour (there is none to assert); only a timing assertion could see it, and that would be a weak test",
+      "evidence": "mutation/out-compat/missed.txt and .../out-compat-recheck/missed.txt"
+    },
+    {
+      "name": "orchestration/loop/src/compat.rs:238:70, 254:85: replace + with * in acquire_active_state_lock_with; 276:5: replace classify_lock -> LockState with Default::default()",
+      "counted_as": "excluded (non-viable)",
+      "verdict": "NON-VIABLE -- the mutant does not compile",
+      "reason": "E0369: cannot multiply std::time::Instant by std::time::Duration (both `+` -> `*` sites); E0277: the trait bound LockState: Default is not satisfied (LockState is an enum with data-carrying variants). The `+` -> `-` siblings at the same addresses ARE viable and were both caught by compat::tests::concurrent_acquires_all_succeed.",
+      "evidence": "mutation/out-compat/mutants.out/unviable.txt and the per-mutant logs"
+    },
+    {
+      "name": "channels/src/policy.rs:90:9 and 112:9: replace PolicyEngine::check_dm / check_group -> Access with Default::default()",
+      "counted_as": "excluded (non-viable)",
+      "verdict": "NON-VIABLE -- the mutant does not compile",
+      "reason": "error[E0277]: the trait bound `Access: Default` is not satisfied. Access derives only Debug, Clone, PartialEq, Eq.",
+      "evidence": "mutation/out-policy-stable/mutants.out/unviable.txt (both), and the compile error is in each log"
+    },
+    {
+      "name": "channels/src/bridge/queue.rs:125:9, 132:9, 138:9: replace with_limits / with_idle_timeout / submit -> Default::default()",
+      "counted_as": "excluded (non-viable)",
+      "verdict": "NON-VIABLE -- the mutants do not compile",
+      "reason": "E0277: `Conversations: Default` is not satisfied (it holds a `runner: Runner` with no Default impl) and `SubmitOutcome: Default` is not satisfied (it derives only Debug, Clone, Copy, PartialEq, Eq).",
+      "evidence": "mutation/out-queue-full/mutants.out/unviable.txt"
+    }
+  ],
+
+  "verified_caught_evidence": {
+    "method": "Every verdict was re-derived from its own per-mutant log. mutation/analyze-queue.py maps mutant -> log through the run's own outcomes.json (the `_NNN` log-name suffix is a RUN-ORDER dedup counter, not the --list order -- reading it as the list order produced three bogus 'inverted verdicts' in an earlier round). mutation/dump-fails.py prints the failing tests per mutant, and mutation/verify-attribution.py checks whether any catch rests only on a test that was flaky before the port fix.",
+    "channels/src/policy.rs": {
+      "caught": 22,
+      "table": "docs/testing/mutation-report.md, 'the revision-stability re-runs' section 2-3 (all 22 rows, each with the witness test and the failing assertion)",
+      "the_six_flake_backed_verdicts": "mutation/verify-attribution.py on the FIRST run (out-policy) reproduces the supervisor's count exactly: 6 mutants were called caught with the flaky telegram-webhook test as their only failing test. On the stable suite 5 of them are CAUGHT by causally correct policy/bridge assertions and the sixth (90:9) is UNVIABLE (E0277) -- so run 1's 'caught' for it was the stale-binary defect, not a test result. This is stated as a supersession in the report, not a silent overwrite."
+    },
+    "channels/src/bridge/queue.rs": {
+      "caught": 32,
+      "table": "docs/testing/mutation-report.md, queue.rs section 6 + this turn's section 4",
+      "sample_attribution": [
+        "31:67 * -> + / * -> / : the_default_idle_timeout_leaves_a_two_minute_old_conversation_routed, left [running] right [idle]",
+        "220:51 || -> && : a_full_table_keeps_its_bystander_when_an_existing_conversation_sends_again, left 1 right 2",
+        "230:34 != -> ==, 231:25 && -> ||, 231:28 delete !, 232:54 > -> == : a_running_turn_is_kept_and_the_idle_conversation_goes -- 'the conversation whose turn is in flight must keep its mailbox'",
+        "232:25 && -> ||, 232:54 > -> < : the same test plus the_default_idle_timeout...",
+        "187:58 + -> - : 40 tests, 'attempt to subtract with overflow' at queue.rs:187:24",
+        "239:53 != -> == : idle_conversations_are_evicted_before_an_active_one, 'the capacity guard leaves a candidate' at queue.rs:246:33"
+      ],
+      "no_flip": "the primary measurement of this revision reproduces the stitched figure exactly: 32 caught, 2 missed, 3 unviable -- no previously-caught mutant flipped to missed."
+    },
+    "orchestration/loop/src/compat.rs": {
+      "caught_primary": 46,
+      "caught_after_recheck": 51,
+      "table": "docs/testing/mutation-report.md, the compat.rs section (Groups A-D + the re-check)",
+      "conversions": "the 5 conversions each name a witness that FAILED and the assertion it failed on: bughunt_regressions::unicode_truncation_and_metadata_roundtrip (x3: url_encode x2 and the GOAL.md branch), bughunt_regressions::rapid_run_mirrors_do_not_overwrite_each_other (write_run), compat::tests::concurrent_acquires_all_succeed (pid_alive, non-deterministic).",
+      "no_execute-only_catches": "every catch has a failing assertion in its own log; the 18 survivors stayed missed under both witness sets, which is what makes the Group B/C/D adjudication evidence rather than a hunch."
+    }
+  },
+
+  "not_executed_in_sample": {
+    "count": 158,
+    "list": [
+      "orchestration/loop/src/backfill.rs (74 mutants) -- ordered, NOT attempted: measured loop cost is ~0.68 min/mutant of wall clock (72 mutants in 49 min, 29 in 24 min at -j 3), so this file is ~50 minutes",
+      "orchestration/loop/src/quota/usage_summary.rs (84 mutants) -- ordered, lowest priority, NOT attempted: ~58 minutes",
+      "desktop/src-tauri/src/windows_power.rs (10 mutants) -- deliberately SKIPPED: the crate was not frozen"
+    ],
+    "note": "The two loop files are 158 mutants, ~108 minutes of wall clock, which does not fit this item's cap; the disclosure here is deliberate so they are not left as an implicit TODO. Nothing measured in this sample may be quoted as the future-loop crate's score: compat.rs is 3 of the crate's many files."
+  },
+
+  "known_flaky_tests": {
+    "status": "FIXED by w-flake before this item's runs, and NOT OBSERVED in any of the four",
+    "what_changed": "the shared literal port 127.0.0.1:18787 is gone from channels/src -- every fixture binds 127.0.0.1:0. Independently, channels/src/bridge/queue.rs:681 has an up-front assert_eq!(len, 2) and a 20 s wait_until budget (the earlier flake fix).",
+    "measured_here": "all four baselines GREEN (policy-stable and queue-full: 190 s build + 67/68 s test over the full 1461-test lib target; compat: 113 s + 5 s; re-check: 102 s + 15 s); 0 timeouts and 0 `no verdict (flaky)` across 162 mutant executions",
+    "residual_risk": "the six tests that were on the pre-fix flake list are now INCLUDED in the witness sets (no module filter on the channels runs). mutation/verify-attribution.py reports 0 catches in policy.rs and in compat.rs that rest on one of them, and 0 ONLY-FLAKY catches for queue.rs; 8 queue.rs catches (wide-blast mutations such as worker -> (), is_superseded -> true) list a flake-listed provider test ALONGSIDE the queue/turn assertions that name the mutated value.",
+    "new_information": "one non-deterministic CAUGHT verdict was found and is flagged: compat.rs:360:61 (MISSED primary, CAUGHT re-check, same 150-round race witness). It is a witness-stability observation, not a flake -- the test is deterministic in what it asserts, but the input it needs is a race window."
+  },
+
+  "infrastructure_lessons": [
+    "cargo-mutants' scratch tree is under %TEMP%, which is on C:. An earlier attempt died in 20 s at 16:13 with 'Failed to copy ... os error 112' (disk full) while C: had 0.1 GB free and D: had 246 GB. TEMP/TMP are pointed at D:\\cov100-mut-tmp for every run.",
+    "A background child does not survive the agent's teardown of a tool call. Earlier attempts died that way with no outcome file. Every driver is now started through WMI Win32_Process.Create (mutation/run-*.cmd), so it is parented to WmiPrvSE and survives turn boundaries.",
+    "cargo-mutants' stdout is BLOCK-BUFFERED when redirected to a file: the run log stays at 3 lines while outcomes.json grows. Progress must be read from the output directory (last log mtime / outcomes.json), not from the log.",
+    "`--cargo-test-arg --lib` restricts cargo test to the lib target. For a crate that keeps its behaviour tests in tests/*.rs (future-loop), that silently produces witness-set misses. Add the integration targets that reference the file: `--cargo-test-arg --test --cargo-test-arg <name>`. This is a MEASURED effect here (12 of the 20 projection mutants would have been reported MISSED under a bare --lib).",
+    "`--json` does not disturb the outcome files; the authoritative mutant -> log map is always outcomes.json.",
+    "Useful: because cargo-mutants copies target/debug into its scratch tree, a per-mutant build is 13-100 s here instead of the ~92 s/mutant an earlier round measured with a cold shared target."
+  ],
+
+  "cost_model_measured": {
+    "out-policy-stable": "24 mutants in 28m at -j 2 (baseline 190 s build + 67 s test on the FULL lib target; 15-40 s build + 60-75 s test per mutant).",
+    "out-queue-full": "37 mutants in 41m at -j 2 (baseline 190 s build + 68 s test; 13-41 s build + 65-73 s test per mutant).",
+    "out-compat": "72 mutants in 49m at -j 3 (baseline 113 s build + 5 s test; 44-263 s build + 4-63 s test per mutant; the 263 s outlier is the first mutant of a job, when its scratch target is still cold).",
+    "out-compat-recheck": "29 mutants in 24m at -j 3 (baseline 102 s build + 15 s test across 7 test targets; ~90-150 s per mutant).",
+    "totals": "133 distinct mutants / 162 executions in 114 minutes of wall clock (19:43:17 -> 21:37:41), including all four baselines. The three ordered files' primary measurements alone (24 + 37 + 72 mutants) ended at 21:13:35, i.e. exactly at the ~90-minute mark; the 24-minute survivor re-check is the declared overrun.",
+    "the_never_run_files": "158 mutants at ~0.68 min/mutant of wall clock at -j 3 = ~108 minutes, which is why backfill.rs and quota/usage_summary.rs are declared un-sampled rather than attempted."
+  },
+
+  "reproduce": [
+    "cargo mutants --version   # 27.1.0",
+    "cargo mutants -p future-channel --file channels/src/policy.rs --list     # 24",
+    "cargo mutants -p future-channel --file channels/src/bridge/queue.rs --list  # 37",
+    "cargo mutants -p future-loop --file orchestration/loop/src/compat.rs --list # 72 (run from the repo root; the path is cwd-relative, not package-relative)",
+    "sha256sum channels/src/policy.rs channels/src/bridge/queue.rs orchestration/loop/src/compat.rs  # must match revision_attestation, before AND after",
+    "mutation\\run-policy-stable.cmd    # detached; policy.rs, full lib target",
+    "mutation\\run-queue-full.cmd       # detached; queue.rs, full lib target",
+    "mutation\\run-compat.cmd           # detached; compat.rs, --lib + compat_projection_contract",
+    "mutation\\run-compat-recheck.cmd   # detached; the 21 survivor addresses, + 6 integration targets",
+    "python mutation/analyze-queue.py mutation/out-queue-full/mutants.out     # per-mutant attribution",
+    "python mutation/verify-attribution.py mutation/out-policy-stable/mutants.out --quiet",
+    "python mutation/compare-runs.py mutation/out-compat/mutants.out mutation/out-compat-recheck/mutants.out",
+    "IMPORTANT: do NOT set CARGO_TARGET_DIR; do NOT use --in-place; TEMP must be on a volume with room"
+  ],
+
+  "artifacts": {
+    "deciding_runs": [
+      "mutation/out-policy-stable/mutants.out/ (24 mutants, 22 caught / 0 missed / 2 unviable)",
+      "mutation/out-queue-full/mutants.out/ (37 mutants, 32 caught / 2 missed / 3 unviable)",
+      "mutation/out-compat/mutants.out/ (72 mutants, 46 caught / 23 missed / 3 unviable -- primary)",
+      "mutation/out-compat-recheck/mutants.out/ (29 survivors re-tested, 11 caught / 18 missed)"
+    ],
+    "drivers": ["mutation/run-policy-stable.cmd", "mutation/run-queue-full.cmd", "mutation/run-compat.cmd", "mutation/run-compat-recheck.cmd", "mutation/run-queue.cmd", "mutation/run-policy.cmd"],
+    "analysis": ["mutation/analyze-queue.py", "mutation/verify-attribution.py", "mutation/dump-fails.py", "mutation/compare-runs.py"],
+    "attribution_dumps": ["mutation/out-queue-full-attribution.txt", "mutation/out-policy-stable-attribution.txt", "mutation/out-compat-attribution.txt", "mutation/out-queue-full-hygiene.txt", "mutation/out-policy-stable-hygiene.txt"],
+    "hashes": "mutation/revision-hashes-prerun.txt (pre-launch values)",
+    "previous_rounds": [
+      "mutation/out-policy/ and mutation/out-policy-recheck{,2}/ -- reference only: run 1 is the evidence for the flake/stale-binary defect analysis, not for any verdict",
+      "mutation/out-queue/ and mutation/out-queue-check/ -- the stitched 23+9 measurement this item replaces with out-queue-full",
+      "mutation/out-policy-final/ -- superseded by out-policy-stable (same verdicts, filtered vs unfiltered witness set)"
+    ],
+    "report": "docs/testing/mutation-report.md ('The revision-stability re-runs' + the compat.rs section)",
+    "gate": "python .future/cov100/verify.py mutation 80"
+  }
+}

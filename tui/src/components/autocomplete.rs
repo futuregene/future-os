@@ -1194,23 +1194,44 @@ mod tests {
         let old_userprofile = env::var_os("USERPROFILE");
         env::remove_var("HOME");
         env::remove_var("USERPROFILE");
-        let provider = FilePathProvider::new(Some("/tmp".into()));
+
+        // The cwd deliberately contains a file the token would match, so the
+        // assertion can tell the two resolutions apart: `~/x` must expand
+        // against the (missing) home, never against the cwd.
+        let cwd = tempfile::tempdir().unwrap();
+        std::fs::write(cwd.path().join("x-ray.txt"), "x").unwrap();
+        let provider = FilePathProvider::new(Some(cwd.path().to_str().unwrap().to_string()));
         let ctx = AutocompleteContext {
             text: "~/x".into(),
             cursor_pos: 3,
             token: "~/x".into(),
             token_start: 0,
         };
-        // Resolved to "/x" → parent "/" → read_dir ok or empty; the point
-        // is the fallback arm ran.
-        let _ = provider.get_completions(&ctx);
+        let items = provider.get_completions(&ctx);
+
+        assert!(
+            !items.iter().any(|item| item.label.contains("x-ray.txt")),
+            "a `~` token must not resolve against the cwd: {items:?}"
+        );
+        for item in &items {
+            assert_eq!(item.value, item.label);
+            assert!(
+                matches!(item.description.as_deref(), Some("") | Some("dir")),
+                "unexpected description {:?}",
+                item.description
+            );
+        }
+
         restore_env_var("HOME", old_home);
         restore_env_var("USERPROFILE", old_userprofile);
     }
 
     #[test]
     fn file_path_parentless_resolution_uses_dot() {
-        // Empty cwd + relative token → resolved "" has no parent → "." arm.
+        // Empty cwd + relative token → resolved "" has no parent → "." arm,
+        // which lists the process's current directory. The observable
+        // consequence is that every label keeps the relative "." prefix
+        // instead of being absolute.
         let provider = FilePathProvider::new(Some(String::new()));
         let ctx = AutocompleteContext {
             text: String::new(),
@@ -1218,7 +1239,21 @@ mod tests {
             token: String::new(),
             token_start: 0,
         };
-        let _ = provider.get_completions(&ctx);
+        let items = provider.get_completions(&ctx);
+
+        let listed_from = std::env::current_dir().unwrap().display().to_string();
+        assert!(
+            !items.is_empty(),
+            "the `.` fallback lists the current directory ({listed_from})"
+        );
+        for item in &items {
+            assert!(
+                item.label.starts_with('.'),
+                "the `.` arm keeps a relative prefix, got {:?}",
+                item.label
+            );
+            assert_eq!(item.value, item.label);
+        }
     }
 
     #[test]
@@ -1643,5 +1678,235 @@ mod tests {
         let plain: Vec<String> = lines.iter().map(|l| strip_ansi_codes(l)).collect();
         assert!(plain.iter().any(|l| l.contains("▶ a")));
         assert!(plain.iter().any(|l| l.contains("  b")));
+    }
+
+    // ─── AttachmentProvider: the fd/find tool contract ──────────────────
+    //
+    // `AttachmentProvider::get_completions` shells out to `fd`, falling back to
+    // `find`. Neither tool is guaranteed to be installed, so the arms were
+    // previously unexecuted. These tests put a *stub* tool on PATH: the stub
+    // prints its own argv, which pins the exact command line the provider
+    // builds (including the lowercased pattern and the `--` separator) and
+    // proves the stdout→items parsing.
+
+    /// A program that prints its argv and exits 0, used as a stub `fd`/`find`.
+    ///
+    /// Windows has no built-in one (`echo` is a `cmd` builtin) and Rust does
+    /// **not** resolve `.cmd`/`.bat` from `PATH` — measured on this host:
+    /// `Command::new("fd")` with an `fd.cmd` on `PATH` fails with
+    /// `Error { kind: NotFound }`, so a batch-file stub cannot work. The MSYS
+    /// `echo.exe` that ships with Git for Windows is therefore used: looked up
+    /// on `PATH`, else at the two standard install roots.
+    #[cfg(windows)]
+    fn argv_echoing_exe() -> Option<PathBuf> {
+        let mut candidates: Vec<PathBuf> = Vec::new();
+        for dir in std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+            .unwrap_or_default()
+        {
+            candidates.push(dir.join("echo.exe"));
+        }
+        candidates.push(PathBuf::from("C:/Program Files/Git/usr/bin/echo.exe"));
+        candidates.push(PathBuf::from("C:/Program Files (x86)/Git/usr/bin/echo.exe"));
+        candidates.into_iter().find(|candidate| candidate.is_file())
+    }
+
+    /// Every POSIX system has a real `echo` binary.
+    #[cfg(unix)]
+    fn argv_echoing_exe() -> Option<PathBuf> {
+        ["/bin/echo", "/usr/bin/echo"]
+            .iter()
+            .map(PathBuf::from)
+            .find(|candidate| candidate.is_file())
+    }
+
+    /// Install a copy of `source` as the command `name` inside `dir`.
+    fn install_argv_stub(dir: &std::path::Path, name: &str, source: &std::path::Path) {
+        #[cfg(windows)]
+        let target = dir.join(format!("{name}.exe"));
+        #[cfg(unix)]
+        let target = dir.join(name);
+        std::fs::copy(source, &target).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    /// Prepend `dirs` to PATH for the duration of `body`.
+    ///
+    /// The second directory matters on Windows: a copy of the MSYS `echo.exe`
+    /// still loads `msys-2.0.dll` from its original directory (a bare copy
+    /// exits with `STATUS_DLL_NOT_FOUND`, 0xC0000135 — measured).
+    fn with_path_prepended<R>(dirs: &[&std::path::Path], body: impl FnOnce() -> R) -> R {
+        let _guard = crate::test_env::lock();
+        let old = env::var_os("PATH");
+        let prefix = dirs
+            .iter()
+            .map(|dir| dir.display().to_string())
+            .collect::<Vec<_>>()
+            .join(&PATH_SEPARATOR.to_string());
+        let mut joined = prefix;
+        if let Some(existing) = &old {
+            joined.push(PATH_SEPARATOR);
+            joined.push_str(&existing.to_string_lossy());
+        }
+        env::set_var("PATH", joined);
+        let result = body();
+        restore_env_var("PATH", old);
+        result
+    }
+
+    #[cfg(windows)]
+    const PATH_SEPARATOR: char = ';';
+    #[cfg(unix)]
+    const PATH_SEPARATOR: char = ':';
+
+    fn attachment_context(token: &str) -> AutocompleteContext {
+        AutocompleteContext {
+            text: format!("@{token}"),
+            cursor_pos: token.len() + 1,
+            token: token.to_string(),
+            token_start: 1,
+        }
+    }
+
+    /// The `fd` success arm: the tool is invoked with the documented argument
+    /// vector, and its stdout becomes one `@`-prefixed item per line.
+    ///
+    /// The stub prints its own argv, so the item's label *is* the command line
+    /// the provider built — including the lowercased pattern and the `--`
+    /// separator (a pattern starting with `-` must not be read as a flag).
+    #[test]
+    fn attachment_completions_run_fd_and_parse_its_stdout() {
+        let Some(source) = argv_echoing_exe() else {
+            // No argv-echoing program on this host, so the tool cannot be
+            // stubbed and this arm is not observable here (see §waivers in
+            // `docs/testing/module-tui.md`). Say so instead of asserting a
+            // tautology.
+            eprintln!("[skip] no argv-echoing program available to stub `fd`");
+            return;
+        };
+        let tools = tempfile::tempdir().unwrap();
+        install_argv_stub(tools.path(), "fd", &source);
+        let cwd = tempfile::tempdir().unwrap();
+
+        let stub_dirs = [tools.path(), source.parent().unwrap()];
+        let items = with_path_prepended(&stub_dirs, || {
+            let mut provider = AttachmentProvider::default();
+            // A mixed-case token must reach the tool lowercased.
+            provider.update_state(cwd.path().to_str().unwrap(), &[], &[]);
+            provider.get_completions(&attachment_context("Src"))
+        });
+
+        assert_eq!(items.len(), 1, "the stub echoes one line: {items:?}");
+        assert_eq!(items[0].label, "--hidden --type f --max-results 50 -- src");
+        assert_eq!(items[0].value, format!("@{}", items[0].label));
+        assert_eq!(items[0].description, Some(String::new()));
+    }
+
+    /// An empty token asks for nothing: the provider returns before spawning a
+    /// tool at all. The proof is the *output*: the stub echoes its argv, so if
+    /// either tool had run there would be one item instead of none.
+    #[test]
+    fn attachment_completions_with_an_empty_token_spawn_no_tool() {
+        let tools = tempfile::tempdir().unwrap();
+        let source = argv_echoing_exe();
+        if let Some(source) = &source {
+            install_argv_stub(tools.path(), "fd", source);
+        }
+        let mut stub_dirs: Vec<&std::path::Path> = vec![tools.path()];
+        if let Some(source) = &source {
+            stub_dirs.push(source.parent().unwrap());
+        }
+
+        let items = with_path_prepended(&stub_dirs, || {
+            let provider = AttachmentProvider::default();
+            provider.get_completions(&attachment_context(""))
+        });
+
+        assert!(
+            items.is_empty(),
+            "an empty token completes nothing: {items:?}"
+        );
+    }
+
+    /// With neither tool usable the provider reports no completions rather than
+    /// failing or hanging. On Windows `find.exe` exists but is the *text
+    /// search* tool, so it rejects these arguments (measured: exit 2, "File
+    /// not found - …") — a deterministic stand-in for "the fallback is
+    /// unusable".
+    ///
+    /// There is deliberately **no** `find.exe` stub test to pair with the `fd`
+    /// one above: `Command::new("find")` is resolved by `CreateProcessW`, which
+    /// searches System32 *before* `PATH`, so the only way to shadow it is to
+    /// write the stub into the test binary's own directory — a directory shared
+    /// by every test in the binary (a concurrently running test would see the
+    /// stub) and one that keeps the file if the process dies before `Drop`
+    /// (observed: a leftover `find.exe` from an earlier crashed run made this
+    /// very assertion fail). The `find`-succeeded arm is therefore recorded as
+    /// unreachable-in-this-environment in `docs/testing/module-tui.md` instead
+    /// of being tested through a fragile write into the build directory.
+    #[cfg(windows)]
+    #[test]
+    fn attachment_completions_without_a_usable_tool_return_nothing() {
+        // Serialize against the tests that prepend a stub directory to `PATH`:
+        // PATH is process-global, and while a stub `fd` is on it this provider
+        // would succeed — through no fault of the code under test. The same lock
+        // `with_path_prepended` holds is the repo's convention for this.
+        let _guard = crate::test_env::lock();
+        let provider = AttachmentProvider::default();
+        assert!(provider
+            .get_completions(&attachment_context("definitely-no-such-file"))
+            .is_empty());
+    }
+
+    /// `update_state` with an empty cwd clears it (the `!cwd.is_empty()` arm),
+    /// and a cleared cwd must not make the provider address a directory.
+    #[test]
+    fn attachment_provider_clears_an_empty_cwd() {
+        // PATH is process-global and other tests replace it; hold the shared
+        // lock so this test's tool resolution is the plain one.
+        let _guard = crate::test_env::lock();
+        let mut provider = AttachmentProvider::default();
+        provider.update_state("/tmp", &[], &[]);
+        provider.update_state("", &[], &[]);
+        assert_eq!(provider.cwd, None, "an empty cwd means 'no cwd'");
+        // With no cwd the tool runs in the test process's own directory. What it
+        // finds is host-dependent (a `fd` install would match this token, none
+        // is required), so the assertion is on the *cwd* behaviour and on the
+        // provider not panicking. The item-mapping invariant is asserted where
+        // the tool is guaranteed to answer — the `fd` stub test above, which
+        // pins `value`, `label` and `description` on real items.
+        let items = provider.get_completions(&attachment_context("cargo"));
+        // Stated as one assertion over the whole list rather than a loop body:
+        // a loop only evaluates its `assert!` when the list is non-empty, which
+        // is host-dependent here, so that line reported as uncovered whenever
+        // this process found nothing. The invariant itself is unchanged, and it
+        // is now checked in both cases (0 items and n items).
+        let unlabelled: Vec<&str> = items
+            .iter()
+            .map(|item| item.label.as_str())
+            .filter(|label| label.is_empty())
+            .collect();
+        assert!(
+            unlabelled.is_empty(),
+            "every listed item names something: {unlabelled:?}"
+        );
+    }
+
+    // ─── Slash provider: a cursor that sits before any character ────────
+
+    #[test]
+    fn slash_match_with_an_empty_prefix_has_no_context() {
+        let provider = SlashCommandProvider::new(slash_commands(), None, None);
+        // Cursor 0 → the prefix is empty, so there is no command name to
+        // complete. The provider must decline rather than offer every command.
+        assert!(provider.r#match("/", 0).is_none());
+        // The same at the start of a multi-byte command name: the slice stops
+        // on the character boundary, so this must not panic.
+        assert!(provider.r#match("/技能", 0).is_none());
+        assert!(provider.r#match("/技能", 1).is_some());
     }
 }

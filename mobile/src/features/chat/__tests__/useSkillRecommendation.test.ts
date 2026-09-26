@@ -267,7 +267,7 @@ describe("showing a recommendation", () => {
       await evaluate(api, DRAFT);
       store.set(
         STORAGE_KEY,
-        JSON.stringify({ day: localDay(), skills: ["future-web"], messages: [messageHash(DRAFT)] }),
+        JSON.stringify({ day: today(), skills: ["future-web"], messages: [messageHash(DRAFT)] }),
       );
       expect(await evaluate(api, DRAFT)).toBe(false);
     } finally {
@@ -278,7 +278,7 @@ describe("showing a recommendation", () => {
   it("stops asking once the day's budget is spent", async () => {
     store.set(
       STORAGE_KEY,
-      JSON.stringify({ day: localDay(), skills: ["a", "b", "c"], messages: [] }),
+      JSON.stringify({ day: today(), skills: ["a", "b", "c"], messages: [] }),
     );
     const api: { current: SkillRecommendationApi | null } = { current: null };
     const tree = mount(api);
@@ -353,13 +353,92 @@ describe("accepting and dismissing", () => {
       act(() => tree.unmount());
     }
   });
+
+  it("installing with nothing suggested is a no-op, not a crash", async () => {
+    const api: { current: SkillRecommendationApi | null } = { current: null };
+    const tree = mount(api);
+    try {
+      let composed: string | null = "unset";
+      await act(async () => { composed = await api.current!.installAndUse(); });
+      expect(composed).toBeNull();
+      expect(remoteMock()!.installSkill).not.toHaveBeenCalled();
+    } finally {
+      act(() => tree.unmount());
+    }
+  });
+
+  it("a skill the catalogue no longer versions cannot be installed from the card", async () => {
+    remoteMock.mockReturnValue(
+      remote({
+        suggestSkill: jest.fn(async () => ({ name: "future-web", description: "search the web" })),
+        // The catalogue entry lost its version (a side-loaded or older desktop
+        // catalogue): there is nothing to install, so the card must not pretend.
+        listAvailableSkills: jest.fn(async () => [
+          { id: "future-web", description: "search the web" },
+        ]),
+      }),
+    );
+    const api: { current: SkillRecommendationApi | null } = { current: null };
+    const tree = mount(api);
+    try {
+      await evaluate(api, DRAFT);
+      let composed: string | null = "unset";
+      await act(async () => { composed = await api.current!.installAndUse(); });
+      expect(composed).toBeNull();
+      expect(remoteMock()!.installSkill).not.toHaveBeenCalled();
+      // The card stays so the user can dismiss or retry rather than silently
+      // losing the message.
+      expect(api.current!.suggestion?.skill.name).toBe("future-web");
+    } finally {
+      act(() => tree.unmount());
+    }
+  });
 });
 
-function localDay(now = new Date()): string {
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-}
+describe("the recommender's failure modes all mean 'send the message'", () => {
+  it("an answer that never arrives is abandoned at the round-trip budget", async () => {
+    jest.useFakeTimers();
+    const api: { current: SkillRecommendationApi | null } = { current: null };
+    // The desktop accepts the request and then says nothing: the phone must not
+    // hold the composer (or the draft) past the budget.
+    remoteMock.mockReturnValue(remote({ suggestSkill: jest.fn(() => new Promise(() => {})) }));
+    const tree = mount(api);
+    try {
+      let answer: boolean | undefined;
+      await act(async () => {
+        const pending = api.current!.evaluate(DRAFT);
+        await jest.advanceTimersByTimeAsync(3_000);
+        answer = await pending;
+      });
+      expect(answer).toBe(false);
+      expect(api.current!.suggestion).toBeNull();
+      expect(api.current!.evaluating).toBe(false);
+      expect(store.has(STORAGE_KEY)).toBe(false);
+    } finally {
+      act(() => tree.unmount());
+      jest.useRealTimers();
+    }
+  });
 
+  it("an unreadable skill catalogue is treated as no candidates, not as an error", async () => {
+    const api: { current: SkillRecommendationApi | null } = { current: null };
+    remoteMock.mockReturnValue(
+      remote({
+        listAvailableSkills: jest.fn(async () => { throw new Error("desktop offline"); }),
+        listInstalledSkills: jest.fn(async () => { throw new Error("desktop offline"); }),
+        suggestSkill: jest.fn(async () => ({ name: "future-web", description: "search the web" })),
+      }),
+    );
+    const tree = mount(api);
+    try {
+      expect(await evaluate(api, DRAFT)).toBe(false);
+      expect(remoteMock()!.suggestSkill).not.toHaveBeenCalled();
+      expect(api.current!.suggestion).toBeNull();
+    } finally {
+      act(() => tree.unmount());
+    }
+  });
+});
 describe("helpers", () => {
   it("detects a picked skill only on a real slash token", () => {
     expect(draftPicksSkill("/future-web")).toBe(true);

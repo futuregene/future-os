@@ -1232,11 +1232,20 @@ mod tests {
     }
 
     #[test]
-    fn restore_file_logs_when_rollback_remove_fails() {
+    fn restore_file_restores_a_snapshot_and_tolerates_a_missing_target() {
         let (_dir, auth, _models) = temp_paths("restore-missing");
-        // snapshot None → rollback removes the file; it never existed, so the
-        // removal fails and the warning path runs (stderr, non-fatal).
+        // Some(bytes): the exact bytes go back, byte for byte.
+        restore_file(&auth, Some(b"{\n  \"a\": 1\n}\n"), false);
+        assert_eq!(
+            std::fs::read_to_string(&auth).unwrap(),
+            "{\n  \"a\": 1\n}\n"
+        );
+        // None: the file this call may have created is removed, and a target
+        // that never existed is not an error worth surfacing.
         restore_file(&auth, None, false);
+        assert!(!auth.exists());
+        restore_file(&auth, None, false);
+        assert!(!auth.exists());
     }
 
     #[test]
@@ -1302,6 +1311,117 @@ mod tests {
     fn make_readonly(path: &Path) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+
+    /// Windows cannot replace a read-only *file*: `fs::rename` is
+    /// `MoveFileEx(MOVEFILE_REPLACE_EXISTING)`, which fails with
+    /// `ACCESS_DENIED` when the destination is read-only. That is the same
+    /// "the write fails, the read still works" injection the Unix tests get from
+    /// a chmod'd directory, and it needs no root skip — the attribute denies an
+    /// elevated process too.
+    #[cfg(windows)]
+    fn make_readonly(path: &Path) {
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+
+    /// An auth-only change whose write fails must leave models.json completely
+    /// alone — the file was never written by this call, so there is nothing to
+    /// restore and restoring would clobber a concurrent writer.
+    #[cfg(windows)]
+    #[test]
+    fn upsert_auth_write_fails_without_models_change_skips_restore() {
+        let (_dir, auth, models) = temp_paths("upsert-auth-fail-nomodels-win");
+        let original =
+            "{\n  \"providers\": {\n    \"existing\": {\n      \"name\": \"x\"\n    }\n  }\n}\n";
+        std::fs::write(&auth, "{}\n").unwrap();
+        std::fs::write(&models, original).unwrap();
+        make_readonly(&auth);
+        let spec = ProviderUpsertSpec {
+            id: "newprov".to_string(),
+            api_key: Some("sk-x".to_string()),
+            ..Default::default()
+        };
+        let error = upsert_provider_files(&auth, &models, &spec).unwrap_err();
+        assert!(error.contains("failed to write"), "{error}");
+        assert_eq!(std::fs::read_to_string(&models).unwrap(), original);
+    }
+
+    /// The models.json write fails: nothing was persisted, the rollback cannot
+    /// replace the read-only file either (logged), and the bytes on disk are
+    /// still the ones the caller started with.
+    #[cfg(windows)]
+    #[test]
+    fn upsert_restores_models_when_models_write_fails() {
+        let (_dir, auth, models) = temp_paths("upsert-models-fail-win");
+        std::fs::write(&models, "{}\n").unwrap();
+        make_readonly(&models);
+        let spec = ProviderUpsertSpec {
+            id: "newprov".to_string(),
+            name: Some("New".to_string()),
+            ..Default::default()
+        };
+        let error = upsert_provider_files(&auth, &models, &spec).unwrap_err();
+        assert!(error.contains("failed to write"), "{error}");
+        assert_eq!(std::fs::read_to_string(&models).unwrap(), "{}\n");
+    }
+
+    /// The models.json write landed and the auth.json write failed, so only the
+    /// file this call already wrote is rolled back — byte-for-byte, so the GUI's
+    /// pretty-printed formatting survives.
+    #[cfg(windows)]
+    #[test]
+    fn upsert_restores_models_when_auth_write_fails() {
+        let (_dir, auth, models) = temp_paths("upsert-auth-fail-win");
+        let original =
+            "{\n  \"providers\": {\n    \"keep\": {\n      \"name\": \"Keep\"\n    }\n  }\n}\n";
+        std::fs::write(&auth, "{}\n").unwrap();
+        std::fs::write(&models, original).unwrap();
+        make_readonly(&auth);
+        let spec = ProviderUpsertSpec {
+            id: "newprov".to_string(),
+            name: Some("New".to_string()),
+            api_key: Some("sk-x".to_string()),
+            ..Default::default()
+        };
+        let error = upsert_provider_files(&auth, &models, &spec).unwrap_err();
+        assert!(error.contains("failed to write"), "{error}");
+        assert_eq!(std::fs::read_to_string(&models).unwrap(), original);
+    }
+
+    /// The delete's models.json write fails: the provider is still there, and
+    /// the rollback that could not restore it is logged rather than replacing
+    /// the original error.
+    #[cfg(windows)]
+    #[test]
+    fn delete_restores_models_when_models_write_fails() {
+        let (_dir, auth, models) = temp_paths("delete-models-fail-win");
+        let original = "{\"providers\":{\"gone\":{\"name\":\"G\"}}}\n";
+        std::fs::write(&models, original).unwrap();
+        std::fs::write(&auth, "{}\n").unwrap();
+        make_readonly(&models);
+        let error = delete_provider_files(&auth, &models, "gone").unwrap_err();
+        assert!(error.contains("failed to write"), "{error}");
+        assert_eq!(std::fs::read_to_string(&models).unwrap(), original);
+    }
+
+    /// The delete's auth.json write failed, so models.json — already rewritten
+    /// without the provider — is put back: a half-deleted provider is the one
+    /// state a client must never see.
+    #[cfg(windows)]
+    #[test]
+    fn delete_restores_models_when_auth_write_fails() {
+        let (_dir, auth, models) = temp_paths("delete-auth-fail-win");
+        std::fs::write(&auth, "{\"gone\":{\"type\":\"api_key\"}}\n").unwrap();
+        std::fs::write(&models, "{\"providers\":{\"gone\":{\"name\":\"G\"}}}\n").unwrap();
+        make_readonly(&auth);
+        let error = delete_provider_files(&auth, &models, "gone").unwrap_err();
+        assert!(error.contains("failed to write"), "{error}");
+        assert!(
+            std::fs::read_to_string(&models).unwrap().contains("gone"),
+            "models.json must be rolled back, not left half-deleted"
+        );
     }
 
     #[cfg(unix)]
