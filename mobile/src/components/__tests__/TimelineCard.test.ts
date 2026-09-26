@@ -166,6 +166,27 @@ test("the folded run opens into its rows, each still opening its own detail", ()
   expect(hasText("ls -la")).toBe(true);
 });
 
+// A lean feed carries no reasoning body at all. The row is then a status label,
+// not a disclosure: rendering the chevron anyway opened an empty box on a real
+// device (tapping 已思考 expanded to nothing), which promises content that never
+// arrives.
+test("a thinking row with no body is a label, not a disclosure", () => {
+  render(reply({ segments: [thinking("k1", "")] }));
+  expect(countText("chat.thoughtCompleted")).toBe(1);
+  expect(countIconsNamed(tree.root, "ChevronDown")).toBe(0);
+  expect(countIconsNamed(tree.root, "ChevronUp")).toBe(0);
+  expect(rowButton("chat.thoughtCompleted")).toBeUndefined();
+});
+
+// The contrast: a body is what earns the chevron.
+test("a thinking row with a body still opens it", () => {
+  render(reply({ segments: [thinking("k1", "why it broke")] }));
+  expect(countIconsNamed(tree.root, "ChevronDown")).toBe(1);
+  expect(hasText("why it broke")).toBe(false);
+  act(() => rowButton("chat.thoughtCompleted").props.onPress());
+  expect(hasText("why it broke")).toBe(true);
+});
+
 // The tool count is a wrench, not the terminal it started as: the count covers
 // every tool kind (run/read/write/edit), and a shell prompt claimed they were all
 // commands.
