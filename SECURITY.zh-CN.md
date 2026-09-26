@@ -7,7 +7,8 @@ FutureOS 是一个本地优先（local-first）的 AI agent。本文档描述其
 ## 信任模型与数据流
 
 - **本地持久化，而非仅离线处理。** 会话与配置存储在本地 `~/.future/` 下；loop 状态默认随项目本地存放。纳入上下文的提示词、选定的附件与工具结果会发送给所配置的模型提供方。FutureOS 托管的模型与在线工具使用 FutureOS 服务；其他提供方/工具使用各自端点。
-- **可选的远程通道。** 启用 Remote 后，命令、会话事件与所请求的文件会经由所配置的 NATS 中继传输。移动端要求 TLS WebSocket（`wss://`），桌面端的 NATS 客户端同样要求经过校验的 TLS——除单元测试外，没有任何运行时开关可降级为明文。飞书/钉钉的消息与回复同样经由这些平台。本地存储并不意味着端到端加密，也不意味着没有任何数据离开设备。
+- **可选的远程通道。** 启用 Remote 后，命令、会话事件与所请求的文件会经由所配置的 NATS 中继传输。移动端要求 TLS WebSocket（`wss://`），桌面端的 NATS 客户端同样要求经过校验的 TLS——除单元测试外，没有任何运行时开关可降级为明文。飞书/钉钉的消息与回复同样经由这些平台。本地存储并不意味着没有数据离开设备。
+- **远程通道加密。** 手机配对完成后，手机↔桌面之间的通道是端到端加密的：两端用 Noise 握手互相认证（配对时为 `XXpsk0`，之后为 `IK`），并用握手导出的密钥以 ChaCha20-Poly1305 加密全部应用记录——命令与应答、文件分块、会话事件、在线状态与目录记录，以及断开通知。因此中继只承载密文，既无法读取，也无法构造一条会被接受的消息；它仍可见 NATS subject、流量元数据与报文的时序/大小。唯一的明文路径是配对请求/应答信封：其中的 Noise 消息本身是加密的，但信封与拒绝原因（如 `invitation_expired`）明文传输。这防的是恶意或被攻陷的中继——防不住被攻陷的端点、被解锁的失窃设备，或泄露的、尚未使用的邀请码。协议细节与边界见 [REMOTE_E2EE](docs/internals/desktop/REMOTE_E2EE.zh-CN.md)。
 - **按用户的本地后端。** agent 默认使用 macOS/Linux 上的 Unix 域套接字（私有目录与对端 UID 校验）或仅当前用户可用的 Windows 命名管道。Unix 遵循 `FUTURE_AGENT_SOCKET`；拥有自己 FutureOS home 的实例（`FUTURE_HOME` / `future agent --home`）使用 `<home>/run/agent.sock`，而不是共享的 XDG 运行时目录；Linux 否则在设置时使用 `$XDG_RUNTIME_DIR/future/agent.sock`，以 `~/.future/run/agent.sock` 作为回退/macOS 默认。`--grpc-addr` 显式启用 TCP。切勿把 agent 的明文 TCP 服务暴露给不可信网络；如需远程访问，请使用经认证的安全隧道。
 - **凭据。** 提供方密钥本地存储，通常位于 `~/.future/agent/auth.json`；旧版 `agent-app/auth.json` 位置同样会被读取。提供方配置中也可能含有密钥。请将这些文件、备份、日志以及 `future auth credential` 的输出视为敏感信息。本地存储并非加密凭据保险库。
 

@@ -30,7 +30,7 @@
 //! every new connection: the declaration belongs to the connection that made it,
 //! and an older client on the same pairing must not inherit it.
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -176,6 +176,15 @@ fn blank_folded_text(event: &mut Value) {
 pub(crate) fn lean_replay_page(page: &mut Value, lean: bool) {
     if !lean {
         return;
+    }
+    // The trim removes events, so the page's own list no longer matches the
+    // source range it covers. State how many events that range held *before*
+    // the trim: a client that declared a trimmed feed still has to prove the
+    // tail reached the pinned watermark, and counting what arrived cannot do
+    // that once holes are expected. The count is what keeps that check exact
+    // instead of relaxing it to "whatever arrived is enough".
+    if let Some(count) = page.get("events").and_then(Value::as_array).map(Vec::len) {
+        page["rawEvents"] = json!(count);
     }
     if let Some(events) = page.get_mut("events").and_then(Value::as_array_mut) {
         events.retain_mut(|event| {
@@ -508,6 +517,12 @@ mod tests {
         // The cursor contract is untouched by the trim.
         assert_eq!(page["nextSinceIdx"], json!(30));
         assert_eq!(page["watermark"], json!(30));
+        // …and the client is told how many source events the range held, so its
+        // "did this tail reach the watermark" check stays exact even though two
+        // of the four were dropped. Without this the client counts arrivals and
+        // rejects every trimmed tail (`replay_prefix_invalid`), which is what
+        // pinned the phone in a retry loop.
+        assert_eq!(page["rawEvents"], json!(4));
 
         let folded = page["projection"]["events"].as_array().unwrap();
         assert_eq!(folded.len(), 2, "the folded list keeps its length and idx");
@@ -526,6 +541,9 @@ mod tests {
         let mut page = before.clone();
         lean_replay_page(&mut page, false);
         assert_eq!(page, before);
+        // A peer that does not trim must not be told to expect holes: its events
+        // are one per index, and the strict client check is what proves it.
+        assert!(page.get("rawEvents").is_none());
     }
 
     /// The three trims, on the shapes a real page carries.

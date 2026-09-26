@@ -67,8 +67,10 @@ configured NATS relay. Mobile uses per-device credentials, short-lived JWTs and
 refresh tokens, with secrets in platform secure storage, and requires `wss://`;
 the desktop requires TLS for its relay connection. Once a phone is paired, the
 desktop↔phone channel is end-to-end encrypted (a Noise handshake with
-ChaCha20-Poly1305 records), so the relay carries ciphertext; the desktop's
-availability announcement before a channel is established is not encrypted. This
+ChaCha20-Poly1305 records), so the relay carries ciphertext and can neither read
+it nor forge an accepted message. The pairing handshake is the one exception: its
+Noise messages are encrypted, but the request/reply envelope around them —
+including refusal reasons such as `invitation_expired` — is not. This
 is still not local-only processing — model requests go to your model providers.
 Only pair devices and use relay deployments you trust.
 

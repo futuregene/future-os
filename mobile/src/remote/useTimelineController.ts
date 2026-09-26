@@ -780,6 +780,11 @@ export function useTimelineController({
         return state;
       },
       requestHistory: loadHistory,
+      // The lane the Desktop agreed to send decides what the integrity checks
+      // may demand: a lean feed omits slices by design, so it must not be read
+      // as loss (that reconciliation would retry forever). Read through the
+      // ref, because the acked features land after the engine is built.
+      feedOmitsIndices: () => clientRef.current?.feedsOmittedIndices() === true,
       fetchReplay: async (sessionId, runId, sinceIdx, isCurrent) => {
         const client = clientRef.current;
         if (!client) throw new Error("not_connected");
