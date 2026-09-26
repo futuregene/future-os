@@ -41,6 +41,26 @@ pub(crate) const LEAN_EVENTS_FEATURE: &str = "lean_events_v1";
 /// Event types that exist only to stream content a phone does not render.
 const DROPPED_EVENTS: [&str; 3] = ["thinking_delta", "tool_delta", "toolcall_delta"];
 
+/// Tools whose arguments carry a body the phone never renders: a `write` its
+/// whole file, an `edit` the text it replaces.
+///
+/// `read` keeps everything (its `offset`/`limit` are a few bytes) and `shell`
+/// keeps its `command`, which *is* the row's label. A tool this build has never
+/// heard of keeps its arguments too: nothing here can tell which of them a
+/// client might read.
+const BODY_BEARING_TOOLS: [&str; 2] = ["write", "edit"];
+
+/// Argument keys a tool row's label is built from, mirroring the client's
+/// `targetFromArgs`. Anything else a body-bearing tool passes is dropped.
+const TARGET_ARG_KEYS: [&str; 3] = ["path", "file_path", "filePath"];
+
+/// Token counters a client reads out of a `usage` event.
+///
+/// The phone sums these into the settled reply's "N tokens" footer. The
+/// provider's other counters and the credit cost are the desktop footer's
+/// business, and the desktop does not read this lane (the agent is its source).
+const USAGE_TOKEN_KEYS: [&str; 2] = ["completion_tokens", "output_tokens"];
+
 static LEAN_EVENTS: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn enabled() -> bool {
@@ -89,6 +109,15 @@ pub(crate) fn lean_event_data<'a>(event_type: &str, data: &'a str) -> Option<Cow
         // The client treats this event as a "resync me" signal and never reads
         // them, so the whole array goes.
         "run_snapshot" => Some(without(data, &["snapshotEvents"])),
+        // A tool call announces itself twice: an `input` phase with no arguments
+        // at all, then an `execution` phase carrying them. The row's label comes
+        // from `path` (read/write/edit) or `command` (shell) -- the file bodies a
+        // `write`/`edit` carries are never rendered, and the history page drops
+        // them for the same reason.
+        "tool_start" | "toolcall_start" => Some(without_tool_bodies(data)),
+        // The client reads one number out of a usage event; every provider
+        // counter beside it is dead weight on this lane.
+        "usage" => Some(without_extra_usage(data)),
         _ => Some(Cow::Borrowed(data)),
     }
 }
@@ -141,6 +170,89 @@ fn without<'a>(data: &'a str, keys: &[&str]) -> Cow<'a, str> {
         fields.remove(*key);
     }
     Cow::Owned(serde_json::to_string(&Value::Object(fields)).expect("a Value always serializes"))
+}
+
+/// A `tool_start`'s arguments, minus the bodies the phone never renders.
+///
+/// Only `write` and `edit` carry one; every other tool is forwarded verbatim
+/// (see [`BODY_BEARING_TOOLS`]). `tool_args` is normally an object but the agent
+/// has emitted a JSON string for it too, and the client accepts either, so both
+/// shapes are filtered and the original shape is preserved. A payload with no
+/// body in it is returned borrowed and untouched.
+fn without_tool_bodies(data: &str) -> Cow<'_, str> {
+    let Ok(mut value) = serde_json::from_str::<Value>(data) else {
+        return Cow::Borrowed(data);
+    };
+    let name = value["tool_name"].as_str().unwrap_or_default();
+    if !BODY_BEARING_TOOLS.contains(&name) {
+        return Cow::Borrowed(data);
+    }
+    let Some(args) = value
+        .as_object_mut()
+        .and_then(|root| root.remove("tool_args"))
+    else {
+        return Cow::Borrowed(data);
+    };
+    let trimmed = match args {
+        Value::Object(fields) => drop_bodies(fields).map(Value::Object),
+        Value::String(text) => serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|parsed| match parsed {
+                Value::Object(fields) => {
+                    drop_bodies(fields).map(|kept| Value::String(Value::Object(kept).to_string()))
+                }
+                _ => None,
+            }),
+        _ => None,
+    };
+    let Some(trimmed) = trimmed else {
+        return Cow::Borrowed(data);
+    };
+    value["tool_args"] = trimmed;
+    Cow::Owned(value.to_string())
+}
+
+/// The path-only remainder of a body-bearing tool's arguments, or `None` when
+/// there was no body to drop.
+fn drop_bodies(fields: serde_json::Map<String, Value>) -> Option<serde_json::Map<String, Value>> {
+    if fields
+        .keys()
+        .all(|key| TARGET_ARG_KEYS.contains(&key.as_str()))
+    {
+        return None;
+    }
+    Some(
+        fields
+            .into_iter()
+            .filter(|(key, _)| TARGET_ARG_KEYS.contains(&key.as_str()))
+            .collect(),
+    )
+}
+
+/// A `usage` event reduced to the counters a client reads.
+///
+/// The phone sums completion tokens for the settled reply's footer, falling back
+/// to the `agent_end` total; the provider's prompt/cache/reasoning counters, the
+/// credit cost and the stop reason are read by nobody on this lane.
+fn without_extra_usage(data: &str) -> Cow<'_, str> {
+    let Ok(mut value) = serde_json::from_str::<Value>(data) else {
+        return Cow::Borrowed(data);
+    };
+    let Some(Value::Object(fields)) = value.get("usage").cloned() else {
+        return Cow::Borrowed(data);
+    };
+    let kept: serde_json::Map<String, Value> = fields
+        .into_iter()
+        .filter(|(key, _)| USAGE_TOKEN_KEYS.contains(&key.as_str()))
+        .collect();
+    if value["usage"] == Value::Object(kept.clone()) {
+        return Cow::Borrowed(data);
+    }
+    value["usage"] = Value::Object(kept);
+    if let Some(root) = value.as_object_mut() {
+        root.remove("stopReason");
+    }
+    Cow::Owned(value.to_string())
 }
 
 /// Blank the `text` of a folded projection event, keeping the event itself.
@@ -349,6 +461,165 @@ mod tests {
                 "{event_type} must be forwarded byte-for-byte"
             );
         }
+    }
+
+    /// A `write`/`edit` announces its body on the live lane too, and the phone
+    /// never renders it: the row's label is the path. Shell and read keep their
+    /// arguments (the command *is* a shell row's label), and an unknown tool
+    /// keeps everything, because nothing here knows what a future client reads.
+    #[test]
+    fn tool_start_drops_the_bodies_only_write_and_edit_carry() {
+        let write = json!({
+            "type": "tool_start",
+            "phase": "execution",
+            "tool_name": "write",
+            "tool_id": "call_1",
+            "tool_args": {"path": "/tmp/x.md", "content": "a".repeat(4096)},
+        })
+        .to_string();
+        let lean: Value =
+            serde_json::from_str(&lean_event_data("tool_start", &write).unwrap()).unwrap();
+        assert_eq!(
+            lean["tool_args"],
+            json!({"path": "/tmp/x.md"}),
+            "path survives"
+        );
+        assert_eq!(lean["tool_id"], json!("call_1"), "identity survives");
+        assert_eq!(lean["phase"], json!("execution"));
+
+        let edit = json!({
+            "type": "tool_start",
+            "tool_name": "edit",
+            "tool_args": {"path": "a.ts", "oldText": "x", "newText": "y"},
+        })
+        .to_string();
+        let lean: Value =
+            serde_json::from_str(&lean_event_data("tool_start", &edit).unwrap()).unwrap();
+        assert_eq!(lean["tool_args"], json!({"path": "a.ts"}));
+
+        // The other argument spelling the client accepts for a path.
+        let alias = json!({
+            "type": "tool_start",
+            "tool_name": "write",
+            "tool_args": {"file_path": "b.ts", "content": "y"},
+        })
+        .to_string();
+        let lean: Value =
+            serde_json::from_str(&lean_event_data("tool_start", &alias).unwrap()).unwrap();
+        assert_eq!(lean["tool_args"], json!({"file_path": "b.ts"}));
+
+        // A shell row's label is its command: nothing may go.
+        let shell = json!({
+            "type": "tool_start",
+            "tool_name": "shell",
+            "tool_args": {"command": "ls -la", "timeout": 5000},
+        })
+        .to_string();
+        let lean = lean_event_data("tool_start", &shell).unwrap();
+        assert_eq!(
+            lean.as_ref(),
+            shell.as_str(),
+            "a shell command is the row's label, so it stays"
+        );
+
+        // `read`'s arguments are a path and two small numbers.
+        let read = json!({
+            "type": "tool_start",
+            "tool_name": "read",
+            "tool_args": {"path": "c.ts", "offset": 10, "limit": 20},
+        })
+        .to_string();
+        assert_eq!(
+            lean_event_data("tool_start", &read).unwrap().as_ref(),
+            read.as_str()
+        );
+
+        // A tool this build does not know keeps its arguments.
+        let unknown = json!({
+            "type": "tool_start",
+            "tool_name": "mcp__whatever",
+            "tool_args": {"content": "keep me"},
+        })
+        .to_string();
+        assert_eq!(
+            lean_event_data("tool_start", &unknown).unwrap().as_ref(),
+            unknown.as_str()
+        );
+
+        // The `input` phase carries no arguments at all and is left alone.
+        let input = json!({
+            "type": "tool_start",
+            "phase": "input",
+            "tool_name": "write",
+            "tool_args": "",
+        })
+        .to_string();
+        assert_eq!(
+            lean_event_data("tool_start", &input).unwrap().as_ref(),
+            input.as_str()
+        );
+
+        // A body-less `write` (already trimmed, or a shape that never had one)
+        // is returned borrowed rather than rewritten.
+        let bare =
+            json!({"type": "tool_start", "tool_name": "write", "tool_args": {"path": "d.ts"}})
+                .to_string();
+        let lean = lean_event_data("tool_start", &bare).unwrap();
+        assert!(
+            matches!(lean, Cow::Borrowed(_)),
+            "nothing to drop means no rewrite"
+        );
+    }
+
+    /// A JSON *string* carrying the arguments is filtered too, and stays a
+    /// string: the client parses either shape, so the lane must not change it.
+    #[test]
+    fn tool_start_filters_a_stringified_argument_object() {
+        let data = json!({
+            "type": "tool_start",
+            "tool_name": "write",
+            "tool_args": "{\"content\":\"big body\",\"path\":\"e.ts\"}",
+        })
+        .to_string();
+        let lean: Value =
+            serde_json::from_str(&lean_event_data("tool_start", &data).unwrap()).unwrap();
+        let args: Value = serde_json::from_str(lean["tool_args"].as_str().unwrap()).unwrap();
+        assert_eq!(args, json!({"path": "e.ts"}));
+    }
+
+    /// The phone sums one counter out of a usage event into the settled reply's
+    /// footer; the rest of the provider's report is read by nobody on this lane.
+    #[test]
+    fn usage_keeps_only_the_counter_a_client_reads() {
+        let data = json!({
+            "type": "usage",
+            "stopReason": "tool_calls",
+            "usage": {
+                "prompt_tokens": 8079,
+                "completion_tokens": 276,
+                "total_tokens": 8355,
+                "cache_read_tokens": 3584,
+                "reasoning_tokens": 182,
+                "credit_cost": 0.01134136,
+            },
+        })
+        .to_string();
+        let lean: Value = serde_json::from_str(&lean_event_data("usage", &data).unwrap()).unwrap();
+        assert_eq!(lean["usage"], json!({"completion_tokens": 276}));
+        assert!(lean.get("stopReason").is_none());
+
+        // The alias the client also reads, and a payload that already carries
+        // only what is needed (returned borrowed, not rewritten).
+        let alias = json!({"type": "usage", "usage": {"output_tokens": 5}}).to_string();
+        let lean = lean_event_data("usage", &alias).unwrap();
+        assert_eq!(lean.as_ref(), alias.as_str());
+
+        // A usage event with no `usage` object is not this function's business.
+        let flat = json!({"type": "usage", "completion_tokens": 7}).to_string();
+        assert_eq!(
+            lean_event_data("usage", &flat).unwrap().as_ref(),
+            flat.as_str()
+        );
     }
 
     /// The tool row's outcome must survive: dropping the captured output is only
