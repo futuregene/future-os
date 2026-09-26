@@ -1642,7 +1642,13 @@ mod tests {
         let script = {
             use std::os::unix::fs::PermissionsExt;
             let script = dir.path().join("hangs.sh");
-            std::fs::write(&script, "#!/bin/sh\nsleep 30\n").expect("write hanging script");
+            // A shell BUILTIN busy loop, not `sleep`: `sleep` is an external child,
+            // and killing the shell would orphan it while it still holds the pipes,
+            // so the readers -- not the deadline -- would decide when the call
+            // returns. (Observed on Linux as 30.003 s against a `< 25 s` assertion.)
+            // Same reasoning as the `cmd` builtin loop on the Windows arm above.
+            std::fs::write(&script, "#!/bin/sh\nwhile :; do :; done\n")
+                .expect("write hanging script");
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
                 .expect("chmod hanging script");
             script

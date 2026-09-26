@@ -753,15 +753,24 @@ pub fn kill_write_half(socket: &crate::transport::ws::Socket) {
         tokio_tungstenite::MaybeTlsStream::Plain(stream) => stream,
         _ => unreachable!("tests dial plain ws only"),
     };
+    // The postcondition is "the next write on this socket fails". If the peer has
+    // already reset, `shutdown` reports NotConnected -- and the postcondition is
+    // already satisfied, so that is success here, not a failure. (On Linux this
+    // surfaced as `Os { code: 107, kind: NotConnected }`.)
+    fn expect_write_half_closed(result: std::io::Result<()>) {
+        match result {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotConnected => {}
+            Err(error) => panic!("shutdown the client socket's write half: {error}"),
+        }
+    }
     #[cfg(unix)]
     {
         use std::os::unix::io::{AsRawFd, FromRawFd};
         let borrowed = std::mem::ManuallyDrop::new(unsafe {
             std::net::TcpStream::from_raw_fd(plain.as_raw_fd())
         });
-        borrowed
-            .shutdown(std::net::Shutdown::Write)
-            .expect("shutdown the client socket's write half");
+        expect_write_half_closed(borrowed.shutdown(std::net::Shutdown::Write));
     }
     #[cfg(windows)]
     {
@@ -769,9 +778,7 @@ pub fn kill_write_half(socket: &crate::transport::ws::Socket) {
         let borrowed = std::mem::ManuallyDrop::new(unsafe {
             std::net::TcpStream::from_raw_socket(plain.as_raw_socket())
         });
-        borrowed
-            .shutdown(std::net::Shutdown::Write)
-            .expect("shutdown the client socket's write half");
+        expect_write_half_closed(borrowed.shutdown(std::net::Shutdown::Write));
     }
 }
 
