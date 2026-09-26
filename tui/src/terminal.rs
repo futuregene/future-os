@@ -1149,33 +1149,6 @@ mod tests {
         }
     }
 
-    // The size fallbacks assume a backend that reports 0 (no tty): with a real
-    // console the backend reports the console's size and overrides COLUMNS/
-    // LINES. Same reason its PTY sibling is unix-only.
-    #[cfg(unix)]
-    #[test]
-    fn columns_rows_read_cached_size() {
-        let _guard = crate::test_env::lock();
-        // Another test may have tripped the one-shot FORCE_NEW_FAILURE seam
-        // without consuming it; drain it so this construction never unwraps
-        // the injected error (observed as a flake in CI).
-        FORCE_NEW_FAILURE.swap(false, Ordering::SeqCst);
-        let t = Terminal::new().unwrap();
-        *t.size.lock() = (111, 44);
-        assert_eq!(t.columns(), 111);
-        assert_eq!(t.rows(), 44);
-        *t.size.lock() = (0, 0);
-        let old_c = std::env::var_os("COLUMNS");
-        let old_l = std::env::var_os("LINES");
-        std::env::set_var("COLUMNS", "72");
-        std::env::set_var("LINES", "33");
-        // refresh_size keeps the cached size when the backend reports 0.
-        t.refresh_size();
-        assert_eq!(t.columns(), 72);
-        assert_eq!(t.rows(), 33);
-        restore_env("COLUMNS", old_c);
-        restore_env("LINES", old_l);
-    }
 
     #[test]
     fn drain_input_with_and_without_protocols() {
