@@ -2224,6 +2224,7 @@ mod end_to_end {
 mod tests {
     use super::*;
     use crate::terminal::test_support;
+    #[cfg(windows)]
     use std::time::Instant;
 
     #[test]
@@ -2396,8 +2397,10 @@ mod tests {
 
     const OP_TEXT: u8 = 0x1;
     const OP_BINARY: u8 = 0x2;
+    #[cfg(windows)]
     const OP_CLOSE: u8 = 0x8;
     const OP_PING: u8 = 0x9;
+    #[cfg(windows)]
     const OP_PONG: u8 = 0xA;
 
     #[derive(Default)]

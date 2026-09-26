@@ -93,6 +93,7 @@ pub fn exit_command(code: i32) -> (PathBuf, Vec<String>) {
 /// An interactive shell (no `-c`): the tests that must write to the child's
 /// stdin drive it here, and a line the shell executes proves the bytes reached
 /// it rather than merely being echoed.
+#[cfg(windows)]
 pub fn interactive_command() -> (PathBuf, Vec<String>) {
     (shell_program(), Vec::new())
 }
