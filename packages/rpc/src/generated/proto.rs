@@ -116,7 +116,10 @@ pub struct RpcCommand {
     pub client_request_id: ::prost::alloc::string::String,
     /// Atomic behavior when the session already has an active run:
     /// "enqueue_if_busy" (default) appends behind the active run (follow-up),
-    /// or "supersede_session" interrupts the active run and runs this next.
+    /// "enqueue_coalescing" appends as well but lets the run boundary fold a
+    /// consecutive run of such requests into ONE run (a folded request comes
+    /// back terminal with reason "merged"), or "supersede_session" interrupts
+    /// the active run and runs this next.
     /// Empty is interpreted as "enqueue_if_busy".
     #[prost(string, tag = "144")]
     pub busy_policy: ::prost::alloc::string::String,

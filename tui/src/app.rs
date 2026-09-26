@@ -55,6 +55,7 @@ use crate::rpc::grpc_client::GrpcClient;
 use crate::rpc::provider_types::{validate_provider_input, ProviderInfo, ProviderInput};
 use crate::rpc::types::{
     AgentEvent, ModelInfo, RpcSessionState, SessionEntriesPage, SessionSummary, ThinkingLevel,
+    BUSY_ENQUEUE_COALESCING,
 };
 use crate::skills_cli::{
     summarize_outcome, SkillCatalogue, SkillOp, SkillOpOutcome, SkillsCli, SKILL_OP_TIMEOUT,
@@ -5836,14 +5837,18 @@ impl<T: TerminalIo> App<T> {
         ));
 
         if self.state.streaming {
-            // Every submission is its own run. The Agent owns the FIFO and
-            // returns the canonical queued run identity.
+            // A submission sent mid-turn queues with the coalescing policy: a
+            // burst of them (a message plus its supplements) is folded into ONE
+            // run at the run boundary, so the model answers the user's latest,
+            // complete instruction instead of replying to each fragment. The
+            // Agent owns the FIFO and returns the queued run identity; folded
+            // submissions come back as terminal `merged` acks.
             let client = self.client.clone();
             let tx = self.op_tx.clone();
             let outgoing = message.clone();
             tokio::spawn(async move {
                 let result = client
-                    .prompt(&outgoing, "enqueue_if_busy", attachments)
+                    .prompt(&outgoing, BUSY_ENQUEUE_COALESCING, attachments)
                     .await;
                 let _ = tx.send(UiCmd::PromptAck {
                     local_id: local_message_id,
@@ -5860,8 +5865,10 @@ impl<T: TerminalIo> App<T> {
         let client = self.client.clone();
         let tx = self.op_tx.clone();
         tokio::spawn(async move {
+            // Same policy when idle: it runs immediately, and it is what lets a
+            // later burst fold into this submission's follow-ups consistently.
             let result = client
-                .prompt(&message, "enqueue_if_busy", attachments)
+                .prompt(&message, BUSY_ENQUEUE_COALESCING, attachments)
                 .await;
             let _ = tx.send(UiCmd::PromptAck {
                 local_id: local_message_id,
@@ -8702,8 +8709,12 @@ impl<T: TerminalIo> App<T> {
             );
         }
         for terminal in &s.recent_terminal_acks {
+            // `merged` is checked before the state: a folded submission is
+            // terminal, and its text is part of the run ahead of it.
             let state = if terminal.reason == "superseded" {
                 RunState::Superseded
+            } else if terminal.reason == "merged" {
+                RunState::Merged
             } else if terminal.state == "cancelled" {
                 RunState::Cancelled
             } else {
@@ -10683,6 +10694,30 @@ mod tests {
         assert_eq!(
             app.chat.last_message().unwrap().run_state,
             Some(RunState::Superseded)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_merged_terminal_ack_maps_to_the_merged_state() {
+        // A folded submission is terminal with reason `merged`; without this
+        // mapping its bubble would sit at `queued (#n)` forever (no run of its
+        // own ever starts to settle it).
+        let (mut app, _rx) = make_app(100, 30);
+        app.chat.add_message(ChatMessage::new(
+            "m2".into(),
+            ChatRole::User,
+            "a supplement",
+        ));
+        app.chat
+            .bind_user_run("m2", "run-2", RunState::Queued, Some(2));
+        let state: RpcSessionState = serde_json::from_value(json_parse(
+            r#"{"thinkingLevel":"off","recentTerminalAcks":[{"run_id":"run-2","run_sequence":2,"client_request_id":"c","state":"terminal","reason":"merged"}]}"#,
+        ))
+        .unwrap();
+        app.handle_cmd(UiCmd::Refreshed(Ok(state)));
+        assert_eq!(
+            app.chat.last_message().unwrap().run_state,
+            Some(RunState::Merged)
         );
     }
 

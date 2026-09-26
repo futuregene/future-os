@@ -171,7 +171,10 @@ supervisor（运行 `/future-loop` 技能的编排 agent）与其 worker 通过�
 
 - **上行（worker → supervisor，持久合批报告）：**
   gate/完成/失败/基础设施通知先落账，Agent 离线也不丢。独立 watchdog 每批合并最多
-  32 条，固定请求 key 和正文后以 `enqueue_if_busy` 推送，失败恢复重试。队列接收不代表
+  32 条，固定请求 key 和正文后以 `enqueue_coalescing` 推送，失败恢复重试。合批是
+  fire-and-forget 的状态同步而非提问，所以编排者忙时排在它后面的多批会折叠成**一个**
+  后续回合，而不是各自起一个 run（然后多半被 supersede）；编排者空闲时到达的单批仍立即
+  执行。队列接收不代表
   supervisor 已行动；旧通知只触发当前状态核对。`supervisor events` 展示待送状态和控制/
   合批回执。
 
