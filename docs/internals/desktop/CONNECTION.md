@@ -356,6 +356,26 @@ would re-fetch a range whose events are always dropped. The folded projection
 riding a replay page keeps its events and their `idx` — both the desktop and the
 client reject an empty or reordered list — so only their text is blanked.
 
+Dropping an event **does** leave a hole in the `idx` sequence, and the client's
+integrity checks are what had to learn that (2026-09-26). Both the live lane and
+the replay path used to be validated as "one event per source index": the live
+cursor called a jump a gap and reconciled, and a replayed tail had to satisfy
+`watermark == since + events.length`. With the trim running, every check failed —
+so a lean phone reconciled forever behind "latest content not synced yet" and
+never cleared it. Two consequences are now part of the contract:
+
+- A trimmed replay page states how many source events its range held before the
+trim (`rawEvents`), which is what keeps the "reached the pinned watermark" check
+*
+exact* rather than relaxed; ordering and range bounds take the place of counting
+arrivals. A page from a peer that trims nothing carries no `rawEvents` and is
+validated exactly as before.
+- The client's live cursor is told whether this connection's feed omits indices
+(its own `lean_events_v1` ack) and then advances over a hole instead of treating
+it as loss. Reconciling cannot recover slices the peer is not sending, so a gap
+verdict there is unanswerable by construction. The same flag suppresses the
+"unknown prefix" reconcile, for the same reason.
+
 **Lean history (2026-09-26):** the same declaration also trims the history pages
 (`get_session_entries`, both the paged and the full read). Three payloads, all of
 them unread rather than merely unrendered, measured on the three heaviest real
