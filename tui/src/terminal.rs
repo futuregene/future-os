@@ -159,7 +159,21 @@ pub(crate) fn terminal_or_skip() -> Option<Terminal> {
 
 #[cfg(all(test, not(windows)))]
 pub(crate) fn terminal_or_skip() -> Option<Terminal> {
-    Some(Terminal::new().unwrap())
+    // A console is not guaranteed on unix either: CI is headless, where `Terminal::new()`
+    // can still succeed while the reader's start path fails with "stdin is not a TTY".
+    // Check the tty as well as construction, and return None so callers skip instead of
+    // panicking -- the same contract the Windows helper above honours.
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        eprintln!("[skip] terminal test needs a tty on stdin");
+        return None;
+    }
+    match Terminal::new() {
+        Ok(terminal) => Some(terminal),
+        Err(error) => {
+            eprintln!("[skip] terminal test needs a console: {error}");
+            None
+        }
+    }
 }
 
 /// Terminal platform backend for tests. See [`terminal_or_skip`] for why this
@@ -183,7 +197,19 @@ pub(crate) fn backend_or_skip() -> Option<platform::Backend> {
 
 #[cfg(all(test, not(windows)))]
 pub(crate) fn backend_or_skip() -> Option<platform::Backend> {
-    Some(platform::Backend::new().unwrap())
+    // Same reasoning as `terminal_or_skip` above: headless CI has no tty, so skip rather
+    // than panic in a helper whose entire purpose is to make a missing console tolerable.
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        eprintln!("[skip] terminal test needs a tty on stdin");
+        return None;
+    }
+    match platform::Backend::new() {
+        Ok(backend) => Some(backend),
+        Err(error) => {
+            eprintln!("[skip] terminal test needs a console: {error}");
+            None
+        }
+    }
 }
 
 impl Terminal {

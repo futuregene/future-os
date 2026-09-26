@@ -1113,9 +1113,18 @@ mod tests {
     /// and route copies through the injected runner (never the real clipboard).
     #[test]
     fn with_runner_keeps_the_probed_candidates_and_uses_the_injected_runner() {
+        let probed = Clipboard::new();
+        // This test routes a copy through the injected runner FOR THE CANDIDATES THIS HOST
+        // PROBED FOR, so it needs at least one. A headless CI runner has no clipboard
+        // program and probed none, where `copy` reports `Requested` rather than `Copied`
+        // (CI: `left: Requested, right: Copied`) -- skip there instead of asserting a
+        // host-dependent outcome.
+        if probed.candidates().is_empty() {
+            eprintln!("[skip] no native clipboard program on this host");
+            return;
+        }
         let (runner, log) = recording_runner(&[]);
         let clipboard = Clipboard::with_runner(runner);
-        let probed = Clipboard::new();
         assert_eq!(clipboard.candidates(), probed.candidates());
         assert_eq!(clipboard.is_ssh(), probed.is_ssh());
         assert_eq!(clipboard.copy("hello", false, true), CopyOutcome::Copied);
