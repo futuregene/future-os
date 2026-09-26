@@ -50,6 +50,13 @@ class Harness {
   /** Emit replay events with snake_case run_id (legacy desktop wire). */
   snakeCaseReplay = false;
   replayFailures = 0;
+  /**
+   * Whether the connected Desktop agreed to a feed that omits source indices
+   * (the client declared `lean_events_v1`). Such a hole is by design, so the
+   * lane must apply across it rather than reconcile a range that will never
+   * arrive.
+   */
+  feedOmitsIndices = false;
   /** Every replay the engine asked for, so a test can assert that a settled
    * run was not re-read from the journal. */
   replayCalls: { run: string; since: number }[] = [];
@@ -65,6 +72,7 @@ class Harness {
         return state;
       },
       requestHistory: async () => this.history,
+      feedOmitsIndices: () => this.feedOmitsIndices,
       fetchReplay: async (_sessionId, run, since) => {
         this.replayCalls.push({ run, since });
         if (this.replayFailures > 0) {
@@ -562,6 +570,42 @@ describe("SyncEngine", () => {
     await h.settle();
     expect(h.textOf("s1")).toBe("first half + second half");
     expect(h.timelineOf("s1").streaming).toBe(false);
+  });
+
+  // The regression that pinned the phone behind a sync notice: the lean trim
+  // omits source indices by design, so a lane that trims nothing must be the
+  // only one that reads a jump as loss.
+  test("a lane that omits indices applies across the hole instead of replaying it", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    h.engine.event("s1", agentStart(run, 0));
+    h.engine.event("s1", textChunk(run, 1, "a"));
+    await h.settle();
+    expect(h.textOf("s1")).toBe("a");
+
+    h.feedOmitsIndices = true;
+    const before = h.replayCalls.length;
+    // The frames at idx 2..8 were dropped by the trim (reasoning and argument
+    // deltas), so the next survivor arrives above the cursor.
+    h.engine.event("s1", textChunk(run, 9, "z"));
+    await h.settle();
+
+    expect(h.textOf("s1")).toBe("az");
+    expect(h.replayCalls.length).toBe(before);
+  });
+
+  test("the same jump on a lane that trims nothing is still a gap", async () => {
+    const run = nextRunId();
+    const h = new Harness(run);
+    h.engine.event("s1", agentStart(run, 0));
+    h.engine.event("s1", textChunk(run, 1, "a"));
+    await h.settle();
+
+    const before = h.replayCalls.length;
+    h.engine.event("s1", textChunk(run, 9, "z"));
+    await h.settle();
+
+    expect(h.replayCalls.length).toBeGreaterThan(before);
   });
 
   test("gap during live streaming fills the hole from the journal (M4)", async () => {

@@ -1259,6 +1259,16 @@ export class RemoteClient {
     );
   }
 
+  /**
+   * Whether the Desktop acked a feed that omits source indices for this
+   * connection (`lean_events_v1`). Integrity checks must not demand the slices
+   * it leaves out: they are omitted by design, and asking for them back would
+   * retry a range the peer will never send.
+   */
+  feedsOmittedIndices(): boolean {
+    return this.negotiatedFeatures.has("lean_events_v1");
+  }
+
   private async secureRequest(connection: NatsConnection, subject: string, plaintext: Uint8Array, timeout: number): Promise<Pick<Msg, "data">> {
     const channel = this.secureChannels.get(connection);
     if (!channel) throw new Error("pairing_handshake_required");

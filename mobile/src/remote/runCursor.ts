@@ -63,6 +63,7 @@ export function nextEvent(
   runId: string | undefined | null,
   idx: number | undefined | null,
   coalescedCount?: number,
+  options?: { omitIndices?: boolean },
 ): CursorEvent {
   if (!runId || idx == null) return { kind: "untracked" };
 
@@ -87,6 +88,15 @@ export function nextEvent(
     return { kind: "apply", idx };
   }
   if (covered.start <= entry.highWater) return { kind: "overlap", fromIdx: entry.highWater };
+  // A feed that omits indices on purpose — the client declared a trimmed lane —
+  // advances over the hole instead of treating it as loss. Reconciling cannot
+  // recover slices the peer is not sending, so a gap verdict here would retry
+  // the same unrecoverable range forever (the phone shows a sync notice it can
+  // never clear).
+  if (options?.omitIndices) {
+    cursor.set(runId, { ...entry, highWater: idx });
+    return { kind: "apply", idx };
+  }
   // idx > high-water + 1 with nothing covering the hole → gap
   return { kind: "gap", fromIdx: entry.highWater };
 }
