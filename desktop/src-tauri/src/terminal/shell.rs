@@ -437,6 +437,10 @@ mod tests {
 
     /// A `SHELL` value is preferred over the known fallbacks, but a blank one is
     /// not a candidate at all (it must never become a relative program name).
+    /// WINDOWS-ONLY. The unix resolver is `/etc/shells`-based (see `list_shells`), so an arbitrary absolute `SHELL`
+    /// path is not preferred there and `ShellSource::EnvShell` is never returned. The preference
+    /// rule asserted here is the Windows one. Windows-only.
+    #[cfg(windows)]
     #[test]
     fn an_environment_shell_is_preferred_but_a_blank_one_is_ignored() {
         let _lock = crate::TEST_HOME_LOCK

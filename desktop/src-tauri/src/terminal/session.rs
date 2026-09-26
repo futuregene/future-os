@@ -1048,6 +1048,10 @@ mod tests {
 
     /// A written line must reach the child, not merely be echoed by the
     /// terminal: the shell executing `exit 5` is the proof.
+    /// WINDOWS-ONLY. Waits for the child's cursor query before writing the line -- the Windows fixture's handshake.
+    /// A unix shell never asks, so the wait times out (CI: "timed out waiting for the shell's
+    /// cursor query"). Windows-only.
+    #[cfg(windows)]
     #[test]
     fn a_written_line_is_executed_by_the_child() {
         let session = spawn_with(test_support::interactive_command());

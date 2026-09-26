@@ -514,6 +514,10 @@ mod tests {
 
     /// A written line must be *executed* by the child, not merely accepted by
     /// the PTY: `exit 5` proves the bytes reached the shell's input.
+    /// WINDOWS-ONLY. The child's cursor query is the Windows interactive-shell fixture's handshake
+    /// (`test_support::interactive_command()`); a unix shell in a PTY does not emit one, so the
+    /// "must ask for the cursor" premise cannot hold there. Windows-only.
+    #[cfg(windows)]
     #[test]
     fn writing_to_the_pty_reaches_the_shell() {
         let mut session = spawn_with(test_support::interactive_command());

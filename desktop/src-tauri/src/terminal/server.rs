@@ -2665,6 +2665,10 @@ mod tests {
     /// its input. The assertions are on the bytes that came back — the shell's
     /// echo of both inputs proves each frame reached the **PTY**, not merely the
     /// pump, and the `Pong` proves the keepalive round trip.
+    /// WINDOWS-ONLY. Same handshake as the PTY test: it asserts the shell's cursor query reaches the client
+/// over the socket, which is the Windows fixture's behaviour. A unix shell never asks.
+/// Windows-only.
+    #[cfg(windows)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pump_reads_every_client_frame_type() {
         let server = isolated_server();
