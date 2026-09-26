@@ -37,14 +37,21 @@ import leanLaneMidEvents from "./fixtures/render-lean-lane-mid-events.json";
 export type LeanRenderMode = "live" | "live-mid" | "full-live" | "history" | "full-history";
 
 /**
- * The command (or path) the FULL-feed history fixture carries for one call.
+ * The command (or path) the FULL feed carries for one call.
  *
- * A lean page drops a shell call's arguments, so the row fetches them when it
- * is opened: in the app that is the `get_tool_call_args` bridge round trip, and
- * the harness answers from the full page instead — the derivation is the
+ * Both lean slices drop a shell call's arguments, so the row fetches them when
+ * it is opened: in the app that is the `get_tool_call_args` bridge round trip,
+ * and the harness answers from the full fixture instead — the derivation is the
  * shipping one (`targetFromArgs`), so a capture shows the command the phone
- * would show after the same tap. Null for a call the full page does not know
- * (a live-lane id), which is the app's "leave the row as it was".
+ * would show after the same tap.
+ *
+ * Both full fixtures are searched because either lane can ask: a history row's
+ * id comes from the persisted page, a live row's from the streamed
+ * `tool_start`. In the app the answer comes from the agent's own database,
+ * which holds the call whichever lane served the client.
+ *
+ * Null for a call neither full fixture knows, which is the app's "leave the row
+ * as it was".
  */
 export function leanTargetForToolCall(toolCallId: string): string | null {
   for (const entry of fullHistoryEntries as unknown as HistoryEntry[]) {
@@ -52,6 +59,21 @@ export function leanTargetForToolCall(toolCallId: string): string | null {
       if (block.kind !== "tool_call" || block.toolCallId !== toolCallId) continue;
       return targetFromArgs(asToolKind(block.name ?? ""), normalizeArgs(block.arguments)) ?? null;
     }
+  }
+  for (const event of fullLaneEvents as unknown as StreamEvent[]) {
+    if (event.type !== "tool_start") continue;
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(event.data) as Record<string, unknown>;
+    }
+    catch {
+      continue;
+    }
+    if (data.tool_id !== toolCallId) continue;
+    const name = typeof data.tool_name === "string" ? data.tool_name : "";
+    // The execution phase carries the arguments; the input phase never does.
+    if (data.phase === "input") continue;
+    return targetFromArgs(asToolKind(name), normalizeArgs(data.tool_args)) ?? null;
   }
   return null;
 }

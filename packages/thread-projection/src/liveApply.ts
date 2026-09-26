@@ -78,6 +78,14 @@ interface ToolActivity {
   detail?: string;
   argsText?: string;
   order: number;
+  /**
+   * The call's own identity and its run, carried so a row whose target the feed
+   * omitted can fetch it when opened (`get_tool_call_args`). The live lane drops
+   * a shell call's arguments now, so this is what keeps the command reachable
+   * there — the same contract the persisted projection has.
+   */
+  toolCallId?: string;
+  runId?: string;
 }
 
 /**
@@ -386,7 +394,7 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
     }
 
     if (event.eventType === "toolcall_start" || event.eventType === "tool_start") {
-      const tool = toolFromPayload(payload, event.sequence);
+      const tool = toolFromPayload(payload, event.sequence, event.runId);
       if (tool) {
         activeToolCallId = tool.id;
         toolActivities.set(tool.id, {
@@ -438,7 +446,7 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
     }
 
     if (event.eventType === "tool_end" || event.eventType === "tool_result") {
-      const tool = toolFromPayload(payload, event.sequence);
+      const tool = toolFromPayload(payload, event.sequence, event.runId);
       const explicitId = explicitToolId(payload);
       // A result may omit the tool name (some serializers drop it); resolve it
       // by the explicit id against an already-tracked tool so the row still
@@ -735,10 +743,13 @@ function toActivityItem(tool: ToolActivity): AgentActivityItem {
     status: tool.status,
     target: tool.target,
     detail: tool.detail,
+    ...(tool.toolCallId && tool.runId
+      ? { toolCallId: tool.toolCallId, runId: tool.runId }
+      : {}),
   };
 }
 
-function toolFromPayload(payload: unknown, sequence: number): ToolActivity | null {
+function toolFromPayload(payload: unknown, sequence: number, runId?: string): ToolActivity | null {
   if (!isRecord(payload))
     return null;
 
@@ -750,14 +761,20 @@ function toolFromPayload(payload: unknown, sequence: number): ToolActivity | nul
 
   const args = normalizeArgs(payload.tool_args ?? payload.toolArgs ?? payload.arguments);
   const target = targetFromArgs(name, args);
+  const toolCallId = explicitToolId(payload);
 
   return {
-    id: explicitToolId(payload) ?? `${name}_${sequence}`,
+    id: toolCallId ?? `${name}_${sequence}`,
     kind: name,
     status: "running",
     target: target ? singleLine(target) : undefined,
     detail: target,
     order: sequence,
+    // The identity a row needs to ask the desktop for a target the feed dropped.
+    // Absent for a synthetic id (no `tool_id` on the event), which nothing can
+    // look up: the row then renders what it has rather than a dead affordance.
+    ...(toolCallId ? { toolCallId } : {}),
+    ...(toolCallId && runId ? { runId } : {}),
   };
 }
 

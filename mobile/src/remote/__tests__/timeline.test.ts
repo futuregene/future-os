@@ -644,7 +644,13 @@ describe("projection reducer", () => {
       {
         id: expect.any(String),
         kind: "tool",
-        tool: { name: "read", status: "completed", complete: true },
+        tool: {
+          name: "read",
+          status: "completed",
+          complete: true,
+          toolCallId: "t1",
+          runId: "run-1",
+        },
       },
       { id: expect.any(String), kind: "text", text: "answer" },
     ]);
@@ -1105,6 +1111,45 @@ describe("stream event reducer", () => {
     expect(answer.segments?.map(segment => segment.kind)).toEqual(["thinking", "tool", "text"]);
   });
 
+  /**
+   * The lean live lane drops a shell call's arguments, so the row has no target
+   * to show until it is opened. What keeps it from being permanently blank is
+   * the identity the activity carries from the event: `get_tool_call_args` is
+   * answered by (session, run, call), and the row passes the run it streamed
+   * under. A row that lost either would render a dead affordance.
+   */
+  test("a live shell row keeps the identity to fetch a command the lane dropped", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "agent_start",
+      data: "{}",
+      runId: "run-7",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_start",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "shell", phase: "execution" }),
+      runId: "run-7",
+      idx: 1,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_end",
+      data: JSON.stringify({ tool_id: "t1", exit_code: 0 }),
+      runId: "run-7",
+      idx: 2,
+    });
+    const reply = state.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!reply || reply.kind !== "message") throw new Error("assistant message missing");
+    const tool = reply.segments?.find(segment => segment.kind === "tool");
+    if (!tool || tool.kind !== "tool") throw new Error("tool row missing");
+    expect(tool.tool).toMatchObject({
+      name: "shell",
+      complete: true,
+      toolCallId: "t1",
+      runId: "run-7",
+    });
+    expect(tool.tool.detail).toBeUndefined();
+  });
+
   test("keeps tool rows in stream order when text streams before the first tool call", () => {
     // Regression: a model may stream an interim remark ahead of its first tool
     // call; the tool row must sit between the two text blocks inside the
@@ -1188,7 +1233,16 @@ describe("stream event reducer", () => {
       {
         id: expect.any(String),
         kind: "tool",
-        tool: { name: "shell", status: "running", complete: false, detail: "ls -la" },
+        tool: {
+          name: "shell",
+          status: "running",
+          complete: false,
+          detail: "ls -la",
+          // The call's identity travels with the row on the live lane too: it is
+          // what an on-open fetch of a dropped target is answered by.
+          toolCallId: "t1",
+          runId: "run-1",
+        },
       },
     ]);
     state = applyStreamEvent(state, {
@@ -1203,12 +1257,26 @@ describe("stream event reducer", () => {
       {
         id: expect.any(String),
         kind: "tool",
-        tool: { name: "shell", status: "running", complete: false, detail: "ls -la" },
+        tool: {
+          name: "shell",
+          status: "running",
+          complete: false,
+          detail: "ls -la",
+          toolCallId: "t1",
+          runId: "run-1",
+        },
       },
       {
         id: expect.any(String),
         kind: "tool",
-        tool: { name: "read", status: "running", complete: false, detail: "/tmp/x" },
+        tool: {
+          name: "read",
+          status: "running",
+          complete: false,
+          detail: "/tmp/x",
+          toolCallId: "t2",
+          runId: "run-1",
+        },
       },
     ]);
   });
@@ -1382,6 +1450,45 @@ describe("shared-projection semantic flags", () => {
     expect(run({ exit_code: 2 })).toBe("failed");
     // The agent's own verdict is honoured when it is present.
     expect(run({ exit_code: 1, is_soft_fail: true })).toBe("completed");
+  });
+
+  /**
+   * The same verdicts on the lane as it now ships: the shell command is not on
+   * the wire at all, so a row's exemption can only come from the agent's own
+   * `is_soft_fail`. That is the whole signal in practice — over 20,332 real
+   * shell results, every `exit_code: 1` without the flag was a genuine failure
+   * (a piped/`&&` chain or a program outside the soft-fail set), and the bare
+   * soft-fail case carries the flag. A row whose command the lane dropped and
+   * whose outcome lacks the flag therefore reads as failed: the documented
+   * price of not shipping the command, reachable only from an agent predating
+   * the flag (see `FETCHED_LABEL_TOOLS` in the desktop's lean trim).
+   */
+  test("a lean shell row's verdict comes from the agent, not from a command", () => {
+    const run = (end: Record<string, unknown>) => {
+      let state = applyStreamEvent(emptyTimeline(), {
+        type: "tool_start",
+        data: JSON.stringify({ tool_id: "t1", tool_name: "shell", phase: "execution" }),
+        runId: "run-1",
+        idx: 0,
+      });
+      state = applyStreamEvent(state, {
+        type: "tool_end",
+        data: JSON.stringify({ tool_id: "t1", tool_name: "shell", ...end }),
+        runId: "run-1",
+        idx: 1,
+      });
+      const reply = state.items.find(item => item.kind === "message");
+      if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+      const segment = reply.segments?.find(candidate => candidate.kind === "tool");
+      return segment && segment.kind === "tool" ? segment.tool.status : undefined;
+    };
+    // The agent judged it a soft failure: no command needed.
+    expect(run({ exit_code: 1, is_soft_fail: true })).toBe("completed");
+    // No flag and no command: the exemption cannot be evaluated, and a real
+    // failure must not be hidden. This is also every real exit-1 row.
+    expect(run({ exit_code: 1 })).toBe("failed");
+    expect(run({ exit_code: 2 })).toBe("failed");
+    expect(run({ exit_code: 0 })).toBe("completed");
   });
 
   /**
