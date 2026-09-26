@@ -454,7 +454,7 @@ mod measure_phone_page_tests {
         // The phone is a chunked reader (it reassembles `readChunk`s) and reads
         // the newest page, so it does not pay the per-item content cap but does
         // pay the byte budget.
-        let build = |lean: bool| {
+        let build = |lean: bool, enforce: bool| {
             let mut data = json!({ "entries": entries.clone() });
             if lean {
                 if let Some(list) = data.get_mut("entries") {
@@ -462,30 +462,56 @@ mod measure_phone_page_tests {
                 }
             }
             let page = prepare_backward_entries_page_with_cap(
-                "measure", data, /* cap_item_content */ false, /* enforce */ true,
+                "measure", data, /* cap_item_content */ false, enforce,
             );
             let wire =
                 sized(&page) + future_remote_crypto::HEADER_LEN + future_remote_crypto::TAG_LEN;
             (page["entries"].as_array().map(Vec::len).unwrap_or(0), wire)
         };
 
-        let (full_entries, full_wire) = build(false);
-        let (lean_count, lean_wire) = build(true);
-        let source = entries.as_array().map(Vec::len).unwrap_or(0);
-        // The byte claim holds entry-wise: the trim only ever removes bytes. The
-        // *entry* count may grow, because the budget behind it sheds whole oldest
-        // exchanges until the page fits — so a leaner page keeps more of them.
+        // Two different effects, so measure them apart.
+        //
+        // Without the budget, both pages hold the requested entries and the
+        // trim's own claim holds exactly: it only ever removes bytes.
+        let (_, plain_wire) = build(false, false);
+        let (_, trimmed_wire) = build(true, false);
         assert!(
-            lean_wire <= full_wire,
-            "the trim may only shrink the bytes of a page ({full_wire} vs {lean_wire})"
+            trimmed_wire <= plain_wire,
+            "the trim may only shrink a page's bytes for the same entries \
+             ({plain_wire} vs {trimmed_wire})"
         );
+
+        // With the budget, the *entry* counts can differ, because the budget
+        // sheds whole oldest exchanges until the page fits. A trim that brings
+        // the page under the budget delivers it whole, while the undeclared page
+        // is cut down — so comparing raw bytes across the two is meaningless:
+        // the lean page can be larger precisely because it still holds the
+        // exchanges the undeclared page had to drop. Measured on a real session
+        // page: undeclared kept 41 of 769 entries in 76 KB, lean kept all 769 in
+        // 276 KB. The invariant is therefore on the entry count, not the bytes.
+        let (full_entries, full_wire) = build(false, true);
+        let (lean_count, lean_wire) = build(true, true);
+        assert!(
+            lean_count >= full_entries,
+            "the lean page must not deliver fewer entries than the undeclared one \
+             ({full_entries} vs {lean_count})"
+        );
+
+        let source = entries.as_array().map(Vec::len).unwrap_or(0);
+        // `saved` is the trim's own effect, measured on the same entries without
+        // the budget — the only comparison in which both pages hold the same
+        // content. The budgeted pair is reported beside it as what each client
+        // actually receives.
         println!(
             "VERIFY_E2E_PHONE_PAGE {}",
             json!({
                 "sourceEntries": source,
+                "plainBytes": plain_wire,
+                "trimmedBytes": trimmed_wire,
+                "saved": 1.0 - (trimmed_wire as f64 / plain_wire.max(1) as f64),
                 "undeclared": { "entries": full_entries, "wireBytes": full_wire },
                 "declared": { "entries": lean_count, "wireBytes": lean_wire },
-                "saved": 1.0 - (lean_wire as f64 / full_wire.max(1) as f64),
+                "declaredWhole": lean_count == source,
             })
         );
     }

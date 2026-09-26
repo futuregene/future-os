@@ -217,10 +217,17 @@ def main() -> int:
                 data = json.loads(line[line.index("VERIFY_E2E_PHONE_PAGE ")
                                        + len("VERIFY_E2E_PHONE_PAGE "):])
                 un, de = data["undeclared"], data["declared"]
+                # `saved` is the trim on the same entries (no budget), which is
+                # the only like-for-like comparison. What each client receives is
+                # reported beside it, because the budget lets the lean page keep
+                # the exchanges the undeclared one had to drop — so its byte count
+                # can legitimately be the larger of the two.
+                whole = "整页" if data.get("declaredWhole") else "被削减"
                 print(f"top{index:<6}{count:>9}{raw_bytes/2**20:>12.2f}"
-                      f"{de['wireBytes']/2**20:>11.2f}{data['saved']*100:>7.1f}%"
-                      f"   page {count} -> {un['entries']}/{de['entries']} entries; "
-                      f"wire {un['wireBytes']} -> {de['wireBytes']}")
+                      f"{data['trimmedBytes']/2**20:>11.2f}{data['saved']*100:>7.1f}%"
+                      f"   裁剪后 {whole}；实收 未声明 {un['entries']} 条/"
+                      f"{un['wireBytes']/1024:.0f} KiB vs lean {de['entries']} 条/"
+                      f"{de['wireBytes']/1024:.0f} KiB")
             finally:
                 page_path.unlink(missing_ok=True)
             continue
