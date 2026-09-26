@@ -598,25 +598,43 @@ function ThinkingRow({ text, streaming, opened }: {
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  // A lean feed carries no body at all: the row is then a status label, not a
+  // disclosure. A chevron that opens an empty box promises content that never
+  // arrives, so a bodyless row must not read as expandable.
+  //
+  // `opened` is the layout (a row inside a run sits on the open rail); the body
+  // is the reader's own expansion. Only the disclosure affordance is gated on
+  // having something to disclose — the two must not be conflated.
+  const hasBody = text.trim().length > 0;
   const open = opened || expanded;
-  return (
-    <View style={[styles.inlineThinking, !open && styles.railThinking]}>
-      <Pressable
-        accessibilityRole="button"
-        hitSlop={ROW_HIT_SLOP}
-        onPress={() => setExpanded(value => !value)}
-        style={[styles.inlineThinkingHeader, !open && styles.railRow]}
-      >
-        <Brain color={colors.inkMuted} size={14} />
-        <Text style={styles.inlineThinkingLabel}>
-          {t(streaming ? "chat.thinking" : "chat.thoughtCompleted")}
-        </Text>
-        {expanded ? (
+  const header = (
+    <>
+      <Brain color={colors.inkMuted} size={14} />
+      <Text style={styles.inlineThinkingLabel}>
+        {t(streaming ? "chat.thinking" : "chat.thoughtCompleted")}
+      </Text>
+      {hasBody &&
+        (expanded ? (
           <ChevronUp color={colors.inkMuted} size={14} />
         ) : (
           <ChevronDown color={colors.inkMuted} size={14} />
-        )}
-      </Pressable>
+        ))}
+    </>
+  );
+  return (
+    <View style={[styles.inlineThinking, !open && styles.railThinking]}>
+      {hasBody ? (
+        <Pressable
+          accessibilityRole="button"
+          hitSlop={ROW_HIT_SLOP}
+          onPress={() => setExpanded(value => !value)}
+          style={[styles.inlineThinkingHeader, !open && styles.railRow]}
+        >
+          {header}
+        </Pressable>
+      ) : (
+        <View style={[styles.inlineThinkingHeader, !open && styles.railRow]}>{header}</View>
+      )}
       {expanded && <Text style={styles.inlineThinkingText}>{text}</Text>}
     </View>
   );
