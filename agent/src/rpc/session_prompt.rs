@@ -350,15 +350,59 @@ impl ServerSession {
             .first()
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("there is no queued run to start"))?;
-        let payload: ScheduledPromptPayload = serde_json::from_value(request.payload.clone())?;
-        // Every accepted request keeps its own execution snapshot. Merging
-        // queued text here used the front request's model, tools, cwd and
-        // sandbox settings for later requests, which could silently widen
-        // permissions or run work under a model the user did not select.
-        let snapshot = self
-            .scheduled_snapshots
-            .remove(&request.run_id)
-            .ok_or_else(|| anyhow::anyhow!("accepted run snapshot is unavailable"))?;
+        let mut payload: ScheduledPromptPayload = serde_json::from_value(request.payload.clone())?;
+        // Follow-up coalescing (opt-in per request via `enqueue_coalescing`):
+        // the requests queued directly behind the front one fold into it, so a
+        // burst of supplements is answered together in ONE run instead of one by
+        // one. Their text, model-context sidecar, images and attachments are
+        // appended in queue order — nothing is dropped, nothing is reordered —
+        // while the EXECUTION configuration (model, thinking level, cwd,
+        // permissions, sandbox) comes from the LAST folded request: the user's
+        // latest instruction decides how the combined turn runs.
+        // Fold BEFORE the run is activated so `prompt_internal` builds the user
+        // message once, from the merged payload (the fold is not reversible at
+        // that point). If activation then fails, the error arm below cancels the
+        // front request, and the folded requests are gone with it: their
+        // content was admitted, never answered, and their clients hold `merged`
+        // receipts. The window is narrow (persistence is checked above, and a
+        // scheduled run needs no shared-loop lock) and the failure mode is the
+        // pre-existing one for the front request itself — an inaccessible
+        // workspace or a lost lease race drops the whole turn, folded or not.
+        let folded = self.scheduler.drain_coalescing_after_first();
+        for trailing in &folded {
+            let trailing_payload: ScheduledPromptPayload =
+                serde_json::from_value(trailing.payload.clone())?;
+            if !payload.message.is_empty() && !trailing_payload.message.is_empty() {
+                payload.message.push_str("\n\n");
+            }
+            payload.message.push_str(&trailing_payload.message);
+            if !payload.model_context.is_empty() && !trailing_payload.model_context.is_empty() {
+                payload.model_context.push_str("\n\n");
+            }
+            payload
+                .model_context
+                .push_str(&trailing_payload.model_context);
+            payload.images.extend(trailing_payload.images);
+            payload.attachments.extend(trailing_payload.attachments);
+        }
+        // The front request keeps the run identity it was acknowledged with
+        // (run id, sequence, client request id) — only the effective settings
+        // move to the last folded request.
+        let coalesced_run_ids: Vec<String> = folded
+            .iter()
+            .map(|trailing| trailing.run_id.clone())
+            .collect();
+        let mut snapshot = self.scheduled_snapshots.remove(&request.run_id);
+        for trailing in &folded {
+            if let Some(folded_snapshot) = self.scheduled_snapshots.remove(&trailing.run_id) {
+                snapshot = Some(folded_snapshot);
+            }
+        }
+        let snapshot =
+            snapshot.ok_or_else(|| anyhow::anyhow!("accepted run snapshot is unavailable"))?;
+        // Keep the payload's own copy of the effective settings consistent, so a
+        // later reader sees the configuration this run actually uses.
+        payload.settings = snapshot.settings.clone();
         debug_assert_eq!(snapshot.settings.model, payload.settings.model);
         #[cfg(test)]
         {
@@ -375,6 +419,7 @@ impl ServerSession {
             Some(&request.client_request_id),
             Some(&request),
             Some(snapshot),
+            &coalesced_run_ids,
         )?;
         Ok(crate::runtime::RunAck {
             run_id: lease.run_id,
@@ -421,6 +466,9 @@ impl ServerSession {
             client_request_id,
             None,
             None,
+            // A directly-submitted prompt is never a coalescing fold target:
+            // folding only happens at the run boundary for queued requests.
+            &[],
         )
     }
 
@@ -434,6 +482,7 @@ impl ServerSession {
         client_request_id: Option<&str>,
         scheduled: Option<&crate::runtime::ScheduledRunRequest>,
         accepted_snapshot: Option<AcceptedRunSnapshot>,
+        coalesced_run_ids: &[String],
     ) -> Result<crate::runtime::RunLease> {
         let accepted_settings = accepted_snapshot
             .as_ref()
@@ -626,6 +675,22 @@ impl ServerSession {
                 "run_id".to_string(),
                 serde_json::Value::String(run_lease.run_id.clone()),
             );
+            // Audit trail for a coalesced turn: the queued requests whose
+            // content this run absorbed, in queue order. Their own runs were
+            // never started (each answered terminal/`merged`), so this is what
+            // records — for the history and the journal — why one answer
+            // covers several submissions.
+            if !coalesced_run_ids.is_empty() {
+                metadata.insert(
+                    "coalesced_run_ids".to_string(),
+                    serde_json::Value::Array(
+                        coalesced_run_ids
+                            .iter()
+                            .map(|run_id| serde_json::Value::String(run_id.clone()))
+                            .collect(),
+                    ),
+                );
+            }
         }
         let user_entry_id = user_message.ensure_journal_entry_id();
         let user_attachments = user_message

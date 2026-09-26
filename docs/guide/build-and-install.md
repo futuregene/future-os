@@ -13,7 +13,7 @@ Required on every platform for a full build (agent + TUI + CLI + GUI):
 
 - **Rust** 1.97+ (pinned via `rust-toolchain.toml`)
 - **Node.js** 24+ (see `.nvmrc`) — for the GUI frontend
-- Optional: **Python 3** — only for `make generate-models` and the CLI golden-diff harness (`make test-cli-diff`)
+- Optional: **Python 3** — for the manual/documentation targets (`make generate-models`, `make check-docs` / `make test-docs-check`, the `make test-cli-diff` / `make test-tui-tmux` harnesses) and the profiling targets (`make profile-agent` / `profile-quick` / `profile-heap`)
 - Optional: **protoc** (Protocol Buffers compiler) — only for `make generate-proto`; generated code is checked in so normal builds don't need it
 
 The TUI and CLI are Rust (`cargo build`) and no longer need Bun or Node.
@@ -53,10 +53,10 @@ make install-cli    # unified `future` CLI only
 make install-desktop    # desktop app only (stages its own agent/CLI sidecars)
 make install-skills # built-in skills + the /future-loop skill
 make package-desktop    # desktop bundle → .app + .dmg in desktop/src-tauri/target/release/bundle/
-scripts/build-desktop-macos.sh  # local DMG; auto-signs when a Developer ID certificate is available
+scripts/build/build-desktop-macos.sh  # local DMG; auto-signs when a Developer ID certificate is available
 ```
 
-`scripts/build-desktop-macos.sh` builds the unified `future` CLI sidecar together
+`scripts/build/build-desktop-macos.sh` builds the unified `future` CLI sidecar together
 with the GUI. It automatically uses a single `Developer ID Application` identity
 from the macOS Keychain and writes a `*-sign.dmg`; if no unambiguous identity
 is available, it falls back to the normal DMG. Run it with `--help` for
@@ -109,8 +109,8 @@ sudo apt install -y protobuf-compiler                             # optional —
 Build and install:
 
 ```bash
-scripts/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS-portable-linux.tar.gz
-scripts/start-desktop-linux.sh                    # local Linux Desktop + agent development session
+scripts/build/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS-portable-linux.tar.gz
+scripts/dev/start-desktop-linux.sh                    # local Linux Desktop + agent development session
 make install        # or install straight from source: GUI + unified `future` CLI + skills → /usr/local/bin (sudo)
 make install-cli    # unified `future` CLI only
 make install-desktop    # desktop app only (stages its own agent/CLI sidecars)
@@ -118,7 +118,7 @@ make install-skills # built-in skills + the /future-loop skill
 make package-desktop    # desktop bundle → .deb in desktop/src-tauri/target/release/bundle/
 ```
 
-`scripts/start-desktop-linux.sh` runs the GUI in dev mode against a locally
+`scripts/dev/start-desktop-linux.sh` runs the GUI in dev mode against a locally
 built agent and stops the agent it started when the GUI exits. Bubblewrap
 diagnostics are informational so the sandbox-unavailable UI can also be tested.
 
@@ -184,8 +184,8 @@ Push-Location desktop; npm run tauri:build; Pop-Location   # → NSIS setup .exe
 
 Notes:
 
-- `scripts\start-desktop-windows.bat` runs the GUI in dev mode against a locally built agent.
-- The scripts under `scripts/` (`build-desktop-macos.sh`, `build-desktop-windows-portable.ps1`, `build-desktop-windows-installer.ps1`) wrap these same steps into a single command and replicate the CI packaging pipeline (DMG / portable zip / NSIS installer). They check the toolchain up front and require `protoc` (`brew install protobuf` / `choco install protoc`). Their artifacts contain the GUI and the unified `future` CLI (agent/TUI/channel/loop embedded) — not a separate TUI.
+- `scripts\dev\start-desktop-windows.bat` runs the GUI in dev mode against a locally built agent.
+- The scripts under `scripts/build/` (`build-desktop-macos.sh`, `build-desktop-windows-portable.ps1`, `build-desktop-windows-installer.ps1`) wrap these same steps into a single command and replicate the CI packaging pipeline (DMG / portable zip / NSIS installer). They check the toolchain up front and require `protoc` (`brew install protobuf` / `choco install protoc`). Their artifacts contain the GUI and the unified `future` CLI (agent/TUI/channel/loop embedded) — not a separate TUI.
 
 ## Loop control plane (`future-loop`)
 
@@ -207,8 +207,8 @@ make install-skills                    # built-in skills + the /future-loop skil
 Optionally install the standalone `future-loop` binary as well (dev use):
 
 ```bash
-bash scripts/install-future-loop.sh        # CLI → ~/.local/bin/future-loop, skill → ~/.future/agent/skills/
-bash scripts/install-future-loop.sh --release
+bash scripts/release/install-future-loop.sh        # CLI → ~/.local/bin/future-loop, skill → ~/.future/agent/skills/
+bash scripts/release/install-future-loop.sh --release
 ```
 
 Verify:
@@ -222,7 +222,7 @@ future loop status        # primary entry (same code as `future-loop status`)
 > the same code as its standalone binary (`future-agent`, `future-tui`,
 > `future-channel`, `future-loop`). The standalone binaries remain buildable
 > with `cargo build -p <crate>` and runnable via `make run-*` (dev use); the
-> standalone future-loop binary installs via scripts/install-future-loop.sh.
+> standalone future-loop binary installs via scripts/release/install-future-loop.sh.
 
 See the [loop control plane guide](../architecture/loop-control-plane.md) for what it does
 and how to use it.

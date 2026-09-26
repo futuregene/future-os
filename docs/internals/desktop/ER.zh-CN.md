@@ -117,7 +117,8 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 | `pinned` | 是否置顶 |
 | `readonly` | 是否只读 |
 | `agent_session_id` | GUI Thread ↔ Agent SQLite session 映射；非空值全局唯一，一个 Agent session 只能绑定一个 Desktop Thread；通过 RPC 查询，不跨数据库建立外键（`store/schema.rs`） |
-| `parent_session_id` | 父 Agent session ID 的本地投影；为空表示根对话。由启动同步、运行时发现和分叉写入；不设外键，允许父会话晚于子会话导入或已删除。Agent 仍是关系真源。 |
+| `parent_session_id` | 父 Agent session ID 的本地投影；为空表示根对话。由启动同步、运行时发现和分叉写入；不设外键，允许父会话晚于子会话导入或已删除。Agent 仍是关系真源。用户删除对话时沿该谱系递归删除（`store::threads::delete_thread_tree`）；孤儿清扫与外部删除反应走单线程删除，保留存活子对话。 |
+| `asset_root_id` | 共享附件原件/缩略图的稳定归属；分叉继承它，删除祖先不会使子会话历史失效（已发布迁移 `v1.1.9-thread-asset-root`） |
 | `last_message_at` | 最近消息时间 |
 | `last_opened_at` | 最近打开时间 |
 | `created_at` | 创建时间 |
@@ -185,6 +186,7 @@ Run 表示一次 Agent 执行，通常由用户消息触发。
 | `ended_at` | 结束时间 |
 | `error_message` | 错误信息 |
 | `error_type` | 结构化错误分类（`stream_interrupted`、`command_failed`、`model_failed`、`abort_requested`、`timeout`、`interrupted`、`unknown` 等；配套 `run_error.rs`，未失败时为 NULL） |
+| `remote_accepted_at` | Agent 持久接受远程（手机）prompt 的时间点；只有越过该边界，远程回执才可见或可恢复（`store/runs.rs` 的 `mark_remote_prompt_accepted`，索引 `idx_runs_remote_prompt_receipt`） |
 | `archived_at` | 归档时间；非空时不在右侧「运行」列表展示，但保留记录和 Agent 事件，供中间信息流的命令详情跳转使用 |
 | `created_at` | 创建时间 |
 | `updated_at` | 更新时间 |
@@ -304,7 +306,7 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 | `thread_id` | 所属 Thread |
 | `run_id` | 来源 Run |
 | `tool_call_id` | 来源 Tool Call，可为空 |
-| `kind` | `shell_command`、`file_read`、`file_write`、`file_delete`、`network_access`、`data_access`、`batch_operation`、`outside_workspace_write` |
+| `kind` | 当前实现产出：`shell_command`、`file_read`、`file_write`、`outside_workspace_write`、`sandbox_escalation`（macOS/Linux 脱沙盒升级）、`windows_write_capability`（Windows 前置写路径）；`file_delete`、`network_access`、`data_access`、`batch_operation` 是设计草案值，实现从不产出；`outside_workspace_read` 为已废弃变体（见下方 v2 说明） |
 | `status` | `pending`、`approved`、`rejected`、`cancelled` |
 | `title` | 标题 |
 | `summary` | 摘要 |
@@ -313,6 +315,7 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 | `action_category` | P2 结构化字段：操作类别 |
 | `action_payload` | P2 结构化字段：完整 action JSON |
 | `sandbox_boundary` | P2 结构化字段：沙盒边界信息 JSON |
+| `save_suggestion` | v2 结构化字段：审批卡「在本工作区 / 本对话允许」背后的建议规则 JSON（`{path, access, action}`）；敏感文件为 null，只能允许一次 |
 | `reviewer` | 审查者，`user` 或 `auto_review`（预留） |
 | `decision_scope` | 决策范围，`once`、`session`、`always`（预留），当前仅 `once` |
 | `decision_source` | 决策来源，`user`、`rule`（预留）、`sandbox`（预留） |
@@ -381,7 +384,7 @@ Review Changeset 表示一组可供用户 review 的变更集合。
 - 普通 Chat 不展示 Review，文件产物进入 Artifact 管理；Workspace 对话不展示 Artifacts，避免同一文件同时进入 Review 和 Artifact 两套语义。
 - 用户可以在 Review 中查看代码 diff、文件变更，以及后续文本类 artifact 的变更摘要。
 - `files_changed`、`additions`、`deletions` 用于展示类似 Git / Codex 的本轮变更汇总，例如 `2 个文件 +204 -90`。
-- `status` 列（`draft`/`ready`/`viewed`/`applied`/`discarded`）属于早期的 apply/discard 决策流；该流程前端已移除，`run_snapshot` changeset **不使用**该列，其状态改由 `completeness` / `confidence` 表达（见 4.10）。`StoredReviewChangeset` 类型保留，仅 markdown `futureos://` 引用仍在用。
+- `status` 列（`draft`/`ready`/`viewed`/`applied`/`discarded`）属于早期的 apply/discard 决策流；该流程前端已移除，`run_snapshot` changeset 写入 `status = 'n/a'`，其状态改由 `completeness` / `confidence` 表达（见 4.10）。`StoredReviewChangeset` 类型保留，仅 markdown `futureos://` 引用仍在用。
 
 ### 4.10 Review File Change
 
@@ -393,10 +396,10 @@ Review File Change 表示某个文件或 artifact 的具体变更。
 | --- | --- |
 | `id` | Review File Change 唯一标识 |
 | `changeset_id` | 所属 Review Changeset |
-| `target_type` | `workspace_file` 或 `artifact` |
+| `target_type` | 影子管线写入 `file`；`workspace_file` / `artifact` 是影子 Review 之前的设计草案值（已移除的 apply/discard 流程） |
 | `target_id` | 目标对象 id，可为空 |
 | `path` | 文件路径或 artifact 路径 |
-| `change_type` | `create`、`modify`、`delete`、`rename` |
+| `change_type` | git name-status 代码：`A` / `M` / `D` / `R` / `C`（新增 / 修改 / 删除 / 重命名 / 复制）；`create`、`modify`、`delete`、`rename` 是影子 Review 之前的设计草案值 |
 | `before_ref` | 变更前内容引用，可为空 |
 | `after_ref` | 变更后内容引用，可为空 |
 | `diff` | 小型文本 diff，可为空 |
@@ -491,8 +494,8 @@ Artifact 表示工作过程中产生的可复用产物。
 - 普通 Chat 产生的 Artifact 存在临时 Workspace 下。
 - 清理普通 Chat 时，用户可以下载 Artifact。
 - 对话输入框附件不自动登记为 Artifact，也不复制到普通 Chat / Workspace 的工作目录。Artifacts 面板的主动上传是独立流程。
-- **附件持久化目录**（不属于 Artifact/SQLite，纯文件树）：`~/.future/app/images/<threadId>/` 下 `thumb/` 保存所有图片附件的缩略图，`origin/` 保存粘贴图片及手机上传等没有稳定桌面原始路径的附件。附件元数据（`path` / `kind` / `name` / `thumbnail`）存在 Agent SQLite entry 元数据中，经 RPC `metadata.attachments` 返回；GUI 无消息副本，**无独立附件表**。
-- **回收**：`images/<tid>` 无逐删执行器,靠启动时 `reconcile_orphan_images` 孤儿清扫——`threads` 表中 `status='deleted'` 或无行的 tid 其目录被删（无软删撤销）；整库 reset 额外清 `images/` 整棵。覆盖 GUI 删、TUI/CLI 外部删 session、reset 三种来源。
+- **附件持久化目录**（不属于 Artifact/SQLite，纯文件树）：`~/.future/app/images/<assetRootId>/`（即线程自身的 `asset_root_id`；fork 后代共享祖先的根，见 4.2）下 `thumb/` 保存所有图片附件的缩略图，`origin/` 保存粘贴图片及手机上传等没有稳定桌面原始路径的附件。附件元数据（`path` / `kind` / `name` / `thumbnail`）存在 Agent SQLite entry 元数据中，经 RPC `metadata.attachments` 返回；GUI 无消息副本，**无独立附件表**。
+- **回收**：`images/<assetRootId>` 无逐删执行器，靠启动时 `reconcile_orphan_images` 孤儿清扫——当没有任何未删除线程解析到该根（`COALESCE(NULLIF(asset_root_id, ''), id)`）时其目录被删，即拥有者不存在或已软删（无软删撤销）；fork 后代让祖先的根保持存活。整库 reset 额外清 `images/` 整棵。覆盖 GUI 删、TUI/CLI 外部删 session、reset 三种来源。
 
 ### 4.12–4.13 Research Collection / Research Resource（已移除，未建表）
 
@@ -599,8 +602,9 @@ Object Reference 表示某个对象引用了另一个对象。
 - `workspace_files`
 - `reference_targets`
 - `object_references`
-- `app_settings`（应用级设置，键值表：`approval_tier`（`manual`/`sandbox`/`off`）、`hidden_models`、`remote_pair_id`，见 `store/app_settings.rs`；已退役的 `show_thinking` 键允许留在旧数据库中，但不再读取、写入或通过设置 API 返回，无需破坏性迁移；旧 `remote_enabled` / `remote_nats_url` 键不再读取，运行状态驻内存、地址由平台环境派生）
+- `app_settings`（应用级设置键值表；缺键时取以下默认值，见 `store/app_settings.rs:64-77,212-262`）：`approval_tier`（默认 `off`，另可 `manual`/`sandbox`；未知值收敛为 `off`）、`hidden_models`、`title_language`（`en`/`zh`，默认 `en`，由 Desktop UI 镜像给后台标题生成）、`auto_compact_first_turn`（保留的存储键名，用于「首个回答后生成标题」；默认 true，从不触发压缩）、`auto_upgrade_skills`（true）、`auto_connect_remote`（false，仅非 release 构建消费）、`bell_on_complete`（true）、`skill_recommend`（true）、`skill_guide_dismissed` / `skill_intro_dismissed`（false）、`community_edition`（false，仅呈现层）以及内部 `device_id`。全部走既有键值表与缺键默认，无需结构性迁移。已退役的 `show_thinking` 键允许留在旧数据库中，但不再读取、写入或通过设置 API 返回，无需破坏性迁移；旧 `remote_enabled` / `remote_nats_url` 键同样不再读取，运行状态驻内存、地址由平台环境派生。
 - `agent_delete_outbox`（删除 Thread 时登记的 Agent 会话删除投递队列，后台重试直至 Agent 确认，见 `store/deletions.rs`）
+- `skill_reco_events`（每次真正展示给用户的技能推荐一行：`day`、`skill_id`、`message_hash`——回答「今天推荐了几次 / 该技能今天是否展示过 / 该消息是否已产生过推荐」；没有可推荐项的调用不写行，见 `store/skill_reco.rs` 与 `store/schema.rs:249-254` 的 DDL）
 
 > `messages`、`run_events`、`tool_calls`、`tool_outputs` 已从 GUI schema 删除（`DROPPED_TABLES` 在旧库清除）；其数据由独立 Agent SQLite 持久化，详见 §4.3、§4.5–4.7、§7。
 >
@@ -731,6 +735,9 @@ erDiagram
 | `history_display` | PK `(session_id,ordinal)`；`source_position/is_user/payload` | 外键级联到 session；`history_users(session_id,is_user,ordinal)` 支持倒序整轮分页。source_position 可空，表示合成占位；不是第二份正文 |
 | `legacy_imports` | PK `session_id`；`status/fingerprint/error_file/error_line/error_kind/warnings` | status 限 imported/skipped/deleted；每会话导入结果及防复活墓碑，无正文 |
 | `storage_meta` | PK `key`；`value` | 库级控制标记，例如一次性导入完成状态 |
+| `compaction_operations` | PK `(session_id,input_key)`；`input_digest/operation_id/state/result_json` | 外键级联到 session；state 限 started/completed/failed。让手动与自动压缩跨重启幂等：同 key 成功直接复用已记录结果，不重新计算；摘要正文不存这里 |
+| `fork_operations` | PK `request_id`；`request_fingerprint/parent_session_id/child_session_id/created_at_ms` | `child_session_id` 唯一且级联；`fork_operations_parent` 服务父会话查找。记录已完成的 fork，重试请求复用子会话而非再建一个 |
+| `skills`、`skills_meta`、`skill_installations`、`skill_operations` | `skills` PK `name`（`version/deleted/installed_at_ms/updated_at_ms`）；`skills_meta` PK `key`；`skill_installations` PK `location`（`name/scope/source/version/package_sha256/observed_at_ms`；scope `app`/`global`，source `managed`/`external`）；`skill_operations` PK `name`（`kind` install/uninstall，`phase` prepared/replaced） | Agent 的已安装技能注册表（`agent/src/skills/registry.rs`，随同一 schema 批次创建，使先于 Agent 启动的 mutator 也能留下 Agent 接受的文件）。`skill_installations_name` 服务按名查找；`~/.future/agent/skills` 下的文件仍是事实来源 |
 
 JSON 的保留边界：
 
@@ -754,6 +761,6 @@ Delta 按 100 ms / 128 条 / 64 KiB 微批写入；非 delta 语义事件、读�
 
 Agent 与 Desktop/Mobile/TUI/CLI 同步发布，不支持新旧 RPC 混搭。现有历史/消息/分叉接口统一使用 `id/kind/role/runId/createdAtMs/blocks/metadata/usage/run`；状态接口集中返回 `usage`、`requestedRun`，列表使用 `updatedAtMs`；缺少父会话用 null。原始实时事件的恢复协议独立保留，不新增旧字段别名或双格式响应。Desktop 内部 Tauri UI 记录仍按其职责映射，不冒充 Agent 公共 RPC。
 
-Agent 当前 `application_id` 为 `0x46555452`，`user_version=2` 只是本库 schema 标识，不是 RPC 版本，也不代表存在需要支持的已发布 v1。开发布局不保留升级链，未知库/不支持布局明确拒绝，绝不自动重建。正式发布后必须维护 schema 迁移；Desktop 已发布的 migrations 继续遵守 §1 的不可修改边界。
+Agent 当前 `application_id` 为 `0x46555452`，`user_version=4` 只是本库 schema 标识，不是 RPC 版本，也不代表存在需要支持的已发布 v1。`user_version` 2 和 3 是更早的布局；2 只在列形状与当前一致时才被接受，否则启动即拒绝（`agent/src/session/database.rs:285-319`）。开发布局不保留升级链，未知库/不支持布局明确拒绝，绝不自动重建。正式发布后必须维护 schema 迁移；Desktop 已发布的 migrations 继续遵守 §1 的不可修改边界。
 
 旧 JSONL 仅由一次性导入器读取、原文件保留；损坏会话隔离跳过，全局存储错误阻止启动。运维、隐私及备份边界见 [SQLite 迁移](../../architecture/sqlite-migration.zh-CN.md)。

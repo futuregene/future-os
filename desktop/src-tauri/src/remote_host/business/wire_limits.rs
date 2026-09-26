@@ -3,10 +3,12 @@ use serde_json::{json, Value};
 /// Reply budget for a `get_messages` page: comfortably under NATS's 1MB
 /// user-JWT payload limit, leaving headroom for the reply envelope.
 pub(crate) const MESSAGES_PAGE_BYTES: usize = 512 * 1024;
-/// Backward mobile history keeps the requested ten-exchange semantic maximum,
-/// with the same 512 KiB wire budget as other remote history pages. Complete
-/// oldest exchanges are deferred only when an unusually content-heavy ten-turn
-/// page would exceed that budget; a page never splits an exchange.
+/// Backward mobile history keeps the requested page of user exchanges, with the
+/// same 512 KiB wire budget as other remote history pages. Complete oldest
+/// exchanges are deferred only when an unusually content-heavy page would exceed
+/// that budget; a page never splits an exchange. (The phone asks for
+/// `HISTORY_PAGE_USER_EXCHANGES` = 3 of them; this comment used to say "ten",
+/// which was true before #607 lowered it.)
 pub(crate) const BACKWARD_HISTORY_PAGE_BYTES: usize = 512 * 1024;
 /// A single persisted message can embed a huge tool result; cap its content so
 /// one oversized message can't push a page past the payload limit on its own.
@@ -689,6 +691,139 @@ mod tests {
         assert_eq!(
             item, before,
             "nothing to rewrite means nothing is rewritten"
+        );
+    }
+}
+
+#[cfg(test)]
+mod measure_phone_page_tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    /// Measure a *phone page* through the shipping trim and page budget.
+    ///
+    /// The whole-session measurements size payloads a phone never reads: the
+    /// phone asks the agent for the newest `HISTORY_PAGE_USER_EXCHANGES`
+    /// exchanges (`before` + `limit`, agent-side paging) and only then meets the
+    /// bridge's trim and 512 KiB budget. The budget sheds whole oldest exchanges,
+    /// so applying it to a whole session yields "as many newest exchanges as fit
+    /// in 512 KiB" — which equals the phone's page only when that page already
+    /// exceeds the budget, and overstates it when the exchanges are small.
+    ///
+    /// Driven by `scripts/measure/measure-lean-history.py --phone-page`, which
+    /// dumps exactly that page. Trim and budget here are the shipping ones.
+    #[test]
+    #[ignore = "measurement: needs VERIFY_E2E_PHONE_PAGE"]
+    fn measure_phone_page() {
+        let path = std::env::var("VERIFY_E2E_PHONE_PAGE").expect("VERIFY_E2E_PHONE_PAGE");
+        let raw = std::fs::read_to_string(path).expect("phone page readable");
+        let entries: Value = serde_json::from_str(&raw).expect("phone page json");
+        let sized = |value: &Value| serde_json::to_vec(value).expect("serializes").len();
+
+        // The phone is a chunked reader (it reassembles `readChunk`s) and reads
+        // the newest page, so it does not pay the per-item content cap but does
+        // pay the byte budget.
+        let build = |lean: bool, enforce: bool| {
+            let mut data = json!({ "entries": entries.clone() });
+            if lean {
+                if let Some(list) = data.get_mut("entries") {
+                    crate::remote_host::lean::lean_entries(list);
+                }
+            }
+            let page = prepare_backward_entries_page_with_cap(
+                "measure", data, /* cap_item_content */ false, enforce,
+            );
+            let wire =
+                sized(&page) + future_remote_crypto::HEADER_LEN + future_remote_crypto::TAG_LEN;
+            (page["entries"].as_array().map(Vec::len).unwrap_or(0), wire)
+        };
+
+        // Two different effects, so measure them apart.
+        //
+        // Without the budget, both pages hold the requested entries and the
+        // trim's own claim holds exactly: it only ever removes bytes.
+        let (_, plain_wire) = build(false, false);
+        let (_, trimmed_wire) = build(true, false);
+        assert!(
+            trimmed_wire <= plain_wire,
+            "the trim may only shrink a page's bytes for the same entries \
+             ({plain_wire} vs {trimmed_wire})"
+        );
+
+        // With the budget, the *entry* counts can differ, because the budget
+        // sheds whole oldest exchanges until the page fits. A trim that brings
+        // the page under the budget delivers it whole, while the undeclared page
+        // is cut down — so comparing raw bytes across the two is meaningless:
+        // the lean page can be larger precisely because it still holds the
+        // exchanges the undeclared page had to drop. Measured on a real session
+        // page: undeclared kept 41 of 769 entries in 76 KB, lean kept all 769 in
+        // 276 KB. The invariant is therefore on the entry count, not the bytes.
+        let (full_entries, full_wire) = build(false, true);
+        let (lean_count, lean_wire) = build(true, true);
+        assert!(
+            lean_count >= full_entries,
+            "the lean page must not deliver fewer entries than the undeclared one \
+             ({full_entries} vs {lean_count})"
+        );
+
+        let source = entries.as_array().map(Vec::len).unwrap_or(0);
+        // The wire size a phone actually pays: the reply body the command loop
+        // builds, run through the shipping encoder with the phone's own
+        // declaration (`reply_gzip_v1`). `wireBytes` above counts plain JSON +
+        // crypto overhead, which is what an *undeclared* client pays on small
+        // pages; a page at or above 32 KiB goes out gzipped.
+        let encode = |lean: bool, enforce: bool| {
+            let mut data = json!({ "entries": entries.clone() });
+            if lean {
+                if let Some(list) = data.get_mut("entries") {
+                    crate::remote_host::lean::lean_entries(list);
+                }
+            }
+            let page = prepare_backward_entries_page_with_cap(
+                "measure", data, /* cap_item_content */ false, enforce,
+            );
+            let body = json!({ "type": "response", "success": true, "data": page, "error": null });
+            let plain = crate::remote::commands::encode_reply_payload_with_gzip(
+                &body, /* gzip */ false,
+            );
+            let gzipped = crate::remote::commands::encode_reply_payload_with_gzip(
+                &body, /* gzip */ true,
+            );
+            // Over the decoded-reply limit the encoder answers with an error
+            // body, not the page — so a size read off it would be nonsense. That
+            // is reachable only without the budget (an untrimmed 3-exchange page
+            // can exceed 1 MiB), which no client configuration asks for; it is
+            // measured to value the trim, and is reported as unavailable here.
+            let over_limit = serde_json::to_vec(&body)
+                .map(|raw| raw.len() > future_remote_crypto::MAX_PLAINTEXT)
+                .unwrap_or(true);
+            (plain.len(), gzipped.len(), over_limit)
+        };
+        let (lean_plain, lean_gzip, _) = encode(true, true);
+        // The trim's own value *after* compression, on the same entries: what it
+        // removes (tool output, reasoning, commands, file bodies) is the part
+        // that compresses worst, so its post-gzip share is the honest one.
+        let (_, untrimmed_gzip, untrimmed_over) = encode(false, false);
+        let (_, trimmed_gzip, _) = encode(true, false);
+        let saved_gzip =
+            (!untrimmed_over).then(|| 1.0 - (trimmed_gzip as f64 / untrimmed_gzip.max(1) as f64));
+
+        println!(
+            "VERIFY_E2E_PHONE_PAGE {}",
+            json!({
+                "sourceEntries": source,
+                "plainBytes": plain_wire,
+                "trimmedBytes": trimmed_wire,
+                "saved": 1.0 - (trimmed_wire as f64 / plain_wire.max(1) as f64),
+                "untrimmedGzip": untrimmed_gzip,
+                "trimmedGzip": trimmed_gzip,
+                "savedGzip": saved_gzip,
+                "leanReplyPlain": lean_plain,
+                "leanReplyGzip": lean_gzip,
+                "undeclared": { "entries": full_entries, "wireBytes": full_wire },
+                "declared": { "entries": lean_count, "wireBytes": lean_wire },
+                "declaredWhole": lean_count == source,
+            })
         );
     }
 }

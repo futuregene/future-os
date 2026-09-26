@@ -936,8 +936,10 @@ fn run_with_model_and_thinking_flags() {
 
 // ── bidirectional messaging: up-channel turn-boundary reports ────────────────
 
-/// A registered supervisor receives an `enqueue_if_busy` report when a todo
-/// completes (up-channel ②, exercised through the real `run` loop).
+/// A registered supervisor receives an `enqueue_coalescing` report when a todo
+/// completes (up-channel ②, exercised through the real `run` loop). Batches
+/// delivered while the orchestrator is busy fold into one reconciliation run,
+/// so a report that never gets a run of its own is expected here.
 #[test]
 fn run_notifies_supervisor_on_completion() {
     let cr = cli_root();
@@ -961,7 +963,7 @@ fn run_notifies_supervisor_on_completion() {
     // to the worker session, not sup-sess).
     let reports: Vec<_> = calls.iter().filter(|(sid, _)| sid == "sup-sess").collect();
     assert_eq!(reports.len(), 1, "one completion report: {calls:?}");
-    assert_eq!(reports[0].1, "enqueue_if_busy");
+    assert_eq!(reports[0].1, "enqueue_coalescing");
 }
 
 #[test]
@@ -1025,7 +1027,7 @@ fn run_notifies_supervisor_on_hard_failure() {
     let calls = shared.lock().unwrap().prompt_calls.clone();
     let reports: Vec<_> = calls.iter().filter(|(sid, _)| sid == "sup-sess").collect();
     assert_eq!(reports.len(), 1, "one failure report: {calls:?}");
-    assert_eq!(reports[0].1, "enqueue_if_busy");
+    assert_eq!(reports[0].1, "enqueue_coalescing");
 }
 
 /// A registered supervisor receives a report when a worker exhausts its
@@ -1085,7 +1087,7 @@ fn run_notifies_supervisor_on_incomplete_budget_exhausted() {
         "one incomplete-budget report: {:?}",
         st.prompt_calls
     );
-    assert_eq!(reports[0].0 .1, "enqueue_if_busy");
+    assert_eq!(reports[0].0 .1, "enqueue_coalescing");
     assert!(
         reports[0]
             .1
@@ -1131,7 +1133,7 @@ fn run_notifies_supervisor_on_transport_error() {
         "one transport report: {:?}",
         st.prompt_calls
     );
-    assert_eq!(reports[0].0 .1, "enqueue_if_busy");
+    assert_eq!(reports[0].0 .1, "enqueue_coalescing");
     assert!(
         reports[0]
             .1
@@ -1184,7 +1186,7 @@ fn run_notifies_supervisor_on_ask_user() {
         !reports.is_empty(),
         "the supervisor learns of the gate: {calls:?}"
     );
-    assert_eq!(reports[0].1, "enqueue_if_busy");
+    assert_eq!(reports[0].1, "enqueue_coalescing");
 }
 
 /// Without a registered supervisor, a completed turn produces NO report

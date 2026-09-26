@@ -168,27 +168,49 @@ pub fn restore_thread(thread_id: String) -> Result<store::ThreadRecord, crate::A
 pub async fn delete_thread(
     input: store::DeleteThreadInput,
 ) -> Result<store::ThreadRecord, crate::AppError> {
-    let thread = store::get_thread(&input.thread_id)?
-        .ok_or_else(|| "Thread could not be loaded.".to_string())?;
-    // Shells opened from this conversation are children of the app and must not
-    // outlive their conversation: closing them here means a deleted thread can
-    // never leave an orphaned terminal pointable at a removed directory.
-    close_thread_terminals(&input.thread_id);
-    let session_id = thread.agent_session_id.as_deref().unwrap_or(&thread.id);
-    stop_active_session_before_delete(session_id).await?;
-    let thread = store::delete_thread_with_files(&input.thread_id, input.delete_files)?;
-    if store::is_agent_session_tombstoned(session_id)? {
-        agent_bridge::drop_observer(session_id);
+    // Resolve the recursive target set before deleting anything: a conversation
+    // delete takes its descendants with it, so each of their shells must close
+    // and each of their active runs must stop first. Shells opened from a
+    // conversation are children of the app and must not outlive it — closing
+    // them here means a deleted thread can never leave an orphaned terminal
+    // pointable at a removed directory. Errors when the thread is already gone,
+    // which keeps the "no such thread" reply unchanged.
+    let targets = store::thread_delete_closure(&input.thread_id)?;
+    for target in &targets {
+        close_thread_terminals(&target.id);
+    }
+    for target in &targets {
+        stop_active_session_before_delete(thread_session_id(target)).await?;
+    }
+    let thread = store::delete_thread_tree(&input.thread_id, input.delete_files)?;
+    for target in &targets {
+        let session_id = thread_session_id(target);
+        if store::is_agent_session_tombstoned(session_id)? {
+            agent_bridge::drop_observer(session_id);
+        }
     }
     crate::agent_bridge::reconcile_delete_outbox().await;
     Ok(thread)
 }
 
-/// Batch-delete multiple threads. For each thread, the DB row + children are
-/// hard-deleted and the agent session JSONL is removed. For chat-mode threads
-/// with `delete_files`, the temporary workspace directory on disk is also
-/// removed. Workspace-mode threads are never touched on disk regardless of
-/// `delete_files`. Returns a summary of deleted count and failures.
+/// The Agent session a GUI thread is bound to: its `agent_session_id`, else its
+/// own id for an unbound thread (same resolution the store uses as a session
+/// key when it tombstones a delete).
+fn thread_session_id(thread: &store::ThreadRecord) -> &str {
+    thread
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(&thread.id)
+}
+
+/// Batch-delete multiple threads. For each thread, the thread and its
+/// descendants are hard-deleted and their agent session JSONL is removed. For
+/// chat-mode threads with `delete_files`, the temporary workspace directory on
+/// disk is also removed. Workspace-mode threads are never touched on disk
+/// regardless of `delete_files`. Returns a summary of deleted count and
+/// failures.
 #[tauri::command]
 pub async fn batch_delete_threads(
     input: store::BatchDeleteThreadsInput,
@@ -197,19 +219,39 @@ pub async fn batch_delete_threads(
         deleted_count: 0,
         failed: Vec::new(),
     };
+    // A selected child of a selected parent is already removed by the parent's
+    // recursive delete; deleting it again is not a failure.
+    let mut cascaded: std::collections::HashSet<String> = std::collections::HashSet::new();
     for thread_id in &input.thread_ids {
-        close_thread_terminals(thread_id);
+        if cascaded.contains(thread_id) {
+            // Already removed by an earlier cascade in this batch: the user's
+            // selection is gone, so it counts as deleted rather than as a
+            // failure.
+            result.deleted_count += 1;
+            continue;
+        }
+        let targets = match store::thread_delete_closure(thread_id) {
+            Ok(targets) => targets,
+            Err(error) => {
+                result.failed.push(format!("{thread_id}: {error}"));
+                continue;
+            }
+        };
+        for target in &targets {
+            close_thread_terminals(&target.id);
+        }
         let deleted = async {
-            let thread = store::get_thread(thread_id)?.ok_or_else(|| {
-                crate::AppError::Message("Thread could not be loaded.".to_string())
-            })?;
-            let session_id = thread.agent_session_id.as_deref().unwrap_or(&thread.id);
-            stop_active_session_before_delete(session_id).await?;
-            store::delete_thread_with_files(thread_id, input.delete_files)
+            for target in &targets {
+                stop_active_session_before_delete(thread_session_id(target)).await?;
+            }
+            store::delete_thread_tree(thread_id, input.delete_files)
         }
         .await;
         match deleted {
-            Ok(_) => result.deleted_count += 1,
+            Ok(_) => {
+                result.deleted_count += 1;
+                cascaded.extend(targets.into_iter().map(|target| target.id));
+            }
             Err(error) => result.failed.push(format!("{thread_id}: {error}")),
         }
     }
@@ -1113,6 +1155,59 @@ mod tests {
         .expect("batch delete");
         assert_eq!(result.deleted_count, 1);
         assert_eq!(result.failed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn delete_thread_takes_its_descendants_with_it() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_delete_cascade");
+        let parent = make_thread(&_home, Some("sess_gui_parent"));
+        let child = make_thread(&_home, Some("sess_gui_child"));
+        store::sync_thread_parent_session("sess_gui_child", "sess_gui_parent").expect("lineage");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("delete_session".to_string(), "{}".to_string())]),
+            ..Default::default()
+        });
+
+        delete_thread(store::DeleteThreadInput {
+            thread_id: parent.id.clone(),
+            delete_files: false,
+        })
+        .await
+        .expect("delete parent");
+
+        assert!(store::get_thread(&parent.id).expect("get").is_none());
+        assert!(store::get_thread(&child.id).expect("get").is_none());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn batch_delete_does_not_report_a_cascaded_child_as_a_failure() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_batch_cascade");
+        let parent = make_thread(&_home, Some("sess_batch_parent"));
+        let child = make_thread(&_home, Some("sess_batch_child"));
+        store::sync_thread_parent_session("sess_batch_child", "sess_batch_parent")
+            .expect("lineage");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("delete_session".to_string(), "{}".to_string())]),
+            ..Default::default()
+        });
+
+        // The user selected both the parent and its child.
+        let result = batch_delete_threads(store::BatchDeleteThreadsInput {
+            thread_ids: vec![parent.id.clone(), child.id.clone()],
+            delete_files: false,
+        })
+        .await
+        .expect("batch delete");
+
+        assert!(result.failed.is_empty(), "{:?}", result.failed);
+        assert_eq!(result.deleted_count, 2, "both selections are gone");
+        assert!(store::get_thread(&child.id).expect("get").is_none());
+        script_mock_agent(MockScript::default());
     }
 
     #[tokio::test]

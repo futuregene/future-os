@@ -38,9 +38,11 @@ interface MarkdownTextProps {
 
 type OpenTarget = (target: string) => void;
 
-/** Rows a table paints inline in the message. Past this it gets a bounded
- * viewport, which shows about eight rows at a time — so the cutoff must stay
- * above the tables a reply usually carries, or they silently lose their tail. */
+/** Rows a table paints before it asks the reader. Past this the table paints
+ * this many rows and offers the rest behind an explicit control — a nested
+ * vertical viewport inside the list around it loses the pan gesture (see the
+ * code block below) — so the cutoff must stay above the tables a reply usually
+ * carries, or they silently lose their tail. */
 const TABLE_INLINE_ROW_LIMIT = 20;
 
 function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: string): ReactNode[] {
@@ -316,31 +318,36 @@ function renderBlocks(
 function MarkdownTable({ node, openTarget }: { node: TableNode; openTarget: OpenTarget }) {
   const { t } = useTranslation();
   const [width, setWidth] = useState(0);
+  const [expanded, setExpanded] = useState(false);
   const { fontScale } = useWindowDimensions();
   const cellWidths = useMemo(() => markdownTableWidths(node, width, fontScale), [node, width, fontScale]);
-  const tableWidth = cellWidths.reduce((sum, cellWidth) => sum + cellWidth, 0);
-  const renderRow = useCallback(({ item, index }: { item: InlineNode[][]; index: number }) => (
-    <MarkdownTableRow cells={item} alignments={node.alignments} cellWidths={cellWidths} openTarget={openTarget} striped={index % 2 === 1} />
-  ), [cellWidths, node.alignments, openTarget]);
   const bounded = node.rows.length > TABLE_INLINE_ROW_LIMIT;
+  const collapsed = bounded && !expanded;
+  // Every painted row is a real row of the table, wrapped by the message list
+  // like any other block. The 360dp inner viewport this replaces put most of a
+  // long table behind a scroll region the surrounding list takes the drag for,
+  // so its tail could not be reached at all. The horizontal scroller stays —
+  // a sideways pan is not contended for, and a wide table still needs it.
+  const rows = collapsed ? node.rows.slice(0, TABLE_INLINE_ROW_LIMIT) : node.rows;
+  const label = t(collapsed ? "chat.tableRowsExpand" : "chat.tableRowsCollapse", { count: node.rows.length });
   return (
     <View style={styles.constrained} onLayout={event => setWidth(event.nativeEvent.layout.width)}>
       <ScrollView horizontal nestedScrollEnabled>
         <View style={styles.table}>
           <MarkdownTableRow cells={node.headers} alignments={node.alignments} cellWidths={cellWidths} openTarget={openTarget} header />
-          {bounded ? (
-            <FlatList data={node.rows} renderItem={renderRow} nestedScrollEnabled
-              initialNumToRender={12} maxToRenderPerBatch={12} windowSize={5}
-              style={{ height: 360, width: tableWidth }}
-              keyExtractor={(_row, index) => String(index)} />
-          ) : node.rows.map((row, rowIndex) => (
+          {rows.map((row, rowIndex) => (
             <MarkdownTableRow key={rowIndex} cells={row} alignments={node.alignments} cellWidths={cellWidths} openTarget={openTarget} striped={rowIndex % 2 === 1} />
           ))}
         </View>
       </ScrollView>
-      {/* A bounded viewport clips rows: say so, or the table looks complete. */}
+      {/* Rows held back make the table look complete: say how many it holds and
+          make the rest one tap away. The control sits outside the horizontal
+          scroller, so it stays on screen when the table is wider than the phone. */}
       {bounded ? (
-        <Text style={styles.tableRowsHint}>{t("chat.tableRowsScrolled", { count: node.rows.length })}</Text>
+        <Pressable accessibilityLabel={label} accessibilityRole="button"
+          onPress={() => setExpanded(value => !value)} style={styles.tableRowsToggle}>
+          <Text style={styles.tableRowsHint}>{label}</Text>
+        </Pressable>
       ) : null}
     </View>
   );
@@ -563,7 +570,8 @@ const styles = StyleSheet.create({
   tableHead: { backgroundColor: colors.surfaceSubtle },
   tableBodyRow: { borderTopWidth: 1, borderTopColor: colors.lineSoft },
   tableRowZebra: { backgroundColor: colors.surfaceSubtle },
-  tableRowsHint: { paddingHorizontal: spacing.sm, paddingTop: spacing.xs, color: colors.inkMuted, fontSize: 12 },
+  tableRowsToggle: { minHeight: 44, justifyContent: "center", paddingHorizontal: spacing.sm },
+  tableRowsHint: { color: colors.accent, fontSize: 12 },
   tableCell: { paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
   th: {
     color: colors.inkStrong,

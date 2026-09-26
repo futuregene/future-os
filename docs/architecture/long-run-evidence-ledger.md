@@ -67,7 +67,7 @@ Totals: **1,777,043,598 tokens in / 3,562,578 tokens out / ≈ $1,946.84**,
 
 | # | Started (+08:00) | State | Focus | Tokens in | Tokens out | Cost (USD) | Tools |
 |---|---|---|---|---|---|---|---|
-| 1 | 08-09 23:05 | completed | `scripts/coverage.sh` tooling + workspace baseline (PR #138) | 2,076,302 | 31,272 | 4.39 | 94 |
+| 1 | 08-09 23:05 | completed | `scripts/measure/coverage.sh` tooling + workspace baseline (PR #138) | 2,076,302 | 31,272 | 4.39 | 94 |
 | 2 | 08-10 00:06 | completed | future-rpc → 100% (PR #139) | 20,874,338 | 192,220 | 32.56 | 214 |
 | 3 | 08-10 07:21 | error | future-tui push, attempt (redone in turn 4) | 837,524,085 | 1,121,310 | 880.04 | 1,824 |
 | 4 | 08-10 13:03 | completed | future-tui → 100% (PRs #140, #141) | 33,663,407 | 152,044 | 44.66 | 270 |
@@ -80,7 +80,7 @@ Totals: **1,777,043,598 tokens in / 3,562,578 tokens out / ≈ $1,946.84**,
 
 ### Validation results
 
-Official measurement: single workspace run of `scripts/coverage.sh` on
+Official measurement: single workspace run of `scripts/measure/coverage.sh` on
 `main@b24d5501` (2026-08-12) — **regions 98.26% / functions 98.03% /
 lines 98.80%**, **3,864 tests, 0 failures**.
 
@@ -133,7 +133,7 @@ future-channel (#150: gRPC client `entry_id` shadowing), 1 in future-cli
   uncovered-line.
 - **Deliverables are local-only**: `coverage/` (lcov.info, html/,
   summary.txt, missed-lines.txt, acceptance-waivers.md) is gitignored by
-  design per `scripts/coverage.sh`.
+  design per `scripts/measure/coverage.sh`.
 - **Attribution limits**: run-history spend covers only the 10 loop runs.
   The future-loop push (PR #148) and the future-cli residual (PRs #146/#147)
   were executed partly by a concurrent interactive session sharing the

@@ -99,9 +99,13 @@ Useful options and forms:
 | `--session <id>` | Connect to an existing session by ID. |
 | `--fork <entry-id>` | Fork a new session from a specific entry in the current session. |
 | `--permission <level>` | `all` (fresh-session default, unrestricted), `workspace` (approval-gated access), or `none` (deny all tool calls). This does not select an OS sandbox; see [[Sandbox]]. |
+| `--tools, -t <names>` | Comma-separated tool names to enable (e.g. `read,shell`); `--no-tools` / `--no-builtin-tools` disable them. |
 | `--steer` | Interrupt the session's current run; without it, the prompt queues behind a busy run. |
+| `--system-prompt`, `--append-system-prompt` | Replace or extend the system prompt. |
 | `--cwd <dir>` | Set the working directory. |
 | `--mode json` | Print the answer as JSON instead of text. |
+| `--verbose` | Write progress and tool calls to stderr. |
+| `--grpc-addr <addr>` | Explicit agent TCP address (default: per-user local IPC; also `FUTURE_AGENT_GRPC_ADDR`). |
 | `--no-session` | Don't save this exchange as a session. |
 
 Examples:
@@ -109,8 +113,10 @@ Examples:
 ```bash
 future run --model sonnet:high "Review the changes"
 future run @README.md "Summarize this file"
-echo "some text" | future run "Clean up this text"
+future run --tools read,shell "Read the README and list files"
 ```
+
+Run `future run --help` for every option.
 
 ### `skills` — manage capability packs
 
@@ -177,6 +183,8 @@ future session list
 future session set <id> [--parent <id>] [--title <name>] [--cwd <dir>]
                         [--model <id>] [--thinking <level>]
 future session info <id>
+future session history --help   # search and read original history
+future session compact --help   # request manual context compaction
 future session rename <id> <name>
 future session delete <id>
 ```
@@ -185,10 +193,16 @@ future session delete <id>
 touched (`--parent ""` detaches). A parent records lineage only: no history is
 copied (that is `fork`), and the parent must be an existing session.
 
-Title and cwd are written to the session record immediately; the model and thinking
-level apply to the running session at once and reach the session record with the next run.
+A title or cwd set on a session that already has a record is written immediately;
+for a session that has never run, it is stored with the session's first run. The
+model and thinking level take effect on the running session at once and reach the
+session record with the next run (they are part of the run snapshot). `future run`
+applies its own `--cwd` (the current directory by default) when a run starts, so a
+cwd set here stays in effect only until the next run overrides it.
 
-Session data lives in `~/.future/agent/sessions/`.
+Session data is stored in the agent's SQLite database, `~/.future/agent/agent.db`.
+The `~/.future/agent/sessions/` directory is retained only as a legacy JSONL import
+source.
 
 ### `doctor` — environment diagnostics
 

@@ -401,6 +401,11 @@ export interface TimelineToolRow {
    *  calls the summary row stands for. */
   count?: number;
   children?: TimelineToolRow[];
+  /** The call's identity and run, on rows projected from persisted entries.
+   *  A lean history page omits a shell call's arguments, so a row with no
+   *  target fetches its command back by this identity when opened. */
+  toolCallId?: string;
+  runId?: string;
 }
 
 /**
@@ -519,6 +524,8 @@ export interface RemoteCommand {
   sinceIdx?: number;
   offset?: number;
   limit?: number;
+  /** get_tool_call_args: the call whose arguments a lean client asks back. */
+  toolCallId?: string;
   /** Exclusive cursor for backward, user-exchange-based history pages. */
   before?: number;
   modelId?: string;

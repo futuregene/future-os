@@ -27,7 +27,7 @@ That's **SmartScreen**; a reputation warning can occur even for signed software.
 
 ### I can't use any model / I'm not signed in
 
-Open **Settings → Providers → FutureGene → Sign in** to sign in, or add your own provider. See [[Settings]].
+Open **Settings → Providers → Built-in → Future → Sign in** to sign in, or add your own provider. See [[Settings]].
 
 ### How do I switch models?
 
@@ -50,7 +50,7 @@ Download the latest version and install it over the old one (replace the folder 
 
 ### How do I uninstall or clear my data?
 
-Delete the app (macOS: remove `FutureOS.app`; Windows: uninstall or delete the portable folder; Linux: `sudo apt remove futureos` for deb installs or remove the portable files). To also remove your data, delete the `.future` folder. Inside the app, **Settings → Reset** can clear local data too.
+Delete the app (macOS: remove `FutureOS.app`; Windows: uninstall or delete the portable folder; Linux: `sudo apt remove future-os` for deb installs or remove the portable files). To also remove your data, delete the `.future` folder. Inside the app, **Settings → Reset** can clear local data too.
 
 ### Which platforms are supported?
 

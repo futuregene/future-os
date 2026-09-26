@@ -1,0 +1,125 @@
+[
+  {
+    "blocks": [
+      {
+        "kind": "text",
+        "text": "帮我看一下工作区的笔记，把两份结论整理成一张对比表。"
+      }
+    ],
+    "createdAtMs": 1790385120000,
+    "id": "he_user",
+    "kind": "message",
+    "role": "user",
+    "runId": "run_verify_lean_history"
+  },
+  {
+    "blocks": [
+      {
+        "kind": "reasoning"
+      },
+      {
+        "kind": "text",
+        "text": "先看看工作区里有什么。"
+      },
+      {
+        "kind": "tool_call",
+        "name": "shell",
+        "toolCallId": "htc_1"
+      },
+      {
+        "kind": "text",
+        "text": "命令不在 PATH 里，换读笔记。"
+      },
+      {
+        "arguments": {
+          "path": "/Users/lixin/Research/dopamine-decision/notes/frank-summary.md"
+        },
+        "kind": "tool_call",
+        "name": "read",
+        "toolCallId": "htc_2"
+      },
+      {
+        "kind": "text",
+        "text": "写成对比表。"
+      },
+      {
+        "arguments": {
+          "path": "/Users/lixin/Research/dopamine-decision/notes/compare-table.md"
+        },
+        "kind": "tool_call",
+        "name": "write",
+        "toolCallId": "htc_3"
+      },
+      {
+        "kind": "text",
+        "text": "对比表写好了。"
+      },
+      {
+        "kind": "tool_call",
+        "name": "shell",
+        "toolCallId": "htc_4"
+      },
+      {
+        "kind": "text",
+        "text": "顺手把两份笔记差也跑一下。"
+      },
+      {
+        "kind": "tool_call",
+        "name": "shell",
+        "toolCallId": "htc_5"
+      },
+      {
+        "kind": "tool_call",
+        "name": "shell",
+        "toolCallId": "htc_6"
+      }
+    ],
+    "createdAtMs": 1790385124000,
+    "id": "he_assistant",
+    "kind": "message",
+    "role": "assistant",
+    "run": {
+      "durationMs": 74300,
+      "status": "completed"
+    },
+    "runId": "run_verify_lean_history",
+    "usage": {
+      "inputTokens": 18420,
+      "outputTokens": 1260
+    }
+  },
+  {
+    "blocks": [
+      {
+        "isError": true,
+        "kind": "tool_result",
+        "toolCallId": "htc_1"
+      },
+      {
+        "kind": "tool_result",
+        "toolCallId": "htc_2"
+      },
+      {
+        "kind": "tool_result",
+        "toolCallId": "htc_3"
+      },
+      {
+        "kind": "tool_result",
+        "toolCallId": "htc_4"
+      },
+      {
+        "kind": "tool_result",
+        "toolCallId": "htc_5"
+      },
+      {
+        "kind": "tool_result",
+        "toolCallId": "htc_6"
+      }
+    ],
+    "createdAtMs": 1790385125000,
+    "id": "he_tool",
+    "kind": "tool",
+    "role": "tool",
+    "runId": "run_verify_lean_history"
+  }
+]

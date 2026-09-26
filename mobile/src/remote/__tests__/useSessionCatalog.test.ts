@@ -621,6 +621,48 @@ describe("useSessionCatalog", () => {
     expect(result.current.sessions.map((s) => s.sessionId)).toEqual(["s2"]);
   });
 
+  test("deleteSession drops the deleted session's descendants too", async () => {
+    render();
+    act(
+      () =>
+        void result.current.applySessionSnapshot([
+          session("s1"),
+          { ...session("s2"), parentSessionId: "s1", pinned: true },
+          { ...session("s3"), parentSessionId: "s2" },
+          session("s4"),
+        ]),
+    );
+    selectedRef.current = "s4";
+    request.mockResolvedValueOnce({ data: {} });
+    let selected = false;
+    await act(async () => {
+      selected = await result.current.deleteSession("s1", "thread-s1");
+    });
+    // A pinned child is still a child: the desktop deletes it, so the phone
+    // must not keep it either.
+    expect(result.current.sessions.map((s) => s.sessionId)).toEqual(["s4"]);
+    expect(selected).toBe(false);
+  });
+
+  test("deleteSession closes the conversation when the selected session is a descendant", async () => {
+    render();
+    act(
+      () =>
+        void result.current.applySessionSnapshot([
+          session("s1"),
+          { ...session("s2"), parentSessionId: "s1" },
+        ]),
+    );
+    selectedRef.current = "s2";
+    request.mockResolvedValueOnce({ data: {} });
+    let selected = false;
+    await act(async () => {
+      selected = await result.current.deleteSession("s1", "thread-s1");
+    });
+    expect(selected).toBe(true);
+    expect(result.current.sessions).toHaveLength(0);
+  });
+
   test("deleteSession returns false for a non-selected session", async () => {
     render();
     act(() => void result.current.applySessionSnapshot([session("s2", "running")]));

@@ -2804,6 +2804,149 @@ mod tests {
         assert!(saved.lock().len() >= 2);
     }
 
+    /// A tool whose handler always fails, for the recorded-failure branch of
+    /// the tool loop.
+    fn failing_tool() -> AgentTool {
+        fn handler(
+            _args: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>> {
+            Box::pin(async move { Err(anyhow::anyhow!("no such file: missing.rs")) })
+        }
+        AgentTool {
+            def: ToolDef {
+                tool_type: "function".to_string(),
+                function: crate::types::FunctionDef {
+                    name: "read".to_string(),
+                    description: "read a file".to_string(),
+                    parameters: serde_json::json!({}),
+                },
+            },
+            handler,
+            guidelines: vec![],
+        }
+    }
+
+    /// A `shell` tool whose result depends on the command: grep reports a
+    /// soft-fail `exit 1`, anything else a hard `exit 101`.
+    fn shell_outcome_tool() -> AgentTool {
+        fn handler(
+            args: serde_json::Value,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String>> + Send>> {
+            Box::pin(async move {
+                let command = args["command"].as_str().unwrap_or_default();
+                if command.starts_with("grep") {
+                    Ok("no matches\n[exit: 1]".to_string())
+                } else {
+                    Ok("error[E0308]: mismatched types\n[exit: 101]".to_string())
+                }
+            })
+        }
+        AgentTool {
+            def: ToolDef {
+                tool_type: "function".to_string(),
+                function: crate::types::FunctionDef {
+                    name: "shell".to_string(),
+                    description: "run a command".to_string(),
+                    parameters: serde_json::json!({}),
+                },
+            },
+            handler,
+            guidelines: vec![],
+        }
+    }
+
+    /// `is_error` flags of every `tool_result` block, in message order.
+    fn tool_result_flags(messages: &[AgentMessage]) -> Vec<bool> {
+        messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|block| match block {
+                ContentBlock::ToolResult { is_error, .. } => Some(*is_error),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_records_failing_tool_result_is_error() {
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ev_toolcall_start(0, "call-1", "read", "{\"path\":\"missing.rs\"}"),
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+            Script::Events(vec![ev_text("done"), ev_stop()]),
+        ]);
+        let requests = provider.clone();
+        let loop_ = Loop::new(provider, "mock").with_tools(vec![failing_tool()]);
+        let saved = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let ctx = StreamContext {
+            on_tool_result: Some({
+                let saved = saved.clone();
+                Arc::new(move |message: &mut AgentMessage| saved.lock().push(message.clone()))
+            }),
+            ..Default::default()
+        };
+        let (_, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("go"),
+                &ctx,
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        // The transcript records the failure...
+        assert_eq!(tool_result_flags(&messages), vec![true]);
+        assert!(messages[2].text().contains("Error: no such file"));
+        // ...the next model request carries it as an error...
+        let second_request = requests.requests.lock()[1].clone();
+        assert_eq!(tool_result_flags(&second_request), vec![true]);
+        // ...and the persisted block keeps it (the store's canonical shape).
+        let saved = saved.lock();
+        let tool_message = saved
+            .iter()
+            .find(|message| message.role == "tool")
+            .expect("tool result persisted");
+        let entry = crate::session::agent_message_to_entry(tool_message);
+        let content = entry.content.unwrap();
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[0]["is_error"], serde_json::json!(true));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_records_soft_fail_and_nonzero_shell_exit_is_error() {
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ev_toolcall_start(
+                    0,
+                    "call-1",
+                    "shell",
+                    "{\"command\":\"grep -r pattern src\"}",
+                ),
+                ev_toolcall_start(1, "call-2", "shell", "{\"command\":\"cargo build\"}"),
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+            Script::Events(vec![ev_text("done"), ev_stop()]),
+        ]);
+        let loop_ = Loop::new(provider, "mock").with_tools(vec![shell_outcome_tool()]);
+        let (_, messages) = loop_
+            .run_streaming_with_messages(
+                user_messages("go"),
+                &StreamContext::default(),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+        // Bare grep's exit 1 is its normal no-match signal; the cargo failure
+        // is a real one. Same shell tool, different verdicts.
+        assert_eq!(tool_result_flags(&messages), vec![false, true]);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn run_rejects_assistant_last_message() {
         let provider = ScriptedProvider::new(vec![]);
@@ -4475,6 +4618,8 @@ mod tests {
         assert!(tool_messages[1]
             .text()
             .contains("was skipped due to user interrupt"));
+        // A skipped call is a cancellation, not a tool failure.
+        assert_eq!(tool_result_flags(&messages), vec![false, false]);
     }
 
     // ── pure helpers ────────────────────────────────────────────────────────
@@ -4889,6 +5034,8 @@ mod tests {
         assert!(messages[2]
             .text()
             .contains("was not executed due to interrupt"));
+        // The synthesized cancellation stays out of the error verdict.
+        assert_eq!(tool_result_flags(&messages), vec![false]);
         assert_eq!(saved.lock().len(), 2, "assistant + placeholder persisted");
     }
 

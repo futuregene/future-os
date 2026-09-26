@@ -779,6 +779,19 @@ mod runtime_tests {
             -1,
             0,
         );
+        // The argument-less `input` phase never reaches the lane either.
+        publish_event(
+            "sess-lean",
+            "tool_start",
+            r#"{"phase":"input","tool_name":"read","tool_id":"c2","tool_args":""}"#,
+            "r",
+            5,
+            0,
+            "e5",
+            "",
+            -1,
+            0,
+        );
         crate::remote_host::lean::set_enabled(false);
 
         // The first thing on the lane is the tool start, not the reasoning that
@@ -806,6 +819,18 @@ mod runtime_tests {
         assert!(data.get("text").is_none(), "captured output is dropped");
         assert_eq!(data["exit_code"], json!(3), "outcome survives");
         assert_eq!(data["tool_id"], json!("c1"), "identity survives");
+
+        // The envelope is trimmed to the keys a subscriber reads. `eventId` is
+        // the largest of the dropped ones (~96 B: `{session}:{run}:{epoch}:{idx}`).
+        assert_eq!(body["runId"], json!("r"));
+        assert_eq!(body["eventId"], json!(null), "eventId is dropped");
+        assert_eq!(body["sessionId"], json!(null), "sessionId is dropped");
+        assert_eq!(body["timestamp"], json!(null), "timestamp is dropped");
+        assert_eq!(body["schemaVersion"], json!(null));
+        assert_eq!(body["epoch"], json!(null));
+        assert_eq!(body["sessionIdx"], json!(null));
+        assert_eq!(body["runSequence"], json!(null));
+        assert!(body["data"].is_string(), "the payload itself stays");
 
         // Nothing trails the dropped events onto the lane.
         super::test_support::assert_no_publish(
@@ -873,6 +898,16 @@ mod runtime_tests {
             json!("boom\n[exit: 3]"),
             "the legacy lane must keep the footer the client parses"
         );
+
+        // And the envelope keeps every legacy key: a client that did not declare
+        // lean is served the byte-identical body it always was.
+        assert_eq!(body["sessionId"], json!("sess-legacy"));
+        assert_eq!(body["eventId"], json!("e2"));
+        assert_eq!(body["schemaVersion"], json!(2));
+        assert_eq!(body["sessionIdx"], json!(-1));
+        assert_eq!(body["runSequence"], json!(0));
+        assert!(body.get("timestamp").is_some(), "timestamp survives");
+        assert!(body.get("epoch").is_some(), "epoch survives");
 
         stop();
     }

@@ -1,4 +1,4 @@
-import { fetchEventsSince, type EventsPage } from "../replay";
+import { fetchEventsSince, tailCoversRange, type EventsPage } from "../replay";
 import type { RemoteClient } from "../client";
 import type { ReplayEventWire } from "../timeline";
 
@@ -225,4 +225,53 @@ test("a cursor that does not advance rejects the page instead of looping forever
   ]);
   await expect(fetchEventsSince(client, "s", "r", 5)).rejects.toThrow("replay_cursor_stalled");
   expect(request).toHaveBeenCalledTimes(1);
+});
+
+describe("tailCoversRange", () => {
+  test("a peer that trims nothing must be one event per index", () => {
+    expect(tailCoversRange([event("a", 1), event("b", 2)], 0, 2, undefined)).toBe(true);
+    // A hole with no statement of the raw count is a failed read, not a trim.
+    expect(tailCoversRange([event("a", 1), event("b", 3)], 0, 2, undefined)).toBe(false);
+    expect(tailCoversRange([event("a", 1), event("b", 3)], 0, 3, undefined)).toBe(false);
+    // …and a short tail that does not reach the watermark is still a failure.
+    expect(tailCoversRange([event("a", 1)], 0, 2, undefined)).toBe(false);
+  });
+
+  test("a stated raw count keeps the watermark check exact across holes", () => {
+    // The range 1..5 held five events; two survived (the rest are trimmed).
+    expect(tailCoversRange([event("a", 1), event("e", 5)], 0, 5, 5)).toBe(true);
+    // A count that does not reach the pinned watermark is still rejected.
+    expect(tailCoversRange([event("a", 1), event("e", 5)], 0, 6, 5)).toBe(false);
+    // As is a reordered or duplicated survivor.
+    expect(tailCoversRange([event("a", 5), event("b", 5)], 0, 5, 5)).toBe(false);
+    expect(tailCoversRange([event("a", 3), event("b", 2)], 0, 5, 5)).toBe(false);
+    // And an event past the window.
+    expect(tailCoversRange([event("a", 6)], 0, 5, 5)).toBe(false);
+  });
+});
+
+test("a trimmed snapshot tail is accepted on its raw count, and rejected without one", async () => {
+  const snapshot = { runId: "r", cursor: 1000, events: [event("agent_start", 0)] };
+  const trimmedTail: EventsPage = {
+    // The trim dropped idx 1001-1004 (reasoning and argument deltas) and left
+    // the terminal event. Before the fix this failed `watermark === boundary +
+    // events.length` every time, so every reconcile retried forever and the
+    // phone showed a sync notice it could never clear.
+    events: [event("agent_end", 1005)],
+    watermark: 1005,
+    rawEvents: 5,
+  };
+  const { client } = clientReturning([
+    { runSnapshot: true, projection: snapshot, events: [], watermark: 1000 },
+    trimmedTail,
+  ]);
+  const result = await fetchEventsSince(client, "s", "r", -1);
+  expect(result.projection?.cursor).toBe(1005);
+  expect(result.projection?.events).toEqual([event("agent_start", 0), event("agent_end", 1005)]);
+
+  const { client: strict } = clientReturning([
+    { runSnapshot: true, projection: snapshot, events: [], watermark: 1000 },
+    { ...trimmedTail, rawEvents: undefined },
+  ]);
+  await expect(fetchEventsSince(strict, "s", "r", -1)).rejects.toThrow("replay_prefix_invalid");
 });

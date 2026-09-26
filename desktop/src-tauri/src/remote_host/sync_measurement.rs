@@ -618,7 +618,7 @@ mod tests {
 }
 
 #[tokio::test]
-#[ignore = "requires isolated DB snapshot; run scripts/measure-sync-browser.py"]
+#[ignore = "requires isolated DB snapshot; run scripts/measure/measure-sync-browser.py"]
 async fn serve_real_snapshot() {
     let endpoint = std::env::var("FUTURE_AGENT_GRPC_ADDR").unwrap();
     assert!(endpoint.starts_with("http://127.0.0.1:"));

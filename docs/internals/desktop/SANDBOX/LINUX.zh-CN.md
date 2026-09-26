@@ -1,6 +1,6 @@
 # Linux：Bubblewrap 沙箱
 
-实现于 #496 合入主线。以下进度与测试证据记录截至 2026-09-04，不因合并而自动升级为最新候选验收通过。L0–L4 与 L6 产品接入已实现；用户已反馈原生 Linux 能跑通，上一轮有 bwrap 0.11.1 的 7/7 smoke 记录。**最新私有报告/资源加固尚未原生复验，L5 发行版、架构、安装包与独立安全 review 仍未完成。** 本页统一设计、实现、安装、异常、验证与计划；公共规则和参考见 [COMMON.zh-CN.md](COMMON.zh-CN.md)。
+实现于 #496 合入主线。L0–L4 与 L6 产品接入已实现；发布级验收（L5：原生发行版/架构、制品、独立安全 review）尚未完成，未完成项见 [§8](#8-后续优先级)；带日期的历史证据不能升级为最新候选验收通过。本页统一设计、实现、安装、异常、验证与计划；公共规则和参考见 [COMMON.zh-CN.md](COMMON.zh-CN.md)。
 
 ## 1. 已确认范围
 
@@ -92,7 +92,7 @@ mount source 以 O_PATH FD 固定，bwrap 通过 `/proc/self/fd/N` 挂载；内�
 | 资源 | 当前上限 / 语义 |
 |---|---|
 | helper JSON request | v3，8 MiB；生产 outer/inner 都用匿名文件 FD，argv 为短 `fd:3` 引用 |
-| mount / shell argv | 16,384 mounts；shell argv 合计 96 KiB，仍可能受系统环境大小限制 |
+| mount / shell argv | 2,242 个 mount（由 9000 参数上限推导：`(9000 − 32) / 4`）；shell argv 合计 96 KiB，仍可能受系统环境大小限制 |
 | bwrap OPTIONS 文件 | NUL 分隔，16 MiB；连同真实 argv 合计最多 9000 参数 |
 | FD | 打开 mount 前读取 `/proc/self/fd` 与 RLIMIT_NOFILE，内部保留 16 个位置 |
 | report | 64 KiB、version 1、最多 4 个匹配 digest 的 detection-only 事件 |
@@ -172,12 +172,8 @@ bwrap/inner 没有 completion 且非信号终止时 helper 返回 infrastructure
 ## 6. 历史证据与开发进度
 
 - 初始分支基线 `fd3e1771`，Linux 实现来自 `claude/linux-bwrap-sandbox`；2026-09-03 曾合并 `origin/main@15d7df79`（`0867b0fd`）。这些是历史定位，不是当前最新 main 声明。
-- 2026-09-03 Ubuntu 26.04/Linux 7.0/x86_64、`/usr/bin/bwrap` 0.11.1，初始 5/5 ignored smoke、基础 probe PASS；不是目标发行版完整认证。
-- 同日历史跨平台记录：sandbox 115 tests、Rust workspace 测试通过；Tauri 1095 项首次1个 remote runtime 时序失败、定向重跑通过。旧 Desktop 687/Mobile 551、availability 12 的 PASS 保留为历史；部分后续主机缺 Node 未重跑，不能合称同一候选全绿。
-- 2026-09-04 大仓库 macOS 夹具：Linux 模块40 PASS/1 ignored；显式大夹具1 PASS，100,013项first/repeat约777/783ms，单 `.env.*` 访问3项。未控OS缓存，不是Linux冷缓存/bwrap性能。
-- 第一轮 `.aws` 修复 macOS：45 PASS/1 ignored；Linux-only/helper未跑。
-- `01b7e413` 第二轮提交者记录：Linux53 PASS/1 ignored、7/7 bwrap smoke、Linux Clippy/fmt通过。全Agent1651 PASS/2 FAIL（`models::future::cache_save_and_concurrent_load_never_torn`、`models::tests::registry_injects_future_models_from_disk_cache`）；独立重跑通过，记录为共享缓存并行疑似flaky，**不是全量首次全绿**。
-- 最新明确项/私有报告加固：macOS fmt、Agent all-targets Clippy、diff check通过；新增测试未执行。Linux cross-check 因缺 `x86_64-linux-gnu-gcc` 在 ring 构建受阻，不能声称Linux helper编译通过。用户反馈真机跑通不覆盖最新所有异常分支。
+- 早期几轮留下过带日期的 smoke/单测计数——Ubuntu 26.04 + bwrap 0.11.1（5/5，后来 7/7 ignored smoke）、macOS 大仓库夹具、`.aws` 根因修复，以及 `01b7e413` 一轮（Linux 53 PASS/1 ignored，一次共享缓存疑似 flaky）。它们只证明各自的提交与主机，不构成最新候选认证，具体运行日志不在本文重录。
+- 私有报告/资源加固仍需一次新的原生 Linux 运行才能用于发布声明；未完成项见 §8（P0）。
 
 | 阶段 | 当前状态 |
 |---|---|
@@ -191,11 +187,11 @@ bwrap/inner 没有 completion 且非信号终止时 helper 返回 infrastructure
 在候选仓库根目录、原生Linux普通环境执行（VM可，容器/WSL不能替代）：
 
 ```bash
-./scripts/test-linux-sandbox-real-machine.sh
+./scripts/tests/test-linux-sandbox-real-machine.sh
 # 可选完整 Rust workspace 测试
-./scripts/test-linux-sandbox-real-machine.sh --full
+./scripts/tests/test-linux-sandbox-real-machine.sh --full
 # GUI 开发启动
-./scripts/start-desktop-linux.sh
+./scripts/dev/start-desktop-linux.sh
 ```
 
 脚本收集环境、构建probe、Linux单测、大于十万项夹具、stderr捕获回归、所有ignored smoke、fmt/clippy，输出 `linux-sandbox-evidence-*.tar.gz`。不安装软件/改变系统策略；出现 `skipping Linux sandbox smoke` 必须失败。**不要固定写“7个测试”**，以候选源码实际套件为准。

@@ -56,12 +56,26 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             if cmd.thread_id.is_empty() {
                 reply(sink, false, Value::Null, Some("missing thread_id")).await;
             } else {
-                match crate::store::delete_thread_with_files(&cmd.thread_id, false) {
-                    Ok(_) => {
-                        crate::emit_remote_activity(&cmd.thread_id);
-                        reply(sink, true, json!({}), None).await
-                    }
+                // Idempotent: the phone deletes a selection one session at a
+                // time, so a child of a parent it already deleted (or a row
+                // another client removed in the meantime) is gone, not an
+                // error to report back.
+                match crate::store::get_thread(&cmd.thread_id) {
+                    Ok(None) => reply(sink, true, json!({}), None).await,
                     Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+                    Ok(Some(_)) => {
+                        // The desktop deletes a conversation's descendants with
+                        // it, exactly like its own GUI delete.
+                        match crate::store::delete_thread_tree(&cmd.thread_id, false) {
+                            Ok(_) => {
+                                crate::emit_remote_activity(&cmd.thread_id);
+                                reply(sink, true, json!({}), None).await
+                            }
+                            Err(error) => {
+                                reply(sink, false, Value::Null, Some(&error.to_string())).await
+                            }
+                        }
+                    }
                 }
             }
         }

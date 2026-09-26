@@ -281,6 +281,36 @@ impl AgentClient {
         message: &str,
         client_request_id: &str,
     ) -> Result<String> {
+        self.prompt_with_policy(session_id, message, client_request_id, "enqueue_if_busy")
+            .await
+    }
+
+    /// Deliver a supervisor outbox batch with the coalescing follow-up policy:
+    /// while the orchestrator is busy, every batch that arrives queues behind
+    /// its run and the run boundary folds them into ONE turn, so a long worker
+    /// phase produces one reconciliation prompt instead of one run per batch.
+    ///
+    /// Safe for this caller precisely because batches are fire-and-forget state
+    /// syncs: a folded batch never gets a run of its own, and this client never
+    /// waits on the run id it received (unlike `--follow-up` / the IM bridges,
+    /// which must keep plain `enqueue_if_busy`).
+    pub async fn prompt_coalescing(
+        &mut self,
+        session_id: &str,
+        message: &str,
+        client_request_id: &str,
+    ) -> Result<String> {
+        self.prompt_with_policy(session_id, message, client_request_id, "enqueue_coalescing")
+            .await
+    }
+
+    async fn prompt_with_policy(
+        &mut self,
+        session_id: &str,
+        message: &str,
+        client_request_id: &str,
+        busy_policy: &str,
+    ) -> Result<String> {
         let resp = self
             .call(
                 "prompt",
@@ -288,7 +318,7 @@ impl AgentClient {
                 RpcCommand {
                     message: message.to_string(),
                     client_request_id: client_request_id.to_string(),
-                    busy_policy: "enqueue_if_busy".to_string(),
+                    busy_policy: busy_policy.to_string(),
                     ..Default::default()
                 },
             )
@@ -319,23 +349,8 @@ impl AgentClient {
         message: &str,
         client_request_id: &str,
     ) -> Result<String> {
-        let resp = self
-            .call(
-                "prompt",
-                session_id,
-                RpcCommand {
-                    message: message.to_string(),
-                    client_request_id: client_request_id.to_string(),
-                    busy_policy: "supersede_session".to_string(),
-                    ..Default::default()
-                },
-            )
-            .await?;
-        resp["run_id"]
-            .as_str()
-            .or_else(|| resp["runId"].as_str())
-            .map(|s| s.to_string())
-            .ok_or_else(|| anyhow!("prompt response missing run_id: {resp}"))
+        self.prompt_with_policy(session_id, message, client_request_id, "supersede_session")
+            .await
     }
 
     /// Delete the agent session backing a run — closes its persistence

@@ -49,6 +49,7 @@ import {
   type ReplayEventWire,
   type TimelineState,
 } from "./timeline";
+import { tailCoversRange } from "./replay";
 import {
   advanceCursor,
   cursorHighWater,
@@ -66,6 +67,8 @@ export interface ReplayResult {
   projection?: { run_id?: string; runId?: string; cursor?: number; events?: ReplayEventWire[] } | null;
   truncated?: boolean;
   watermark?: number;
+  /** Source events the tail covered before a peer's lean trim removed any. */
+  rawEvents?: number;
 }
 
 /**
@@ -79,6 +82,13 @@ export interface SyncDeps {
   requestGetState(sessionId: string): Promise<RemoteSessionState>;
   requestHistory(sessionId: string, isCurrent: () => boolean): Promise<TimelineState>;
   fetchReplay(sessionId: string, runId: string, sinceIdx: number, isCurrent: () => boolean): Promise<ReplayResult>;
+  /**
+   * Whether this connection's Desktop agreed to send a feed that omits source
+   * indices (the client declared `lean_events_v1`). Omitted slices are not loss:
+   * the integrity checks must not demand them, or every reconcile retries a
+   * range the peer will never send.
+   */
+  feedOmitsIndices?: () => boolean;
   onFailure?(failure: SyncFailure): void;
   onRecovered?(sessionId: string): void;
   /** Replay progress is independent of whether a cached timeline is readable. */
@@ -735,8 +745,14 @@ export class SyncEngine {
       // A tail (and a watermarked full reply) must be contiguous and reach the pinned watermark. Do not
       // advance over a gap or accept a reset journal as an empty successful
       // sync. Preserve the UI, invalidate the baseline, and retry from -1.
-      const invalid = result.truncated || events.some((event, index) => event.idx !== since + 1 + index)
-        || (result.watermark !== undefined && result.watermark !== since + events.length);
+      //
+      // "Contiguous" means one event per index only for a peer that trims
+      // nothing. A lean peer omits slices on purpose (the client declared
+      // `lean_events_v1`), so it states how many source events the range held
+      // (`rawEvents`) and ordering plus that count take the place of counting
+      // arrivals — see `tailCoversRange`.
+      const invalid = result.truncated
+        || !tailCoversRange(events, since, result.watermark, result.rawEvents);
       if (invalid) {
         this.invalidateBaseline(lane);
         throw new Error("replay_prefix_invalid");
@@ -821,7 +837,10 @@ export class SyncEngine {
         continue;
       }
       const wasFirst = event.runId != null && !lane.cursor.has(event.runId);
-      const verdict = nextEvent(lane.cursor, event.runId, event.idx, event.coalescedCount);
+      const omitsIndices = this.deps.feedOmitsIndices?.() === true;
+      const verdict = nextEvent(lane.cursor, event.runId, event.idx, event.coalescedCount, {
+        omitIndices: omitsIndices,
+      });
       if (verdict.kind === "overlap") {
         // A merged event whose range starts below the high-water: a reconcile
         // landed while the desktop was still holding its merge window open, so
@@ -865,8 +884,10 @@ export class SyncEngine {
         append(event);
         // A run whose first seen event has idx > 0 (mid-run join or an
         // out-of-order first delivery) has an unknown prefix (H3) — reconcile
-        // it from -1 so the missing prefix is recovered.
-        if (wasFirst && (verdict.idx ?? 0) > 0) {
+        // it from -1 so the missing prefix is recovered. A feed that omits
+        // indices by design has no recoverable prefix: the peer never sends
+        // those slices, so the reconcile would only show a sync notice.
+        if (wasFirst && (verdict.idx ?? 0) > 0 && !omitsIndices) {
           this.enqueueReplay(lane, { reason: "prefix", runId: event.runId ?? "" });
         }
       } else {

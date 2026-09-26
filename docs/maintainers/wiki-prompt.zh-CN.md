@@ -19,7 +19,7 @@ Wiki 不必单独创建 TUI 页，仓库已有 `docs/guide/tui*.md`；CLI 页可
 - 页内使用同语言 `[[Page]]` 或 `[[标签|Page]]` 链接；同步 `_Sidebar.md`、`_Footer.md`。
   不要把省略 `.md` 的 Markdown 链接当成仓库相对文件链接。
 - 两套语言独立可用，不要求跨语言导航。
-- `Models.md` 由 `scripts/generate_models.py`（`make generate-models`）生成，禁止手改；
+- `Models.md` 由 `scripts/docs/generate_models.py`（`make generate-models`）生成，禁止手改；
   不要只为修改周边说明而重新生成模型数据。
 - 共同事实改变时，同步 README、构建安装、目录和安全参考；新增用户页要进入文档索引。
 
@@ -28,7 +28,7 @@ Wiki 不必单独创建 TUI 页，仓库已有 `docs/guide/tui*.md`；CLI 页可
 | 页面 | 内容 | 核验来源 |
 |---|---|---|
 | `Home.md` | 定位、场景、导航、平台概览 | 根 README；`desktop/src/components/layout/ActivityRail.tsx` |
-| `Installation.md` | 产物/架构、首次启动、运行库、更新与卸载 | `.github/workflows/release.yml`、`build-{macos-signed,windows-signed}.yml`、`build-linux.yaml`；`scripts/install.sh`、`install.ps1`；`docs/dist/` |
+| `Installation.md` | 产物/架构、首次启动、运行库、更新与卸载 | `.github/workflows/release.yml`、`build-{macos-signed,windows-signed}.yml`、`build-linux.yaml`；`scripts/release/install.sh`、`scripts/release/install.ps1`；`docs/dist/` |
 | `Quick-Start.md` | 登录或 BYOK、首个对话、审批选择、模型选择 | 桌面登录/新会话流程及设置文案 |
 | `Using-FutureOS.md` | Chat/workspace、附件、工具、批准卡、Files/Runs/Review | `desktop/src/features/agent/`、`review/`、`filetree/`；`components/layout/` |
 | `Settings.md` | 当前设置项与默认值 | `desktop/src/features/settings/`；`desktop/src-tauri/src/store/app_settings.rs` |
@@ -58,7 +58,7 @@ Wiki 不必单独创建 TUI 页，仓库已有 `docs/guide/tui*.md`；CLI 页可
    不建议绕过无法解释的签名错误。Linux 有 x86_64/aarch64 deb、portable、静态 CLI 发布包；
    本地构建的命名/链接方式可能不同，使用实际产物文件名。
 5. **本地优先不等于仅本地。**模型请求、在线工具、Remote 中继和 IM 桥都会传输数据。
-   手机强制 WSS，桌面 NATS 由部署配置控制；不承诺端到端加密或所有凭据均被隔离。
+   手机强制 WSS，桌面 NATS 传输要求经过校验的 TLS（无明文降级开关）；不承诺端到端加密或所有凭据均被隔离。
 6. **命令与代码一致。**读取 Rust 源码，不引用退役的 `cli/src/*.ts`。优先使用 `future channel`；
    若运行 release 二进制，构建须加 `--release`。桥接层处理斜杠命令仍可能调用 Agent RPC，
    “不发给模型”不等于“不需要 Agent 连接”。

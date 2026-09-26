@@ -14,10 +14,24 @@ current controls and limitations, and vulnerability reporting.
   FutureOS services; other providers/tools use their respective endpoints.
 - **Optional remote surfaces.** Enabling Remote sends commands, conversation events
   and requested files through the configured NATS relay. Mobile requires TLS
-  WebSocket (`wss://`); desktop-to-NATS transport follows deployment configuration
-  and is not unconditionally TLS-enforced. Feishu/DingTalk messages and replies
-  also pass through those platforms. Local storage does not imply end-to-end
-  encryption or that no data leaves the device.
+  WebSocket (`wss://`), and the desktop's NATS client requires verified TLS too —
+  outside unit tests there is no runtime switch that allows a plaintext
+  downgrade. Feishu/DingTalk messages and replies also pass through those
+  platforms. Local storage does not mean no data leaves the device.
+- **Encrypted remote channel.** Once a phone is paired, the phone↔desktop channel
+  is end-to-end encrypted. The two endpoints authenticate each other with a Noise
+  handshake (`XXpsk0` while pairing, `IK` afterwards) and encrypt every
+  application record — commands and replies, file chunks, session events,
+  presence and catalog records, and the disconnect notice — with
+  ChaCha20-Poly1305, using keys derived from that handshake. The relay therefore
+  carries ciphertext and cannot read it or fabricate an accepted message. It
+  still sees NATS subjects, traffic metadata and message timing/size. The pairing
+  request/reply envelope is the one unencrypted path: the Noise message inside it
+  is encrypted, but the envelope and refusal reasons (e.g. `invitation_expired`)
+  travel in the clear. This protects against a hostile or compromised relay — not
+  against a compromised endpoint, a stolen unlocked device, or an unused
+  invitation that leaked. Protocol details and boundaries:
+  [REMOTE_E2EE](docs/internals/desktop/REMOTE_E2EE.md).
 - **Per-user local backend.** The agent defaults to Unix-domain sockets on
   macOS/Linux (private directory and peer-UID checks) or a current-user-only
   Windows named pipe. Unix honors `FUTURE_AGENT_SOCKET`; an instance with its own

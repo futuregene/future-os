@@ -35,16 +35,19 @@ summary. A line is covered when a test executes it; nothing is measured by
 proxy.
 
 ```bash
-bash scripts/chan-cov.sh                          # whole crate: report + missed list
-bash scripts/chan-cov.sh --check FILE [FILE...]    # fail if a named file has an uncovered line
-python3 scripts/chan-missed.py [substring]        # grouped list of uncovered lines
-python3 scripts/show-lines.py FILE LINE [LINE...] # print the lines with context
+bash scripts/measure/chan-cov.sh                          # whole crate: report + missed list
+bash scripts/measure/chan-cov.sh --check FILE [FILE...]    # fail if a named file has an uncovered line
+python3 scripts/measure/chan-missed.py [substring]        # grouped list of uncovered lines
+python3 scripts/measure/show-lines.py FILE LINE [LINE...] # print the lines with context
 ```
 
 The script sanitises the environment (`CARGO_HOME`, `CARGO_TARGET_DIR`, `HOME`)
 and takes an exclusive lock: a leaked variable changes the instrumented unit
 hash and llvm-cov then reports every line as never executed, and concurrent
 instrumented runs thrash the machine.
+
+The line numbers below are one measurement snapshot; they drift as the crate
+changes. Re-run the commands above before relying on a specific number.
 
 ## The rule
 

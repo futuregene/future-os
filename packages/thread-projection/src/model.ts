@@ -23,6 +23,15 @@ export interface AgentActivityItem {
    * preview and its expandable sub-list.
    */
   children?: AgentActivityItem[];
+  /**
+   * The tool call's own identity and the run it belongs to. Set on both paths:
+   * a persisted entry carries them already, and the live lane attaches them as
+   * a call starts, because the lean feed omits a shell call's arguments on
+   * either one. This is what lets the row fetch its command back when it is
+   * opened (`get_tool_call_args`) and cache it.
+   */
+  toolCallId?: string;
+  runId?: string;
 }
 
 /**

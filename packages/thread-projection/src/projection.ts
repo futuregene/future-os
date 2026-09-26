@@ -264,8 +264,12 @@ function foldAssistantEntry(acc: ExchangeAcc, entry: SessionEntry) {
   if (entry.runId) acc.runId = entry.runId;
   for (const [index, block] of entry.blocks.entries()) {
     const id = `seg_${key}_${index}`;
-    if (block.kind === "reasoning" && block.text) {
-      acc.segments.push({ id, kind: "thinking", text: block.text });
+    if (block.kind === "reasoning") {
+      // Shown from the block's presence alone, matching the live lane: a lean
+      // history page carries the block with no body, and the row is still the
+      // only indication that the model reasoned. (`text` is kept for a full
+      // history page, which still renders the body when the row is expanded.)
+      acc.segments.push({ id, kind: "thinking", text: block.text ?? "" });
     } else if (block.kind === "text" && block.text?.trim()) {
       acc.segments.push({ id, kind: "text", text: block.text });
       acc.finalText = block.text;
@@ -278,6 +282,10 @@ function foldAssistantEntry(acc: ExchangeAcc, entry: SessionEntry) {
         status: "completed",
         target,
         detail: target,
+        // Identity for a row whose target is absent: a lean page omits a shell
+        // call's arguments, and the row fetches them when it is opened.
+        ...(block.toolCallId ? { toolCallId: block.toolCallId } : {}),
+        ...(entry.runId ? { runId: entry.runId } : {}),
       };
       acc.segments.push({ id, kind: "activity", item });
       acc.pendingTools.push(item);

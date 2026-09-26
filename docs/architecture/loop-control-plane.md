@@ -47,20 +47,19 @@ agent executes one bounded turn (gRPC) → writes evidence → kernel decides th
 | Concept | Command | What it does |
 |---|---|---|
 | Goal | `goal init` | Project-local state at `<cwd>/.future/loop/`, event-sourced and replayable |
-| Todo | `todo add/update/complete/supersede` | Classes: advancement / user-gate / user-action / monitor / blocker / coordination; `--blocks` dependency chains; `--priority`; `todo add --parent T` creates an immutable organizational parent link within the same goal (maximum three levels, independent of dependencies/completion) |
+| Todo | `todo add/update/claim/complete/archive/supersede` | Classes: advancement / user-gate / user-action / monitor / blocker / coordination; `--blocks` dependency chains; `--priority`; `todo add --parent T` creates an immutable organizational parent link within the same goal (maximum three levels, independent of dependencies/completion) |
 | Evidence | `todo complete --evidence` | **Non-empty, enforced**: closing a todo must state what actually landed (paths, attempt ids, measurements); `--force` is the explicit operator override |
 | Acceptance contract | `todo add --acceptance "tok1,tok2"` | Completion evidence must contain every token (case-insensitive) — the hard form of "done ≠ delivered" |
 | Verifier | `todo add --verify "cmd"` | The kernel runs the command after each **run turn boundary**; only exit 0 lets that turn's todo complete (bounded by `--max-validation-attempts`). A machine-checkable gate for deterministic deliverables. **Not** for exploratory todos (research/report) whose correctness the kernel cannot judge — the orchestrator judges those by reading the artifact, and a manual `todo complete` deliberately does not re-run `--verify` |
 | Lease | `lease claim/renew/release/expire/status` | Who holds a todo and until when. **Lease liveness**: the holder's pid is recorded; a dead process's leases are auto-reclaimed — no manual cleanup after killing a worker |
 | Gate | `gate resolve` | An open gate blocks its dependents; independent work can run and complete. `--global-gate` explicitly freezes all work. Gates are decision points, not work items: `todo complete` on a gate **bails and points at `gate resolve`** (the decision is recorded, never silently marked "done"). user-actions (non-blocking human to-dos) surface to the user without freezing the agent |
-| Delivery closure | `delivery status/record` | Completion lands in a pending `delivered` state; an operator resolves it as `verified/failed/rework`; unverified deliveries auto-derive a follow-up after 3 turns |
-| Terminal | `frontier show` | Validated closure: todos done/superseded + closure intent + no acceptance gaps + no pending deferred work; `frontier` gives the terminal judgement with gap detail |
+| Delivery closure | `delivery status/record/followthrough` | Completion lands in a pending `delivered` state; an operator resolves it as `verified/failed/rework`; unverified deliveries auto-derive a follow-up after 3 turns |
+| Terminal & frontier | `frontier show` | Validated closure: todos done/superseded + closure intent + no acceptance gaps + no pending deferred work, with gap detail; also projects outcome segments, structured replan rules and bounded semantic history (N=50) |
 | Dashboard | `ui` | Local read-only web dashboard on 127.0.0.1: goal cards, attention queue, kernel decision, todo DAG, workers/cost, run/event ledgers — live over SSE; mutations stay in the CLI |
 | Quota | `quota should-run/usage/spend/decisions` | The deterministic should-run kernel: scheduling, refusal reasons, and spend are all auditable |
 | Scheduler | `scheduler tick/show/record-host-failure/ack/liveness` | Monitor cadence, host-failure records, liveness heartbeats |
-| Multi-agent | `agent onboard/list` | Register parallel-worker identities and workspace write sets; coordinate tasks using ownership, dependencies and leases. Removed multi-host contract/recipe/succession/collective interfaces are not public commands. |
+| Multi-agent | `agent onboard/list` | Register parallel-worker identities and workspace write sets; coordinate tasks using ownership, dependencies and leases |
 | Worker observability | `worker tail` | Stream a worker's live turn log (`.live.jsonl`) as a condensed tool/usage view (`--raw` for verbatim) — the orchestrator's window into what a worker is actually doing, so it can steer / stop / let it run |
-| Frontier | `frontier show` | Outcome segments, structured replan rules, bounded semantic history (N=50), terminal judgement |
 
 ## Drive loop via the skill (recommended entry)
 
@@ -198,10 +197,14 @@ channel. Both directions ride the same event-sourced state:
 - **Up (worker → supervisor, persistent batched reports):**
   Gate/completion/failure/infra notes are ledgered first, including while the agent
   is offline. An independent watchdog coalesces up to 32 notes into an immutable
-  batch and sends with `enqueue_if_busy`. Failed pushes retry the same request key
-  and payload. Queue acceptance is not proof of supervisor action; reconcile current
-  state before reacting to old notifications. `supervisor events` includes delivery
-  pending state and control/batch receipts.
+  batch and sends with `enqueue_coalescing`. Failed pushes retry the same request
+  key and payload. Because a batch is a fire-and-forget state sync rather than a
+  question, the batches that queue behind a busy orchestrator fold into ONE next
+  turn instead of each starting (and usually being superseded) on its own; a batch
+  arriving while the orchestrator is idle still runs immediately. Queue acceptance
+  is not proof of supervisor action; reconcile current state before reacting to old
+  notifications. `supervisor events` includes delivery pending state and
+  control/batch receipts.
 
 - **Infra stops + dead workers:** a worker that exits before reaching a
   turn-boundary writeback (gRPC transport loss, incomplete-retry budget
@@ -256,7 +259,7 @@ parsing a merged top-level line.
 
 ## How it fits FutureOS
 
-- **Agent service** (`future agent`, per-user local IPC by default, `--grpc-addr` to switch to TCP): `run` executes every turn through it, discovered socket-first like the TUI/CLI clients (`FUTURE_LOOP_AGENT_ADDR` overrides with an explicit TCP address)
+- **Agent service** (`future agent`, per-user local IPC by default, `--grpc-addr` to switch to TCP): `run` executes every turn through it over the same shared transport discovery as the TUI/CLI clients — the per-user local IPC endpoint by default, or an explicit TCP address via `FUTURE_LOOP_AGENT_ADDR` (authoritative: a failed explicit target is reported, never silently redirected to local IPC)
 - **Any client through the skill** (TUI, desktop, mobile, Feishu / DingTalk): loop goals are driven by the `/future-loop` skill orchestrating `future loop` commands — there is no native bridge↔loop integration; gates surface as agent messages asking one concrete question
 - **The `/future-loop` skill**: the driving manual for agents (v4, kept in sync with this doc)
 - **State location**: `<cwd>/.future/loop/` (add to the project `.gitignore`)

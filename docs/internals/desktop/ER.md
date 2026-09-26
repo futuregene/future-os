@@ -159,7 +159,8 @@ Field draft:
 | `pinned` | pinned or not |
 | `readonly` | read-only or not |
 | `agent_session_id` | GUI Thread ↔ Agent SQLite session mapping; non-null values globally unique, one Agent session binds at most one Desktop Thread; queried via RPC, no cross-database foreign key (`store/schema.rs`) |
-| `parent_session_id` | local projection of the parent Agent session ID; null means a root conversation. Written by startup sync, runtime discovery, and forks; no foreign key — a parent session may be imported later than its child or already deleted. The Agent remains the relation source of truth. |
+| `parent_session_id` | local projection of the parent Agent session ID; null means a root conversation. Written by startup sync, runtime discovery, and forks; no foreign key — a parent session may be imported later than its child or already deleted. The Agent remains the relation source of truth. A user delete follows this lineage recursively (`store::threads::delete_thread_tree`); the orphan sweep and the reaction to an externally deleted session delete one thread and keep surviving children. |
+| `asset_root_id` | stable owner of shared attachment originals/thumbnails; forks inherit it so deleting an ancestor cannot invalidate a child's history (released migration `v1.1.9-thread-asset-root`) |
 | `last_message_at` | most recent message time |
 | `last_opened_at` | most recent open time |
 | `created_at` | creation time |
@@ -259,6 +260,7 @@ Field draft:
 | `ended_at` | end time |
 | `error_message` | error info |
 | `error_type` | structured error classification (`stream_interrupted`, `command_failed`, `model_failed`, `abort_requested`, `timeout`, `interrupted`, `unknown`, etc.; paired with `run_error.rs`, NULL when not failed) |
+| `remote_accepted_at` | when the Agent durably accepted a remote (phone) prompt; a remote receipt is only visible or recoverable after this boundary (`store/runs.rs` `mark_remote_prompt_accepted`, index `idx_runs_remote_prompt_receipt`) |
 | `archived_at` | archive time; when non-null the run is not shown in the right "Runs" list, but the record and Agent events are kept for command-detail jumps from the intermediate information flow |
 | `created_at` | creation time |
 | `updated_at` | update time |
@@ -411,7 +413,7 @@ Field draft:
 | `thread_id` | owning Thread |
 | `run_id` | source Run |
 | `tool_call_id` | source Tool Call, nullable |
-| `kind` | `shell_command`, `file_read`, `file_write`, `file_delete`, `network_access`, `data_access`, `batch_operation`, `outside_workspace_write` |
+| `kind` | produced by the current implementation: `shell_command`, `file_read`, `file_write`, `outside_workspace_write`, `sandbox_escalation` (macOS/Linux de-sandbox escalation), `windows_write_capability` (Windows pre-approved write paths); `file_delete`, `network_access`, `data_access`, `batch_operation` are design-draft values never produced; `outside_workspace_read` is a deprecated variant (see the v2 note below) |
 | `status` | `pending`, `approved`, `rejected`, `cancelled` |
 | `title` | title |
 | `summary` | summary |
@@ -420,6 +422,7 @@ Field draft:
 | `action_category` | P2 structured field: action category |
 | `action_payload` | P2 structured field: complete action JSON |
 | `sandbox_boundary` | P2 structured field: sandbox boundary info JSON |
+| `save_suggestion` | v2 structured field: the suggested rule JSON (`{path, access, action}`) behind "allow in this workspace / this chat"; null for sensitive files, which can only be allowed once |
 | `reviewer` | reviewer, `user` or `auto_review` (reserved) |
 | `decision_scope` | decision scope, `once`, `session`, `always` (reserved); currently only `once` |
 | `decision_source` | decision source, `user`, `rule` (reserved), `sandbox` (reserved) |
@@ -540,8 +543,8 @@ Notes:
   per-round change summary, e.g. `2 files +204 -90`.
 - The `status` column (`draft`/`ready`/`viewed`/`applied`/`discarded`) belongs
   to the early apply/discard decision flow; that flow's frontend is removed,
-  and `run_snapshot` changesets **do not use** the column — their state is
-  expressed by `completeness` / `confidence` (see 4.10). The
+  and `run_snapshot` changesets are written with `status = 'n/a'` — their
+  state is expressed by `completeness` / `confidence` (see 4.10). The
   `StoredReviewChangeset` type is kept, only still used by markdown
   `futureos://` references.
 
@@ -555,10 +558,10 @@ Field draft:
 | --- | --- |
 | `id` | Review File Change unique identifier |
 | `changeset_id` | owning Review Changeset |
-| `target_type` | `workspace_file` or `artifact` |
+| `target_type` | the shadow pipeline writes `file`; `workspace_file` / `artifact` are pre-shadow design-draft values (the removed apply/discard flow) |
 | `target_id` | target object id, nullable |
 | `path` | file path or artifact path |
-| `change_type` | `create`, `modify`, `delete`, `rename` |
+| `change_type` | git name-status code: `A` / `M` / `D` / `R` / `C` (added / modified / deleted / renamed / copied); `create` / `modify` / `delete` / `rename` are pre-shadow design-draft values |
 | `before_ref` | pre-change content reference, nullable |
 | `after_ref` | post-change content reference, nullable |
 | `diff` | small text diff, nullable |
@@ -706,17 +709,21 @@ Notes:
   into the ordinary Chat / Workspace working directory. The Artifacts panel's
   active upload is a separate flow.
 - **Attachment persistence directory** (not part of Artifact/SQLite, a pure
-  file tree): under `~/.future/app/images/<threadId>/`, `thumb/` keeps
-  thumbnails of all image attachments, `origin/` keeps pasted images and
-  phone-uploaded attachments without a stable desktop original path.
+  file tree): under `~/.future/app/images/<assetRootId>/` (a thread's own
+  `asset_root_id`; fork descendants share their ancestor's root — see 4.2),
+  `thumb/` keeps thumbnails of all image attachments, `origin/` keeps pasted
+  images and phone-uploaded attachments without a stable desktop original
+  path.
   Attachment metadata (`path` / `kind` / `name` / `thumbnail`) lives in Agent
   SQLite entry metadata, returned via RPC `metadata.attachments`; the GUI has
   no message copy — **no standalone attachment table**.
-- **Reclamation**: `images/<tid>` has no per-delete executor; it relies on the
-  startup `reconcile_orphan_images` orphan sweep — directories whose tid has
-  `status='deleted'` or no row in `threads` are deleted (no soft-delete undo);
-  a whole-database reset additionally clears the entire `images/` tree. Covers
-  GUI deletion, TUI/CLI external session deletion, and reset.
+- **Reclamation**: `images/<assetRootId>` has no per-delete executor; it
+  relies on the startup `reconcile_orphan_images` orphan sweep — a directory
+  is deleted when no non-deleted thread resolves to that root
+  (`COALESCE(NULLIF(asset_root_id, ''), id)`), i.e. its owner is absent or
+  soft-deleted (no soft-delete undo); a fork descendant keeps the ancestor's
+  root alive. A whole-database reset additionally clears the entire `images/`
+  tree. Covers GUI deletion, TUI/CLI external session deletion, and reset.
 
 ### 4.12–4.13 Research Collection / Research Resource (removed, no tables created)
 
@@ -848,21 +855,31 @@ First-version priority:
 - `workspace_files`
 - `reference_targets`
 - `object_references`
-- `app_settings` (app-level settings key-value table: `approval_tier`
-  (`manual`/`sandbox`/`off`), `hidden_models`, `remote_pair_id`,
-  `auto_compact_first_turn` (legacy stored key retained for
-  `autoTitleFirstTurn`: boolean, absent means true; explicitly saved false stays
-  disabled. Generates and saves a title after the first answer only, never compacts context), `title_language`
-  (`en`/`zh`, default `en`, mirrored from the Desktop UI for background title
-  generation). Both use the existing key-value table with absent-key defaults;
-  no structural migration is needed — see `store/app_settings.rs`;
-  the retired `show_thinking` key may remain in existing databases but is no
-  longer read, written, or exposed by the settings API (no destructive migration).
-  The old `remote_enabled` / `remote_nats_url` keys are no longer read, runtime state lives in memory and
-  addresses are derived from the platform environment)
+- `app_settings` (app-level settings key-value table; absent keys take these
+  defaults — `store/app_settings.rs:64-77,212-262`): `approval_tier` (`off`
+  default / `manual` / `sandbox`; unknown values clamp to `off`),
+  `hidden_models`, `title_language` (`en`/`zh`, default `en`, mirrored from the
+  Desktop UI for background title generation), `auto_compact_first_turn` (the
+  stored key name kept for "generate a title after the first answer"; default
+  true, never compacts context), `auto_upgrade_skills` (true),
+  `auto_connect_remote` (false; consulted only on non-release builds),
+  `bell_on_complete` (true), `skill_recommend` (true),
+  `skill_guide_dismissed` / `skill_intro_dismissed` (false),
+  `community_edition` (false; presentation only) and the internal
+  `device_id`. All use the existing key-value table with absent-key defaults;
+  no structural migration is needed. The retired `show_thinking` key may remain
+  in existing databases but is no longer read, written, or exposed by the
+  settings API (no destructive migration); the old `remote_enabled` /
+  `remote_nats_url` keys are likewise no longer read — runtime state lives in
+  memory and addresses are derived from the platform environment.
 - `agent_delete_outbox` (the Agent session deletion delivery queue registered
   when deleting a Thread, retried in the background until the Agent confirms —
   see `store/deletions.rs`)
+- `skill_reco_events` (one row per skill recommendation actually shown to the
+  user: `day`, `skill_id`, `message_hash` — it answers "how many today / has
+  this skill been shown today / has this message produced one"; ignored calls
+  leave no row — see `store/skill_reco.rs` and the DDL at
+  `store/schema.rs:249-254`)
 
 > `messages`, `run_events`, `tool_calls`, `tool_outputs` were deleted from the
 > GUI schema (`DROPPED_TABLES` clears them in old databases); their data is
@@ -1132,6 +1149,9 @@ are not the same as the public history RPC's optional fields.
 | `history_display` | PK `(session_id,ordinal)`; `source_position/is_user/payload` | foreign key cascades to session; `history_users(session_id,is_user,ordinal)` serves reverse-order whole-round paging. source_position nullable, meaning a synthetic placeholder; not a second body copy |
 | `legacy_imports` | PK `session_id`; `status/fingerprint/error_file/error_line/error_kind/warnings` | status limited to imported/skipped/deleted; per-session import result and anti-resurrection tombstone, no bodies |
 | `storage_meta` | PK `key`; `value` | database-level control flags, e.g. the one-time import completion state |
+| `compaction_operations` | PK `(session_id,input_key)`; `input_digest/operation_id/state/result_json` | foreign key cascades to session; state limited to started/completed/failed. Makes manual and automatic compaction idempotent across restarts: a same-key success replays the recorded result instead of recomputing it; summaries themselves are not stored here |
+| `fork_operations` | PK `request_id`; `request_fingerprint/parent_session_id/child_session_id/created_at_ms` | `child_session_id` unique and cascading; `fork_operations_parent` serves parent lookup. Records a completed fork so a retried request reuses the child session rather than creating a second one |
+| `skills`, `skills_meta`, `skill_installations`, `skill_operations` | `skills` PK `name` (`version/deleted/installed_at_ms/updated_at_ms`); `skills_meta` PK `key`; `skill_installations` PK `location` (`name/scope/source/version/package_sha256/observed_at_ms`; scope `app`/`global`, source `managed`/`external`); `skill_operations` PK `name` (`kind` install/uninstall, `phase` prepared/replaced) | the Agent's installed-skill registry (`agent/src/skills/registry.rs`, included in the same schema batch so a mutator that runs before the Agent starts still leaves a file the Agent accepts). `skill_installations_name` serves name lookup; `*.json` packages under `~/.future/agent/skills` stay the file source of truth |
 
 JSON preservation boundaries:
 
@@ -1198,13 +1218,15 @@ kept independently — no new legacy-field aliases or dual-format responses. The
 Desktop-internal Tauri UI records still map per their duties and do not pass
 for the Agent's public RPC.
 
-The Agent's current `application_id` is `0x46555452`; `user_version=2` is only
+The Agent's current `application_id` is `0x46555452`; `user_version=4` is only
 this database's schema identifier — not an RPC version, and it does not mean a
-published v1 exists that must be supported. Development layouts keep no
-upgrade chain; unknown databases/unsupported layouts are explicitly refused,
-never auto-rebuilt. After official release, schema migrations must be
-maintained; Desktop's released migrations keep following §1's non-modifiable
-boundary.
+published v1 exists that must be supported. `user_version` 2 and 3 are previous
+layouts; 2 is accepted only when its columns match the current shape, otherwise
+startup refuses it (`agent/src/session/database.rs:285-319`). Development
+layouts keep no upgrade chain; unknown databases/unsupported layouts are
+explicitly refused, never auto-rebuilt. After official release, schema
+migrations must be maintained; Desktop's released migrations keep following
+§1's non-modifiable boundary.
 
 Old JSONL is read only by the one-time importer with originals kept; corrupt
 sessions are skipped in isolation, and global storage errors block startup.

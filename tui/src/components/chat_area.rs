@@ -51,6 +51,10 @@ pub enum RunState {
     Failed,
     Cancelled,
     Superseded,
+    /// Absorbed into the run ahead of it (the agent's `merged` terminal ack):
+    /// the submission's text is part of another run's prompt, so no run of its
+    /// own ever starts.
+    Merged,
     LostOnAgentRestart,
 }
 
@@ -65,6 +69,7 @@ impl RunState {
             RunState::Failed => "failed",
             RunState::Cancelled => "cancelled",
             RunState::Superseded => "superseded",
+            RunState::Merged => "merged into the previous run",
             RunState::LostOnAgentRestart => "lost_on_agent_restart",
         }
     }
@@ -1445,6 +1450,7 @@ impl ChatArea {
             msg.run_state,
             Some(RunState::Cancelled)
                 | Some(RunState::Superseded)
+                | Some(RunState::Merged)
                 | Some(RunState::LostOnAgentRestart)
         ) {
             let label = msg.run_state.unwrap().label();
@@ -3726,10 +3732,29 @@ mod tests {
         assert_eq!(RunState::Failed.label(), "failed");
         assert_eq!(RunState::Cancelled.label(), "cancelled");
         assert_eq!(RunState::Superseded.label(), "superseded");
+        assert_eq!(RunState::Merged.label(), "merged into the previous run");
         assert_eq!(
             RunState::LostOnAgentRestart.label(),
             "lost_on_agent_restart"
         );
+    }
+
+    #[test]
+    fn merged_submission_renders_its_own_line() {
+        // A submission folded into the run ahead of it never starts, so the
+        // composer has to say so instead of leaving it at `queued (#n)`.
+        let mut chat = new_chat();
+        chat.add_message(ChatMessage {
+            run_state: Some(RunState::Merged),
+            ..ChatMessage::new("m1".into(), ChatRole::User, "a supplement")
+        });
+        let rendered = chat.render_all(W).join("\n");
+        let rendered = strip(&rendered);
+        assert!(
+            rendered.contains("merged into the previous run"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("queued"), "{rendered}");
     }
 
     #[test]

@@ -2153,6 +2153,297 @@ mod bridge_tests {
         (home, bridge)
     }
 
+    /// The history lane's half of the lean feed, end to end through the real
+    /// command path. The unit tests pin the rewrite itself; this pins that the
+    /// command consults the declared flag, that an undeclared client still gets
+    /// every field, and that a later connection cannot inherit the declaration.
+    ///
+    /// `mock_agent_lock` serializes this family, so no sibling test can observe
+    /// the process-wide flag while it is flipped here.
+    #[tokio::test]
+    async fn lean_history_trims_only_for_a_client_that_declared_it() {
+        use crate::remote_host::lean::LEAN_EVENTS_FEATURE;
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-lean-history").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("sess-lean");
+        agent.set_session_entries(
+            &session,
+            json!({ "entries": [
+                {
+                    "id": "u1", "kind": "user", "role": "user", "createdAtMs": 1,
+                    "blocks": [{"kind": "text", "text": "question"}],
+                },
+                {
+                    "id": "a1", "kind": "assistant", "role": "assistant", "createdAtMs": 2,
+                    "runId": "run-1",
+                    "blocks": [
+                        {"kind": "reasoning", "text": "private reasoning body"},
+                        {"kind": "text", "text": "visible answer"},
+                        {"kind": "tool_call", "name": "read", "toolCallId": "c1",
+                         "arguments": {"path": "/tmp/a", "offset": 5, "limit": 10}},
+                        {"kind": "tool_call", "name": "shell", "toolCallId": "c2",
+                         "arguments": {"command": "rm -rf build", "timeout": 30}},
+                    ],
+                },
+                {
+                    "id": "t1", "kind": "tool", "role": "tool", "createdAtMs": 3,
+                    "blocks": [
+                        {"kind": "tool_result", "toolCallId": "c1", "text": "tool output body"},
+                    ],
+                },
+            ] }),
+        );
+
+        let read = |id: &'static str| {
+            let bridge = &bridge;
+            let session = session.clone();
+            async move {
+                bridge
+                    .call(json!({ "id": unique(id), "type": "get_session_entries", "sessionId": session }))
+                    .await
+            }
+        };
+        // The paged shape is the one the phone actually uses (`useTimelineController`
+        // always sends `before`), and it is a separate code path from the full
+        // read above, so both are asserted throughout.
+        let read_paged = |id: &'static str| {
+            let bridge = &bridge;
+            let session = session.clone();
+            async move {
+                bridge
+                    .call(json!({
+                        "id": unique(id),
+                        "type": "get_session_entries",
+                        "sessionId": session,
+                        "before": i64::MAX,
+                        "limit": 10,
+                    }))
+                    .await
+            }
+        };
+
+        // Undeclared: the page is exactly what it always was. A distinct id per
+        // call, because a repeated id is served from the single-flight response
+        // cache and would mask the flag change.
+        let full = read("lean-before").await;
+        assert_eq!(full["success"], json!(true));
+        assert_eq!(
+            full["data"]["entries"][1]["blocks"][0]["text"],
+            json!("private reasoning body")
+        );
+        assert_eq!(
+            full["data"]["entries"][1]["blocks"][2]["arguments"]["offset"],
+            json!(5)
+        );
+        assert_eq!(
+            full["data"]["entries"][1]["blocks"][3]["arguments"]["command"],
+            json!("rm -rf build"),
+            "an undeclared client's page still carries every command"
+        );
+        assert_eq!(
+            full["data"]["entries"][2]["blocks"][0]["text"],
+            json!("tool output body")
+        );
+        let full_paged = read_paged("lean-before-paged").await;
+        assert_eq!(
+            full_paged["data"]["entries"][1]["blocks"][0]["text"],
+            json!("private reasoning body")
+        );
+
+        apply_declared_features(
+            &bridge.handshake,
+            &bridge.pair_id,
+            &[LEAN_EVENTS_FEATURE.to_string()],
+        );
+        let lean = read("lean-after").await;
+        assert_eq!(lean["success"], json!(true));
+        let blocks = lean["data"]["entries"][1]["blocks"].as_array().unwrap();
+        // The reasoning block survives without its body, so the row still shows.
+        assert_eq!(blocks[0]["kind"], json!("reasoning"));
+        assert!(blocks[0].get("text").is_none());
+        // Visible text is untouched.
+        assert_eq!(blocks[1]["text"], json!("visible answer"));
+        // A file row keeps only the keys a target can be derived from.
+        assert_eq!(blocks[2]["arguments"], json!({"path": "/tmp/a"}));
+        assert_eq!(blocks[2]["toolCallId"], json!("c1"));
+        // A shell row keeps its identity and loses its arguments whole: the
+        // command is what the client fetches when the row is opened, and the
+        // call identity (plus the entry's runId) is what it needs to do so.
+        assert_eq!(blocks[3]["toolCallId"], json!("c2"));
+        assert!(blocks[3].get("arguments").is_none());
+        assert_eq!(lean["data"]["entries"][1]["runId"], json!("run-1"));
+        // The result block keeps its identity and loses its body.
+        let result = &lean["data"]["entries"][2]["blocks"][0];
+        assert_eq!(result["toolCallId"], json!("c1"));
+        assert!(result.get("text").is_none());
+        // Nothing structural moved: the page still carries all three entries.
+        assert_eq!(lean["data"]["entries"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            lean["data"]["entries"][0]["blocks"][0]["text"],
+            json!("question")
+        );
+
+        let lean_paged = read_paged("lean-after-paged").await;
+        assert_eq!(lean_paged["success"], json!(true));
+        let paged_blocks = lean_paged["data"]["entries"][1]["blocks"]
+            .as_array()
+            .unwrap();
+        assert!(
+            paged_blocks[0].get("text").is_none(),
+            "the paged path must trim too"
+        );
+        assert_eq!(paged_blocks[2]["arguments"], json!({"path": "/tmp/a"}));
+        assert_eq!(paged_blocks[3]["toolCallId"], json!("c2"));
+        assert!(
+            paged_blocks[3].get("arguments").is_none(),
+            "the paged path drops a shell call's arguments too"
+        );
+        assert!(lean_paged["data"]["entries"][2]["blocks"][0]
+            .get("text")
+            .is_none());
+        assert_eq!(lean_paged["data"]["entries"].as_array().unwrap().len(), 3);
+
+        // A later connection that declares only another capability must not
+        // inherit this one, or an older build on the same pairing would receive
+        // history it cannot read.
+        apply_declared_features(
+            &bridge.handshake,
+            &bridge.pair_id,
+            &["event_coalescing_v1".to_string()],
+        );
+        let full_again = read("lean-withdrawn").await;
+        assert_eq!(
+            full_again["data"]["entries"][1]["blocks"][0]["text"],
+            json!("private reasoning body"),
+            "withdrawing the declaration must restore the full page"
+        );
+        assert_eq!(
+            full_again["data"]["entries"][2]["blocks"][0]["text"],
+            json!("tool output body")
+        );
+        let full_again_paged = read_paged("lean-withdrawn-paged").await;
+        assert_eq!(
+            full_again_paged["data"]["entries"][1]["blocks"][0]["text"],
+            json!("private reasoning body")
+        );
+    }
+
+    /// The lazy-fetch half of the lean history lane, end to end: only a client
+    /// that declared the feed can ask for a shell call's arguments back, the
+    /// identity it sent is what reaches the Agent, and a missing identity is
+    /// refused before the Agent is bothered.
+    #[tokio::test]
+    async fn tool_call_args_is_reachable_only_for_a_client_that_declared_lean() {
+        use crate::remote_host::lean::LEAN_EVENTS_FEATURE;
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-tool-args").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("sess-args");
+        let run = unique("run-args");
+        let ask = |id: &'static str| {
+            let bridge = &bridge;
+            let session = session.clone();
+            let run = run.clone();
+            async move {
+                bridge
+                    .call(json!({
+                        "id": unique(id),
+                        "type": "get_tool_call_args",
+                        "sessionId": session,
+                        "runId": run,
+                        "toolCallId": "c1",
+                    }))
+                    .await
+            }
+        };
+
+        // Undeclared: the command must be as unreachable as it is for an older
+        // bridge — the same "unsupported" the dispatch catch-all gives — and it
+        // must not reach the Agent.
+        agent.clear_requests();
+        let reply = ask("args-undeclared").await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(
+            reply["error"]
+                .as_str()
+                .unwrap()
+                .contains("Unsupported command"),
+            "got: {reply}"
+        );
+        assert!(!agent.served("get_tool_call_args", &session));
+
+        apply_declared_features(
+            &bridge.handshake,
+            &bridge.pair_id,
+            &[LEAN_EVENTS_FEATURE.to_string()],
+        );
+        agent.script_for(
+            "get_tool_call_args",
+            &session,
+            true,
+            json!({"toolCallId": "c1", "name": "shell", "arguments": {"command": "ls -la", "timeout": 30}}),
+            "",
+        );
+        let reply = ask("args-declared").await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(reply["data"]["arguments"]["command"], json!("ls -la"));
+        let forwarded = agent
+            .last_full_request("get_tool_call_args")
+            .expect("the declared client's read must reach the Agent");
+        assert_eq!(forwarded.session_id, session);
+        assert_eq!(forwarded.run_id, run);
+        assert_eq!(forwarded.tool_call_id.as_deref(), Some("c1"));
+
+        // A call identity is required: refuse locally, never ask the Agent for
+        // "whatever call happens to be first".
+        agent.clear_requests();
+        let reply = bridge
+            .call(json!({
+                "id": unique("args-no-call"),
+                "type": "get_tool_call_args",
+                "sessionId": session,
+                "runId": run,
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(
+            reply["error"].as_str().unwrap().contains("toolCallId"),
+            "got: {reply}"
+        );
+        assert!(!agent.served("get_tool_call_args", &session));
+
+        // An Agent-side failure (unknown call) is surfaced, not swallowed.
+        agent.script_for(
+            "get_tool_call_args",
+            &session,
+            false,
+            json!(null),
+            "tool call not found",
+        );
+        let reply = ask("args-missing").await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("tool call not found"));
+
+        // Withdrawing the declaration takes the command away again.
+        apply_declared_features(
+            &bridge.handshake,
+            &bridge.pair_id,
+            &["event_coalescing_v1".to_string()],
+        );
+        let reply = ask("args-withdrawn").await;
+        assert_eq!(reply["success"], json!(false));
+        assert!(reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("Unsupported command"));
+    }
+
     #[tokio::test]
     async fn presence_and_catalog_commands() {
         let _lock = mock_agent_lock();
@@ -3547,7 +3838,10 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(false));
 
-        // delete_session: missing id, success, and unknown-thread failure.
+        // delete_session: missing id, success, and idempotent success for a
+        // thread that is already gone (a child of a parent this phone deleted,
+        // or a row removed in the meantime) — the phone walks a selection one
+        // session at a time, so "already gone" must not read as a failure.
         let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "delete_session" }))
             .await;
@@ -3561,9 +3855,17 @@ mod bridge_tests {
             .await;
         assert_eq!(reply["success"], json!(true));
         let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "delete_session", "threadId": thread.id }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "repeat delete is idempotent");
+        let reply = bridge
             .call(json!({ "id": unique("cmd"), "type": "delete_session", "threadId": "missing-thread" }))
             .await;
-        assert_eq!(reply["success"], json!(false));
+        assert_eq!(
+            reply["success"],
+            json!(true),
+            "already gone is not a failure"
+        );
 
         // Unknown command type.
         let reply = bridge

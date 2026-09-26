@@ -197,3 +197,57 @@ describe("the message hash is over UTF-8 bytes, not UTF-16 code units", () => {
   });
 });
 
+/**
+ * The budget resets on the user's local midnight, not UTC's. This distinction is
+ * invisible for most of the day — UTC and a positive-offset local date agree
+ * until the offset rolls over — so it has to be pinned at a fixed instant where
+ * they disagree, or a switch to `toISOString` would pass CI for 16 hours a day
+ * and quietly reset (or extend) the budget for the rest.
+ */
+/**
+ * The budget resets on the user's local midnight, not UTC's. The distinction is
+ * invisible for most of the day (and always invisible on a UTC host, which is
+ * what CI runs), so it has to be pinned by forcing a disagreement rather than
+ * by trusting the runner's timezone.
+ */
+describe("the day is the local calendar day", () => {
+  it("reads local date parts, never the UTC date", () => {
+    const now = new Date("2026-09-25T16:47:00Z");
+    // 16:47Z is already the 26th at UTC+8. Force that disagreement, then assert
+    // the local parts win — on a UTC host they otherwise agree and the point
+    // would be unobservable.
+    const year = jest.spyOn(Date.prototype, "getFullYear").mockReturnValue(2026);
+    const month = jest.spyOn(Date.prototype, "getMonth").mockReturnValue(8);
+    const date = jest.spyOn(Date.prototype, "getDate").mockReturnValue(26);
+    try {
+      expect(now.toISOString().slice(0, 10)).toBe("2026-09-25");
+      expect(today(now)).toBe("2026-09-26");
+    } finally {
+      year.mockRestore();
+      month.mockRestore();
+      date.mockRestore();
+    }
+  });
+
+  it("treats a record from another day as nothing spent", () => {
+    // The consequence of the two calendars disagreeing: a record stamped with a
+    // different day reads as stale, so the budget is silently reset. This is
+    // what made the recommendation feature re-offer a skill it had already shown
+    // in the first hours of every local day.
+    const now = new Date("2026-09-25T16:47:00Z");
+    const recorded = JSON.stringify({ day: "2026-09-24", skills: ["future-web"], messages: ["h"] });
+    const year = jest.spyOn(Date.prototype, "getFullYear").mockReturnValue(2026);
+    const month = jest.spyOn(Date.prototype, "getMonth").mockReturnValue(8);
+    const date = jest.spyOn(Date.prototype, "getDate").mockReturnValue(26);
+    try {
+      expect(parseDay(recorded, now)).toEqual({ day: "2026-09-26", skills: [], messages: [] });
+      // And the record is honoured once it carries the local day.
+      const sameDay = JSON.stringify({ day: "2026-09-26", skills: ["future-web"], messages: ["h"] });
+      expect(parseDay(sameDay, now)).toEqual({ day: "2026-09-26", skills: ["future-web"], messages: ["h"] });
+    } finally {
+      year.mockRestore();
+      month.mockRestore();
+      date.mockRestore();
+    }
+  });
+});

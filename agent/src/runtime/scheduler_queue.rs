@@ -392,6 +392,65 @@ impl InMemoryRunQueue {
         Ok((request, ack))
     }
 
+    /// Take the maximal prefix of coalescing requests queued behind the front
+    /// one out of the queue, so the caller can fold their content into the
+    /// front run's payload before it starts.
+    ///
+    /// Two boundaries decide the prefix, and both preserve order:
+    ///
+    /// - the front request must itself have opted in ([`BusyPolicy::
+    ///   coalesces`]); a plain `enqueue_if_busy` request absorbs nothing;
+    /// - folding stops at the first request that did not opt in, and at the
+    ///   first request that would push the *merged* payload past
+    ///   `max_request_bytes` (the front was validated on its own, and folding
+    ///   happens after admission, so this is the only place that bounds the
+    ///   combined size). Whatever is left stays queued, in order, and runs on
+    ///   its own.
+    ///
+    /// Folded requests never run: they leave the queue, release their quota,
+    /// and are recorded terminal with reason `merged`, which is how their
+    /// clients learn the submission was answered as part of another run.
+    pub fn drain_coalescing_after_first(&self) -> Vec<ScheduledRunRequest> {
+        let mut state = self.state.lock();
+        let Some((front_bytes, front_coalesces)) = state
+            .queued
+            .front()
+            .map(|front| (front.payload_bytes, front.busy_policy.coalesces()))
+        else {
+            return Vec::new();
+        };
+        if !front_coalesces {
+            return Vec::new();
+        }
+        let mut remaining = self.max_request_bytes.saturating_sub(front_bytes);
+        let mut count = 0usize;
+        for request in state.queued.iter().skip(1) {
+            if !request.busy_policy.coalesces() || request.payload_bytes > remaining {
+                break;
+            }
+            remaining -= request.payload_bytes;
+            count += 1;
+        }
+        if count == 0 {
+            return Vec::new();
+        }
+        let folded: Vec<_> = state.queued.drain(1..=count).collect();
+        for request in &folded {
+            state.queued_bytes = state.queued_bytes.saturating_sub(request.payload_bytes);
+            self.global_budget.release(request.payload_bytes);
+        }
+        for request in &folded {
+            remember_terminal(
+                &mut state,
+                request,
+                "terminal",
+                "merged",
+                self.recent_ack_limit,
+            );
+        }
+        folded
+    }
+
     /// Atomically replace every queued request with one successor while
     /// leaving the current active request owned until cooperative abort
     /// completes. Validation and quota projection happen before mutation.
@@ -706,6 +765,11 @@ mod tests {
         InMemoryRunQueue::new("session-a", 1)
     }
 
+    /// Payload size as the queue measures and budgets it.
+    fn bytes(value: &Value) -> usize {
+        serde_json::to_vec(value).unwrap().len()
+    }
+
     #[test]
     fn assigns_monotonic_sequence_and_starts_fifo() {
         let queue = queue();
@@ -757,6 +821,207 @@ mod tests {
             .unwrap();
         assert_eq!(second.accepted_state, RunAcceptedState::Queued);
         assert_eq!(queue.queued().len(), 2);
+    }
+
+    #[test]
+    fn coalescing_folds_the_coalescing_prefix_and_marks_it_merged() {
+        let queue = queue();
+        for (request, run) in [
+            ("request-1", "run-1"),
+            ("request-2", "run-2"),
+            ("request-3", "run-3"),
+        ] {
+            queue
+                .accept(
+                    request,
+                    Some(run),
+                    BusyPolicy::EnqueueCoalescing,
+                    Value::Null,
+                )
+                .unwrap();
+        }
+        let folded = queue.drain_coalescing_after_first();
+        assert_eq!(
+            folded
+                .iter()
+                .map(|request| request.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-2", "run-3"]
+        );
+        // The front stays queued: the caller folds, then starts it.
+        assert_eq!(queue.queued().len(), 1);
+        assert_eq!(queue.queued()[0].run_id, "run-1");
+        // Folded requests never run, so each is terminal with reason `merged`.
+        let acks = queue.recent_terminal_acks();
+        assert_eq!(acks.len(), 2);
+        assert!(acks
+            .iter()
+            .all(|ack| ack.state == "terminal" && ack.reason == "merged"));
+        assert_eq!(acks[0].run_id, "run-2");
+        assert_eq!(acks[0].run_sequence, 2);
+        assert_eq!(acks[0].client_request_id, "request-2");
+        // Nothing left to fold once the prefix is gone, and an empty queue is a
+        // no-op rather than a panic.
+        assert!(queue.drain_coalescing_after_first().is_empty());
+        assert!(InMemoryRunQueue::new("session-empty", 1)
+            .drain_coalescing_after_first()
+            .is_empty());
+    }
+
+    #[test]
+    fn coalescing_stops_at_the_first_request_that_did_not_opt_in() {
+        let queue = queue();
+        queue
+            .accept(
+                "r1",
+                Some("run-1"),
+                BusyPolicy::EnqueueCoalescing,
+                Value::Null,
+            )
+            .unwrap();
+        queue
+            .accept(
+                "r2",
+                Some("run-2"),
+                BusyPolicy::EnqueueCoalescing,
+                Value::Null,
+            )
+            .unwrap();
+        // A caller that streams its own run keeps its own identity...
+        queue
+            .accept("r3", Some("run-3"), BusyPolicy::EnqueueIfBusy, Value::Null)
+            .unwrap();
+        // ...and its content is never folded away from it.
+        queue
+            .accept(
+                "r4",
+                Some("run-4"),
+                BusyPolicy::EnqueueCoalescing,
+                Value::Null,
+            )
+            .unwrap();
+
+        let folded = queue.drain_coalescing_after_first();
+        assert_eq!(
+            folded
+                .iter()
+                .map(|request| request.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-2"]
+        );
+        assert_eq!(
+            queue
+                .queued()
+                .iter()
+                .map(|request| request.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-1", "run-3", "run-4"]
+        );
+    }
+
+    #[test]
+    fn a_plain_enqueue_front_absorbs_nothing() {
+        let queue = queue();
+        queue
+            .accept("r1", Some("run-1"), BusyPolicy::EnqueueIfBusy, Value::Null)
+            .unwrap();
+        queue
+            .accept(
+                "r2",
+                Some("run-2"),
+                BusyPolicy::EnqueueCoalescing,
+                Value::Null,
+            )
+            .unwrap();
+        assert!(queue.drain_coalescing_after_first().is_empty());
+        assert_eq!(queue.queued().len(), 2);
+        assert!(queue.recent_terminal_acks().is_empty());
+    }
+
+    #[test]
+    fn coalescing_stops_before_the_merged_payload_exceeds_the_request_cap() {
+        let front = serde_json::json!({"message": "x".repeat(32)});
+        let second = serde_json::json!({"message": "y".repeat(8)});
+        let third = serde_json::json!({"message": "z".repeat(64)});
+        // Every payload was admitted on its own (each is under the cap), but the
+        // merged payload only fits the front and the second: the third would
+        // push it over, so the fold has to stop before it.
+        let cap = bytes(&third) + 1;
+        assert!(bytes(&front) + bytes(&second) < cap);
+        assert!(bytes(&front) + bytes(&second) + bytes(&third) > cap);
+        let queue = InMemoryRunQueue::with_limits(
+            "session-a",
+            1,
+            DEFAULT_SESSION_QUEUE_CAPACITY,
+            DEFAULT_SESSION_QUEUE_BYTES,
+            cap,
+            256,
+        );
+        for (request, run, payload) in [
+            ("r1", "run-1", &front),
+            ("r2", "run-2", &second),
+            ("r3", "run-3", &third),
+        ] {
+            queue
+                .accept(
+                    request,
+                    Some(run),
+                    BusyPolicy::EnqueueCoalescing,
+                    payload.clone(),
+                )
+                .unwrap();
+        }
+        let folded = queue.drain_coalescing_after_first();
+        assert_eq!(
+            folded
+                .iter()
+                .map(|request| request.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-2"]
+        );
+        // The oversized candidate keeps its own run instead of being dropped.
+        assert_eq!(
+            queue
+                .queued()
+                .iter()
+                .map(|request| request.run_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["run-1", "run-3"]
+        );
+        assert!(queue
+            .recent_terminal_acks()
+            .iter()
+            .all(|ack| ack.run_id != "run-3"));
+    }
+
+    #[test]
+    fn folding_releases_the_folded_requests_quota() {
+        let global = std::sync::Arc::new(GlobalQueueBudget::new(8, 4_096));
+        let queue = InMemoryRunQueue::with_limits_and_global(
+            "session-a",
+            1,
+            8,
+            4_096,
+            4_096,
+            256,
+            global.clone(),
+        );
+        let payload = serde_json::json!({"m": "x".repeat(32)});
+        for (request, run) in [("r1", "run-1"), ("r2", "run-2"), ("r3", "run-3")] {
+            queue
+                .accept(
+                    request,
+                    Some(run),
+                    BusyPolicy::EnqueueCoalescing,
+                    payload.clone(),
+                )
+                .unwrap();
+        }
+        assert_eq!(global.usage(), (3, bytes(&payload) * 3));
+        assert_eq!(queue.drain_coalescing_after_first().len(), 2);
+        // Only the front run still holds a reservation.
+        assert_eq!(global.usage(), (1, bytes(&payload)));
+        assert_eq!(queue.queued_bytes(), bytes(&payload));
     }
 
     #[test]

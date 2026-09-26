@@ -17,6 +17,9 @@ impl Manager {
     pub(crate) fn tool_output(&self, session: &str, run: &str, call: &str) -> Result<Value> {
         self.storage()?.tool_output(session, run, call)
     }
+    pub(crate) fn tool_call_args(&self, session: &str, run: &str, call: &str) -> Result<Value> {
+        self.storage()?.tool_call_args(session, run, call)
+    }
 }
 
 impl SqliteStore {
@@ -57,6 +60,31 @@ impl SqliteStore {
             Ok(json!({"output":output}))
         })
     }
+
+    /// One tool call's stored arguments, by identity.
+    ///
+    /// The history page a phone receives drops a shell call's `arguments`
+    /// entirely (the command is the page's most expensive unread payload), so
+    /// the client asks for them back here — by `tool_call_id`, the same
+    /// identity the page carries, scoped to its session AND run so an id that
+    /// repeats in another conversation cannot answer this one.
+    fn tool_call_args(&self, session: &str, run: &str, call: &str) -> Result<Value> {
+        let (session, run, call) = (session.to_owned(), run.to_owned(), call.to_owned());
+        self.db.call(move |db| {
+            let mut stmt = db.prepare("SELECT b.tool_name,b.arguments_json FROM message_blocks b JOIN entries e ON e.session_id=b.session_id AND e.position=b.entry_position WHERE b.session_id=?1 AND e.run_id=?2 AND b.tool_call_id=?3 AND b.kind='tool_call' ORDER BY e.position DESC LIMIT 1")?;
+            let mut rows = stmt.query(params![session, run, call])?;
+            let (name, arguments) = match rows.next()? {
+                Some(row) => (
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?
+                        .map(|raw| serde_json::from_str::<Value>(&raw))
+                        .transpose()?,
+                ),
+                None => (None, None),
+            };
+            Ok(json!({"toolCallId": call, "name": name, "arguments": arguments}))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -90,6 +118,93 @@ mod tests {
             store.tool_page("s", "two", 0, 2).unwrap()["tools"][0]["status"],
             "completed"
         );
+    }
+
+    /// The lean history page drops a shell call's arguments, so the phone asks
+    /// for them back by `(session, run, tool_call_id)`. The same id exists in
+    /// another session and run here: neither may answer for the caller's.
+    #[test]
+    fn get_tool_call_args_reads_one_call_by_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+        let call = |id: &str, run: &str, name: &str, args: Value| {
+            json!({"id":format!("{run}-{id}"),"type":"assistant","role":"assistant","timestamp":"2026-01-01T00:00:00Z","meta":{"run_id":run},
+                "content":[{"type":"tool_call","id":id,"name":name,"args":args}]})
+        };
+        store
+            .replace(
+                "s1",
+                vec![
+                    call(
+                        "call-1",
+                        "one",
+                        "shell",
+                        json!({"command": "ls -la", "timeout": 30}),
+                    ),
+                    call(
+                        "call-2",
+                        "one",
+                        "read",
+                        json!({"path": "/tmp/a", "offset": 5}),
+                    ),
+                ],
+            )
+            .unwrap();
+        store
+            .replace(
+                "s2",
+                vec![call("call-1", "one", "shell", json!({"command": "pwd"}))],
+            )
+            .unwrap();
+        // Same call id, same session, two runs: the run scopes the read.
+        store
+            .replace(
+                "s3",
+                vec![
+                    call("call-1", "one", "shell", json!({"command": "pwd"})),
+                    call("call-1", "two", "shell", json!({"command": "whoami"})),
+                ],
+            )
+            .unwrap();
+
+        let hit = store.tool_call_args("s1", "one", "call-1").unwrap();
+        assert_eq!(hit["toolCallId"], json!("call-1"));
+        assert_eq!(hit["name"], json!("shell"));
+        assert_eq!(
+            hit["arguments"],
+            json!({"command": "ls -la", "timeout": 30})
+        );
+        assert_eq!(
+            store.tool_call_args("s1", "one", "call-2").unwrap()["arguments"],
+            json!({"path": "/tmp/a", "offset": 5})
+        );
+        // The other session's identically named call must not leak in.
+        assert_eq!(
+            store.tool_call_args("s2", "one", "call-1").unwrap()["arguments"],
+            json!({"command": "pwd"})
+        );
+        assert_eq!(
+            store.tool_call_args("s3", "one", "call-1").unwrap()["arguments"],
+            json!({"command": "pwd"})
+        );
+        assert_eq!(
+            store.tool_call_args("s3", "two", "call-1").unwrap()["arguments"],
+            json!({"command": "whoami"})
+        );
+        // Misses are explicit nulls, never another call's arguments.
+        for (session, run, id) in [
+            ("s1", "one", "missing"),
+            ("s1", "two", "call-1"),
+            ("s4", "one", "call-1"),
+        ] {
+            let miss = store.tool_call_args(session, run, id).unwrap();
+            assert_eq!(miss["toolCallId"], json!(id));
+            assert!(miss["name"].is_null(), "{session}/{run}/{id} must miss");
+            assert!(
+                miss["arguments"].is_null(),
+                "{session}/{run}/{id} must miss"
+            );
+        }
     }
 }
 

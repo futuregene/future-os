@@ -3,7 +3,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRemote } from "../../../remote/RemoteContext";
 import { draftPicksSkill, utf8Length, useSkillRecommendation, type SkillRecommendationApi } from "../useSkillRecommendation";
-import { messageHash } from "../skillRecoBudget";
+import { messageHash, today } from "../skillRecoBudget";
 
 jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
 jest.mock("@react-native-async-storage/async-storage", () => {
@@ -234,10 +234,11 @@ describe("showing a recommendation", () => {
     store.set(
       STORAGE_KEY,
       JSON.stringify({
-        // The budget is keyed by the *local* calendar day (`skillRecoBudget`'s
-        // `today`); `toISOString` is UTC and reads as a different day for every
-        // timezone east of UTC before 08:00, which made this test fail there.
-        day: localDay(),
+        // The same day the hook reads. `toISOString` is UTC here, while the
+        // budget uses the local calendar day, so seeding it with the UTC date
+        // silently wrote "yesterday" for the first hours of every local day and
+        // the record was discarded as stale.
+        day: today(),
         skills: ["future-web"],
         messages: [],
       }),
@@ -266,7 +267,7 @@ describe("showing a recommendation", () => {
       await evaluate(api, DRAFT);
       store.set(
         STORAGE_KEY,
-        JSON.stringify({ day: localDay(), skills: ["future-web"], messages: [messageHash(DRAFT)] }),
+        JSON.stringify({ day: today(), skills: ["future-web"], messages: [messageHash(DRAFT)] }),
       );
       expect(await evaluate(api, DRAFT)).toBe(false);
     } finally {
@@ -277,7 +278,7 @@ describe("showing a recommendation", () => {
   it("stops asking once the day's budget is spent", async () => {
     store.set(
       STORAGE_KEY,
-      JSON.stringify({ day: localDay(), skills: ["a", "b", "c"], messages: [] }),
+      JSON.stringify({ day: today(), skills: ["a", "b", "c"], messages: [] }),
     );
     const api: { current: SkillRecommendationApi | null } = { current: null };
     const tree = mount(api);
@@ -438,12 +439,6 @@ describe("the recommender's failure modes all mean 'send the message'", () => {
     }
   });
 });
-
-function localDay(now = new Date()): string {
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-}
-
 describe("helpers", () => {
   it("detects a picked skill only on a real slash token", () => {
     expect(draftPicksSkill("/future-web")).toBe(true);

@@ -79,7 +79,17 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 )
                 .await
                 {
-                    Ok(data) => {
+                    Ok(mut data) => {
+                        // Trim before the byte budget, not after: the budget sheds
+                        // whole oldest exchanges to fit a reply, so measuring the
+                        // trimmed page is what lets it hold more of them per round
+                        // trip. Nothing here adds or removes an entry, so the
+                        // cursor arithmetic below is untouched (see `lean_entries`).
+                        if crate::remote_host::lean::enabled() {
+                            if let Some(entries) = data.get_mut("entries") {
+                                crate::remote_host::lean::lean_entries(entries);
+                            }
+                        }
                         // A chunked first paint is the one page that pays the
                         // byte budget for a reader who is waiting: dropping the
                         // oldest complete exchange sends it to the next pull
@@ -119,7 +129,12 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 return;
             }
             match crate::agent_bridge::get_session_entries(cmd.session_id.clone()).await {
-                Ok(data) => {
+                Ok(mut data) => {
+                    if crate::remote_host::lean::enabled() {
+                        if let Some(entries) = data.get_mut("entries") {
+                            crate::remote_host::lean::lean_entries(entries);
+                        }
+                    }
                     let entries = entries_vec(data);
                     reply(
                         sink,
@@ -139,6 +154,43 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     reply(sink, true, empty_entries_page(), None).await;
                 }
                 Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
+            }
+        }
+        // A lean client's way back to the arguments its page omitted. Gated on
+        // the declaration that asked for the trim: an undeclared client's page
+        // still carries every argument, so it has no use for this command and
+        // must not find a path to it (the reply is the same "unsupported" a
+        // client of an older bridge would get).
+        "get_tool_call_args" => {
+            if !crate::remote_host::lean::enabled() {
+                reply(
+                    sink,
+                    false,
+                    Value::Null,
+                    Some("Unsupported command: get_tool_call_args"),
+                )
+                .await;
+                return;
+            }
+            if cmd.session_id.is_empty() || cmd.run_id.is_empty() || cmd.tool_call_id.is_empty() {
+                reply(
+                    sink,
+                    false,
+                    Value::Null,
+                    Some("sessionId, runId and toolCallId are required"),
+                )
+                .await;
+                return;
+            }
+            match crate::agent_bridge::get_tool_call_args(
+                cmd.session_id.clone(),
+                cmd.run_id.clone(),
+                cmd.tool_call_id.clone(),
+            )
+            .await
+            {
+                Ok(data) => reply(sink, true, data, None).await,
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
             }
         }
         "get_events_since" => {

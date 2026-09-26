@@ -262,6 +262,10 @@ struct ScriptedResponse {
 struct MockAgentState {
     /// (command, session_id) request log, for assertions.
     requests: Vec<(String, String)>,
+    /// Last few full requests, so a test can assert the fields a forwarded
+    /// read carried (run id, tool-call id) — the (command, session) log above
+    /// answers "was this served", not "with what".
+    full_requests: Vec<crate::agent_proto::RpcCommand>,
     /// One-shot scripted responses keyed by `command` or `command:session_id`.
     scripts: HashMap<String, VecDeque<ScriptedResponse>>,
     /// `get_session_entries` payloads keyed by session id.
@@ -423,7 +427,25 @@ impl MockAgent {
     /// asks for *from here on*. The log is process-global and the mock is
     /// shared, so a "was this command served" assertion needs a fresh start.
     pub(crate) fn clear_requests(&self) {
-        self.state.lock().unwrap().requests.clear();
+        let mut state = self.state.lock().unwrap();
+        state.requests.clear();
+        state.full_requests.clear();
+    }
+
+    /// The most recent full request for `command`, for assertions about the
+    /// fields it carried (see [`MockAgentState::full_requests`]).
+    pub(crate) fn last_full_request(
+        &self,
+        command: &str,
+    ) -> Option<crate::agent_proto::RpcCommand> {
+        self.state
+            .lock()
+            .unwrap()
+            .full_requests
+            .iter()
+            .rev()
+            .find(|request| request.r#type == command)
+            .cloned()
     }
 }
 
@@ -438,6 +460,10 @@ impl AgentService {
             state
                 .requests
                 .push((cmd.r#type.clone(), cmd.session_id.clone()));
+            state.full_requests.push(cmd.clone());
+            if state.full_requests.len() > 256 {
+                state.full_requests.remove(0);
+            }
             let key = format!("{}:{}", cmd.r#type, cmd.session_id);
             let scripted = state
                 .scripts
@@ -493,6 +519,48 @@ impl AgentService {
 
 fn ok(value: Value) -> (bool, String, String) {
     (true, value.to_string(), String::new())
+}
+
+/// Mirror the Agent's backward paging over a stored session.
+///
+/// A measurement that ignores `before`/`limit` hands the bridge a whole session,
+/// and the bridge's 512 KiB budget then keeps *as many newest exchanges as fit* —
+/// which is not the page the phone asks for. The phone sends `before` (its
+/// backward cursor) plus `limit` user exchanges, so the page has to be selected
+/// here the way `agent::session::history_index::read_page` selects it: the newest
+/// `limit` user entries ending at the cursor. Without this the harness overstates
+/// a lean page several-fold (it fills the budget instead of stopping at the
+/// requested exchanges).
+fn paginate_backward(entries: Value, before: Option<i64>, limit: Option<i64>) -> Value {
+    let mut stored = entries
+        .get("entries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let Some(before) = before else {
+        return json!({ "entries": stored });
+    };
+    let total = stored.len() as i64;
+    let end = before.clamp(0, total) as usize;
+    let count = limit.unwrap_or(10).clamp(1, 100) as usize;
+    let user_positions: Vec<usize> = stored
+        .iter()
+        .enumerate()
+        .take(end)
+        .filter(|(_, entry)| entry.get("role").and_then(Value::as_str) == Some("user"))
+        .map(|(index, _)| index)
+        .collect();
+    let start = if user_positions.len() >= count {
+        user_positions[user_positions.len() - count]
+    } else {
+        0
+    };
+    let page: Vec<Value> = stored.drain(start..end).collect();
+    json!({
+        "entries": page,
+        "hasMore": start > 0,
+        "nextOffset": start,
+    })
 }
 
 fn default_answer(
@@ -601,7 +669,34 @@ fn default_answer(
                 .get(&cmd.session_id)
                 .cloned()
                 .unwrap_or_else(|| json!({ "entries": [] }));
-            ok(entries)
+            ok(paginate_backward(entries, cmd.before, cmd.limit))
+        }
+        // The lean phone's way back to a shell call's dropped `arguments`.
+        // Answered from the same recorded entries `get_session_entries` serves,
+        // and scoped by run as well as id, so a mock cannot answer an identity
+        // the real agent would refuse.
+        "get_tool_call_args" => {
+            let requested = cmd.tool_call_id.clone().unwrap_or_default();
+            let found = state
+                .session_entries
+                .get(&cmd.session_id)
+                .and_then(|entries| entries.get("entries"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|entry| entry.get("runId").and_then(Value::as_str) == Some(&cmd.run_id))
+                .flat_map(|entry| entry["blocks"].as_array().into_iter().flatten())
+                .find(|block| block.get("toolCallId").and_then(Value::as_str) == Some(&requested))
+                .map(|block| (block.get("name"), block.get("arguments")));
+            let (name, arguments) = match found {
+                Some((name, arguments)) => (name.cloned(), arguments.cloned()),
+                None => (None, None),
+            };
+            ok(json!({
+                "toolCallId": requested,
+                "name": name.unwrap_or(Value::Null),
+                "arguments": arguments.unwrap_or(Value::Null),
+            }))
         }
         "get_events_since" => ok(json!({ "events": [], "hasMore": false })),
         "get_state" => ok(json!({

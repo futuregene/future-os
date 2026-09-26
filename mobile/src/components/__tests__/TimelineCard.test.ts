@@ -3,6 +3,7 @@ import { AppState, StyleSheet, type AppStateStatus } from "react-native";
 import { colors } from "../../theme/tokens";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { TimelineCard } from "../TimelineCard";
+import type { TimelineCardProps } from "../TimelineCard";
 import type { TimelineItem, TimelineSegment, TimelineToolRow } from "../../remote/types";
 
 jest.mock("../MarkdownText", () => ({ MarkdownText: "MarkdownText" }));
@@ -46,8 +47,8 @@ afterEach(() => { if (tree) act(() => tree.unmount()); });
 const reply = (fields: Partial<Extract<TimelineItem, { kind: "message" }>>): TimelineItem => ({
   kind: "message", role: "assistant", id: "a", text: "reply", ...fields,
 });
-function render(item: TimelineItem) {
-  act(() => { tree = create(createElement(TimelineCard, { item })); });
+function render(item: TimelineItem, props: Partial<TimelineCardProps> = {}) {
+  act(() => { tree = create(createElement(TimelineCard, { item, ...props })); });
 }
 function hasText(text: string) {
   return tree.root.findAll(node => node.props.children === text).length > 0;
@@ -62,6 +63,12 @@ function rowButton(text: string) {
   return tree.root.findAll(node =>
     typeof node.props.onPress === "function"
     && node.findAll(inner => inner.props.children === text).length > 0)[0]!;
+}
+/** Every tappable row carrying `text` — a burst's children share one label. */
+function rowButtons(text: string) {
+  return tree.root.findAll(node =>
+    typeof node.props.onPress === "function"
+    && node.findAll(inner => inner.props.children === text).length > 0);
 }
 const prose = (id: string, text = "answer"): TimelineSegment => ({ id, kind: "text", text });
 const thinking = (id: string, text = id): TimelineSegment => ({ id, kind: "thinking", text });
@@ -163,6 +170,27 @@ test("the folded run opens into its rows, each still opening its own detail", ()
   expect(hasText("why it broke")).toBe(true);
   act(() => rowButton("chat.runCompleted").props.onPress());
   expect(hasText("ls -la")).toBe(true);
+});
+
+// A lean feed carries no reasoning body at all. The row is then a status label,
+// not a disclosure: rendering the chevron anyway opened an empty box on a real
+// device (tapping 已思考 expanded to nothing), which promises content that never
+// arrives.
+test("a thinking row with no body is a label, not a disclosure", () => {
+  render(reply({ segments: [thinking("k1", "")] }));
+  expect(countText("chat.thoughtCompleted")).toBe(1);
+  expect(countIconsNamed(tree.root, "ChevronDown")).toBe(0);
+  expect(countIconsNamed(tree.root, "ChevronUp")).toBe(0);
+  expect(rowButton("chat.thoughtCompleted")).toBeUndefined();
+});
+
+// The contrast: a body is what earns the chevron.
+test("a thinking row with a body still opens it", () => {
+  render(reply({ segments: [thinking("k1", "why it broke")] }));
+  expect(countIconsNamed(tree.root, "ChevronDown")).toBe(1);
+  expect(hasText("why it broke")).toBe(false);
+  act(() => rowButton("chat.thoughtCompleted").props.onPress());
+  expect(hasText("why it broke")).toBe(true);
 });
 
 // The tool count is a wrench, not the terminal it started as: the count covers
@@ -520,4 +548,147 @@ test("a manual compaction divider reports both counts too", () => {
     segments: [compaction({ tokensBefore: 33_064, tokensAfter: 9_250, trigger: "manual" })],
   }));
   expect(hasText("Manually compacted · 33,064 → 9,250 tokens (estimated)")).toBe(true);
+});
+
+/**
+ * A lean history page omits a shell call's arguments, so the row arrives with
+ * no target. Tapping it must fetch the command by the call's identity and show
+ * it; a fetch that fails (offline, or a desktop without the command) must
+ * leave the row exactly as it was — never block the list, never reject.
+ */
+describe("a tool row whose target the lean page omitted", () => {
+  const trimmedShell = (fields: Partial<TimelineToolRow> = {}): TimelineSegment =>
+    tool("c1", {
+      detail: undefined,
+      toolCallId: "call_1",
+      runId: "run_1",
+      ...fields,
+    });
+
+  test("fetches the command when opened, shows it, and never asks twice", async () => {
+    const resolveToolTarget = jest.fn(async () => "ls -la /tmp");
+    render(reply({ segments: [trimmedShell()] }), { onResolveToolTarget: resolveToolTarget });
+    // Nothing is shown up front: the command is not in the page.
+    expect(hasText("ls -la /tmp")).toBe(false);
+    const row = rowButton("chat.runCompleted");
+    expect(row.props.disabled).toBe(false);
+    await act(async () => { row.props.onPress(); });
+    expect(resolveToolTarget).toHaveBeenCalledWith("call_1", "run_1");
+    expect(hasText("ls -la /tmp")).toBe(true);
+    // Collapse and re-open: the row already holds the command, so the resolver
+    // is not asked again.
+    act(() => rowButton("chat.runCompleted").props.onPress());
+    act(() => rowButton("chat.runCompleted").props.onPress());
+    expect(resolveToolTarget).toHaveBeenCalledTimes(1);
+    expect(hasText("ls -la /tmp")).toBe(true);
+  });
+
+  test("a failed fetch leaves the row untouched and never blocks the reply", async () => {
+    const resolveToolTarget = jest.fn(async () => {
+      throw new Error("Unsupported command: get_tool_call_args");
+    });
+    // One step row beside prose (a second step row would fold into a run
+    // summary, which is not what this test is about).
+    render(reply({ segments: [trimmedShell(), prose("t1", "answer")] }), {
+      onResolveToolTarget: resolveToolTarget,
+    });
+    await act(async () => { rowButton("chat.runCompleted").props.onPress(); });
+    expect(resolveToolTarget).toHaveBeenCalledTimes(1);
+    // The row is still the collapsed badge it was, with no invented target, and
+    // the rest of the reply rendered regardless.
+    const row = rowButton("chat.runCompleted");
+    expect(railOf(row)).toBe("flex-end");
+    // The prose beside it still rendered (MarkdownText is a host stub here).
+    expect(
+      tree.root
+        .findAll(node => (node.type as unknown) === "MarkdownText")
+        .some(node => node.props.text === "answer"),
+    ).toBe(true);
+    expect(hasText("Unsupported command: get_tool_call_args")).toBe(false);
+    // It stays tappable: a later attempt (reconnected, newer desktop) may work.
+    expect(row.props.disabled).toBe(false);
+  });
+
+  test("a row with no call identity is not tappable and never resolves", () => {
+    const resolveToolTarget = jest.fn(async () => "should not be asked for");
+    render(reply({ segments: [tool("c1", { detail: undefined })] }), {
+      onResolveToolTarget: resolveToolTarget,
+    });
+    const row = rowButton("chat.runCompleted");
+    expect(row.props.disabled).toBe(true);
+    expect(resolveToolTarget).not.toHaveBeenCalled();
+  });
+
+  // A burst folds several shell calls into "运行 2 次". On a lean page none of
+  // them carries its command, and the group row has no call identity of its
+  // own — so without a per-child affordance the whole burst read "已运行" twice
+  // with no way to find out what ran.
+  const shellBurst = (children: TimelineToolRow[]): TimelineSegment =>
+    tool("c1", { count: children.length, children });
+  const child = (fields: Partial<TimelineToolRow>): TimelineToolRow => ({
+    name: "shell", complete: true, status: "completed", ...fields,
+  });
+
+  test("a burst child whose command the page dropped fetches its own", async () => {
+    const resolveToolTarget = jest.fn(async (id: string) => `cmd from ${id}`);
+    render(
+      reply({ segments: [shellBurst([
+        child({ toolCallId: "call_a", runId: "run_1" }),
+        child({ toolCallId: "call_b", runId: "run_1" }),
+      ])] }),
+      { onResolveToolTarget: resolveToolTarget },
+    );
+    act(() => rowButton("chat.stepRun 2×").props.onPress());
+    // Both children are labels: the page carried no command, and nothing is
+    // asked for until the reader opens one.
+    expect(rowButtons("chat.runCompleted")).toHaveLength(2);
+    expect(resolveToolTarget).not.toHaveBeenCalled();
+
+    const rows = rowButtons("chat.runCompleted");
+    await act(async () => { rows[0]!.props.onPress(); });
+    expect(resolveToolTarget).toHaveBeenCalledWith("call_a", "run_1");
+    expect(hasText("cmd from call_a")).toBe(true);
+    // The sibling is untouched — each child pays for its own command.
+    expect(resolveToolTarget).toHaveBeenCalledTimes(1);
+    expect(hasText("cmd from call_b")).toBe(false);
+
+    // The fetched child now shows its command, so the remaining label is the
+    // sibling's.
+    const remaining = rowButtons("chat.runCompleted");
+    expect(remaining).toHaveLength(1);
+    await act(async () => { remaining[0]!.props.onPress(); });
+    expect(resolveToolTarget).toHaveBeenLastCalledWith("call_b", "run_1");
+    expect(hasText("cmd from call_b")).toBe(true);
+    expect(rowButtons("chat.runCompleted")).toHaveLength(0);
+  });
+
+  test("a burst child that already carries its command is a plain line", () => {
+    const resolveToolTarget = jest.fn(async () => "never");
+    render(
+      reply({ segments: [shellBurst([
+        child({ detail: "cmd one", toolCallId: "call_a", runId: "run_1" }),
+        child({ detail: "cmd two", toolCallId: "call_b", runId: "run_1" }),
+      ])] }),
+      { onResolveToolTarget: resolveToolTarget },
+    );
+    act(() => rowButton("chat.stepRun 2×").props.onPress());
+    expect(hasText("cmd one")).toBe(true);
+    expect(hasText("cmd two")).toBe(true);
+    expect(rowButtons("chat.runCompleted")).toHaveLength(0);
+    expect(resolveToolTarget).not.toHaveBeenCalled();
+  });
+
+  test("a burst child with no call identity stays a label", () => {
+    render(
+      reply({ segments: [shellBurst([
+        child({ toolCallId: "call_a", runId: "run_1" }),
+        child({}),
+      ])] }),
+      { onResolveToolTarget: jest.fn(async () => "never") },
+    );
+    act(() => rowButton("chat.stepRun 2×").props.onPress());
+    expect(countText("chat.runCompleted")).toBe(2);
+    // Only the child that carries an identity can ask for anything.
+    expect(rowButtons("chat.runCompleted")).toHaveLength(1);
+  });
 });
