@@ -555,6 +555,35 @@ mod tests {
         assert!(screen.writes.is_empty());
     }
 
+    /// `write_history` is the exit path: the TUI has already left the alternate
+    /// screen, so a blank batch must return 0 **and write nothing at all** —
+    /// a stray write here would append blank lines to the user's scrollback
+    /// after the shell prompt.
+    #[test]
+    fn write_history_writes_nothing_for_blank_rows() {
+        let mut screen = Recorder::default();
+        assert_eq!(
+            write_history(&mut screen, &rows(&["", "   "]), 20, false),
+            0
+        );
+        assert!(
+            screen.writes.is_empty(),
+            "blank rows must not reach the scrollback: {:?}",
+            screen.writes
+        );
+        assert!(
+            screen.order.is_empty(),
+            "the exit path never switches screens: {:?}",
+            screen.order
+        );
+
+        // Visible rows still go straight to the scrollback, with no round trip.
+        let written = write_history(&mut screen, &rows(&["hello "]), 20, false);
+        assert_eq!(written, 1);
+        assert_eq!(screen.order, vec!["write"]);
+        assert!(strip_ansi_codes(&screen.writes[0]).contains("hello \r\n"));
+    }
+
     #[test]
     fn insert_history_reenters_the_screen_when_the_write_unwinds() {
         let mut screen = Recorder {

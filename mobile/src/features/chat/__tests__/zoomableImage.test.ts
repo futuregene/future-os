@@ -1,9 +1,12 @@
+import { createElement } from "react";
 import { Animated, PanResponder, type GestureResponderEvent, type PanResponderGestureState } from "react-native";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import {
   DOUBLE_TAP_MS,
   DOUBLE_TAP_SCALE,
   MAX_SCALE,
   MIN_SCALE,
+  ZoomableImage,
   clampScale,
   clampTranslation,
   createZoomController,
@@ -200,4 +203,67 @@ test("panning is limited to the overhang the zoom created", () => {
   expect(clampTranslation(999, 6, 400)).toBe(999);
   expect(clampTranslation(5000, 6, 400)).toBe(1000);
   expect(clampTranslation(Number.NaN, 3, 400)).toBe(0);
+});
+
+test("a finger landing or leaving mid-gesture restarts the pinch from the live state", () => {
+  const { handlers, gesture, event, values } = gestureHarness();
+  handlers.onPanResponderGrant!(event([100, 300], [300, 300]), gesture);
+  handlers.onPanResponderMove!(event([100, 300], [300, 300]), gesture);
+  const twoFingerScale = values()[2]!;
+  expect(twoFingerScale).toBeGreaterThan(0);
+  // One finger lifts: the scale must hold (the remaining finger pans), rather
+  // than apply a ratio against the stale two-finger distance.
+  handlers.onPanResponderMove!(event([150, 300]), gesture);
+  expect(values()[2]).toBe(twoFingerScale);
+  // A second finger lands again: a fresh baseline is taken from the live pair.
+  handlers.onPanResponderMove!(event([100, 300], [300, 300]), gesture);
+  expect(values()[2]).toBeGreaterThan(0);
+  expect(Number.isFinite(values()[2])).toBe(true);
+  // Lifting everything (zero touches) must not divide by a missing finger.
+  handlers.onPanResponderMove!(event(), gesture);
+  expect(Number.isFinite(values()[2])).toBe(true);
+  expect(Number.isFinite(values()[0])).toBe(true);
+  expect(Number.isFinite(values()[1])).toBe(true);
+});
+
+test("a gesture the system takes over settles at the current transform", () => {
+  const { handlers, gesture, event, zoom } = gestureHarness();
+  handlers.onPanResponderGrant!(event([100, 300], [300, 300]), gesture);
+  handlers.onPanResponderMove!(event([50, 300], [350, 300]), gesture);
+  const atTakeOver = zoom.state();
+  handlers.onPanResponderTerminate!(event([50, 300], [350, 300]), gesture);
+  // No snap back to fit: the system interrupt (a notification shade, a call)
+  // must leave the reader where they were.
+  expect(zoom.state()).toEqual(atTakeOver);
+});
+
+test("the component measures its frame on layout so the first pinch has real bounds", () => {
+  jest.useFakeTimers();
+  try {
+    const panCreate = jest.spyOn(PanResponder, "create");
+    let tree!: ReactTestRenderer;
+    act(() => {
+      tree = create(createElement(ZoomableImage, {
+        accessibilityLabel: "Preview of diagram.png", uri: "file:///a.png",
+      }));
+    });
+    try {
+      const frame = tree.root.findAll(node => typeof node.props.onLayout === "function")[0]!;
+      expect(frame).toBeDefined();
+      // The frame reports zero until the first layout: panning before then has
+      // no bounds to clamp against.
+      act(() => frame.props.onLayout({ nativeEvent: { layout: { height: 600, width: 400 } } }));
+      const zoom = panCreate.mock.results[0]?.value as unknown;
+      expect(zoom).toBeDefined();
+      expect(panCreate).toHaveBeenCalled();
+      // A second layout with the same size must not reset the reader's zoom.
+      act(() => frame.props.onLayout({ nativeEvent: { layout: { height: 600, width: 400 } } }));
+      expect(tree.root.findAll(node => node.props.accessibilityLabel === "Preview of diagram.png"))
+        .not.toHaveLength(0);
+    } finally {
+      act(() => tree.unmount());
+    }
+  } finally {
+    jest.useRealTimers();
+  }
 });

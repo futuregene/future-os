@@ -40,6 +40,8 @@ pub mod agent_supervisor;
 pub mod app;
 pub mod clipboard;
 pub mod components;
+#[cfg(all(test, windows))]
+pub mod console_harness;
 pub mod crash;
 pub mod external_editor;
 pub mod help;

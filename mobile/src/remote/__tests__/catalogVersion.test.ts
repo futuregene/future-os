@@ -56,3 +56,18 @@ test("legacy Desktop retains arrival fencing, malformed versions never advance s
   }
   expect(gate.accept("sessions", { epoch: "A", revision: 1 })).toBe(true);
 });
+
+test("re-authenticating within the same epoch keeps the revision fence", () => {
+  const gate = new CatalogVersionGate();
+  gate.authenticate("A");
+  expect(gate.accept("sessions", { epoch: "A", revision: 5 })).toBe(true);
+  // A reconnect that reports the same epoch must not let a replay of the same
+  // snapshot through as if it were newer.
+  gate.authenticate("A");
+  expect(gate.accept("sessions", { epoch: "A", revision: 5 })).toBe(false);
+  expect(gate.revision("sessions")).toBe(5);
+  // A genuinely new epoch does start the counter over.
+  gate.authenticate("B");
+  expect(gate.revision("sessions")).toBe(-1);
+  expect(gate.accept("sessions", { epoch: "B", revision: 5 })).toBe(true);
+});

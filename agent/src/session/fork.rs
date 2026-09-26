@@ -964,3 +964,164 @@ mod tests {
         );
     }
 }
+
+/// Fork-point parsing and cutoff resolution. Both decide whether a fork is
+/// allowed at all, so the rejections are asserted as carefully as the accepts.
+#[cfg(test)]
+mod cutoff_paths {
+    use super::*;
+    use crate::session::entry::ENTRY_TYPE_RUN_STARTED;
+    use crate::session::SessionEntry;
+
+    #[test]
+    fn fork_point_modes_require_a_selection_and_reject_unknown_modes() {
+        assert!(ForkPoint::from_rpc("", "").is_err());
+        assert!(ForkPoint::from_rpc("through_entry", "").is_err());
+        assert!(ForkPoint::from_rpc("through_turn", "").is_err());
+        assert!(ForkPoint::from_rpc("through_turn", "u").is_ok());
+        assert!(matches!(
+            ForkPoint::from_rpc("latest_settled", "").unwrap(),
+            ForkPoint::LatestSettled
+        ));
+        assert!(ForkPoint::from_rpc("rewind", "u").is_err());
+    }
+
+    #[test]
+    fn a_through_turn_point_must_name_a_user_message_and_latest_settled_needs_a_terminal() {
+        let mut entries = vec![
+            SessionEntry::new_user("user", serde_json::json!("question")),
+            SessionEntry::new_assistant(serde_json::json!("answer"), Vec::new()),
+            SessionEntry::run_terminal("r", "completed", 1, 1, None),
+        ];
+        entries[0].id = "u".into();
+        entries[1].id = "a".into();
+        entries[2].id = "t".into();
+        let error = resolve_cutoff(&entries, &ForkPoint::ThroughTurn("a".into()))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("persisted user message"), "{error}");
+        assert_eq!(
+            resolve_cutoff(&entries, &ForkPoint::LatestSettled).unwrap(),
+            2
+        );
+
+        // A run that started and never settled has no usable fork point.
+        let mut started = SessionEntry::new_user("user", serde_json::json!("question"));
+        started.entry_type = ENTRY_TYPE_RUN_STARTED.to_string();
+        entries.pop();
+        entries.push(started);
+        let error = resolve_cutoff(&entries, &ForkPoint::LatestSettled)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no settled run"), "{error}");
+    }
+
+    #[test]
+    fn a_checkpoint_that_cannot_be_remapped_is_dropped_from_the_fork() {
+        let user = || {
+            let mut entry = SessionEntry::new_user("user", serde_json::json!("question"));
+            entry.id = "u".into();
+            entry
+        };
+        let checkpoint = |protected: serde_json::Value, summary: serde_json::Value| {
+            let mut entry = SessionEntry::new_user("user", serde_json::json!(null));
+            entry.id = "cp".into();
+            entry.entry_type = crate::session::ENTRY_TYPE_COMPACTION.into();
+            entry.content = Some(serde_json::json!({
+                "schema_version": 3,
+                "covered_from_entry_id": "u",
+                "cutoff_entry_id": "u",
+                "protected_entry_ids": protected,
+                "summary": summary
+            }));
+            entry
+        };
+        let fork = |entries: Vec<SessionEntry>| {
+            let mut parent = Session::new("/synthetic", "mock");
+            parent.entries = entries;
+            build_fork_session(&parent, &ForkPoint::ThroughEntry("cp".to_string())).unwrap()
+        };
+
+        for (protected, summary) in [
+            // Protected ids that are not a list at all.
+            (serde_json::json!("not-a-list"), serde_json::json!([])),
+            // A protected id that is not part of the copied range.
+            (serde_json::json!(["unknown-id"]), serde_json::json!([])),
+            // A summary that is not a block array.
+            (serde_json::json!([]), serde_json::json!("not-blocks")),
+        ] {
+            let child = fork(vec![user(), checkpoint(protected, summary)]);
+            assert!(
+                !child
+                    .entries
+                    .iter()
+                    .any(|entry| entry.entry_type == "compaction"),
+                "a checkpoint that cannot be remapped must not survive the fork"
+            );
+        }
+
+        // A checkpoint whose ids all resolve survives, with its ids rewritten
+        // to the copied entries'.
+        let child = fork(vec![
+            user(),
+            checkpoint(serde_json::json!(["u"]), serde_json::json!([])),
+        ]);
+        let kept = child
+            .entries
+            .iter()
+            .find(|entry| entry.entry_type == "compaction")
+            .expect("a remappable checkpoint survives");
+        let content = kept.content.as_ref().unwrap();
+        assert_ne!(content["covered_from_entry_id"], "u");
+        assert_ne!(content["protected_entry_ids"][0], "u");
+    }
+
+    #[test]
+    fn provenance_is_replaced_only_when_the_child_carries_a_session_info() {
+        // No session_info: the provenance update is a no-op, not a panic.
+        let mut bare = Session::new("/synthetic", "mock");
+        bare.entries.push(SessionEntry::new_user(
+            "user",
+            serde_json::json!("question"),
+        ));
+        set_creation_provenance(&mut bare, "web", "device-1");
+        assert_eq!(bare.entries.len(), 1);
+        assert!(bare.entries[0]
+            .content
+            .as_ref()
+            .unwrap()
+            .get("created_by")
+            .is_none());
+
+        // With metadata the creator is replaced, and an empty creator id removes
+        // the field instead of storing an empty string.
+        let mut forked = Session::new("/synthetic", "mock");
+        forked.entries.push(SessionEntry::session_info(
+            serde_json::json!({"created_by":"tui","creator_id":"inherited"}),
+            "mock".into(),
+            String::new(),
+        ));
+        set_creation_provenance(&mut forked, "web", "");
+        let content = forked.entries[0].content.clone().unwrap();
+        assert_eq!(content["created_by"], "web");
+        assert!(content.get("creator_id").is_none());
+    }
+
+    #[test]
+    fn a_settled_turn_resolves_through_its_run_markers() {
+        // The user entry carries no run id of its own, so the turn's run has to
+        // come from the `run_started` marker inside the same range.
+        let mut entries = vec![
+            SessionEntry::new_user("user", serde_json::json!("question")),
+            SessionEntry::run_started("r", 1),
+            SessionEntry::run_terminal("r", "completed", 1, 1, None),
+        ];
+        entries[0].id = "u".into();
+        entries[1].id = "started".into();
+        entries[2].id = "terminal".into();
+        assert_eq!(
+            resolve_cutoff(&entries, &ForkPoint::ThroughTurn("u".into())).unwrap(),
+            2
+        );
+    }
+}

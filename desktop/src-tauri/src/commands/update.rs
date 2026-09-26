@@ -502,6 +502,70 @@ mod tests {
     }
 
     #[test]
+    fn channel_comparison_covers_core_and_run_number_advances() {
+        // Different cores: the newer core wins on both channels, and the older
+        // one never does (the `latest_core > current_core` comparison).
+        assert!(should_offer_update(
+            BuildChannel::Test,
+            "0.0.2-120+test",
+            "0.0.3-1+nightly"
+        ));
+        assert!(!should_offer_update(
+            BuildChannel::Nightly,
+            "0.0.3-1+nightly",
+            "0.0.2-120+nightly"
+        ));
+        // Same core but a run counter that cannot be read: never offer.
+        assert!(!should_offer_update(
+            BuildChannel::Test,
+            "0.0.2-abc+test",
+            "0.0.2-abc+nightly"
+        ));
+        assert!(!should_offer_update(
+            BuildChannel::Test,
+            "0.0.2",
+            "0.0.2-121+nightly"
+        ));
+        // A version that does not parse at all is not offered either.
+        assert!(!should_offer_update(
+            BuildChannel::Nightly,
+            "not-a-version",
+            "0.0.3-1+nightly"
+        ));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[tokio::test]
+    async fn a_manual_check_without_a_newer_build_reports_no_update() {
+        let manifest_url = serve_once(
+            "200 OK",
+            "application/json",
+            json!({
+                "version": "0.0.2-121+nightly",
+                "assets": {
+                    (PLATFORM_ASSET_KEY): { "url": "https://dl.future-os.cn/nightly/x" }
+                }
+            })
+            .to_string()
+            .into_bytes(),
+        );
+        // The same build the user already runs: no update, no download link,
+        // and the reported latest version stays the current one.
+        let status = check_manual_update_from_url(
+            BuildChannel::Local,
+            "0.0.2-121+nightly".to_string(),
+            &manifest_url,
+        )
+        .await
+        .expect("manual check");
+        assert!(!status.has_update);
+        assert_eq!(status.latest_version, "0.0.2-121+nightly");
+        assert_eq!(status.current_version, "0.0.2-121+nightly");
+        assert_eq!(status.download_url, None, "no update means no link");
+        assert!(!status.can_install_in_app);
+    }
+
+    #[test]
     fn release_only_advances_to_a_newer_release() {
         assert!(should_offer_update(BuildChannel::Release, "1.0.0", "1.0.1"));
         assert!(!should_offer_update(

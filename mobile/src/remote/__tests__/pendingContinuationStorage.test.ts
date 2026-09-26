@@ -127,3 +127,24 @@ describe("pending continuation storage", () => {
     await expect(loadPendingContinuation()).resolves.toEqual(newer);
   });
 });
+
+test("discarding a pair drops its legacy record too, so an upgrade cannot replay it", async () => {
+  await savePendingContinuation(pending);
+  mockData.set("futureos.remote.pending-continuation.v1", JSON.stringify(pending));
+  await discardPendingContinuation(pending.pairId);
+  expect(mockData.has(`futureos.remote.pending-continuation.v1.${pending.pairId}`)).toBe(false);
+  expect(mockData.has("futureos.remote.pending-continuation.v1")).toBe(false);
+});
+
+test("discarding one pair leaves another pair's legacy record alone", async () => {
+  mockData.set("futureos.remote.pending-continuation.v1", JSON.stringify(pending));
+  await discardPendingContinuation("another-pair");
+  expect(mockData.has("futureos.remote.pending-continuation.v1")).toBe(true);
+});
+
+test("discarding without a pair id clears only the bare slot", async () => {
+  mockData.set("futureos.remote.pending-continuation.v1", JSON.stringify(pending));
+  await discardPendingContinuation();
+  expect(mockData.has("futureos.remote.pending-continuation.v1")).toBe(false);
+});
+

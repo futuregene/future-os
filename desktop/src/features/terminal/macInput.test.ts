@@ -211,4 +211,13 @@ describe("macOS WebKit input ordering (real xterm)", () => {
     text("#");
     expect(sent).toEqual([]);
   });
+
+  it("is a no-op when the terminal has no textarea to listen on", () => {
+    // A detached / not-yet-opened terminal has no textarea; the workaround must
+    // hand back a disposable no-op rather than throwing during mount.
+    const bare = { options: { screenReaderMode: false } } as unknown as Terminal;
+    const remove = installMacInputWorkaround(bare);
+    expect(typeof remove).toBe("function");
+    expect(() => remove()).not.toThrow();
+  });
 });

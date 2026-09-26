@@ -424,6 +424,275 @@ mod tests {
         assert_eq!(bounded["nextOffset"], 100 + 12 - kept.len());
         assert_eq!(bounded["hasMore"], true);
     }
+
+    /// A single oversized *entry* — not page — is the case `cap_remote_item`
+    /// exists for. Every stage has to converge on something smaller than the
+    /// cap: first the text blocks, then the tool arguments, and only then a
+    /// whole-item replacement that keeps the identity a client needs to render
+    /// the row (id, role, kind, run, timestamps).
+    #[test]
+    fn an_oversized_entry_is_reduced_in_stages_until_it_fits() {
+        // Tool arguments big enough to be replaced on their own.
+        let mut item = json!({
+            "id": "e1", "role": "assistant", "kind": "assistant",
+            "runId": "r", "createdAtMs": 1, "usage": {"in": 1},
+            "run": {"status": "completed"},
+            "checkpoint": {
+                "checkpointId": "cp1", "tokensBefore": 10, "tokensAfter": 20,
+                "trigger": "auto", "unrelated": "y".repeat(50_000)
+            },
+            "blocks": [
+                {"kind": "tool", "arguments": {"blob": "x".repeat(40_000)}},
+                {"kind": "text", "text": "z".repeat(40_000)},
+            ],
+        });
+        cap_remote_item(&mut item, 4096);
+        assert!(serialized_len(&item) <= 4096, "{item}");
+        assert_eq!(item["id"], json!("e1"), "identity survives the cap");
+        assert_eq!(item["role"], json!("assistant"));
+        assert_eq!(item["runId"], json!("r"));
+        assert_eq!(item["createdAtMs"], json!(1));
+        assert_eq!(item["usage"], json!({"in": 1}));
+        assert_eq!(item["run"], json!({"status": "completed"}));
+        assert_eq!(item["metadata"]["remoteTruncated"], json!(true));
+        // The checkpoint keeps only what a merged-context row needs, and the
+        // unrelated bulk is gone.
+        assert_eq!(item["checkpoint"]["checkpointId"], json!("cp1"));
+        assert_eq!(item["checkpoint"]["tokensBefore"], json!(10));
+        assert_eq!(item["checkpoint"]["tokensAfter"], json!(20));
+        assert_eq!(item["checkpoint"]["trigger"], json!("auto"));
+        assert!(item["checkpoint"].get("unrelated").is_none());
+    }
+
+    /// An event (no `blocks`) is capped by rewriting its `data`, and an item
+    /// with no `data` at all must still come back with a `data` *string*: the
+    /// phone decodes that field, so an object where it expects JSON text would
+    /// be unreadable. The relay budget is a bound on the *envelope*, and the
+    /// replacement deliberately keeps a tail of the text (released clients read
+    /// their `[exit: N]` footer there) — so the assertion is that the row shrinks
+    /// by an order of magnitude and stays decodable, not that it fits one cap.
+    #[test]
+    fn an_oversized_event_has_its_data_cut_or_marked_missing() {
+        // Large enough that one truncation pass runs, like the real relay
+        // budget. A cap below the event size is what makes the pipeline rewrite
+        // the payload rather than pass it through.
+        const CAP: usize = 64 * 1024;
+        let tail = "-[exit: 3]";
+        let body = format!("{}{tail}", "x".repeat(120 * 1024));
+        let original_data = json!({"text": body, "exit_code": 3, "tool_id": "c1"}).to_string();
+        let mut with_data = json!({
+            "id": "ev1",
+            "type": "tool_end",
+            "data": original_data.clone(),
+        });
+        let before = serialized_len(&with_data);
+        cap_remote_item(&mut with_data, CAP);
+        let after = serialized_len(&with_data);
+        assert!(
+            after * 4 < before,
+            "the row must shrink, not merely re-serialise: {before} -> {after}"
+        );
+        assert_eq!(with_data["metadata"]["remoteTruncated"], json!(true));
+        assert!(
+            with_data["metadata"]["originalBytes"].as_u64().unwrap() as usize >= before,
+            "the original size is recorded for the UI: {with_data}"
+        );
+        let data = with_data["data"].as_str().expect("data stays a string");
+        let parsed: Value = serde_json::from_str(data).expect("data stays decodable JSON");
+        assert_eq!(parsed["_truncated"], json!(true));
+        assert_eq!(
+            parsed["bytes"].as_u64().unwrap() as usize,
+            original_data.len(),
+            "bytes reports what was cut, so the client can tell how much it lost"
+        );
+        assert!(
+            parsed["note"].as_str().unwrap().contains("get_messages"),
+            "the marker must say where the full content still is: {parsed}"
+        );
+        assert_eq!(
+            parsed["exit_code"],
+            json!(3),
+            "the outcome survives the cut"
+        );
+        assert_eq!(parsed["tool_id"], json!("c1"));
+        assert!(
+            parsed["text"].as_str().unwrap().ends_with(tail),
+            "the tail is what a released client reads its exit footer from: {parsed}"
+        );
+
+        // No `data` at all: an event without a payload cannot be shrunk by
+        // rewriting `data`, so the cap's job here is only to make the truncation
+        // *visible*: the row gains a decodable marker recording the original size
+        // instead of reaching the phone looking complete. (The oversized non-
+        // payload field is not this function's to drop.)
+        let mut without_data =
+            json!({"id": "ev2", "type": "usage", "padding": "y".repeat(120 * 1024)});
+        let before = serialized_len(&without_data);
+        cap_remote_item(&mut without_data, CAP);
+        let data: Value =
+            serde_json::from_str(without_data["data"].as_str().expect("data is a string"))
+                .expect("data is decodable JSON");
+        assert_eq!(data["_truncated"], json!(true));
+        assert!(
+            data["bytes"].as_u64().unwrap() as usize >= before,
+            "the marker records the size that was not delivered: {data}"
+        );
+    }
+
+    /// Tool arguments reach the desktop in either wire shape: a JSON string
+    /// (the older providers) or an object. Both must be reduced to the file
+    /// target, and an entry that is already inside the cap must be returned
+    /// untouched so a small row is never rewritten.
+    #[test]
+    fn oversized_tool_arguments_are_reduced_to_their_target() {
+        let big = "x".repeat(40_000);
+        for tool_args in [
+            json!(json!({"command": "/bin/sh -c 'echo hi'", "content": big}).to_string()),
+            json!({"path": "/tmp/a.txt", "content": big}),
+        ] {
+            let data = json!({
+                "type": "tool_start",
+                "tool_id": "c1",
+                "tool_args": tool_args,
+                "extra": big,
+            })
+            .to_string();
+            let truncated = truncated_event_data(&data);
+            let parsed: Value = serde_json::from_str(&truncated).unwrap();
+            assert_eq!(parsed["tool_id"], json!("c1"));
+            let target = if parsed["tool_args"].get("command").is_some() {
+                "command"
+            } else {
+                "path"
+            };
+            assert!(
+                parsed["tool_args"][target].is_string(),
+                "the row's target survives: {parsed}"
+            );
+            assert!(
+                parsed["tool_args"].get("content").is_none(),
+                "the bulk is not forwarded twice: {parsed}"
+            );
+            assert!(truncated.len() < data.len());
+        }
+
+        // Inside the cap the row is returned byte-for-byte unchanged, so a small
+        // row is never rewritten: this is the no-op contract of the cap, and it
+        // is what keeps the marker (`_truncated`) meaningful — see
+        // `an_oversized_event_has_its_data_cut_or_marked_missing` for the case
+        // where the payload is over the budget instead.
+        let mut item = json!({"id": "small", "blocks": [{"kind": "text", "text": "hi"}]});
+        let before = item.clone();
+        cap_remote_item(&mut item, 64 * 1024);
+        assert_eq!(item, before, "a row inside the budget is untouched");
+    }
+
+    /// A tool call whose arguments are not a JSON object is not a write the
+    /// desktop can reduce, so its arguments are replaced wholesale — but the
+    /// `arguments` key must remain present, because the client branches on it
+    /// to render the row as a tool call at all.
+    #[test]
+    fn unparsable_tool_arguments_are_marked_not_dropped() {
+        let data = json!({
+            "type": "tool_end",
+            "tool_args": "this is not JSON at all, just a long string".repeat(500),
+        })
+        .to_string();
+        let truncated = truncated_event_data(&data);
+        let parsed: Value = serde_json::from_str(&truncated).unwrap();
+        assert!(parsed.get("tool_args").is_some());
+        // The rebuilt value is always an object, and it never carries more than
+        // the write target: an unparsable input leaves it empty (nothing was
+        // recoverable), a parseable one keeps the target — nothing else about
+        // the call is forwarded a second time.
+        assert_eq!(
+            argument_keys(&parsed),
+            Vec::<String>::new(),
+            "a non-JSON argument string recovers no target: {parsed}"
+        );
+    }
+
+    /// The keys of a rebuilt `tool_args`, sorted so a test compares the whole
+    /// shape rather than a predicate whose body may never run.
+    fn argument_keys(parsed: &Value) -> Vec<String> {
+        let mut keys: Vec<String> = parsed["tool_args"]
+            .as_object()
+            .expect("tool_args stays an object")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    /// A parseable write keeps the one thing the phone needs to render the row
+    /// — its target — and drops the content it already has locally. This is the
+    /// other half of the shape assertion above: the rebuilt object is small, not
+    /// empty.
+    #[test]
+    fn a_parseable_tool_call_keeps_its_target_and_drops_its_content() {
+        let data = json!({
+            "type": "tool_end",
+            "tool_args": {"content": "y".repeat(60_000), "path": "/tmp/big.txt"},
+        })
+        .to_string();
+        let truncated = truncated_event_data(&data);
+        let parsed: Value = serde_json::from_str(&truncated).unwrap();
+        // `path` alone: the 60 KB of `content` is not forwarded a second time.
+        assert_eq!(
+            argument_keys(&parsed),
+            vec!["path".to_string()],
+            "only the write target survives: {parsed}"
+        );
+        assert_eq!(parsed["tool_args"]["path"], json!("/tmp/big.txt"));
+        assert!(
+            truncated.len() < data.len() / 10,
+            "reducing a 60 KB write must actually shrink it"
+        );
+    }
+
+    /// The arguments pass is the *second* stage: a row whose only bulk is tool
+    /// arguments is still over the cap after the text pass, and the arguments
+    /// pass is what brings it under. When that happens the row keeps its real
+    /// identity (id/role/run) — the whole-row replacement below is for rows that
+    /// even that cannot fit, and using it here would throw away the identity a
+    /// client needs to match the row against its own tool call.
+    #[test]
+    fn an_item_that_fits_once_its_tool_arguments_are_reduced_keeps_its_identity() {
+        let mut item = json!({
+            "id": "tool-row", "role": "assistant", "kind": "assistant", "runId": "r",
+            "createdAtMs": 1,
+            "blocks": [{"kind": "tool", "arguments": {"blob": "x".repeat(40_000)}}],
+        });
+        assert!(serialized_len(&item) > 8 * 1024);
+        cap_remote_item(&mut item, 8 * 1024);
+        assert!(serialized_len(&item) <= 8 * 1024, "{item}");
+        assert_eq!(item["id"], json!("tool-row"));
+        assert_eq!(item["role"], json!("assistant"));
+        assert_eq!(item["runId"], json!("r"));
+        assert_eq!(item["createdAtMs"], json!(1));
+        assert_eq!(item["blocks"][0]["arguments"]["truncated"], json!(true));
+        assert!(
+            item.get("metadata").is_none(),
+            "no whole-row replacement was needed: {item}"
+        );
+    }
+
+    /// The relay budget applies to whatever the Agent sent. A malformed row that
+    /// is not an item object at all (`blocks` absent, no object form) has nothing
+    /// the cap can rewrite, so it must come back byte-for-byte rather than being
+    /// replaced by an envelope with invented fields.
+    #[test]
+    fn a_value_that_is_not_an_item_object_has_nothing_to_rewrite() {
+        let mut item = json!((0..500).collect::<Vec<u32>>());
+        let before = item.clone();
+        assert!(serialized_len(&item) > 1024);
+        cap_remote_item(&mut item, 1024);
+        assert_eq!(
+            item, before,
+            "nothing to rewrite means nothing is rewritten"
+        );
+    }
 }
 
 #[cfg(test)]

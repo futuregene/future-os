@@ -961,6 +961,50 @@ mod end_to_end {
     use tokio_tungstenite::tungstenite::Message;
 
     use super::*;
+    use crate::terminal::test_support;
+
+    /// A server with its own manager, so a test can create the exact child it
+    /// needs without the store, the shared listener or another test's sessions.
+    ///
+    /// Defined here, not in `mod tests`, because both this module and its nested
+    /// test module need it: the route tests drive a real session through the
+    /// control layer, and the pump tests drive one through a synthetic socket.
+    fn isolated_server() -> TerminalServer {
+        TerminalServer {
+            info: ServerInfo {
+                url: "http://127.0.0.1:0".to_string(),
+                token: random_secret(),
+                port: 0,
+                max_sessions: MAX_SESSIONS,
+            },
+            listener: Mutex::new(None),
+            manager: Arc::new(Manager::new()),
+            tickets: TicketStore::default(),
+            connections: Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS)),
+        }
+    }
+
+    /// Create a session in `server`'s own manager and hand back its id.
+    fn isolated_session(
+        server: &TerminalServer,
+        thread: &str,
+        command: (std::path::PathBuf, Vec<String>),
+    ) -> String {
+        let (program, args) = command;
+        server
+            .manager
+            .create_with(
+                thread.to_string(),
+                Some("Harness".to_string()),
+                program,
+                args,
+                std::env::temp_dir(),
+                80,
+                24,
+            )
+            .expect("create session")
+            .id
+    }
     use crate::auth_store::test_support::HomeGuard;
     use crate::store;
 
@@ -1034,6 +1078,51 @@ mod end_to_end {
             .unwrap_or_else(|error| panic!("not JSON ({}): {}", error, response.body))
     }
 
+    /// Send raw bytes over a fresh connection and read everything until the
+    /// peer closes. Used for the cases the helper above cannot express: a
+    /// request that is never terminated, an oversized body, a silent socket.
+    fn raw_exchange(port: u16, payload: &[u8]) -> String {
+        raw_exchange_split(port, payload, &[], Duration::from_millis(0))
+    }
+
+    /// As [`raw_exchange`], but `payload` is written in two parts separated by
+    /// `gap`. That is what makes a *split* request body deterministic: without
+    /// the pause TCP would coalesce both writes into the segment the parser
+    /// reads first, and the body-read loop would never run.
+    fn raw_exchange_split(port: u16, head: &[u8], body: &[u8], gap: Duration) -> String {
+        let mut stream = StdStream::connect(("127.0.0.1", port)).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(20)))
+            .expect("timeout");
+        if !head.is_empty() {
+            stream.write_all(head).expect("write head");
+            stream.flush().expect("flush head");
+        }
+        if body.is_empty() {
+            // A peer that has nothing more to say: half-close so the parser
+            // sees EOF instead of waiting out its read timeout.
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+        } else {
+            std::thread::sleep(gap);
+            stream.write_all(body).expect("write body");
+            stream.flush().expect("flush body");
+        }
+        let mut response = String::new();
+        let _ = stream.read_to_string(&mut response);
+        response
+    }
+
+    /// Bind and start the accept loop, tolerating a loop that another test in
+    /// this process already started. The listener is process-wide, so which
+    /// test gets there first is not something a test may depend on.
+    fn shared_server() -> (u16, String) {
+        let server = bind().expect("bind");
+        if let Err(error) = serve() {
+            assert!(error.contains("already serving"), "{error}");
+        }
+        (server.info.port, server.info.token.clone())
+    }
+
     /// One temp HOME per test *process* is all the store supports: its home
     /// guard takes a process-wide lock, so a second guard inside the same test
     /// would deadlock against the first.
@@ -1073,7 +1162,13 @@ mod end_to_end {
         let _home = setup_home("terminal-e2e");
         let thread_id = create_thread_in_new_workspace("terminal-e2e");
         let server = bind().expect("bind");
-        serve().expect("serve");
+        // The accept loop is process-wide: whichever test in this process gets
+        // here first starts it, and every later call observes that it is
+        // already running. `serve_owns_the_listener_exactly_once` pins the
+        // refusal message down.
+        if let Err(error) = serve() {
+            assert!(error.contains("already serving"), "{error}");
+        }
         let port = server.info.port;
         let token = server.info.token.clone();
 
@@ -1197,13 +1292,27 @@ mod end_to_end {
             .expect("websocket handshake");
         assert_eq!(response.status().as_u16(), 101);
 
+        // CR is what a terminal actually sends for Enter (a Unix pty maps it
+        // back to LF through ICRNL); Windows PowerShell's PSReadLine reads CR
+        // as Enter and treats a bare LF as "insert a line", leaving the command
+        // sitting in the buffer as a continuation line.
         socket
-            .send(Message::Text("echo marker-$((21 + 21))\n".into()))
+            .send(Message::Text("echo marker-$((21 + 21))\r".into()))
             .await
             .expect("send input");
 
         // Collect output until the shell's echo lands, tracking the control
         // frame the way the client does.
+        //
+        // A real terminal must also answer the shell's Device Status Report
+        // (`ESC [ 6 n`, a cursor-position query): Windows PowerShell's
+        // PSReadLine emits it while starting an interactive session and then
+        // waits for the reply before it draws a prompt or reads the line we
+        // typed. Without an answering client the shell sits at the query and
+        // the test would time out on a machine whose default shell is pwsh.
+        const DSR_QUERY: &str = "\u{1b}[6n";
+        const DSR_REPLY: &str = "\u{1b}[1;1R";
+        let mut answered_dsr = false;
         let mut output = String::new();
         let mut meta: Option<Meta> = None;
         let deadline = Instant::now() + Duration::from_secs(15);
@@ -1222,6 +1331,13 @@ mod end_to_end {
                 Ok(Some(Err(error))) => panic!("socket error: {error}"),
                 Ok(None) => break,
                 Err(_) => break,
+            }
+            if !answered_dsr && output.contains(DSR_QUERY) {
+                answered_dsr = true;
+                socket
+                    .send(Message::Text(DSR_REPLY.into()))
+                    .await
+                    .expect("answer the shell's cursor-position query");
             }
         }
         assert!(
@@ -1278,7 +1394,11 @@ mod end_to_end {
         assert_eq!(response.status, 200, "body: {}", response.body);
         let created = body_json(&response);
         let home = std::env::var("HOME").expect("guarded HOME");
-        let home = std::fs::canonicalize(&home).unwrap_or_else(|_| std::path::PathBuf::from(home));
+        // The home fallback is served in the ordinary spelling (Windows'
+        // `\\?\` extended-length form never reaches a client or a shell).
+        let home = crate::store::strip_verbatim_prefix(
+            std::fs::canonicalize(&home).unwrap_or_else(|_| std::path::PathBuf::from(home)),
+        );
         assert_eq!(
             std::path::Path::new(created["cwd"].as_str().expect("cwd")),
             home
@@ -1292,11 +1412,819 @@ mod end_to_end {
             None,
         );
     }
+
+    /// The listener is process-wide: the first `bind`/`serve` wins and the
+    /// second call reports the existing state instead of rebinding or starting
+    /// a second accept loop.
+    #[test]
+    fn serve_owns_the_listener_exactly_once() {
+        let first = bind().expect("bind");
+        let second = bind().expect("bind again");
+        assert_eq!(first.info.port, second.info.port, "one listener, one port");
+        assert_eq!(
+            first.info.token, second.info.token,
+            "one secret per process"
+        );
+        assert_eq!(first.info.max_sessions, MAX_SESSIONS);
+
+        // Whether this test or the end-to-end one started the loop first is not
+        // something either may depend on; what must hold is that the *second*
+        // call never steals the listener the first one handed out.
+        let _ = serve();
+        let refused = serve().expect_err("the listener can only be taken once");
+        assert!(refused.contains("already serving"), "{refused}");
+        assert_eq!(
+            info().map(|info| info.port),
+            Some(first.info.port),
+            "info() reports the bound endpoint"
+        );
+    }
+
+    /// Everything the control surface must refuse: an unknown route, a wrong
+    /// method, a missing secret, a malformed body, an unknown session and a
+    /// foreign origin. None of these need a conversation, so they can run
+    /// without a home in the store.
+    #[test]
+    fn control_routes_reject_malformed_unknown_and_unauthenticated_requests() {
+        let (port, token) = shared_server();
+
+        // An unknown path is a 404 with the standard error envelope.
+        let unknown = request(port, "GET", "/nope", Some(&token), None);
+        assert_eq!(unknown.status, 404, "body: {}", unknown.body);
+        assert_eq!(body_json(&unknown)["error"]["code"], "NOT_FOUND");
+
+        // A known path with an unsupported method is a 405, not a 404.
+        let wrong_method = request(port, "PUT", "/terminal", Some(&token), None);
+        assert_eq!(wrong_method.status, 405, "body: {}", wrong_method.body);
+        assert_eq!(
+            body_json(&wrong_method)["error"]["code"],
+            "METHOD_NOT_ALLOWED"
+        );
+
+        // The secret is required on every control route except the preflight,
+        // and a wrong secret is refused exactly like a missing one.
+        for token in [None, Some("not-the-secret")] {
+            let refused = request(port, "GET", "/terminal", token, None);
+            assert_eq!(refused.status, 401, "body: {}", refused.body);
+            assert_eq!(body_json(&refused)["error"]["code"], "UNAUTHORIZED");
+        }
+
+        // A foreign origin is refused even when it holds the secret.
+        let foreign = request_with_origin(
+            port,
+            "OPTIONS",
+            "/terminal",
+            Some(&token),
+            None,
+            Some("https://evil.example"),
+        );
+        assert_eq!(foreign.status, 403, "body: {}", foreign.body);
+        assert_eq!(body_json(&foreign)["error"]["code"], "ORIGIN_FORBIDDEN");
+
+        // A loopback dev server is allowed, and the echoed CORS header names the
+        // origin that asked.
+        let dev = request_with_origin(
+            port,
+            "OPTIONS",
+            "/terminal",
+            None,
+            None,
+            Some("http://localhost:5173"),
+        );
+        assert_eq!(dev.status, 204);
+        assert!(
+            dev.raw
+                .to_lowercase()
+                .contains("access-control-allow-origin: http://localhost:5173"),
+            "raw: {}",
+            dev.raw
+        );
+
+        // Create: a body that is not JSON, then one whose threadId is blank.
+        let not_json = request(port, "POST", "/terminal", Some(&token), Some("not json"));
+        assert_eq!(not_json.status, 400);
+        assert_eq!(
+            body_json(&not_json)["error"]["message"],
+            "invalid create request body"
+        );
+        let blank = request(
+            port,
+            "POST",
+            "/terminal",
+            Some(&token),
+            Some(&serde_json::json!({ "threadId": "   " }).to_string()),
+        );
+        assert_eq!(blank.status, 400);
+        assert_eq!(
+            body_json(&blank)["error"]["message"],
+            "threadId is required"
+        );
+
+        // Update: an unparseable body is refused before any session lookup...
+        let bad_update = request(port, "PATCH", "/terminal/ghost", Some(&token), Some("["));
+        assert_eq!(bad_update.status, 400);
+        assert_eq!(
+            body_json(&bad_update)["error"]["message"],
+            "invalid update request body"
+        );
+        // ...and a well-formed body for an unknown session is a 404 from the
+        // manager, not a 400.
+        let unknown_update = request(
+            port,
+            "PATCH",
+            "/terminal/ghost",
+            Some(&token),
+            Some(&serde_json::json!({ "cols": 90, "rows": 30 }).to_string()),
+        );
+        assert_eq!(unknown_update.status, 404, "body: {}", unknown_update.body);
+        assert_eq!(
+            body_json(&unknown_update)["error"]["code"],
+            "TERMINAL_NOT_FOUND"
+        );
+
+        // Every route that addresses one session reports the same 404.
+        for (method, path) in [
+            ("GET", "/terminal/ghost"),
+            ("DELETE", "/terminal/ghost"),
+            ("POST", "/terminal/ghost/connect-token"),
+        ] {
+            let response = request(port, method, path, Some(&token), None);
+            assert_eq!(response.status, 404, "{method} {path}: {}", response.body);
+            assert_eq!(body_json(&response)["error"]["code"], "TERMINAL_NOT_FOUND");
+        }
+
+        // The websocket route refuses a non-GET and a plain GET before it looks
+        // at a ticket: a ticket is not an authentication substitute for the
+        // upgrade itself.
+        let connect_post = request(port, "POST", "/terminal/ghost/connect", Some(&token), None);
+        assert_eq!(connect_post.status, 405);
+        assert_eq!(
+            body_json(&connect_post)["error"]["message"],
+            "connect requires GET"
+        );
+        let connect_plain = request(port, "GET", "/terminal/ghost/connect", Some(&token), None);
+        assert_eq!(connect_plain.status, 400);
+        assert_eq!(
+            body_json(&connect_plain)["error"]["message"],
+            "connect requires a websocket upgrade"
+        );
+
+        // A query the request does not carry, and one that does not name the
+        // key asked for, both fall back to the caller's default.
+        let ignored_query = request(port, "GET", "/terminal?foo=1", Some(&token), None);
+        assert_eq!(ignored_query.status, 200);
+        assert!(body_json(&ignored_query).is_array());
+    }
+
+    /// The single-session `GET` and a partial `PATCH`.
+    ///
+    /// `PATCH` takes its size from `(cols, rows)` **only when both are
+    /// present**: a caller that re-fits one axis (the renderer sends `cols`
+    /// alone while a user drags the panel wider) must not have the other axis
+    /// silently reset, and must not resize the PTY at all until it has a
+    /// complete size. That `_ => None` arm is the whole point of the match, and
+    /// nothing else in this suite sends a partial body.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_can_be_read_and_partially_updated() {
+        let _home = setup_home("terminal-item-routes");
+        let thread_id = create_thread_in_new_workspace("terminal-item-routes");
+        let (port, token) = shared_server();
+
+        let created = request(
+            port,
+            "POST",
+            "/terminal",
+            Some(&token),
+            Some(
+                &serde_json::json!({
+                    "threadId": thread_id,
+                    "cols": 100,
+                    "rows": 30,
+                    "title": "Terminal 1",
+                })
+                .to_string(),
+            ),
+        );
+        assert_eq!(created.status, 200, "body: {}", created.body);
+        let id = body_json(&created)["id"].as_str().expect("id").to_string();
+
+        // GET one session: the same document `create` returned, addressed by id.
+        let read = request(port, "GET", &format!("/terminal/{id}"), Some(&token), None);
+        assert_eq!(read.status, 200, "body: {}", read.body);
+        let read = body_json(&read);
+        assert_eq!(read["id"], serde_json::json!(id));
+        assert_eq!(read["threadId"], serde_json::json!(thread_id));
+        assert_eq!(read["cols"], serde_json::json!(100));
+        assert_eq!(read["rows"], serde_json::json!(30));
+        assert_eq!(read["title"], serde_json::json!("Terminal 1"));
+        assert_eq!(read["status"], serde_json::json!("running"));
+
+        // A partial body: a new title, but only one of the two size axes. The
+        // title must change and both axes must be left alone — if the size were
+        // built from the partial pair, `rows` would come back missing.
+        let partial = request(
+            port,
+            "PATCH",
+            &format!("/terminal/{id}"),
+            Some(&token),
+            Some(&serde_json::json!({ "title": "Renamed", "cols": 132 }).to_string()),
+        );
+        assert_eq!(partial.status, 200, "body: {}", partial.body);
+        let partial = body_json(&partial);
+        assert_eq!(partial["title"], serde_json::json!("Renamed"));
+        assert_eq!(
+            partial["cols"],
+            serde_json::json!(100),
+            "a partial size must not be applied at all"
+        );
+        assert_eq!(partial["rows"], serde_json::json!(30));
+
+        // A complete pair does resize, so the call above was not silently
+        // ignored for some unrelated reason.
+        let full = request(
+            port,
+            "PATCH",
+            &format!("/terminal/{id}"),
+            Some(&token),
+            Some(&serde_json::json!({ "cols": 132, "rows": 44 }).to_string()),
+        );
+        assert_eq!(full.status, 200, "body: {}", full.body);
+        let full = body_json(&full);
+        assert_eq!(full["cols"], serde_json::json!(132));
+        assert_eq!(full["rows"], serde_json::json!(44));
+        assert_eq!(
+            full["title"],
+            serde_json::json!("Renamed"),
+            "an update without a title must keep the current one"
+        );
+
+        let removed = request(
+            port,
+            "DELETE",
+            &format!("/terminal/{id}"),
+            Some(&token),
+            None,
+        );
+        assert_eq!(removed.status, 200, "body: {}", removed.body);
+    }
+
+    /// The request parser is bounded: a connection that never sends a request,
+    /// an oversized head and an oversized declared body are all dropped without
+    /// a response, and a body that arrives in a second TCP segment is still
+    /// assembled — that second read is the only reason the body loop exists.
+    #[test]
+    fn the_request_parser_is_bounded_and_reassembles_split_bodies() {
+        let (port, token) = shared_server();
+
+        // A connection that sends nothing at all: the parser sees EOF and
+        // closes without writing a byte.
+        assert_eq!(raw_exchange(port, b""), "");
+
+        // A head bigger than MAX_HEAD with no terminator is dropped.
+        let oversized = vec![b'H'; MAX_HEAD + 64];
+        assert_eq!(raw_exchange(port, &oversized), "");
+
+        // A declared body bigger than MAX_BODY is refused before it is read.
+        let huge = format!(
+            "POST /terminal HTTP/1.1\r\nhost: x\r\ncontent-length: {}\r\n\r\n",
+            MAX_BODY + 1
+        );
+        assert_eq!(raw_exchange(port, huge.as_bytes()), "");
+
+        // A body split across two segments is reassembled and parsed: the
+        // refusal names the *conversation*, which is only reachable once the
+        // body was decoded.
+        // The body is only decoded behind the control route's secret, so the
+        // request needs the bearer token: without it every case below would be
+        // a 401 and none of the parser's body paths could be reached.
+        let body = serde_json::json!({ "threadId": "split-body" }).to_string();
+        let head = format!(
+            "POST /terminal HTTP/1.1\r\nhost: x\r\nconnection: close\r\nauthorization: Bearer {token}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+            body.len()
+        );
+        let response = raw_exchange_split(
+            port,
+            head.as_bytes(),
+            body.as_bytes(),
+            Duration::from_millis(80),
+        );
+        assert!(
+            !response.contains("invalid create request body"),
+            "the split body must be reassembled, got: {response}"
+        );
+        assert!(
+            response.contains("THREAD_NOT_FOUND"),
+            "response: {response}"
+        );
+
+        // A body that stops early (the peer half-closed) is truncated, and the
+        // truncated request is rejected instead of hanging on.
+        let truncated = format!(
+            "POST /terminal HTTP/1.1\r\nhost: x\r\nconnection: close\r\nauthorization: Bearer {token}\r\ncontent-length: 64\r\n\r\n{{\"threadId\":\"sh"
+        );
+        let response = raw_exchange(port, truncated.as_bytes());
+        assert!(
+            response.contains("invalid create request body"),
+            "a truncated body must be rejected: {response}"
+        );
+    }
+
+    /// The HTTP status the server answers a WebSocket handshake with, for the
+    /// handshakes that are *expected* to be refused. A successful one returns
+    /// 101 and hands back a live socket the caller must drain, which is what
+    /// `a_real_shell_streams_over_the_loopback_transport` covers.
+    async fn refused_handshake_status(port: u16, path: &str) -> u16 {
+        let url = format!("ws://127.0.0.1:{port}{path}");
+        match tokio_tungstenite::connect_async(url.as_str()).await {
+            Ok(_) => 101,
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                response.status().as_u16()
+            }
+            Err(error) => panic!("unexpected handshake failure for {path}: {error}"),
+        }
+    }
+
+    /// The WebSocket route has its own authentication boundary and every part of
+    /// it is checked *before* the socket is upgraded, so a caller that cannot
+    /// connect is told why by name instead of being left with a socket that
+    /// silently closes.
+    ///
+    /// A browser cannot set an `Authorization` header on a handshake, so the
+    /// secret only buys a one-shot ticket, and a ticket is bound to one session.
+    /// That is the whole reason the two routes exist, and this test pins the
+    /// four refusals a client can actually hit, in the order the router checks
+    /// them: method, upgrade, ticket, session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_connect_route_authenticates_before_it_upgrades() {
+        let _home = setup_home("terminal-connect-auth");
+        let thread_id = create_thread_in_new_workspace("terminal-connect-auth");
+        let (port, token) = shared_server();
+
+        let created = request(
+            port,
+            "POST",
+            "/terminal",
+            Some(&token),
+            Some(&serde_json::json!({ "threadId": thread_id, "cols": 80, "rows": 24 }).to_string()),
+        );
+        assert_eq!(created.status, 200, "body: {}", created.body);
+        let id = body_json(&created)["id"].as_str().expect("id").to_string();
+
+        // A connect is always a GET. Anything else is refused by name, and the
+        // refusal carries the code the client switches on.
+        let wrong_method = request(
+            port,
+            "POST",
+            &format!("/terminal/{id}/connect"),
+            Some(&token),
+            None,
+        );
+        assert_eq!(wrong_method.status, 405, "raw: {}", wrong_method.raw);
+        assert!(
+            wrong_method.body.contains("METHOD_NOT_ALLOWED"),
+            "{}",
+            wrong_method.body
+        );
+
+        // A plain GET is not an upgrade either, and the route says so rather
+        // than holding the connection open waiting for one.
+        let not_an_upgrade = request(
+            port,
+            "GET",
+            &format!("/terminal/{id}/connect"),
+            Some(&token),
+            None,
+        );
+        assert_eq!(not_an_upgrade.status, 400, "raw: {}", not_an_upgrade.raw);
+        assert!(
+            not_an_upgrade.body.contains("INVALID_ARGUMENT"),
+            "{}",
+            not_an_upgrade.body
+        );
+
+        // A real handshake with no ticket at all: the secret alone is not
+        // enough on this route.
+        assert_eq!(
+            refused_handshake_status(port, &format!("/terminal/{id}/connect")).await,
+            403,
+            "a handshake without a ticket must be refused"
+        );
+        // ... and a ticket nobody issued is refused the same way.
+        assert_eq!(
+            refused_handshake_status(port, &format!("/terminal/{id}/connect?ticket=deadbeef"))
+                .await,
+            403,
+            "an unissued ticket must be refused"
+        );
+        // A ticket is scoped to one session, so an unknown session is a 404 —
+        // the ticket's own validity is not even the question.
+        assert_eq!(
+            refused_handshake_status(port, "/terminal/no-such-session/connect?ticket=deadbeef")
+                .await,
+            404,
+            "an unknown session must be reported as missing"
+        );
+
+        // The handle the refusals were about is still usable: a ticket issued
+        // for it upgrades (101), and the shell it carries is then torn down.
+        let ticket = request(
+            port,
+            "POST",
+            &format!("/terminal/{id}/connect-token"),
+            Some(&token),
+            None,
+        );
+        assert_eq!(ticket.status, 200, "body: {}", ticket.body);
+        let ticket = body_json(&ticket)["ticket"]
+            .as_str()
+            .expect("ticket")
+            .to_string();
+        assert_eq!(
+            refused_handshake_status(
+                port,
+                &format!("/terminal/{id}/connect?cursor=-1&ticket={ticket}")
+            )
+            .await,
+            101,
+            "a valid ticket must upgrade"
+        );
+
+        let removed = request(
+            port,
+            "DELETE",
+            &format!("/terminal/{id}"),
+            Some(&token),
+            None,
+        );
+        assert_eq!(removed.status, 200, "body: {}", removed.body);
+        assert_eq!(
+            body_json(&removed)["removed"],
+            serde_json::json!(true),
+            "a successful removal reports itself"
+        );
+    }
+
+    /// The WebSocket pump's client-facing half, and both of its exit paths.
+    ///
+    /// The end-to-end test above covers the *streaming* half (a live shell's
+    /// bytes reaching a viewer). This one covers what a client can send and how
+    /// the socket ends, which is the part a browser actually depends on:
+    ///
+    /// * a `Ping` must be answered with a matching `Pong` — that is how the
+    ///   renderer notices a dead connection;
+    /// * a `Text` frame is input, and the shell's echo proves it arrived;
+    /// * a session that exits while a viewer is attached must send the exit
+    ///   control frame and then a normal `Close`, not a silent socket;
+    /// * a viewer that connects *after* the exit must get the final screen, the
+    ///   exit code and the same `Close` immediately.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pump_answers_pings_carries_input_and_ends_with_the_shell() {
+        let _home = setup_home("terminal-pump");
+        let thread_id = create_thread_in_new_workspace("terminal-pump");
+        let server = bind().expect("bind");
+        if let Err(error) = serve() {
+            assert!(error.contains("already serving"), "{error}");
+        }
+        let port = server.info.port;
+        let token = server.info.token.clone();
+
+        let created = request(
+            port,
+            "POST",
+            "/terminal",
+            Some(&token),
+            Some(&serde_json::json!({ "threadId": thread_id, "cols": 80, "rows": 24 }).to_string()),
+        );
+        assert_eq!(created.status, 200, "body: {}", created.body);
+        let id = body_json(&created)["id"].as_str().expect("id").to_string();
+
+        let ticket = |port: u16| {
+            let response = request(
+                port,
+                "POST",
+                &format!("/terminal/{id}/connect-token"),
+                Some(&token),
+                None,
+            );
+            body_json(&response)["ticket"]
+                .as_str()
+                .expect("ticket")
+                .to_string()
+        };
+
+        // ---- a live viewer: Ping, then Text input ----
+        let first = ticket(port);
+        let url = format!("ws://127.0.0.1:{port}/terminal/{id}/connect?cursor=-1&ticket={first}");
+        let (mut socket, response) = tokio_tungstenite::connect_async(url.as_str())
+            .await
+            .expect("handshake");
+        assert_eq!(response.status().as_u16(), 101);
+
+        socket
+            .send(Message::Ping(b"probe".to_vec()))
+            .await
+            .expect("send ping");
+        let mut pong: Option<Vec<u8>> = None;
+        let mut echoed = String::new();
+        // The shell emits `ESC [ 6 n` while starting and will not read a line
+        // until a client answers it (the end-to-end test above answers the same
+        // query — the pump deliberately does not, because the query belongs to
+        // the terminal protocol, not to the transport).
+        let mut answered_dsr = false;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline && pong.is_none() {
+            match tokio::time::timeout(Duration::from_secs(5), socket.next()).await {
+                Ok(Some(Ok(Message::Pong(payload)))) => pong = Some(payload),
+                Ok(Some(Ok(Message::Binary(bytes)))) => {
+                    if bytes.first() != Some(&protocol::CONTROL_PREFIX) {
+                        echoed.push_str(&String::from_utf8_lossy(&bytes));
+                    }
+                }
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(error))) => panic!("socket error: {error}"),
+                Ok(None) => break,
+                Err(_) => break,
+            }
+            if !answered_dsr && echoed.contains("\u{1b}[6n") {
+                answered_dsr = true;
+                socket
+                    .send(Message::Text("\u{1b}[1;1R".into()))
+                    .await
+                    .expect("answer the shell's cursor query");
+            }
+        }
+        assert_eq!(
+            pong.as_deref(),
+            Some(&b"probe"[..]),
+            "the pump must echo a Ping's payload back as a Pong"
+        );
+
+        // Text is input: the shell runs the line it carries.
+        socket
+            .send(Message::Text("echo pump-marker\r".into()))
+            .await
+            .expect("send text");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline && !echoed.contains("pump-marker") {
+            match tokio::time::timeout(Duration::from_secs(5), socket.next()).await {
+                Ok(Some(Ok(Message::Binary(bytes)))) => {
+                    if bytes.first() != Some(&protocol::CONTROL_PREFIX) {
+                        echoed.push_str(&String::from_utf8_lossy(&bytes));
+                    }
+                }
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
+            }
+            if !answered_dsr && echoed.contains("\u{1b}[6n") {
+                answered_dsr = true;
+                socket
+                    .send(Message::Text("\u{1b}[1;1R".into()))
+                    .await
+                    .expect("answer the shell's cursor query");
+            }
+        }
+        assert!(
+            echoed.contains("pump-marker"),
+            "a Text frame must reach the shell's input: {echoed:?}"
+        );
+
+        // ---- the session ends while this viewer is attached ----
+        // `on_eof` is what `close()` and the reader thread call; on this host the
+        // reader never sees EOF (see the run status), so the test drives it.
+        // The shell is still alive at this point, so the recorded code is `None`
+        // — deliberately: a session whose child could not be reaped must report
+        // no code rather than invent one, and the transport must still tell the
+        // viewer the stream is over and close the socket normally.
+        let session = server.manager.session_for_test(&id).expect("session");
+        session.on_eof();
+
+        let mut exit_frame = None;
+        let mut close_code = None;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline && close_code.is_none() {
+            match tokio::time::timeout(Duration::from_secs(5), socket.next()).await {
+                Ok(Some(Ok(Message::Binary(bytes)))) => {
+                    if bytes.first() == Some(&protocol::CONTROL_PREFIX) {
+                        exit_frame = serde_json::from_slice::<Meta>(&bytes[1..]).ok();
+                    }
+                }
+                Ok(Some(Ok(Message::Close(frame)))) => close_code = frame.map(|f| f.code),
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
+            }
+        }
+        let exit_frame = exit_frame.expect("the exit control frame must be sent");
+        assert_eq!(
+            exit_frame.exit_code, None,
+            "a live shell must not be given an invented exit code: {exit_frame:?}"
+        );
+        assert_eq!(
+            close_code,
+            Some(CloseCode::Normal),
+            "an exited shell must close the socket normally"
+        );
+
+        // ---- a viewer that connects after the exit ----
+        // The session is out of the manager only if it was removed; here it is
+        // still addressable, so a fresh ticket must yield the final screen, the
+        // exit code and an immediate Close.
+        let second = ticket(port);
+        let url = format!("ws://127.0.0.1:{port}/terminal/{id}/connect?cursor=-1&ticket={second}");
+        let (mut late, response) = tokio_tungstenite::connect_async(url.as_str())
+            .await
+            .expect("late handshake");
+        assert_eq!(response.status().as_u16(), 101);
+        let mut late_exit = None;
+        let mut late_close = None;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline && late_close.is_none() {
+            match tokio::time::timeout(Duration::from_secs(5), late.next()).await {
+                Ok(Some(Ok(Message::Binary(bytes)))) => {
+                    if bytes.first() == Some(&protocol::CONTROL_PREFIX) {
+                        late_exit = serde_json::from_slice::<Meta>(&bytes[1..]).ok();
+                    }
+                }
+                Ok(Some(Ok(Message::Close(frame)))) => late_close = frame.map(|f| f.code),
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
+            }
+        }
+        let late_exit =
+            late_exit.expect("a viewer attaching to an exited session gets the control frame");
+        assert_eq!(
+            late_exit.exit_code, None,
+            "the same un-reaped session state must be replayed, not a fresh guess: {late_exit:?}"
+        );
+        assert_eq!(
+            late_exit.cursor, late_exit.start,
+            "a tailing viewer's replay starts exactly at the cursor it is given"
+        );
+        assert_eq!(
+            late_close,
+            Some(CloseCode::Normal),
+            "a late viewer must be closed normally, not left hanging"
+        );
+
+        let removed = request(
+            port,
+            "DELETE",
+            &format!("/terminal/{id}"),
+            Some(&token),
+            None,
+        );
+        assert_eq!(removed.status, 200, "body: {}", removed.body);
+    }
+
+    /// The connect-ticket store's capacity boundary, through the route's own
+    /// handler.
+    ///
+    /// `connect_token` is the only route that mints a ticket, and a flood of
+    /// handshakes must be refused with 429 rather than growing the table without
+    /// bound. Filling 10 000 tickets over HTTP would take minutes, so the store is
+    /// filled directly — through the same `TicketStore::issue` the route calls —
+    /// and then the handler is asked once, which is the behaviour under test.
+    ///
+    /// It runs against an **isolated** server on purpose: the ticket store is
+    /// process-wide on the shared listener, and filling that one would leave
+    /// every later test unable to mint a ticket (which is exactly what an
+    /// earlier version of this test did).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_full_ticket_store_is_reported_as_capacity_exceeded() {
+        let server = isolated_server();
+        let id = isolated_session(&server, "thread-capacity", test_support::idle_command());
+        let scope = TicketScope {
+            terminal_id: id.clone(),
+            thread_id: "thread-capacity".to_string(),
+        };
+
+        // The boundary is inclusive: the first `TICKET_CAPACITY` tickets are
+        // issued, and the next one is refused.
+        for issued in 0..crate::terminal::ticket::TICKET_CAPACITY {
+            assert!(
+                server.tickets.issue(scope.clone()).is_some(),
+                "the store must accept ticket {issued}, up to its capacity"
+            );
+        }
+
+        let refused = server.connect_token(&id);
+        assert_eq!(
+            refused.status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "a full ticket store must refuse with 429: {:?}",
+            refused.body
+        );
+        assert_eq!(
+            refused.body["error"]["code"], "CAPACITY_EXCEEDED",
+            "the refusal must name the capacity, not report a generic error"
+        );
+        assert_eq!(
+            refused.body["error"]["message"], "too many outstanding connect tickets",
+            "the refusal must name the reason, not report a generic error"
+        );
+
+        // The session it refused to mint for is untouched.
+        assert!(server.manager.get(&id).is_ok());
+
+        // And the refusal is not sticky: once a ticket is consumed the store has
+        // room again, so a client that retries after reconnecting is served.
+        let issued = server.connect_token(&id);
+        assert_eq!(
+            issued.status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "a consumed ticket frees a slot only after it is used, which this \
+             assertion pins: the store is still full"
+        );
+    }
+
+    /// The connect-ticket store's capacity boundary, through the route's own
+    /// handler.
+    ///
+    /// `connect_token` is the only route that mints a ticket, and a flood of
+    /// handshakes must be refused with 429 rather than growing the table without
+    /// bound. Filling 10 000 tickets over HTTP would take minutes, so the store is
+    /// filled directly — through the same `TicketStore::issue` the route calls —
+    /// and then the handler is asked once, which is the behaviour under test.
+    ///
+    /// It runs against an **isolated** server on purpose: the ticket store is
+    /// process-wide on the shared listener, and filling that one would leave
+    /// every later test unable to mint a ticket (which is exactly what an earlier
+    /// version of this test did).
+    /// A WebSocket handshake that fails *after* the route accepted the connection.
+    ///
+    /// `handle_connect`'s `let Ok(ws) = ws else { return }` is the arm for a client
+    /// that asks for an upgrade but cannot complete one — here an
+    /// `Upgrade: websocket` request with no `Sec-WebSocket-Key`, which
+    /// `accept_hdr_async` rejects. The route must drop the connection instead of
+    /// leaving a half-open socket behind (and must not panic).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_handshake_missing_its_key_is_dropped() {
+        let _home = setup_home("terminal-bad-handshake");
+        let thread_id = create_thread_in_new_workspace("terminal-bad-handshake");
+        let (port, token) = shared_server();
+
+        let created = request(
+            port,
+            "POST",
+            "/terminal",
+            Some(&token),
+            Some(&serde_json::json!({ "threadId": thread_id }).to_string()),
+        );
+        assert_eq!(created.status, 200, "body: {}", created.body);
+        let id = body_json(&created)["id"].as_str().expect("id").to_string();
+
+        let issued = request(
+            port,
+            "POST",
+            &format!("/terminal/{id}/connect-token"),
+            Some(&token),
+            None,
+        );
+        assert_eq!(
+            issued.status, 200,
+            "the ticket must be issuable: {}",
+            issued.body
+        );
+        let ticket = body_json(&issued)["ticket"]
+            .as_str()
+            .expect("ticket")
+            .to_string();
+
+        // A valid ticket and a real upgrade request, but no key: the handshake
+        // cannot be completed, so nothing is written back.
+        let head = format!(
+            "GET /terminal/{id}/connect?ticket={ticket} HTTP/1.1\r\n\
+             host: 127.0.0.1:{port}\r\n\
+             connection: Upgrade\r\n\
+             upgrade: websocket\r\n\
+             sec-websocket-version: 13\r\n\r\n"
+        );
+        let response = raw_exchange(port, head.as_bytes());
+        assert!(
+            !response.contains("101"),
+            "a keyless handshake must not be upgraded: {response:?}"
+        );
+
+        // The session is still usable: the failed handshake consumed its ticket,
+        // not its life.
+        let alive = request(port, "GET", &format!("/terminal/{id}"), Some(&token), None);
+        assert_eq!(alive.status, 200, "body: {}", alive.body);
+
+        let removed = request(
+            port,
+            "DELETE",
+            &format!("/terminal/{id}"),
+            Some(&token),
+            None,
+        );
+        assert_eq!(removed.status, 200, "body: {}", removed.body);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::test_support;
+    use std::time::Instant;
 
     #[test]
     fn routes_are_recognised_and_unknown_ones_are_not() {
@@ -1332,7 +2260,16 @@ mod tests {
             query_value("/terminal/t/connect?ticket=a%2Bb", "ticket").as_deref(),
             Some("a+b")
         );
+        // A malformed escape is kept literally (the byte is not dropped) and a
+        // `+` is the space a form-encoded query means by it.
+        assert_eq!(
+            query_value("/terminal/t/connect?ticket=a+b%zz", "ticket").as_deref(),
+            Some("a b%zz")
+        );
+        // No query at all, and a query that does not name this key, are both
+        // `None` — the loop's terminal case is a real arm, not dead code.
         assert_eq!(query_value("/terminal/t/connect", "ticket"), None);
+        assert_eq!(query_value("/terminal?foo=1", "ticket"), None);
     }
 
     #[test]
@@ -1359,6 +2296,57 @@ mod tests {
         let mut body = [0_u8; 5];
         stream.read_exact(&mut body).await.expect("socket read");
         assert_eq!(&body, b"first");
+
+        // Writes, flushes and the shutdown the websocket layer performs all
+        // reach the socket; the client observes both the bytes and the EOF.
+        stream.write_all(b"pong").await.expect("write through");
+        stream.flush().await.expect("flush through");
+        let mut got = [0_u8; 4];
+        client.read_exact(&mut got).await.expect("client read");
+        assert_eq!(&got, b"pong");
+        stream.shutdown().await.expect("shutdown through");
+        let mut tail = [0_u8; 1];
+        assert_eq!(client.read(&mut tail).await.expect("eof read"), 0);
+    }
+
+    /// The upgrade response echoes the caller's origin (and invents nothing when
+    /// there is none), so a browser started from a dev server can complete the
+    /// handshake without the response looking reusable to another origin.
+    #[test]
+    fn the_upgrade_response_echoes_the_request_origin() {
+        type UpgradeRequest = tokio_tungstenite::tungstenite::handshake::server::Request;
+        type UpgradeResponse = tokio_tungstenite::tungstenite::handshake::server::Response;
+
+        let request = UpgradeRequest::builder()
+            .header("origin", "tauri://localhost")
+            .body(())
+            .expect("request");
+        let response = UpgradeResponse::builder()
+            .status(StatusCode::SWITCHING_PROTOCOLS)
+            .body(())
+            .expect("response");
+        let echoed = upgrade_response(&request, response).expect("upgrade");
+        assert_eq!(
+            echoed
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("tauri://localhost")
+        );
+
+        let bare = UpgradeRequest::builder().body(()).expect("request");
+        let response = UpgradeResponse::builder()
+            .status(StatusCode::SWITCHING_PROTOCOLS)
+            .body(())
+            .expect("response");
+        let echoed = upgrade_response(&bare, response).expect("upgrade");
+        assert!(
+            echoed
+                .headers()
+                .get("access-control-allow-origin")
+                .is_none(),
+            "no origin to echo means no header"
+        );
     }
 
     #[test]
@@ -1374,5 +2362,497 @@ mod tests {
         let secret = random_secret();
         assert_eq!(secret.len(), 64);
         assert!(secret.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // ---- the pump, driven by a socket the test owns -------------------------
+    //
+    // `pump` is generic over its transport, so these tests hand it a stream they
+    // control completely: the bytes it reads (hand-built masked client frames)
+    // and the writes it must perform (which they can make fail on demand). That
+    // is the only way to reach the send-failure arms honestly — with a real TCP
+    // peer the kernel accepts a write into its send buffer even after the peer
+    // is gone, so the failure is a race rather than a state, and those arms
+    // would be untestable and unwaivable.
+
+    /// A client frame must be masked; this builds one by hand (RFC 6455 §5.3).
+    fn client_frame(opcode: u8, payload: &[u8]) -> Vec<u8> {
+        const MASK: [u8; 4] = [0x12, 0x34, 0x56, 0x78];
+        let mut frame = vec![0x80 | opcode];
+        match payload.len() {
+            len if len < 126 => frame.push(0x80 | len as u8),
+            len if len <= u16::MAX as usize => {
+                frame.push(0x80 | 126);
+                frame.extend_from_slice(&(len as u16).to_be_bytes());
+            }
+            len => {
+                frame.push(0x80 | 127);
+                frame.extend_from_slice(&(len as u64).to_be_bytes());
+            }
+        }
+        frame.extend_from_slice(&MASK);
+        frame.extend(payload.iter().enumerate().map(|(i, b)| b ^ MASK[i % 4]));
+        frame
+    }
+
+    const OP_TEXT: u8 = 0x1;
+    const OP_BINARY: u8 = 0x2;
+    const OP_CLOSE: u8 = 0x8;
+    const OP_PING: u8 = 0x9;
+    const OP_PONG: u8 = 0xA;
+
+    #[derive(Default)]
+    struct SocketState {
+        inbound: std::collections::VecDeque<u8>,
+        outbound: Vec<u8>,
+        /// Set to make every subsequent write fail, the way a closed socket does.
+        failing: bool,
+        /// The reader's waker, so a byte pushed after the pump parked still wakes it.
+        waker: Option<std::task::Waker>,
+    }
+
+    /// A duplex socket the test drives: bytes in, bytes out, and a failure switch.
+    #[derive(Clone)]
+    struct FakeSocket(Arc<Mutex<SocketState>>);
+
+    impl FakeSocket {
+        fn new() -> Self {
+            Self(Arc::new(Mutex::new(SocketState::default())))
+        }
+        fn push_frame(&self, opcode: u8, payload: &[u8]) {
+            self.push_bytes(&client_frame(opcode, payload));
+        }
+        fn push_bytes(&self, bytes: &[u8]) {
+            let waker = {
+                let mut state = self.0.lock().unwrap();
+                state.inbound.extend(bytes.iter().copied());
+                state.waker.take()
+            };
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        }
+        fn fail_writes(&self) {
+            self.0.lock().unwrap().failing = true;
+        }
+        fn sent(&self) -> Vec<u8> {
+            self.0.lock().unwrap().outbound.clone()
+        }
+        fn has_sent_something(&self) -> bool {
+            !self.0.lock().unwrap().outbound.is_empty()
+        }
+    }
+
+    impl AsyncRead for FakeSocket {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let mut state = self.0.lock().unwrap();
+            if state.inbound.is_empty() {
+                // Park rather than report EOF: the pump must keep serving the
+                // session while the client is merely quiet.
+                state.waker = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
+            let n = buf.remaining().min(state.inbound.len());
+            let bytes: Vec<u8> = state.inbound.drain(..n).collect();
+            buf.put_slice(&bytes);
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl AsyncWrite for FakeSocket {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let mut state = self.0.lock().unwrap();
+            if state.failing {
+                return Poll::Ready(Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "the client is gone",
+                )));
+            }
+            state.outbound.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A server with its own manager, so these tests create the exact child they
+    /// need without the store, the shared listener or another test's sessions.
+    fn isolated_server() -> TerminalServer {
+        TerminalServer {
+            info: ServerInfo {
+                url: "http://127.0.0.1:0".to_string(),
+                token: random_secret(),
+                port: 0,
+                max_sessions: MAX_SESSIONS,
+            },
+            listener: Mutex::new(None),
+            manager: Arc::new(Manager::new()),
+            tickets: TicketStore::default(),
+            connections: Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS)),
+        }
+    }
+
+    /// Create a session in `server`'s own manager and hand back its id.
+    fn isolated_session(
+        server: &TerminalServer,
+        thread: &str,
+        command: (std::path::PathBuf, Vec<String>),
+    ) -> String {
+        let (program, args) = command;
+        server
+            .manager
+            .create_with(
+                thread.to_string(),
+                Some("Harness".to_string()),
+                program,
+                args,
+                std::env::temp_dir(),
+                80,
+                24,
+            )
+            .expect("create session")
+            .id
+    }
+
+    async fn pump_socket(socket: FakeSocket) -> tokio_tungstenite::WebSocketStream<FakeSocket> {
+        tokio_tungstenite::WebSocketStream::from_raw_socket(
+            socket,
+            tokio_tungstenite::tungstenite::protocol::Role::Server,
+            None,
+        )
+        .await
+    }
+
+    /// Wait for the pump to have written something, or fail loudly.
+    async fn await_first_write(socket: &FakeSocket) {
+        for _ in 0..200 {
+            if socket.has_sent_something() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the pump never wrote the control frame");
+    }
+
+    /// Every way the pump can end because the *client* cannot be written to.
+    ///
+    /// A viewer that vanishes must not take the pump's session down with it: each
+    /// arm detaches and returns, leaving the shell running for the next tab. The
+    /// assertions are on exactly that — the tunnel is abandoned per case, and the
+    /// session behind it is still alive.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pump_gives_up_quietly_when_the_client_cannot_be_written_to() {
+        // (a) A failing replay send: the session has retained output, and the
+        // socket is already dead when the pump tries to hand it over.
+        let server = isolated_server();
+        let id = isolated_session(&server, "thread-replay", test_support::idle_command());
+        server
+            .manager
+            .session_for_test(&id)
+            .expect("session")
+            .on_data(b"retained screen");
+        let socket = FakeSocket::new();
+        socket.fail_writes();
+        server
+            .pump(pump_socket(socket).await, id.clone(), None)
+            .await;
+        assert!(
+            server
+                .manager
+                .session_for_test(&id)
+                .expect("session")
+                .is_running(),
+            "abandoning the view must not touch the shell"
+        );
+
+        // (b) A failing control-frame send, with nothing to replay first: the
+        // pump's first write *is* the meta frame.
+        let id = isolated_session(&server, "thread-meta", test_support::idle_command());
+        let socket = FakeSocket::new();
+        socket.fail_writes();
+        server
+            .pump(pump_socket(socket).await, id.clone(), Some(-1))
+            .await;
+        assert!(server
+            .manager
+            .session_for_test(&id)
+            .expect("session")
+            .is_running());
+    }
+
+    /// The mid-stream failure arms, each driven by making the write fail at the
+    /// moment the pump is about to send that particular frame.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pump_survives_a_client_that_vanishes_mid_stream() {
+        let server = Arc::new(isolated_server());
+
+        // Data that cannot be delivered.
+        let id = isolated_session(&server, "thread-mid-data", test_support::idle_command());
+        let socket = FakeSocket::new();
+        let live = server.manager.session_for_test(&id).expect("session");
+        let pump = {
+            let server = Arc::clone(&server);
+            let socket = socket.clone();
+            let id = id.clone();
+            tokio::spawn(async move { server.pump(pump_socket(socket).await, id, Some(-1)).await })
+        };
+        await_first_write(&socket).await;
+        socket.fail_writes();
+        live.on_data(b"undeliverable");
+        tokio::time::timeout(Duration::from_secs(20), pump)
+            .await
+            .expect("the pump must stop when the client is gone")
+            .expect("pump task");
+        assert!(
+            live.is_running(),
+            "a dead client must not end the session it was watching"
+        );
+
+        // An exit that cannot be announced.
+        let id = isolated_session(&server, "thread-mid-exit", test_support::idle_command());
+        let socket = FakeSocket::new();
+        let live = server.manager.session_for_test(&id).expect("session");
+        let pump = {
+            let server = Arc::clone(&server);
+            let socket = socket.clone();
+            let id = id.clone();
+            tokio::spawn(async move { server.pump(pump_socket(socket).await, id, Some(-1)).await })
+        };
+        await_first_write(&socket).await;
+        socket.fail_writes();
+        live.on_eof();
+        tokio::time::timeout(Duration::from_secs(20), pump)
+            .await
+            .expect("the pump must stop when the exit cannot be sent")
+            .expect("pump task");
+
+        // A keepalive that cannot be answered.
+        let id = isolated_session(&server, "thread-mid-ping", test_support::idle_command());
+        let socket = FakeSocket::new();
+        let pump = {
+            let server = Arc::clone(&server);
+            let socket = socket.clone();
+            let id = id.clone();
+            tokio::spawn(async move { server.pump(pump_socket(socket).await, id, Some(-1)).await })
+        };
+        await_first_write(&socket).await;
+        socket.fail_writes();
+        socket.push_frame(OP_PING, b"keepalive");
+        tokio::time::timeout(Duration::from_secs(20), pump)
+            .await
+            .expect("an unanswerable ping must not wedge the pump")
+            .expect("pump task");
+    }
+
+    /// The client-facing half: every frame type the pump accepts, in order, and
+    /// the way the conversation ends.
+    ///
+    /// This is a faithful client conversation. An interactive shell on this host
+    /// emits `ESC [ 6 n` as it starts and will not read a line until a client
+    /// answers it, so the test does what the renderer does: watch for the query
+    /// on the socket, send the reply back as a `Text` frame, and only then send
+    /// its input. The assertions are on the bytes that came back — the shell's
+    /// echo of both inputs proves each frame reached the **PTY**, not merely the
+    /// pump, and the `Pong` proves the keepalive round trip.
+    /// WINDOWS-ONLY. Same handshake as the PTY test: it asserts the shell's cursor query reaches the client
+/// over the socket, which is the Windows fixture's behaviour. A unix shell never asks.
+/// Windows-only.
+    #[cfg(windows)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pump_reads_every_client_frame_type() {
+        let server = isolated_server();
+        let id = isolated_session(
+            &server,
+            "thread-frames",
+            test_support::interactive_command(),
+        );
+        let socket = FakeSocket::new();
+
+        let pump = {
+            let server = Arc::new(server);
+            let socket = socket.clone();
+            let id = id.clone();
+            tokio::spawn(async move { server.pump(pump_socket(socket).await, id, Some(-1)).await })
+        };
+
+        // Wait for the shell's cursor query, then answer it — the frame that a
+        // terminal emulator sends.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline && !test_support::asks_for_the_cursor(&socket.sent()) {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            test_support::asks_for_the_cursor(&socket.sent()),
+            "the shell's cursor query must reach the client over the socket"
+        );
+        socket.push_frame(OP_TEXT, test_support::DSR_REPLY);
+
+        // A `Binary` frame is input in the terminal's own protocol, a `Text`
+        // frame is input verbatim, `Ping` must be answered and `Pong` ignored.
+        socket.push_frame(OP_BINARY, b"echo binary-input\r");
+        socket.push_frame(OP_TEXT, b"echo text-input\r");
+        socket.push_frame(OP_PING, b"probe");
+        socket.push_frame(OP_PONG, b"unsolicited");
+
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut seen = String::new();
+        while Instant::now() < deadline {
+            seen = test_support::visible_text(&socket.sent());
+            if seen.contains("binary-input") && seen.contains("text-input") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            seen.contains("binary-input") && seen.contains("text-input"),
+            "both client frames must reach the shell, whose echo comes back over \
+             the socket: {seen:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&socket.sent()).contains("probe"),
+            "the Ping's payload must come back as a Pong: {:?}",
+            String::from_utf8_lossy(&socket.sent())
+        );
+
+        // `Close` ends the conversation.
+        socket.push_frame(OP_CLOSE, &[]);
+        tokio::time::timeout(Duration::from_secs(20), pump)
+            .await
+            .expect("a Close frame must end the pump")
+            .expect("pump task");
+    }
+
+    /// A client that sends bytes that are not a WebSocket frame at all.
+    ///
+    /// `Some(Err(_)) => break` is the arm that keeps a malformed peer from
+    /// spinning the pump: tungstenite reports the protocol error, and the
+    /// tunnel must end rather than retry on a stream that can never recover.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pump_ends_on_a_protocol_error_from_the_client() {
+        let server = isolated_server();
+        let id = isolated_session(&server, "thread-garbage", test_support::idle_command());
+        let socket = FakeSocket::new();
+        // An unmasked frame: illegal from a client, so tungstenite errors.
+        socket.push_bytes(&[0x81, 0x03, b'b', b'a', b'd']);
+
+        let pump = {
+            let socket = socket.clone();
+            tokio::spawn(async move {
+                server
+                    .pump(pump_socket(socket).await, id.clone(), Some(-1))
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(20), pump)
+            .await
+            .expect("a protocol error must end the pump, not wedge it")
+            .expect("pump task");
+    }
+
+    /// A viewer that attaches to a session that has **already exited**.
+    ///
+    /// The pump's early-exit branch is not the same code as the mid-stream one:
+    /// when the attachment already carries an exit code the replay *is* the final
+    /// screen, so the control frame must carry the code and the socket must close
+    /// without ever activating a subscriber. Reaching it needs a session whose
+    /// child was really reaped — an exit recorded from a live child has no code
+    /// (see the run status), and that is a different branch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pump_replays_and_closes_a_session_that_already_exited() {
+        let server = isolated_server();
+        let id = isolated_session(&server, "thread-gone", test_support::exit_command(4));
+        let live = server.manager.session_for_test(&id).expect("session");
+        assert!(
+            live.wait_for_child_exit(Duration::from_secs(30)),
+            "the fixture child must really exit"
+        );
+        live.on_data(b"the last screen");
+        live.on_eof();
+        assert_eq!(
+            live.info().exit_code,
+            Some(4),
+            "the reaped code must be on the session before the pump reads it"
+        );
+
+        let socket = FakeSocket::new();
+        server
+            .pump(pump_socket(socket.clone()).await, id.clone(), None)
+            .await;
+
+        let sent = test_support::visible_text(&socket.sent());
+        assert!(
+            sent.contains("the last screen"),
+            "the final screen must be replayed to a late viewer: {sent:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&socket.sent()).contains("\"exitCode\":4"),
+            "the control frame must carry the reaped code: {:?}",
+            String::from_utf8_lossy(&socket.sent())
+        );
+    }
+
+    /// A shell that dies while the client is still typing.
+    ///
+    /// `attachment.write` is refused once the session is exited, and the pump
+    /// must end the tunnel rather than keep accepting input for a shell that can
+    /// never read it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pump_stops_reading_input_once_the_shell_is_gone() {
+        for (opcode, label) in [(OP_BINARY, "binary"), (OP_TEXT, "text")] {
+            let server = isolated_server();
+            let id = isolated_session(&server, "thread-dead-input", test_support::idle_command());
+            let live = server.manager.session_for_test(&id).expect("session");
+            let socket = FakeSocket::new();
+            let pump = {
+                let server = Arc::new(server);
+                let socket = socket.clone();
+                let id = id.clone();
+                tokio::spawn(
+                    async move { server.pump(pump_socket(socket).await, id, Some(-1)).await },
+                )
+            };
+            await_first_write(&socket).await;
+            // The shell is gone, so the next input cannot be delivered.
+            live.on_eof();
+            socket.push_frame(opcode, b"echo too-late\r");
+            assert!(
+                !live.is_running(),
+                "the {label} case must start from a dead session"
+            );
+            tokio::time::timeout(Duration::from_secs(20), pump)
+                .await
+                .unwrap_or_else(|_| panic!("the {label} input must end the pump"))
+                .expect("pump task");
+        }
+    }
+
+    /// A session that disappears between the ticket check and the upgrade.
+    ///
+    /// `pump`'s `attach` failure is the transport's answer to exactly that race:
+    /// the route already returns 404 for a *stranger*, but a session can be
+    /// closed after a valid ticket was redeemed, and the socket must then be
+    /// dropped without a reply rather than kept open.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pump_drops_a_session_that_disappeared_before_the_upgrade() {
+        let server = isolated_server();
+        let socket = FakeSocket::new();
+        server
+            .pump(pump_socket(socket.clone()).await, "ghost".to_string(), None)
+            .await;
+        assert!(
+            !socket.has_sent_something(),
+            "an unknown session must be dropped without writing to the socket"
+        );
     }
 }

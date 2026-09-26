@@ -965,23 +965,6 @@ pub(crate) mod webhook_test_hook {
     }
 }
 
-/// A failure-arm test kills the client socket's write half so the session's
-/// next ack/pong flush fails deterministically (rather than racing the
-/// reconnect read).
-#[cfg(all(test, unix))]
-pub(crate) fn kill_write_half(socket: &ws::Socket) {
-    use std::os::fd::{AsRawFd, FromRawFd};
-    let plain = match socket.get_ref() {
-        tokio_tungstenite::MaybeTlsStream::Plain(stream) => stream,
-        _ => unreachable!("tests dial plain ws only"),
-    };
-    let borrowed =
-        std::mem::ManuallyDrop::new(unsafe { std::net::TcpStream::from_raw_fd(plain.as_raw_fd()) });
-    borrowed
-        .shutdown(std::net::Shutdown::Write)
-        .expect("shutdown the client socket's write half");
-}
-
 pub fn provider() -> Box<dyn Provider> {
     Box::new(Slack)
 }

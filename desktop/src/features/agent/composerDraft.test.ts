@@ -71,4 +71,17 @@ describe("composerDraft", () => {
     clearComposerDraft("t");
     expect(loadComposerDraft("t")).toBeNull();
   });
+
+  it("treats an absent text or attachment list as empty", () => {
+    // boundary: `draft.attachments?.length ?? 0` and `(draft.text ?? "")` are both
+    // defensive against a partial call - a composer can persist a draft that has
+    // only pills, or only attachments. Neither may throw, and a draft with nothing
+    // at all in any field still counts as empty.
+    saveComposerDraft("partial", { attachments: [{ name: "a.png", path: "/a.png" }] } as never);
+    expect(loadComposerDraft("partial")?.attachments).toHaveLength(1);
+
+    clearComposerDraft("absent");
+    saveComposerDraft("absent", {} as never);
+    expect(loadComposerDraft("absent")).toBeNull();
+  });
 });

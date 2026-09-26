@@ -1290,3 +1290,62 @@ fn clear_base_url_is_a_noop_when_the_entry_is_not_an_object() {
     )
     .unwrap();
 }
+
+/// Arm the one-shot auth-write injection: models.json and auth.json share a
+/// directory, so a test cannot make the first write succeed and the second fail
+/// organically. Mirrors the seam in `write.rs`.
+fn arm_auth_write_failure() {
+    super::write::INJECT_AUTH_WRITE_FAILURE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[test]
+fn upsert_rolls_models_back_when_the_paired_key_write_fails() {
+    let _home = HomeGuard::new("wr-upsert-auth-failure");
+    let catalog = fixture_catalog();
+    let mut with_key = input("dashscope", "DashScope", true);
+    with_key.api_key = Some("sk-test".to_string());
+    arm_auth_write_failure();
+
+    let error = upsert_custom_provider_with_catalog(with_key, &catalog)
+        .expect_err("the injected auth write failure must surface to the caller")
+        .to_string();
+    assert!(error.contains("injected auth write failure"), "{error}");
+
+    // Only auth.json was left untouched; models.json was rolled back to its
+    // pre-call bytes, so the provider is not in the persisted config.
+    let view = providers_view(&catalog);
+    assert!(
+        !view
+            .custom
+            .iter()
+            .any(|provider| provider.id == "dashscope"),
+        "a rolled-back upsert must not leave the provider behind"
+    );
+}
+
+#[test]
+fn delete_restores_models_when_the_auth_removal_fails() {
+    let _home = HomeGuard::new("wr-delete-auth-failure");
+    let catalog = fixture_catalog();
+    let mut with_key = input("dashscope", "DashScope", true);
+    with_key.api_key = Some("sk-test".to_string());
+    upsert_custom_provider_with_catalog(with_key, &catalog).unwrap();
+    assert!(crate::auth_store::read().unwrap().contains_key("dashscope"));
+
+    arm_auth_write_failure();
+    let error = delete_custom_provider_with_catalog("dashscope".to_string(), &catalog)
+        .expect_err("the injected auth write failure must surface to the caller")
+        .to_string();
+    assert!(error.contains("injected auth write failure"), "{error}");
+
+    // The models half had already been written, so it is restored: the provider
+    // and its key are both still configured, i.e. the delete is all-or-nothing.
+    let view = providers_view(&catalog);
+    assert!(
+        view.custom
+            .iter()
+            .any(|provider| provider.id == "dashscope"),
+        "a failed delete must not leave the provider half-removed"
+    );
+    assert!(crate::auth_store::read().unwrap().contains_key("dashscope"));
+}

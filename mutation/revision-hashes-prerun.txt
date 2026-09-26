@@ -1,0 +1,9 @@
+# Pre-run revision attestation, recorded 2026-09-26 19:43 local (launch of the
+# policy-stable + queue-full detached drivers; compat.rs taken just before its
+# own launch, see the post-run re-read appended at the end of this file).
+#
+# Re-read with:  Get-FileHash <path> -Algorithm SHA256
+#
+channels/src/policy.rs                  9E746D4FE5E349D313D5AE01C932FFB36631439D067205EA1C0C9D25F538DE42  mtime 2026-09-26 15:13:36
+channels/src/bridge/queue.rs            FE40F333828A44A8BF6A157A2FEA9C890AB750BCC8007AF6D76C6792616BA5C9  mtime 2026-09-26 19:29:08
+orchestration/loop/src/compat.rs        22D63EBF83ABC5C5C21D6BE1ED90DB21C635759476D09DEE7F9C2876366027C1  mtime 2026-09-26 01:42:42

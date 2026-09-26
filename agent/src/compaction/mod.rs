@@ -512,6 +512,31 @@ mod tests {
         }
     }
 
+    /// Every trigger has exactly one phase, and a provider limit is the only one
+    /// that can fire *inside* a turn (the checkpoint then has to be admitted
+    /// mid-stream rather than before the request is built). The legacy-A tests
+    /// derive their phase through this helper, so a wrong mapping would move
+    /// those tests onto a phase the runtime no longer uses.
+    #[test]
+    fn every_compaction_trigger_maps_to_its_documented_phase() {
+        assert_eq!(
+            default_phase(CompactionTrigger::Manual),
+            CompactionPhase::Standalone
+        );
+        assert_eq!(
+            default_phase(CompactionTrigger::ProviderContextLimit),
+            CompactionPhase::MidTurn
+        );
+        assert_eq!(
+            default_phase(CompactionTrigger::Automatic),
+            CompactionPhase::PreTurn
+        );
+        assert_eq!(
+            default_phase(CompactionTrigger::ModelContextDownshift),
+            CompactionPhase::PreTurn
+        );
+    }
+
     #[test]
     fn cjk_text_estimates_higher_than_ascii_of_same_length() {
         // 100 CJK chars ≈ 150 tokens; 100 ASCII chars ≈ 25 tokens.

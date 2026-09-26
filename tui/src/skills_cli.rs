@@ -1936,7 +1936,6 @@ mod tests {
         chunks: usize,
         reads: usize,
     }
-
     impl Read for ChunkCounter {
         fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
             self.reads += 1;
@@ -1945,6 +1944,119 @@ mod tests {
             buffer[..read].fill(b'x');
             Ok(read)
         }
+    }
+
+    // ─── The same real-runner paths on Windows ────────────────────────────
+    //
+    // The tests above drive the real runner through `sh`, which Windows does not
+    // have, so the runner's timeout, flood-limit and deadline-error paths were
+    // never executed on this host. These are their Windows counterparts, using
+    // `cmd` and PowerShell (both present on every supported Windows).
+
+    /// A child that writes `bytes` bytes to stdout without the help of `sh`.
+    #[cfg(windows)]
+    fn windows_bytes_on_stdout(bytes: usize) -> Vec<String> {
+        vec![
+            "-NoProfile".to_string(),
+            "-Command".to_string(),
+            format!("[Console]::Out.Write('x' * {bytes})"),
+        ]
+    }
+
+    #[cfg(windows)]
+    fn windows_args(script: &str) -> Vec<String> {
+        vec!["/c".to_string(), script.to_string()]
+    }
+
+    /// `spawn_runner` is the real entry point (the `/skills` panel's runner);
+    /// every other test injects a runner, so its own body must be exercised at
+    /// least once against a real program.
+    #[cfg(windows)]
+    #[test]
+    fn a_real_windows_spawn_runner_captures_streams_and_the_exit_code() {
+        let args = windows_args("echo out & echo err 1>&2 & exit /b 3");
+        let (code, stdout, stderr) = spawn_runner(Path::new("cmd"), &args).expect("run cmd");
+        assert_eq!(code, 3, "the child's exit code is reported verbatim");
+        assert!(stdout.contains("out"), "{stdout:?}");
+        assert!(
+            stderr.contains("err"),
+            "the streams stay separate: {stderr:?}"
+        );
+    }
+
+    /// The deadline path on Windows: a child that outlives its budget is killed
+    /// **and reaped**, and the failure is the timeout marker rather than a
+    /// partial (or empty) success. The bounded assertion is what makes "it was
+    /// killed" real — the child would otherwise hold the pipe for 30 s.
+    #[cfg(windows)]
+    #[test]
+    fn a_real_windows_wait_times_out_and_kills_the_child() {
+        let started = Instant::now();
+        let args = windows_args("ping -n 30 127.0.0.1 > nul");
+        let error = spawn_with_timeout(Path::new("cmd"), &args, Duration::from_millis(300))
+            .expect_err("a child that outlives its budget must fail");
+        assert!(error.starts_with(TIMEOUT_MARKER), "{error}");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "the timeout must kill the child, not wait it out: {elapsed:?}"
+        );
+        // A timeout reports no exit code (the child never answered), which is
+        // the `code.is_none()` arm of the deadline error.
+        assert!(
+            !error.contains("descendant"),
+            "a killed child is a timeout, not a leaked pipe: {error}"
+        );
+    }
+
+    /// A child whose output passes the capture ceiling is killed with an
+    /// explicit error instead of letting the TUI's memory follow it, and the
+    /// message names the limit (so the user learns why the panel failed).
+    #[cfg(windows)]
+    #[test]
+    fn a_real_windows_child_flooding_the_capture_limit_fails_explicitly() {
+        let args = windows_bytes_on_stdout(MAX_CAPTURED_BYTES + 2 * 1024 * 1024);
+        let error = spawn_with_timeout(Path::new("powershell"), &args, Duration::from_secs(60))
+            .expect_err("flooding past the ceiling must fail");
+        assert!(error.contains("capture limit"), "{error}");
+        assert!(error.contains(&MAX_CAPTURED_BYTES.to_string()), "{error}");
+    }
+
+    /// Output larger than the OS pipe buffer (64 KiB) must come back intact: the
+    /// draining is what keeps a fast child from blocking in `write` and being
+    /// killed as a timeout although it answered instantly.
+    #[cfg(windows)]
+    #[test]
+    fn a_real_windows_wait_drains_stdout_larger_than_the_pipe_buffer() {
+        let bytes = 200_000usize;
+        let args = windows_bytes_on_stdout(bytes);
+        let (code, stdout, _) =
+            spawn_with_timeout(Path::new("powershell"), &args, Duration::from_secs(60))
+                .expect("a big answer is not a timeout");
+        assert_eq!(code, 0);
+        assert_eq!(stdout.len(), bytes, "every byte is captured");
+    }
+
+    /// The two deadline messages are distinct on purpose: a child that already
+    /// answered but whose *descendant* still holds the pipe is not a timeout, and
+    /// calling its output "cut short" would invent a result. Both arms asserted
+    /// directly, because producing a real leaking grandchild is not
+    /// deterministic.
+    #[test]
+    fn deadline_error_distinguishes_a_killed_child_from_a_leaked_pipe() {
+        let timeout = Duration::from_secs(7);
+        let running = deadline_error(false, timeout);
+        assert!(running.starts_with(TIMEOUT_MARKER), "{running}");
+        assert!(running.contains("7s"), "{running}");
+
+        let exited = deadline_error(true, timeout);
+        assert!(
+            !exited.starts_with(TIMEOUT_MARKER),
+            "an answered child is not a timeout: {exited}"
+        );
+        assert!(exited.contains("descendant"), "{exited}");
+        assert!(exited.contains("7s"), "{exited}");
+        assert_ne!(running, exited);
     }
 
     #[test]

@@ -1424,4 +1424,80 @@ mod tests {
             })
         );
     }
+
+    /// Every guard on the trim path fails *open*: an event the projection cannot
+    /// classify — no `type`, no raw `data`, or a `data` that is not a JSON
+    /// object — must be forwarded byte-for-byte, because dropping it would lose
+    /// an event the client has no other way to fetch. The one thing that *is*
+    /// dropped is a streamed type: that is decided by type alone, so whether its
+    /// payload happens to parse is irrelevant.
+    #[test]
+    fn replay_page_forwards_raw_events_it_cannot_classify() {
+        let mut page = json!({
+            "events": [
+                {"data": json!({"text": "x"}).to_string(), "idx": 1},
+                {"type": "thinking_delta", "idx": 2},
+                // A kept type whose payload is not an object: forwarded verbatim.
+                {"type": "tool_end", "data": 7, "idx": 3},
+                {"type": "tool_end", "data": "[\"array\"]", "idx": 4},
+                // A streamed type is dropped by type, so its payload never has to
+                // parse — and this one would not.
+                {"type": "tool_delta", "data": "still not json", "idx": 5},
+            ],
+        });
+        lean_replay_page(&mut page, true);
+        let indices: Vec<Value> = page["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["idx"].clone())
+            .collect();
+        assert_eq!(
+            indices,
+            vec![json!(1), json!(2), json!(3), json!(4)],
+            "only the classifiable streamed delta is trimmed"
+        );
+        assert_eq!(
+            page["events"][2]["data"],
+            json!(7),
+            "a non-string payload is forwarded untouched"
+        );
+        assert_eq!(
+            page["events"][3]["data"],
+            json!("[\"array\"]"),
+            "valid JSON that is not an object is forwarded byte-for-byte"
+        );
+    }
+
+    /// A folded projection event whose payload is not a JSON object is left
+    /// alone: blanking it would either rewrite an opaque string or invent a
+    /// field the client never sent.
+    #[test]
+    fn folded_events_with_an_unexpected_payload_are_left_alone() {
+        let mut page = json!({
+            "projection": {"events": [
+                {"type": "thinking_delta", "data": "not json", "idx": 1},
+                {"type": "thinking_delta", "idx": 2},
+                {"type": "thinking_delta", "data": 7, "idx": 3},
+                {"type": "thinking_delta", "data": json!({"text": "long"}).to_string(), "idx": 4},
+            ]},
+        });
+        lean_replay_page(&mut page, true);
+        let folded = page["projection"]["events"].as_array().unwrap();
+        assert_eq!(folded[0]["data"], json!("not json"));
+        assert!(folded[1].get("data").is_none());
+        assert_eq!(folded[2]["data"], json!(7));
+        let blanked: Value = serde_json::from_str(folded[3]["data"].as_str().unwrap()).unwrap();
+        assert_eq!(blanked["text"], json!(""));
+    }
+
+    /// A page carrying neither shape — a cursor-only reply — is left as it is
+    /// rather than gaining keys the trim did not mean to add.
+    #[test]
+    fn a_page_without_events_is_not_rewritten() {
+        let before = json!({"watermark": 4, "nextSinceIdx": 4});
+        let mut page = before.clone();
+        lean_replay_page(&mut page, true);
+        assert_eq!(page, before);
+    }
 }

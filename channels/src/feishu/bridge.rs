@@ -2397,22 +2397,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn card_action_edge_arms() {
         let fx = make_bridge("card-edge", done_events()).await;
-        // No content → early return.
-        let mut e = event("om_2");
-        e.event_type = "card.action.trigger".into();
-        e.content = None;
-        fx.bridge.handle_event(e).await.unwrap();
-        // Invalid JSON content → early return.
-        let mut e = event("om_3");
-        e.event_type = "card.action.trigger".into();
-        e.content = Some("not json".into());
-        fx.bridge.handle_event(e).await.unwrap();
-        // Missing approval_request_id → early return.
-        let mut e = event("om_4");
-        e.event_type = "card.action.trigger".into();
-        e.content = Some(r#"{"action":"approve"}"#.into());
-        fx.bridge.handle_event(e).await.unwrap();
-        // No session → decision skipped, ack reply still sent.
+        // A card action whose request id matches no route for this chat is
+        // answered by the caller's guard, before the handler is entered.
         fx.bridge
             .handle_event(card_action("om_5", "approve", "req_9"))
             .await
@@ -2420,7 +2406,110 @@ mod tests {
         assert!(ts::recorded_of(&fx.grpc, "approval_decision").is_empty());
         assert!(replies(&fx.http, "om_5")
             .iter()
-            .any(|b| b.contains("not delivered")));
+            .any(|b| b.contains("No matching approval")));
+
+        // The handler's own input guards, called directly (the caller's route
+        // guard normally rejects these first). Each is a no-op: no decision is
+        // sent and no card reply goes out.
+        let mut no_content = event("om_6");
+        no_content.event_type = "card.action.trigger".into();
+        no_content.content = None;
+        fx.bridge.handle_card_action(&no_content).await.unwrap();
+
+        let mut bad_json = card_action("om_7", "approve", "req_1");
+        bad_json.content = Some("not json".into());
+        fx.bridge.handle_card_action(&bad_json).await.unwrap();
+
+        let mut no_request_id = card_action("om_8", "approve", "");
+        no_request_id.content = Some(r#"{"action":"approve"}"#.into());
+        fx.bridge.handle_card_action(&no_request_id).await.unwrap();
+
+        let mut unknown_action = card_action("om_9", "dismiss", "req_1");
+        unknown_action.content =
+            Some(r#"{"action":"dismiss","approval_request_id":"req_1"}"#.into());
+        fx.bridge.handle_card_action(&unknown_action).await.unwrap();
+
+        assert!(
+            ts::recorded_of(&fx.grpc, "approval_decision").is_empty(),
+            "malformed card actions must not reach the agent"
+        );
+        for msg_id in ["om_6", "om_7", "om_8", "om_9"] {
+            assert!(
+                replies(&fx.http, msg_id).is_empty(),
+                "{msg_id} must not get an acknowledgement"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failing_queued_event_is_logged_and_the_worker_survives() {
+        // The ingress queue's worker logs a handler failure instead of dying.
+        // Session creation fails and no error reply can be delivered either, so
+        // `handle_event` returns Err — the one path that reaches the worker's
+        // log line. Both queued events fail the same way, which proves the
+        // worker kept running after the first failure. A thread-local
+        // subscriber (current_thread runtime) is what makes the log line's
+        // body evaluate at all.
+        let _sub = tracing::subscriber::set_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        );
+        let mut routes = std_routes(&["om_1", "om_2"]);
+        routes.retain(|route| !route.path.ends_with("/reply"));
+        let mut state = MockState::default();
+        state.events = done_events();
+        state.fail_commands.insert("new_session".into());
+        let fx = make_bridge_routes("queue-event-error", state, routes).await;
+        let bridge = Arc::new(fx.bridge);
+        assert!(bridge.enqueue_event(event("om_1")));
+        assert!(bridge.enqueue_event(event("om_2")));
+        assert!(
+            ts::wait_until(
+                || {
+                    // Both events reached the session-creation failure and
+                    // attempted their (undeliverable) error reply.
+                    ts::requests_to(&fx.http, "/im/v1/messages/om_1/reply").len() == 1
+                        && ts::requests_to(&fx.http, "/im/v1/messages/om_2/reply").len() == 1
+                },
+                std::time::Duration::from_secs(5)
+            )
+            .await,
+            "the worker must survive a failing event and handle the next one"
+        );
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_turn_superseded_before_it_starts_clears_its_ack_reaction() {
+        let fx = make_bridge("supersede-before-start", done_events()).await;
+        // The generation counter is already past this turn's arrival
+        // generation, so the pre-stream supersede check fires.
+        let counter = std::sync::atomic::AtomicU64::new(7);
+        let lock = tokio::sync::Mutex::new(());
+        prompt_loop::run_prompt_loop(
+            &fx.bridge.feishu,
+            &fx.bridge.agent,
+            "sid-1",
+            "om_1",
+            "hello",
+            &[],
+            false,
+            &lock,
+            &counter,
+            Some("rid_1".into()),
+            None,
+            Some(3),
+        )
+        .await
+        .unwrap();
+        // The stale turn removed its Typing reaction and never prompted.
+        assert!(ts::recorded_of(&fx.grpc, "prompt").is_empty());
+        assert_eq!(
+            ts::requests_to(&fx.http, "/im/v1/messages/om_1/reactions/rid_1").len(),
+            1,
+            "the superseded turn must clear its ack reaction"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

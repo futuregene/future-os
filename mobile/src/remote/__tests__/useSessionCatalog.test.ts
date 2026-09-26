@@ -500,6 +500,19 @@ describe("useSessionCatalog", () => {
     expect(result.current.sandboxAvailable).toBe(true);
   });
 
+  test("a failed settings read is recorded as failed and keeps the previous tier", async () => {
+    render();
+    request.mockResolvedValueOnce({ data: { approvalTier: "sandbox", sandboxAvailable: true } });
+    await act(async () => { await result.current.refreshSettings(); });
+    expect(result.current.approvalTier).toBe("sandbox");
+    request.mockRejectedValueOnce(new Error("desktop offline"));
+    await act(async () => { await result.current.refreshSettings(); });
+    // The domain reports `failed` so the panel can offer a retry, and the tier
+    // the desktop last confirmed is not replaced by a guess.
+    expect(result.current.catalogSync.settings).toBe("failed");
+    expect(result.current.approvalTier).toBe("sandbox");
+  });
+
   test("refreshWorkspaces updates the workspace list", async () => {
     render();
     request.mockResolvedValueOnce({
@@ -770,6 +783,37 @@ describe("useSessionCatalog", () => {
     expect(result.current.sessions.map((s) => s.sessionId)).toEqual(["s1"]);
   });
 
+  test("deleting a workspace also drops the phone-side titles of its sessions", async () => {
+    // A title override is keyed by session id and outlives the session. If it
+    // were kept, a later session that reuses the id would show a name the user
+    // typed for an unrelated conversation.
+    render();
+    act(() => void result.current.applySessionSnapshot([
+      { ...session("s1"), mode: "workspace", workspaceId: "w1" },
+    ]));
+    act(() => result.current.setTitleOverrides({ s1: "Phone name", "elsewhere": "Kept" }));
+    request.mockResolvedValueOnce({ data: {} });
+    await act(async () => { await result.current.deleteWorkspace("w1"); });
+    expect(result.current.titleOverrides).toEqual({ elsewhere: "Kept" });
+  });
+
+  test("a live finish marks a session the user is not reading as unread", async () => {
+    render();
+    selectedRef.current = "other";
+    act(() => {
+      result.current.observeRunEvent({ type: "agent_start", data: "{}", runId: "r1" }, "s1");
+      result.current.observeRunEvent({ type: "agent_end", data: "{}", runId: "r1" }, "s1");
+    });
+    expect(onFinished).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "s1" }));
+    expect(result.current.unreadSessions.has("s1")).toBe(true);
+    // The one on screen is not flagged: the user is looking at it.
+    act(() => {
+      result.current.observeRunEvent({ type: "agent_start", data: "{}", runId: "r2" }, "other");
+      result.current.observeRunEvent({ type: "agent_end", data: "{}", runId: "r2" }, "other");
+    });
+    expect(result.current.unreadSessions.has("other")).toBe(false);
+  });
+
   test("setSessionPinned reorders pinned sessions to the top", async () => {
     render();
     act(
@@ -963,5 +1007,225 @@ describe("useSessionCatalog", () => {
     });
     expect(request).toHaveBeenCalledWith({ type: "list_workspaces" }, "list");
     expect(request).not.toHaveBeenCalledWith({ type: "list_sessions" }, "list");
+  });
+
+  test("a revision beacon with nothing to compare against is ignored", () => {
+    render();
+    act(() => { result.current.noteCatalogRevisions(undefined); });
+    // An absent beacon must not be dereferenced (a TypeError here would take
+    // the presence handler down with it) and must not trigger a pull.
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  test("catalogue refreshes without a client are no-ops", async () => {
+    render();
+    clientRef.current = null;
+    await act(async () => {
+      await result.current.refreshSessions();
+      await result.current.refreshSettings();
+      await result.current.refreshWorkspaces();
+      await result.current.refreshModels();
+    });
+    // Nothing to read from: no request may be sent on a torn-down coupling.
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  test("a live terminal event with an unusable payload is not announced", () => {
+    render();
+    const base = { runId: "r1", type: "agent_end" } as never;
+    act(() => {
+      // No run to attribute it to, and a type that carries no completion.
+      result.current.observeRunEvent({ type: "agent_start" } as never, "s1");
+      result.current.observeRunEvent({ ...(base as object), type: "message" } as never, "s1");
+      result.current.observeRunEvent({ ...(base as object), runId: undefined } as never, "s1");
+      result.current.observeRunEvent({ ...(base as object), data: "{" } as never, "s1");
+      result.current.observeRunEvent({ ...(base as object), data: "[]" } as never, "s1");
+    });
+    // A completion whose payload cannot be read (truncated JSON, an array where
+    // an object is promised) must not be reported as a finished run.
+    expect(onFinished).not.toHaveBeenCalled();
+  });
+
+  test("the notified-run ledger stays bounded without losing recent deduplication", () => {
+    render();
+    const finish = (runId: string) => act(() => {
+      result.current.observeRunEvent({ runId, type: "agent_end", data: "{}" } as never, "s1");
+    });
+    for (let index = 0; index < 513; index += 1) finish(`run-${index}`);
+    expect(onFinished).toHaveBeenCalledTimes(513);
+    // The oldest entries are dropped to keep the ledger bounded, but the run
+    // that just finished is still remembered: a repeated terminal frame must not
+    // announce the same completion twice.
+    finish("run-512");
+    expect(onFinished).toHaveBeenCalledTimes(513);
+  });
+
+  test("a model recovery timer that outlives the catalogue is cleared on unmount", async () => {
+    jest.useFakeTimers();
+    try {
+      render();
+      request.mockResolvedValue({ data: { models: [] } });
+      await act(async () => { await result.current.refreshModels(); });
+      expect(request).toHaveBeenCalledTimes(1);
+      await act(async () => { renderer!.unmount(); renderer = null; });
+      await act(async () => { await jest.runAllTimersAsync(); });
+      // The warm-up retries belong to a catalogue that no longer exists.
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("a newer model refresh abandons the pending warm-up retry", async () => {
+    jest.useFakeTimers();
+    try {
+      render();
+      request.mockResolvedValue({ data: { models: [] } });
+      await act(async () => { await result.current.refreshModels(); });
+      expect(request).toHaveBeenCalledTimes(1);
+      // A reconnect asks again before the first retry fires.
+      await act(async () => { await result.current.refreshModels(); });
+      expect(request).toHaveBeenCalledTimes(2);
+      await act(async () => { await jest.runAllTimersAsync(); });
+      // The superseded timer was cancelled: only the newer generation's retries
+      // may run, so the request count follows one recovery chain, not two.
+      expect(request).toHaveBeenCalledTimes(6);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("a warm-up retry whose epoch was replaced or client removed does nothing", async () => {
+    jest.useFakeTimers();
+    try {
+      render();
+      request.mockResolvedValue({ data: { models: [] } });
+      await act(async () => { await result.current.refreshModels(); });
+      expect(request).toHaveBeenCalledTimes(1);
+      // A new authenticated epoch invalidates the catalogue generation.
+      act(() => { result.current.setCatalogEpoch("E2"); });
+      await act(async () => { await jest.advanceTimersByTimeAsync(5_000); });
+      expect(request).toHaveBeenCalledTimes(1);
+
+      await act(async () => { await result.current.refreshModels(); });
+      expect(request).toHaveBeenCalledTimes(2);
+      clientRef.current = null;
+      await act(async () => { await jest.advanceTimersByTimeAsync(5_000); });
+      expect(request).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("reset cancels a pending model warm-up", async () => {
+    jest.useFakeTimers();
+    try {
+      render();
+      request.mockResolvedValue({ data: { models: [] } });
+      await act(async () => { await result.current.refreshModels(); });
+      act(() => { result.current.reset(); });
+      await act(async () => { await jest.runAllTimersAsync(); });
+      // An unpaired catalogue must not keep probing the desktop it just left.
+      expect(request).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("title generation refuses to run without a connection or a session", async () => {
+    render();
+    clientRef.current = null;
+    await expect(result.current.generateTitle("s1", "en")).rejects.toThrow("not_connected");
+    clientRef.current = { request, requestRetry: request } as unknown as RemoteClient;
+    await expect(result.current.generateTitle("", "en")).rejects.toThrow("not_connected");
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  test("title generation refuses a reply from a desktop generation that was replaced", async () => {
+    render();
+    let finish!: (value: unknown) => void;
+    request.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const pending = result.current.generateTitle("s1", "en");
+    // The desktop re-authenticated while the title was being written.
+    act(() => { result.current.setCatalogEpoch("E2"); });
+    finish({ success: true, data: { title: "Renamed" } });
+    await expect(pending).rejects.toThrow("connection_changed");
+  });
+
+  test("title generation refuses an empty or refused answer", async () => {
+    render();
+    request.mockResolvedValueOnce({ success: false, error: "title_unavailable" });
+    await expect(result.current.generateTitle("s1", "en")).rejects.toThrow("title_unavailable");
+    request.mockResolvedValueOnce({ success: true, data: { title: "   " } });
+    // A blank title is not a title: accepting it would rename the session to
+    // nothing.
+    await expect(result.current.generateTitle("s1", "en")).rejects.toThrow("title_generation_failed");
+  });
+
+  test("a rename acknowledged by a replaced desktop generation is dropped", async () => {
+    render();
+    let finish!: (value: unknown) => void;
+    request.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const pending = result.current.rename("s1", "Renamed");
+    act(() => { result.current.setCatalogEpoch("E2"); });
+    finish({ data: {} });
+    await act(async () => { await pending; });
+    // The overlay and the local title belong to the pairing that asked for the
+    // rename, not to whatever desktop is connected now.
+    expect(result.current.titleOverrides).toEqual({});
+    expect(result.current.sessions.some(item => item.title === "Renamed")).toBe(false);
+  });
+
+  test("a deletion acknowledged by a replaced desktop generation keeps the session", async () => {
+    render();
+    await act(async () => {
+      request.mockResolvedValue({ data: { sessions: [session("s1")] } });
+      await result.current.refreshSessions();
+    });
+    let finish!: (value: unknown) => void;
+    request.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const pending = result.current.deleteSession("s1", "thread-s1");
+    act(() => { result.current.setCatalogEpoch("E2"); });
+    finish({ data: {} });
+    // `false` means the conversation must stay open: the delete was answered by
+    // a desktop generation this screen no longer shows.
+    await expect(pending).resolves.toBe(false);
+    expect(result.current.sessions.map(item => item.sessionId)).toEqual(["s1"]);
+  });
+
+  test("a workspace deletion acknowledged by a replaced desktop generation keeps the catalogue", async () => {
+    render();
+    await act(async () => {
+      request.mockResolvedValue({
+        data: { sessions: [{ ...session("s1"), workspaceId: "w1" }] },
+      });
+      await result.current.refreshSessions();
+    });
+    let finish!: (value: unknown) => void;
+    request.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const pending = result.current.deleteWorkspace("w1");
+    act(() => { result.current.setCatalogEpoch("E2"); });
+    finish({ data: {} });
+    // `false` keeps the caller's conversation open and leaves the local
+    // catalogue intact: the cascade was answered by a desktop this screen no
+    // longer shows.
+    await expect(pending).resolves.toBe(false);
+    expect(result.current.sessions.map(item => item.sessionId)).toEqual(["s1"]);
+  });
+
+  test("a pin acknowledged by a replaced desktop generation does not reorder", async () => {
+    render();
+    await act(async () => {
+      request.mockResolvedValue({ data: { sessions: [session("s1"), session("s2")] } });
+      await result.current.refreshSessions();
+    });
+    const before = result.current.sessions.map(item => item.sessionId);
+    let finish!: (value: unknown) => void;
+    request.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const pending = result.current.setSessionPinned("s2", "thread-s2", true);
+    act(() => { result.current.setCatalogEpoch("E2"); });
+    finish({ data: {} });
+    await act(async () => { await pending; });
+    expect(result.current.sessions.map(item => item.sessionId)).toEqual(before);
   });
 });

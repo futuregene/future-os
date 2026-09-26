@@ -229,11 +229,15 @@ fn validate_path(path: &Path) -> Result<(), RequestError> {
     Ok(())
 }
 
-// Linux helper protocol semantics: the fixtures are POSIX absolute paths and
-// bwrap locations, which are only meaningful where the helper itself runs.
-#[cfg(all(test, unix))]
+// The helper protocol itself is POSIX, but the code under test validates
+// *host* paths, so the fixtures spell their absolute paths the way the host's
+// `Path::is_absolute` accepts. Every invariant asserted here (versioning,
+// path safety, fd uniqueness, size bounds, unknown-field rejection) is
+// platform-independent.
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::host_absolute_path as abs;
 
     fn identity() -> BwrapIdentity {
         BwrapIdentity {
@@ -248,13 +252,13 @@ mod tests {
         LinuxSandboxRequest {
             version: REQUEST_VERSION,
             phase: HelperPhase::Outer,
-            bwrap_path: PathBuf::from("/usr/bin/bwrap"),
+            bwrap_path: abs("/usr/bin/bwrap"),
             bwrap_identity: identity(),
-            cwd: PathBuf::from("/tmp/work"),
+            cwd: abs("/tmp/work"),
             argv: vec!["/bin/sh".into(), "-c".into(), "true".into()],
             mounts: vec![MountRequest {
-                source: PathBuf::from("/tmp/work"),
-                target: PathBuf::from("/tmp/work"),
+                source: abs("/tmp/work"),
+                target: abs("/tmp/work"),
                 kind: MountKind::Writable,
                 expected: None,
                 source_fd: None,
@@ -267,13 +271,144 @@ mod tests {
         }
     }
 
+    fn writable_mount(index: usize) -> MountRequest {
+        MountRequest {
+            source: abs(&format!("/tmp/m{index}")),
+            target: abs(&format!("/tmp/m{index}")),
+            kind: MountKind::Writable,
+            expected: None,
+            source_fd: None,
+        }
+    }
+
+    /// Rejection matrix: every validation arm the helper relies on to fail
+    /// closed. A miss here is a sandbox-escape-shaped bug (an oversized or
+    /// mis-phased request reaching bwrap), so each arm is asserted by its
+    /// exact error variant rather than merely `is_err()`.
+    #[test]
+    fn validation_rejects_every_oversized_misphased_and_unsafe_shape() {
+        use crate::sandbox::linux::plan::GlobSnapshot;
+
+        // Mount count over the bwrap argument ceiling.
+        let mut candidate = request();
+        candidate.mounts = (0..=MAX_MOUNTS).map(writable_mount).collect();
+        assert_eq!(candidate.validate(), Err(RequestError::TooManyMounts));
+
+        // Glob snapshots are mounts too: their count, the pattern's
+        // absoluteness and each expanded match must all be bounded/absolute.
+        let absolute_pattern = abs("/tmp/**/*.pem").to_string_lossy().into_owned();
+        let mut candidate = request();
+        candidate.glob_snapshots = vec![GlobSnapshot {
+            pattern: absolute_pattern.clone(),
+            matches: (0..=MAX_MOUNTS)
+                .map(|index| abs(&format!("/tmp/{index}.pem")))
+                .collect(),
+        }];
+        assert_eq!(candidate.validate(), Err(RequestError::TooManyMounts));
+        let mut candidate = request();
+        candidate.glob_snapshots = vec![GlobSnapshot {
+            pattern: "relative/*.pem".into(),
+            matches: vec![abs("/tmp/a.pem")],
+        }];
+        assert_eq!(candidate.validate(), Err(RequestError::TooManyMounts));
+        let mut candidate = request();
+        candidate.glob_snapshots = vec![GlobSnapshot {
+            pattern: absolute_pattern,
+            matches: vec![PathBuf::from("relative.pem")],
+        }];
+        assert_eq!(candidate.validate(), Err(RequestError::TooManyMounts));
+
+        // Omitted protected paths are bounded as well.
+        let mut candidate = request();
+        candidate.omitted_missing_protected_paths = (0..=MAX_MOUNTS)
+            .map(|index| abs(&format!("/tmp/o{index}")))
+            .collect();
+        assert_eq!(candidate.validate(), Err(RequestError::TooManyMounts));
+
+        // Digest must be a 64-char hex string: short, over-long and non-hex.
+        for digest in ["a".repeat(63), "a".repeat(65), "z".repeat(64)] {
+            let mut candidate = request();
+            candidate.policy_digest = digest;
+            assert_eq!(candidate.validate(), Err(RequestError::InvalidDigest));
+        }
+
+        // A reported fd is only meaningful for the outer phase and must not
+        // collide with the helper's own descriptors (< 5).
+        let mut candidate = request();
+        candidate.report_fd = Some(4);
+        assert_eq!(candidate.validate(), Err(RequestError::InvalidFd));
+        let mut candidate = request();
+        candidate.phase = HelperPhase::Inner;
+        candidate.report_fd = Some(9);
+        candidate.status_fd = Some(3);
+        assert_eq!(candidate.validate(), Err(RequestError::InvalidFd));
+
+        // Phase/mount mismatch: the outer phase must carry no mount fds and no
+        // expected identity; the inner phase must carry both.
+        let mut candidate = request();
+        candidate.mounts[0].source_fd = Some(7);
+        assert_eq!(candidate.validate(), Err(RequestError::InvalidFd));
+
+        let mut inner = request();
+        inner.phase = HelperPhase::Inner;
+        inner.status_fd = Some(3);
+        inner.mounts[0].source_fd = Some(7);
+        inner.mounts[0].expected = Some(identity());
+        assert_eq!(inner.validate(), Ok(()));
+        // The same request without the expected identity is rejected.
+        inner.mounts[0].expected = None;
+        assert_eq!(inner.validate(), Err(RequestError::InvalidFd));
+        // And an inner request with no source fd at all as well.
+        let mut inner = request();
+        inner.phase = HelperPhase::Inner;
+        inner.status_fd = Some(3);
+        assert_eq!(inner.validate(), Err(RequestError::InvalidFd));
+
+        // A duplicate source fd across mounts is rejected, not silently shared.
+        let mut inner = request();
+        inner.phase = HelperPhase::Inner;
+        inner.status_fd = Some(3);
+        inner.mounts = vec![
+            MountRequest {
+                source_fd: Some(7),
+                expected: Some(identity()),
+                ..writable_mount(0)
+            },
+            MountRequest {
+                source_fd: Some(7),
+                expected: Some(identity()),
+                ..writable_mount(1)
+            },
+        ];
+        assert_eq!(inner.validate(), Err(RequestError::DuplicateFd));
+    }
+
+    /// The wire-size guards on both directions: an oversized input buffer is
+    /// rejected before parsing, and an oversized base64 spelling is rejected
+    /// before decoding (so a hostile peer cannot make the helper allocate).
+    #[test]
+    fn oversized_inputs_are_rejected_before_parsing_or_decoding() {
+        let bytes = vec![b'a'; MAX_REQUEST_BYTES + 1];
+        assert_eq!(
+            LinuxSandboxRequest::from_json_bytes(&bytes),
+            Err(RequestError::TooLarge)
+        );
+        let encoded = "A".repeat(MAX_REQUEST_BYTES * 2 + 1);
+        assert_eq!(
+            LinuxSandboxRequest::decode(&encoded),
+            Err(RequestError::TooLarge)
+        );
+        assert_eq!(
+            LinuxSandboxRequest::decode("not*base64"),
+            Err(RequestError::InvalidEncoding)
+        );
+    }
+
     #[test]
     fn omitted_missing_paths_round_trip_and_are_validated() {
         let mut request = request();
-        request.omitted_missing_protected_paths = vec![
-            PathBuf::from("/home/user/.aws"),
-            PathBuf::from("/home/user/.aws/creds"),
-        ];
+        request.omitted_missing_protected_paths =
+            vec![abs("/home/user/.aws"), abs("/home/user/.aws/creds")];
         assert_eq!(
             LinuxSandboxRequest::decode(&request.encode().unwrap()).unwrap(),
             request

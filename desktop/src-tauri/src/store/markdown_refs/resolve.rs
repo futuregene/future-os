@@ -420,4 +420,20 @@ mod tests {
         assert_eq!(file.name, "");
         assert!(!file.inside_workspace);
     }
+
+    /// A path the model wrote as absolute is kept verbatim instead of being
+    /// joined onto the workspace root. (`"/"` above is absolute only off
+    /// Windows, so the platform's own absolute spelling is what pins this arm.)
+    #[test]
+    fn file_reference_absolute_paths_are_kept_verbatim() {
+        let conn = test_conn();
+        seed_objects(&conn);
+        let absolute = std::env::temp_dir().join("futureos-absolute-ref.txt");
+        let resolved = resolve_file_reference(&conn, "ws1", &absolute.display().to_string())
+            .expect("resolve absolute reference");
+        assert_eq!(resolved.path, absolute.display().to_string());
+        assert_eq!(resolved.name, "futureos-absolute-ref.txt");
+        assert!(!resolved.inside_workspace);
+        assert_eq!(resolved.relative_path, None);
+    }
 }

@@ -67,3 +67,21 @@ async fn reply_view(sink: &dyn ReplySink, result: Result<ProvidersView, crate::A
         Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
     }
 }
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    /// Only the four provider commands the dispatcher routes here may reach this
+    /// handler. Anything else is a routing bug and must panic rather than reply.
+    #[tokio::test]
+    #[should_panic(expected = "handler received")]
+    async fn a_command_from_another_family_is_not_answered() {
+        let sink = crate::remote::test_support::RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "get_settings".into(),
+            ..Default::default()
+        };
+        execute(&cmd, &sink).await;
+    }
+}

@@ -1207,6 +1207,34 @@ mod tests {
         );
     }
 
+    /// The URL inside an OSC 8 sequence is *protocol data*, not markup: a URL
+    /// carrying a control byte could end the escape sequence early and let the
+    /// rest of the string execute as terminal commands (the classic
+    /// `OSC 8` / `BEL`-injection). Such a link must degrade to plain text.
+    #[test]
+    fn hyperlink_collapses_a_control_bearing_url_to_plain_text() {
+        for hostile in [
+            "https://x.com\x07",       // BEL ends the OSC early
+            "https://x.com\x1b\\evil", // a pre-inserted ST
+            "https://x.com\n",         // a newline would break the row
+            "https://x.com\x00",       // NUL
+        ] {
+            assert_eq!(
+                hyperlink("label", hostile),
+                "label",
+                "a control-bearing URL must not be emitted: {hostile:?}"
+            );
+        }
+        // A tab is a control character too, and a URL has no legitimate one.
+        assert_eq!(hyperlink("label", "https://x.com/\ty"), "label");
+        // Non-control Unicode in a URL is left alone (the wrapper is what makes
+        // it safe), so the guard is specifically about controls.
+        assert_eq!(
+            hyperlink("标签", "https://例子.test/路径"),
+            "\x1b]8;;https://例子.test/路径\x1b\\标签\x1b]8;;\x1b\\"
+        );
+    }
+
     #[test]
     fn image_fallback_formats() {
         assert_eq!(

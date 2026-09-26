@@ -63,11 +63,14 @@ describe("useCopyState", () => {
     await act(async () => {
       await h.current.copy("text");
     });
+    // The copy scheduled the reset; exactly one timer is outstanding.
+    expect(vi.getTimerCount()).toBe(1);
+
     h.unmount();
-    // Advancing past the reset fires no post-unmount state update.
-    act(() => {
-      vi.advanceTimersByTime(5000);
-    });
+    // Unmount ran the cleanup, which cleared that timer. Without the cleanup
+    // the count would still be 1 here, so this genuinely exercises it — the
+    // previous version of this test advanced the clock and asserted nothing.
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("re-copying clears the previous timer", async () => {

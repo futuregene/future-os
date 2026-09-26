@@ -131,4 +131,65 @@ mod tests {
         assert_eq!(goal.runnable_advancement().count(), 0);
         assert_eq!(pending_others(&goal, "a"), 2);
     }
+
+    /// The delivery notice is what a host hands to a human: it must carry the
+    /// validation receipt (bounded) when one exists, and omitting it must not
+    /// drop the rest of the handoff. Both shapes are asserted on parsed JSON, so
+    /// a field rename fails here rather than in a consumer.
+    #[test]
+    fn notice_includes_the_validation_receipt_and_bounds_it() {
+        use crate::state::{TaskValidation, ValidationStatus};
+        let mut goal = Goal::new("g", "work", ".");
+        goal.add(Todo::advancement("t", "deliver"));
+        let mut record = crate::state::RunRecord {
+            agent_id: Some("a".into()),
+            turn: 1,
+            todo_id: "t".into(),
+            run_id: "run-1".into(),
+            terminal_state: "completed".into(),
+            error: None,
+            tokens_in_delta: 0,
+            tokens_out_delta: 0,
+            cost_delta: 0.0,
+            tools: vec![],
+            evidence: "artifact validated".into(),
+            recorded_at: 0,
+            spend_source: None,
+            validation: None,
+            failure_kind: None,
+            truncation: None,
+        };
+        // No receipt → `validation` is present but null (stable JSON shape).
+        let without: serde_json::Value =
+            serde_json::from_str(&notice(&goal, &record, None, "s", &goal_dir())).unwrap();
+        assert!(without["validation"].is_null(), "{without}");
+        assert_eq!(without["delivery"], "awaiting_review");
+        assert_eq!(without["pending_other_todos"], 0);
+        assert_eq!(without["execution_state"], "completed");
+
+        // With a receipt, the diagnostics tail is bounded to 400 bytes.
+        record.validation = Some(TaskValidation {
+            schema_version: "future_loop_task_validation_v0".into(),
+            status: ValidationStatus::Failed,
+            validator_kind: "verify".into(),
+            summary: "E".repeat(5_000),
+            recovery_kind: Some(crate::state::RecoveryKind::RepairRequired),
+            exit_code: Some(1),
+            ok: false,
+        });
+        let with: serde_json::Value =
+            serde_json::from_str(&notice(&goal, &record, Some("a"), "s", &goal_dir())).unwrap();
+        let v = &with["validation"];
+        assert_eq!(v["ok"], false);
+        assert_eq!(v["exit_code"], 1);
+        assert!(
+            v["diagnostics_tail"].as_str().unwrap().len() <= 400,
+            "diagnostics must stay bounded: {v}"
+        );
+        assert_eq!(with["agent_id"], "a");
+    }
+
+    fn goal_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from("journal.jsonl")
+    }
 }

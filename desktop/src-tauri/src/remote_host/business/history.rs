@@ -348,4 +348,19 @@ mod tests {
             assert!(!is_newest_page(Some(before)), "cursor {before}");
         }
     }
+
+    /// The history handler serves a closed set of read commands. A name from
+    /// another family means the routing table and the handler disagreed, which
+    /// must be loud rather than answered.
+    #[tokio::test]
+    #[should_panic(expected = "handler received")]
+    async fn a_command_from_another_family_is_not_answered() {
+        use crate::remote::protocol::IncomingCmd;
+        let sink = crate::remote::test_support::RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "get_settings".into(),
+            ..Default::default()
+        };
+        super::execute(&cmd, &sink).await;
+    }
 }

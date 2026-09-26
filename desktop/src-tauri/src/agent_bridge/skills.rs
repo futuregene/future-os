@@ -258,4 +258,46 @@ mod tests {
         );
         refresh_skills().await;
     }
+
+    /// A broken Agent answer must never decide the user's prompt: a transport
+    /// failure and a malformed suggestion both surface as errors, which the
+    /// caller collapses to "no recommendation" instead of guessing.
+    #[tokio::test]
+    async fn suggest_skill_surfaces_transport_and_malformed_replies() {
+        let mock = mock_agent();
+
+        mock.push(
+            "suggest_skill",
+            Reply::Status(tonic::Code::Unavailable, "down"),
+        );
+        let error = suggest_skill("deploy", Vec::new())
+            .await
+            .expect_err("a transport failure must not read as 'no suggestion'");
+        assert!(
+            error
+                .to_string()
+                .contains("Unable to request a skill suggestion"),
+            "{error}"
+        );
+
+        // `skill` present but the wrong shape: decoding must fail loudly rather
+        // than silently reporting "no recommendation".
+        mock.push_data("suggest_skill", serde_json::json!({"skill": {"name": 7}}));
+        let error = suggest_skill("deploy", Vec::new())
+            .await
+            .expect_err("a malformed suggestion must be reported");
+        assert!(error.to_string().contains("invalid suggestion"), "{error}");
+
+        // A well-formed reply still yields the suggestion it carries.
+        mock.push_data(
+            "suggest_skill",
+            serde_json::json!({"skill": {"name": "deploy", "description": "ship it"}}),
+        );
+        let suggestion = suggest_skill("deploy", Vec::new())
+            .await
+            .expect("well-formed reply")
+            .expect("a suggestion");
+        assert_eq!(suggestion.name, "deploy");
+        assert_eq!(suggestion.description, "ship it");
+    }
 }

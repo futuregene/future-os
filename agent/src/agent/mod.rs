@@ -580,6 +580,77 @@ mod tests {
         Loop::new(std::sync::Arc::new(MockProvider), "test-model")
     }
 
+    /// `error_message` is the single place where a truncation reason becomes a
+    /// stable, client-visible code (the UI and the orchestration layer branch on
+    /// it), so every documented reason has to keep its code and an unknown one
+    /// must fall back *without* losing the raw reason a human needs.
+    #[test]
+    fn stream_truncation_error_message_maps_every_reason_to_a_stable_code() {
+        let cases = [
+            ("upstream_disconnected", "UPSTREAM_DISCONNECTED"),
+            ("request_timeout", "RESPONSE_TIMEOUT"),
+            ("idle_timeout", "RESPONSE_TIMEOUT"),
+            ("finish_length", "OUTPUT_LIMIT"),
+            ("finish_content_filter", "MODEL_CONTENT_FILTER"),
+            ("finish_error", "MODEL_RESPONSE_ERROR"),
+            ("model_response_error", "MODEL_RESPONSE_ERROR"),
+            ("model_paused", "MODEL_PAUSED"),
+            ("provider_cancelled", "PROVIDER_CANCELLED"),
+            // `eof_no_terminal` is documented in the doc comment and produced by
+            // the stream layer; it must not be mistaken for a known finish reason
+            // and must still be classified as unconfirmed.
+            ("eof_no_terminal", "RESPONSE_UNCONFIRMED"),
+            ("a_reason_from_a_future_provider", "RESPONSE_UNCONFIRMED"),
+        ];
+        for (detected_by, code) in cases {
+            let truncation = StreamTruncation {
+                turns_so_far: 3,
+                output_len: 42,
+                tool_calls_so_far: 1,
+                detected_by: detected_by.to_string(),
+            };
+            assert_eq!(
+                truncation.error_message(),
+                format!("[{code}] {detected_by}"),
+                "reason {detected_by} must keep code {code}"
+            );
+        }
+    }
+
+    /// This struct is persisted with a finished run, so its wire shape is
+    /// history: a round trip must reproduce it exactly and a record written by an
+    /// older build (same field names, no extra keys) must still load.
+    #[test]
+    fn stream_truncation_survives_serialization_round_trips_and_legacy_payloads() {
+        let truncation = StreamTruncation {
+            turns_so_far: 2,
+            output_len: 17,
+            tool_calls_so_far: 0,
+            detected_by: "finish_length".to_string(),
+        };
+        let json = serde_json::to_value(&truncation).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "turns_so_far": 2,
+                "output_len": 17,
+                "tool_calls_so_far": 0,
+                "detected_by": "finish_length",
+            })
+        );
+        let restored: StreamTruncation = serde_json::from_value(json).unwrap();
+        assert_eq!(restored, truncation);
+        // A record written before a later field was added must still decode.
+        let legacy: StreamTruncation = serde_json::from_value(serde_json::json!({
+            "turns_so_far": 0,
+            "output_len": 0,
+            "tool_calls_so_far": 0,
+            "detected_by": "idle_timeout",
+        }))
+        .unwrap();
+        assert_eq!(legacy.error_message(), "[RESPONSE_TIMEOUT] idle_timeout");
+    }
+
     #[test]
     fn loop_interrupt_and_clear() {
         let loop_ = make_loop();

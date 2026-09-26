@@ -1,5 +1,6 @@
 import {
   decodePairingCode,
+  encodeBase64Url,
   jwtExpiry,
   MAX_PROMPT_MESSAGE_BYTES,
   messageText,
@@ -63,6 +64,36 @@ describe("pairing codec", () => {
     // parser must degrade to null rather than leak a TypeError to the caller.
     expect(parsePairingInvitation("not a url")).toBeNull();
     expect(parsePairingInvitation("%%%")).toBeNull();
+  });
+
+  test("rejects an empty QR payload and an invitation for the wrong endpoint", () => {
+    // A scanner can hand back an empty frame, and a deep link can target any
+    // other futureos:// route: neither may be mistaken for a pairing code.
+    expect(pairingCodeFromQr("   ")).toBeNull();
+    expect(
+      parsePairingInvitation(
+        "futureos://remote/other?code=abc_123&desktopId=desktop_1&desktopKey=U1",
+      ),
+    ).toBeNull();
+    expect(
+      parsePairingInvitation("https://remote/pair?code=abc_123&desktopId=desktop_1&desktopKey=U1"),
+    ).toBeNull();
+  });
+
+  test("v2 invitations need two real 32-byte transport keys", () => {
+    const base = "futureos://remote/pair?code=abc_123&desktopId=desktop_1&desktopKey=U1&v=2";
+    const key = encodeBase64Url(new Uint8Array(32).fill(7));
+    // A truncated or non-key parameter cannot seed the Noise handshake, and
+    // accepting it would fail much later with a confusing signature error.
+    expect(parsePairingInvitation(`${base}&secureKey=short&secret=short`)).toBeNull();
+    expect(parsePairingInvitation(`${base}&secureKey=${key}&secret=short`)).toBeNull();
+    expect(parsePairingInvitation(`${base}&secureKey=${key}&secret=${key}`)).toEqual({
+      code: "abc_123",
+      desktopId: "desktop_1",
+      desktopPublicKey: "U1",
+      secureKey: key,
+      secret: key,
+    });
   });
 });
 

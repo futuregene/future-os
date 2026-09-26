@@ -196,4 +196,21 @@ mod tests {
             "expired tickets must not keep the store full"
         );
     }
+
+    /// Failing closed beats evicting a live ticket: once the store holds
+    /// [`TICKET_CAPACITY`] unexpired tickets, issuing reports failure instead of
+    /// dropping a ticket a viewer may still be about to redeem.
+    #[test]
+    fn the_store_refuses_to_grow_past_its_capacity() {
+        let store = TicketStore::default();
+        for _ in 0..TICKET_CAPACITY {
+            store.issue(scope("t1")).expect("issue");
+        }
+        assert_eq!(store.len(), TICKET_CAPACITY);
+        assert!(
+            store.issue(scope("t1")).is_none(),
+            "a full store must refuse rather than evict a live ticket"
+        );
+        assert_eq!(store.len(), TICKET_CAPACITY, "nothing was evicted");
+    }
 }

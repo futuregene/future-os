@@ -2348,4 +2348,41 @@ mod tests {
         let mut cache = TOOL_PROJECTION_CACHE.lock().unwrap_or_else(unpoison);
         cache.remove(&run_id);
     }
+
+    #[test]
+    fn remote_prompt_receipt_rejects_a_blank_command_id() {
+        let (_home, _conn) = crate::store::db::test_support::guarded_conn("runs_receipt_blank");
+        let error = mark_remote_prompt_accepted("run-1", "   ")
+            .expect_err("a blank command id can never identify a remote prompt")
+            .to_string();
+        assert!(
+            error.contains("remote command id cannot be empty"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn remote_prompt_receipt_reports_a_run_that_could_not_be_stamped() {
+        let (_home, _conn) = crate::store::db::test_support::guarded_conn("runs_receipt_miss");
+        // Nothing matches, so the remote client must not be told the prompt was
+        // accepted.
+        let error = mark_remote_prompt_accepted("no-such-run", "command-1")
+            .expect_err("a receipt for a non-existent run must not report success")
+            .to_string();
+        assert!(
+            error.contains("Remote prompt receipt could not be committed"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_tool_delta_without_text_projects_no_tool_call() {
+        // Index-only providers stream deltas with no id and no text at all; they
+        // must be dropped rather than projected as an empty-argument call.
+        let events = vec![
+            tool_event("run-1", "tool_delta", r#"{"tool_id":"t1"}"#, 1),
+            tool_event("run-1", "toolcall_delta", r#"{"text":""}"#, 2),
+        ];
+        assert!(project_tool_calls(&events).is_empty());
+    }
 }

@@ -182,4 +182,85 @@ mod tests {
         );
         assert_eq!(specs[1].args, vec!["--grpc-addr", "127.0.0.1:55001"]);
     }
+
+    /// A long-running child that exits on its own only long after the test.
+    fn spawn_sleeper() -> Child {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("cmd");
+            command.args(["/c", "ping -n 60 127.0.0.1 > nul"]);
+            command
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = Command::new("sleep");
+            command.arg("60");
+            command
+        };
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn a sleeper")
+    }
+
+    /// Whether `pid` still exists, asked of the OS rather than of our own
+    /// handle (a `Child` we still hold would answer "running" about a corpse).
+    fn process_is_running(pid: u32) -> bool {
+        #[cfg(windows)]
+        {
+            let out = Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+                .output()
+                .expect("tasklist");
+            String::from_utf8_lossy(&out.stdout).contains(&pid.to_string())
+        }
+        #[cfg(unix)]
+        {
+            Command::new("ps")
+                .args(["-p", &pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .expect("ps")
+                .success()
+        }
+    }
+
+    /// The TUI owns this guard: dropping it must kill and reap the sidecar it
+    /// started, or every TUI exit would leak a `future agent` process.
+    ///
+    /// The liveness check runs in a *separate* process and is first shown to
+    /// answer "running" for the live child — so "gone" afterwards cannot be the
+    /// observer simply never seeing anything.
+    #[test]
+    fn dropping_the_owned_agent_kills_its_child() {
+        let child = spawn_sleeper();
+        let pid = child.id();
+        assert!(
+            process_is_running(pid),
+            "the observer must be able to see a live process"
+        );
+
+        drop(OwnedAgent { child });
+
+        assert!(
+            !process_is_running(pid),
+            "a dropped OwnedAgent must kill the child it owns (pid {pid})"
+        );
+    }
+
+    /// The `cfg!(test)` guard: a unit test must never launch a real sidecar, so
+    /// the probe's failure must surface as this refusal and not as a spawn.
+    #[tokio::test]
+    async fn ensure_agent_running_refuses_to_spawn_in_test_builds() {
+        // Port 1 is never a running agent, so the health probe fails and the
+        // launch path is entered.
+        let error = match ensure_agent_running("127.0.0.1:1").await {
+            Ok(_) => panic!("a test build must not start an agent"),
+            Err(error) => error,
+        };
+        assert!(error.contains("disabled in unit tests"), "{error}");
+    }
 }

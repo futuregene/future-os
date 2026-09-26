@@ -4273,26 +4273,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| "future-loop".to_string());
         let mut cmd = std::process::Command::new(&exe);
-        // The re-executed binary is the same CLI (future-loop / future), so
-        // the child re-enters the dispatcher with the command name prepended.
-        // The child re-enters the CLI dispatcher, which expects the command
-        // name first; our args start at `run`'s flags (we ARE cmd_run), so
-        // re-prepend the command name.
-        //
-        // IMPORTANT: the unified `future` binary dispatches on the FIRST arg
-        // as a group name — `future loop run …` reaches cmd_run, but
-        // `future run …` falls through to the unrelated one-shot `future run`
-        // command (which rejects `--goal` with "Unknown option: --goal" and
-        // exits immediately). The standalone `future-loop` binary has no such
-        // group layer, so only prepend `loop` when re-execing the `future`
-        // binary (detected via `exe_stem` above).
-        let mut child_args: Vec<String> = Vec::with_capacity(args.len() + 3);
-        if exe_stem == "future" {
-            child_args.push("loop".to_string());
-        }
-        child_args.push("run".to_string());
-        child_args.extend(args.iter().cloned());
-        child_args.push("--detach".to_string());
+        let child_args = detached_child_args(&exe_stem, args);
         cmd.args(&child_args);
         // Platform-neutral detachment: own process group (POSIX process_group
         // / Windows CREATE_NEW_PROCESS_GROUP|DETACHED_PROCESS), stdio routed
@@ -4325,25 +4306,7 @@ async fn cmd_run(store: &mut Store, args: &[String]) -> Result<()> {
         // orchestrator sees the failure instead of a dead worker it must
         // discover later.
         tokio::time::sleep(std::time::Duration::from_millis(DETACH_LIVENESS_GRACE_MS)).await;
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                bail!(
-                    "detached run exited immediately ({status}) — check {} for the real error; re-exec may have mis-dispatched",
-                    log_path.display()
-                );
-            }
-            Ok(None) => {}
-            Err(_) => {
-                // A try_wait error is not a crash signal; fall through and let
-                // the normal detached supervision own the child from here.
-            }
-        }
-        println!(
-            "⏏ detached run pid={} (agent {who}) — log {}",
-            child.id(),
-            log_path.display()
-        );
-        return Ok(());
+        return enforce_detach_liveness(&mut child, &who, &log_path);
     }
     let goal_id = goal_id.ok_or_else(|| anyhow::anyhow!("--goal required"))?;
 
@@ -8818,6 +8781,100 @@ fn todo_update(store: &mut Store, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Re-exec argument vector for the detached child (`cmd_run`).
+///
+/// The child re-enters the CLI dispatcher with the command name prepended: our
+/// args start at `run`'s flags (we ARE `cmd_run`), so the command name must be
+/// put back. The unified `future` binary dispatches on the FIRST arg as a group
+/// name — `future loop run …` reaches `cmd_run`, but `future run …` falls
+/// through to the unrelated one-shot `future run` command (which rejects
+/// `--goal` with "Unknown option: --goal" and exits immediately). The
+/// standalone `future-loop` binary has no such group layer, so `loop` is
+/// prepended only when re-execing the `future` binary.
+fn detached_child_args(exe_stem: &str, args: &[String]) -> Vec<String> {
+    let mut child_args: Vec<String> = Vec::with_capacity(args.len() + 3);
+    if exe_stem == "future" {
+        child_args.push("loop".to_string());
+    }
+    child_args.push("run".to_string());
+    child_args.extend(args.iter().cloned());
+    child_args.push("--detach".to_string());
+    child_args
+}
+
+/// Enforce the detached-child liveness guard: `spawn` succeeding only means the
+/// process was created, so a child that already exited means the re-exec
+/// mis-dispatched. The parent must report that instead of printing a plausible
+/// pid for a worker that is already dead. A child that is still running is
+/// announced and left to the normal detached supervision; a `try_wait` error is
+/// not a crash signal either, so it takes the same path.
+fn enforce_detach_liveness(
+    child: &mut std::process::Child,
+    who: &str,
+    log_path: &std::path::Path,
+) -> Result<()> {
+    match try_wait_detached(child) {
+        Ok(Some(status)) => bail!(
+            "detached run exited immediately ({status}) — check {} for the real error; re-exec may have mis-dispatched",
+            log_path.display()
+        ),
+        Ok(None) | Err(_) => {
+            println!(
+                "⏏ detached run pid={} (agent {who}) — log {}",
+                child.id(),
+                log_path.display()
+            );
+            Ok(())
+        }
+    }
+}
+
+/// The detached child's liveness probe, with a test-only interposition.
+///
+/// In production this is exactly `Child::try_wait`. Its `Err` arm needs the OS
+/// to refuse the wait on a child that just spawned, and whether a child is still
+/// running is a scheduling race, so a unit test arms [`detach_probe`] with a
+/// chosen outcome and the guard's decision for each outcome is asserted. The
+/// hook is compiled out of every non-test build.
+fn try_wait_detached(
+    child: &mut std::process::Child,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    #[cfg(test)]
+    if let Some(injected) = detach_probe::take() {
+        return injected;
+    }
+    child.try_wait()
+}
+
+/// Test-only interposition for [`try_wait_detached`]. One arming covers one
+/// probe.
+#[cfg(test)]
+mod detach_probe {
+    use std::cell::RefCell;
+    use std::io;
+    use std::process::ExitStatus;
+
+    thread_local! {
+        static NEXT: RefCell<Option<io::Result<Option<ExitStatus>>>> = const { RefCell::new(None) };
+    }
+
+    /// Supply the next probe's outcome: a reaped child (`Ok(Some(..))`), a live
+    /// child (`Ok(None)`), or an OS wait failure (`Err(..)`).
+    pub(super) fn arm(result: io::Result<Option<ExitStatus>>) {
+        NEXT.with(|cell| *cell.borrow_mut() = Some(result));
+    }
+
+    /// Drop a leftover arming, so a test that must observe the real
+    /// `Child::try_wait` cannot read a previous test's outcome.
+    pub(super) fn clear() {
+        NEXT.with(|cell| *cell.borrow_mut() = None);
+    }
+
+    pub(super) fn take() -> Option<io::Result<Option<ExitStatus>>> {
+        NEXT.with(|cell| cell.borrow_mut().take())
+    }
+}
+
 // ── in-module coverage tests ───────────────────────────────────────────────
 // Helpers and render paths that the CLI surface cannot reach (private fns,
 // defensive arms, non-todo event descriptions, the `future loop` prog name).
@@ -9122,14 +9179,131 @@ mod coverage_tests {
                 session_id: "sess-a".into(),
                 ts: 1,
             },
+            // Control-plane / supervisor-surface variants. These were missing
+            // from this list, which silently broke the "every variant" claim of
+            // `describe_event_covers_every_variant` and left the matrix test
+            // below blind to them.
+            Event::WorkerSteered {
+                goal_id: "g".into(),
+                agent_id: Some("a".into()),
+                instruction: "focus".into(),
+                ts: 1,
+            },
+            Event::SteerConsumed {
+                goal_id: "g".into(),
+                agent_id: Some("a".into()),
+                steer_ts: 1,
+                ts: 1,
+            },
+            Event::ControlIssued {
+                goal_id: "g".into(),
+                instruction: crate::agents::control::Instruction {
+                    id: "i1".into(),
+                    agent_id: Some("a".into()),
+                    text: "hold".into(),
+                    interrupt: true,
+                },
+                ts: 1,
+            },
+            Event::ControlAcknowledged {
+                goal_id: "g".into(),
+                instruction_id: "i1".into(),
+                agent_id: Some("a".into()),
+                ts: 1,
+            },
+            Event::SupervisorRegistered {
+                goal_id: "g".into(),
+                session_id: "sess-sup".into(),
+                ts: 1,
+            },
+            Event::SupervisorBatchPrepared {
+                goal_id: "g".into(),
+                batch_id: "b1".into(),
+                session_id: "sess-sup".into(),
+                note_keys: vec!["k1".into()],
+                message: "batch".into(),
+                ts: 1,
+            },
+            Event::SupervisorBatchDelivered {
+                goal_id: "g".into(),
+                batch_id: "b1".into(),
+                ts: 1,
+            },
+            Event::SupervisorNote {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                note_kind: "completed".into(),
+                message: "note".into(),
+                dedup_key: "d1".into(),
+                ts: 1,
+            },
+            Event::ProgressReported {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                todo_id: todo_id.into(),
+                message: "halfway".into(),
+                ts: 1,
+            },
+            Event::DeliveryOutcomeRecorded {
+                goal_id: "g".into(),
+                todo_id: todo_id.into(),
+                outcome: "verified".into(),
+                note: Some("ok".into()),
+                delivered_turn: 1,
+                seq: 1,
+                ts: 1,
+            },
+            Event::ProjectionRepaired {
+                goal_id: "g".into(),
+                projection: "run_index".into(),
+                drift_count: 1,
+                missing_rows: 1,
+                stale_rows: 0,
+                duplicate_rows: 0,
+                rows_written: 1,
+                backup_path: "b.jsonl".into(),
+                ts: 1,
+            },
+            Event::WorkspaceLockAcquired {
+                goal_id: "g".into(),
+                agent_id: "a".into(),
+                todo_id: todo_id.into(),
+                paths: vec!["src/lib.rs".into()],
+                forced: false,
+                ts: 1,
+            },
         ]
     }
 
     #[test]
     fn describe_event_covers_every_variant() {
+        // Two properties a stub cannot satisfy: a description must never be
+        // empty, and no two variants may render the same line — `evidence-log`
+        // and `todo-event` consumers key off these strings, so collapsing two
+        // arms (or `return "x"`) must fail here rather than in the CLI output.
+        // The kind strings themselves are deliberately NOT duplicated here; the
+        // per-variant contract tests below (`describe_event_renders_*`) pin those.
+        let mut described = std::collections::BTreeSet::new();
         for ev in all_events("todo_1") {
             let s = describe_event(&ev);
             assert!(!s.is_empty(), "{ev:?}");
+            assert!(described.insert(s.clone()), "duplicate description: {s:?}");
+        }
+        // The list really does reach the whole surface: the control-plane kinds
+        // added after the first coverage pass must be described, not skipped.
+        for kind in [
+            "steer_consumed",
+            "control_issued",
+            "control_acknowledged",
+            "supervisor_batch_prepared",
+            "supervisor_batch_delivered",
+            "supervisor_note",
+            "progress_reported",
+        ] {
+            assert!(
+                described.iter().any(|s| s.starts_with(kind)),
+                "{kind} missing from all_events/describe_event"
+            );
         }
     }
 
@@ -11127,6 +11301,246 @@ mod residual_branch_tests {
         let err = render_premerge_gate(&report, false).unwrap_err();
         assert!(format!("{err:#}").contains("gate failed"), "{err:#}");
     }
+
+    // ── fault seams: IO/error-propagation arms no ordinary fixture can aim ──
+
+    /// `run_followthrough_and_refresh`'s `?` on the follow-through scan: its
+    /// first ledger write fails, so the error must propagate before the second
+    /// half of the `TodoAdded`/`FollowthroughCreated` pair is written. A
+    /// half-recorded follow-through would claim a delivery was resolved for a
+    /// todo that never joined the frontier.
+    #[test]
+    fn followthrough_write_fault_propagates_and_leaves_no_half_state() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        seed_overdue_delivery(&mut store);
+        let before = store.raw_ledger_lines("g").unwrap();
+        let goal = store.replay("g").unwrap().unwrap();
+
+        let _armed = crate::store::write_fault::fail_next_append("todo_added");
+        let err = run_followthrough_and_refresh(&mut store, "g", goal).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("injected ledger write failure"), "{msg}");
+
+        // No half state: the ledger is byte-identical and no follow-through
+        // todo exists, so a retry starts from the same place.
+        assert_eq!(store.raw_ledger_lines("g").unwrap(), before);
+        assert!(store
+            .replay("g")
+            .unwrap()
+            .unwrap()
+            .todos
+            .iter()
+            .all(|t| !t.text.contains("Follow-through")));
+    }
+
+    /// A ledger write that fails while persisting the compact decision must
+    /// abort the turn before any model work: `executed` never flips, no run is
+    /// recorded, and neither half of the decision/receipt pair lands.
+    #[tokio::test]
+    async fn decision_write_fault_aborts_the_turn_before_any_work() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "work"),
+                ts: 2,
+            })
+            .unwrap();
+
+        let mut client = crate::agent_client::AgentClient::unreachable_for_test();
+        let _armed = crate::store::write_fault::fail_next_append("decision_summary_recorded");
+        let mut last_failure_kind = None;
+        let mut executed = false;
+        let err = run_turns(
+            &mut client,
+            &mut store,
+            "g",
+            "session-1",
+            5,
+            3600,
+            Some("agent-a"),
+            0,
+            false,
+            &mut last_failure_kind,
+            &mut executed,
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("injected ledger write failure"), "{msg}");
+        assert!(
+            !executed,
+            "no model work may run after the decision write failed"
+        );
+        assert!(
+            last_failure_kind.is_none(),
+            "a refused ledger write is not a science failure"
+        );
+
+        let kinds: Vec<String> = store
+            .events("g")
+            .unwrap()
+            .into_iter()
+            .filter_map(|stored| {
+                serde_json::to_value(&stored.event).ok().and_then(|value| {
+                    value
+                        .get("kind")
+                        .and_then(|kind| kind.as_str())
+                        .map(str::to_string)
+                })
+            })
+            .collect();
+        for absent in [
+            "decision_summary_recorded",
+            "heartbeat_receipt_recorded",
+            "run_recorded",
+        ] {
+            assert!(
+                !kinds.iter().any(|kind| kind.as_str() == absent),
+                "`{absent}` must not be in the ledger: {kinds:?}"
+            );
+        }
+    }
+
+    /// `release_leases_of_stopped` for a goal that is gone: nothing to release,
+    /// no error, and no ledger write. The paired control (a live lease on a
+    /// known goal) shows the empty result is the missing-goal branch and not a
+    /// return every input takes.
+    #[test]
+    fn release_leases_of_stopped_reports_nothing_for_a_vanished_goal() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "work"),
+                ts: 2,
+            })
+            .unwrap();
+        let now = crate::state::now_epoch();
+        store
+            .append(Event::TodoClaimed {
+                goal_id: "g".into(),
+                todo_id: "t1".into(),
+                agent_id: "worker-a".into(),
+                lease_expires_at: now + 3600,
+                holder_pid: Some(1),
+                ts: now,
+            })
+            .unwrap();
+
+        let before = store.raw_ledger_lines("g").unwrap();
+        let released =
+            release_leases_of_stopped(&mut store, "goal-that-vanished", &["worker-a".into()])
+                .unwrap();
+        assert!(released.is_empty(), "{released:?}");
+        assert_eq!(
+            store.raw_ledger_lines("g").unwrap(),
+            before,
+            "a vanished goal must not produce a release event"
+        );
+
+        // Control: the same call on the live goal DOES release, so the empty
+        // result above is the missing-goal arm.
+        let released = release_leases_of_stopped(&mut store, "g", &["worker-a".into()]).unwrap();
+        assert_eq!(released, vec!["t1".to_string()]);
+    }
+
+    /// The seam targets ONE event kind: an append of a different kind is not
+    /// failed. Without this, the fault tests would be measuring "everything
+    /// failed" rather than "this write failed".
+    #[test]
+    fn write_fault_only_fails_the_armed_event_kind() {
+        let (_dir, mut store) = tmp_store();
+        registered(&mut store, "g");
+        let _armed = crate::store::write_fault::fail_next_append("decision_summary_recorded");
+        store
+            .append(Event::TodoAdded {
+                goal_id: "g".into(),
+                todo: Todo::advancement("t1", "work"),
+                ts: 2,
+            })
+            .expect("an unarmed kind must not be failed");
+        assert_eq!(store.replay("g").unwrap().unwrap().todos.len(), 1);
+    }
+
+    /// The unified `future` binary dispatches on its first argument as a group
+    /// name, so a detached re-exec from it must be `future loop run …`; the
+    /// standalone `future-loop` binary must not gain that layer.
+    #[test]
+    fn detached_child_args_prepend_the_group_only_for_the_unified_binary() {
+        let args: Vec<String> = ["--goal", "g"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            detached_child_args("future", &args),
+            ["loop", "run", "--goal", "g", "--detach"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            detached_child_args("future-loop", &args),
+            ["run", "--goal", "g", "--detach"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// `Child::try_wait` cannot be made to fail on demand, and whether a spawned
+    /// child has already exited is a scheduling race. The probe's outcomes are
+    /// therefore supplied deterministically and the guard's decision for each
+    /// is asserted — including the real OS read, so the seam is not shadowing
+    /// production.
+    #[test]
+    fn detach_liveness_guard_decides_from_the_probe_outcome() {
+        let log = std::path::Path::new("detached-child.log");
+
+        // A genuinely reaped child is reported by the OS and rejected.
+        let mut reaped = trivial_child();
+        let status = reaped.wait().unwrap();
+        detach_probe::clear();
+        let err = enforce_detach_liveness(&mut reaped, "anonymous", log).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("exited immediately"), "{msg}");
+        assert!(
+            msg.contains(&status.to_string()),
+            "the real exit status must be reported: {msg}"
+        );
+
+        // Still running: the normal detached supervision owns the child.
+        let mut running = trivial_child();
+        detach_probe::arm(Ok(None));
+        enforce_detach_liveness(&mut running, "anonymous", log).unwrap();
+        let _ = running.kill();
+        let _ = running.wait();
+
+        // An OS wait failure is not a crash signal.
+        let mut unknown = trivial_child();
+        detach_probe::arm(Err(std::io::Error::other("injected try_wait failure")));
+        enforce_detach_liveness(&mut unknown, "anonymous", log).unwrap();
+        let _ = unknown.kill();
+        let _ = unknown.wait();
+    }
+
+    fn trivial_child() -> std::process::Child {
+        #[cfg(windows)]
+        let program = "cmd";
+        #[cfg(windows)]
+        let args = ["/C", "exit 0"];
+        #[cfg(unix)]
+        let program = "sh";
+        #[cfg(unix)]
+        let args = ["-c", "exit 0"];
+        std::process::Command::new(program)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("trivial child spawns")
+    }
 }
 
 #[cfg(test)]
@@ -11462,5 +11876,59 @@ mod todo_verify_hint_tests {
             Some("sess-2"),
             "latest binding must win"
         );
+    }
+}
+
+#[cfg(test)]
+mod worker_tail_tests {
+    use super::condense_live_log;
+
+    /// The condensed view keeps the events an orchestrator acts on and drops the
+    /// streaming deltas that would otherwise bury them. Malformed lines and
+    /// event types a newer executor writes must be skipped, never fatal.
+    #[test]
+    fn condensed_view_keeps_signals_and_drops_streaming_deltas() {
+        let log = [
+            r#"{"type":"run_header","run_id":"r1"}"#,
+            r#"{"type":"agent_start"}"#,
+            r#"{"type":"text_chunk","text":"STREAMED-DELTA"}"#,
+            r#"{"type":"thinking_delta","text":"THINKING-DELTA"}"#,
+            r#"{"type":"tool_start","tool":"shell"}"#,
+            r#"{"type":"tool_delta","tool":"shell"}"#,
+            r#"{"type":"tool_end"}"#,
+            r#"{"type":"usage","usage":{"total_tokens":1234,"credit_cost":0.5}}"#,
+            r#"{"type":"user_message"}"#,
+            r#"{"type":"agent_end"}"#,
+            r#"{"type":"some_future_event","payload":1}"#,
+            "not json at all",
+        ]
+        .join("\n");
+        let out = condense_live_log(&log);
+        assert_eq!(out.len(), 7, "one line per retained event: {out:?}");
+        assert_eq!(out[0], "[run start]");
+        assert!(
+            out.iter()
+                .any(|l| l.starts_with("[tool ") && l.ends_with("shell")),
+            "{out:?}"
+        );
+        assert!(out.iter().any(|l| l.contains("1234 tokens")), "{out:?}");
+        assert!(out.contains(&"[prompt]".to_string()), "{out:?}");
+        assert!(out.contains(&"[agent end]".to_string()), "{out:?}");
+        assert!(
+            !out.iter()
+                .any(|l| l.contains("STREAMED-DELTA") || l.contains("THINKING-DELTA")),
+            "streaming deltas leaked into the view: {out:?}"
+        );
+    }
+
+    #[test]
+    fn condensed_view_tolerates_empty_partial_and_payloadless_lines() {
+        assert!(condense_live_log("").is_empty());
+        assert!(condense_live_log("\n   \n").is_empty());
+        // `usage` without a usage object, and `tool_start` without a tool name.
+        assert!(condense_live_log(r#"{"type":"usage"}"#).is_empty());
+        let unnamed = condense_live_log(r#"{"type":"tool_start"}"#);
+        assert_eq!(unnamed.len(), 1, "{unnamed:?}");
+        assert!(unnamed[0].ends_with('?'), "{unnamed:?}");
     }
 }

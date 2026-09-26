@@ -3,6 +3,31 @@
 What the channel framework promises about tests, and the handful of lines that
 are deliberately not covered.
 
+## Where the authoritative numbers live now
+
+This page states the *policy* and the historical waivers. The measurement, the
+per-file inventory and the current ledger live in
+[`../testing/module-channels.md`](../testing/module-channels.md), which is the
+document the goal gate reads (`verify.py crate future-channels …`).
+
+Two things this page predates and that you should know before quoting it:
+
+1. **Platform.** The counts below were produced on Linux, using the LCOV
+   `DA:<line>,0` records the `chan-*` scripts read. On Windows the same crate
+   measures **117 DA-uncovered lines**, and under llvm-cov's (stricter) JSON
+   `summary.lines` metric — the one the goal gate uses — **222 uncovered lines in
+   39 files at 99.1760%**. The difference is not behaviour: llvm-cov's line
+   summary also counts a line that *executed* but carries a zero region (the
+   `?`-error branch of an `await?` on its own line, a `}`/span end), which is the
+   `attribution-artifact` class below. `docs/testing/module-channels.md` §1
+   explains the split and §6 lists every file.
+2. **Windows-red tests.** The seven tests that were red on `main` on Windows
+   (Discord ×3, Mattermost, QQ, Slack, `transport/webhook`) are fixed; four of
+   them were *test* bugs — including two that matched the OS's **localized**
+   error text — and one was a harness bug (`WsAction::SendClose` silently ended
+   the script). See `docs/testing/module-channels.md` §2, and re-run them with
+   `python .future/cov100/verify.py windows-red-baseline future-channel`.
+
 ## The measure
 
 Coverage is per line, from llvm-cov's `DA:<line>,0` records — not a percentage
@@ -46,7 +71,11 @@ here instead of being hidden:
 
 ## Uncovered lines in the framework
 
-Measured on the channel crate. 22 lines, in four groups.
+Measured on the channel crate. 22 lines, in four groups. **Line numbers on this
+page drift**; the authoritative, freshly measured per-file inventory (Windows:
+222 lines in 39 files by llvm-cov's `summary.lines`, 117 by the DA records this
+page uses) is `docs/testing/module-channels.md` §5–§6. The groups below are the
+*reasons* that survive measurement on either platform.
 
 ### Environmental (8)
 
@@ -61,8 +90,8 @@ Measured on the channel crate. 22 lines, in four groups.
 
 | Lines | Why |
 |---|---|
-| `providers/slack.rs` 733, `providers/mattermost.rs` 527 | `let Some(message) = stream.next() else { bail!("… closed by the platform") }`. Verified by experiment: a server that drops the connection **without** a close frame does not end the stream — the client reports `Err(Protocol(ResetWithoutClosingHandshake))` on the read arm. A connection that closes properly yields `Ok(Close)`, which bails on its own arm. The `None` arm is therefore not reachable through this client; it is kept because `Stream::next` is typed as `Option`. |
-| `providers/slack.rs` 976 | `unreachable!("tests dial plain ws only")` in a test-only helper: the tests hand it a plain socket, so the TLS arm cannot be taken. |
+| `providers/slack.rs` 733, `providers/mattermost.rs` 527 | `let Some(message) = stream.next() else { bail!("… closed by the platform") }`. The original experiment here concluded the `None` arm was unreachable, because a server that drops the connection **without** a close frame yields `Err(Protocol(ResetWithoutClosingHandshake))` on the read arm. That is true of an abrupt drop but **not** of a drained close handshake: `a_drained_close_handshake_ends_the_message_stream_with_none` now drives a close frame, waits for the client's reply, half-closes the server's write half, and the client's stream yields `None` (proved against tungstenite 0.24's `ConnectionClosed → None` mapping). The `None` arm is therefore **reachable**; the *session*-level arm is simply not driven by a test yet, and it is listed as OPEN in the module ledger rather than waived here. |
+| `test_support.rs` 741 | `unreachable!("tests dial plain ws only")` in `kill_write_half`: the tests hand it a plain socket, so the TLS arm cannot be taken. This helper moved out of `providers/slack.rs` (where it was `#[cfg(all(test, unix))]`) into `channels/src/test_support.rs` with `#[cfg(unix)]`/`#[cfg(windows)]` branches, so the Mattermost auth-challenge test can use it on Windows. |
 | `outbox.rs` 210 | The "not built" guard in `Outbox::context`. Resolving a channel by id goes through the registry, which ships no planned channel, so the guard cannot fire. The same guard **is** covered in the starter, where a definition can be handed in directly (see below). |
 
 ### Ordering and environment (1)
@@ -78,7 +107,7 @@ by the named test.
 
 | Lines | What they are | Proof the code runs |
 |---|---|---|
-| `lib.rs` 172–173, 190–191 | The `inspect_err` closures of the Feishu and DingTalk supervisors | Both bridges retry on error and return `Ok` on shutdown, so the closure only runs if a bridge is aborted before its first exit. Nothing in the suite aborts them mid-run. |
+| `lib.rs` 172–173, 190–191 | The `inspect_err` closures of the Feishu and DingTalk supervisors | Both bridges retry on error and return `Ok` on shutdown, so the closure only runs if a bridge is aborted before its first exit. Nothing in the suite aborts them mid-run (the process-level SIGINT tests that would are `#[cfg(unix)]`). |
 | `lib.rs` 386 | `}` closing the flusher's flush-failure block | `the_flusher_survives_an_unwritable_snapshot` makes the flush fail and asserts the flusher keeps running. |
 | `lib.rs` 514 | The `Some(Running)` operand of the state assertion in `starting_publishes_a_state_for_every_channel` | The snapshot is taken before the supervisors run, so every enabled row is `Starting` and the second operand is never evaluated. It stays in the assertion so the test remains valid if that changes. |
 | `providers/slack.rs` 763, 903 | The `}` after the webhook's `if let Some(event)` and after the dispatch spawn | `the_events_webhook_verifies_signatures_and_answers_the_challenge` waits for the accepted prompt's acknowledgement, which `dispatch_event` only sends once the event has been through the bridge pipeline. |

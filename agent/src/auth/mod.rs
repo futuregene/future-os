@@ -130,6 +130,10 @@ mod tests {
             }
         }
         let capture = Capture::default();
+        // The capture double is what tracing stores behind `Write`; its `flush`
+        // is part of that contract and must succeed without emitting anything.
+        let mut sink = capture.clone();
+        assert!(std::io::Write::flush(&mut sink).is_ok());
         let writer = capture.clone();
         let subscriber = tracing_subscriber::fmt()
             .without_time()

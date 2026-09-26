@@ -800,6 +800,8 @@ impl Store {
         source_line: Option<u64>,
         privacy: Option<String>,
     ) -> Result<String> {
+        #[cfg(test)]
+        crate::store::write_fault::maybe_fail(&event)?;
         let goal_id = event.goal_id().to_string();
         if !self.registered(&goal_id) {
             bail!("goal `{goal_id}` is not registered — register before appending events");
@@ -2247,4 +2249,64 @@ pub fn projection_gap(goal: &Goal) -> Option<String> {
         ));
     }
     None
+}
+
+/// Test-only ledger write-fault interposition.
+///
+/// A ledger append fails in production only on real disk IO, so the `?` arms
+/// that *propagate* that failure cannot be aimed from outside the process — and
+/// a global wedge (a read-only ledger) panics first on an earlier
+/// `.expect`-guarded append, never reaching the later propagation sites. A unit
+/// test arms this hook to fail the next append of ONE event kind, which makes
+/// those propagation arms reachable deterministically. The hook is compiled out
+/// of every non-test build, so the shipped append path is unchanged.
+#[cfg(test)]
+pub(crate) mod write_fault {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static NEXT_KIND: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+
+    /// An armed fault, disarmed when the guard drops so a panicking test cannot
+    /// leak the arming into a later test that reuses the thread.
+    pub(crate) struct Armed;
+
+    impl Drop for Armed {
+        fn drop(&mut self) {
+            NEXT_KIND.with(|cell| *cell.borrow_mut() = None);
+        }
+    }
+
+    /// Fail the next append whose event kind equals `kind` (the serde tag, e.g.
+    /// `"todo_added"`).
+    pub(crate) fn fail_next_append(kind: &str) -> Armed {
+        NEXT_KIND.with(|cell| *cell.borrow_mut() = Some(kind.to_string()));
+        Armed
+    }
+
+    /// Called by [`super::Store::append_with_meta`] before any write: returns
+    /// the injected error when the arming names this event's kind. Consumes the
+    /// arming either way, so only the first append after arming is affected.
+    pub(crate) fn maybe_fail(event: &super::Event) -> anyhow::Result<()> {
+        let Some(armed) = NEXT_KIND.with(|cell| cell.borrow_mut().take()) else {
+            return Ok(());
+        };
+        if event_kind(event) == armed {
+            anyhow::bail!("injected ledger write failure for `{armed}`");
+        }
+        Ok(())
+    }
+
+    fn event_kind(event: &super::Event) -> String {
+        serde_json::to_value(event)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("kind")
+                    .and_then(|kind| kind.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default()
+    }
 }

@@ -141,6 +141,75 @@ mod tests {
         script_mock_agent(MockScript::default());
     }
 
+    /// `refresh_skills` is fire-and-forget (it reports success, not the agent's
+    /// answer), and the daily-budget pair round-trips through the app store:
+    /// only *shown* recommendations are recorded, and the count is the budget.
+    #[tokio::test]
+    async fn refresh_and_the_daily_recommendation_budget_round_trip() {
+        let _lock = mock_agent_lock();
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-reco");
+        crate::store::initialize_app_store().expect("init store");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("refresh_skills".into(), "{}".into())]),
+            ..Default::default()
+        });
+        refresh_skills().await.expect("refresh");
+
+        let today = skill_reco_today().await.expect("today");
+        assert_eq!(today.count, 0, "a fresh day has spent nothing");
+        assert!(today.skill_ids.is_empty());
+        assert!(today.message_hashes.is_empty());
+
+        record_skill_reco("acme".into(), "hash-1".into())
+            .await
+            .expect("record");
+        let today = skill_reco_today().await.expect("today");
+        assert_eq!(today.count, 1);
+        assert_eq!(today.skill_ids, vec!["acme".to_string()]);
+        assert_eq!(today.message_hashes, vec!["hash-1".to_string()]);
+        script_mock_agent(MockScript::default());
+    }
+
+    /// The recommender forwards the query and candidates to the agent and maps
+    /// both answers a client can get: a suggestion, and a refusal (no skill).
+    #[tokio::test]
+    async fn a_skill_suggestion_is_forwarded_and_a_refusal_maps_to_none() {
+        let _lock = mock_agent_lock();
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-suggest");
+        crate::store::initialize_app_store().expect("init store");
+        crate::commands::agent_mock::ensure_mock_agent();
+
+        script_mock_agent(MockScript {
+            data: HashMap::from([("suggest_skill".into(), "{}".into())]),
+            ..Default::default()
+        });
+        let refused = suggest_skill("how do I x".into(), Vec::new())
+            .await
+            .expect("suggestion call");
+        assert!(refused.is_none(), "a refusal is not an error");
+
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "suggest_skill".into(),
+                "{\"skill\":{\"name\":\"acme\",\"description\":\"does x\"}}".into(),
+            )]),
+            ..Default::default()
+        });
+        let suggested = suggest_skill(
+            "how do I x".into(),
+            vec![crate::agent_bridge::SkillCandidate {
+                name: "acme".into(),
+                description: "does x".into(),
+            }],
+        )
+        .await
+        .expect("suggestion call")
+        .expect("a suggestion");
+        assert_eq!(suggested.name, "acme");
+        script_mock_agent(MockScript::default());
+    }
+
     #[tokio::test]
     async fn skill_guide_still_uses_the_platform_endpoint() {
         let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-guide");

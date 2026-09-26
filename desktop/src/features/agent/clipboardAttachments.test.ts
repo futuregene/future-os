@@ -13,4 +13,15 @@ describe("localPathsFromUriList", () => {
   it("ignores external URIs and duplicate local paths", () => {
     expect(localPathsFromUriList("https://example.com/a\nfile:///tmp/a\nfile:///tmp/a")).toEqual(["/tmp/a"]);
   });
+
+  it("drops a file URI it cannot turn into a path", () => {
+    // boundary: a `file:` URI that decodes to an empty path (or an undecodable
+    // percent escape) is not a usable local path, so it must be skipped rather than
+    // forwarded as an empty string for the attach step to trip over.
+    expect(localPathsFromUriList("file://%\nfile:///ok.txt")).toEqual(["/ok.txt"]);
+    // A bare `file:` scheme carries no path at all.
+    expect(localPathsFromUriList("file:")).toEqual([]);
+    // Whitespace-only and comment-only input yields nothing.
+    expect(localPathsFromUriList("  \n# gone\n")).toEqual([]);
+  });
 });

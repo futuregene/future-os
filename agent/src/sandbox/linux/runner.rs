@@ -108,18 +108,20 @@ fn shell_argv(command: &str) -> Vec<String> {
     std::iter::once(program.to_string()).chain(args).collect()
 }
 
-// Linux helper protocol semantics: the fixtures are POSIX absolute paths and
-// bwrap locations, which are only meaningful where the helper itself runs.
-#[cfg(all(test, unix))]
+// The helper protocol itself is POSIX, but the code under test validates
+// *host* paths and host executables, so fixtures spell absolute paths the way
+// the host accepts them (see `test_support::host_absolute_path`).
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::sandbox::linux::probe::{BwrapIdentity, LinuxSandboxProbeCode};
+    use crate::test_support::host_absolute_path as abs;
 
     fn probe() -> LinuxSandboxProbe {
         LinuxSandboxProbe {
             available: true,
             code: LinuxSandboxProbeCode::Available,
-            path: Some(PathBuf::from("/usr/bin/bwrap")),
+            path: Some(abs("/usr/bin/bwrap")),
             version: Some("1.0.0".into()),
             identity: Some(BwrapIdentity {
                 device: 1,
@@ -135,7 +137,7 @@ mod tests {
 
     fn plan() -> LinuxSandboxPlan {
         LinuxSandboxPlan {
-            writable_roots: vec![PathBuf::from("/tmp/work")],
+            writable_roots: vec![abs("/tmp/work")],
             read_only_paths: Vec::new(),
             unreadable_paths: Vec::new(),
             reopened_paths: Vec::new(),
@@ -149,7 +151,7 @@ mod tests {
 
     #[test]
     fn preparation_is_structured_and_includes_complete_policy() {
-        let prepared = prepare(&probe(), plan(), "echo ok", Path::new("/tmp/work")).unwrap();
+        let prepared = prepare(&probe(), plan(), "echo ok", &abs("/tmp/work")).unwrap();
         assert_eq!(prepared.boundary.backend, ShellBackend::LinuxBubblewrap);
         assert_eq!(
             prepared.boundary.policy_digest.as_deref(),
@@ -163,8 +165,8 @@ mod tests {
         let mut complete = plan();
         complete
             .omitted_missing_protected_paths
-            .push(PathBuf::from("/tmp/missing"));
-        let prepared = prepare(&probe(), complete, "true", Path::new("/tmp/work")).unwrap();
+            .push(abs("/tmp/missing"));
+        let prepared = prepare(&probe(), complete, "true", &abs("/tmp/work")).unwrap();
         assert!(prepared
             .args
             .iter()
@@ -219,33 +221,33 @@ mod tests {
     #[test]
     fn mount_order_preserves_alternating_broad_and_narrow_rules() {
         let mut policy = plan();
-        policy.read_only_paths = vec![PathBuf::from("/tmp/work/vendor")];
-        policy.reopened_paths = vec![PathBuf::from("/tmp/work/vendor/ok")];
-        policy.unreadable_paths = vec![PathBuf::from("/tmp/work/vendor/ok/secret")];
-        let prepared = prepare(&probe(), policy, "true", Path::new("/tmp/work")).unwrap();
+        policy.read_only_paths = vec![abs("/tmp/work/vendor")];
+        policy.reopened_paths = vec![abs("/tmp/work/vendor/ok")];
+        policy.unreadable_paths = vec![abs("/tmp/work/vendor/ok/secret")];
+        let prepared = prepare(&probe(), policy, "true", &abs("/tmp/work")).unwrap();
         let request =
             LinuxSandboxRequest::from_json_bytes(prepared.request_payload.as_deref().unwrap())
                 .unwrap();
         let targets: Vec<_> = request.mounts.iter().map(|mount| &mount.target).collect();
         let broad = targets
             .iter()
-            .position(|path| path.as_path() == Path::new("/tmp/work/vendor"))
+            .position(|path| path.as_path() == abs("/tmp/work/vendor"))
             .unwrap();
         let reopen = targets
             .iter()
-            .position(|path| path.as_path() == Path::new("/tmp/work/vendor/ok"))
+            .position(|path| path.as_path() == abs("/tmp/work/vendor/ok"))
             .unwrap();
         let narrow = targets
             .iter()
-            .position(|path| path.as_path() == Path::new("/tmp/work/vendor/ok/secret"))
+            .position(|path| path.as_path() == abs("/tmp/work/vendor/ok/secret"))
             .unwrap();
         assert!(broad < reopen && reopen < narrow);
 
         let mut policy = plan();
-        let same = PathBuf::from("/tmp/work/secret");
+        let same = abs("/tmp/work/secret");
         policy.read_only_paths = vec![same.clone()];
         policy.unreadable_paths = vec![same.clone()];
-        let prepared = prepare(&probe(), policy, "true", Path::new("/tmp/work")).unwrap();
+        let prepared = prepare(&probe(), policy, "true", &abs("/tmp/work")).unwrap();
         let request =
             LinuxSandboxRequest::from_json_bytes(prepared.request_payload.as_deref().unwrap())
                 .unwrap();
@@ -272,12 +274,26 @@ mod tests {
 
     #[test]
     fn large_request_is_carried_out_of_band_instead_of_argv() {
-        let command = "x".repeat(90 * 1024);
-        let prepared = prepare(&probe(), plan(), &command, Path::new("/tmp/work")).unwrap();
+        // A 90 KiB command is legal argv on unix, but Windows passes the
+        // command as a base64-encoded UTF-16 PowerShell script (~2.7 argv
+        // bytes per command byte), which trips the 96 KiB argv budget. Take
+        // the larger of "90 KiB" and what the host's own wrapping cost leaves
+        // room for, so the request stays valid on every platform while still
+        // being far larger than any inline argv payload.
+        let base_argv_bytes = shell_argv("").iter().map(String::len).sum::<usize>();
+        let per_char_cost =
+            shell_argv("x").iter().map(String::len).sum::<usize>() - base_argv_bytes;
+        let command_chars = (90 * 1024)
+            .min((super::super::request::MAX_ARG_BYTES - base_argv_bytes) / per_char_cost);
+        let command = "x".repeat(command_chars);
+        let prepared = prepare(&probe(), plan(), &command, &abs("/tmp/work")).unwrap();
         assert_eq!(prepared.args.last().map(String::as_str), Some("fd:3"));
         let payload = prepared.request_payload.as_deref().unwrap();
-        assert!(payload.len() > 90 * 1024);
+        assert!(payload.len() > command.len());
         let request = LinuxSandboxRequest::from_json_bytes(payload).unwrap();
-        assert_eq!(request.argv.last().map(String::len), Some(command.len()));
+        // The request carries the host's own shell invocation for the command
+        // (verbatim on unix, inside the encoded wrapper script on Windows),
+        // so the round-trip is exact rather than merely the same length.
+        assert_eq!(request.argv, shell_argv(&command));
     }
 }

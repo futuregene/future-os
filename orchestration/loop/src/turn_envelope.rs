@@ -544,4 +544,103 @@ mod tests {
         let msg = compose_turn_message(&g, g.todo("T1").unwrap(), None);
         assert!(!msg.contains("Prior activity:"), "envelope: {msg}");
     }
+
+    /// Legacy records predate the writeback classification: a record with no
+    /// `failure_kind` is judged by `terminal_state`, and one explicitly
+    /// classified `None` is a success even if its state string is not
+    /// `completed`. Getting this wrong either hides a failure or resurrects it.
+    #[test]
+    fn goal_memory_handles_legacy_and_classified_failure_records() {
+        // Legacy: no classification, non-completed state → counted as failed.
+        let mut legacy = run_rec("T1", "failed", FailureKind::HardError, None, None);
+        legacy.failure_kind = None;
+        // Explicitly classified as succeeded → NOT a failure, whatever the state.
+        let mut classified_success = run_rec("T1", "stalled", FailureKind::HardError, None, None);
+        classified_success.failure_kind = Some(FailureKind::None);
+        // Classified as a science failure while the state string says completed.
+        let classified_failure = run_rec(
+            "T1",
+            "completed",
+            FailureKind::ScienceVerifyFailed,
+            None,
+            None,
+        );
+
+        // The memory renders the LAST failure, so each record is exercised alone.
+        let with = |history: Vec<RunRecord>| {
+            let mut g = Goal::new("g1", "o", "/tmp");
+            g.add(Todo::advancement("T1", "Work"));
+            g.history = history;
+            compose_goal_memory(&g, g.todo("T1").unwrap())
+        };
+        let legacy_msg = with(vec![legacy]);
+        assert!(
+            legacy_msg.contains("legacy `failed` (unclassified)"),
+            "legacy record must be labelled by its state: {legacy_msg}"
+        );
+        let science_msg = with(vec![classified_failure]);
+        assert!(
+            science_msg.contains("verify-gate rejected the output"),
+            "classify by failure_kind, not the state string: {science_msg}"
+        );
+        assert!(
+            with(vec![classified_success]).is_empty(),
+            "a record explicitly classified as succeeded must not surface as a failure"
+        );
+    }
+
+    /// Semantic history is goal-level, so an event that belongs to no todo must
+    /// still be rendered (without an empty `[]` placeholder).
+    #[test]
+    fn goal_memory_renders_semantic_events_without_a_todo_id() {
+        use crate::decision::goal_frontier::semantic_history::SemanticEvent;
+        let mut g = Goal::new("g1", "o", "/tmp");
+        g.add(Todo::advancement("T1", "Work"));
+        g.semantic_history = vec![SemanticEvent {
+            kind: "replan_acked".into(),
+            todo_id: None,
+            summary: "goal-level realignment".into(),
+            ts: 1,
+        }];
+        let msg = compose_goal_memory(&g, g.todo("T1").unwrap());
+        assert!(
+            msg.contains("- replan_acked goal-level realignment"),
+            "unscoped event must not print a placeholder id: {msg}"
+        );
+        assert!(!msg.contains("[]"), "{msg}");
+    }
+
+    /// A wide fan-in gets no per-source snippet (the budget per source falls
+    /// below the useful minimum) but must still list every source, and a todo
+    /// with no upstream at all must produce no block.
+    #[test]
+    fn upstream_evidence_scales_the_budget_and_handles_an_empty_fan_in() {
+        let mut g = Goal::new("g1", "o", "/tmp");
+        let ids: Vec<String> = (0..120).map(|n| format!("U{n}")).collect();
+        for id in &ids {
+            let mut up = Todo::advancement(id, "probe");
+            up.status = crate::state::TodoStatus::Done;
+            up.evidence = Some("a long probe finding that would be truncated".into());
+            g.add(up);
+        }
+        let mut sink = Todo::advancement("S1", "synthesize");
+        let ids_ref: Vec<&str> = ids.iter().map(String::as_str).collect();
+        sink = sink.blocking(&ids_ref);
+        g.add(sink);
+        let msg = compose_turn_message(&g, g.todo("S1").unwrap(), None);
+        assert!(msg.contains("Upstream evidence:"), "{msg}");
+        for id in ["U0", "U119"] {
+            assert!(msg.contains(&format!("upstream {id}:")), "{id}: {msg}");
+        }
+        assert!(
+            !msg.contains("a long probe finding"),
+            "a 120-way fan-in must not spend the per-source snippet budget: {msg}"
+        );
+
+        // No predecessors at all → no upstream block.
+        let mut plain = Goal::new("g2", "o", "/tmp");
+        plain.add(Todo::advancement("S2", "synthesize"));
+        let msg = compose_turn_message(&plain, plain.todo("S2").unwrap(), None);
+        assert!(!msg.contains("Upstream evidence:"), "{msg}");
+    }
 }

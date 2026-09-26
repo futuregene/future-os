@@ -5,8 +5,12 @@ import { useCompactContext } from "../useCompactContext";
 import { emptyTimeline } from "../../../remote/timeline";
 import type { CompactionOutcome } from "../../../remote/types";
 import { SkillPicker } from "../components/SkillPicker";
+import { SkillSuggestionCard } from "../components/SkillSuggestionCard";
+import { SkillDetailsDialog } from "../components/SkillDetailsDialog";
 import { PendingApprovalCard } from "../../../components/TimelineCard";
+import { deleteTemporaryAttachment } from "../../../remote/files";
 import { resources } from "../../../i18n/locales";
+import { CircleAlert } from "lucide-react-native";
 import { StyleSheet, Text, TextInput, View } from "react-native";
 
 let mockDimensions = { width: 390, height: 844, scale: 1, fontScale: 1 };
@@ -17,7 +21,18 @@ jest.mock("react-native", () => {
   });
 });
 
-jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowDown", "ChevronDown", "CircleAlert", "FileText", "Paperclip", "Send", "Slash", "Square", "X"].map(name => [name, () => null])));
+jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowDown", "ChevronDown", "CircleAlert", "FileText", "Info", "Lightbulb", "Paperclip", "Send", "Slash", "Square", "X"].map(name => [name, () => null])));
+// The composer takes `t` as a prop, but the details dialog and the surfaces
+// below it call `useTranslation` themselves. Standing up the real i18n module
+// would drag expo-localization into a component test; the translations are
+// covered by src/i18n/__tests__, so here they only need to not throw.
+jest.mock("react-i18next", () => ({
+  useTranslation: () => ({ t: (key: string) => key, i18n: { language: "en" } }),
+}));
+// The details dialog renders a full-screen surface, which reads the safe-area
+// insets. Outside a provider that hook throws, so use the package's own mock.
+jest.mock("react-native-safe-area-context", () =>
+  jest.requireActual("react-native-safe-area-context/jest/mock").default);
 jest.mock("../../../components/TimelineCard", () => ({ PendingApprovalCard: jest.fn(() => null) }));
 jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
 jest.mock("../../../remote/files", () => ({ deleteTemporaryAttachment: jest.fn() }));
@@ -480,4 +495,199 @@ test("slash button opens above the composer and skill selection edits without se
 test("both languages define the history retry label", () => {
   expect(resources.en.translation.common.retry).toBe("Retry");
   expect(resources.zh.translation.common.retry).toBe("重试");
+});
+
+/** The props every case below needs; a test overrides just what it asserts. */
+function baseProps(overrides: Record<string, unknown> = {}) {
+  return {
+    message: "", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
+    supportsImages: true, activeModelLabel: "model", t: (key: string) => key,
+    remote: {
+      draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: false, busy: false, abort: jest.fn(), capabilities: new Set(),
+    },
+    openAttachmentMenu: jest.fn(), send: jest.fn(async () => {}), atLatest: true,
+    scrollToLatest: jest.fn(), pendingApprovals: [], approvalSubmitting: null,
+    approvalError: null, decideApproval: jest.fn(), selector: null, setSelector: jest.fn(),
+    ...overrides,
+  } as unknown as ComponentProps<typeof ComposerDock>;
+}
+
+function mountDock(overrides: Record<string, unknown> = {}) {
+  const props = baseProps(overrides);
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(ComposerDock, props)); });
+  const pressable = (label: string) => tree.root.findAll(node =>
+    node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0];
+  // The `/` menu is focus-gated (`useSkillCompletion` only computes a query
+  // while the input is focused), so a test that expects the picker has to put
+  // the caret in the field first — mounting alone leaves it closed.
+  const focusComposer = () => act(() => tree.root.findByType(TextInput).props.onFocus());
+  return { props, tree, pressable, focusComposer, unmount: () => act(() => tree.unmount()) };
+}
+
+test("the suggestion card's buttons reach the screen's callbacks", () => {
+  // The card is rendered by the dock, but the *policy* lives in ChatScreen:
+  // the dock only forwards. A dropped arrow here leaves the card's buttons
+  // inert with no test failing.
+  const onInstallSkill = jest.fn();
+  const onDismissSkill = jest.fn();
+  const suggestion = {
+    skill: { name: "future-web", description: "search the web" },
+    draft: "search the web",
+  };
+  const { tree, unmount } = mountDock({
+    skillSuggestion: suggestion, skillInstalling: true,
+    onInstallSkill, onDismissSkill,
+  });
+  try {
+    const card = tree.root.findByType(SkillSuggestionCard);
+    expect(card.props.installing).toBe(true);
+    expect(card.props.suggestion).toBe(suggestion);
+    act(() => card.props.onInstall());
+    expect(onInstallSkill).toHaveBeenCalledTimes(1);
+    act(() => card.props.onDismiss());
+    expect(onDismissSkill).toHaveBeenCalledTimes(1);
+  } finally {
+    unmount();
+  }
+});
+
+test("the suggestion card's buttons are optional, so a caller that omits them does not throw", () => {
+  const { tree, unmount } = mountDock({
+    skillSuggestion: { skill: { name: "future-web", description: "" }, draft: "x" },
+  });
+  try {
+    const card = tree.root.findByType(SkillSuggestionCard);
+    // No `onInstallSkill` / `onDismissSkill` were passed: the dock is used
+    // read-only in some hosts, and pressing must be a no-op rather than a crash.
+    expect(() => act(() => card.props.onInstall())).not.toThrow();
+    expect(() => act(() => card.props.onDismiss())).not.toThrow();
+  } finally {
+    unmount();
+  }
+});
+
+test("the skill picker's details toggle opens on one tap and closes on the second", () => {
+  const { tree, focusComposer, unmount } = mountDock({
+    message: "/web",
+    remote: {
+      draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: false, busy: false, abort: jest.fn(),
+      capabilities: new Set(["skills_v1"]), listSkills: jest.fn(async () => []),
+    },
+  });
+  try {
+    focusComposer();
+    const picker = tree.root.findByType(SkillPicker);
+    const skill = { name: "future-web", description: "search the web" };
+    act(() => picker.props.onShowDetails(skill));
+    expect(tree.root.findByType(SkillDetailsDialog).props.skill).toMatchObject({ name: "future-web" });
+    // The picker's row is told which skill is open so it can show it as
+    // expanded; that flag is part of the same state, so it has to move with it.
+    expect(tree.root.findByType(SkillPicker).props.detailsName).toBe("future-web");
+    // Tapping the same skill again closes it: the toggle is what makes the
+    // name row do something other than re-open a dialog that is already up.
+    act(() => tree.root.findByType(SkillPicker).props.onShowDetails(skill));
+    expect(tree.root.findByType(SkillDetailsDialog).props.skill).toBeNull();
+    expect(tree.root.findByType(SkillPicker).props.detailsName).toBeNull();
+    // A *different* skill replaces the open one rather than toggling it away.
+    act(() => tree.root.findByType(SkillPicker).props.onShowDetails(skill));
+    act(() => tree.root.findByType(SkillPicker).props.onShowDetails({ name: "other", description: "" }));
+    expect(tree.root.findByType(SkillDetailsDialog).props.skill).toMatchObject({ name: "other" });
+  } finally {
+    unmount();
+  }
+});
+
+test("the details dialog's own dismiss closes it, and an absent skill keeps it closed", () => {
+  const { tree, focusComposer, unmount } = mountDock({ message: "/web", remote: {
+    draft: false, selectedSessionId: "s1", desktopOnline: true,
+    connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+    streaming: false, busy: false, abort: jest.fn(),
+    capabilities: new Set(["skills_v1"]), listSkills: jest.fn(async () => []),
+  } });
+  try {
+    focusComposer();
+    expect(tree.root.findByType(SkillDetailsDialog).props.skill).toBeNull();
+    const picker = tree.root.findByType(SkillPicker);
+    act(() => picker.props.onShowDetails({ name: "future-web", description: "d" }));
+    act(() => tree.root.findByType(SkillDetailsDialog).props.onClose());
+    expect(tree.root.findByType(SkillDetailsDialog).props.skill).toBeNull();
+  } finally {
+    unmount();
+  }
+});
+
+test("removing an attachment deletes its temporary file and drops only that row", () => {
+  const removal = jest.fn();
+  const attachment = (name: string) => ({
+    localUri: `file:///cache/${name}`, name, mimeType: "image/jpeg",
+    kind: "image" as const, originalSize: 10, transferSize: 10, temporary: true,
+  });
+  const setAttachments = jest.fn((update: unknown) => removal(update));
+  const { tree, unmount } = mountDock({
+    attachments: [attachment("a.png"), attachment("b.png"), attachment("c.png")],
+    setAttachments,
+  });
+  const deleteTemporary = jest.mocked(deleteTemporaryAttachment);
+  try {
+    // The middle row: a filter keyed on the wrong index would drop the wrong
+    // file, and an off-by-one here is invisible unless the *identity* is
+    // asserted rather than the count. The label is bare because the test's `t`
+    // returns the key; the rows are told apart by position.
+    const removes = tree.root.findAll(node =>
+      node.props.accessibilityLabel === "attachment.remove" && typeof node.props.onPress === "function");
+    expect(removes).toHaveLength(3);
+    act(() => removes[1]!.props.onPress());
+    expect(setAttachments).toHaveBeenCalledTimes(1);
+    const next = removal.mock.calls[0]![0] as (current: unknown[]) => unknown[];
+    const current = [attachment("a.png"), attachment("b.png"), attachment("c.png")];
+    const kept = next(current) as { name: string }[];
+    expect(kept.map(item => item.name)).toEqual(["a.png", "c.png"]);
+    // The row's own local copy is deleted, and only that one: the other two
+    // must stay on disk for the send that follows.
+    expect(deleteTemporary).toHaveBeenCalledTimes(1);
+    expect(deleteTemporary).toHaveBeenCalledWith(current[1]);
+  } finally {
+    unmount();
+  }
+});
+
+test("images the model cannot take are called out on the pending row and above the composer", () => {
+  const image = {
+    localUri: "file:///cache/a.png", name: "a.png", mimeType: "image/png",
+    kind: "image" as const, originalSize: 10, transferSize: 10,
+  };
+  const text = {
+    localUri: "file:///cache/a.txt", name: "a.txt", mimeType: "text/plain",
+    kind: "file" as const, originalSize: 4, transferSize: 4,
+  };
+  const shown = (tree: ReactTestRenderer, key: string) =>
+    tree.root.findAllByType(Text).some(node => node.props.children === key);
+  const withImage = mountDock({ attachments: [image], supportsImages: false });
+  try {
+    // Both the row's warning icon and the composer-level line: the user has to
+    // see it before sending, not after the desktop rejects the message.
+    expect(withImage.tree.root.findAllByType(CircleAlert).length).toBeGreaterThan(0);
+    expect(shown(withImage.tree, "attachment.imagesUnsupported")).toBe(true);
+  } finally {
+    withImage.unmount();
+  }
+  const filesOnly = mountDock({ attachments: [text], supportsImages: false });
+  try {
+    // A non-image attachment is unaffected by the image capability, so the
+    // warning must not appear for it.
+    expect(shown(filesOnly.tree, "attachment.imagesUnsupported")).toBe(false);
+  } finally {
+    filesOnly.unmount();
+  }
+  const supported = mountDock({ attachments: [image], supportsImages: true });
+  try {
+    expect(shown(supported.tree, "attachment.imagesUnsupported")).toBe(false);
+  } finally {
+    supported.unmount();
+  }
 });

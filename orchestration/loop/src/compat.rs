@@ -125,6 +125,65 @@ const LIVE_HOLDER_POLL: Duration = Duration::from_millis(5);
 /// cannot spin forever. Reaching it means heavy contention, not a stuck lock.
 const MAX_LOCK_ATTEMPTS: usize = 512;
 
+/// Windows `ERROR_ACCESS_DENIED`, reported by every operation on a file another
+/// writer is concurrently unlinking (see [`delete_pending_retry`]).
+#[cfg(windows)]
+const ERROR_ACCESS_DENIED: i32 = 5;
+
+/// Retries allowed for the Windows delete-pending window. The window closes as
+/// soon as the unlinking writer drops its handle (microseconds), so a handful
+/// of polls is generous; exhausting the budget means the error really is a
+/// permission problem and is surfaced.
+#[cfg(windows)]
+const DELETE_PENDING_RETRIES: usize = 64;
+
+/// Is this `create_new` failure just another writer's transient state rather
+/// than a real error?
+///
+/// On Unix the only contention signal is `AlreadyExists`. Windows has a second
+/// one: between `remove_file` and the kernel finishing the unlink the name is
+/// *delete-pending*, and `create_new` on it reports `ERROR_ACCESS_DENIED` — not
+/// `AlreadyExists`, not `NotFound`. Four workers claiming at once hit that
+/// window routinely, so it must fall through to the classify/remove path below
+/// (which sorts out whether the lock is really still there) instead of being
+/// reported as a failure. Anything else — a genuinely unwritable directory,
+/// say — still surfaces as an error.
+fn create_is_contention(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::AlreadyExists {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        error.raw_os_error() == Some(ERROR_ACCESS_DENIED)
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Windows quirk, removal side: `remove_file` on a delete-pending name also
+/// reports `ERROR_ACCESS_DENIED`, though the unlink the caller wanted is already
+/// underway. Sleep and let the caller retry, up to a bounded budget; any other
+/// error, or an exhausted budget, is reported unchanged — a real permission
+/// problem must still name itself.
+#[cfg(windows)]
+fn delete_pending_retry(retries: &mut usize, error: &std::io::Error) -> bool {
+    if error.raw_os_error() != Some(ERROR_ACCESS_DENIED) || *retries >= DELETE_PENDING_RETRIES {
+        return false;
+    }
+    *retries += 1;
+    std::thread::sleep(LIVE_HOLDER_POLL);
+    true
+}
+
+/// Non-Windows has no delete-pending state: unlink succeeds even while other
+/// handles are open, so a removal error is always real.
+#[cfg(not(windows))]
+fn delete_pending_retry(_retries: &mut usize, _error: &std::io::Error) -> bool {
+    false
+}
+
 /// What a lock file says about its holder.
 enum LockState {
     /// Gone — released between our create attempt and this read.
@@ -154,6 +213,7 @@ fn acquire_active_state_lock_with(goal_dir: &Path, empty_wait: Duration) -> Resu
     // begins, so a wait for an earlier holder does not eat the later one's budget.
     let mut live_deadline: Option<std::time::Instant> = None;
     let mut empty_deadline: Option<std::time::Instant> = None;
+    let mut delete_pending_retries = 0usize;
     for _ in 0..MAX_LOCK_ATTEMPTS {
         // Publishing the pid is what makes us the holder; `create_new` is the
         // atomic part. The file is briefly visible without a pid — a reader has
@@ -168,7 +228,7 @@ fn acquire_active_state_lock_with(goal_dir: &Path, empty_wait: Duration) -> Resu
                 writeln!(file, "{}", std::process::id()).context("write pid into lock")?;
                 return Ok(lock_path);
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) if create_is_contention(&error) => {}
             Err(error) => return Err(error).context(format!("create {ACTIVE_STATE_LOCK}")),
         }
         match classify_lock(&lock_path) {
@@ -182,7 +242,12 @@ fn acquire_active_state_lock_with(goal_dir: &Path, empty_wait: Duration) -> Resu
                 std::thread::sleep(LIVE_HOLDER_POLL);
             }
             LockState::Dead => {
-                remove_lock_file(&lock_path).context("remove dead-holder lock")?;
+                if let Err(error) = remove_lock_file(&lock_path) {
+                    if delete_pending_retry(&mut delete_pending_retries, &error) {
+                        continue;
+                    }
+                    return Err(error).context("remove dead-holder lock");
+                }
             }
             LockState::Empty => {
                 let deadline =
@@ -190,7 +255,12 @@ fn acquire_active_state_lock_with(goal_dir: &Path, empty_wait: Duration) -> Resu
                 if std::time::Instant::now() >= deadline {
                     // Still no pid after the grace period: the writer that created
                     // it is gone, not slow.
-                    remove_lock_file(&lock_path).context("remove abandoned lock")?;
+                    if let Err(error) = remove_lock_file(&lock_path) {
+                        if delete_pending_retry(&mut delete_pending_retries, &error) {
+                            continue;
+                        }
+                        return Err(error).context("remove abandoned lock");
+                    }
                 } else {
                     std::thread::sleep(LIVE_HOLDER_POLL);
                 }
@@ -680,6 +750,84 @@ mod tests {
         }
     }
 
+    /// A directory squatting on the lock name is not a lock: no pid can be
+    /// read out of it and it cannot be unlinked as a file, so the acquire must
+    /// fail with the removal error rather than spin or pretend to hold it.
+    ///
+    /// This is also the deterministic trigger for the two platform arms that
+    /// guard the removal — on Windows `create_new` on a directory name reports
+    /// `ERROR_ACCESS_DENIED` (not `AlreadyExists`), which is the same code a
+    /// delete-pending lock reports, while on Unix it is `EEXIST`.
+    #[test]
+    fn a_directory_in_place_of_the_lock_reports_the_remove_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(lock_path(dir.path())).unwrap();
+        let err = acquire_active_state_lock_with(dir.path(), Duration::ZERO).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("remove abandoned lock"),
+            "unexpected error: {msg}"
+        );
+        // Nothing was acquired: the directory is still there.
+        assert!(lock_path(dir.path()).is_dir());
+    }
+
+    /// A lock held by a pid that is gone is normally taken over by unlinking it.
+    /// When the unlink itself is refused the error must name the removal, not be
+    /// swallowed: the caller has to learn that the projection could not be
+    /// written. Unix gets the refusal from a read-only parent directory.
+    #[cfg(unix)]
+    #[test]
+    fn a_dead_holder_lock_that_cannot_be_unlinked_names_the_removal() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(lock_path(dir.path()), format!("{}\n", reaped_child_pid())).unwrap();
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+        let err = acquire_active_state_lock_with(dir.path(), Duration::ZERO).unwrap_err();
+        let msg = format!("{err:#}");
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+        assert!(
+            msg.contains("remove dead-holder lock"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Windows counterpart, and the deliberate counter-case to the delete-pending
+    /// retry: a lock file another handle opened without delete sharing still
+    /// reads fine (so it is classified by its dead pid) but cannot be unlinked.
+    /// `DeleteFile` reports `ERROR_SHARING_VIOLATION`, which is *not* the
+    /// delete-pending code, so the retry must not pretend it is transient — the
+    /// acquire has to fail and name the removal.
+    #[cfg(windows)]
+    #[test]
+    fn a_lock_held_closed_to_delete_names_the_removal() {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 1;
+        const FILE_SHARE_WRITE: u32 = 2;
+        let dir = tempfile::tempdir().unwrap();
+        let path = lock_path(dir.path());
+        std::fs::write(&path, format!("{}\n", reaped_child_pid())).unwrap();
+        // Readable by us, but nobody may delete it while this handle lives.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&path)
+            .unwrap();
+        let err = acquire_active_state_lock_with(dir.path(), Duration::ZERO).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("remove dead-holder lock"),
+            "unexpected error: {msg}"
+        );
+        // Still nothing acquired: the file we could not unlink is still the lock.
+        drop(held);
+        assert!(path.exists());
+    }
+
     #[test]
     fn write_active_state_acquires_and_releases_lock() {
         let dir = tempfile::tempdir().unwrap();
@@ -688,6 +836,33 @@ mod tests {
         assert!(dir.path().join("ACTIVE_GOAL_STATE.md").exists());
         // Released after the write — no residual lock file.
         assert!(!lock_path(dir.path()).exists());
+    }
+
+    /// The two ways `write_active_state` can fail before it publishes anything:
+    /// a goal dir that cannot be created, and a lock a live writer holds. Either
+    /// must surface as an error — publishing a projection from a lock-less write
+    /// is exactly the corruption the sidecar exists to prevent.
+    #[test]
+    fn write_active_state_reports_an_unusable_goal_dir_and_a_held_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let goal = Goal::new("g", "lock objective", "/tmp");
+
+        // A regular file where the goal dir should be: `create_dir_all` fails.
+        let not_a_dir = dir.path().join("regular-file");
+        std::fs::write(&not_a_dir, b"x").unwrap();
+        let err = write_active_state(&not_a_dir, &goal).unwrap_err();
+        assert!(
+            !not_a_dir.join("ACTIVE_GOAL_STATE.md").exists(),
+            "a failed acquire must not publish a projection: {err:#}"
+        );
+
+        // Our own pid is certainly alive → the lock is held, so the write waits
+        // for the holder and then reports it instead of clobbering the file.
+        std::fs::write(lock_path(dir.path()), format!("{}\n", std::process::id())).unwrap();
+        let err = write_active_state(dir.path(), &goal).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("held by pid"), "unexpected error: {msg}");
+        assert!(!dir.path().join("ACTIVE_GOAL_STATE.md").exists());
     }
 
     #[test]

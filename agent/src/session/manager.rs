@@ -1798,3 +1798,91 @@ mod tests {
             .any(|b| { b.get("type").and_then(|t| t.as_str()) == Some("tool_result") }));
     }
 }
+
+/// A fork request must carry its own idempotency key and a parent before any
+/// storage work happens; both rejections are the first thing the RPC path sees.
+#[cfg(test)]
+mod fork_request_validation {
+    use super::*;
+    use crate::session::{ForkPoint, ForkRequest};
+
+    fn request(request_id: &str, parent: &str) -> ForkRequest {
+        ForkRequest {
+            request_id: request_id.to_string(),
+            parent_session_id: parent.to_string(),
+            point: ForkPoint::LatestSettled,
+            created_by: "test".to_string(),
+            creator_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_fork_request_needs_its_own_id_and_a_parent_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().join("sessions"));
+        let error = manager
+            .create_fork(request("   ", "parent"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("fork request id is required"), "{error}");
+        let error = manager
+            .create_fork(request("request", " "))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("fork parent session id is required"),
+            "{error}"
+        );
+    }
+}
+
+/// The in-process projection cache: a hit must be promoted (still present on the
+/// next read) and the cache must stay bounded.
+#[cfg(test)]
+mod display_cache_paths {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn a_cache_hit_is_promoted_and_the_oldest_entry_is_evicted() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().join("sessions"));
+        let mut session = crate::session::Session::new("/synthetic", "mock");
+        session.entries.push(crate::session::SessionEntry::new_user(
+            "user",
+            serde_json::json!("question"),
+        ));
+        manager.save(&session).unwrap();
+        let revision = manager.session_revision(&session.id).unwrap();
+        manager.cache_display_entries(
+            &session.id,
+            revision.clone(),
+            Arc::new(vec![serde_json::json!({"id":"entry"})]),
+        );
+        assert_eq!(
+            manager
+                .cached_display_entries(&session.id, &revision)
+                .unwrap()
+                .len(),
+            1
+        );
+        // The hit was promoted, so it is still cached on the next read.
+        assert!(manager
+            .cached_display_entries(&session.id, &revision)
+            .is_some());
+
+        for index in 0..=DISPLAY_ENTRIES_CACHE_MAX {
+            manager.cache_display_entries(
+                &format!("filler-{index}"),
+                revision.clone(),
+                Arc::new(Vec::new()),
+            );
+        }
+        assert!(
+            manager
+                .cached_display_entries(&session.id, &revision)
+                .is_none(),
+            "the cap evicts the oldest entry"
+        );
+    }
+}

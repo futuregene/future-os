@@ -4,6 +4,7 @@ import {
   commitAcknowledgedUserMessage,
   dropSupersededCompactionDividers,
   emptyTimeline,
+  foldLiveCompactionPlaceholdersIntoHistory,
   markApprovalDecision,
   mergeHistoryAttachments,
   normalizeReplayEvents,
@@ -12,6 +13,7 @@ import {
   timelineFromHistory,
   timelineFromProjection,
 } from "../timeline";
+import { messageToItems } from "../projection";
 import type { HistoryEntry } from "../types";
 
 describe("history reducer", () => {
@@ -39,6 +41,64 @@ describe("history reducer", () => {
       expect.objectContaining({ kind: "message", role: "user", text: "hi" }),
       expect.objectContaining({ kind: "message", role: "assistant", text: "done" }),
     ]);
+  });
+
+  test("a message that is neither a user bubble nor an assistant reply renders nothing", () => {
+    // System/tool rows travel in the same projection envelope; they have no
+    // bubble in this UI and must not appear as an empty one.
+    expect(messageToItems({ id: "sys", role: "system", content: "you are an agent" } as never))
+      .toEqual([]);
+    // An assistant row with no text, no segments and no outcome carries nothing
+    // to say: not even a placeholder bubble.
+    expect(messageToItems({ id: "a", role: "assistant", content: "", segments: [] } as never))
+      .toEqual([]);
+    // …but an outcome without text still has to be visible (a failed or stopped
+    // turn is exactly the case the user needs to see).
+    expect(messageToItems({ id: "a", role: "assistant", content: "", segments: [], stopped: true } as never))
+      .toHaveLength(1);
+    expect(messageToItems({ id: "a", role: "assistant", content: "", segments: [], durationMs: 12 } as never))
+      .toHaveLength(1);
+  });
+
+  test("a live bubble that already carries its attachments keeps them", () => {
+    const live = appendUserMessage(emptyTimeline(), "look", [
+      { path: "file:///live.jpg", name: "live.jpg", kind: "image" },
+    ]);
+    const durable = appendUserMessage(emptyTimeline(), "look", [
+      { path: "file:///durable.jpg", name: "durable.jpg", kind: "file" },
+    ]);
+    const merged = mergeHistoryAttachments(live, durable);
+    // The live row's chips came from the composer the user actually used;
+    // replacing them with the durable copy would swap a photo for a file.
+    expect(merged.items[0]).toMatchObject({ attachments: [{ name: "live.jpg" }] });
+  });
+
+  test("a settled live placeholder for a durable checkpoint is folded away", () => {
+    const divider = (id: string, status: "running" | "completed") => ({
+      id,
+      kind: "message" as const,
+      role: "assistant" as const,
+      text: "",
+      segments: [{ id: `seg_${id}`, kind: "compaction" as const, checkpointId: "cp-1", status }],
+    });
+    // The live placeholder never got its terminal, so it still carries the
+    // operation id while the durable divider carries the checkpoint id. When
+    // both rows exist, the placeholder must go — including any copy of it that
+    // the durable window still holds.
+    const live = [divider("compaction:op-1", "completed")];
+    const history = [divider("compaction:op-1", "completed"), divider("m_cp-1", "completed")];
+    const folded = foldLiveCompactionPlaceholdersIntoHistory(history, live);
+    expect(folded.live).toEqual([]);
+    expect(folded.history.map(item => item.id)).toEqual(["m_cp-1"]);
+    // A placeholder whose terminal is still running is not an alias: the durable
+    // copy of that same row stays, because only a settled placeholder proves the
+    // running marker is stale.
+    const running = foldLiveCompactionPlaceholdersIntoHistory(
+      [divider("compaction:op-2", "running")],
+      [divider("compaction:op-2", "running")],
+    );
+    expect(running.live).toEqual([]);
+    expect(running.history.map(item => item.id)).toEqual(["compaction:op-2"]);
   });
 });
 

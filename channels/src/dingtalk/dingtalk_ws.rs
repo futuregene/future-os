@@ -105,10 +105,14 @@ impl DingtalkWsClient {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Missing ticket in gateway response: {}", raw))?;
 
+        // The bounded slice is computed here rather than inside the macro
+        // argument list: macro arguments only evaluate when a subscriber is
+        // installed, which makes the expression untrackable (and the same
+        // hoisting is what `feishu::bridge` does for its receive log).
+        let ticket_preview = &ticket[..ticket.len().min(16)];
         info!(
             "DingTalk Gateway endpoint={} ticket={:.16}...",
-            endpoint,
-            &ticket[..ticket.len().min(16)]
+            endpoint, ticket_preview
         );
         Ok((endpoint.to_string(), ticket.to_string()))
     }

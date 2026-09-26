@@ -845,6 +845,29 @@ mod tests {
         assert!(message.contains(&DRAFT_ATTEMPTS.to_string()), "{message}");
     }
 
+    /// The **non-collision** failure arm, on every platform. A name that cannot
+    /// be created at all (its parent directory does not exist) is not a name
+    /// collision: retrying the same broken name would loop, so the error must
+    /// come straight back and name the path it could not create. The POSIX test
+    /// below reaches the same arm through permissions; this one needs no
+    /// platform-specific setup.
+    #[test]
+    fn create_draft_file_reports_a_name_that_cannot_be_created() {
+        let dir = draft_dir();
+        let mut attempts = 0u32;
+        let err = create_draft_file(dir.path(), "seed", |_| {
+            attempts += 1;
+            "missing-subdirectory/draft.md".to_string()
+        })
+        .unwrap_err();
+        assert_eq!(attempts, 1, "a non-collision error must not be retried");
+        let message = io_message(err);
+        assert!(
+            message.contains("draft.md"),
+            "the failing path must be named: {message}"
+        );
+    }
+
     #[test]
     #[cfg(unix)]
     fn create_draft_file_reports_unwritable_directory() {

@@ -2101,6 +2101,31 @@ mod tests {
         assert_eq!(lines, vec!["a", "", "b"]);
     }
 
+    /// Top-level indentation is *presentation text*, not markdown structure: a
+    /// paragraph written with leading spaces must render with those spaces
+    /// (deterministic rows matter here — the transcript is diffed between
+    /// frames). Container indentation inside lists/quotes is a different path
+    /// and is not affected by this rule.
+    #[test]
+    fn a_top_level_indented_paragraph_keeps_its_leading_spaces() {
+        let lines = plain("  indented\n", 40);
+        assert_eq!(lines, vec!["  indented"], "leading spaces are preserved");
+
+        // A tab is normalized to three spaces before parsing, so it lands as
+        // indentation too rather than as a code block.
+        let lines = plain("\ttabbed\n", 40);
+        assert_eq!(lines, vec!["   tabbed"]);
+
+        // A paragraph with no indentation is unchanged (the guard's other
+        // side), and indentation inside a list item is container indentation.
+        assert_eq!(plain("plain\n", 40), vec!["plain"]);
+        let nested = plain("- item\n  continued\n", 40);
+        assert!(
+            nested.iter().all(|line| !line.starts_with("    ")),
+            "container indentation is not re-emitted as text: {nested:?}"
+        );
+    }
+
     #[test]
     fn multiple_blank_lines_collapse_to_one() {
         let lines = plain("a\n\n\n\nb", 40);

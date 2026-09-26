@@ -590,6 +590,234 @@ mod tests {
         );
     }
 
+    /// A transport backed by a `Server` the test built by hand. The refusal
+    /// arms below depend on server state (a missing secret, an unreadable
+    /// private key, a pinned peer) that `Transport::new` cannot produce, but
+    /// which a real persisted credential can carry after an upgrade or a
+    /// partial write — so each arm must name its own refusal.
+    fn server_with(creds: super::super::protocol::PairingCreds) -> Transport {
+        Transport {
+            server: Some(Arc::new(Mutex::new(Server {
+                creds,
+                pending: HashMap::new(),
+                candidates: Vec::new(),
+                current: None,
+            }))),
+            legacy_fixture: false,
+        }
+    }
+
+    fn refusal(transport: &Transport, payload: &str) -> String {
+        transport
+            .handshake(payload.as_bytes(), "bridge_secure")
+            .unwrap_err()
+            .to_string()
+    }
+
+    /// Perform only the `secure_open` leg of a pairing, leaving one pending
+    /// challenge on the server so the `secure_finish` arms are reachable.
+    fn open_pairing(
+        transport: &Transport,
+        creds: &super::super::protocol::PairingCreds,
+        private: &[u8],
+    ) -> Value {
+        let identity = creds.secure.as_ref().unwrap();
+        let prologue = future_remote_crypto::prologue(&creds.pair_id, &creds.desktop_id).unwrap();
+        let mut noise = Handshake::new(
+            Pattern::Pair,
+            true,
+            private,
+            None,
+            Some(&key(identity.secret.as_deref().unwrap()).unwrap()),
+            &prologue,
+        )
+        .unwrap();
+        let open = json!({
+            "type": "secure_open",
+            "pairing": true,
+            "message": URL_SAFE_NO_PAD.encode(noise.write(b"").unwrap()),
+        });
+        transport
+            .handshake(&serde_json::to_vec(&open).unwrap(), "bridge_secure")
+            .expect("a fresh invitation opens")
+    }
+
+    fn finish_payload(id: &str, message: &str) -> String {
+        json!({ "type": "secure_finish", "id": id, "message": message }).to_string()
+    }
+
+    /// Every refusal the handshake can produce was named only after a real
+    /// pairing failure had to be diagnosed by reading raw bytes. These are the
+    /// arms the happy-path tests never take: a malformed field, a credential an
+    /// upgrade left incomplete, a prologue the platform will not accept, and a
+    /// challenge that was consumed, reused or has expired.
+    #[test]
+    fn malformed_and_incomplete_credentials_are_refused_by_name() {
+        let _home = HomeGuard::new("secure-refusal-arms");
+        init_store();
+
+        // A field past the 12 000-byte bound is refused before base64 decoding,
+        // and a decodable field that is not a 32-byte key is refused after it.
+        assert!(decode(&"A".repeat(12_001)).is_err());
+        assert!(decode(&"A".repeat(12_000)).is_ok());
+        assert!(key("AAAA").is_err());
+
+        // `secure_open` on an invitation whose PSK was never minted (an upgrade
+        // that kept the identity but lost the secret).
+        let mut no_secret = creds();
+        no_secret.secure.as_mut().unwrap().secret = None;
+        assert_eq!(
+            refusal(
+                &server_with(no_secret),
+                r#"{"type":"secure_open","pairing":true,"message":"AAAA"}"#
+            ),
+            format!("{REFUSED} (secret)")
+        );
+
+        // An unreadable desktop private key.
+        let mut bad_key = creds();
+        bad_key.secure.as_mut().unwrap().private_key = "AAAA".into();
+        assert_eq!(
+            refusal(
+                &server_with(bad_key),
+                r#"{"type":"secure_open","pairing":true,"message":"AAAA"}"#
+            ),
+            format!("{REFUSED} (private_key)")
+        );
+
+        // Identifiers the prologue builder rejects: an empty pair id binds
+        // nothing, so no key may be derived from it.
+        let mut no_prologue = creds();
+        no_prologue.pair_id = String::new();
+        assert_eq!(
+            refusal(
+                &server_with(no_prologue),
+                r#"{"type":"secure_open","pairing":true,"message":"AAAA"}"#
+            ),
+            format!("{REFUSED} (prologue)")
+        );
+
+        // A message that is not base64 at all.
+        assert_eq!(
+            refusal(
+                &server_with(creds()),
+                r#"{"type":"secure_open","pairing":true,"message":"not base64!"}"#
+            ),
+            format!("{REFUSED} (message)")
+        );
+
+        // No secure identity at all: the transport cannot prove anything, and
+        // must say so rather than fall through to a plaintext lane.
+        let mut no_identity = creds();
+        no_identity.secure = None;
+        assert_eq!(
+            refusal(
+                &server_with(no_identity),
+                r#"{"type":"secure_open","pairing":false,"message":"AAAA"}"#
+            ),
+            format!("{REFUSED} (identity)")
+        );
+
+        // An empty `type` is distinguished from an unknown one.
+        assert_eq!(
+            refusal(&server_with(creds()), r#"{"type":"","message":"AAAA"}"#),
+            format!("{REFUSED} (missing_type)")
+        );
+    }
+
+    /// The `secure_finish` leg re-checks everything the `secure_open` leg did,
+    /// because the two arrive as separate messages: a client may reconnect
+    /// between them, an invitation may expire while the phone is scanning, and
+    /// a peer may replay a challenge the pair already consumed. Each of those
+    /// has to be a named refusal, not a silent fallback.
+    #[test]
+    fn a_consumed_expired_or_undecryptable_challenge_is_refused_by_name() {
+        let _home = HomeGuard::new("secure-finish-arms");
+        init_store();
+        let creds = creds();
+        let (private, _) = future_remote_crypto::generate_identity().unwrap();
+
+        // A challenge that decodes but does not open: the pending entry is
+        // consumed by the attempt, so the refusal is about the bytes.
+        let transport = server_with(creds.clone());
+        let opened = open_pairing(&transport, &creds, &private);
+        let id = opened["id"].as_str().unwrap().to_string();
+        assert_eq!(
+            refusal(&transport, &finish_payload(&id, "AAAA")),
+            format!("{REFUSED} (finish_undecryptable)")
+        );
+
+        // A second attempt finds no pending entry: the challenge was consumed
+        // by the attempt above, so this is `challenge_expired`, not a replay.
+        assert_eq!(
+            refusal(&transport, &finish_payload(&id, "AAAA")),
+            format!("{REFUSED} (challenge_expired)")
+        );
+
+        // The pair pinned a peer key between the two legs (another invitation
+        // completed): this challenge must not bind a second one.
+        let transport = server_with(creds.clone());
+        let opened = open_pairing(&transport, &creds, &private);
+        let id = opened["id"].as_str().unwrap().to_string();
+        transport
+            .server
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .creds
+            .secure
+            .as_mut()
+            .unwrap()
+            .peer_public_key = Some("pinned by another pairing".into());
+        assert_eq!(
+            refusal(&transport, &finish_payload(&id, "AAAA")),
+            format!("{REFUSED} (invitation_already_used)")
+        );
+
+        // The invitation expired while the phone was scanning it.
+        let transport = server_with(creds.clone());
+        let opened = open_pairing(&transport, &creds, &private);
+        let id = opened["id"].as_str().unwrap().to_string();
+        transport
+            .server
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .creds
+            .secure
+            .as_mut()
+            .unwrap()
+            .expires_at = now_secs() - 1;
+        assert_eq!(
+            refusal(&transport, &finish_payload(&id, "AAAA")),
+            format!("{REFUSED} (invitation_expired)")
+        );
+    }
+
+    /// A credential row that is not a v2 secure pairing has no server, so the
+    /// transport is inert in both directions: it must not seal (which would
+    /// publish plaintext on a lane the client believes is encrypted) and it
+    /// must not open (which would accept unauthenticated bytes as commands).
+    #[test]
+    fn a_transport_without_a_server_refuses_to_open_or_seal() {
+        let _home = HomeGuard::new("secure-inert");
+        init_store();
+        let mut row = creds();
+        row.handshake_version = 2;
+        row.secure = None;
+        let transport = Transport::new(&row);
+        assert!(!transport.enabled());
+        assert!(transport.seal("presence", b"private").unwrap().is_none());
+        match transport.open("command", b"plaintext") {
+            Ok(_) => panic!("an inert transport must not open"),
+            // `open` has no reason to name: unlike a handshake refusal it never
+            // reaches a peer, so the byte-stable prefix is the whole message.
+            Err(error) => assert_eq!(error.to_string(), "remote_secure_channel_invalid"),
+        }
+    }
+
     #[test]
     fn readiness_is_an_authenticated_commit_and_stop_invalidates_candidates() {
         let _home = HomeGuard::new("secure-readiness");
@@ -704,5 +932,311 @@ mod tests {
             .handshake(br#"{"type":"approval_decision","message":""}"#, "bridge")
             .is_err());
         assert!(transport.handshake(&vec![b'x'; 16_385], "bridge").is_err());
+    }
+
+    /// The identity is a private key. Its `Debug` must exist (it is derived by
+    /// anything that logs the enclosing struct) and must report only whether the
+    /// pair is established, never the key material.
+    #[test]
+    fn a_pairing_identity_never_debugs_its_key_material() {
+        let identity = PairingIdentity::new(now_secs() + 60).unwrap();
+        let rendered = format!("{identity:?}");
+        assert!(rendered.contains("PairingIdentity"));
+        assert!(
+            rendered.contains("paired: false"),
+            "unpaired is the state before the handshake: {rendered}"
+        );
+        assert!(!rendered.contains(&identity.private_key));
+        assert!(!rendered.contains(identity.secret.as_deref().unwrap()));
+        let mut pinned = identity.clone();
+        pinned.peer_public_key = Some("Upeer".into());
+        assert!(format!("{pinned:?}").contains("paired: true"));
+    }
+
+    /// Handshake fields are attacker-controlled. `decode` bounds the base64
+    /// before it is ever parsed, and a value that is not base64 at all is a
+    /// channel error rather than a panic.
+    #[test]
+    fn handshake_fields_are_bounded_before_decoding() {
+        assert!(decode("AAAA").is_ok());
+        assert_eq!(
+            decode(&"A".repeat(12_001)).unwrap_err().to_string(),
+            "remote_secure_channel_invalid"
+        );
+        assert!(decode("not base64!").is_err());
+        assert!(key("AAAA").is_err(), "a short key is rejected, not padded");
+    }
+
+    /// A transport that was never handed v2 credentials is inert rather than
+    /// panicking: a legacy row can be loaded and the bridge must not treat it as
+    /// an authenticated channel.
+    #[test]
+    fn a_transport_without_a_server_seals_nothing_and_is_never_active() {
+        let legacy = Transport::new(&super::super::protocol::PairingCreds {
+            handshake_version: 1,
+            secure: None,
+            ..creds()
+        });
+        assert!(!legacy.enabled(), "a v1 row has no secure channel to offer");
+        assert_eq!(
+            legacy.seal("presence", b"legacy lane").unwrap().as_deref(),
+            Some(&b"legacy lane"[..]),
+            "the v1 lane is plaintext by contract"
+        );
+
+        let unpaired = Transport::new(&super::super::protocol::PairingCreds {
+            handshake_version: 2,
+            secure: None,
+            ..creds()
+        });
+        assert!(!unpaired.enabled());
+        assert!(unpaired.seal("presence", b"secret").unwrap().is_none());
+        assert!(Transport::default()
+            .seal("presence", b"secret")
+            .unwrap()
+            .is_none());
+        let detached = Reply {
+            channel: None,
+            context: String::new(),
+        };
+        assert!(!unpaired.is_active(&detached));
+        // A well-formed handshake reaches the missing-server guard (the malformed
+        // ones are refused earlier, which `a_refused_handshake_names_the_reason`
+        // pins), so an unconfigured transport is *inert* rather than panicking.
+        assert_eq!(
+            unpaired
+                .handshake(br#"{"type":"secure_open","message":"AAAA"}"#, "bridge")
+                .unwrap_err()
+                .to_string(),
+            format!("{REFUSED} (disabled)")
+        );
+    }
+
+    /// Re-activating the channel that is already current is a no-op, not an
+    /// error: a phone that resends its readiness (after a lost reply) must not
+    /// be told its own active channel is unknown.
+    #[test]
+    fn activating_the_current_channel_twice_is_idempotent() {
+        let _home = HomeGuard::new("secure-reactivate");
+        init_store();
+        let creds = creds();
+        let transport = Transport::new(&creds);
+        let (private, _) = future_remote_crypto::generate_identity().unwrap();
+        let (_channel, reply) = prepare_connection(&transport, &creds, &private, true).unwrap();
+        transport.activate(&reply).unwrap();
+        transport.activate(&reply).unwrap();
+        assert!(transport.is_active(&reply));
+        // A reply that never opened a channel cannot be activated.
+        assert_eq!(
+            transport
+                .activate(&Reply {
+                    channel: None,
+                    context: String::new()
+                })
+                .unwrap_err()
+                .to_string(),
+            "remote_secure_channel_invalid"
+        );
+    }
+
+    /// An opening that names no `type` — or a type this transport does not
+    /// implement — is refused with the two distinct reasons the phone's console
+    /// prints. A client whose body was cut mid-write sends the empty one.
+    #[test]
+    fn an_opening_without_a_known_type_is_refused_by_name() {
+        let _home = HomeGuard::new("secure-missing-type");
+        init_store();
+        let transport = Transport::new(&creds());
+        let reason = |payload: &str| {
+            transport
+                .handshake(payload.as_bytes(), "bridge_secure")
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            reason(r#"{"type":"","message":"AAAA"}"#),
+            format!("{REFUSED} (missing_type)")
+        );
+        // A reconnect by a phone this desktop has never paired with has no
+        // pinned key to check the noise proof against.
+        assert_eq!(
+            reason(r#"{"type":"secure_open","pairing":false,"message":"AAAA"}"#),
+            format!("{REFUSED} (peer_unknown)")
+        );
+    }
+
+    /// The challenge table is bounded: a relay that opens connections forever
+    /// must not grow the desktop's memory, and the refusal has to be a named
+    /// error the phone can show rather than a silent drop.
+    #[test]
+    fn an_opening_flood_is_refused_once_the_challenge_table_is_full() {
+        let _home = HomeGuard::new("secure-busy");
+        init_store();
+        let creds = creds();
+        let transport = Transport::new(&creds);
+        let (private, _) = future_remote_crypto::generate_identity().unwrap();
+        let open = {
+            let identity = creds.secure.as_ref().unwrap();
+            let prologue =
+                future_remote_crypto::prologue(&creds.pair_id, &creds.desktop_id).unwrap();
+            let psk = key(identity.secret.as_deref().unwrap()).unwrap();
+            let mut noise =
+                Handshake::new(Pattern::Pair, true, &private, None, Some(&psk), &prologue).unwrap();
+            json!({ "type": "secure_open", "pairing": true, "message": URL_SAFE_NO_PAD.encode(noise.write(b"").unwrap()) })
+        };
+        let open = serde_json::to_vec(&open).unwrap();
+        for attempt in 0..16 {
+            assert!(
+                transport.handshake(&open, "bridge_secure").is_ok(),
+                "challenge {attempt} is admitted"
+            );
+        }
+        assert_eq!(
+            transport
+                .handshake(&open, "bridge_secure")
+                .unwrap_err()
+                .to_string(),
+            format!("{REFUSED} (busy)")
+        );
+    }
+
+    /// The two payload guards on a handshake: the opening message must carry no
+    /// application bytes, and the finish must carry none either. A client that
+    /// smuggles data alongside the noise proof is refused rather than having it
+    /// silently ignored.
+    #[test]
+    fn a_handshake_that_carries_application_bytes_is_refused() {
+        let _home = HomeGuard::new("secure-open-payload");
+        init_store();
+        let creds = creds();
+        let transport = Transport::new(&creds);
+        let (private, _) = future_remote_crypto::generate_identity().unwrap();
+        let identity = creds.secure.as_ref().unwrap();
+        let psk = key(identity.secret.as_deref().unwrap()).unwrap();
+        let prologue = future_remote_crypto::prologue(&creds.pair_id, &creds.desktop_id).unwrap();
+        let mut noise =
+            Handshake::new(Pattern::Pair, true, &private, None, Some(&psk), &prologue).unwrap();
+        let open = json!({
+            "type": "secure_open",
+            "pairing": true,
+            "message": URL_SAFE_NO_PAD.encode(noise.write(b"smuggled").unwrap()),
+        });
+        assert_eq!(
+            transport
+                .handshake(&serde_json::to_vec(&open).unwrap(), "bridge_secure")
+                .unwrap_err()
+                .to_string(),
+            format!("{REFUSED} (open_payload)")
+        );
+
+        // A clean opening is admitted, and then the *finish* carries the bytes.
+        let mut noise =
+            Handshake::new(Pattern::Pair, true, &private, None, Some(&psk), &prologue).unwrap();
+        let open = json!({
+            "type": "secure_open",
+            "pairing": true,
+            "message": URL_SAFE_NO_PAD.encode(noise.write(b"").unwrap()),
+        });
+        let response = transport
+            .handshake(&serde_json::to_vec(&open).unwrap(), "bridge_secure")
+            .unwrap();
+        noise
+            .read(&decode(response["message"].as_str().unwrap()).unwrap())
+            .unwrap();
+        let finish = json!({
+            "type": "secure_finish",
+            "id": response["id"],
+            "message": URL_SAFE_NO_PAD.encode(noise.write(b"smuggled").unwrap()),
+        });
+        assert_eq!(
+            transport
+                .handshake(&serde_json::to_vec(&finish).unwrap(), "bridge_secure")
+                .unwrap_err()
+                .to_string(),
+            format!("{REFUSED} (finish_payload)")
+        );
+    }
+
+    /// A challenge that is answered after a *different* socket already pinned
+    /// this pair — and one that is answered after the invitation's own expiry —
+    /// must not silently rebind the desktop to a second key.
+    #[test]
+    fn a_stale_challenge_cannot_bind_a_second_key() {
+        let _home = HomeGuard::new("secure-stale-challenge");
+        init_store();
+        let creds = creds();
+        let transport = Transport::new(&creds);
+        let (private, _) = future_remote_crypto::generate_identity().unwrap();
+        let identity = creds.secure.as_ref().unwrap();
+        let psk = key(identity.secret.as_deref().unwrap()).unwrap();
+        let prologue = future_remote_crypto::prologue(&creds.pair_id, &creds.desktop_id).unwrap();
+        let challenge = |transport: &Transport| {
+            let mut noise =
+                Handshake::new(Pattern::Pair, true, &private, None, Some(&psk), &prologue).unwrap();
+            let open = json!({
+                "type": "secure_open",
+                "pairing": true,
+                "message": URL_SAFE_NO_PAD.encode(noise.write(b"").unwrap()),
+            });
+            let response = transport
+                .handshake(&serde_json::to_vec(&open).unwrap(), "bridge_secure")
+                .unwrap();
+            noise
+                .read(&decode(response["message"].as_str().unwrap()).unwrap())
+                .unwrap();
+            (noise, response["id"].clone())
+        };
+        let message_for = |noise: &mut Handshake, id: &Value| {
+            json!({
+                "type": "secure_finish",
+                "id": id,
+                "message": URL_SAFE_NO_PAD.encode(noise.write(b"").unwrap()),
+            })
+        };
+
+        // Another socket pinned the key while this challenge was outstanding.
+        let (mut noise, id) = challenge(&transport);
+        let finish = message_for(&mut noise, &id);
+        transport
+            .server
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .creds
+            .secure
+            .as_mut()
+            .unwrap()
+            .peer_public_key = Some("Uanother".into());
+        assert_eq!(
+            transport
+                .handshake(&serde_json::to_vec(&finish).unwrap(), "bridge_secure")
+                .unwrap_err()
+                .to_string(),
+            format!("{REFUSED} (invitation_already_used)")
+        );
+
+        // The invitation expired while the phone was scanning.
+        let expired = Transport::new(&creds);
+        let (mut noise, id) = challenge(&expired);
+        let finish = message_for(&mut noise, &id);
+        expired
+            .server
+            .as_ref()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .creds
+            .secure
+            .as_mut()
+            .unwrap()
+            .expires_at = now_secs() - 1;
+        assert_eq!(
+            expired
+                .handshake(&serde_json::to_vec(&finish).unwrap(), "bridge_secure")
+                .unwrap_err()
+                .to_string(),
+            format!("{REFUSED} (invitation_expired)")
+        );
     }
 }

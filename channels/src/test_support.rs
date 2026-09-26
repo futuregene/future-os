@@ -48,6 +48,9 @@ pub struct MockState {
     pub stream_mid_error_after: Option<usize>,
     /// stream_events yields nothing, ever (hang).
     pub stream_hang: bool,
+    /// The `global_events` monitor stream ends immediately instead of pinging
+    /// forever — the shape a client sees when the agent went away.
+    pub global_events_end: bool,
     /// Delay before each streamed event (paces the run loop past its flush
     /// throttle deterministically).
     pub stream_event_delay: Option<Duration>,
@@ -207,6 +210,13 @@ impl FutureAgent for MockAgent {
             )));
         }
         if global_events {
+            if st.global_events_end {
+                // A stream that is already over: the monitor sees `None` on its
+                // first read, exactly as it does when the agent disconnects.
+                return Ok(tonic::Response::new(
+                    Box::pin(futures_util::stream::empty()),
+                ));
+            }
             let ping = StreamEvent {
                 r#type: "ping".to_string(),
                 session_idx: -1,
@@ -586,6 +596,9 @@ pub enum WsAction {
     SendText(String),
     SendBinary(Vec<u8>),
     SendPing(Vec<u8>),
+    /// Send a close frame. The script continues, so a later action can drain
+    /// the peer's close reply or finish the handshake from this side; sending
+    /// another frame after it fails the send and ends the script.
     SendClose,
     Delay(Duration),
     /// Write raw bytes onto the socket underneath the WS framing — used to
@@ -594,6 +607,20 @@ pub enum WsAction {
     /// Abortive close (SO_LINGER 0 → RST on unix; plain drop elsewhere) so
     /// the client's next send fails instead of its read.
     ResetTcp,
+    /// Graceful FIN of the server's write half while the read half keeps
+    /// draining. A plain drop instead closes the whole socket, and on Windows
+    /// closing a socket with unread data sends an RST that discards whatever
+    /// the peer has not read yet; a half-close lets a test end the stream with
+    /// a clean end-of-file on every platform.
+    ShutdownWrite,
+    /// Wait until this server has recorded at least `count` incoming frames
+    /// (across all connections it accepted), or `timeout` elapses. Lets a
+    /// script order a later action after the peer's reply instead of guessing
+    /// with a delay.
+    WaitForReceived {
+        count: usize,
+        timeout: Duration,
+    },
 }
 
 pub type WsReceived = Arc<Mutex<Vec<tokio_tungstenite::tungstenite::Message>>>;
@@ -662,7 +689,6 @@ pub async fn spawn_ws_per_connection(scripts: Vec<Vec<WsAction>>) -> (String, Ws
                         }
                         WsAction::SendClose => {
                             let _ = sink.send(WsMsg::Close(None)).await;
-                            break;
                         }
                         WsAction::Delay(d) => tokio::time::sleep(d).await,
                         WsAction::SendRawBytes(bytes) => {
@@ -670,6 +696,18 @@ pub async fn spawn_ws_per_connection(scripts: Vec<Vec<WsAction>>) -> (String, Ws
                             let mut raw = &raw;
                             if raw.write_all(&bytes).is_err() {
                                 break;
+                            }
+                        }
+                        WsAction::ShutdownWrite => {
+                            let _ = raw.shutdown(std::net::Shutdown::Write);
+                        }
+                        WsAction::WaitForReceived { count, timeout } => {
+                            let deadline = tokio::time::Instant::now() + timeout;
+                            while lock_unpoisoned(&received).len() < count {
+                                if tokio::time::Instant::now() >= deadline {
+                                    break;
+                                }
+                                tokio::time::sleep(Duration::from_millis(5)).await;
                             }
                         }
                         WsAction::ResetTcp => {
@@ -703,6 +741,45 @@ pub async fn spawn_ws_per_connection(scripts: Vec<Vec<WsAction>>) -> (String, Ws
         }
     });
     (format!("ws://127.0.0.1:{}", addr.port()), received)
+}
+
+/// Shut down the write half of a plain (non-TLS) client socket so its next
+/// write fails on every platform.
+///
+/// `shutdown` is called on a borrowed view of the socket: the stream keeps
+/// ownership, so the caller can go on reading the (now unwritable) socket.
+pub fn kill_write_half(socket: &crate::transport::ws::Socket) {
+    let plain = match socket.get_ref() {
+        tokio_tungstenite::MaybeTlsStream::Plain(stream) => stream,
+        _ => unreachable!("tests dial plain ws only"),
+    };
+    // The postcondition is "the next write on this socket fails". If the peer has
+    // already reset, `shutdown` reports NotConnected -- and the postcondition is
+    // already satisfied, so that is success here, not a failure. (On Linux this
+    // surfaced as `Os { code: 107, kind: NotConnected }`.)
+    fn expect_write_half_closed(result: std::io::Result<()>) {
+        match result {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotConnected => {}
+            Err(error) => panic!("shutdown the client socket's write half: {error}"),
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::{AsRawFd, FromRawFd};
+        let borrowed = std::mem::ManuallyDrop::new(unsafe {
+            std::net::TcpStream::from_raw_fd(plain.as_raw_fd())
+        });
+        expect_write_half_closed(borrowed.shutdown(std::net::Shutdown::Write));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::{AsRawSocket, FromRawSocket};
+        let borrowed = std::mem::ManuallyDrop::new(unsafe {
+            std::net::TcpStream::from_raw_socket(plain.as_raw_socket())
+        });
+        expect_write_half_closed(borrowed.shutdown(std::net::Shutdown::Write));
+    }
 }
 
 // ─── HOME isolation ─────────────────────────────────────────────────────────

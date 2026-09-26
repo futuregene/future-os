@@ -619,6 +619,28 @@ mod tests {
         );
     }
 
+    /// `is_terminal_unrecoverable` is the answer a client needs before it decides
+    /// to retry: false while there is no run or a live one, true once the run has
+    /// been marked stuck and will never release the session by itself.
+    #[tokio::test]
+    async fn terminal_unrecoverable_tracks_the_run_control_state() {
+        let runtime = Arc::new(SessionRuntime::new(Arc::new(AtomicBool::new(false))));
+        assert!(!runtime.is_terminal_unrecoverable(), "no run at all");
+        let lease = runtime.begin_scheduled("run-a", "request-a", 7).unwrap();
+        assert!(
+            !runtime.is_terminal_unrecoverable(),
+            "an accepted run is still recoverable"
+        );
+        assert!(
+            runtime.control.mark_stuck(&lease, "test injected"),
+            "an active lease can be marked stuck"
+        );
+        assert!(
+            runtime.is_terminal_unrecoverable(),
+            "a stuck run must never free the session on its own"
+        );
+    }
+
     #[tokio::test]
     async fn monitor_marks_stuck_when_task_panics() {
         let runtime = Arc::new(SessionRuntime::new(Arc::new(AtomicBool::new(false))));

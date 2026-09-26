@@ -236,6 +236,51 @@ test("reports the oversized file but still stages the files that fit", async () 
   expect(mockedToast).toHaveBeenCalledWith("attachment.errors.attachment_file_too_large");
 });
 
+test("a share the sending app marked as failed is reported before it is staged", async () => {
+  // `failed` means the native share intent could not read part of the payload
+  // (a permission or export failure). The payload that did survive is still
+  // usable, but the user has to be told something was dropped.
+  mockedGetPendingShare.mockResolvedValue({
+    text: "surviving caption",
+    failed: true,
+    tooLarge: false,
+    files: [],
+  });
+
+  render();
+  await flush();
+
+  expect(mockedToast).toHaveBeenCalledWith("attachment.errors.attachment_failed");
+  await choose();
+  expect(mockedSaveDraft).toHaveBeenCalledWith(NEW_CONVERSATION_DRAFT_KEY, {
+    text: "surviving caption",
+    attachments: [],
+  });
+});
+
+test("a failed share with nothing left in it is reported and never opens a conversation", async () => {
+  mockedGetPendingShare.mockResolvedValue({ text: "", failed: true, tooLarge: false, files: [] });
+
+  render();
+  await flush();
+
+  expect(mockedToast).toHaveBeenCalledWith("attachment.errors.attachment_failed");
+  expect(mockedSaveDraft).not.toHaveBeenCalled();
+  expect(newConversation).not.toHaveBeenCalled();
+});
+
+// ── workspace rows ──────────────────────────────────────────────────────────
+
+test("a share read that throws is reported instead of silently dropped", async () => {
+  mockedGetPendingShare.mockRejectedValue(new Error("native bridge gone"));
+
+  render();
+  await flush();
+
+  expect(mockedToast).toHaveBeenCalledWith("attachment.errors.attachment_failed");
+  expect(newConversation).not.toHaveBeenCalled();
+});
+
 test("surfaces an attachment failure and leaves no half-staged draft", async () => {
   mockedGetPendingShare.mockResolvedValue({
     text: "",
@@ -297,6 +342,76 @@ test("does not stage into an existing session after the desktop changes during p
   expect(mockedSaveDraft).not.toHaveBeenCalled();
   expect(selectSession).not.toHaveBeenCalled();
   expect(mockedMarkLanded).not.toHaveBeenCalled();
+});
+
+test("a destination chosen after the pairing changed writes nothing", async () => {
+  mockedGetPendingShare.mockResolvedValueOnce({ text: "caption", tooLarge: false, files: [] });
+  render();
+  await flush();
+  expect(intake.pending).not.toBeNull();
+  // The desktop is re-paired (or switched) between staging the share and the
+  // user picking a destination.
+  mockedUseRemote.mockReturnValue({
+    ...mockedUseRemote(),
+    credentials: { pairId: "other-pair", expectedDesktopId: "other" },
+  } as ReturnType<typeof useRemote>);
+  act(() => renderer!.update(createElement(Harness)));
+  await choose();
+  // The payload belongs to the previous desktop; landing it in the new one's
+  // draft would hand the wrong machine content the user shared for the first.
+  expect(mockedSaveDraft).not.toHaveBeenCalled();
+  expect(newConversation).not.toHaveBeenCalled();
+  expect(mockedMarkLanded).not.toHaveBeenCalled();
+});
+
+test("a desktop change while the draft is being saved does not open a conversation", async () => {
+  mockedGetPendingShare.mockResolvedValueOnce({ text: "caption", tooLarge: false, files: [] });
+  let release!: () => void;
+  mockedSaveDraft.mockImplementationOnce(() => new Promise<void>(resolve => { release = () => resolve(); }));
+  render();
+  await flush();
+  const start = intake.chooseDestination;
+  let importing!: Promise<void>;
+  act(() => {
+    intake.dismiss();
+    importing = start("chat");
+  });
+  await flush();
+  mockedUseRemote.mockReturnValue({
+    ...mockedUseRemote(),
+    credentials: { pairId: "other-pair", expectedDesktopId: "other" },
+  } as ReturnType<typeof useRemote>);
+  act(() => renderer!.update(createElement(Harness)));
+  await act(async () => { release(); await importing; });
+  // The draft write already happened for the old desktop; opening a
+  // conversation now would start it on the new one with the old one's content.
+  expect(newConversation).not.toHaveBeenCalled();
+  expect(mockedMarkLanded).not.toHaveBeenCalled();
+});
+
+test("a desktop change while the destination is opening does not mark the share landed", async () => {
+  mockedGetPendingShare.mockResolvedValueOnce({ text: "caption", tooLarge: true, files: [] });
+  let release!: () => void;
+  selectSession.mockImplementationOnce(() => new Promise<void>(resolve => { release = () => resolve(); }));
+  render();
+  await flush();
+  const start = intake.chooseDestination;
+  let importing!: Promise<void>;
+  act(() => {
+    intake.dismiss();
+    importing = start("session", "s1");
+  });
+  await flush();
+  mockedUseRemote.mockReturnValue({
+    ...mockedUseRemote(),
+    credentials: { pairId: "other-pair", expectedDesktopId: "other" },
+  } as ReturnType<typeof useRemote>);
+  act(() => renderer!.update(createElement(Harness)));
+  await act(async () => { release(); await importing; });
+  // Marking it landed would clear the inbox entry for a share that was never
+  // delivered, and the oversize notice belongs to that delivery too.
+  expect(mockedMarkLanded).not.toHaveBeenCalled();
+  expect(mockedToast).not.toHaveBeenCalled();
 });
 
 test("only imports once while an existing session is opening", async () => {

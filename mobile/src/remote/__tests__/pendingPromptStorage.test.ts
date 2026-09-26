@@ -134,3 +134,24 @@ describe("pending prompt storage", () => {
     await expect(loadPendingPrompt()).resolves.toEqual(newer);
   });
 });
+
+test("discarding a pair drops its legacy record too, so an upgrade cannot replay it", async () => {
+  await savePendingPrompt(pending);
+  mockData.set("futureos.remote.pending-prompt.v1", JSON.stringify(pending));
+  await discardPendingPrompt(pending.pairId);
+  expect(mockData.has(`futureos.remote.pending-prompt.v1.${pending.pairId}`)).toBe(false);
+  expect(mockData.has("futureos.remote.pending-prompt.v1")).toBe(false);
+});
+
+test("discarding one pair leaves another pair's legacy record alone", async () => {
+  mockData.set("futureos.remote.pending-prompt.v1", JSON.stringify(pending));
+  await discardPendingPrompt("another-pair");
+  expect(mockData.has("futureos.remote.pending-prompt.v1")).toBe(true);
+});
+
+test("discarding without a pair id clears only the bare slot", async () => {
+  mockData.set("futureos.remote.pending-prompt.v1", JSON.stringify(pending));
+  await discardPendingPrompt();
+  expect(mockData.has("futureos.remote.pending-prompt.v1")).toBe(false);
+});
+

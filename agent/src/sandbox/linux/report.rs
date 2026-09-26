@@ -83,6 +83,37 @@ mod tests {
         assert!(HelperReport::read(&mut file, "a").is_err());
     }
 
+    /// The write-side size guard: a report whose serialized form exceeds the
+    /// private-channel ceiling is refused rather than truncated, so a peer can
+    /// never read a half-written event list as complete evidence.
+    #[test]
+    fn oversized_report_is_refused_on_write() {
+        let mut sink = Vec::new();
+        let error = HelperReport {
+            version: 1,
+            policy_digest: "a".repeat(MAX_REPORT_BYTES as usize + 1),
+            events: vec![],
+        }
+        .write(&mut sink)
+        .expect_err("oversized report must be refused");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            sink.is_empty(),
+            "nothing may be written for a refused report"
+        );
+
+        // A small report still round-trips through the same writer.
+        let mut sink = Vec::new();
+        HelperReport {
+            version: 1,
+            policy_digest: "a".repeat(64),
+            events: vec![],
+        }
+        .write(&mut sink)
+        .unwrap();
+        assert!(!sink.is_empty());
+    }
+
     #[test]
     fn printed_markers_are_explicitly_untrusted() {
         let output = untrusted_output(&format!("prefix{VIOLATION_PREFIX}{{}}"));

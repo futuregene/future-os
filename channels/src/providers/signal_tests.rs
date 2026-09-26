@@ -1199,6 +1199,29 @@ async fn an_idle_daemon_is_polled_and_not_hammered() {
 }
 
 #[tokio::test]
+async fn a_daemon_that_is_not_listening_is_reported_as_unreachable() {
+    // Port 1 on loopback has no listener, so the connect is refused before any
+    // HTTP exchange: that is a daemon problem, not a missing route, and it must
+    // be named as such rather than being retried as a route shape.
+    let config = SignalConfig {
+        http_url: "http://127.0.0.1:1".into(),
+        number: "+15550001234".into(),
+        receive_timeout_s: 1,
+        ..SignalConfig::default()
+    };
+    let ctx = ctx_with(serde_json::json!({
+        "enabled": true, "http_url": config.http_url, "number": config.number,
+    }));
+    let sender = SignalSender::new(&ctx, &config);
+    let error = sender
+        .receive(&config)
+        .await
+        .expect_err("nothing is listening on that port");
+    let message = error.to_string();
+    assert!(message.contains("cannot reach signal-cli"), "{message}");
+}
+
+#[tokio::test]
 async fn an_unreachable_daemon_keeps_the_channel_retryable() {
     let ctx = ctx_with(serde_json::json!({
         "enabled": true, "http_url": "http://127.0.0.1:1", "number": "+15550001234",

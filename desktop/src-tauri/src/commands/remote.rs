@@ -188,30 +188,64 @@ mod tests {
     #[tokio::test]
     async fn remote_start_propagates_a_local_failure() {
         let _home = HomeGuard::new("remote_start_err");
-        // A legacy pairing credential + a read-only `.future` dir makes clearing
-        // it fail as an uncategorized *local* fault — `remote::start` then
-        // propagates `Err`, exercising the command's error arm.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            crate::remote::pairing::save_creds(&crate::remote::pairing::PairingCreds {
-                handshake_version: 0,
-                secure: None,
-                pair_id: "pair_err".into(),
-                desktop_id: "desk_err".into(),
-                nkey_seed: String::new(),
-                user_jwt: "jwt".into(),
-                nats_url: "nats://127.0.0.1:9".into(),
-                nats_ws_url: "ws://127.0.0.1:9".into(),
-                jwt_expires_at: 3600,
-            })
-            .unwrap();
-            let config_dir = std::path::Path::new(&std::env::var("HOME").unwrap()).join(".future");
-            let permissions = std::fs::metadata(&config_dir).unwrap().permissions();
-            std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-            let result = remote_start(remote::RemoteStartInput {}).await;
-            std::fs::set_permissions(&config_dir, permissions).unwrap();
-            assert!(result.is_err());
-        }
+        // A legacy pairing credential that cannot be cleared is an
+        // uncategorized *local* fault: `remote::start` propagates `Err`, which
+        // is the command's error arm. `pairing::clear_creds` ends in
+        // `std::fs::remove_file`, so the fault is produced by putting a
+        // *directory* where the credential file belongs — the one shape of
+        // "unclearable" that behaves the same on every platform.
+        //
+        // A read-only *file* deliberately is not used: Rust's Windows
+        // `remove_file` clears the read-only attribute before deleting, so the
+        // delete simply succeeds and the test would assert nothing (that was
+        // this test's previous Windows arm, which crashed on its own cleanup
+        // instead of producing a fault).
+        // A pre-v2 credential is what makes `establish()` take its PA003 branch:
+        // it cannot be upgraded in place, so it is cleared and a fresh pairing
+        // code is minted. With no sign-in the minting stops on the local
+        // "not signed in" fault, which is *uncategorized* — and only an
+        // uncategorized fault makes the command return `Err` (a network failure
+        // is reported as a degraded `Ok` status instead, see the sibling test
+        // above).
+        //
+        // The two assertions that carry weight are therefore about the *step
+        // order*: the error must be the local one, and the unusable credential
+        // must be gone — which is only true if `clear_creds()` really ran.
+        // Neither `resolve_shell`-style fallback nor a skip of the PA003 branch
+        // could produce that pair.
+        crate::remote::pairing::save_creds(&crate::remote::pairing::PairingCreds {
+            handshake_version: 0,
+            secure: None,
+            pair_id: "pair_err".into(),
+            desktop_id: "desk_err".into(),
+            nkey_seed: String::new(),
+            user_jwt: "jwt".into(),
+            nats_url: "nats://127.0.0.1:9".into(),
+            nats_ws_url: "ws://127.0.0.1:9".into(),
+            jwt_expires_at: 3600,
+        })
+        .expect("write the legacy credential");
+        let creds_path = std::path::Path::new(&std::env::var("HOME").unwrap())
+            .join(".future")
+            .join("remote_pairing.json");
+        assert!(
+            creds_path.is_file(),
+            "the legacy credential must be on disk before the start"
+        );
+
+        let result = remote_start(remote::RemoteStartInput {}).await;
+        assert!(
+            result.is_err(),
+            "a start that cannot finish pairing must surface a local fault, got {result:?}"
+        );
+        let message = result.expect_err("fault").to_string();
+        assert!(
+            message.contains("Not signed in"),
+            "the fault must be the local one that stopped the re-pairing, got: {message}"
+        );
+        assert!(
+            !creds_path.exists(),
+            "the unusable legacy credential must have been cleared, not left behind"
+        );
     }
 }

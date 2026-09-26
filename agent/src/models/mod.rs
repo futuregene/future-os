@@ -1202,7 +1202,7 @@ mod tests {
     use super::{
         derive_thinking_compat, enrich_user_models, find_best_builtin_match, provider_similarity,
     };
-    use super::{Cost, Model, ProviderOverride, Registry};
+    use super::{Cost, CostSplit, Model, ProviderOverride, Registry};
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -1769,10 +1769,46 @@ mod tests {
 
     #[test]
     fn model_accepts_images_returns_bool() {
-        // The function depends on the global Registry — just verify it doesn't panic
-        let result = super::model_accepts_images("gpt-4o");
-        // Result depends on the builtin model catalog
-        let _ = result;
+        // The decision is read from the model's declared `input` list, so a
+        // registry fixture pins both arms without depending on the host's
+        // auth.json / models.json.
+        let model = |id: &str, input: &[&str]| Model {
+            provider: "cov100-fixture".into(),
+            id: id.into(),
+            input: input.iter().map(|kind| kind.to_string()).collect(),
+            ..Default::default()
+        };
+        let registry = Registry {
+            builtin: std::sync::Arc::new(vec![
+                model("cov100-vision", &["text", "image"]),
+                model("cov100-text-only", &["text"]),
+            ]),
+            user: vec![],
+            provider_overrides: HashMap::new(),
+            auth_store: crate::AuthStore::default(),
+        };
+        assert!(super::model_accepts_images_with(&registry, "cov100-vision"));
+        assert!(super::model_accepts_images_with(
+            &registry,
+            "cov100-fixture/cov100-vision"
+        ));
+        assert!(!super::model_accepts_images_with(
+            &registry,
+            "cov100-text-only"
+        ));
+        // An unresolvable model takes the `unwrap_or(false)` arm: no image
+        // support is assumed for a model the catalog cannot resolve.
+        assert!(!super::model_accepts_images_with(
+            &registry,
+            "cov100-no-such-model-xyz"
+        ));
+
+        // The global entry point reads the builtin catalog, where gpt-4o
+        // declares `image` input.
+        assert!(
+            super::model_accepts_images("gpt-4o"),
+            "the builtin catalog declares image input for gpt-4o"
+        );
     }
 
     #[test]
@@ -1842,9 +1878,67 @@ mod tests {
 
     #[test]
     fn get_default_model_returns_something() {
-        let model = super::get_default_model();
-        // In CI there may be no auth.json configured, so None is acceptable
-        let _ = model;
+        // Whatever this host has configured, a named default must be an id the
+        // same catalog can resolve — never a half-formatted `provider//id` or a
+        // stale preference pointing at a model that no longer exists.
+        if let Some(id) = super::get_default_model() {
+            assert!(
+                super::Registry::new().resolve(&id).is_some(),
+                "get_default_model named {id:?}, which the catalog cannot resolve"
+            );
+        }
+
+        // The selection rule, against registries built in the test so the
+        // result does not depend on the host's auth.json / settings.json.
+        let model = |provider: &str, id: &str, output: &[&str], key: &str| Model {
+            provider: provider.into(),
+            id: id.into(),
+            output: output.iter().map(|kind| kind.to_string()).collect(),
+            api_key: key.into(),
+            ..Default::default()
+        };
+        let auth_without_future =
+            crate::AuthStore::from_json(r#"{"cov100-fixture":{"type":"api_key","key":"k"}}"#)
+                .expect("fixture auth parses");
+        let registry = Registry {
+            builtin: std::sync::Arc::new(vec![
+                // Text-capable and first in the catalog, but no credentials
+                // anywhere → never the default.
+                model("cov100-unconfigured", "cov100-text", &["text"], ""),
+                // Credentialed through the auth store (empty inline key).
+                model("cov100-fixture", "cov100-auth-text", &["text"], ""),
+                // Credentialed inline, but not text-capable → never a default.
+                model("cov100-fixture", "cov100-vision", &["image"], "inline"),
+            ]),
+            user: vec![],
+            provider_overrides: HashMap::new(),
+            auth_store: auth_without_future.clone(),
+        };
+        assert_eq!(
+            super::get_default_model_with(&registry).as_deref(),
+            Some("cov100-fixture/cov100-auth-text"),
+            "the first credentialed *text* model must win, not the first catalog entry"
+        );
+
+        // A configured `future` provider short-circuits to its flagship model,
+        // even when an earlier text model is credentialed.
+        let auth_with_future =
+            crate::AuthStore::from_json(r#"{"future":{"type":"api_key","key":"f"}}"#)
+                .expect("fixture auth parses");
+        let future_registry = Registry {
+            builtin: std::sync::Arc::new(vec![
+                model("cov100-fixture", "cov100-auth-text", &["text"], "inline"),
+                model("future", "deepseek-v4-pro", &["text"], ""),
+            ]),
+            user: vec![],
+            provider_overrides: HashMap::new(),
+            auth_store: auth_with_future.clone(),
+        };
+        assert_eq!(
+            super::get_default_model_with(&future_registry).as_deref(),
+            Some("future/deepseek-v4-pro"),
+            "a configured future provider wins over the first credentialed model"
+        );
     }
 
     // ─── provider_similarity additional ────────────────────────────────────
@@ -1932,11 +2026,43 @@ mod tests {
 
     #[test]
     fn registry_resolve_scope_with_star() {
-        let reg = super::Registry::new();
-        let auth = crate::AuthStore::load();
-        let scope = reg.resolve_scope(&["*".to_string()], &auth);
-        // Star should match all models (if auth is available)
-        let _ = scope;
+        // Only credential-reachable models are in scope: `cov100-fixture` is
+        // credentialed through the auth store, `cov100-other` is not.
+        let auth =
+            crate::AuthStore::from_json(r#"{"cov100-fixture":{"type":"api_key","key":"k"}}"#)
+                .expect("fixture auth parses");
+        let model = |provider: &str, id: &str| Model {
+            provider: provider.into(),
+            id: id.into(),
+            ..Default::default()
+        };
+        let registry = Registry {
+            builtin: std::sync::Arc::new(vec![
+                model("cov100-fixture", "cov100-alpha"),
+                model("cov100-other", "cov100-unconfigured"),
+                model("cov100-fixture", "cov100-beta"),
+            ]),
+            user: vec![],
+            provider_overrides: HashMap::new(),
+            auth_store: auth.clone(),
+        };
+
+        // `*` matches every credentialed model in catalog order; the
+        // unconfigured provider is filtered out before matching.
+        assert_eq!(
+            registry.resolve_scope(&["*".to_string()], &auth),
+            vec!["cov100-alpha".to_string(), "cov100-beta".to_string()]
+        );
+        // The bare provider name is itself a valid pattern.
+        assert_eq!(
+            registry.resolve_scope(&["cov100-fixture".to_string()], &auth),
+            vec!["cov100-alpha".to_string(), "cov100-beta".to_string()]
+        );
+        // A pattern matching nothing yields an empty scope rather than falling
+        // back to the whole catalog.
+        assert!(registry
+            .resolve_scope(&["cov100-no-such-model".to_string()], &auth)
+            .is_empty());
     }
 
     // ─── derive_thinking_compat ────────────────────────────────────────────
@@ -2363,6 +2489,20 @@ mod tests {
     fn registry_default_matches_new() {
         let reg = Registry::default();
         assert!(!reg.all_models().is_empty());
+    }
+
+    /// A split is "unset" until something was actually priced, which is what
+    /// keeps a session running on a price-less model from being shown as a
+    /// zero-cost run.
+    #[test]
+    fn a_cost_split_is_unset_until_a_charge_is_priced() {
+        let mut split = CostSplit::default();
+        assert!(split.is_unset(), "nothing priced yet");
+        split.add([0.5, 0.25, 0.0, 1.0]);
+        assert!(!split.is_unset(), "a priced category is not unset");
+        let mut zero = CostSplit::default();
+        zero.add([0.0, 0.0, 0.0, 0.0]);
+        assert!(zero.is_unset(), "zero is not a price");
     }
 
     #[test]

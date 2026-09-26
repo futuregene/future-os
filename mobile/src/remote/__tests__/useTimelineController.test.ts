@@ -2047,6 +2047,32 @@ describe("useTimelineController", () => {
     });
     const terminal = (type: string, data: Record<string, unknown>) => evt(type, JSON.stringify(data));
 
+    test("a stale probe cannot strand a wait registered after its own settle", async () => {
+      const reads: Array<(value: unknown) => void> = [];
+      request.mockImplementation((cmd: { type: string }) => cmd.type === "get_state"
+        ? new Promise(resolve => { reads.push(resolve as (value: unknown) => void); })
+        : Promise.resolve({ data: { entries: [] } }));
+      render();
+      // A wait starts before the session opens, so the opening state read
+      // snapshots it.
+      const first = result.current.awaitCompactionOutcome("s1", "op", 600_000);
+      await establish();
+      expect(reads.length).toBe(1);
+      const staleRead = reads[0]!;
+      // The terminal arrives while that read is still pending, settling the wait
+      // and removing it from the registry.
+      act(() => result.current.handleEvent(terminal("compaction_committed", { operation_id: "op" }), "s1"));
+      await expect(first).resolves.toEqual({ status: "committed" });
+      // A second wait for the same operation is live under the same key.
+      const second = result.current.awaitCompactionOutcome("s1", "op", 600_000);
+      // The stale read finally answers idle. It must not touch the wait that is
+      // live now: settling (or unregistering) the wait it snapshotted would
+      // strand this one until its own timeout.
+      await act(async () => { staleRead({ data: { isCompacting: false } }); await flush(); });
+      act(() => result.current.handleEvent(terminal("compaction_committed", { operation_id: "op" }), "s1"));
+      await expect(second).resolves.toEqual({ status: "committed" });
+    });
+
     test("settles on the matching operation and ignores another operation's event", async () => {
       render();
       await establish();
@@ -2135,6 +2161,506 @@ describe("useTimelineController", () => {
         await new Promise(resolve => setTimeout(resolve, 5));
       });
       await expect(outcome).resolves.toEqual({ status: "timeout" });
+    });
+  });
+
+  describe("paging and refresh edges", () => {
+    const terminal = (type: string, data: Record<string, unknown>) =>
+      evt(type, JSON.stringify(data));
+
+    test("a pull-to-refresh with no selected session is a no-op, and with one rebuilds that lane", async () => {
+      render();
+      await establish();
+      const engine = result.current.syncEngineRef.current!;
+      const restart = jest.spyOn(engine, "restart");
+      // Nothing is selected: restarting would open a session that is not the
+      // one on screen. The escape hatch must be inert rather than guess.
+      options.selectedRef.current = "";
+      act(() => result.current.reloadTimeline());
+      expect(restart).not.toHaveBeenCalled();
+      options.selectedRef.current = "s1";
+      act(() => result.current.reloadTimeline());
+      expect(restart).toHaveBeenCalledWith("s1", "open");
+    });
+
+    test("seeding a paging window reaches both the ref and the rendered state", () => {
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      render();
+      // The seam exists so paging tests need not drive several real round
+      // trips. If it wrote only the ref, the screen would never see the
+      // window and `canLoadOlderTimeline` would stay false.
+      const window = { nextBefore: 12, endOffset: 3, hasMore: true, loading: false };
+      act(() => result.current.seedHistoryPaging("s1", window));
+      expect(result.current.historyPaging.s1).toEqual(window);
+      expect(result.current.canLoadOlderTimeline).toBe(true);
+      expect(result.current.loadingOlderTimeline).toBe(false);
+    });
+
+    test("the parking lot for early compaction terminals is bounded and keeps the newest operations", async () => {
+      render();
+      await establish();
+      // Terminals that arrive with no initiator (a replay, or a screen that
+      // opened mid-compaction) are parked for a later await. A long session
+      // replays many operations, so the lot must evict rather than grow.
+      for (let i = 0; i < 33; i += 1) {
+        act(() => result.current.handleEvent(
+          terminal("compaction_committed", { operation_id: `cmp-${i}`, phase: "standalone" }),
+          "s1",
+        ));
+      }
+      request.mockImplementation(async (command: { type: string }) => ({
+        data: command.type === "get_state" ? { isCompacting: false } : { entries: [] },
+      }));
+      // The oldest is gone: only a real probe can answer for it, and with the
+      // session idle that probe ends in a timeout.
+      const evicted = result.current.awaitCompactionOutcome("s1", "cmp-0", 1);
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); });
+      await expect(evicted).resolves.toEqual({ status: "timeout" });
+      // The newest is still remembered, without a probe.
+      await expect(result.current.awaitCompactionOutcome("s1", "cmp-32"))
+        .resolves.toEqual({ status: "committed" });
+    });
+
+    test("a trimmed tail whose backfill page does not end flush fails the refresh instead of installing a hole", async () => {
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      // The tail page is byte-trimmed and short of the exchange budget, so the
+      // controller backfills. That second page claims a cursor that does not
+      // join the requested range: the durable history moved underneath the
+      // read, so nothing may be installed — not even the tail that did arrive.
+      request.mockImplementation(async (command: { type: string; before?: number }) => {
+        if (command.type !== "get_session_entries") return { data: {} };
+        return command.before === Number.MAX_SAFE_INTEGER
+          ? { data: { entries: [userEntry("u-tail", "tail question")], nextOffset: 4, hasMore: true, trimmed: true } }
+          : { data: { entries: [userEntry("u-back", "backfill question")], nextOffset: 2, hasMore: false } };
+      });
+      render();
+      await establish();
+      await flush();
+      const texts = result.current.timeline.items
+        .filter((item) => item.kind === "message")
+        .map((item) => (item.kind === "message" ? item.text : ""));
+      expect(texts).not.toContain("tail question");
+      expect(texts).not.toContain("backfill question");
+    });
+
+    test("a session switch while an older page is in flight restores the paging window and drops the stale page", async () => {
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      render();
+      await establish();
+      await flush(80);
+      act(() => result.current.seedHistoryPaging("s1", {
+        nextBefore: 20, endOffset: 0, hasMore: true, loading: false,
+      }));
+      let release!: (value: unknown) => void;
+      request.mockImplementation(() => new Promise((resolve) => { release = resolve; }));
+      const pending = result.current.loadOlderTimeline();
+      await flush(1);
+      expect(result.current.loadingOlderTimeline).toBe(true);
+      release({ data: { entries: [userEntry("u-old", "older question")], nextOffset: 17, hasMore: true } });
+      // Let the page read finish, then leave the session before the committed
+      // page can be installed.
+      await Promise.resolve();
+      options.selectedRef.current = "s2";
+      await act(async () => { await pending; });
+      options.selectedRef.current = "s1";
+      expect(result.current.loadingOlderTimeline).toBe(false);
+      expect(result.current.canLoadOlderTimeline).toBe(true);
+      expect(result.current.timeline.items.some(
+        (item) => item.kind === "message" && item.text === "older question",
+      )).toBe(false);
+    });
+
+    /** A page the bridge returned short of the requested window. */
+    const page = (
+      entries: ReturnType<typeof userEntry>[],
+      nextOffset: number,
+      hasMore: boolean,
+      trimmed = false,
+    ) => ({ data: { entries, nextOffset, hasMore, ...(trimmed ? { trimmed } : {}) } });
+
+    const rows = (prefix: string, count: number, start: number) =>
+      Array.from({ length: count }, (_, i) => userEntry(`${prefix}-${start + i}`, `${prefix} ${start + i}`));
+
+    const messageTexts = () => result.current.timeline.items
+      .filter((item) => item.kind === "message")
+      .map((item) => (item.kind === "message" ? item.text : ""));
+
+    test("a refresh supersedes an older page still in flight so the stale page cannot land", async () => {
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      request.mockImplementation((command: { type: string; before?: number }) =>
+        command.type !== "get_session_entries"
+          ? Promise.resolve({ data: {} })
+          : command.before === 20
+            // The older page the user asked for never lands on its own.
+            ? new Promise(() => {})
+            : Promise.resolve(page(rows("tail", 1, 8), 8, true)));
+      render();
+      await establish();
+      act(() => result.current.seedHistoryPaging("s1", {
+        nextBefore: 20, endOffset: 8, hasMore: true, loading: false,
+      }));
+      const pending = result.current.loadOlderTimeline();
+      await flush();
+      // A refresh rebuilds the window from the tail. The page still in flight
+      // belongs to the cursor that was just replaced, so it is abandoned
+      // rather than committed into the fresh window.
+      act(() => result.current.reconcileSession("s1", "resend"));
+      await flush();
+      await act(async () => { await pending; });
+      expect(messageTexts()).toContain("tail 8");
+    });
+
+    test("a gap page that is short only because of the byte trim is bridged from an untrimmed re-read", async () => {
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      let tails = 0;
+      request.mockImplementation(async (command: { type: string; before?: number; untrimmed?: boolean }) => {
+        if (command.type !== "get_session_entries") return { data: {} };
+        const before = command.before ?? 0;
+        if (before === Number.MAX_SAFE_INTEGER) {
+          tails += 1;
+          // The cold open sees the same tail the refresh will.
+          return page(rows("row", 1, 8), 8, true);
+        }
+        // The trimmed page sheds the older exchanges of the range it was asked
+        // for and jumps its cursor past them, so it cannot end flush.
+        if (before === 8 && command.untrimmed !== true) return page(rows("row", 1, 7), 4, true);
+        if (before === 8) return page(rows("row", 3, 5), 5, true);
+        return page(rows("row", 5, 0), 0, false);
+      });
+      render();
+      await establish();
+      act(() => result.current.seedHistoryPaging("s1", {
+        nextBefore: 30, endOffset: 0, hasMore: true, loading: false,
+      }));
+      act(() => result.current.reconcileSession("s1", "resend"));
+      await flush();
+      // Nothing was lost between the paged window and the fresh tail, and the
+      // shed range came back exactly once: the untrimmed re-read is the
+      // authoritative version of the range, not an addition to it.
+      expect(tails).toBeGreaterThan(1);
+      expect(messageTexts()).toEqual(
+        Array.from({ length: 9 }, (_, i) => `row ${i}`),
+      );
+    });
+
+    test("a gap page that is short without hasMore is corruption and fails the refresh", async () => {
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      let tails = 0;
+      request.mockImplementation(async (command: { type: string; before?: number; untrimmed?: boolean }) => {
+        if (command.type !== "get_session_entries") return { data: {} };
+        const before = command.before ?? 0;
+        if (before === Number.MAX_SAFE_INTEGER) {
+          tails += 1;
+          return tails === 1
+            ? page(rows("open", 1, 0), 0, false)
+            : page(rows("row", 1, 8), 8, true);
+        }
+        // No trim, no more history, yet the page does not reach the cursor:
+        // the journal moved underneath the read, so nothing may be installed.
+        return page(rows("row", 1, 7), 4, false);
+      });
+      render();
+      await establish();
+      act(() => result.current.seedHistoryPaging("s1", {
+        nextBefore: 30, endOffset: 0, hasMore: true, loading: false,
+      }));
+      act(() => result.current.reconcileSession("s1", "resend"));
+      await flush();
+      // The failed refresh left the conversation it could not rebuild alone.
+      expect(messageTexts()).toEqual(["open 0"]);
+    });
+
+    test("an untrimmed re-read that still does not end flush fails the refresh", async () => {
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      let tails = 0;
+      request.mockImplementation(async (command: { type: string; before?: number; untrimmed?: boolean }) => {
+        if (command.type !== "get_session_entries") return { data: {} };
+        const before = command.before ?? 0;
+        if (before === Number.MAX_SAFE_INTEGER) {
+          tails += 1;
+          return tails === 1
+            ? page(rows("open", 1, 0), 0, false)
+            : page(rows("row", 1, 8), 8, true);
+        }
+        if (before === 8 && command.untrimmed !== true) return page(rows("row", 1, 7), 4, true);
+        // Opting out of the trim was supposed to make the whole range
+        // available. It did not, so the gap cannot be trusted even after the
+        // retry — the untrimmed page is validated like any other.
+        return page(rows("bad", 2, 6), 4, true);
+      });
+      render();
+      await establish();
+      act(() => result.current.seedHistoryPaging("s1", {
+        nextBefore: 30, endOffset: 0, hasMore: true, loading: false,
+      }));
+      act(() => result.current.reconcileSession("s1", "resend"));
+      await flush();
+      expect(messageTexts()).toEqual(["open 0"]);
+    });
+  });
+
+  /**
+   * Guards and completion paths the happy flow never reaches: a retained paging
+   * window with no durable prefix, a client that disappears mid-request, a lane
+   * that goes stale as its page commits, a complete run that needs no replay,
+   * and the compaction waiter's own timing edges.
+   */
+  describe("lane and waiter edges", () => {
+    const compactionEvent = (type: string, operationId: string) =>
+      evt(type, JSON.stringify({ operation_id: operationId }));
+    const texts = () => result.current.timeline.items
+      .filter((item) => item.kind === "message")
+      .map((item) => (item.kind === "message" ? item.text : ""));
+
+    test("a retained window with no durable prefix keeps only the fresh page", async () => {
+      jest.useFakeTimers();
+      try {
+        options.selectedSessionId = "s1";
+        options.selectedRef.current = "s1";
+        request.mockResolvedValue({ data: {} });
+        render();
+        await establish();
+        // Drain the open reconcile's own bookkeeping (its commit republishes the
+        // paging window) before seeding the window this test drives.
+        await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+        await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+        // A live-only item: no durable id and no durable run, so nothing of it can
+        // be proven to belong to the retained window.
+        act(() => result.current.syncEngineRef.current!.mutate("s1", live =>
+          commitAcknowledgedUserMessage(live, { id: "local:1", runId: "r1", text: "typed" })));
+        await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+        expect(result.current.timeline.items.map(item => item.id)).toContain("local:1");
+        request.mockImplementation(async (cmd: { type: string }) => cmd.type === "get_session_entries"
+          ? { data: { entries: [userEntry("h1", "durable")], nextOffset: 5, hasMore: false } }
+          : { data: {} });
+        await act(async () => {
+          // The retained window ends exactly where the fresh page begins (an exact
+          // join) and holds no durable item, so there is no prefix to keep.
+          result.current.seedHistoryPaging("s1", {
+            nextBefore: 20, endOffset: 5, hasMore: true, loading: false,
+          });
+          result.current.reconcileSession("s1", "reconnect");
+          await jest.advanceTimersByTimeAsync(0);
+        });
+        await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+        expect(texts()).toContain("durable");
+        // The fresh page alone was adopted, which hands paging over to its own
+        // cursor. Keeping an empty prefix instead would keep claiming the old
+        // window is open, and the reader would be offered a page that is gone.
+        expect(result.current.canLoadOlderTimeline).toBe(false);
+      } finally { jest.useRealTimers(); }
+    });
+
+    test("agent_end on the open session re-reads the list even without a catalogue event", () => {
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      render();
+      (options.refreshSessions as jest.Mock).mockClear();
+      result.current.handleEvent(evt("agent_end", "{}"), "s1");
+      // The completion is only visible in the catalogue, and nothing else will
+      // ask for it: the session list would otherwise keep showing "running".
+      expect(options.refreshSessions).toHaveBeenCalled();
+    });
+
+    test("a client that disappears before the history read yields an empty timeline", async () => {
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      request.mockImplementation(async (cmd: { type: string }) => {
+        // The connection is torn down between get_state and the history page.
+        if (cmd.type === "get_state") options.clientRef.current = null;
+        return { data: { entries: [userEntry("h1", "durable")], nextOffset: 0, hasMore: false } };
+      });
+      render();
+      act(() => result.current.reconcileSession("s1", "open"));
+      await flush();
+      // No page may be requested without a client, and the timeline must stay
+      // empty rather than keeping rows from a connection that is gone.
+      expect(request.mock.calls.some(([cmd]) => cmd.type === "get_session_entries")).toBe(false);
+      expect(result.current.timeline.items).toEqual([]);
+    });
+
+    test("a lane that goes stale as its page commits does not advance the cursor", async () => {
+      jest.useFakeTimers();
+      try {
+        options.selectedSessionId = "s1";
+        options.selectedRef.current = "s1";
+        request.mockResolvedValue({ data: { entries: [], nextOffset: 0, hasMore: false } });
+        render();
+        await establish();
+        // Drain the open reconcile's own bookkeeping (its commit republishes the
+        // paging window) before seeding the window this test drives.
+        await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+        await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+        request.mockResolvedValue({ data: {
+          entries: [userEntry("u-old", "older")], nextOffset: 17, hasMore: true,
+        } });
+        // The commit that publishes the page is exactly where the reader leaves:
+        // its subscriber runs in the same microtask as the resolve, before the
+        // awaiting caller resumes, which is how a navigation interleaves with a
+        // commit. Only the page's own commit counts.
+        let flipped = false;
+        const unsubscribe = result.current.syncEngineRef.current!.subscribe(commit => {
+          if (commit.sessionId === "s1" &&
+              commit.timeline.items.some(item => item.kind === "message" && item.text === "older")) {
+            flipped = true;
+            options.selectedRef.current = "s2";
+          }
+        });
+        let applied: unknown;
+        const requestsBefore = request.mock.calls.length;
+        await act(async () => {
+          // Seeded and read in one turn: the lane's pending work cannot slip
+          // between the window and the read that uses it.
+          result.current.seedHistoryPaging("s1", {
+            nextBefore: 20, endOffset: 0, hasMore: true, loading: false,
+          });
+          applied = await result.current.loadOlderTimeline();
+        });
+        unsubscribe();
+        expect(request.mock.calls.length).toBeGreaterThan(requestsBefore);
+        expect(flipped).toBe(true);
+        // The page was downloaded, and the commit that published it is where the
+        // reader left: the cursor and the paging window must not move for a
+        // conversation the user is no longer on.
+        expect(applied).toBe(false);
+      } finally { jest.useRealTimers(); }
+    });
+
+    test("a replay asked for without a client fails as not connected", async () => {
+      const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      let arm = false;
+      request.mockImplementation(async (cmd: { type: string }) => {
+        // The desktop answers get_state, and the connection is gone the moment
+        // that reply is processed — before the run's replay is asked for.
+        if (cmd.type === "get_state") {
+          if (arm) queueMicrotask(() => { options.clientRef.current = null; });
+          return { success: true, data: { activeRun: { runId: "r1" } } };
+        }
+        if (cmd.type === "get_events_since") {
+          return { success: true, data: {
+            events: [
+              { type: "agent_start", data: "{}", runId: "r1", idx: 0 },
+              { type: "text_chunk", data: JSON.stringify({ text: "whole" }), runId: "r1", idx: 1 },
+              { type: "agent_end", data: "{}", runId: "r1", idx: 2 },
+            ],
+            hasMore: false,
+          } };
+        }
+        return { success: true, data: { entries: [userEntry("h1", "durable")], hasMore: false } };
+      });
+      render();
+      await establish();
+      await flush(80);
+      // Ask again while the socket has just died. The run's prefix is already
+      // complete, so no history read precedes the replay it needs — only the
+      // replay path can notice the missing connection.
+      const historyBefore = request.mock.calls.filter(([cmd]) => cmd.type === "get_session_entries").length;
+      arm = true;
+      act(() => result.current.reconcileSession("s1", "snapshot-flip", "r1"));
+      await flush(60);
+      expect(request.mock.calls.filter(([cmd]) => cmd.type === "get_session_entries").length)
+        .toBe(historyBefore);
+      expect(errorSpy).toHaveBeenCalledWith(
+        "[remote] session timeline sync failed",
+        expect.objectContaining({
+          stage: "replay",
+          error: expect.objectContaining({ message: "not_connected" }),
+        }),
+      );
+      errorSpy.mockRestore();
+    });
+
+    test("a snapshot flip that names an already-complete run is not re-read", async () => {
+      const run = "run-complete";
+      options.selectedSessionId = "s1";
+      options.selectedRef.current = "s1";
+      request.mockImplementation(async (cmd: { type: string }) => ({
+        success: true,
+        data: cmd.type === "get_state" ? { activeRun: { runId: run } }
+          : cmd.type === "get_events_since" ? {
+            events: [
+              { type: "agent_start", data: "{}", runId: run, idx: 0 },
+              { type: "text_chunk", data: JSON.stringify({ text: "whole" }), runId: run, idx: 1 },
+              { type: "agent_end", data: "{}", runId: run, idx: 2 },
+            ],
+            hasMore: false,
+          }
+          : { entries: [userEntry("h1", "ask")], hasMore: false },
+      }));
+      render();
+      await establish();
+      const engine = result.current.syncEngineRef.current!;
+      expect(engine.runCompleteLocally("s1", run)).toBe(true);
+      const reconcile = jest.spyOn(engine, "reconcile");
+      // The catalogue still thinks the run is live for one snapshot.
+      result.current.streamingRef.current["s1"] = true;
+      act(() => result.current.applySessionStreaming("s1", false));
+      // The terminal already arrived over a complete prefix: re-reading the run
+      // would show a sync notice for text that is on screen.
+      expect(reconcile).not.toHaveBeenCalled();
+    });
+
+    test("a compaction wait that is already aborted never registers", async () => {
+      render();
+      const controller = new AbortController();
+      controller.abort();
+      await expect(
+        result.current.awaitCompactionOutcome("s1", "op", 60_000, controller.signal),
+      ).resolves.toEqual({ status: "cancelled" });
+      // No waiter and no probe: the caller had already given up.
+      expect(request.mock.calls.filter(([cmd]) => cmd.type === "get_state")).toHaveLength(0);
+    });
+
+    test("a second compaction wait for the same operation shares the first promise", async () => {
+      render();
+      const first = result.current.awaitCompactionOutcome("s1", "op", 60_000);
+      const second = result.current.awaitCompactionOutcome("s1", "op", 60_000);
+      // One operation, one waiter: a second ask must not replace the first
+      // promise, or the outcome the first caller is awaiting would be lost.
+      expect(second).toBe(first);
+      act(() => result.current.handleEvent(compactionEvent("compaction_committed", "op"), "s1"));
+      await expect(first).resolves.toEqual({ status: "committed" });
+    });
+
+    test("an unresolved compaction wait keeps probing until its terminal arrives", async () => {
+      jest.useFakeTimers();
+      try {
+        options.selectedSessionId = "s1";
+        options.selectedRef.current = "s1";
+        // The desktop says it is still compacting, so the probe proves nothing
+        // and the wait has to keep watching.
+        request.mockImplementation(async (cmd: { type: string }) => ({
+          success: true,
+          data: cmd.type === "get_state" ? { isCompacting: true } : { entries: [] },
+        }));
+        render();
+        await act(async () => { await jest.advanceTimersByTimeAsync(0); });
+        const wait = result.current.awaitCompactionOutcome("s1", "slow");
+        const probes = () => request.mock.calls.filter(([cmd]) => cmd.type === "get_state").length;
+        await act(async () => { await jest.advanceTimersByTimeAsync(5_000); });
+        const afterFirstPoll = probes();
+        expect(afterFirstPoll).toBeGreaterThan(0);
+        await act(async () => { await jest.advanceTimersByTimeAsync(5_000); });
+        // Each unresolved probe arms exactly one more: the wait keeps watching
+        // while the desktop still reports the compaction running.
+        expect(probes()).toBeGreaterThan(afterFirstPoll);
+        act(() => result.current.handleEvent(compactionEvent("compaction_committed", "slow"), "s1"));
+        await expect(wait).resolves.toEqual({ status: "committed" });
+        // The poll that follows a settled wait must find it finished instead of
+        // probing the desktop again.
+        const settled = probes();
+        await act(async () => { await jest.advanceTimersByTimeAsync(20_000); });
+        expect(probes()).toBe(settled);
+      } finally { jest.useRealTimers(); }
     });
   });
 });

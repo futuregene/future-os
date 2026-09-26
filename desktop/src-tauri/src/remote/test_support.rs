@@ -42,6 +42,21 @@ pub(crate) fn init_store() {
     crate::store::initialize_app_store().expect("store init under test HOME");
 }
 
+/// A direct connection to the GUI store's database, for fixtures the store's
+/// own write path cannot express: a row left behind by an out-of-band delete
+/// (a `runs` row whose thread is gone) or one whose column holds a value the
+/// record decoder refuses. Foreign keys are off so such a row can be written,
+/// and the caller must already hold the HOME guard that serializes the pool.
+pub(crate) fn raw_store_connection() -> rusqlite::Connection {
+    let path = crate::store::app_data_path()
+        .expect("store path under the test HOME")
+        .db_path;
+    let conn = rusqlite::Connection::open(path).expect("open the store database");
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")
+        .expect("fixture rows may describe a dangling parent");
+    conn
+}
+
 /// Sign the test HOME in to FutureGene against `platform_url` (a MockPlatform),
 /// writing the `future` auth entry the platform-URL resolver reads.
 pub(crate) fn sign_in(platform_url: &str) {
@@ -70,6 +85,31 @@ pub(crate) fn now_secs() -> i64 {
 /// Complete the real v2 handshake over the fake broker, using the same
 /// invitation a phone scans. Used by runtime and malicious-relay tests.
 pub(crate) async fn secure_pair(
+    client: &async_nats::Client,
+    invitation: &str,
+    pair_id: &str,
+) -> future_remote_crypto::Channel {
+    let mut channel = open_secure_channel(client, invitation, pair_id).await;
+    let subject = format!("p.{pair_id}.cmd.handshake");
+    let wire = channel
+        .seal(
+            &subject,
+            &serde_json::to_vec(&json!({"type":"secure_ready"})).unwrap(),
+        )
+        .unwrap();
+    let context = future_remote_crypto::reply_context(&subject, &wire).unwrap();
+    let response = client.request(subject, wire.into()).await.unwrap();
+    let ready: Value =
+        serde_json::from_slice(&channel.open(&context, &response.payload).unwrap()).unwrap();
+    assert_eq!(ready["success"], true);
+    channel
+}
+
+/// The two *proving* legs of that handshake, stopped before the phone declares
+/// readiness: the desktop holds a candidate channel it has not activated yet.
+/// A test that needs "paired but not ready" (or that wants to drive
+/// `secure_ready` itself) starts here.
+pub(crate) async fn open_secure_channel(
     client: &async_nats::Client,
     invitation: &str,
     pair_id: &str,
@@ -127,19 +167,72 @@ pub(crate) async fn secure_pair(
         serde_json::from_slice(&channel.open("handshake-confirm", &encrypted).unwrap()).unwrap();
     assert_eq!(confirmed["pairId"], pair_id);
     assert_eq!(confirmed["confirmed"], true);
-    let subject = format!("p.{pair_id}.cmd.handshake");
-    let wire = channel
-        .seal(
-            &subject,
-            &serde_json::to_vec(&json!({"type":"secure_ready"})).unwrap(),
-        )
-        .unwrap();
-    let context = future_remote_crypto::reply_context(&subject, &wire).unwrap();
-    let response = client.request(subject, wire.into()).await.unwrap();
-    let ready: Value =
-        serde_json::from_slice(&channel.open(&context, &response.payload).unwrap()).unwrap();
-    assert_eq!(ready["success"], true);
     channel
+}
+
+// ── Reply sink ──────────────────────────────────────────────────────────────
+
+/// Records every reply a command handler pushed, in order.
+///
+/// Handler-level tests drive `remote_host::business::execute` and
+/// `PagedReply` directly instead of through NATS, so they need the handler's
+/// *decision* (success flag, payload, error text) rather than a wire frame.
+/// Keeping the replies in a list makes a multi-reply handler observable: a
+/// handler that answers twice, or answers after `return`ing, cannot hide.
+#[derive(Default)]
+pub(crate) struct RecordingSink {
+    replies: Mutex<Vec<(bool, Value, Option<String>)>>,
+}
+
+impl RecordingSink {
+    pub(crate) fn len(&self) -> usize {
+        self.replies.lock().unwrap().len()
+    }
+
+    /// The single reply this handler sent. Panics on zero or many so a test
+    /// cannot silently pass on the wrong shape.
+    pub(crate) fn only(&self) -> (bool, Value, Option<String>) {
+        let replies = self.replies.lock().unwrap();
+        assert_eq!(replies.len(), 1, "expected exactly one reply: {replies:?}");
+        replies[0].clone()
+    }
+
+    /// The last reply, whatever came before it.
+    pub(crate) fn last(&self) -> (bool, Value, Option<String>) {
+        self.replies
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("a reply")
+    }
+
+    // The `Result`-returning handlers are asserted through these two views, so
+    // a test reads the same way whether the handler replied once or twice.
+    pub(crate) fn ok_data(&self) -> Value {
+        let (success, data, error) = self.last();
+        assert!(success, "handler failed: {error:?}");
+        data
+    }
+
+    pub(crate) fn error_text(&self) -> String {
+        let (success, _, error) = self.last();
+        assert!(!success, "handler unexpectedly succeeded");
+        error.expect("a failed reply carries the reason")
+    }
+}
+
+impl crate::remote::services::ReplySink for RecordingSink {
+    fn send<'a>(
+        &'a self,
+        success: bool,
+        data: Value,
+        error: Option<String>,
+    ) -> futures::future::BoxFuture<'a, ()> {
+        Box::pin(async move {
+            self.replies.lock().unwrap().push((success, data, error));
+        })
+    }
 }
 
 // ── Mock gRPC FutureAgent ───────────────────────────────────────────────────
@@ -1585,6 +1678,103 @@ mod tests {
         .await;
     }
 
+    /// The matching variant must fail loudly too. It is the helper that decides
+    /// whether a heartbeat or an offline notice was observed, so a typo in its
+    /// predicate has to end the test rather than let it time out silently and
+    /// pass on a stale value.
+    #[tokio::test]
+    #[should_panic(expected = "timed out waiting for a matching publish")]
+    async fn await_publish_matching_times_out_when_no_publish_matches() {
+        let nats = FakeNats::start().await;
+        let mut tap = nats.tap();
+        nats.inject("presence", None, b"{\"online\":true}".to_vec());
+        // The subject matches but the predicate never does: the publish is
+        // drained and the wait still has to end.
+        await_publish_matching(
+            &mut tap,
+            "presence",
+            std::time::Duration::from_millis(30),
+            |published| published.json()["online"] == serde_json::json!(false),
+        )
+        .await;
+    }
+
+    /// `wait_until` is the fixture every "surface appears eventually" assertion
+    /// rests on: if the condition never holds it must panic with its message
+    /// rather than return and let the following assertion read a half-built
+    /// state.
+    #[tokio::test]
+    #[should_panic(expected = "the surface never appeared")]
+    async fn wait_until_panics_when_the_condition_never_holds() {
+        wait_until(
+            "the surface never appeared",
+            std::time::Duration::from_millis(30),
+            || false,
+        )
+        .await;
+    }
+
+    /// A non-object session entry is skipped instead of aborting the fixture:
+    /// `set_session_entries` exists to make one session's history wire-valid,
+    /// and a test that hands it a mixed list still wants the entries it could
+    /// shape to be usable.
+    #[tokio::test]
+    async fn set_session_entries_shape_skips_non_object_entries() {
+        let agent = ensure_mock_agent();
+        let session = unique("sess-mixed-entries");
+        agent.set_session_entries(
+            &session,
+            serde_json::json!({"entries": [{"role": "user"}, "not an object", 7]}),
+        );
+        let entries = agent.state.lock().unwrap().session_entries.clone();
+        let shaped = entries.get(&session).expect("entry list stored");
+        let shaped = shaped["entries"].as_array().expect("entries array");
+        assert_eq!(shaped.len(), 3, "the list is kept as given: {shaped:?}");
+        assert_eq!(shaped[0]["kind"], serde_json::json!("user"));
+        assert_eq!(shaped[1], serde_json::json!("not an object"));
+    }
+
+    /// The mock's default answers are a contract, not filler: a healthy mock
+    /// Agent has to satisfy the same readiness handshake as a real one, or
+    /// every test that reaches the login/readiness path would fail against the
+    /// double rather than against the code under test.
+    #[test]
+    fn the_mock_defaults_satisfy_the_agent_readiness_handshake() {
+        let mut state = MockAgentState::default();
+        let info = default_answer(
+            &crate::agent_proto::RpcCommand {
+                r#type: "get_agent_info".to_string(),
+                ..Default::default()
+            },
+            &mut state,
+        );
+        assert!(info.0, "the readiness probe must succeed: {info:?}");
+        let data: serde_json::Value = serde_json::from_str(&info.1).expect("JSON payload");
+        assert_eq!(data["version"], crate::build_info::VERSION);
+        assert_eq!(data["agentInstanceId"], "mock-agent");
+        assert_eq!(data["skillsCount"], 0);
+
+        let sandbox = default_answer(
+            &crate::agent_proto::RpcCommand {
+                r#type: "probe_sandbox".to_string(),
+                ..Default::default()
+            },
+            &mut state,
+        );
+        assert!(sandbox.0, "an unsupported sandbox is not a failure");
+        let data: serde_json::Value = serde_json::from_str(&sandbox.1).expect("JSON payload");
+        // The mock must never claim a sandbox its own host does not have: the
+        // desktop's approval tier follows this answer.
+        assert_eq!(
+            data["available"],
+            serde_json::json!(cfg!(target_os = "macos"))
+        );
+        assert!(
+            data["code"].as_str().is_some_and(|code| !code.is_empty()),
+            "a probe reports a machine-readable reason: {data}"
+        );
+    }
+
     #[tokio::test]
     async fn assert_no_publish_fails_when_one_arrives() {
         let nats = FakeNats::start().await;
@@ -1600,6 +1790,10 @@ mod tests {
 
     #[tokio::test]
     async fn mock_platform_handles_broken_requests() {
+        // Install the crypto provider here rather than inheriting it from
+        // whichever test happened to run first: without it, `Client::build`
+        // panics and this test would pass or fail on test scheduling alone.
+        crate::install_rustls_provider();
         let platform = MockPlatform::start().await;
         let addr = platform.url().trim_start_matches("http://").to_string();
 

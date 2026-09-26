@@ -465,6 +465,140 @@ describe("runSendPipeline stream/failure edges", () => {
   });
 });
 
+it("persists an interrupted reply but repaints nothing once the send is superseded", async () => {
+  // concurrency: the stream closed incomplete and a thread switch landed while the
+  // run row was being read. The reply must still be persisted (it is durable text
+  // the returned-to thread reads back), but neither the sidebar refresh nor the
+  // bubble repaint belongs to a view that no longer owns the send.
+  let current = true;
+  vi.mocked(getRun).mockImplementation(async () => {
+    current = false;
+    return storedRun();
+  });
+  vi.mocked(sendPromptToFutureAgent).mockResolvedValue({
+    content: "partial answer",
+    complete: false,
+    sessionId: "session-1",
+  });
+  const setMessages = vi.fn();
+  const deps = { ...makeDeps(setMessages), isCurrentSend: () => current };
+
+  await runSendPipeline(deps, { content: "hello", attachments: [] });
+
+  expect(deps.refreshRecentRun).not.toHaveBeenCalled();
+  const assistants = foldMessages(setMessages).filter(message => message.role === "assistant");
+  expect(assistants.map(message => message.content)).not.toContain("partial answer");
+});
+
+it("does not repaint a cancelled exchange that was superseded mid-stream", async () => {
+  // concurrency: the same guard on the CANCELLED outcome path. A user abort that
+  // lands after this view stopped owning the send must not set `recentRun` or
+  // patch the stopped bubble into whatever conversation is now on screen - the
+  // durability half (the run row is already settled) is the backend's.
+  let current = true;
+  vi.mocked(getRun).mockImplementation(async () => {
+    current = false;
+    return storedRun({ status: "cancelled", endedAt: 2_000 });
+  });
+  vi.mocked(sendPromptToFutureAgent).mockResolvedValue({
+    content: "partial before the abort",
+    complete: false,
+    sessionId: "session-1",
+  });
+  const setMessages = vi.fn();
+  const deps = { ...makeDeps(setMessages), isCurrentSend: () => current };
+
+  await runSendPipeline(deps, { content: "hello", attachments: [] });
+
+  // `setRecentRun` fires once, and that call is the pre-supersede one that pins the
+  // RUNNING run. What the guard prevents is the cancelled row being pushed
+  // afterwards - i.e. a second call, or any call carrying "cancelled".
+  expect(deps.setRecentRun.mock.calls.map(call => (call[0] as { status?: string }).status)).toEqual(["running"]);
+  const assistants = foldMessages(setMessages).filter(message => message.role === "assistant");
+  expect(assistants.map(message => message.content)).not.toContain("partial before the abort");
+  expect(assistants.some(message => message.stopped === true)).toBe(false);
+});
+
+it("leaves the new view alone when a cancelled empty run lands after the send was superseded", async () => {
+  // concurrency: the sibling test above pins the same cancelled-before-text
+  // finalization for a send that still owns the view. Here the abort is followed
+  // by a thread switch, so `isCurrentSend()` flips false while the projection is
+  // still resolving: the stopped bubble belongs to the abandoned conversation and
+  // must not be painted into the one on screen.
+  let current = true;
+  vi.mocked(getRun).mockImplementation(async () => {
+    current = false;
+    return storedRun({ status: "cancelled", endedAt: 2_000 });
+  });
+  vi.mocked(sendPromptToFutureAgent).mockResolvedValue({
+    content: "",
+    complete: false,
+    sessionId: "session-1",
+  });
+  const setMessages = vi.fn();
+  const deps = { ...makeDeps(setMessages), isCurrentSend: () => current };
+
+  await runSendPipeline(deps, { content: "hello", attachments: [] });
+
+  const assistants = foldMessages(setMessages).filter(m => m.role === "assistant");
+  expect(assistants.some(m => m.stopped === true)).toBe(false);
+  expect(assistants.some(m => m.terminationNotice !== undefined)).toBe(false);
+  // `createRun`'s resolution refreshes the sidebar unconditionally; the
+  // finalization refresh inside the guard is what must not fire.
+  expect(deps.onThreadActivity).toHaveBeenCalledTimes(1);
+});
+
+it("does not repaint a durable completion that arrived after the send was superseded", async () => {
+  // concurrency: the attach/IPC failed, but the run row shows it actually
+  // COMPLETED - the backend won a race. The recovery render exists so the user
+  // sees the real answer rather than a bogus failure, but it too must stay off a
+  // view that no longer owns this send.
+  let current = true;
+  vi.mocked(getRun).mockImplementation(async () => {
+    current = false;
+    return storedRun({ status: "completed", endedAt: 2_000 });
+  });
+  vi.mocked(listRunEvents).mockResolvedValue([{
+    id: "durable-text",
+    runId: "run-1",
+    sequence: 0,
+    eventType: "text_chunk",
+    payload: JSON.stringify({ text: "durable answer" }),
+    createdAt: 1000,
+  }] as never);
+  vi.mocked(sendPromptToFutureAgent).mockRejectedValue(new Error("Future Agent run ended before the stream attached"));
+  const setMessages = vi.fn();
+  const deps = { ...makeDeps(setMessages), isCurrentSend: () => current };
+
+  await runSendPipeline(deps, { content: "hello", attachments: [] });
+
+  expect(deps.refreshRecentRun).not.toHaveBeenCalled();
+  const assistants = foldMessages(setMessages).filter(message => message.role === "assistant");
+  expect(assistants.map(message => message.content)).not.toContain("durable answer");
+});
+
+it("does not refresh the sidebar when a failed send was superseded", async () => {
+  // concurrency: the invoke throws after a thread switch. The failure bubble
+  // belongs to the abandoned conversation, and refreshing THIS thread's
+  // sidebar is the new view's business - but the failed run row is still
+  // written, because the row is durable state the returned-to thread reads.
+  let current = true;
+  vi.mocked(getRun).mockImplementation(async () => {
+    current = false;
+    return storedRun();
+  });
+  vi.mocked(sendPromptToFutureAgent).mockRejectedValue(new Error("transport down"));
+  const setMessages = vi.fn();
+  const deps = { ...makeDeps(setMessages), isCurrentSend: () => current };
+
+  await runSendPipeline(deps, { content: "hello", attachments: [] });
+
+  expect(deps.refreshRecentRun).not.toHaveBeenCalled();
+  expect(updateRunStatus).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-1", status: "failed" }));
+  const assistants = foldMessages(setMessages).filter(m => m.role === "assistant");
+  expect(assistants.some(m => m.runError !== undefined)).toBe(false);
+});
+
 describe("send acceptance timing", () => {
   it("acknowledges before the response finishes and keeps the run active", async () => {
     vi.mocked(createRun).mockResolvedValue(storedRun());

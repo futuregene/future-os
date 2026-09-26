@@ -1115,6 +1115,35 @@ mod tests {
 
     #[cfg(not(windows))]
     #[tokio::test]
+    async fn login_device_code_deadline_break_stops_before_polling() {
+        // `expires_in: 1` with `interval: 1` is the only shape that reaches the
+        // poll loop's "the deadline passed while sleeping" break: the loop body
+        // runs, the sleep eats the whole expiry, and the token endpoint must
+        // then NOT be polled (there is no route for it, so a poll would fail
+        // with a transport message instead of the expiry one).
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            "/client/v1/oauth/device/code",
+            200,
+            "{\"device_code\":\"dc-1\",\"user_code\":\"WXYZ\",\"verification_uri\":\"https://x/verify\",\"expires_in\":1,\"interval\":1}",
+        )])
+        .await;
+        let empty = tempfile::tempdir().expect("tempdir");
+        let _env = EnvGuard::set(&[("PATH", empty.path().as_os_str().to_os_string())]);
+        let started = std::time::Instant::now();
+        let (code, stdout, stderr) = run(&["auth", "login", "--url", &base]).await;
+        let elapsed = started.elapsed();
+        assert_eq!(code, 1, "stdout: {stdout}");
+        assert_eq!(stderr, "Device authorization expired.\n");
+        assert!(
+            elapsed >= std::time::Duration::from_millis(900),
+            "the one-second interval was slept, not skipped: {elapsed:?}"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[tokio::test]
     async fn login_device_code_post_error_variants() {
         let _guard = crate::test_env::lock_env().await;
         let _home = EnvGuard::temp_home();
@@ -1175,6 +1204,281 @@ mod tests {
         let (code, _, stderr) = run(&["auth", "login", "--url", &base]).await;
         assert_eq!(code, 1);
         assert_eq!(stderr, "Denied by user\n");
+    }
+
+    #[cfg(windows)]
+    mod windows_device_code_flow {
+        //! The device-code flow on Windows.
+        //!
+        //! The unix login tests above fake the browser opener by emptying
+        //! `PATH`. That cannot work here: the Windows opener is
+        //! `cmd /c start`, which `CreateProcess` finds in System32 even with an
+        //! empty `PATH`, so those tests are `cfg(not(windows))` and a real
+        //! browser window would open.
+        //!
+        //! Instead the *request* is made unspawnable: Windows refuses a command
+        //! line longer than ~32 KiB with "The filename or extension is too
+        //! long", so a device-code response carrying a 40 000-character
+        //! verification URL makes `open_browser` fail deterministically, with
+        //! no browser and no other side effect. That is exactly the
+        //! "Open this URL in your browser:" arm the unix tests reach, so the
+        //! rest of `login` — polling, the pending dots, `save_auth`, the
+        //! expiry guard and every error arm — runs identically here.
+        use super::*;
+
+        /// Long enough that Windows cannot build the opener's command line
+        /// (the limit is ~32 767 characters).
+        const UNSPAWNABLE_URL_LEN: usize = 40_000;
+
+        fn unspawnable_url(prefix: &str) -> String {
+            format!("{prefix}{}", "x".repeat(UNSPAWNABLE_URL_LEN))
+        }
+
+        /// A temp HOME holding `auth.json` with `body`.
+        async fn seeded_home(body: &str) -> tempfile::TempDir {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = auth_file();
+            tokio::fs::create_dir_all(path.parent().expect("parent"))
+                .await
+                .expect("mkdir");
+            tokio::fs::write(&path, body)
+                .await
+                .expect("write auth.json");
+            dir
+        }
+
+        /// The happy path: the granted key is saved into the existing entry
+        /// (preserving its `type` and every other provider), the pending polls
+        /// print a dot each, and the browser-open failure is reported as the
+        /// plain URL instead of an error.
+        #[tokio::test]
+        async fn a_granted_key_is_saved_and_pending_polls_are_reported() {
+            let _guard = crate::test_env::lock_env().await;
+            let dir = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(&[
+                ("HOME", dir.path().as_os_str().to_owned()),
+                ("USERPROFILE", dir.path().as_os_str().to_owned()),
+            ]);
+            let path = auth_file();
+            tokio::fs::create_dir_all(path.parent().expect("parent"))
+                .await
+                .expect("mkdir");
+            tokio::fs::write(
+                &path,
+                r#"{"future":{"type":"oauth"},"openai":{"key":"keep"}}"#,
+            )
+            .await
+            .expect("write");
+
+            let complete = unspawnable_url("https://x/verify?c=");
+            let device = format!(
+                r#"{{"device_code":"dc-1","user_code":"ABCD-EFGH","verification_uri":"https://x/verify","verification_uri_complete":"{complete}","expires_in":60,"interval":0}}"#
+            );
+            let base = crate::test_server::spawn_http(vec![
+                crate::test_server::HttpRoute::json("/client/v1/oauth/device/code", 200, &device),
+                crate::test_server::HttpRoute::sequence(
+                    "/client/v1/oauth/device/token",
+                    vec![
+                        (400, r#"{"error":"authorization_pending"}"#),
+                        (400, r#"{"error":"slow_down"}"#),
+                        (
+                            200,
+                            r#"{"api_key":"sk-new","api_key_id":"id1","token_type":"bearer"}"#,
+                        ),
+                    ],
+                ),
+            ])
+            .await;
+
+            let (out, cap) = Output::memory();
+            login(Some(base.clone()), &out)
+                .await
+                .expect("login succeeds");
+            let stdout = String::from_utf8(cap.out.lock().expect("out").clone()).expect("utf8");
+            assert!(
+                stdout.contains("Open this URL in your browser:"),
+                "the spawn failed, so the URL is printed: {}",
+                &stdout[..stdout.len().min(200)]
+            );
+            assert!(stdout.contains(&complete), "the complete URI is preferred");
+            assert!(stdout.contains("  ABCD-EFGH"), "the user code is shown");
+            assert!(stdout.contains("Waiting for authorization..."));
+            assert!(stdout.contains(".."), "one dot per pending poll: {stdout}");
+            assert!(stdout.contains("Saved Future API key to"), "{stdout}");
+
+            let saved: Value =
+                serde_json::from_str(&tokio::fs::read_to_string(&path).await.expect("read"))
+                    .expect("json");
+            assert_eq!(saved["future"]["key"], "sk-new");
+            assert_eq!(saved["future"]["type"], "oauth", "the existing type wins");
+            assert_eq!(saved["future"]["base_url"], format!("{base}/api"));
+            assert_eq!(saved["openai"]["key"], "keep", "other providers survive");
+        }
+
+        /// With no `verification_uri_complete` the plain `verification_uri` is
+        /// the one printed — the other side of that choice.
+        #[tokio::test]
+        async fn an_empty_complete_uri_falls_back_to_the_plain_one() {
+            let _guard = crate::test_env::lock_env().await;
+            let _dir = seeded_home(r#"{"future":{"key":"old"}}"#).await;
+            let plain = unspawnable_url("https://x/plain?");
+            let device = format!(
+                r#"{{"device_code":"dc-2","user_code":"WXYZ","verification_uri":"{plain}","verification_uri_complete":"","expires_in":60,"interval":0}}"#
+            );
+            let base = crate::test_server::spawn_http(vec![
+                crate::test_server::HttpRoute::json("/client/v1/oauth/device/code", 200, &device),
+                crate::test_server::HttpRoute::json(
+                    "/client/v1/oauth/device/token",
+                    200,
+                    r#"{"api_key":"sk-plain"}"#,
+                ),
+            ])
+            .await;
+
+            let (out, cap) = Output::memory();
+            login(Some(base), &out).await.expect("login succeeds");
+            let stdout = String::from_utf8(cap.out.lock().expect("out").clone()).expect("utf8");
+            assert!(stdout.contains(&plain), "the plain URI is printed");
+            assert!(stdout.contains("  WXYZ"));
+        }
+
+        /// The expiry guard: an `expires_in` that cannot be added to `now` is
+        /// refused before polling, and a zero expiry ends the loop with the
+        /// expiry error rather than polling once.
+        #[tokio::test]
+        async fn expiry_guards_are_enforced_before_polling() {
+            let _guard = crate::test_env::lock_env().await;
+            let _dir = seeded_home(r#"{"future":{"key":"old"}}"#).await;
+            let huge = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+                "/client/v1/oauth/device/code",
+                200,
+                r#"{"device_code":"d","user_code":"U","verification_uri":"https://x/v","expires_in":18446744073709551615,"interval":0}"#,
+            )])
+            .await;
+            let (out, _cap) = Output::memory();
+            let err = login(Some(huge), &out)
+                .await
+                .expect_err("an unrepresentable expiry is refused");
+            assert!(err.contains("expiry is too large"), "{err}");
+
+            // expires_in = 0 → the loop body never runs.
+            let expired = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+                "/client/v1/oauth/device/code",
+                200,
+                r#"{"device_code":"d","user_code":"U","verification_uri":"https://x/v","expires_in":0,"interval":0}"#,
+            )])
+            .await;
+            let (out, _cap) = Output::memory();
+            let err = login(Some(expired), &out)
+                .await
+                .expect_err("a zero expiry expires");
+            assert_eq!(err, "Device authorization expired.");
+        }
+
+        /// Every failure of the two HTTP calls is reported with the server's
+        /// own words: a `message` field, a bare status, a non-JSON body, a
+        /// granted-but-empty key, and a token error that is neither
+        /// `authorization_pending` nor `slow_down`.
+        #[tokio::test]
+        async fn http_and_grant_failures_are_reported() {
+            let _guard = crate::test_env::lock_env().await;
+            let _dir = seeded_home(r#"{"future":{"key":"old"}}"#).await;
+
+            // device/code: message field, then the status fallback, then a
+            // non-JSON body.
+            for (body, expect) in [
+                (r#"{"message":"broken server"}"#, "broken server"),
+                ("{}", "Request failed with 500"),
+            ] {
+                let base =
+                    crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+                        "/client/v1/oauth/device/code",
+                        500,
+                        body,
+                    )])
+                    .await;
+                let (out, _cap) = Output::memory();
+                let err = login(Some(base), &out).await.expect_err("500 fails");
+                assert_eq!(err, expect, "body={body}");
+            }
+            let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+                "/client/v1/oauth/device/code",
+                200,
+                "not json",
+            )])
+            .await;
+            let (out, _cap) = Output::memory();
+            let err = login(Some(base), &out).await.expect_err("bad JSON fails");
+            assert!(err.contains("Network error"), "{err}");
+
+            // A granted key that is empty is refused, not saved.
+            let empty_key = crate::test_server::spawn_http(vec![
+                crate::test_server::HttpRoute::json(
+                    "/client/v1/oauth/device/code",
+                    200,
+                    r#"{"device_code":"d","user_code":"U","verification_uri":"https://x/v","expires_in":60,"interval":0}"#,
+                ),
+                crate::test_server::HttpRoute::json(
+                    "/client/v1/oauth/device/token",
+                    200,
+                    r#"{"api_key":""}"#,
+                ),
+            ])
+            .await;
+            let (out, _cap) = Output::memory();
+            let err = login(Some(empty_key), &out)
+                .await
+                .expect_err("an empty key is not a login");
+            assert!(err.contains("empty API key"), "{err}");
+
+            // A terminal token error is the server's message.
+            let denied = crate::test_server::spawn_http(vec![
+                crate::test_server::HttpRoute::json(
+                    "/client/v1/oauth/device/code",
+                    200,
+                    r#"{"device_code":"d","user_code":"U","verification_uri":"https://x/v","expires_in":60,"interval":0}"#,
+                ),
+                crate::test_server::HttpRoute::json(
+                    "/client/v1/oauth/device/token",
+                    403,
+                    r#"{"error":"access_denied","message":"Denied by user"}"#,
+                ),
+            ])
+            .await;
+            let (out, _cap) = Output::memory();
+            let err = login(Some(denied), &out)
+                .await
+                .expect_err("a denial is terminal");
+            assert_eq!(err, "Denied by user");
+        }
+
+        /// `open_browser` reports whether the opener could be started, and the
+        /// Windows opener is `cmd /c start "" <url>` — the empty argument is
+        /// the window title `start` would otherwise consume the URL for.
+        #[test]
+        fn the_windows_opener_command_shape_is_exact() {
+            let (command, args) = opener_command("https://x/v");
+            assert_eq!(command, "cmd");
+            assert_eq!(args, vec!["/c", "start", "", "https://x/v"]);
+
+            // A URL too long for a Windows command line cannot be spawned at
+            // all, which is the property these tests rely on.
+            let long = unspawnable_url("https://x/");
+            assert!(
+                !futures_util_block_on(open_browser(&long)),
+                "40k chars cannot spawn"
+            );
+        }
+
+        /// Minimal executor for the one `open_browser` call in a plain `#[test]`
+        /// (it takes no runtime of its own — it just spawns a process).
+        fn futures_util_block_on(future: impl std::future::Future<Output = bool>) -> bool {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(future)
+        }
     }
 
     #[tokio::test]

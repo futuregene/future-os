@@ -584,10 +584,10 @@ mod tests {
         coalescer.flush(&mut out);
         assert_eq!(out.len(), 2, "the burst splits into budget-sized groups");
         for published in &out {
+            let merged_bytes = published.payload.len();
             assert!(
-                published.payload.len() <= super::super::MAX_EVENT_BYTES,
-                "merged event of {} bytes exceeds the publish budget",
-                published.payload.len()
+                merged_bytes <= super::super::MAX_EVENT_BYTES,
+                "merged event of {merged_bytes} bytes exceeds the publish budget"
             );
         }
         assert!(
@@ -596,6 +596,44 @@ mod tests {
         );
         let merged: String = out.iter().map(text_of).collect();
         assert_eq!(merged, fragment.repeat(4), "no text may be lost");
+    }
+
+    /// The window is the only knob the real-journal measurement turns, so it has
+    /// to be the thing that decides a merge. Two fragments of one stream merge
+    /// inside the window and are published separately once it has passed; a
+    /// coalescer that read the default instead of its override would merge both.
+    #[test]
+    fn the_window_override_is_what_decides_a_merge() {
+        let base = Instant::now();
+        let two = |coalescer: &mut Coalescer, gap: Duration| {
+            let mut out = Vec::new();
+            coalescer.offer(
+                event("text_chunk", serde_json::json!({"text": "a"}), 0),
+                base,
+                &mut out,
+            );
+            coalescer.offer(
+                event("text_chunk", serde_json::json!({"text": "b"}), 1),
+                base + gap,
+                &mut out,
+            );
+            coalescer.flush(&mut out);
+            out
+        };
+
+        let mut wide = Coalescer::with_window(Duration::from_secs(5));
+        assert_eq!(wide.window(), Duration::from_secs(5));
+        assert_eq!(two(&mut wide, Duration::from_millis(10)).len(), 1);
+
+        let mut narrow = Coalescer::with_window(Duration::from_millis(1));
+        assert_eq!(narrow.window(), Duration::from_millis(1));
+        let split = two(&mut narrow, Duration::from_millis(10));
+        assert_eq!(split.len(), 2, "past the window each fragment stands alone");
+        assert_eq!(split.iter().map(text_of).collect::<String>(), "ab");
+
+        // Production never overrides the window: the default is the real one.
+        let default = Coalescer::default();
+        assert_eq!(default.window(), COALESCE_WINDOW);
     }
 
     /// A provider that resends the accumulated arguments mid-stream makes the
@@ -1130,5 +1168,87 @@ mod tests {
                 "reduction": 1.0 - (lean_bytes as f64 / full_bytes.max(1) as f64),
             })
         );
+    }
+
+    /// The two harnesses above are `#[ignore]`d because the measurement wants a
+    /// real recorded journal. That left the accounting the measurement trusts
+    /// unreachable from `cargo test`, which is exactly the code a wrong number
+    /// would come from. Drive both over a synthetic journal of the shape
+    /// `scripts/measure-live-lane.py` writes, so their invariants are checked on
+    /// every run: every source event is accounted for exactly once, no character
+    /// is lost or duplicated, the newest index still reaches the lane, and the
+    /// coalesced lane is smaller than today's. The journal deliberately mixes a
+    /// non-fragment event, a dropped-in-lean event, and CJK text across the
+    /// fragment mergeto-boundary (`MAX_MERGED_FRAGMENTS`).
+    #[test]
+    fn the_measurement_harnesses_hold_over_a_synthetic_journal() {
+        let mut journal = String::new();
+        let mut line = |event_type: &str, data: Value, idx: i64| {
+            journal.push_str(
+                &serde_json::json!({
+                    "event_type": event_type,
+                    "data": data.to_string(),
+                    "idx": idx,
+                    "epoch": 1,
+                    // A real journal's own timestamps are the clock; keep them
+                    // monotonic and inside the window so the merge is decided
+                    // by contiguity rather than by a wall clock.
+                    "timestamp": format!(
+                        "2026-09-26T02:00:{:02}.{:03}+00:00",
+                        idx / 1000,
+                        idx % 1000
+                    ),
+                    "session_idx": -1,
+                    "run_sequence": 1,
+                })
+                .to_string(),
+            );
+            journal.push('\n');
+        };
+        line("agent_start", serde_json::json!({}), 0);
+        // Dropped by the lean lane, and its text must not reach the feed.
+        line("thinking_delta", serde_json::json!({"text": "思考中"}), 1);
+        for idx in 2..=(MAX_MERGED_FRAGMENTS as i64 + 2) {
+            line(
+                "text_chunk",
+                serde_json::json!({"text": format!("中文{idx} ")}),
+                idx,
+            );
+        }
+        line(
+            "agent_end",
+            serde_json::json!({}),
+            MAX_MERGED_FRAGMENTS as i64 + 3,
+        );
+
+        let path = std::env::temp_dir().join(crate::remote::test_support::unique(
+            "coalesce-journal.jsonl",
+        ));
+        std::fs::write(&path, &journal).unwrap();
+        let names = [
+            "SYNC_MEASURE_JOURNAL",
+            "SYNC_MEASURE_SESSION",
+            "SYNC_MEASURE_RUN",
+            "SYNC_MEASURE_WINDOW_MS",
+        ];
+        let previous: Vec<(&str, Option<String>)> = names
+            .iter()
+            .map(|name| (*name, std::env::var(name).ok()))
+            .collect();
+        std::env::set_var("SYNC_MEASURE_JOURNAL", &path);
+        std::env::set_var("SYNC_MEASURE_SESSION", "session-measure");
+        std::env::set_var("SYNC_MEASURE_RUN", "run-measure");
+        std::env::set_var("SYNC_MEASURE_WINDOW_MS", "60000");
+
+        measure_real_journal();
+        measure_real_journal_lean();
+
+        for (name, value) in previous {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+        std::fs::remove_file(&path).ok();
     }
 }

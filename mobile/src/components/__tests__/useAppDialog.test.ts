@@ -67,3 +67,19 @@ test("system back cancels without invoking the destructive action", () => {
   act(() => modal.props.onDismiss());
   expect(confirm).not.toHaveBeenCalled();
 });
+
+test("a dialog left open when the surface goes away is dismissed, not left on screen", () => {
+  function Surface({ active }: { active: boolean }) {
+    const dialog = useAppDialog(active);
+    useEffect(() => { api = dialog; });
+    return dialog.dialog;
+  }
+  act(() => { tree = create(createElement(Surface, { active: true })); });
+  act(() => api.alert("Delete", "Cannot undo", [{ text: "Delete", onPress: jest.fn() }]));
+  expect(tree.root.findAllByType(DialogSurface)).toHaveLength(1);
+  // The screen that owns the dialog is no longer active (a tab switch, a
+  // navigation): its dialog must not survive over the surface that replaced it.
+  act(() => { tree.update(createElement(Surface, { active: false })); });
+  expect(tree.root.findAllByType(DialogSurface)).toHaveLength(0);
+});
+

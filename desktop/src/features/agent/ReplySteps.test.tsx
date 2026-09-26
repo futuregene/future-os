@@ -157,3 +157,19 @@ it("preserves an expanded summary as new settled steps arrive", async () => {
   expect(summary().textContent).toBe("×2·×1");
   expect(summary().nextElementSibling!.textContent).toContain(i18n.t("agent:activity.failed.shell"));
 });
+
+it("shows a thinking-only group without inventing a tool count", async () => {
+  // boundary: a group can hold thinking segments and no activity at all (a model
+  // that reasons before answering, interrupted before any tool call). Then `tools`
+  // is 0, so its summary term and its wrench glyph must both be omitted rather
+  // than rendering a bare "0" or an icon with no count behind it.
+  await render([thought, thought]);
+  const button = summary();
+
+  // The thoughts term alone carries the summary - no tool term at all.
+  expect(button.getAttribute("aria-label")).toBe(i18n.t("agent:activity.stepThoughts", { count: 2 }));
+  expect(button.getAttribute("aria-label")).not.toContain("0");
+  expect(button.querySelector(".lucide-wrench")).toBeNull();
+  expect(button.querySelector(".lucide-brain")).not.toBeNull();
+  expect(button.textContent).toBe("×2");
+});

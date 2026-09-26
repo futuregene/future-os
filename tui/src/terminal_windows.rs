@@ -331,3 +331,113 @@ pub(crate) fn write_stdout(data: &[u8]) -> io::Result<usize> {
 pub(crate) fn die_with_signal(_sig: i32) -> ! {
     std::process::abort()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A console-less runner cannot build a backend; the child of
+    /// `console_harness` can. Either way the reported values must be the ones
+    /// the shared reader loop relies on: a live TTY, a non-zero size, no
+    /// EOF-from-a-console, and a `wake` that touches nothing.
+    #[test]
+    fn backend_reports_its_own_availability() {
+        let Some(backend) = super::super::backend_or_skip() else {
+            return;
+        };
+        assert!(backend.is_tty(), "a usable backend must report a TTY");
+        let (cols, rows) = backend.size();
+        assert!(
+            cols > 0 && rows > 0,
+            "console size must be non-zero: {cols}x{rows}"
+        );
+        // Windows never reports EOF from a console read and has no signals.
+        assert!(!backend.eof_is_terminal());
+        assert!(TERM_SIGNALS.is_empty());
+        backend.wake();
+    }
+
+    /// `enable_raw`/`restore_raw` are idempotent: `start()` may run once, but
+    /// the app's exit paths call `restore_raw` more than once and a repeated
+    /// `enable_raw` must not re-capture the (already raw) console modes as the
+    /// originals, which would leave the console raw after exit.
+    #[test]
+    fn enable_and_restore_raw_are_idempotent() {
+        let Some(backend) = super::super::backend_or_skip() else {
+            return;
+        };
+        backend.restore_raw(); // not raw yet — a no-op, not an error
+        backend.enable_raw().expect("raw mode on a real console");
+        assert!(backend.is_tty());
+        let raw_size = backend.size();
+        // Second call returns early rather than re-capturing the raw modes.
+        backend
+            .enable_raw()
+            .expect("a second enable_raw is a no-op");
+        assert_eq!(backend.size(), raw_size);
+        backend.restore_raw();
+        backend.restore_raw(); // idempotent again
+        assert!(backend.is_tty(), "the console is still a console");
+    }
+
+    /// `read_size` degrades to `(0, 0)` for a handle that is not a console
+    /// screen buffer — the case `columns_with_ioctl`/`rows_with_ioctl` fall
+    /// back to `COLUMNS`/`LINES`, else 80x24.
+    #[test]
+    fn read_size_of_a_non_console_handle_is_zero() {
+        assert_eq!(Backend::read_size(std::ptr::null_mut()), (0, 0));
+        assert_eq!(Backend::read_size(INVALID_HANDLE_VALUE), (0, 0));
+    }
+
+    /// `write_stdout` writes every byte, including the multi-chunk case the
+    /// `while total < data.len()` loop exists for, and reports the count.
+    #[test]
+    fn write_stdout_writes_all_bytes() {
+        let payload = vec![b'#'; 40_000];
+        assert_eq!(write_stdout(&payload).unwrap(), payload.len());
+        assert_eq!(write_stdout(b"").unwrap(), 0);
+    }
+
+    /// The reader loop polls `wait` with a deadline, so `wait` must always
+    /// return promptly, and a window-size change must be reported **once** (it
+    /// is edge-triggered: a pending key survives to the next `wait`). Asserting
+    /// "no two consecutive `Resize` results" is the deterministic form of that
+    /// contract — a console that keeps reporting the same size as a change would
+    /// spin the reader loop's resize callback forever.
+    #[test]
+    fn wait_is_prompt_and_reports_a_size_change_only_once() {
+        let Some(backend) = super::super::backend_or_skip() else {
+            return;
+        };
+        let mut previous_was_resize = false;
+        let mut resizes = 0usize;
+        for _ in 0..20 {
+            let started = std::time::Instant::now();
+            let wait = backend.wait(0);
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(5),
+                "wait(0) must return promptly, took {:?}",
+                started.elapsed()
+            );
+            match wait {
+                ReadWait::Resize => {
+                    assert!(
+                        !previous_was_resize,
+                        "a size change must not be reported twice in a row — the reader \
+                         loop's resize callback would fire on every poll"
+                    );
+                    previous_was_resize = true;
+                    resizes += 1;
+                }
+                ReadWait::Input | ReadWait::Timeout => previous_was_resize = false,
+                other => panic!("unexpected wait outcome on Windows: {other:?}"),
+            }
+        }
+        // `Resize` can only be produced by a real change, and this test changes
+        // nothing — the initial size was recorded by `Backend::new`.
+        assert_eq!(
+            resizes, 0,
+            "no window-size change happened, yet Resize was reported {resizes} time(s)"
+        );
+    }
+}
