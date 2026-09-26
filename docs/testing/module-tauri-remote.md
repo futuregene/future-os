@@ -280,3 +280,16 @@ this run are the two `#[cfg(test)]`-module refactors named under *weak-tests-fix
    runs. A reviewer who can execute one should replace the row with a test.
 3. **`secure.rs`'s remaining closures** and the `files.rs` TOCTOU arms are
    readings from the source, not from a failed attempt, as in the previous run.
+
+## Post-merge registrations — files `origin/main` brought into this group's scope (2026-09-26)
+
+The branch merged `origin/main`, and re-measuring on the merged tree moved this group from 97.4866%
+to **94.7059%** (18068/19078 across 42 files, 1010 uncovered in 29 files). The drop is not a
+regression in the tests: it is that the merged tree contains code the previous report did not cover.
+Three files are new to this ledger, and each is registered by what its code actually is:
+
+| file | uncovered | category | reason |
+|---|---|---|---|
+| `desktop/src-tauri/src/remote/verify_e2e.rs` | 321 | `unreachable-in-this-environment` | End-to-end byte verification of the lean lane over the REAL cryptography. Its uncovered lines are the bodies of three `#[ignore]`d tests that need a real broker and a measurement run: `VERIFY_E2E_NATS_URL` (a live NATS server), plus `VERIFY_E2E_JOURNAL`/`VERIFY_E2E_SESSION`/`VERIFY_E2E_RUN`/`VERIFY_E2E_ENTRIES` produced by `scripts/measure/verify-e2e-bytes.py`. `origin/main` added this file with those gates intact. |
+| `desktop/src-tauri/src/remote_host/lean.rs` | 156 | `unreachable-in-this-environment` | Fixture generation and a measurement instrument, gated by `LEAN_RENDER_FIXTURES` and `LEAN_HISTORY_ENTRIES` (two `#[ignore]`d tests). The module's ordinary test module runs and covers the non-instrument code; the uncovered lines are the gated paths. |
+| `desktop/src-tauri/src/remote_host/business/catalog.rs` | **0** | covered | CLOSED by a test, not waived: the three `Err(error) => reply(..)` arms of the store calls in `set_session_pinned` and `delete_session` are now driven, and the file reports **193/193 lines, no uncovered lines**. The test is `a_failed_lookup_is_not_reported_as_already_deleted` (see the row above). This row previously said "3 | being covered" — that was accurate when written and is superseded here, because leaving it would describe uncovered lines the report no longer contains. |

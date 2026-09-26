@@ -159,7 +159,7 @@ fn tool_inspection_requires_its_whole_scope_and_reports_an_empty_page() {
         assert!(response["error"]
             .as_str()
             .unwrap()
-            .contains("sessionId, runId and (for output) toolCallId are required"));
+            .contains("sessionId, runId and (for call-scoped reads) toolCallId are required"));
     }
 
     // A well-formed query for a run that recorded nothing is an empty page,

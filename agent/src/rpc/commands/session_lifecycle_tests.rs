@@ -1966,10 +1966,23 @@ fn activating_a_cold_persisted_session_announces_the_first_activation() {
         .activate_persisted_session("cold-committed-child")
         .expect("a resident session activates");
     assert!(Arc::ptr_eq(&activated, &again));
-    assert!(matches!(
-        rx.try_recv(),
-        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-    ));
+    // No SECOND announcement for this session. Assert the claim rather than "the channel is
+    // empty": the broadcaster is a process-wide singleton and the rest of the suite publishes
+    // to it in parallel, so emptiness is not a property of this code (that over-broad form
+    // passed alone and failed in the full run). Drain a bounded number of pending events and
+    // require that none of them announces this session again.
+    for _ in 0..64 {
+        match rx.try_recv() {
+            Ok(event) => assert!(
+                !(event.event_type == "session_created"
+                    && event.data.contains("cold-committed-child")),
+                "the second activation must not announce the session again: {event:?}"
+            ),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+        }
+    }
 }
 
 #[test]

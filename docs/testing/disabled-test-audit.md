@@ -254,10 +254,46 @@ section is valid for the revision it names. The full anti-pattern sweep (deleted
 production lines, guard deletion, `#[cfg(test)]` seams, weakened assertions) is
 in `docs/testing/weak-test-audit.md`.
 
+## Post-merge inventory — the disabled tests `origin/main` brought in (2026-09-26)
+
+This section exists because the branch merged `origin/main` after the sections above were written,
+and the merged tree is what the PR carries. Four files with `#[ignore]` markers are **new to this
+doc**, and all four were **added by `origin/main`**, not by this goal (checked with
+`git diff --name-status HEAD~1..origin/main`, which reports `A` for each):
+
+| file | marker(s) | reason recorded in the source |
+|---|---|---|
+| `desktop/src-tauri/src/remote/verify_e2e.rs` | `:967`, `:1103`, `:1114` | real NATS broker (`VERIFY_E2E_NATS_URL`) or the measurement inputs `VERIFY_E2E_JOURNAL/SESSION/RUN/ENTRIES`, both produced by `scripts/measure/verify-e2e-bytes.py` |
+| `desktop/src-tauri/src/remote_host/business/wire_limits.rs` | `:716` | measurement: needs `VERIFY_E2E_PHONE_PAGE` |
+| `desktop/src-tauri/src/remote_host/lean.rs` | `:1217`, `:1379` | fixture generation: needs `LEAN_RENDER_FIXTURES`; measurement: needs `LEAN_HISTORY_ENTRIES` |
+| `packages/rpc/tests/measure_usage_run_nulls.rs` | `:28` attribute, `:2` prose | measurement: needs `LEAN_USAGE_RUN_ENTRIES` |
+
+Every one of them is a **measurement instrument or a fixture generator**, not a test that was switched
+off: each reads an environment variable produced by a script under `scripts/measure/`, and each
+`expect`s that variable with a message naming it. That is the "external service or measurement
+harness" class the policy allows, and it matches the shape of the pre-existing inventory above.
+
+The `:2` entry in `packages/rpc/tests/measure_usage_run_nulls.rs` is a **prose mention** inside the
+module's `//!` doc, not an attribute — the same phenomenon the pre-merge section explains for the
+28-vs-26 discrepancy. Accounting for the merged tree: the scanner's 36 markers are 10 in files already
+inventoried above, 6 real attributes in the four files listed here, and 1 prose mention (plus the
+prose mentions already explained). The attribute count, which is what matters, is 26 pre-existing +
+6 from the merge.
+
+**Nothing here was disabled by this goal.** The goal's own red line — no newly disabled test — was
+verified pre-merge by diffing the ignored-test NAME SETS against `origin/main` (26 now / 26 there /
+ADDED 0 / REMOVED 0), and this section extends that inventory to the merged tree rather than
+re-asserting it. These 6 belong to `origin/main`'s authors.
+
 ## Statement
 
 **No test was disabled in order to reach a coverage or green-suite target.**
-The 26 ignored tests are all pre-existing on `origin/main`, are reproducible by
-the reason string attached to each (platform, external service, or measurement
-harness), and none of them was disabled by this goal. The branch's only
+The 26 ignored tests inventoried above are all pre-existing on `origin/main`, are
+reproducible by the reason string attached to each (platform, external service, or
+measurement harness), and none of them was disabled by this goal. The branch's only
 `#[ignore]`-adjacent change is the script-path rewording above.
+
+After merging `origin/main`, the merged tree also carries the 6 attributes listed in
+the post-merge section, all of which `origin/main` added and all of which are
+environment-gated measurement instruments. So the claim above holds for the tree the
+PR actually contains, not only for the branch before the merge.
