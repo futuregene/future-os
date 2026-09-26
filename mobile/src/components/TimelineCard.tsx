@@ -558,23 +558,75 @@ function ToolRow({
       ) : null}
       {expanded && children ? (
         <View style={styles.inlineToolChildren}>
-          {children.map((child, index) => {
-            const childKind = toolKind(child.name);
-            return (
-              <Text
-                key={`${child.name}:${child.detail ?? ""}:${index}`}
-                selectable
-                style={styles.inlineToolChild}
-              >
-                {child.detail
-                  ? toolDetail(childKind, child.detail)
-                  : toolLabel(t, childKind, child.complete)}
-              </Text>
-            );
-          })}
+          {children.map((child, index) => (
+            <ToolChildRow
+              key={`${child.name}:${child.detail ?? ""}:${index}`}
+              child={child}
+              resolveTarget={resolveTarget}
+            />
+          ))}
         </View>
       ) : null}
     </View>
+  );
+}
+
+/**
+ * One call inside an expanded burst, e.g. a command under "运行 2 次".
+ *
+ * A lean history page carries no shell `arguments`, so a burst's children are
+ * labels — and the group row has no call identity of its own, so opening it
+ * could never reveal what ran. Each child that still has its identity therefore
+ * fetches its own command, the same way a single tool row does: one tap, one
+ * command, and only for the calls the reader actually opens.
+ */
+function ToolChildRow({
+  child,
+  resolveTarget,
+}: {
+  child: TimelineToolRow;
+  resolveTarget?: ToolTargetResolver;
+}) {
+  const { t } = useTranslation();
+  const [fetchedTarget, setFetchedTarget] = useState<string | null>(null);
+  const [fetching, setFetching] = useState(false);
+  const kind = toolKind(child.name);
+  const rawDetail = child.detail ?? fetchedTarget ?? undefined;
+  const detail = rawDetail?.trim() ? toolDetail(kind, rawDetail.trim()) : null;
+  const fetchable = !detail && Boolean(child.toolCallId && child.runId && resolveTarget);
+  const label = toolLabel(t, kind, child.complete);
+  if (!fetchable) {
+    return (
+      <Text selectable style={styles.inlineToolChild}>
+        {detail ?? label}
+      </Text>
+    );
+  }
+  return (
+    <Pressable
+      accessibilityRole="button"
+      disabled={fetching}
+      hitSlop={ROW_HIT_SLOP}
+      onPress={() => {
+        if (fetching) return;
+        setFetching(true);
+        // A convenience, never a dependency: a failure leaves the line as it
+        // was rather than surfacing an unhandled rejection.
+        Promise.resolve()
+          .then(() => resolveTarget!(child.toolCallId!, child.runId!))
+          .then(target => {
+            if (target && target.trim()) setFetchedTarget(target);
+          })
+          .catch(() => undefined)
+          .finally(() => setFetching(false));
+      }}
+      style={styles.inlineToolChildRow}
+    >
+      <Text selectable style={styles.inlineToolChild}>
+        {detail ?? label}
+      </Text>
+      {detail ? null : <ChevronDown color={colors.inkMuted} size={12} />}
+    </Pressable>
   );
 }
 
@@ -1221,6 +1273,15 @@ const styles = StyleSheet.create({
     gap: 2,
     marginTop: 2,
     paddingLeft: spacing.md + spacing.sm,
+  },
+  // A burst child that can still fetch its command sits its glyph beside the
+  // line, so the row reads as tappable without moving the text off the other
+  // children's left edge.
+  inlineToolChildRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    alignSelf: "flex-start",
   },
   // The collapsed summary hugs the right edge, out of the prose's eye line. Its
   // gap is tighter than a tool row's: the counts are one cluster, and 8px on each
