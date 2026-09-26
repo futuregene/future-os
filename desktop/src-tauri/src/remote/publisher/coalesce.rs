@@ -1008,6 +1008,10 @@ mod tests {
         let mut published = Vec::new();
         let mut full_bytes = 0usize;
         let mut lean_bytes = 0usize;
+        // Per-type totals, so a report can say which event types still carry the
+        // lane rather than only how big it is.
+        let mut full_by_type: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut lean_by_type: std::collections::BTreeMap<String, usize> = Default::default();
         let mut events = 0usize;
         let mut delivered = 0usize;
         let mut last_idx = i64::MIN;
@@ -1019,7 +1023,7 @@ mod tests {
             let idx = raw["idx"].as_i64().unwrap_or(0);
             events += 1;
             last_idx = last_idx.max(idx);
-            full_bytes += serde_json::to_vec(&super::super::build_event_body(
+            let full_body = serde_json::to_vec(&super::super::build_event_body(
                 &session,
                 event_type,
                 data,
@@ -1031,8 +1035,9 @@ mod tests {
                 raw["session_idx"].as_i64().unwrap_or(-1),
                 raw["run_sequence"].as_i64().unwrap_or(0),
             ))
-            .expect("body serializes")
-            .len();
+            .expect("body serializes");
+            *full_by_type.entry(event_type.to_string()).or_default() += full_body.len();
+            full_bytes += full_body.len();
 
             let Some(lean) = lean_event_data(event_type, data) else {
                 continue;
@@ -1050,7 +1055,9 @@ mod tests {
                 raw["session_idx"].as_i64().unwrap_or(-1),
                 raw["run_sequence"].as_i64().unwrap_or(0),
             );
-            lean_bytes += serde_json::to_vec(&payload).expect("body serializes").len();
+            let lean_body = serde_json::to_vec(&payload).expect("body serializes");
+            *lean_by_type.entry(event_type.to_string()).or_default() += lean_body.len();
+            lean_bytes += lean_body.len();
             let stamp = raw["timestamp"]
                 .as_str()
                 .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
@@ -1072,10 +1079,12 @@ mod tests {
 
         let mut coalesced_bytes = 0usize;
         let mut newest_idx = i64::MIN;
+        let mut published_by_type: std::collections::BTreeMap<String, usize> = Default::default();
         for event in &published {
             coalesced_bytes += event.payload.len();
             let body: Value = serde_json::from_slice(&event.payload).expect("published body");
             let event_type = body["type"].as_str().unwrap_or_default();
+            *published_by_type.entry(event_type.to_string()).or_default() += event.payload.len();
             assert!(
                 lean_event_data(event_type, "{}").is_some(),
                 "{event_type} streams content the lean lane must not carry"
@@ -1093,6 +1102,9 @@ mod tests {
                 "delivered": delivered,
                 "fullBytes": full_bytes,
                 "leanBytes": lean_bytes,
+                "fullByType": full_by_type,
+                "leanByType": lean_by_type,
+                "publishedByType": published_by_type,
                 "published": published.len(),
                 "coalescedBytes": coalesced_bytes,
                 "windowMs": window.as_millis(),
