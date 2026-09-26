@@ -329,10 +329,30 @@ scope and Agent authority are unchanged; Desktop-to-broker legacy publication
 is retained, while irrelevant detailed delivery to the phone is avoided.
 
 **Lean event content (2026-09-26):** a phone that declares `lean_events_v1`
-receives the same event lane with the content it never renders removed. Measured
-on the three heaviest completed runs, a run costs 67-77 MB raw / 4.4-4.7 MB
-coalesced without the declaration, and 0.9-1.4 MB raw / 0.5-0.9 MB coalesced
-with it.
+receives the same event lane with the content it never renders removed.
+
+Measured on the three heaviest completed runs, the two capabilities the phone
+declares contribute in sequence — which is the only way to read them, because
+coalescing shipped first and the phone's before/after is coalesced-vs-
+coalesced+lean:
+
+| Sample, as the phone receives it | Messages | Wire bytes |
+| --- | ---: | ---: |
+| 1 undeclared | 174,791 | 70,330,622 |
+| 1 coalesced only (`event_coalescing_v1`) | 4,174 | 3,115,440 |
+| 1 coalesced + `lean_events_v1` | **1,320** | **818,013** |
+| 2 undeclared → coalesced → + lean | 166,685 → 4,127 → **1,409** | 66,634,886 → 2,967,307 → **819,590** |
+| 3 undeclared → coalesced → + lean | 154,907 → 3,383 → **896** | 60,876,773 → 2,437,683 → **472,645** |
+
+So the trim's own contribution to a phone is **-72% to -81%** on top of
+coalescing (3.1 / 3.0 / 2.4 MB → 0.82 / 0.82 / 0.47 MB), not the ~-98% the
+raw-to-lean ratio suggests: that ratio credits the trim with merging it did not
+do. Re-measured through the real Noise+AEAD channel by
+`scripts/measure/verify-e2e-bytes.py`, which installs the live-lane capability
+flags the way the supervisor does — a harness that skips that step silently
+measures the *undeclared* lane and reports it as "coalesced", which is exactly
+the mistake that produced a wrong marginal figure once. The measurement now
+asserts the flag and the merging, so that cannot pass unnoticed again.
 
 | Event | Without the declaration | With it |
 | --- | --- | --- |
@@ -379,7 +399,7 @@ verdict there is unanswerable by construction. The same flag suppresses the
 **Lean history (2026-09-26):** the same declaration also trims the history pages
 (`get_session_entries`, both the paged and the full read). Three payloads, all of
 them unread rather than merely unrendered, measured on the three heaviest real
-sessions:
+sessions (whole-session payloads, `scripts/measure/measure-lean-history.py`):
 
 | Trim | Share of the page |
 | --- | --- |
@@ -387,19 +407,36 @@ sessions:
 | tool-result body | 22.0-26.5% |
 | tool-call arguments beyond the four a target can come from | 12.3-17.8% |
 
-Together 67.1% / 72.7% / 68.4% of a page. `targetFromArgs` derives a tool row's
-text from `command`, `path`, `file_path` or `filePath` and reads **no other**
+Together 67.1% / 72.7% / 68.4% of a whole session. `targetFromArgs` derives a tool
+row's text from `command`, `path`, `file_path` or `filePath` and reads **no other**
 argument key for any tool name, so keeping exactly those four is
 behaviour-preserving; `foldToolEntry` reads a result block's `toolCallId` and
 `isError` and nothing else; a reasoning body is only rendered when its row is
 expanded.
 
+What a phone actually pays is smaller than the whole session, and it is measured
+on **the page the phone asks for** (the newest `HISTORY_PAGE_USER_EXCHANGES`
+exchanges, selected by the agent) rather than on a whole session:
+
+| | undeclared | lean | saved |
+| --- | ---: | ---: | ---: |
+| newest 3-exchange page (wire) | 495,618 / 424,391 / 1,037,043 | 151,629 / 98,112 / 118,369 | **69.4% / 76.9% / 88.6%** |
+| 100-entry full read | 262,613 / 275,875 / 356,328 | 34,547 / 35,258 / 34,830 | 86.8% / 87.2% / 90.2% |
+
+A corrected instrument matters here: the earlier measurement fed the bridge a
+*whole session* and let the byte budget reduce it, which reports "as many newest
+exchanges as fit in 512 KiB" rather than the requested page — overstating a lean
+page about three-fold (511,841 vs 147,735 bytes on the first session above).
+`verify_e2e.rs` now pages its scripted agent's replies like the agent does
+(`paginate_backward`), and `measure-lean-history.py --phone-page N` measures the
+real page through the shipping trim and budget.
+
 Nothing in this trim adds, removes or reorders an entry or a block — entries keep
 their identity and count — so a page's `nextOffset`/`hasMore`/flush-cursor
 arithmetic and the client's gap-fill are unaffected. It is applied **before** the
-page byte budget rather than after: the budget sheds whole oldest exchanges to fit
-a reply, so measuring the trimmed page is what lets it hold more of them per
-round trip.
+page byte budget rather than after, so that a page which *exceeds* the budget
+spends it on trimmed exchanges and holds more of them per round trip; a page that
+already fits is simply smaller.
 
 **What bounds one reply (2026-09-26):** the budget is `BACKWARD_HISTORY_PAGE_BYTES`
 (512 KiB) and it exists to stay under NATS's 1 MiB payload limit with envelope
@@ -412,8 +449,12 @@ knowing before touching any of them:
   limit** (1,032,942 wire bytes) and was relayed intact — the budget bounded the
   other two samples at ~0.5 MB. A page can therefore approach the limit, and the
   trim is what keeps it away: that same page is 114,222 bytes for a lean client.
-- A lean page *does* fill the budget (511,841 of 524,288 observed), because
-  fitting more entries is the point of trimming before the budget.
+- The budget bounds a page only up to the **oldest exchange it may shed**: a
+  lean page does not fill the budget when the requested exchanges are smaller
+  than it (147,735 of 524,288 observed for a 3-exchange page, where the
+  undeclared page hit the budget and was cut to 279 of its 325 entries).
+  Filling the budget is what happens when the *whole session* is offered to the
+  budget — not what the phone's own page request does.
 - Oversize is an explicit error, never a silent drop: `encode_reply_payload`
   compares against `future_remote_crypto::MAX_PLAINTEXT` (1 MiB − header − tag,
   chosen so a sealed record is exactly ≤ 1 MiB) and answers
