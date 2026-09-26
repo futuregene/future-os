@@ -578,34 +578,46 @@ describe("SyncEngine", () => {
   test("a lane that omits indices applies across the hole instead of replaying it", async () => {
     const run = nextRunId();
     const h = new Harness(run);
-    h.engine.event("s1", agentStart(run, 0));
-    h.engine.event("s1", textChunk(run, 1, "a"));
-    await h.settle();
-    expect(h.textOf("s1")).toBe("a");
+    try {
+      h.engine.event("s1", agentStart(run, 0));
+      h.engine.event("s1", textChunk(run, 1, "a"));
+      await h.settle();
+      expect(h.textOf("s1")).toBe("a");
 
-    h.feedOmitsIndices = true;
-    const before = h.replayCalls.length;
-    // The frames at idx 2..8 were dropped by the trim (reasoning and argument
-    // deltas), so the next survivor arrives above the cursor.
-    h.engine.event("s1", textChunk(run, 9, "z"));
-    await h.settle();
+      h.feedOmitsIndices = true;
+      const before = h.replayCalls.length;
+      // The frames at idx 2..8 were dropped by the trim (reasoning and argument
+      // deltas), so the next survivor arrives above the cursor.
+      h.engine.event("s1", textChunk(run, 9, "z"));
+      await h.settle();
 
-    expect(h.textOf("s1")).toBe("az");
-    expect(h.replayCalls.length).toBe(before);
+      expect(h.textOf("s1")).toBe("az");
+      expect(h.replayCalls.length).toBe(before);
+    } finally {
+      h.engine.clear();
+    }
   });
 
   test("the same jump on a lane that trims nothing is still a gap", async () => {
     const run = nextRunId();
     const h = new Harness(run);
-    h.engine.event("s1", agentStart(run, 0));
-    h.engine.event("s1", textChunk(run, 1, "a"));
-    await h.settle();
+    try {
+      h.engine.event("s1", agentStart(run, 0));
+      h.engine.event("s1", textChunk(run, 1, "a"));
+      await h.settle();
 
-    const before = h.replayCalls.length;
-    h.engine.event("s1", textChunk(run, 9, "z"));
-    await h.settle();
+      const before = h.replayCalls.length;
+      h.engine.event("s1", textChunk(run, 9, "z"));
+      await h.settle();
 
-    expect(h.replayCalls.length).toBeGreaterThan(before);
+      expect(h.replayCalls.length).toBeGreaterThan(before);
+    } finally {
+      // `npm test` runs jest with `--runInBand`, so a lane left holding its
+      // retry timer keeps the process from exiting and hangs CI instead of
+      // failing it: a gap verdict schedules one, and this test provokes one on
+      // purpose.
+      h.engine.clear();
+    }
   });
 
   test("gap during live streaming fills the hole from the journal (M4)", async () => {
