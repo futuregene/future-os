@@ -4,7 +4,7 @@
 
 <h3 align="center">同一个 AI Agent，处处随你。</h3>
 <p align="center">
-  终端、桌面、手机、飞书与钉钉——一个 Rust 核心，一个 Agent，3800+ 模型。<br>
+  终端、桌面、手机、飞书与钉钉——一个 Rust 核心，一个 Agent。<br>
   可配置审批与 OS 沙箱。本地优先。开源。
 </p>
 
@@ -18,7 +18,7 @@
 <p align="center">
   <a href="#快速开始">快速开始</a> •
   <a href="#特性">特性</a> •
-  <a href="#配置模型">3800+ 模型</a> •
+  <a href="#配置模型">模型</a> •
   <a href="#常用斜杠命令tui">命令</a> •
   <a href="#故障排查">故障排查</a>
 </p>
@@ -43,9 +43,9 @@
 
 | 类别 | 说明 |
 |---|---|
-| **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、移动端 App（Android · iOS）、命令行 (CLI)、IM 机器人——一个 Agent，无处不在 |
+| **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、移动端 App（Android · iOS）、命令行 (CLI)、IM 机器人——一个 Agent，无处不在。桌面后端还可**无头运行在服务器上**（`futureos-headless`，无需窗口或 WebView，可跑在 SSH 会话里），手机与桌面之间的通道是**端到端加密**的——Noise 握手 + ChaCha20-Poly1305 记录，中继只看到密文（[无头模式](docs/guide/desktop-headless.zh-CN.md)、[远程](docs/wiki/zh/Remote.md)） |
 | **可配置工具安全** | read, write, edit, shell——审批规则与沙箱分级（`off` / `manual` / `sandbox`）；支持 macOS Seatbelt、Linux 系统 Bubblewrap、Windows 受限令牌写保护。各平台可用性与保护范围不同（[指南](docs/wiki/zh/Sandbox.md)） |
-| **模型灵活** | 内置 3800+ 模型，覆盖 140+ Provider（[目录](docs/wiki/zh/Models.md)）；通过 `models.json` 自定义 Provider；支持模型范围限定 |
+| **模型灵活** | **自带 API Key（BYOK）**：[内置目录](docs/wiki/zh/Models.md)覆盖主流 Provider，任何 OpenAI 或 Anthropic 兼容端点都可通过 `models.json` 接入。也可以登录 **FutureOS 托管 Provider**（`future auth login`），由平台直接配好 Key 与模型列表。两者可同时使用，并自行限定选择器里出现的模型（[配置](#配置模型)） |
 | **Loop 工程** | 持久化目标/todos/门禁/监控，支撑 24+ 小时长程任务连续执行——确定性 should-run 内核、事件溯源状态、硬校验（证据下限/验收契约/verify 闸门）、租约活性自愈、多 agent（[指南](docs/architecture/loop-control-plane.zh-CN.md)） |
 | **强大的预设技能** | 内置 15+ 技能开箱即用，覆盖日常 Agent 场景——图片读取与生成、PDF/Word 解析、网页搜索、浏览器控制、幻灯片与软件安装，以及 `/future-loop` 长程目标编排器（[builtin](https://github.com/futuregene/future-skills/tree/main/builtin)） |
 | **可分支会话** | 像仓库一样为对话开分支——fork、clone、树形导航，JSONL 存储 |
