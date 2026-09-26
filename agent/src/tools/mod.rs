@@ -3283,19 +3283,35 @@ mod tests {
         // header — which made this assertion flaky on a busy machine. A single
         // string allocation makes the amount produced independent of machine
         // load, so the test measures truncation, not CPU contention.
+        // Both platforms emit a HEAD marker first and a TAIL marker last, so the two
+        // assertions below prove WHICH END survived without depending on the payload's
+        // characters. (The previous form counted 'y' bytes, which only exist in the
+        // PowerShell payload -- the unix command produces digits, so the assertion could
+        // never hold on Linux. CI caught it; only a Windows build could not.)
         #[cfg(unix)]
-        let (command, last_line) = ("seq 1 120000; echo TAIL-MARKER", "TAIL-MARKER");
+        let command = "echo HEAD-MARKER; seq 1 120000; echo TAIL-MARKER";
         #[cfg(windows)]
-        let (command, last_line) = ("'y' * 600000 + 'TAIL-MARKER'", "TAIL-MARKER");
+        let command = "'HEAD-MARKER' + ('y' * 600000) + 'TAIL-MARKER'";
         let result = run_shell(command, 120, false, "").await.unwrap();
         assert!(result.contains("truncated"), "{result:.200}");
-        assert!(result.contains(last_line), "tail kept: {result:.200}");
-        // The head is gone: nearly the whole MAX_KEEP-sized tail survives as
-        // 'y' payload bytes, i.e. the kept slice is the END of the stream.
+        assert!(result.contains("TAIL-MARKER"), "tail kept: {result:.200}");
         assert!(
-            result.matches('y').count() >= 490_000,
-            "tail payload missing: {} y-bytes kept",
-            result.matches('y').count()
+            !result.contains("HEAD-MARKER"),
+            "the head must be dropped, but it survived: {result:.200}"
+        );
+        // Sanity bound on top of the marker evidence: the retained slice is the last
+        // MAX_KEEP (500_000) bytes, so the body must be close to that. It also has to be
+        // smaller than the full payload (600_024+ bytes on unix, 600_024 on Windows),
+        // which independently confirms the head was removed.
+        assert!(
+            result.len() >= 490_000,
+            "kept too little: {} bytes kept",
+            result.len()
+        );
+        assert!(
+            result.len() < 600_000,
+            "head not dropped: {} bytes kept",
+            result.len()
         );
     }
 
