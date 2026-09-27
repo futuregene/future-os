@@ -5,10 +5,10 @@ Reads cargo-mutants' own outcomes.json (the authoritative mutant<->log mapping: 
 `_NNN` suffix on a log file name is a RUN-ORDER dedup counter, so the mapping must
 come from the JSON, never from the file name).
 
-Usage:
-    python mutation/verify-attribution.py mutation/out-queue-full/mutants.out
-    python mutation/verify-attribution.py mutation/out-policy-stable/mutants.out --flaky a,b,c
-    python mutation/verify-attribution.py mutation/out-compat/mutants.out --missed-only
+Usage (run from this directory, where the runners write the `out-*/` trees):
+    python verify-attribution.py out-queue-full/mutants.out
+    python verify-attribution.py out-policy-stable/mutants.out --flaky a,b,c
+    python verify-attribution.py out-compat/mutants.out --missed-only
 
 Prints, per mutant: the tests that actually failed in ITS log, and flags
   * `ONLY-FLAKY`  — every failing test is on the pre-fix flake list (an unusable catch)

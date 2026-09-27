@@ -23,12 +23,13 @@ REM clock past the 75-minute cap; CARGO_BUILD_JOBS is lowered to 2 so three jobs
 REM never exceed the 6 concurrent rustc that already ran safely here.
 REM
 REM NO CARGO_TARGET_DIR (one scratch target per job). NEVER --in-place.
-cd /d D:\future-os\.worktrees\cov100
-set "TEMP=D:\cov100-mut-tmp"
-set "TMP=D:\cov100-mut-tmp"
+cd /d "%~dp0..\..\.."
+REM cargo-mutants copies the workspace (~1 GB) into %TEMP%; point TEMP/TMP at a
+REM drive with room for it if your system drive is small (the host these runs
+REM came from had a full C: drive -- see section 7.1 of the mutation report).
 set "CARGO_BUILD_JOBS=2"
 set "RUST_TEST_THREADS=4"
-echo STARTED %DATE% %TIME% > mutation\out-compat-run.log
-D:\.cargo\bin\cargo.exe mutants -p future-loop --file orchestration/loop/src/compat.rs --gitignore true --timeout 300 -j 3 -o mutation\out-compat --json --cargo-test-arg --lib --cargo-test-arg --test --cargo-test-arg compat_projection_contract >> mutation\out-compat-run.log 2>&1
-echo EXITCODE=%ERRORLEVEL% >> mutation\out-compat-run.log
-echo FINISHED %DATE% %TIME% >> mutation\out-compat-run.log
+echo STARTED %DATE% %TIME% > "%~dp0out-compat-run.log"
+cargo mutants -p future-loop --file orchestration/loop/src/compat.rs --gitignore true --timeout 300 -j 3 -o "%~dp0out-compat" --json --cargo-test-arg --lib --cargo-test-arg --test --cargo-test-arg compat_projection_contract >> "%~dp0out-compat-run.log" 2>&1
+echo EXITCODE=%ERRORLEVEL% >> "%~dp0out-compat-run.log"
+echo FINISHED %DATE% %TIME% >> "%~dp0out-compat-run.log"

@@ -6,15 +6,19 @@ mapping must come from the JSON, not from the file name) and prints, for every
 mutant, the tests that actually failed in that mutant's log plus the panic
 message that failed them.
 
-Usage:  python mutation/analyze-queue.py [mutation/out-<run>/mutants.out]
-        (default: mutation/out-queue/mutants.out)
+Usage:  python scripts/measure/mutation/analyze-queue.py [<run>/mutants.out]
+        (default: out-queue/mutants.out, next to this script)
 """
 import json
 import pathlib
 import re
 import sys
 
-OUT = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else pathlib.Path("mutation/out-queue/mutants.out")
+OUT = (
+    pathlib.Path(sys.argv[1])
+    if len(sys.argv) > 1
+    else pathlib.Path(__file__).resolve().parent / "out-queue" / "mutants.out"
+)
 
 FAILED_RE = re.compile(r"^test (\S+) \.\.\. FAILED", re.M)
 # panic payload lines look like `thread 'x' panicked at ...:\n<message>`

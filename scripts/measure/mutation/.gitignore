@@ -1,0 +1,4 @@
+# Per-run cargo-mutants trees and driver logs — written by run-*.cmd next to this
+# file, never committed (the evidence that is kept is committed on purpose).
+out-*/
+out-*-run.log

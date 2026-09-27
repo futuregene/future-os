@@ -52,7 +52,11 @@ directly comparable — only the per-file figures are.
 | | module lines | uncovered | files with gaps |
 |---|---|---|---|
 | previous run (mirror, 96.8223%) | 15387/15892 | 505 | 28 |
-| then (`coverage/tauri-tau-remote-report.json`) — **superseded post-merge, see below** | 16678/17108 = 97.4866% | 430 | 26 |
+
+> Archived (the `coverage/tauri-tau-remote-report.json` measurement, superseded
+> post-merge by the registrations below): moved to
+> [docs/archives/testing/module-tauri-remote.md](../archives/testing/module-tauri-remote.md)
+> — superseded/historical text, kept verbatim with its original dates.
 
 Per-file, for the nine files this run targeted (JSON summary; the LCOV figure in
 brackets):
@@ -93,7 +97,7 @@ the repo-relative path, so the gate can match it.
 | file | uncovered | category | reason |
 |---|---|---|---|
 | `desktop/src-tauri/src/remote/supervisor/start.rs` | 175 | unreachable-in-this-environment | 164 of these are the `#[cfg(not(test))]` bodies of `spawn_start_retry`, `spawn_runtime_reconnect`, `GenerationWatch::run`, `spawn_runtime_supervisor`, `spawn_web_reconnect` and `require_tls`. The test binary compiles the `#[cfg(test)] return;` arm beside each one, so **no test can execute the other arm** — it is absent from the instrumented binary. Reaching them needs a *new failure-injection seam* (a transport that refuses readiness, a broker that drops mid-handshake) or a real host; both are design changes this task was explicitly told not to make. The residual 11 are `start_generation`'s early returns, unchanged from the previous run. |
-| `desktop/src-tauri/src/remote_host/sync_measurement.rs` | 68 | unreachable-in-this-environment | 40 are the `#[ignore]`d `serve_real_snapshot` harness, which needs an isolated Agent, a DB snapshot, a browser-driven client and its 120 s timeout arm (`scripts/measure-sync-browser.py`). The ~28 in `handle()` are socket-teardown arms: a peer that disconnects mid-response, a truncated body, a missing `origin`. |
+| `desktop/src-tauri/src/remote_host/sync_measurement.rs` | 68 | unreachable-in-this-environment | 40 are the `#[ignore]`d `serve_real_snapshot` harness, which needs an isolated Agent, a DB snapshot, a browser-driven client and its 120 s timeout arm (`scripts/measure/measure-sync-browser.py`). The ~28 in `handle()` are socket-teardown arms: a peer that disconnects mid-response, a truncated body, a missing `origin`. |
 | `desktop/src-tauri/src/remote/transport.rs` | 35 | unreachable-in-this-environment | The credential-refresh failure paths: a refreshed credential the broker *rejects* (needs `FakeNats` to refuse `CONNECT`), the `CREDENTIAL_EPISODE` connect failure, and a generation/readiness mismatch that needs `stop()` to land between two awaits of the refresh. The `require_tls(true)` line is `#[cfg(not(test))]`. |
 | `desktop/src-tauri/src/future_login.rs` | 25 | unreachable-in-this-environment | The auth-state error arms and the retryable-poll transport error need the platform to **drop the connection mid-poll**, and 477 needs an `error` with no `source()` chain. The scripted `MockPlatform` answers every request it accepts; it cannot abort one halfway. |
 | `desktop/src-tauri/src/remote/supervisor/shutdown.rs` | 20 | unreachable-in-this-environment | The mobile-notice arms need a live pair-scoped publish at the exact instant of `unpair`/`stop`, plus a `start_once` scripted to fail so `handle_system_resume` takes its retryable and `Err` arms. The `serde_json::to_vec(Value)` `.ok()?` arms underneath them are additionally `unreachable-by-construction`. |

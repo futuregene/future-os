@@ -75,6 +75,13 @@ Coverage, profiling and performance measurement tooling.
 - `measure-sync-snapshot.ts` — A/B entry: legacy raw replay vs snapshot bootstrap.
 - `measure-sync-warm.ts` — historical trace playback entry for warm-sync measurements.
 
+### `mutation/`
+
+Mutation-testing evidence for the coverage campaign (see `mutation/README.md`):
+`cargo-mutants` runner `.cmd` scripts, the analysis helpers that turn a run's raw
+output into the attributed evidence files kept beside them, the `summary.json`
+roll-up, and `policy-defaults-finding.md` (the one prose finding).
+
 ## docs/
 
 Scripts that generate or verify the documentation itself.

@@ -210,7 +210,7 @@ rather than left silent.
   (the integration matrix already has `probe_host_with_command`; an equivalent
   seam for token/ACL creation would move most of
   `windows/{token,acl,audit,process}.rs` out of waiver).
-* `scripts/test-windows-sandbox.ps1` is the repo's designated runner for the
+* `scripts/tests/test-windows-sandbox.ps1` is the repo's designated runner for the
   release sandbox matrix — running the new tools-level restricted-runner tests
   through it (serially, no sibling `cargo-llvm-cov`) would remove hazard §6.1.
 

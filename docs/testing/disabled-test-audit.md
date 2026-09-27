@@ -136,8 +136,8 @@ would lift it.
 | `agent/src/sandbox/linux/glob_scan.rs:506` | `large_workspace_exceeds_old_node_limit_without_failing` | creates >100 000 entries; large-workspace acceptance, too slow for the default run | a dedicated acceptance/perf job, or locally with `--ignored` |
 | `channels/tests/agent_integration_test.rs:110` | `test_agent_prompt_flow` | requires a running agent | run against a live agent |
 | `channels/tests/agent_integration_test.rs:235` | `test_old_session_prompt_flow` | requires a running agent | run against a live agent |
-| `desktop/src-tauri/src/remote_host/sync_measurement.rs:584` | `serve_real_snapshot` | requires an isolated DB snapshot; driven by `scripts/measure-sync-browser.py` | a measurement run with the script |
-| `desktop/src-tauri/src/remote/publisher/coalesce.rs:891` | `measure_real_journal` | driven by `scripts/measure-live-lane.py` with a real journal | a measurement run with the script |
+| `desktop/src-tauri/src/remote_host/sync_measurement.rs:584` | `serve_real_snapshot` | requires an isolated DB snapshot; driven by `scripts/measure/measure-sync-browser.py` | a measurement run with the script |
+| `desktop/src-tauri/src/remote/publisher/coalesce.rs:891` | `measure_real_journal` | driven by `scripts/measure/measure-live-lane.py` with a real journal | a measurement run with the script |
 | `desktop/src-tauri/src/remote/publisher/coalesce.rs:1031` | `measure_real_journal_lean` | needs `SYNC_MEASURE_JOURNAL` / `SESSION` / `RUN` in the env | a measurement run with those vars |
 
 ### Why the raw marker count is 28, not 26
@@ -154,16 +154,15 @@ diff in check 2.
 
 ### The two reworded reasons (not new disabled tests)
 
-`git diff origin/main` for the two desktop files shows the reason strings moved
-with the measurement scripts, while the ignored test functions themselves are
-unchanged:
+The reason strings of two already-`#[ignore]`d tests name the measurement
+scripts, and those paths moved under `scripts/measure/` while this goal was in
+flight; the ignored test functions themselves are unchanged. The reasons as the
+tree now reads:
 
-* `desktop/src-tauri/src/remote_host/sync_measurement.rs:584`:
-  `#[ignore = "requires isolated DB snapshot; run scripts/measure/measure-sync-browser.py"]`
-  → `… run scripts/measure-sync-browser.py"]`.
-* `desktop/src-tauri/src/remote/publisher/coalesce.rs:891`:
-  `#[ignore = "driven by scripts/measure/measure-live-lane.py with a real journal"]`
-  → `… scripts/measure-live-lane.py with a real journal"]`.
+* `desktop/src-tauri/src/remote_host/sync_measurement.rs`:
+  `#[ignore = "requires isolated DB snapshot; run scripts/measure/measure-sync-browser.py"]`.
+* `desktop/src-tauri/src/remote/publisher/coalesce.rs`:
+  `#[ignore = "driven by scripts/measure/measure-live-lane.py with a real journal"]`.
 
 Both files also gained **new, non-ignored** tests on this branch (e.g.
 `the_measurement_harnesses_hold_over_a_synthetic_journal`,

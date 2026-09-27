@@ -17,21 +17,17 @@ product line was touched** to make them look covered.
 Measurement platform: **Windows 11 (x86-64, MSVC)**, the platform this task runs
 on. §5/§6 name what that hides. **The fresh measurement (this revision) used
 llvm-cov's own default target dir, `target/llvm-cov-target`, in one atomic run
-(no `--no-report`/`report` split — rule 2 below).** The older two-step recipe
-below used the private `target/cov-chan2`, never the shared `target/`:
+(no `--no-report`/`report` split — rule 2 below).**
 
 ```powershell
 # this revision: one atomic green run into the gate's report (1461 lib tests)
 cargo llvm-cov -p future-channel --json --show-missing-lines --output-path coverage/channels-report.json -- --test-threads=2
-
-# the older two-step recipe (private target dir), kept for reference
-$env:CARGO_TARGET_DIR='target/cov-chan2'
-cargo llvm-cov -p future-channel --no-report --no-fail-fast -- --test-threads=2  # 1451 lib tests, 6 binary tests
-cargo llvm-cov report --json --output-path coverage/channels-report.json
-python .future/cov100/verify.py crate future-channels 99.99 coverage/channels-report.json
-python .future/cov100/verify.py uncovered future-channels coverage/channels-report.json
-python .future/cov100/verify.py windows-red-baseline future-channel
 ```
+
+> Archived (the older two-step recipe with the private `target/cov-chan2` dir,
+> kept for reference): moved to
+> [docs/archives/testing/module-channels.md](../archives/testing/module-channels.md)
+> — superseded/historical text, kept verbatim with its original dates.
 
 | | value |
 |---|---|
@@ -48,7 +44,7 @@ python .future/cov100/verify.py windows-red-baseline future-channel
 ### Two metrics, and why the doc quotes both
 
 `verify.py` gates on llvm-cov's `summary.lines` (**222** here). The repo's own
-channel tooling (`scripts/chan-missed.py`, `docs/architecture/channels-test-coverage.md`)
+channel tooling (`scripts/measure/chan-missed.py`, `docs/architecture/channels-test-coverage.md`)
 reads LCOV `DA:<line>,0` records (17 files here). The difference is *not* a
 platform difference: llvm-cov's line summary also marks a line uncovered when a
 **zero region sits on an otherwise executed line** — the `?`-error branch of a
@@ -179,7 +175,7 @@ re-runs them by exact path even though the full suite is the real evidence).
 
 ## 3b. The six flaky tests: reproduction, root cause, fix
 
-`mutation/summary.json` → `known_flaky_tests` reported that the lib suite was
+`scripts/measure/mutation/summary.json` → `known_flaky_tests` reported that the lib suite was
 **not stable**, and this mattered far more than it looks: a test that fails for
 an unrelated reason makes a mutant look *caught* when nothing observed the change
 ("6 mutants whose ONLY failures it supplied"), and — because a non-green run makes
@@ -543,7 +539,7 @@ predicate was changed to make Windows compile.
 | token | evidence |
 |---|---|
 | `windows-tests-green` | §2: all seven `WINDOWS_RED_BASELINE` channel tests re-run by exact path = 7/7 green, plus a fully green measurement run: `cargo llvm-cov -p future-channel … --test-threads=2` = **lib 1451 passed / 0 failed**, `channel_bin` 6 passed, `agent_integration_test` 2 ignored (pre-existing). **§3b** extends this from "one green run" to **five consecutive full runs plus two concurrent pairs**, all `1458 passed; 0 failed` — because a single green run is precisely what the flakes used to survive. |
-| `weak-tests-fixed` | §3: items 1–3 (two tests that could not fail for the right reason, one assertion that matched localized OS text) from the previous pass; item 4 — `card_action_edge_arms` never reached the handler it claimed to test, which is what made four card-action lines look untested; item 5 makes three load-flaky timing tests deterministic without weakening an assertion; item 6 reports the two flakes left unfixed. **§3b is this pass**: the six tests from `mutation/summary.json` → `known_flaky_tests`, with the reproduction, the panic for each, the root cause, and the fix — 5 made deterministic (fixed port → OS-assigned port ×2, guessed delay → observed attempt, 5 s → 20 s with the premise asserted directly, and a genuine race on an asynchronously-recorded prompt), and 1 (`delivery::tests::the_queue_is_bounded_…`) registered `environment-limited` with its conditions and evidence. The two tests reported there are also what made the mutation score unreliable, so fixing them is what makes §1's number quotable. |
+| `weak-tests-fixed` | §3: items 1–3 (two tests that could not fail for the right reason, one assertion that matched localized OS text) from the previous pass; item 4 — `card_action_edge_arms` never reached the handler it claimed to test, which is what made four card-action lines look untested; item 5 makes three load-flaky timing tests deterministic without weakening an assertion; item 6 reports the two flakes left unfixed. **§3b is this pass**: the six tests from `scripts/measure/mutation/summary.json` → `known_flaky_tests`, with the reproduction, the panic for each, the root cause, and the fix — 5 made deterministic (fixed port → OS-assigned port ×2, guessed delay → observed attempt, 5 s → 20 s with the premise asserted directly, and a genuine race on an asynchronously-recorded prompt), and 1 (`delivery::tests::the_queue_is_bounded_…`) registered `environment-limited` with its conditions and evidence. The two tests reported there are also what made the mutation score unreliable, so fixing them is what makes §1's number quotable. |
 | `lines-100-or-waived` | §1 measured **99.1873% (27094/27316), 222 uncovered lines in 40 files** (the previous measurement's LCOV `DA:0` view showed real never-ran lines in only **17 files**). §5/§6 split them: **86** lines / 5 files are `platform-unmeasured` (unix-only process tests; Linux CI is the platform), the rest are `unreachable-in-this-environment` (macOS-only iMessage, webhook `accept()`/debug tails, slack/mattermost session end-of-stream arms and the uncompiled `#[cfg(not(test))]` slot, discord clean-EOF, outbox "not built" guard, the `WaitForReceived` timeout exit, the Feishu pong-send race), `unreachable-by-construction` (the mock's TLS arm, and `policy.rs` 427's defensive test arm), or `attribution-artifact` (zero regions on executed lines, including `policy.rs` 447 and `providers/cli.rs` 472). **No file is declared OPEN**: the 17 lines the previous revision listed as unwaived test debt are each now covered, or classified with the evidence in §5b, and the one file the gate still reported undocumented (`channels/src/policy.rs`, 2 lines) now carries a per-line category and reason in §6. |
 | `dimensions` | §4, with named tests per dimension (boundary, error-path, concurrency, property, platform-cfg, serialization). |
 
@@ -572,7 +568,7 @@ predicate was changed to make Windows compile.
    `environment-limited` entry in this document, and the retry would remove it.
    Do not do it as a coverage/test change — it is a production change.
 5. **Re-run the mutation measurement now that the suite is stable.** The whole
-   point of §3b: `mutation/summary.json`'s score was computed under a suite that
+   point of §3b: `scripts/measure/mutation/summary.json`'s score was computed under a suite that
    failed 17/24 times for reasons unrelated to the mutants, so 6 mutants were
    scored "caught" by nothing. Re-scoring is the check that the fix bought what
    it was meant to. **Partly done for this crate** (item `todo_50756baf3574`,
@@ -580,7 +576,7 @@ predicate was changed to make Windows compile.
    boundary tests and **9 are now caught**, the tenth being the boundary-only
    `232:54 > -> >=`; witnesses, failing assertions and the reachability argument
    are in `mutation-report.md` §5.4/§6. `policy.rs` and the three `loop` files are
-   still the mutation owner's to re-run — `mutation/summary.json` has not been
+   still the mutation owner's to re-run — `scripts/measure/mutation/summary.json` has not been
    edited by that item.
 6. **`delivery.rs` / `outbox.rs` / `status.rs` / `approval.rs` / `http.rs`** —
    permanent-vs-transient classification arms and flusher snapshot arms, 1–4

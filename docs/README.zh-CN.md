@@ -3,7 +3,8 @@
 > `docs/` 目录导航索引。链接均在本仓库内解析；面向用户的 wiki 见 [docs/wiki/](wiki/en/Home.md)（en）与
 > [docs/wiki/zh/Home.md](wiki/zh/Home.md)（zh）。
 >
-> `docs/` 下每篇文档均为双语（`name.md`=英文，`name.zh-CN.md`=中文）；
+> `docs/` 下每篇面向用户的文档均为双语（`name.md`=英文，`name.zh-CN.md`=中文）；
+> `testing/` 下的 agent 任务记录是刻意保留的仅英文例外。
 > `scripts/docs/check-docs.py` 强制校验目录归属、双语配对、链接、脚本路径引用与代码围栏。
 > `archives/` 下的历史审计文档保留原始时间与 commit 边界。
 
@@ -94,6 +95,8 @@ DMG、Windows 便携 zip 与 Linux 便携 tarball。它们是**活文档**——
   沙箱/E2EE/延迟审计，以及移动端快照：[Markdown 展示审计](archives/verification/markdown-rendering-audit.zh-CN.md)、
   [浏览器同步测量](archives/verification/streaming-sync-browser-measurement.zh-CN.md)、
   [缓存重开测量](archives/verification/streaming-sync-warm-measurement.zh-CN.md) 与性能/问题报告、去身份测量 JSON
+- [testing/](archives/testing/) — 被取代的覆盖率战役任务记录快照，整体移出
+  `testing/`；同属非用户文档仅英文例外
 
 ## 维护者文档（`maintainers/`）
 
@@ -105,6 +108,13 @@ DMG、Windows 便携 zip 与 Linux 便携 tarball。它们是**活文档**——
 预留给进行中的文档↔代码审计报告；已完成的带日期报告归档到
 `archives/verification/`（例如 2026-09-16 的
 [文档↔代码不符审计](archives/verification/doc-code-mismatches.zh-CN.md)）。
+
+## 测试任务记录（`testing/`）
+
+- [testing/](testing/README.zh-CN.md)（[en](testing/README.md)）— 逐模块覆盖率
+  战役的任务记录：运行身份、测量命令、未覆盖行、各维度证据、waiver 与未解决项。
+  面向 agent 的工作笔记，不是用户文档；按 `scripts/docs/check-docs.py` 中刻意的
+  `PAIR_EXEMPT` 例外只有英文；被取代的快照保存在 `archives/testing/`。
 
 ## 文档如何保持正确
 
@@ -127,7 +137,8 @@ DMG、Windows 便携 zip 与 Linux 便携 tarball。它们是**活文档**——
     过滤依据是问题**所属文件**，而不是报错文本。
 - `docs/` 下的每个 `.md` 都需要两种语言（新增的 `docs/` 子目录自动继承该要求；
   `docs/wiki/` 按 `en/`+`zh/` 配对，`docs/dist/` 按 `-en` 后缀配对）。
-  唯一的例外是 `BILINGUAL_PENDING` 债务清单，它必须为空。`docs/` 之外的
+  `docs/testing/` 与 `docs/archives/testing/` 作为非用户文档（覆盖率战役的
+  agent 任务记录）被豁免；`BILINGUAL_PENDING` 债务清单必须为空。`docs/` 之外的
   Markdown 只允许 `WHITELIST` 中列出的路径；`EXTRA_PAIR_SCOPED` 要求其中少数
   文件也配对（`SECURITY*`、`THIRD_PARTY_NOTICES*`、`orchestration/loop/UPSTREAM*`）。
 - `make test-docs-check` 运行该校验器自身的回归测试，含反向用例

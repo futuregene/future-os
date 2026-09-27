@@ -68,6 +68,12 @@
 - `measure-sync-snapshot.ts` — A/B 入口：传统原始回放对比快照引导。
 - `measure-sync-warm.ts` — 历史轨迹回放入口，用于热同步测量。
 
+### `mutation/`
+
+覆盖率战役的变异测试证据（详见 `mutation/README.md`）：`cargo-mutants` 的
+runner `.cmd` 脚本、把原始输出整理成旁证文件的几个分析脚本、`summary.json`
+汇总，以及唯一的散文式结论 `policy-defaults-finding.md`。
+
 ## docs/
 
 生成或校验文档本身的脚本。

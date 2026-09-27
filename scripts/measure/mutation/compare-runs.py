@@ -1,6 +1,6 @@
 """Compare a primary cargo-mutants sample with its survivor re-check.
 
-Usage: python mutation/compare-runs.py <primary/mutants.out> <recheck/mutants.out>
+Usage: python scripts/measure/mutation/compare-runs.py <primary/mutants.out> <recheck/mutants.out>
 
 Prints the mutants whose primary verdict was MISSED and whose re-check verdict is
 CAUGHT (witness-set artifacts), the ones still MISSED under the wider witness set,

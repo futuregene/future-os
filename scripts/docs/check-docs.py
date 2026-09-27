@@ -20,7 +20,10 @@ Rules
    - docs/dist/: each readme needs its -en counterpart and vice versa.
    The rule is "all of docs/" rather than a list of known directories, so a
    newly added docs/ subdirectory inherits the bilingual requirement instead
-   of silently escaping it.
+   of silently escaping it. docs/testing/ and docs/archives/testing/ are the
+   deliberate exceptions (PAIR_EXEMPT): they hold the coverage campaign's
+   agent-facing task records (and the superseded snapshots moved out of them),
+   not user documentation, so they are not required to be bilingual.
    Files whose pair is still being written are listed in BILINGUAL_PENDING.
    That list is temporary debt: an entry is a warning in a normal run and a
    failure under --strict-pending, which additionally requires the list to be
@@ -109,6 +112,14 @@ WHITELIST = {
     "scripts/compaction_experiment/README.md",
     "scripts/compaction_experiment/CLOSED_BOOK_PROTOCOL.md",
     "scripts/compaction_experiment/OPEN_BOOK_PROTOCOL.md",
+    # Mutation-testing evidence companion doc for scripts/measure/mutation/:
+    # it annotates the runner's baseline logs, so it travels with them. It is
+    # an agent-run record like docs/testing/, so no bilingual pair is required.
+    "scripts/measure/mutation/policy-defaults-finding.md",
+    # Mutation-testing runner directory guide; it sits beside the scripts it
+    # describes (same pattern as scripts/README.md).
+    "scripts/measure/mutation/README.md",
+    "scripts/measure/mutation/README.zh-CN.md",
     # Directory layout guides; they sit beside the scripts they describe.
     "scripts/README.md",
     "scripts/README.zh-CN.md",
@@ -125,11 +136,21 @@ EXTRA_PAIR_SCOPED = {
     "THIRD_PARTY_NOTICES.md",
     # Bilingual layout guide; the English side registers the pair rule for both.
     "scripts/README.md",
+    # Bilingual mutation-runner guide; same arrangement as scripts/README.md.
+    "scripts/measure/mutation/README.md",
 }
 
 # docs/ subtrees that enforce bilingual coverage by a different rule and are
 # therefore excluded from the name.md <-> name.zh-CN.md check.
 PAIR_BY_OTHER_RULE = ("docs/wiki/", "docs/dist/")
+
+# docs/testing/ holds the coverage campaign's task records (waiver ledgers,
+# dimension evidence, gate commands, run identities) and docs/archives/testing/
+# holds the superseded snapshots moved out of it. They are agent-facing working
+# notes, not user documentation, so the name.md <-> name.zh-CN.md rule does not
+# apply there. The exemption is a narrow prefix match on these directories:
+# placement, link, fence and scripts-path checks still apply inside them.
+PAIR_EXEMPT = ("docs/testing/", "docs/archives/testing/")
 
 # Docs whose missing language pair is scheduled for the bilingualization PR.
 # Each entry is the path of the existing file (relative to the repo root,
@@ -256,9 +277,13 @@ def in_pair_scope(relative):
 
     Deliberately "all of docs/" rather than an allowlist of directories: a new
     docs/ subdirectory must inherit the requirement. An allowlist let
-    docs/verification/ escape the check entirely.
+    docs/verification/ escape the check entirely. docs/testing/ and
+    docs/archives/testing/ are the exceptions (PAIR_EXEMPT): they hold agent
+    task records, not user docs.
     """
     if not relative.endswith(".md"):
+        return False
+    if relative.startswith(PAIR_EXEMPT):
         return False
     if relative in EXTRA_PAIR_SCOPED or md_pair(relative) in EXTRA_PAIR_SCOPED:
         return True
