@@ -197,6 +197,67 @@ describe("useSendMessage", () => {
     expect(sendingRef().current).toBe(true);
   });
 
+  it("releases a caller waiting on delivery when the send is abandoned", async () => {
+    // regression: a send whose invoke response never arrives (a suspended
+    // webview) leaves the pipeline pending forever. Abandoning it on the
+    // watchdog's evidence that the run already settled must also settle the
+    // promise the composer is waiting on, or the composer stays locked on it.
+    const release = heldPipeline();
+    const { harness, sendingRef, send } = setup();
+    let settled = false;
+    const pending = send(() => {}).then(() => {
+      settled = true;
+    });
+    expect(settled).toBe(false);
+
+    act(() => harness.current.abandonSend());
+    await pending;
+
+    expect(settled).toBe(true);
+    // Released as delivered, not refused: the abandoned run is settled, so a
+    // rejection would put the submitted draft back and duplicate the message
+    // the thread is already showing.
+    expect(sendingRef().current).toBe(false);
+    release();
+    harness.unmount();
+  });
+
+  it("says nothing when an abandoned send's pipeline fails later", async () => {
+    // error-path: the pipeline keeps running after the abandon and can still
+    // fail. Nobody is left waiting on it, so its failure must not surface as a
+    // toast for a send the caller already considers delivered.
+    let fail: (error: Error) => void = () => {};
+    pipeline.mockImplementation(() => new Promise<void>((_resolve, reject) => {
+      fail = reject;
+    }));
+    const { harness, send } = setup();
+    const { toasts, off } = collectToasts();
+    const pending = send(() => {});
+
+    act(() => harness.current.abandonSend());
+    await pending;
+    fail(new Error("stream closed"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(toasts).toEqual([]);
+    off();
+    harness.unmount();
+  });
+
+  it("abandoning with no send in flight is a no-op", async () => {
+    // boundary: the writer-ownership effect abandons on every thread switch,
+    // whether or not a send was running. There is no delivery to release then.
+    const { harness, sendingRef } = setup();
+
+    act(() => harness.current.abandonSend());
+
+    expect(sendingRef().current).toBe(false);
+    expect(harness.current.localSendRef.current).toBeNull();
+    harness.unmount();
+  });
+
   it("abandonSend invalidates the in-flight send and frees the lock", async () => {
     const release = heldPipeline();
     const { harness, calls, sendingRef, send } = setup();
