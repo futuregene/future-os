@@ -56,6 +56,8 @@ const mockRemote = {
   retryTimeline: jest.fn(),
   listSessionFiles: jest.fn(async () => null),
   desktopOnline: true,
+  // The model's own generation state, separate from the lane's sync status.
+  streaming: false,
   timelineSyncStatus: "idle" as TimelineSyncStatus,
   connectionPresentation: { level: "connected" },
 };
@@ -178,6 +180,7 @@ beforeEach(() => {
   mockFileDownload.fileAction = null;
   mockRemote.canLoadOlderTimeline = true;
   mockRemote.desktopOnline = true;
+  mockRemote.streaming = false;
   mockRemote.timelineSyncStatus = "idle";
   mockRemote.timelineError = null;
   mockRemote.retryTimeline = jest.fn();
@@ -454,6 +457,45 @@ test("the pull's spinner is the only report of the wait it restarts", () => {
     node => node.props.accessibilityLiveRegion === "polite",
   );
   expect(waiting.findAllByType(ActivityIndicator)).toHaveLength(0);
+});
+
+test("live output is the only report of the wait behind it", () => {
+  // A reconcile behind a streaming run is routine engine traffic — every gap is
+  // healed from the journal while the run streams — and the transcript already
+  // grows with the run's own row. Announcing it again above the text is the
+  // state the reader cannot act on.
+  const notice = (key: string) =>
+    tree.root.findAll(node => node.props.children === key).length > 0;
+  mockRemote.timelineSyncStatus = "syncing";
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(notice("chat.syncingLatest")).toBe(true);
+
+  mockRemote.streaming = true;
+  act(() => tree.update(createElement(ChatScreen)));
+  act(() => jest.advanceTimersByTime(2000));
+  expect(notice("chat.syncingLatest")).toBe(false);
+
+  // The two richer states stay: a failing lane or a connection the lane cannot
+  // use is not visible in the streaming text.
+  mockRemote.timelineSyncStatus = "retrying";
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(notice("chat.syncRetrying")).toBe(true);
+  mockRemote.desktopOnline = false;
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(notice("chat.syncWaitingNetwork")).toBe(true);
+  mockRemote.desktopOnline = true;
+
+  // Back to a plain reconcile while the run still streams: quiet again.
+  mockRemote.timelineSyncStatus = "syncing";
+  act(() => tree.update(createElement(ChatScreen)));
+  act(() => jest.advanceTimersByTime(2000));
+  expect(notice("chat.syncingLatest")).toBe(false);
+
+  // Generation over, the lane still catching up: the pill is back, because
+  // nothing on screen says the transcript is still catching up.
+  mockRemote.streaming = false;
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(notice("chat.syncingLatest")).toBe(true);
 });
 
 test("text selection cannot trigger Android focus-driven transcript scrolling", () => {
