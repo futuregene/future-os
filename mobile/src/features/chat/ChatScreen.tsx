@@ -282,11 +282,21 @@ export function ChatScreen() {
   // say the same sentence twice. The pull wins that overlap: the finger is still
   // there. The two richer states stay, because the spinner cannot say them.
   const pullOwnsTheWait = pullRefreshActive && syncNoticeState === "syncing";
+  // Live generation reports its own progress: the transcript grows with the
+  // run's streaming row while the lane backfills. A reconcile behind live
+  // output is routine traffic — the engine heals every gap from the journal
+  // while the run streams — so the pill would announce a wait the reader is
+  // already watching, for a state that needs no action. The two richer states
+  // stay for the same reason as under a pull: the streaming text cannot say
+  // "retrying" or "waiting for the connection".
+  const liveOutputOwnsTheWait =
+    controls.streaming && syncNoticeState === "syncing";
   const showSyncNotice = useMinimumVisible(
     !remote.draft &&
       timelineItems.length > 0 &&
       syncNoticeState !== null &&
-      !pullOwnsTheWait,
+      !pullOwnsTheWait &&
+      !liveOutputOwnsTheWait,
     SYNC_NOTICE_MIN_MS,
     conversationKey,
   );

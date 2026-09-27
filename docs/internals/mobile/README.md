@@ -242,7 +242,11 @@ increments.
 - Reopening a session shows "Syncing latest content…" even with cached
   messages, until status, history, and event backfill complete; failure retry
   or waiting for reconnection keeps the corresponding hint. This state is
-  separate from "model generating".
+  separate from "model generating". While a run is generating, the plain
+  "syncing" hint stays down: the transcript's own streaming row is the progress
+  report, and a lane backfilling behind live output is routine traffic with
+  nothing for the reader to act on — the retry and waiting-for-connection
+  states still show, because streaming text cannot say them.
 - The hint floats above the timeline, is not inserted as a list row, and does
   not change scroll position when appearing/disappearing.
 - Streaming text reveals only new suffixes in batches, about a 192ms window per
