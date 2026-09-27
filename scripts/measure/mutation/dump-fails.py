@@ -1,6 +1,6 @@
 """Dump the failing-test list for selected mutants of a cargo-mutants run.
 
-Usage: python mutation/dump-fails.py <mutants.out> <substring> [<substring> ...]
+Usage: python scripts/measure/mutation/dump-fails.py <mutants.out> <substring> [<substring> ...]
 
 Prints one block per matching mutant: verdict, name, then every test that
 actually failed in that mutant's own log (from outcomes.json's log_path map).

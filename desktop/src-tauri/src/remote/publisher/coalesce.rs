@@ -1174,7 +1174,7 @@ mod tests {
     /// real recorded journal. That left the accounting the measurement trusts
     /// unreachable from `cargo test`, which is exactly the code a wrong number
     /// would come from. Drive both over a synthetic journal of the shape
-    /// `scripts/measure-live-lane.py` writes, so their invariants are checked on
+    /// `scripts/measure/measure-live-lane.py` writes, so their invariants are checked on
     /// every run: every source event is accounted for exactly once, no character
     /// is lost or duplicated, the newest index still reaches the lane, and the
     /// coalesced lane is smaller than today's. The journal deliberately mixes a

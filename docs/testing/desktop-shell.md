@@ -998,9 +998,7 @@ Remaining outside this task's control:
 2. `verify.py weak` needs the repo-level `docs/testing/weak-test-audit.md`, which
    is outside the write set.
 
-Item 3 of the previous revision — *"`main.tsx`'s single line needs a sibling
-`desktop/src/main.test.tsx`"* — **no longer applies**: it is covered by
-`desktop/src/app/main.test.tsx`, which sits inside the write set. See §4.
+> Archived (previous revision's closed item 3 (`main.tsx` test sibling)): moved to [docs/archives/testing/desktop-shell.md](../archives/testing/desktop-shell.md) — superseded/historical text, kept verbatim with its original dates.
 
 ## 5. Document self-audit — every claim in this file checked against the artefacts
 

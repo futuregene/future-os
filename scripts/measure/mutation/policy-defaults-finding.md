@@ -1,17 +1,21 @@
 # policy.rs default-value mutants — raw evidence
 
 Companion to the `channels/src/policy.rs` section of
-`docs/testing/mutation-report.md` (item `todo_8dcc25abfda1`, agent `w-chan3`).
-Kept under `mutation/` because that file is shared and may be rewritten by the
-mutation job. Everything below is either extracted verbatim from the artifacts or
-measured on this checkout; commands are given so it can be re-derived.
+`mutation-report.md` (item `todo_8dcc25abfda1`, agent `w-chan3`) — that section is
+now archived verbatim at `docs/archives/testing/mutation-report.md`, because the
+live report keeps only the current waiver set.
+Kept under `scripts/measure/mutation/` because that file is shared and may be
+rewritten by the mutation job. Everything below is either extracted verbatim from
+the artifacts or measured on this checkout; commands are given so it can be
+re-derived.
 
-Artifacts analysed (both gitignored):
+Artifacts analysed (paths relative to this file; both per-run outputs, not
+committed):
 
 | run | dir | mutants | recorded | completed? |
 |---|---|---|---|---|
-| `out-policy` | `mutation/out-policy/mutants.out` | 12 diffs, 8 outcomes | 6 caught / 2 missed / 0 unviable | **no** — `outcomes.json` has `"end_time": null`, `"success": 0` |
-| `timing-probe` | `mutation/timing-probe/mutants.out` | 1 | 0 caught / 1 missed | yes (baseline clean, `1451 passed; 0 failed`) |
+| `out-policy` | `out-policy/mutants.out` | 12 diffs, 8 outcomes | 6 caught / 2 missed / 0 unviable | **no** — `outcomes.json` has `"end_time": null`, `"success": 0` |
+| `timing-probe` | `timing-probe/mutants.out` | 1 | 0 caught / 1 missed | yes (baseline clean, `1451 passed; 0 failed`) |
 
 ## 1. Outcomes, and what each mutant's own log says
 
@@ -19,7 +23,7 @@ Extracted with:
 
 ```python
 import re, glob, os
-for p in sorted(glob.glob('mutation/out-policy/mutants.out/log/*.log')):
+for p in sorted(glob.glob('out-policy/mutants.out/log/*.log')):  # run from this directory
     t = open(p, encoding='utf-8', errors='replace').read()
     print(os.path.basename(p),
           sorted(set(re.findall(r'(\S+) \.\.\. FAILED', t))),
@@ -104,7 +108,7 @@ CARGO_TARGET_DIR=target/cov-w-chan3 cargo test -p future-channel --lib -j 3 -- p
 |---|---|---|
 | baseline | none | 19 passed, 0 failed |
 | gap proof | dm→`"xyzzy"`, group→`String::new()`, require_mention→`false` | **19 passed, 0 failed** — all three unpinned |
-| after fix | same three | 6 failed (the new tests; per-test panic messages in the report's §4) |
+| after fix | same three | 6 failed (the new tests; per-test panic messages in the archived report's `channels/src/policy.rs` §4 at `docs/archives/testing/mutation-report.md`) |
 | behavioural | dm→`"open"` only | `an_unconfigured_engine_refuses_a_stranger_in_dm` failed: `got Allowed` |
 | arm probe | delete `"open"` arm only | `dm_open_allows_anyone` failed (`policy.rs:207`) |
 | restored | none | full `--lib`: **1458 passed, 0 failed**; `git diff` = one insertion-only hunk in `mod tests` |
@@ -114,7 +118,7 @@ CARGO_TARGET_DIR=target/cov-w-chan3 cargo test -p future-channel --lib -j 3 -- p
 * `out-policy` for `channels/src/policy.rs` must **not** be read as 6/8 = 75 %.
   The 6 "caught" verdicts come from a port collision and two of them contradict
   their own logs; the honest count is **0/8 genuinely caught** before the fix.
-* `mutation/summary.json` was deliberately **not** written by this item. Whoever
+* `scripts/measure/mutation/summary.json` was deliberately **not** written by this item. Whoever
   produces it must re-run on the post-fix commit (the recorded verdicts predate
   it) and must neutralise the flaky Telegram-webhook / ws-timing tests first —
   otherwise the score measures `WSAEADDRINUSE`, not the tests.

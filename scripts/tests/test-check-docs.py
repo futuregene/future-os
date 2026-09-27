@@ -48,6 +48,9 @@ WHITELISTED_FILES = [
     "scripts/compaction_experiment/README.md",
     "scripts/compaction_experiment/CLOSED_BOOK_PROTOCOL.md",
     "scripts/compaction_experiment/OPEN_BOOK_PROTOCOL.md",
+    "scripts/measure/mutation/policy-defaults-finding.md",
+    "scripts/measure/mutation/README.md",
+    "scripts/measure/mutation/README.zh-CN.md",
     "scripts/README.md",
     "scripts/README.zh-CN.md",
     "docs/README.md",
@@ -208,6 +211,53 @@ class PairScopeTests(unittest.TestCase):
         result = run(root)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("docs/verification/report.md", result.stderr)
+
+
+class TestingDocsPairExemptionTests(unittest.TestCase):
+    """docs/testing/ and docs/archives/testing/ hold agent task records: no
+    bilingual pair is required there, and no other check is relaxed."""
+
+    def test_english_record_alone_is_accepted(self):
+        result = run(build_tree({"docs/testing/foo.md": "# foo\n"}))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_english_archive_record_alone_is_accepted(self):
+        result = run(build_tree({"docs/archives/testing/foo.md": "# foo\n"}))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_pair_that_does_exist_is_also_accepted(self):
+        result = run(build_tree({
+            "docs/testing/foo.md": "# foo\n",
+            "docs/testing/foo.zh-CN.md": "# foo\n",
+        }))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_the_exemption_does_not_leak_to_another_subdirectory(self):
+        result = run(build_tree({"docs/guide/bar.md": "# bar\n"}))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("bilingual pair missing", result.stderr)
+
+    def test_the_archive_exemption_does_not_leak_to_a_sibling(self):
+        """docs/archives/testing/ is exempt; docs/archives/verification/ is not."""
+        result = run(build_tree({"docs/archives/verification/foo.md": "# foo\n"}))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("bilingual pair missing", result.stderr)
+
+    def test_scripts_path_rule_still_applies_inside_docs_testing(self):
+        result = run(build_tree({
+            "docs/testing/x.md": "# x\n\nrun `scripts/gone/tool.py`.\n",
+        }))
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("missing scripts path scripts/gone/tool.py", result.stderr)
+
+    def test_prefix_is_a_directory_not_a_stem(self):
+        self.assertFalse(checker.in_pair_scope("docs/testing/foo.md"))
+        self.assertFalse(checker.in_pair_scope("docs/testing/foo.zh-CN.md"))
+        self.assertFalse(checker.in_pair_scope("docs/archives/testing/foo.md"))
+        self.assertTrue(checker.in_pair_scope("docs/archives/testing-notes/foo.md"))
+        self.assertTrue(checker.in_pair_scope("docs/archives/testing.md"))
+        self.assertTrue(checker.in_pair_scope("docs/testing-notes/foo.md"))
+        self.assertTrue(checker.in_pair_scope("docs/testing.md"))
 
 
 class ScriptsPathTests(unittest.TestCase):

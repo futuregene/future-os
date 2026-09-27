@@ -4,10 +4,12 @@
 > the user-facing wiki lives under [docs/wiki/](wiki/en/Home.md) (en) and
 > [docs/wiki/zh/Home.md](wiki/zh/Home.md) (zh).
 >
-> Every document under `docs/` ships in two languages (`name.md` = en,
-> `name.zh-CN.md` = zh); `scripts/docs/check-docs.py` enforces directory placement,
-> bilingual pairing, links, script-path references and fences. Historical
-> archives under `archives/` keep their original dates and commit boundaries.
+> Every user-facing document under `docs/` ships in two languages (`name.md` = en,
+> `name.zh-CN.md` = zh); the agent task records under `testing/` are the
+> deliberate English-only exception. `scripts/docs/check-docs.py` enforces
+> directory placement, bilingual pairing, links, script-path references and
+> fences. Historical archives under `archives/` keep their original dates and
+> commit boundaries.
 
 ## Guides (`guide/`)
 
@@ -101,6 +103,9 @@ to match today's code.
   [browser sync measurement](archives/verification/streaming-sync-browser-measurement.md),
   [cached-reopen measurement](archives/verification/streaming-sync-warm-measurement.md),
   plus performance/issue reports and the de-identified measurement JSONs
+- [testing/](archives/testing/) — superseded coverage-campaign task-record
+  snapshots, moved out of `testing/` whole and English-only under the same
+  non-user-document exception
 
 ## Maintainers (`maintainers/`)
 
@@ -113,6 +118,15 @@ to match today's code.
 Reserved for in-progress doc↔code audit reports; completed dated reports are
 archived under `archives/verification/` (e.g. the 2026-09-16
 [doc↔code mismatch audit](archives/verification/doc-code-mismatches.md)).
+
+## Testing records (`testing/`)
+
+- [testing/](testing/README.md) ([中文](testing/README.zh-CN.md)) — the
+  per-module coverage campaign's task records: run identity, measurement
+  command, uncovered lines, dimension evidence, waivers and open items.
+  Agent-facing working notes, not user documentation, and English-only under
+  the deliberate `PAIR_EXEMPT` exception in `scripts/docs/check-docs.py`;
+  superseded snapshots are kept in `archives/testing/`.
 
 ## How the docs stay correct
 
@@ -139,9 +153,11 @@ archived under `archives/verification/` (e.g. the 2026-09-16
     file they are about, not by their wording.
 - Every `.md` under `docs/` needs both languages (any new `docs/` subdirectory
   inherits this; `docs/wiki/` pairs by `en/`+`zh/` and `docs/dist/` by the `-en`
-  suffix). The only exception is the `BILINGUAL_PENDING` debt list, which must be
-  empty. Markdown outside `docs/` is allowed only for the paths in `WHITELIST`,
-  and `EXTRA_PAIR_SCOPED` requires a pair for a few of them
+  suffix). `docs/testing/` and `docs/archives/testing/` are exempt as
+  non-user documents (the coverage campaign's agent task records), and the
+  `BILINGUAL_PENDING` debt list must be empty. Markdown outside `docs/` is
+  allowed only for the paths in `WHITELIST`, and `EXTRA_PAIR_SCOPED` requires
+  a pair for a few of them
   (`SECURITY*`, `THIRD_PARTY_NOTICES*`, `orchestration/loop/UPSTREAM*`).
 - `make test-docs-check` runs the gate's own regression tests, including
   negative controls (they fail if the checker stops detecting violations).

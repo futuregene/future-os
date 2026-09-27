@@ -569,7 +569,7 @@ notice; the down side is that they must never be the only copy of anything.
 The objective asks for test *effectiveness*, not just coverage, and this is
 instrumented for Rust only in this repo (`verify.py mutation` reads a
 cargo-mutants `summary.json`; there is no TS mutation runner — no stryker/mutant
-in `package.json`, no `mutation/` directory). So I ran a mutation campaign by
+in `package.json`, and no TS-side mutation tree). So I ran a mutation campaign by
 hand against five product files **inside this write set**, one mutation at a
 time, reverting each and re-verifying by SHA-256 (all five mutated files were
 restored byte-identical; `git status` shows no product file modified).
@@ -974,9 +974,9 @@ reviewer should confirm by reading.
     a comment: a boundary assertion on repeated characters pins only one bound.
   * **Scope limit of this evidence, stated plainly:** 17 inverted assertions across
     the six dimensions is *not* a mutation score. There is **no TypeScript mutation
-    harness in this repo** — `verify.py mutation` reads `mutation/summary.json` from a
-    **cargo-mutants** job only, there is no stryker/mutant tooling in
-    `package.json`, and no `mutation/` directory exists. So the objective's
+    harness in this repo** — `verify.py mutation` reads the **cargo-mutants** roll-up at
+    `scripts/measure/mutation/summary.json` only, and there is no stryker/mutant
+    tooling in `package.json`. So the objective's
     mutation-testing axis is instrumented for Rust only, and an objective per-module
     mutation score for `desktop/` would need a TS mutation runner that does not exist
     yet and is outside this task's write set.
