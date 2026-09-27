@@ -82,9 +82,14 @@ export interface SkillRecommendationProp {
 
 interface ComposerProps {
   /**
-   * Resolve when the message is accepted, not when the assistant finishes.
-   * Rejecting preserves the submitted draft. New-conversation callers resolve
-   * once the prompt is staged in its newly created thread.
+   * Send the message. The composer hands the draft over and empties itself as
+   * soon as this returns (the caller shows the message optimistically, so the
+   * box must not keep a second copy of it). Resolve when the message is
+   * accepted, not when the assistant finishes; rejecting restores the
+   * submitted draft — unless the user typed something new in the meantime, in
+   * which case their draft wins and the rejected message stays readable in the
+   * conversation. New-conversation callers resolve once the prompt is staged
+   * in its newly created thread.
    */
   onSend: (payload: ComposerSendPayload) => void | Promise<void>;
   className?: string;
@@ -426,39 +431,61 @@ function ComposerImpl({
    * silently swallowing the send.
    */
   function sendNow() {
-    const trimmed = (editorRef.current?.getContent() ?? "").trim();
     const submittedText = editorRef.current?.getContent() ?? "";
+    const trimmed = submittedText.trim();
     const submittedDraftKey = draftKeyRef.current;
     const submittedAttachments = attachments;
-    const clearComposer = () => {
-      // The editor remains editable during delivery. A late ACK must not erase
-      // a revised draft or a different conversation's composer.
+    /**
+     * Hand the submitted draft over: the caller appends the message to the
+     * conversation the moment it is called (the optimistic bubble precedes the
+     * agent handshake), so clearing on the delivery ACK instead left the same
+     * message visible in the thread *and* sitting in the box for as long as
+     * that handshake took — session setup, the pre-run git snapshot, or a run
+     * already in flight could stretch it to seconds. The editor stays editable
+     * during delivery, so a revised draft or another conversation's composer is
+     * never touched: only what was actually submitted is dropped.
+     */
+    const dropSubmittedDraft = () => {
       if (!editorRef.current || draftKeyRef.current !== submittedDraftKey)
         return;
-      const unchanged = (editorRef.current?.getContent() ?? "") === submittedText;
-      if (unchanged) {
-        editorRef.current?.clear();
-        lastTextRef.current = "";
-      }
+      editorRef.current.clear();
+      lastTextRef.current = "";
       const remaining = attachmentsRef.current.filter(item => !submittedAttachments.includes(item));
       attachmentsRef.current = remaining;
       setAttachments(remaining);
       setAttachError(null);
-      if (unchanged && remaining.length === 0 && submittedDraftKey)
+      if (remaining.length === 0 && submittedDraftKey)
         clearComposerDraft(submittedDraftKey);
     };
+    /**
+     * Put the submitted draft back after a rejected delivery (rationale on
+     * `ComposerProps.onSend`). A draft typed in the meantime wins, and so does
+     * the conversation the user is now in; in both cases the rejected message
+     * stays recoverable from its bubble in the thread.
+     */
+    const restoreComposer = () => {
+      if (!editorRef.current || draftKeyRef.current !== submittedDraftKey)
+        return;
+      if ((editorRef.current.getContent() ?? "").trim().length > 0)
+        return;
+      editorRef.current.restore(submittedText);
+      lastTextRef.current = submittedText;
+      const restored = [...submittedAttachments, ...attachmentsRef.current];
+      attachmentsRef.current = restored;
+      setAttachments(restored);
+      if (submittedDraftKey)
+        saveComposerDraft(submittedDraftKey, { attachments: restored, text: submittedText });
+    };
+    dropSubmittedDraft();
     const result = onSend({ attachments, content: trimmed });
     if (result) {
-      // Async send: clear only on success so a failure keeps the draft
-      // (rationale on ComposerProps.onSend). The caller reports the error.
+      // Async send: the caller reports the failure, and only then does the
+      // draft come back.
       setSendPending(true);
       result
-        .then(clearComposer)
-        .catch(() => {})
+        .catch(restoreComposer)
         .finally(() => setSendPending(false));
-      return;
     }
-    clearComposer();
   }
 
   // Reset the handled flag whenever a fresh card appears, so its actions arm.
