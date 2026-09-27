@@ -263,6 +263,29 @@ describe("local send lifecycle", () => {
     await first.done;
   });
 
+  it("releases the caller waiting on a hung send when the watchdog abandons it", async () => {
+    // regression: the watchdog's evidence that the run row is terminal is what
+    // abandons a send whose invoke never answers. Abandoning it must also
+    // settle the promise its caller is waiting on - the pipeline's own await is
+    // precisely the thing that never returns here, so without this the composer
+    // stays locked on a send that already finished. `first.done` is that
+    // promise: this test hangs if the abandon leaves it pending.
+    const view = await mount();
+    const first = await begin(view);
+    latest = { ...running, status: "completed", endedAt: time + 1000 };
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    // The agent's reply is still outstanding - the send is released anyway.
+    await act(async () => {
+      await first.done;
+    });
+
+    expect(view.current.recentRun?.status).toBe("completed");
+    view.unmount();
+  });
+
   it("leaves the send alone when the watchdog's run read fails", async () => {
     // error-path: the watchdog driver reads the run row to decide whether a hung
     // send can be abandoned. If that read fails there is no evidence the run
