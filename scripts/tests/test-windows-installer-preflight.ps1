@@ -22,7 +22,17 @@ $preflight = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\desktop\src-
 $powershell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
 function Assert-Equal($Actual, $Expected, [string]$Label) {
-    if ($Actual -ne $Expected) { throw "${Label}: expected $Expected, got $Actual" }
+    if ($Actual -ne $Expected) {
+        if ($script:installerLog) {
+            Write-Host "Installer diagnostics: $script:installerLog"
+            if (Test-Path -LiteralPath $script:installerLog) {
+                Get-Content -LiteralPath $script:installerLog | ForEach-Object { Write-Host $_ }
+            } else {
+                Write-Host 'Installer did not write a diagnostic log.'
+            }
+        }
+        throw "${Label}: expected $Expected, got $Actual"
+    }
 }
 function New-Install([string]$Name) {
     $directory = Join-Path $root $Name
@@ -56,7 +66,14 @@ function Invoke-Preflight([string]$Directory, [string]$Mode = 'Check') {
 }
 function Start-Installer([string]$Directory, [string]$Flags = '/S') {
     # NSIS /D must be last and unquoted, even when it contains spaces.
-    $p = Start-Process -FilePath $installer -ArgumentList "$Flags /D=$Directory" -PassThru
+    $script:installerLog = Join-Path $root ('installer-' + [Guid]::NewGuid().ToString('N') + '.log')
+    $previousLog = $env:FUTUREOS_INSTALLER_TEST_LOG
+    $env:FUTUREOS_INSTALLER_TEST_LOG = $script:installerLog
+    try {
+        $p = Start-Process -FilePath $installer -ArgumentList "$Flags /D=$Directory" -PassThru
+    } finally {
+        $env:FUTUREOS_INSTALLER_TEST_LOG = $previousLog
+    }
     $processes.Add($p)
     return $p
 }
