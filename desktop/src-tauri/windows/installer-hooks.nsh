@@ -48,7 +48,8 @@ Function ${PREFIX}FutureOSRunPreflight
   Push $0
   Push $1
   Push $R2
-  System::Call 'kernel32::GetCurrentProcessId() i .r2'
+  ; System.dll's R2 maps to NSIS $R2; r2 would write to $2 instead.
+  System::Call 'kernel32::GetCurrentProcessId() i .R2'
   StrCpy $0 "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
   ${If} ${RunningX64}
     ; NSIS is 32-bit; native PowerShell can inspect 64-bit process paths.
