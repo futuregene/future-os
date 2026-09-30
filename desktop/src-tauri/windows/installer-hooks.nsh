@@ -59,6 +59,22 @@ Function ${PREFIX}FutureOSRunPreflight
   Pop $1
   StrCmp $1 "" +2
   DetailPrint "$1"
+!ifdef FUTUREOS_TEST_DIAGNOSTICS
+  ; The offline NSIS fixture is launched silently, so its DetailPrint output
+  ; is otherwise lost when the test only observes the installer exit code.
+  Push $R8
+  Push $R9
+  ReadEnvStr $R9 "FUTUREOS_INSTALLER_TEST_LOG"
+  StrCmp $R9 "" futureos_test_diag_done
+  FileOpen $R8 $R9 a
+  IfErrors futureos_test_diag_done
+  FileWrite $R8 "mode=$R0 exit=$R1$\r$\n"
+  FileWrite $R8 "output=$1$\r$\n"
+  FileClose $R8
+futureos_test_diag_done:
+  Pop $R9
+  Pop $R8
+!endif
   Pop $R2
   Pop $1
   Pop $0
