@@ -10,6 +10,17 @@ use super::prompt_helpers::{
 };
 use super::ServerSession;
 
+/// How many settled runs keep their raw event journal in a session.
+///
+/// A journal is a run's per-token event stream; the transcript is the durable
+/// record of what the run produced, and a client only replays a journal while
+/// it can still attach to (or reconnect to) that run. Retention runs at the
+/// start of every run, so the newest settled journals stay replayable while
+/// everything older is retired — without it a long-lived session keeps every
+/// token it ever streamed and `agent.db` grows without bound (8 GB in the
+/// field, 95% of it such deltas).
+const SETTLED_RUN_JOURNALS_KEPT: usize = 2;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScheduledPromptPayload {
     message: String,
@@ -967,6 +978,33 @@ impl ServerSession {
         let perm = run_permission_level;
         let scope_sandbox = sandbox.clone();
         let run_task = async move {
+            // Retire the event journals of this session's older settled runs —
+            // see `SETTLED_RUN_JOURNALS_KEPT`. Awaited on the blocking pool so
+            // this run cannot race its own cleanup, and never fatal: a failed
+            // prune leaves the bytes for the next run (or the startup
+            // compaction) instead of failing the run that is starting.
+            if !is_ephemeral {
+                if let Ok(store) = session_manager.storage().cloned() {
+                    let pruning = session_id.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        store.prune_settled_runs(&pruning, SETTLED_RUN_JOURNALS_KEPT)
+                    })
+                    .await
+                    {
+                        Ok(Ok(0)) => {}
+                        Ok(Ok(events)) => {
+                            tracing::debug!(events, "retired settled run event journals")
+                        }
+                        Ok(Err(error)) => {
+                            tracing::warn!(%error, "could not retire settled run event journals")
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "run journal retirement task failed")
+                        }
+                    }
+                }
+            }
+
             // Anchors for per-reply metadata written at the save site: wall-clock
             // start and the session-cumulative output-token count before this
             // prompt ran. The delta/elapsed are attributed to the final assistant
