@@ -305,6 +305,9 @@ Run Events are structured events produced during a Run.
 **GUI storage: the `run_events` table is deleted (`DROPPED_TABLES` clears it in
 old databases).** Agent SQLite still has its own `run_events` table, the event
 recovery source of truth; the GUI reads it by cursor via `get_events_since`.
+The Agent keeps only the newest settled Runs' journals — later Runs retire the
+rest (`SqliteStore::prune_settled_runs`) — so cursor replay is a recent-Run
+facility; the transcript stays the durable record.
 High-frequency deltas use 100 ms / 128 entries / 64 KiB micro-batches; semantic
 events, reads, and closes flush first. There is no GUI JSONL compatibility
 read or runtime fallback; the abnormal-exit boundary for uncommitted deltas is

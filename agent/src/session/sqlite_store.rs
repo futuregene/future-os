@@ -352,6 +352,40 @@ impl SqliteStore {
         self.reclaim_after(result.is_ok());
         result
     }
+
+    /// Retire the raw event journals of a session's settled runs, keeping the
+    /// newest `keep` of them. Returns how many event rows were deleted.
+    ///
+    /// A journal is a run's per-token event stream; the transcript has already
+    /// folded its content into entries and message blocks, and a client only
+    /// replays a journal while it can still attach to (or reconnect to) that
+    /// run. Everything older is dead weight — without this a long-lived
+    /// session keeps every token it ever streamed (the 8 GB `agent.db`).
+    ///
+    /// Never touched: the still-running run, runs with no timestamp (nothing
+    /// can order them against the rest), and any row the `runs` table does not
+    /// cover (session-scoped events live under an empty run id).
+    pub(crate) fn prune_settled_runs(&self, session: &str, keep: usize) -> Result<usize> {
+        let session = session.to_owned();
+        let keep = i64::try_from(keep).unwrap_or(i64::MAX);
+        let result = self.db.call(move |db| {
+            let tx = crate::session::database::begin_immediate(db)?;
+            let deleted = tx.execute(
+                "DELETE FROM run_events WHERE session_id=?1 AND run_id IN (
+                    SELECT run_id FROM runs
+                     WHERE session_id=?1
+                       AND status IN ('completed','failed','cancelled','interrupted')
+                       AND COALESCE(started_at_ms, completed_at_ms) IS NOT NULL
+                     ORDER BY COALESCE(started_at_ms, completed_at_ms) DESC
+                     LIMIT -1 OFFSET ?2)",
+                params![session, keep],
+            )?;
+            tx.commit()?;
+            Ok(deleted)
+        });
+        self.reclaim_after(result.is_ok());
+        result
+    }
 }
 
 fn read_entry_rows(db: &Connection, session: &str) -> Result<Vec<String>> {
@@ -832,8 +866,12 @@ mod reclamation_tests {
     }
 
     fn event(idx: i64) -> Value {
+        event_for("run", idx)
+    }
+
+    fn event_for(run: &str, idx: i64) -> Value {
         serde_json::json!({
-            "run_id": "run",
+            "run_id": run,
             "idx": idx,
             "epoch": 1,
             "timestamp": "2026-01-01T00:00:00Z",
@@ -992,6 +1030,56 @@ mod reclamation_tests {
             "pruning must shrink the file: {peak} → {after}"
         );
         assert!(free < FREELIST_RECLAIM_PAGES, "{free} pages still free");
+    }
+
+    /// Retention: a session keeps the newest settled runs' journals and retires
+    /// the rest — never the live run, the undated rows, or anything the `runs`
+    /// table does not cover.
+    #[test]
+    fn settled_run_retention_keeps_the_newest_journals() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&directory.path().join("agent.db")).unwrap();
+        store.bind_events("keeps").unwrap();
+        let runs: [(&str, &str, Option<i64>); 6] = [
+            ("run-1", "completed", Some(1_000)),
+            ("run-2", "cancelled", Some(2_000)),
+            ("run-3", "failed", Some(3_000)),
+            ("run-4", "interrupted", Some(4_000)),
+            ("run-undated", "completed", None),
+            ("run-live", "running", Some(5_000)),
+        ];
+        store
+            .db
+            .call(move |db| {
+                for (run, status, started) in runs {
+                    db.execute(
+                        "INSERT INTO runs(session_id,run_id,status,started_at_ms) VALUES ('keeps',?1,?2,?3)",
+                        params![run, status, started],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        for (run, _, _) in runs {
+            store
+                .append_events("keeps", vec![event_for(run, 0), event_for(run, 1)])
+                .unwrap();
+        }
+
+        assert_eq!(store.prune_settled_runs("keeps", 2).unwrap(), 4);
+
+        let events = |run: &str| store.events("keeps", run).unwrap().len();
+        assert_eq!(events("run-1"), 0, "the oldest settled journal is retired");
+        assert_eq!(events("run-2"), 0, "so is the one after it");
+        assert_eq!(events("run-3"), 2, "the newest two settled journals stay");
+        assert_eq!(events("run-4"), 2);
+        assert_eq!(events("run-undated"), 2, "undated runs are never retired");
+        assert_eq!(events("run-live"), 2, "the live run is never retired");
+        assert_eq!(
+            store.prune_settled_runs("keeps", 2).unwrap(),
+            0,
+            "a second pass finds nothing left to retire"
+        );
     }
 
     /// The failure from the log. `replace` reads `legacy_imports` before it

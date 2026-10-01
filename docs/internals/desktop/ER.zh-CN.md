@@ -215,6 +215,8 @@ Run Event 表示 Run 过程中的结构化事件。
 
 **GUI 存储：`run_events` 表已删除（`DROPPED_TABLES` 在旧库清除）。** Agent SQLite
 仍有自己的 `run_events` 表，为事件恢复真源；GUI 经 `get_events_since` 按游标读取。
+Agent 只保留最新若干个已结束 Run 的日志——更早的在后续 Run 启动时被回收
+（`SqliteStore::prune_settled_runs`），因此游标回放面向近期 Run；会话记录始终完整。
 高频 delta 使用 100 ms / 128 条 / 64 KiB 微批，语义事件、读取和关闭先刷盘。
 没有 GUI JSONL 兼容读取或运行时回退；未提交 delta 的异常退出边界见 §7。
 
