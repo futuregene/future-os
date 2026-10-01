@@ -252,7 +252,10 @@ impl SqliteStore {
             // propagate from the transaction below.
             let parsed = revalidate_sources(&sources).and_then(|()| parse_sources(&sources, &id));
             self.db.call(move |db| {
-                let tx = db.transaction()?;
+                // Reads the destination before it writes: take the write lock at
+                // BEGIN, or a concurrent connection's commit invalidates this
+                // snapshot and the upgrade fails instantly (SQLITE_BUSY_SNAPSHOT).
+                let tx = crate::session::database::begin_immediate(db)?;
                 let parsed = if tx.query_row("SELECT id FROM sessions WHERE id=?1", [&id], |r| r.get::<_, String>(0)).optional()?.is_some() {
                     Err(InvalidSource { file: "transcript".into(), line: 0, kind: "existing_sqlite_session" })
                 } else { parsed };
