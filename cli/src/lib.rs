@@ -41,8 +41,36 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
     let rest: &[String] = args.get(2..).unwrap_or(&[]);
 
     // if (group === "--version" || group === "-v" || group === "version")
-    if matches!(group, Some("--version" | "-v" | "version")) {
+    //
+    // `version` is both a bare form and a group with `--json`, so it must be
+    // matched before the group dispatch below.
+    if matches!(group, Some("--version" | "-v")) {
         out.log(&format!("future v{}", version::VERSION));
+        return 0;
+    }
+    if group == Some("version") {
+        let help_flag = command == Some("--help")
+            || command == Some("-h")
+            || rest.iter().any(|a| a == "--help" || a == "-h");
+        if help_flag {
+            out.log(help::VERSION_HELP);
+            return 0;
+        }
+        let json_flag = command == Some("--json") || rest.iter().any(|a| a == "--json");
+        let unknown = [command, rest.first().map(String::as_str)]
+            .into_iter()
+            .flatten()
+            .find(|arg| !matches!(*arg, "--json" | "--help" | "-h"));
+        if let Some(argument) = unknown {
+            out.log_err(&format!("Unknown argument: {argument}\n"));
+            out.log_err("Usage: future version [--json]");
+            return 1;
+        }
+        if json_flag {
+            out.log(version::build_info_json().trim_end());
+        } else {
+            out.log(&format!("future v{}", version::VERSION));
+        }
         return 0;
     }
 
@@ -314,12 +342,56 @@ mod tests {
 
     #[tokio::test]
     async fn version_flags() {
-        for flag in ["--version", "-v", "version"] {
+        for flag in ["--version", "-v"] {
             let (code, stdout, stderr) = run(&[flag]).await;
             assert_eq!(code, 0);
             assert_eq!(stdout, format!("future v{}\n", version::VERSION));
             assert_eq!(stderr, "");
         }
+        // The bare `version` form prints the same string as `--version`, so
+        // existing callers keep working.
+        let (code, stdout, stderr) = run(&["version"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, format!("future v{}\n", version::VERSION));
+        assert_eq!(stderr, "");
+    }
+
+    /// `version --json` reports the build identity a support conversation (or an
+    /// agent) needs, and the two forms agree on the version string.
+    #[tokio::test]
+    async fn version_json_reports_the_build_identity() {
+        let (code, stdout, stderr) = run(&["version", "--json"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(stderr, "");
+        let info: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(info["version"], version::VERSION);
+        assert_eq!(info["isRelease"], version::is_release(version::VERSION));
+        assert!(info["buildTarget"].is_string(), "{stdout}");
+        // Locally this is a real commit; a tarball build reports null instead.
+        if let Some(commit) = info["gitCommit"].as_str() {
+            assert_eq!(commit.len(), 40, "{stdout}");
+        }
+    }
+
+    #[tokio::test]
+    async fn version_help_and_unknown_argument() {
+        for values in [
+            vec!["version", "--help"],
+            vec!["version", "-h"],
+            vec!["version", "--json", "--help"],
+        ] {
+            let (code, stdout, stderr) = run(&values).await;
+            assert_eq!(code, 0, "{values:?}");
+            assert_eq!(stdout, format!("{}\n", help::VERSION_HELP), "{values:?}");
+            assert_eq!(stderr, "", "{values:?}");
+        }
+        let (code, stdout, stderr) = run(&["version", "bogus"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert_eq!(
+            stderr,
+            "Unknown argument: bogus\n\nUsage: future version [--json]\n"
+        );
     }
 
     #[tokio::test]

@@ -19,6 +19,7 @@ Groups:
   models    List available AI models from the agent
   session   List, inspect, update, rename, and delete agent sessions
   doctor    Environment diagnostic
+  version   Print the build identity (version, commit, target)
 
 Apps (run the FutureOS components — same as their standalone binaries):
   agent     Start the agent gRPC server (future-agent)
@@ -50,6 +51,7 @@ Run 'future <group> --help' for per-group details.
   future agent --help        Agent server options (gRPC addr, logging, profiling)
   future tui --help          TUI options (print mode, list models, etc.)
   future loop --help         Loop control plane commands
+  future version --json      Build identity: version, commit, target
   future --version           Print version and exit"#;
 
 /// `future init --help` output (index.ts).
@@ -140,6 +142,33 @@ When a change takes effect:
 
 No Agent is required; a running one is unaffected, since these settings are read
 from disk when they are used."#;
+
+/// `future version --help` output.
+pub const VERSION_HELP: &str = r#"future version — print the build identity of this CLI
+
+Usage:
+  future version [--json]
+  future --version | -v | version      Same thing, plain output
+
+Plain output is the display version (`future v0.0.2-479c8fee+local`), the same
+string `future --version` has always printed. `--json` adds the facts that
+string cannot carry:
+
+  version         Display version
+  isRelease       true when the version is a release (its first component is
+                  non-zero); `0.*` is a dev build
+  bundleVersion   Plain semver core, what installers use (they reject suffixes)
+  gitCommit       Full commit this binary was built from, or null when the build
+                  had no git checkout (tarball/vendored build)
+  gitCommitShort  Abbreviated form
+  gitDirty        Whether the tree had uncommitted changes at build time; null
+                  when gitCommit is null
+  buildTarget     Target triple the binary was compiled for
+  buildProfile    Cargo profile (`debug` or `release`)
+
+`gitCommit` is present even for release and coordinated test/nightly builds,
+whose version string carries no hash at all. Use it to check whether the binary
+you are running is the commit you are reading."#;
 
 /// `future auth` group help (index.ts, no-command / --help branch).
 pub const AUTH_GROUP_HELP: &str = r#"future auth — authenticate with the Future platform

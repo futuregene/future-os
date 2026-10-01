@@ -584,6 +584,14 @@ fn get_agent_info(data: &Value) -> Option<proto::AgentInfo> {
         version: payload.version,
         agent_instance_id: payload.agent_instance_id,
         skills_count: payload.skills_count as u64,
+        // Proto strings cannot be absent, so "not reported" is the empty string
+        // here; `git_dirty` stays a real Option so "not reported" remains
+        // distinguishable from `false`.
+        git_commit: payload.git_commit.unwrap_or_default(),
+        git_commit_short: payload.git_commit_short.unwrap_or_default(),
+        git_dirty: payload.git_dirty,
+        build_target: payload.build_target.unwrap_or_default(),
+        build_profile: payload.build_profile.unwrap_or_default(),
     })
 }
 

@@ -15,6 +15,7 @@
 | `future config get [<key>] [--json]` | 生效中的全局设置（含默认值） |
 | `future doctor` | 一次检查登录、Agent 连接、沙箱、provider、会话与技能 |
 | `future models --json` | 本 Agent 可用的模型 |
+| `future version --json` | 这是哪个构建：版本、commit、目标平台、是否有未提交改动 |
 | `future auth status` | 是否已配置平台登录（登录到哪个平台） |
 | `future account profile` / `balance` | 用户账户与剩余额度 |
 | `future skills list` | 已安装与目录中的技能 |
@@ -29,7 +30,48 @@
 脚本中使用。
 
 凭据是刻意的例外。`auth.json` 从不属于这个面：`future config get` 不含任何密钥
-材料，设置文档里也没有存放密钥的字段。
+材料，设置文档里也没有存放密钥的字段。account 这两个命令会自己去读该文件——
+Agent 既不需要读，也不应该读。
+
+## 账户是唯一的远端读取
+
+`future account profile` 与 `future account balance` 是「这里的一切都在这块磁盘上」
+的例外：它们通过网络访问 Future 平台、需要登录，因此离线会失败、未 `future auth
+login` 会失败——这是要如实报告的配置状态，而不是账户坏了。两条命令都免费（读余额
+不消耗额度），余额偏低应当转达，而不是去创建充值订单。
+
+## 这是哪个构建
+
+版本字符串往往不足以定位代码，所以 `future version --json` 会报出它承载不了的
+信息：
+
+```sh
+future version --json
+```
+
+```json
+{
+  "version": "0.0.2-2a4df8a7+local.dirty",
+  "isRelease": false,
+  "bundleVersion": "0.0.2",
+  "gitCommit": "2a4df8a738716ed63b933ad6bf488b975a4bd50b",
+  "gitCommitShort": "2a4df8a7",
+  "gitDirty": true,
+  "buildTarget": "aarch64-apple-darwin",
+  "buildProfile": "debug"
+}
+```
+
+`gitCommit` 是关键：发布 tag（`1.2.3`）与协同构建（`0.0.2-<run>+test`）的版本串里
+**完全没有 commit**，本地开发构建也只有一个缩写 hash。把 `gitCommit` 与
+`git rev-parse HEAD` 对比，才能回答「我正在运行的二进制是不是我正在读的那份代码」。
+`gitDirty`（构建时是否有未提交改动）与 `buildTarget`/`buildProfile` 是 bug 报告
+否则只能靠猜的部分。若构建时没有 git 检出，commit 相关字段为 `null` 而不是占位符，
+调用方就不会把「未记录」当成 commit 名。
+
+运行中的 Agent 通过 `get_agent_info` 报告同样的事实（`gitCommit`、`gitCommitShort`、
+`gitDirty`、`buildTarget`、`buildProfile`），这才让**进程**可以与一份检出、或与
+连接另一端的 CLI 相互比对。
 
 ## 阅读实现本身
 

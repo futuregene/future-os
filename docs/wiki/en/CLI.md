@@ -99,6 +99,25 @@ future account profile  # email, user ID, verification status, creation date
 future account balance  # credit balance (--json for machine output)
 ```
 
+Both commands are free. They are the only CLI reads that leave the machine: they
+call the Future platform over the network and need a login (`future auth login`).
+The CLI reads the stored API key itself, so no key ever needs to be passed — and
+seeing a low balance is information to report, not a reason to create a recharge
+order.
+
+### `version` — which build is this
+
+```bash
+future version            # same string as `future --version`
+future version --json     # version, commit, dirty state, target, profile
+```
+
+`--json` reports what the version string cannot: `gitCommit` (the full object
+name this binary was built from), `gitDirty`, `buildTarget` and `buildProfile`.
+Release and coordinated test/nightly builds carry **no** commit in their version
+at all, so this is the only way to check whether the binary you are running is
+the commit you are reading.
+
 ### `run` — send a one-off prompt and print the answer
 
 ```bash

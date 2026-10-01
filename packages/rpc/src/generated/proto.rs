@@ -522,6 +522,27 @@ pub struct AgentInfo {
     pub agent_instance_id: ::prost::alloc::string::String,
     #[prost(uint64, tag = "3")]
     pub skills_count: u64,
+    /// Build identity of the RUNNING agent binary. `version` alone cannot carry
+    /// it: a release tag (`1.2.3`) and a coordinated test/nightly build
+    /// (`0.0.2-<run>+test`) contain no commit at all, and a dev build only an
+    /// abbreviated hash. A client that wants to know whether this process matches
+    /// the checkout it is reading (or the CLI at the other end) needs the full
+    /// object name, so it is a separate field rather than something parsed out of
+    /// `version`. Empty when the agent was built without a git checkout.
+    #[prost(string, tag = "4")]
+    pub git_commit: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub git_commit_short: ::prost::alloc::string::String,
+    /// Uncommitted changes at build time; only meaningful when git_commit is set,
+    /// which is also the only case it is serialized for.
+    #[prost(bool, optional, tag = "6")]
+    pub git_dirty: ::core::option::Option<bool>,
+    /// Target triple and Cargo profile this binary was compiled for — what a bug
+    /// report otherwise has to guess.
+    #[prost(string, tag = "7")]
+    pub build_target: ::prost::alloc::string::String,
+    #[prost(string, tag = "8")]
+    pub build_profile: ::prost::alloc::string::String,
 }
 /// Lightweight business-RPC handshake for Desktop startup and login. Skill
 /// discovery belongs to get_agent_info / the dedicated skill commands.

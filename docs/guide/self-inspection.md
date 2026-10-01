@@ -20,6 +20,7 @@ themselves.
 | `future config get [<key>] [--json]` | The effective global settings, defaults included |
 | `future doctor` | One pass over login, agent connectivity, sandbox, providers, sessions and skills |
 | `future models --json` | Models this agent can use |
+| `future version --json` | Which build this is: version, commit, target, dirty state |
 | `future auth status` | Whether a platform login is configured (and to what) |
 | `future account profile` / `balance` | The user's account and remaining credits |
 | `future skills list` | Installed vs. catalogued skills |
@@ -36,7 +37,53 @@ in a script.
 
 Credentials are a deliberate exception. `auth.json` is never part of this
 surface: `future config get` contains no key material, and the settings document
-has no field for one.
+has no field for one. The account commands read that file themselves — the agent
+never needs to, and never should.
+
+## The account is the one remote read
+
+`future account profile` and `future account balance` are the exception to
+"everything here is on this disk". They reach the Future platform over the
+network and need a login, so they fail offline and fail before `future auth
+login` — a configuration state to report, not a broken account. Both are free
+(reading a balance never spends credits), and a low balance is information to
+pass on rather than a reason to create a recharge order.
+
+## Which build is this
+
+The version string is often not enough to identify the code, so
+`future version --json` reports the facts it cannot carry:
+
+```sh
+future version --json
+```
+
+```json
+{
+  "version": "0.0.2-2a4df8a7+local.dirty",
+  "isRelease": false,
+  "bundleVersion": "0.0.2",
+  "gitCommit": "2a4df8a738716ed63b933ad6bf488b975a4bd50b",
+  "gitCommitShort": "2a4df8a7",
+  "gitDirty": true,
+  "buildTarget": "aarch64-apple-darwin",
+  "buildProfile": "debug"
+}
+```
+
+`gitCommit` is the point: a release tag (`1.2.3`) and a coordinated
+test/nightly build (`0.0.2-<run>+test`) carry **no commit at all** in the
+version, and a local dev build only an abbreviated hash. Comparing `gitCommit`
+against `git rev-parse HEAD` is what answers "is the binary I am running the
+commit I am reading?". `gitDirty` (uncommitted changes at build time) and
+`buildTarget`/`buildProfile` are the rest of what a bug report otherwise has to
+guess. When a build had no git checkout, the commit fields are `null` rather
+than a placeholder, so a caller cannot mistake "not recorded" for a commit name.
+
+The running Agent reports the same facts through `get_agent_info`
+(`gitCommit`, `gitCommitShort`, `gitDirty`, `buildTarget`, `buildProfile`), which
+is what makes the *process* comparable to a checkout or to the CLI at the other
+end of the connection.
 
 ## Reading the implementation
 

@@ -96,6 +96,21 @@ future account profile  # 邮箱、用户 ID、验证状态、创建日期
 future account balance  # 余额(--json 输出机器可读结果)
 ```
 
+两条命令都免费。它们是 CLI 中唯一会离机的读取：通过网络访问 Future 平台，需要
+先 `future auth login`。API key 由 CLI 自己读取，无需手动传入——而余额偏低应当
+转达给用户，不是去创建充值订单的理由。
+
+### `version` —— 这是哪个构建
+
+```bash
+future version            # 与 `future --version` 输出相同
+future version --json     # 版本、commit、脏标记、目标平台、构建配置
+```
+
+`--json` 会报出版本串承载不了的信息：`gitCommit`（该二进制构建自哪个完整对象名）、
+`gitDirty`、`buildTarget`、`buildProfile`。发布版与协同构建的版本串里**完全没有**
+commit，因此这是判断「正在运行的二进制是不是我正在读的那份代码」的唯一方式。
+
 ### `run` —— 发一次性 prompt 并打印回答
 
 ```bash
