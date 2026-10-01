@@ -1760,6 +1760,38 @@ async fn prompt_with_explicit_name_and_provenance_persists_info() {
     assert_eq!(info["source_meta"]["thread"], "t-1");
 }
 
+/// Retention: each run retires the journals of the settled runs that fell out
+/// of the replay window, so a long-lived session cannot accumulate every token
+/// it ever streamed (`agent.db` grew to 8 GB doing exactly that).
+#[tokio::test(flavor = "current_thread")]
+async fn later_runs_retire_the_journals_of_settled_older_runs() {
+    let provider = ScriptedProvider::new(vec![
+        text_turn("one"),
+        text_turn("two"),
+        text_turn("three"),
+        text_turn("four"),
+    ]);
+    let fixture = run_fixture(provider, "retention");
+    let mut session = fixture.session;
+    let mut runs = Vec::new();
+    for prompt in ["1", "2", "3", "4"] {
+        runs.push(session.prompt(prompt, &[], &[], None, None).unwrap().run_id);
+        wait_for_run_end(&session).await;
+    }
+
+    let store = session.session_manager.storage().unwrap();
+    assert!(
+        store.events("s1", &runs[0]).unwrap().is_empty(),
+        "the journal that fell out of the replay window is retired"
+    );
+    for run in &runs[1..] {
+        assert!(
+            !store.events("s1", run).unwrap().is_empty(),
+            "run {run} is still replayable"
+        );
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn prompt_with_project_context_file() {
     let provider = ScriptedProvider::new(vec![
