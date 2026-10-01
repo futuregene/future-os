@@ -90,7 +90,12 @@ end of the connection.
 The commands above say *what* is configured; the source says *why* it behaves
 that way. When a behaviour is surprising, when a setting's effect is unclear, or
 before claiming a limit, the answer is usually in the implementation — and the
-repository carries its own orientation for that:
+repository carries its own orientation for that. The source lives at
+[github.com/futuregene/future-os](https://github.com/futuregene/future-os), in a
+checkout rather than in `~/.future/` (a session with no checkout should say so
+rather than answer from memory); the skills list lives in
+[futuregene/future-skills](https://github.com/futuregene/future-skills), the
+`skills/` submodule.
 
 | Where | What it gives you |
 |---|---|

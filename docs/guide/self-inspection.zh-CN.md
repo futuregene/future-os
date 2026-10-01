@@ -77,7 +77,10 @@ future version --json
 
 上面的命令回答的是「配置成什么」，源码回答的是「为什么这样表现」。当行为出乎意料、
 某个设置的效果不清楚、或准备断言某个边界时，答案通常就在实现里——而仓库自带指路
-信息：
+信息。源码在 [github.com/futuregene/future-os](https://github.com/futuregene/future-os)
+的一份检出里，而不是在 `~/.future/`（没有检出时应明说，而不是凭记忆回答）；技能
+列表在 [futuregene/future-skills](https://github.com/futuregene/future-skills)，
+即 `skills/` 子模块。
 
 | 位置 | 提供什么 |
 |---|---|
