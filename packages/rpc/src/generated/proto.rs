@@ -67,6 +67,12 @@ pub struct RpcCommand {
     /// In this mode limit counts user exchanges rather than raw journal rows.
     #[prost(int64, optional, tag = "98")]
     pub before: ::core::option::Option<i64>,
+    /// Upper bound on how many sessions `search_all_session_history` scans,
+    /// ordered by most recently updated first. Absent selects the server
+    /// default; the response reports `scannedSessions` and `truncated` so a
+    /// caller can tell that older sessions were left unsearched.
+    #[prost(int64, optional, tag = "147")]
+    pub max_sessions: ::core::option::Option<i64>,
     /// Session name (set by /name command).  Used with set_session_name, and
     /// accepted by new_session as the initial human-readable session title.
     #[prost(string, tag = "93")]

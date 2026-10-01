@@ -6,6 +6,7 @@
 
 ```sh
 future session history search --session SESSION_ID --query "ExpoSharing" --limit 5 --json
+future session history search --all --query "ExpoSharing" --sessions 50 --json
 future session history get --session SESSION_ID --entry ENTRY_ID --json
 ```
 
@@ -16,6 +17,22 @@ future session history get --session SESSION_ID --entry ENTRY_ID --json
 - 结果按最新 entry 优先，返回 `entryId`、`blockIndex`、角色、时间、run/tool 标识、简短片段和 `byteOffset`。
 - `hasMore` 表示还有匹配，可缩小关键词或增加 limit。
 - 片段按字节限制，边缘可能出现替代字符；精确原文应使用 get。
+
+## 跨会话搜索
+
+`--all` 回答的是「我们以前是否处理过这件事」，不需要先知道是哪个会话：它取代
+`--session`，跨会话检索，并给每条命中加上 `sessionId`（会话有标题时还加
+`sessionName`）。会话按最近更新优先扫描，命中再按各自时间排序。
+
+扫描范围由 `--sessions` 限制（1～500，默认 50），因此单次调用的开销不会随全部历史
+增长。响应会说明它覆盖了多少历史，而不是暗示覆盖了全部：
+
+- `scannedSessions`——实际扫描的会话数；
+- `truncated`——扫描窗口之外还有更早的会话、且未被检索时为 `true`；
+- `hasMore`——超出 `--limit` 仍有命中时为 `true`。
+
+调用方必须同时看这两个标志，才能把空结果当作「从未讨论过」；超过 500 个会话时
+`--sessions` 也无法补全视野，此时应改为收窄查询词。
 
 ## 有界读取
 

@@ -53,7 +53,7 @@ future init
 
 安装所有内置技能。在 macOS 和 Linux 上,还会把 `future`(若存在,连同 `future-agent`)链接到 `~/.future/bin/`,并提示 PATH 配置。
 
-### `config` —— 配置模型提供商
+### `config` —— 配置模型提供商，以及读写全局设置
 
 ```bash
 future config
@@ -65,6 +65,20 @@ future config
 - 自定义：依次填写提供商 ID、API 协议、Base URL、API key、模型 ID、上下文窗口等信息。API key 输入时不会回显。
 
 配置写入 `~/.future/agent/models.json` 和 `~/.future/agent/auth.json`。如果 agent 正在运行，会通过 RPC 写入并立即刷新模型列表；否则在 agent 下次启动时生效。
+
+同一组命令也用于读写 agent 的全局设置（不带子命令时仍是上面的交互流程）：
+
+```bash
+future config get                                   # 生效中的设置（含默认值）
+future config get defaultPermissionLevel            # 单个值，便于脚本使用
+future config set defaultPermissionLevel workspace  # 改一个键
+future config set compaction.reserve_tokens 8192
+```
+
+`future config get --help` 列出全部可设置的键与取值。写入前先校验：取值非法或键名未知时
+`settings.json` 保持原样。读写都不需要 agent 在运行；改动在下一个新会话
+（`defaultModel`、`defaultPermissionLevel`）或下次 agent 启动时
+（`compaction.*`、`retry.*`、`maxTurns`）生效。完整说明见[自我认知](../../guide/self-inspection.zh-CN.md)。
 
 ### `auth` —— 登录与登出
 
@@ -185,6 +199,11 @@ future session compact --help   # 请求手动压缩上下文
 future session rename <id> <name>
 future session delete <id>
 ```
+
+`future session history search --all --query "<关键词>"` 跨会话检索，因此「我们以前是否
+处理过这件事」不必先知道是哪个会话。它扫描最近更新的 `--sessions` 个会话（默认 50），
+并返回 `scannedSessions` 与 `truncated`，所以只覆盖了一部分历史时是可见的，而不是被
+悄悄当成「从未讨论过」。详见[自我认知](../../guide/self-inspection.zh-CN.md)。
 
 `set` 修改**已有**会话的这些设置（只改传了的参数，其余不动，`--parent ""` 表示解除父会话）。
 `--parent` 只记录会话谱系，不复制父会话历史（那是 `fork` 的行为），且父会话必须是已存在的会话。

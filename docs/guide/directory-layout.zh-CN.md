@@ -51,7 +51,10 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 归 `future-agent`（默认每用户本地 IPC 的 gRPC 后端）所有。其配置
 完全从本目录的文件读取——没有任何模型相关的 CLI 旗标或环境变量：
 
-- `settings.json` — agent 设置。
+- `settings.json` — agent 设置（compaction、retry、`maxTurns`、
+  `defaultPermissionLevel`、`defaultModel`）。用 `future config get` /
+  `future config set` 读写；设置在用到时才生效，因此读取不需要重启，`set` 也不会
+  动到文件里的其他键。
 - `models.json` — provider 目录，形如
   `{"providers": {"<provider>": {"apiKey": …, "baseUrl": …, "models": [{"id", "name", "contextWindow"}]}}}`。
   `future auth login` 会自动同步此文件；也可以手工编辑。

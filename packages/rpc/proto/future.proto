@@ -128,6 +128,12 @@ message RpcCommand {
   // In this mode limit counts user exchanges rather than raw journal rows.
   optional int64 before = 98;
 
+  // Upper bound on how many sessions `search_all_session_history` scans,
+  // ordered by most recently updated first. Absent selects the server
+  // default; the response reports `scannedSessions` and `truncated` so a
+  // caller can tell that older sessions were left unsearched.
+  optional int64 max_sessions = 147;
+
   // Session name (set by /name command).  Used with set_session_name, and
   // accepted by new_session as the initial human-readable session title.
   string name = 93;

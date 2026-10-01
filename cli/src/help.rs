@@ -10,7 +10,7 @@ Usage:
 
 Groups:
   init      Install built-in skills and initialize local commands
-  config    Configure a model provider interactively
+  config    Configure a model provider, and read/write global settings
   auth      Authentication & API key management
   account   Platform account info
   run       Send a prompt to the agent (one-shot, non-interactive)
@@ -62,12 +62,23 @@ Installs all built-in skills. On macOS and Linux, also links future and, when
 available, its sibling future-agent into ~/.future/bin/ and prints a PATH setup hint."#;
 
 /// `future config --help` output.
-pub const CONFIG_HELP: &str = r#"future config — configure a model provider interactively
+pub const CONFIG_HELP: &str = r#"future config — configure a model provider, or read/write global settings
 
 Usage:
-  future config
+  future config                       Interactive model-provider setup
+  future config get [<key>] [--json]  Show the effective agent settings
+  future config set <key> <value>     Change one setting
+  future config get --help            All settings keys and their defaults
 
-Provider choices:
+Subcommands:
+  get       With no key, prints the settings file path and every effective
+            setting value (defaults included). With a key, prints that value
+            alone; --json prints it typed, or the whole document.
+  set       Writes one key into ~/.future/agent/settings.json, creating the
+            file if needed. Other keys, and any key this build does not know
+            about, are left untouched.
+
+Interactive setup (no subcommand):
   FutureOS  Reuse the device-code login flow. If a token is already configured,
             asks before replacing it.
   Custom    Prompt for provider ID, API protocol, base URL, API key, model ID,
@@ -75,7 +86,60 @@ Provider choices:
             and ~/.future/agent/auth.json.
 
 API keys are read without terminal echo. If Future Agent is running, custom
-provider changes take effect immediately; otherwise they apply on its next start."#;
+provider changes take effect immediately; otherwise they apply on its next start.
+Settings reads and writes never need the Agent: settings are read from disk when
+they are used, so a `set` applies to the next new session (or the next Agent
+start, for the compaction and retry policy).
+
+Settable keys (the dotted names are the exact keys in settings.json):
+  compaction.enabled                  true|false  Auto-compaction on/off
+  compaction.reserve_tokens           integer     Context reserved for the reply
+  compaction.keep_recent_tokens       integer     Recent tokens kept verbatim
+  retry.enabled                       true|false  Automatic retry on/off
+  retry.max_retries                   integer     Retries per request
+  retry.base_delay_ms                 integer     Base backoff delay (ms)
+  retry.provider.max_retry_delay_ms   integer     Provider-level retry cap (ms)
+  maxTurns                            integer     Model+tool turns per prompt (0 = unlimited)
+  defaultPermissionLevel              all|workspace|none
+  defaultModel                        model id    Global default model ("provider/id"; "" = none)"#;
+
+/// `future config get --help` output.
+pub const CONFIG_GET_HELP: &str = r#"future config get — show the effective agent settings
+
+Usage:
+  future config get [<key>] [--json]
+
+With no key, prints the settings file path and every effective value, including
+the defaults for keys the file omits. With a key, prints that value alone, which
+makes it usable in a script. --json prints the value typed (or, with no key, the
+whole effective document as JSON).
+
+Reads ~/.future/agent/settings.json and never writes it, so it works with the
+Agent stopped. It does not read auth.json: credentials are never part of the
+settings document."#;
+
+/// `future config set --help` output.
+pub const CONFIG_SET_HELP: &str = r#"future config set — change one global agent setting
+
+Usage:
+  future config set <key> <value> [--json]
+
+Writes one key into ~/.future/agent/settings.json (created if missing) and
+prints the new value. Other keys are preserved, including keys this build does
+not know about, and the file keeps the Agent's own formatting.
+
+Run `future config get --help` for the settable keys, their accepted values and
+their defaults.
+
+Values are validated before the file is touched, and an invalid value or an
+unknown key leaves the file exactly as it was.
+
+When a change takes effect:
+  defaultModel, defaultPermissionLevel   the next new session
+  compaction.*, retry.*, maxTurns        the next Agent start
+
+No Agent is required; a running one is unaffected, since these settings are read
+from disk when they are used."#;
 
 /// `future auth` group help (index.ts, no-command / --help branch).
 pub const AUTH_GROUP_HELP: &str = r#"future auth — authenticate with the Future platform

@@ -226,6 +226,29 @@ impl RunClient {
         .await
     }
 
+    /// The same literal search across the `max_sessions` most recently updated
+    /// sessions. No session id: the Agent chooses the scan window and reports
+    /// both `scannedSessions` and `truncated`.
+    pub async fn search_all_session_history(
+        &self,
+        query: &str,
+        limit: i64,
+        max_sessions: i64,
+    ) -> Result<Value, String> {
+        self.execute_command(
+            "search_all_session_history",
+            RpcCommand {
+                message: query.to_string(),
+                limit: Some(limit),
+                max_sessions: Some(max_sessions),
+                ..Default::default()
+            },
+            None,
+            30,
+        )
+        .await
+    }
+
     /// Indexed original entry read; offset/limit are UTF-8 bytes, not display-page cursors.
     pub async fn get_session_history_entry(
         &self,

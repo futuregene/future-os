@@ -60,18 +60,41 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
         return catch(out, commands::init::init_command(out)).await;
     }
 
-    // `future config` — interactive model-provider setup.
+    // `future config` — interactive model-provider setup, plus non-interactive
+    // reads/writes of the global settings document.
     if group == Some("config") {
-        if command == Some("--help") || command == Some("-h") {
-            out.log(help::CONFIG_HELP);
-            return 0;
+        match command {
+            None => return catch(out, commands::configure::configure(out)).await,
+            Some("--help" | "-h") => {
+                out.log(help::CONFIG_HELP);
+                return 0;
+            }
+            Some(sub) => {
+                let args = rest.to_vec();
+                let help_flag = args.iter().any(|a| a == "--help" || a == "-h");
+                match sub {
+                    "get" => {
+                        if help_flag {
+                            out.log(help::CONFIG_GET_HELP);
+                            return 0;
+                        }
+                        return catch(out, async { commands::settings::get(&args, out) }).await;
+                    }
+                    "set" => {
+                        if help_flag {
+                            out.log(help::CONFIG_SET_HELP);
+                            return 0;
+                        }
+                        return catch(out, async { commands::settings::set(&args, out) }).await;
+                    }
+                    argument => {
+                        out.log_err(&format!("Unknown argument: {argument}\n"));
+                        out.log_err("Usage: future config [get [<key>] | set <key> <value>]");
+                        return 1;
+                    }
+                }
+            }
         }
-        if let Some(argument) = command {
-            out.log_err(&format!("Unknown argument: {argument}\n"));
-            out.log_err("Usage: future config");
-            return 1;
-        }
-        return catch(out, commands::configure::configure(out)).await;
     }
 
     // if (group === "auth" && (!command || command === "--help" || command === "-h"))
@@ -338,7 +361,51 @@ mod tests {
         assert_eq!(stdout, "");
         assert_eq!(
             stderr,
-            "Unknown argument: unexpected\n\nUsage: future config\n"
+            "Unknown argument: unexpected\n\nUsage: future config [get [<key>] | set <key> <value>]\n"
+        );
+    }
+
+    /// `config get` / `config set` are reachable from the dispatcher, print
+    /// their own help without touching the file, and read the Agent's settings
+    /// document from the FUTURE_HOME in effect.
+    #[tokio::test]
+    async fn config_get_and_set_dispatch() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env =
+            crate::test_env::EnvGuard::set(&[("FUTURE_HOME", dir.path().as_os_str().to_owned())]);
+
+        for (args, expected) in [
+            (vec!["config", "get", "--help"], help::CONFIG_GET_HELP),
+            (vec!["config", "set", "--help"], help::CONFIG_SET_HELP),
+        ] {
+            let (code, stdout, stderr) = run(&args).await;
+            assert_eq!(code, 0, "{args:?}");
+            assert_eq!(stdout, format!("{expected}\n"), "{args:?}");
+            assert_eq!(stderr, "", "{args:?}");
+        }
+
+        let (code, stdout, stderr) = run(&["config", "get"]).await;
+        assert_eq!(code, 0);
+        assert!(stdout.contains("defaultPermissionLevel = all"), "{stdout}");
+        assert_eq!(stderr, "");
+
+        let (code, stdout, stderr) = run(&["config", "set", "maxTurns", "9"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("maxTurns = 9"), "{stdout}");
+
+        let (code, stdout, stderr) = run(&["config", "get", "maxTurns"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, "9\n");
+        assert_eq!(stderr, "");
+
+        // A rejected write is reported as a command failure, not a traceback.
+        let (code, stdout, stderr) = run(&["config", "set", "maxTurns", "-1"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert!(
+            stderr.starts_with("maxTurns must be at least 0"),
+            "{stderr}"
         );
     }
 
