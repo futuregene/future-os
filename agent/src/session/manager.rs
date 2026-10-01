@@ -202,7 +202,10 @@ impl Manager {
         let id = id.to_owned();
         let values = Self::encoded(&[user, started])?;
         self.storage()?.db.call(move |db| {
-            let tx = db.transaction()?;
+            // Reads the existing markers before it writes: take the write lock
+            // at BEGIN, or a concurrent connection's commit invalidates this
+            // snapshot and the upgrade fails instantly (SQLITE_BUSY_SNAPSHOT).
+            let tx = crate::session::database::begin_immediate(db)?;
             let existing: Vec<SessionEntry> = super::sqlite_store::read_run_markers(&tx, &id)?
                 .into_iter()
                 .map(serde_json::from_value)
@@ -252,7 +255,10 @@ impl Manager {
     ) -> Result<()> {
         let id = id.to_owned();
         self.storage()?.db.call(move |db| {
-            let tx = db.transaction()?;
+            // Reads the current metadata before it writes: take the write lock
+            // at BEGIN, or a concurrent connection's commit invalidates this
+            // snapshot and the upgrade fails instantly (SQLITE_BUSY_SNAPSHOT).
+            let tx = crate::session::database::begin_immediate(db)?;
             let payload: String = tx.query_row("SELECT payload FROM entry_records WHERE session_id=?1 AND entry_type='session_info' ORDER BY position DESC LIMIT 1", [&id], |row| row.get(0))?;
             let entry: serde_json::Value = serde_json::from_str(&payload)?;
             let mut info = entry["content"].as_object().cloned()
@@ -306,7 +312,10 @@ impl Manager {
         let creator_id = request.creator_id.clone();
         let fingerprint_for_tx = fingerprint.clone();
         let outcome = self.storage()?.db.call(move |db| {
-            let tx = db.transaction()?;
+            // Reads the operation and the parent's entries before it writes:
+            // take the write lock at BEGIN, or a concurrent connection's commit
+            // invalidates this snapshot and the upgrade fails instantly.
+            let tx = crate::session::database::begin_immediate(db)?;
             if let Some((stored_fingerprint, child_id)) = tx
                 .query_row(
                     "SELECT request_fingerprint, child_session_id FROM fork_operations WHERE request_id=?1",
@@ -1057,6 +1066,54 @@ mod tests {
             .filter(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
             .count();
         assert_eq!(info_count, 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `update_session_info_fields` reads the current metadata and then writes,
+    /// so it must take the write lock at `BEGIN`. A deferred transaction keeps
+    /// the read snapshot it opened while a *different* connection to the same
+    /// agent.db (every live session owns one) commits; SQLite then fails the
+    /// upgrade immediately with SQLITE_BUSY_SNAPSHOT — "database is locked" —
+    /// bypassing both `busy_timeout` and the retry ladder. That is the error the
+    /// startup metadata sync records while it is only logged by its caller, and
+    /// the session then rejects every prompt with "session persistence is
+    /// unavailable: database is locked" until the agent restarts.
+    #[test]
+    fn metadata_update_survives_a_concurrent_commit_on_another_connection() {
+        let (dir, manager) = temp_manager("update-info-race");
+        let info = SessionEntry::session_info(
+            serde_json::json!({"cwd": "/a", "model": "m1", "session_name": "n1"}),
+            "m1".to_string(),
+            "low".to_string(),
+        );
+        let session = Session::snapshot(
+            "s-race".to_string(),
+            "/a".to_string(),
+            "m1".to_string(),
+            "n1".to_string(),
+            String::new(),
+            vec![
+                info,
+                SessionEntry::new_user("user", serde_json::json!("hi")),
+            ],
+        );
+        manager.save(&session).unwrap();
+
+        // Hold the write lock from a second connection and release it only after
+        // the update has read its snapshot, so a deferred read-then-write loses
+        // the upgrade while the update below waits for the lock at `BEGIN`.
+        let blocker = rusqlite::Connection::open(manager.database_path()).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            blocker.execute_batch("COMMIT").unwrap();
+        });
+        let updated = manager.update_session_info("s-race", "model", serde_json::json!("m2"));
+        release.join().unwrap();
+        updated.expect("a concurrent commit must not lose the metadata update");
+
+        let loaded = manager.load("s-race").unwrap();
+        assert_eq!(loaded.get_session_info().unwrap()["model"], "m2");
         let _ = std::fs::remove_dir_all(dir);
     }
 
