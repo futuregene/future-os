@@ -107,6 +107,60 @@ fn history_cli_reads_persisted_sessions_without_loading_a_runtime() {
 }
 
 #[test]
+fn cross_session_history_search_dispatches_without_a_session() {
+    let state = make_app_state();
+    for (session, entry, timestamp) in [
+        ("older", "e1", "2026-01-01T00:00:00Z"),
+        ("newer", "e2", "2026-01-02T00:00:00Z"),
+    ] {
+        state
+            .session_manager
+            .storage()
+            .unwrap()
+            .replace(
+                session,
+                vec![serde_json::json!({
+                    "id": entry, "type": "user", "role": "user",
+                    "timestamp": timestamp, "content": format!("needle in {session}")
+                })],
+            )
+            .unwrap();
+    }
+    // No session id at all: the command must be dispatched before session
+    // resolution, exactly like the other history reads.
+    let mut search = make_cmd("search_all_session_history");
+    search.message = "needle".into();
+    let response = parse_response(&handle_command_internal(&state, search));
+    assert_eq!(response["success"], true, "{response}");
+    let matches = response["data"]["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 2, "{response}");
+    // Newest first, and every match says which session it came from.
+    assert_eq!(matches[0]["sessionId"], "newer");
+    assert_eq!(matches[0]["entryId"], "e2");
+    assert_eq!(matches[1]["sessionId"], "older");
+    assert!(response["data"]["scannedSessions"].as_i64().unwrap() >= 2);
+    assert_eq!(response["data"]["truncated"], false);
+
+    // The scan bound is applied, and the cut is reported rather than hidden.
+    let mut bounded = make_cmd("search_all_session_history");
+    bounded.message = "needle".into();
+    bounded.max_sessions = Some(1);
+    let response = parse_response(&handle_command_internal(&state, bounded));
+    assert_eq!(response["success"], true, "{response}");
+    assert_eq!(response["data"]["scannedSessions"], 1);
+    assert_eq!(response["data"]["truncated"], true);
+
+    // Out-of-range bounds are refused before any storage work.
+    let mut too_many = make_cmd("search_all_session_history");
+    too_many.message = "needle".into();
+    too_many.max_sessions = Some(0);
+    assert_eq!(
+        parse_response(&handle_command_internal(&state, too_many))["success"],
+        false
+    );
+}
+
+#[test]
 fn delete_session_fences_admission_and_reclaims_queued_snapshots() {
     let state = make_app_state();
     let session = state.get_session("default").unwrap();

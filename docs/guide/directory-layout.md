@@ -54,7 +54,11 @@ Owned by `future-agent` (the gRPC backend, defaulting to per-user local IPC). Re
 config purely from files here — there are no model-related CLI flags or env
 vars:
 
-- `settings.json` — agent settings.
+- `settings.json` — agent settings (compaction, retry, `maxTurns`,
+  `defaultPermissionLevel`, `defaultModel`). Read and change it with
+  `future config get` / `future config set`; the Agent applies the values when it
+  uses them, so no restart is needed to read them and none of the file's other
+  keys are touched by a `set`.
 - `models.json` — provider catalog in the shape
   `{"providers": {"<provider>": {"apiKey": …, "baseUrl": …, "models": [{"id", "name", "contextWindow"}]}}}`.
   `future auth login` syncs this automatically; it can also be hand-edited.

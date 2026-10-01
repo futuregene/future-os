@@ -139,6 +139,38 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
 /// carry a `-<hash>` suffix (`+local[.dirty]` for local builds).
 pub const VERSION: &str = env!("FUTURE_VERSION");
 
+/// Build identity of this agent binary, injected by `agent/build.rs` and
+/// reported through `get_agent_info`. `VERSION` alone cannot identify the code:
+/// a release tag (`1.2.3`) and a coordinated test/nightly build
+/// (`0.0.2-<run>+test`) contain no commit at all, so a client checking whether
+/// the *running* process is the commit it is reading needs these separately.
+/// `unknown` means the build had no git checkout.
+pub const GIT_COMMIT: &str = env!("FUTURE_GIT_COMMIT");
+pub const GIT_COMMIT_SHORT: &str = env!("FUTURE_GIT_COMMIT_SHORT");
+pub const GIT_DIRTY: &str = env!("FUTURE_GIT_DIRTY");
+pub const BUILD_TARGET: &str = env!("FUTURE_BUILD_TARGET");
+pub const BUILD_PROFILE: &str = env!("FUTURE_BUILD_PROFILE");
+
+/// The build identity as JSON, ready to merge into a response object.
+///
+/// `gitCommit` is `null` rather than the literal `"unknown"` when the build had
+/// no checkout: a caller comparing it against `git rev-parse HEAD` must not read
+/// "no commit recorded" as a commit name. `gitDirty` follows the same rule —
+/// with no working tree there is nothing to be dirty, which is not the same as
+/// verified clean.
+pub fn build_identity_json() -> serde_json::Value {
+    let known =
+        |value: &str| (!value.is_empty() && value != "unknown").then(|| serde_json::json!(value));
+    let commit_present = known(GIT_COMMIT).is_some();
+    serde_json::json!({
+        "gitCommit": known(GIT_COMMIT),
+        "gitCommitShort": if commit_present { known(GIT_COMMIT_SHORT) } else { None },
+        "gitDirty": commit_present.then(|| GIT_DIRTY == "1"),
+        "buildTarget": known(BUILD_TARGET),
+        "buildProfile": known(BUILD_PROFILE),
+    })
+}
+
 /// Resolve the user home directory consistently for every Agent subsystem.
 ///
 /// `HOME`/`USERPROFILE` are honoured first so isolated home redirects

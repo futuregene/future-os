@@ -10,6 +10,7 @@ is required. No new model tools are introduced: the agent can use its existing
 
 ```sh
 future session history search --session SESSION_ID --query "ExpoSharing" --limit 5 --json
+future session history search --all --query "ExpoSharing" --sessions 50 --json
 future session history get --session SESSION_ID --entry ENTRY_ID --json
 ```
 
@@ -22,6 +23,26 @@ controls the match count, default 5, maximum 20. A match returns `entryId`,
 `blockIndex`, role, timestamp, run/tool identifiers, a bounded snippet, and
 `byteOffset`. A snippet can contain replacement characters at its byte-bounded
 edges; use `get` to obtain exact text. `hasMore` means additional matches exist.
+
+## Cross-session search
+
+`--all` answers "have we ever discussed this" without knowing which session:
+it replaces `--session`, searches across sessions and adds `sessionId` (and
+`sessionName`, when the session has a title) to every match. Sessions are scanned
+newest-first and matches are ordered by their own timestamps.
+
+The scan is bounded by `--sessions` (1..500, default 50) so the cost of one call
+does not grow with the whole history. The response therefore reports how much of
+the history it covered, instead of implying it covered all of it:
+
+- `scannedSessions` — how many sessions were searched;
+- `truncated` — `true` when sessions older than the scan window exist and were
+  not searched;
+- `hasMore` — `true` when more matches exist beyond `--limit`.
+
+A caller must read both flags before treating an empty result as "this was never
+discussed", and `--sessions` cannot fix an incomplete picture beyond 500 sessions
+— narrow the query instead.
 
 `get` uses the `(session_id, entry_id)` index. It returns the entry's text/argument
 fields as ordered `chunks` with original `blockIndex`, `toolCallId`, `toolName`,

@@ -137,6 +137,20 @@ pub struct AgentInfoPayload {
     pub version: String,
     pub agent_instance_id: String,
     pub skills_count: usize,
+    /// Build identity of the running agent binary. Optional rather than
+    /// defaulted: an agent from before these fields existed, and a build made
+    /// without a git checkout, both report nothing — which is not the same as
+    /// reporting a commit name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_commit_short: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_dirty: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_profile: Option<String>,
 }
 
 /// Process identity returned by the skill-independent readiness handshake.

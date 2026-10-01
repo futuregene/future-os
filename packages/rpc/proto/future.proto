@@ -128,6 +128,12 @@ message RpcCommand {
   // In this mode limit counts user exchanges rather than raw journal rows.
   optional int64 before = 98;
 
+  // Upper bound on how many sessions `search_all_session_history` scans,
+  // ordered by most recently updated first. Absent selects the server
+  // default; the response reports `scannedSessions` and `truncated` so a
+  // caller can tell that older sessions were left unsearched.
+  optional int64 max_sessions = 147;
+
   // Session name (set by /name command).  Used with set_session_name, and
   // accepted by new_session as the initial human-readable session title.
   string name = 93;
@@ -536,6 +542,23 @@ message AgentInfo {
   string version = 1;
   string agent_instance_id = 2;
   uint64 skills_count = 3;
+
+  // Build identity of the RUNNING agent binary. `version` alone cannot carry
+  // it: a release tag (`1.2.3`) and a coordinated test/nightly build
+  // (`0.0.2-<run>+test`) contain no commit at all, and a dev build only an
+  // abbreviated hash. A client that wants to know whether this process matches
+  // the checkout it is reading (or the CLI at the other end) needs the full
+  // object name, so it is a separate field rather than something parsed out of
+  // `version`. Empty when the agent was built without a git checkout.
+  string git_commit = 4;
+  string git_commit_short = 5;
+  // Uncommitted changes at build time; only meaningful when git_commit is set,
+  // which is also the only case it is serialized for.
+  optional bool git_dirty = 6;
+  // Target triple and Cargo profile this binary was compiled for — what a bug
+  // report otherwise has to guess.
+  string build_target = 7;
+  string build_profile = 8;
 }
 
 // Lightweight business-RPC handshake for Desktop startup and login. Skill

@@ -102,15 +102,21 @@ pub(crate) fn handle_set_default_model(state: &AppState, cmd: &RpcCommand, id: &
 pub(crate) fn get_agent_info_response(state: &AppState, id: &str) -> String {
     let skills_count =
         crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs()).len();
-    RpcResponse::ok(
-        id,
-        "get_agent_info",
-        serde_json::json!({
-            "version": crate::utils::VERSION,
-            "agentInstanceId": state.agent_instance_id,
-            "skillsCount": skills_count,
-        }),
-    )
+    let mut data = serde_json::json!({
+        "version": crate::utils::VERSION,
+        "agentInstanceId": state.agent_instance_id,
+        "skillsCount": skills_count,
+    });
+    // The running binary's build identity, so a client can check whether this
+    // process is the commit it is reading rather than trusting a version string
+    // that may carry no commit at all.
+    if let (Some(object), Some(identity)) = (
+        data.as_object_mut(),
+        crate::utils::build_identity_json().as_object().cloned(),
+    ) {
+        object.extend(identity);
+    }
+    RpcResponse::ok(id, "get_agent_info", data)
 }
 
 /// A business-RPC readiness check that cannot wait on skill discovery. Login

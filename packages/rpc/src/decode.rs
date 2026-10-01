@@ -641,10 +641,18 @@ fn model_entry_from_proto(model: &proto::ModelEntry) -> crate::payloads_ext::Mod
 // ── get_agent_info ───────────────────────────────────────────────────────────
 
 fn agent_info_from_proto(info: &proto::AgentInfo) -> crate::payloads_ext::AgentInfoPayload {
+    // Empty proto strings mean \"not reported\" for the optional identity
+    // fields, so they map back to None rather than to an empty string.
+    let present = |value: &str| (!value.is_empty()).then(|| value.to_string());
     crate::payloads_ext::AgentInfoPayload {
         version: info.version.clone(),
         agent_instance_id: info.agent_instance_id.clone(),
         skills_count: info.skills_count as usize,
+        git_commit: present(&info.git_commit),
+        git_commit_short: present(&info.git_commit_short),
+        git_dirty: info.git_dirty,
+        build_target: present(&info.build_target),
+        build_profile: present(&info.build_profile),
     }
 }
 

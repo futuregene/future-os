@@ -17,5 +17,6 @@ pub mod run;
 pub mod session;
 mod session_compact;
 mod session_history;
+pub mod settings;
 pub mod skills;
 pub mod tools;

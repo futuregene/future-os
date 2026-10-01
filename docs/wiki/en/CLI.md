@@ -53,7 +53,7 @@ future init
 
 Installs all built-in skills. On macOS and Linux, also links `future` (and `future-agent` when available) into `~/.future/bin/` and prints a PATH setup hint.
 
-### `config` — configure a model provider
+### `config` — configure a model provider, and read/write global settings
 
 ```bash
 future config
@@ -65,6 +65,23 @@ Interactively select **FutureOS** or a **custom provider**:
 - Custom: prompts for the provider ID, API protocol, base URL, API key, model ID, context window, and related settings. API key input is not echoed.
 
 Configuration is written to `~/.future/agent/models.json` and `~/.future/agent/auth.json`. If the agent is running, the command writes through its RPC and refreshes the model registry immediately; otherwise the changes take effect the next time the agent starts.
+
+The same group reads and changes the agent's global settings, with no subcommand
+needed to stay interactive:
+
+```bash
+future config get                                   # effective settings, defaults included
+future config get defaultPermissionLevel            # one value, for scripts
+future config set defaultPermissionLevel workspace  # change one key
+future config set compaction.reserve_tokens 8192
+```
+
+`future config get --help` lists every settable key and its accepted values.
+Writes are validated first, so a bad value or an unknown key leaves
+`settings.json` untouched. Neither direction needs a running agent; a change
+applies to the next new session (`defaultModel`, `defaultPermissionLevel`) or the
+next agent start (`compaction.*`, `retry.*`, `maxTurns`). See
+[Self-inspection](../../guide/self-inspection.md) for the full picture.
 
 ### `auth` — sign in and out
 
@@ -81,6 +98,25 @@ future auth logout      # sign out
 future account profile  # email, user ID, verification status, creation date
 future account balance  # credit balance (--json for machine output)
 ```
+
+Both commands are free. They are the only CLI reads that leave the machine: they
+call the Future platform over the network and need a login (`future auth login`).
+The CLI reads the stored API key itself, so no key ever needs to be passed — and
+seeing a low balance is information to report, not a reason to create a recharge
+order.
+
+### `version` — which build is this
+
+```bash
+future version            # same string as `future --version`
+future version --json     # version, commit, dirty state, target, profile
+```
+
+`--json` reports what the version string cannot: `gitCommit` (the full object
+name this binary was built from), `gitDirty`, `buildTarget` and `buildProfile`.
+Release and coordinated test/nightly builds carry **no** commit in their version
+at all, so this is the only way to check whether the binary you are running is
+the commit you are reading.
 
 ### `run` — send a one-off prompt and print the answer
 
@@ -188,6 +224,13 @@ future session compact --help   # request manual context compaction
 future session rename <id> <name>
 future session delete <id>
 ```
+
+`future session history search --all --query "<text>"` searches across sessions
+instead of one, so "have we ever discussed this" does not require knowing which
+session first. It scans the most recently updated `--sessions` sessions (default
+50) and reports `scannedSessions` and `truncated`, so a partial scan is visible
+rather than silently reported as "never discussed". See
+[Self-inspection](../../guide/self-inspection.md).
 
 `set` changes those settings on an existing session — only the options you pass are
 touched (`--parent ""` detaches). A parent records lineage only: no history is

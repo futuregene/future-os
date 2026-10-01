@@ -171,25 +171,31 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
             Err(error) => RpcResponse::build_fail(id, cmd_type, &error.to_string()),
         };
     }
-    // History recall reads only the specified persisted session, without
-    // instantiating a model runtime or waiting for a compaction/run lease.
+    // History recall reads only persisted sessions, without instantiating a
+    // model runtime or waiting for a compaction/run lease. The cross-session
+    // variant takes no session_id: it scans the most recently updated ones.
     if matches!(
         cmd_type.as_str(),
-        "search_session_history" | "get_session_history_entry"
+        "search_session_history" | "search_all_session_history" | "get_session_history_entry"
     ) {
-        let result = if cmd_type == "search_session_history" {
-            state.session_manager.search_history(
+        let result = match cmd_type.as_str() {
+            "search_session_history" => state.session_manager.search_history(
                 &cmd.session_id,
                 &cmd.message,
                 cmd.limit.unwrap_or(5),
-            )
-        } else {
-            state.session_manager.read_history_entry(
+            ),
+            "search_all_session_history" => state.session_manager.search_history_all(
+                &cmd.message,
+                cmd.limit.unwrap_or(5),
+                cmd.max_sessions
+                    .unwrap_or(crate::session::HISTORY_DEFAULT_SESSIONS),
+            ),
+            _ => state.session_manager.read_history_entry(
                 &cmd.session_id,
                 &cmd.entry_id,
                 cmd.offset.unwrap_or(0),
                 cmd.limit.unwrap_or(crate::session::HISTORY_DEFAULT_BYTES),
-            )
+            ),
         };
         return match result {
             Ok(data) => RpcResponse::ok(id, cmd_type, data),

@@ -76,6 +76,10 @@ pub struct RpcCommand {
     /// exchanges when this is present; `next_offset` walks toward zero.
     #[serde(default)]
     pub before: Option<i64>,
+    /// Upper bound on how many sessions `search_all_session_history` scans,
+    /// most recently updated first. Absent selects the server default.
+    #[serde(default)]
+    pub max_sessions: Option<i64>,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
