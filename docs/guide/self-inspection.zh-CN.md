@@ -19,7 +19,7 @@
 | `future auth status` | 是否已配置平台登录（登录到哪个平台） |
 | `future account profile` / `balance` | 用户账户与剩余额度 |
 | `future skills list` | 已安装与目录中的技能 |
-| `future tools list` / `describe <name>` | 工具面，含参数与示例 |
+| `future tools list` / `describe <name>` | **CLI** 可调用的平台/浏览器工具（不是模型的 `read`/`write`/`edit`/`shell`，那组按会话设置） |
 | `future session list --json` | 全部已记录会话（新的在前） |
 | `future session info <id>` | 单个会话的模型、cwd、消息/工具计数、token 与成本 |
 | `future loop status` | 当前项目目录下的长程目标 |

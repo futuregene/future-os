@@ -24,7 +24,7 @@ themselves.
 | `future auth status` | Whether a platform login is configured (and to what) |
 | `future account profile` / `balance` | The user's account and remaining credits |
 | `future skills list` | Installed vs. catalogued skills |
-| `future tools list` / `describe <name>` | The tool surface, with arguments and examples |
+| `future tools list` / `describe <name>` | Platform and browser tools the **CLI** can call (not the model's `read`/`write`/`edit`/`shell`, which are set per session) |
 | `future session list --json` | Every recorded session, newest first |
 | `future session info <id>` | One session's model, cwd, message/tool counts, tokens and cost |
 | `future loop status` | Long-running goals for the current project directory |

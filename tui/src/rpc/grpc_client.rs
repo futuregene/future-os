@@ -2219,6 +2219,14 @@ mod tests {
                             version: "9.9.9".into(),
                             agent_instance_id: "agent-typed".into(),
                             skills_count: 3,
+                            // Build identity travels with the same typed
+                            // payload; set so the assertions below also cover
+                            // the new fields' round trip through decode.
+                            git_commit: "0123456789abcdef0123456789abcdef01234567".into(),
+                            git_commit_short: "0123456".into(),
+                            git_dirty: Some(true),
+                            build_target: "x86_64-unknown-linux-gnu".into(),
+                            build_profile: "release".into(),
                         })),
                     },
                 ),
@@ -2279,6 +2287,17 @@ mod tests {
         assert_eq!(info["version"], "9.9.9");
         assert_eq!(info["agentInstanceId"], "agent-typed");
         assert_eq!(info["skillsCount"], 3);
+        // The build identity must survive the typed decode too, otherwise a
+        // client comparing the running Agent against a checkout would read the
+        // stale JSON `data` fallback instead of the real commit.
+        assert_eq!(
+            info["gitCommit"],
+            "0123456789abcdef0123456789abcdef01234567"
+        );
+        assert_eq!(info["gitCommitShort"], "0123456");
+        assert_eq!(info["gitDirty"], true);
+        assert_eq!(info["buildTarget"], "x86_64-unknown-linux-gnu");
+        assert_eq!(info["buildProfile"], "release");
 
         let synced = client.sync_future_models().await.unwrap();
         assert_eq!(synced["synced"], true);
