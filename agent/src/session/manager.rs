@@ -259,10 +259,44 @@ impl Manager {
             // at BEGIN, or a concurrent connection's commit invalidates this
             // snapshot and the upgrade fails instantly (SQLITE_BUSY_SNAPSHOT).
             let tx = crate::session::database::begin_immediate(db)?;
-            let payload: String = tx.query_row("SELECT payload FROM entry_records WHERE session_id=?1 AND entry_type='session_info' ORDER BY position DESC LIMIT 1", [&id], |row| row.get(0))?;
-            let entry: serde_json::Value = serde_json::from_str(&payload)?;
-            let mut info = entry["content"].as_object().cloned()
-                .ok_or_else(|| anyhow!("session has no session_info object"))?;
+            // The authoritative current metadata is `sessions.current_metadata_json`
+            // — `entry_records` *projects* a `session_info` entry's content from
+            // it (`records.rs` `VIEWS`), so reading the entry adds nothing and
+            // makes the update depend on an entry that may not exist. A
+            // legacy-imported transcript has no `session_info` entry at all, so
+            // the previous `query_row(..)` on that entry failed with a bare
+            // "Query returned no rows": `future session set --title/--thinking`
+            // on an imported session reported success while persisting nothing.
+            //
+            // Three distinct cases, deliberately not collapsed:
+            //   no row          -> the session does not exist (caller's bug)
+            //   NULL column     -> nothing recorded yet; start empty (the
+            //                      legacy-import case this fixes)
+            //   non-object JSON -> corrupt metadata; report it rather than
+            //                      silently replacing it and dropping every
+            //                      other field it held
+            // Outer `Option` = is there a row; inner = is the column NULL.
+            let existing: Option<Option<String>> = tx
+                .query_row(
+                    "SELECT current_metadata_json FROM sessions WHERE id=?1",
+                    [&id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+                .context("session metadata could not be read")?;
+            let Some(existing) = existing else {
+                // The row itself is missing, so the appended entry would fail on
+                // its foreign key. Name the real cause instead of surfacing a
+                // constraint error.
+                return Err(anyhow!("session not found: no row for {id}"));
+            };
+            let mut info = match existing {
+                None => serde_json::Map::new(),
+                Some(json) => serde_json::from_str::<serde_json::Value>(&json)
+                    .ok()
+                    .and_then(|value| value.as_object().cloned())
+                    .ok_or_else(|| anyhow!("session has no session_info object"))?,
+            };
             info.extend(fields);
             let entry = SessionEntry::session_info(
                 serde_json::Value::Object(info),
@@ -1024,6 +1058,49 @@ mod tests {
         assert_eq!(loaded.model, "new");
         assert_eq!(loaded.name, "renamed");
         assert_eq!(loaded.get_session_info().unwrap()["model"], "new");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A session whose entries carry no `session_info` (every legacy-imported
+    /// transcript, since the importer never synthesises one) must still accept a
+    /// metadata update. The reader used to require an existing `session_info`
+    /// row and failed with a bare "Query returned no rows", so `future session
+    /// set --title/--thinking/--model` on an imported session reported success
+    /// while persisting nothing.
+    #[test]
+    fn metadata_update_works_without_an_existing_session_info_entry() {
+        let (dir, manager) = temp_manager("update-info-no-snapshot");
+        // Exactly the shape the legacy importer produces: conversation entries
+        // only, no session_info.
+        manager
+            .storage()
+            .unwrap()
+            .replace(
+                "s-imported",
+                vec![serde_json::json!({
+                    "id": "e1", "type": "user", "role": "user",
+                    "timestamp": "2026-01-01T00:00:00Z", "content": "hi"
+                })],
+            )
+            .unwrap();
+        assert!(
+            manager
+                .load("s-imported")
+                .unwrap()
+                .get_session_info()
+                .is_none(),
+            "precondition: no session_info exists yet"
+        );
+
+        manager
+            .update_session_info("s-imported", "session_name", serde_json::json!("Named"))
+            .unwrap();
+
+        let loaded = manager.load("s-imported").unwrap();
+        assert_eq!(loaded.name, "Named");
+        assert_eq!(loaded.get_session_info().unwrap()["session_name"], "Named");
+        // The conversation itself must survive the metadata write.
+        assert_eq!(loaded.entries.len(), 2, "user entry + appended snapshot");
         let _ = std::fs::remove_dir_all(dir);
     }
 
