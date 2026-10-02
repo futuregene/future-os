@@ -42,16 +42,29 @@ login` 会失败——这是要如实报告的配置状态，而不是账户坏�
 
 ## 找到自己所在的会话
 
-检索需要 session id，而真正有意思的问题是 Agent 如何拿到**自己那条**：
+Agent 无需去查自己处在哪个会话——**它自己的系统提示词里就带着这个 id**，在环境
+（environment）一节：
 
-```sh
-future session list --json     # isStreaming 为 true 的那一行就是本会话
+```
+Current session ID: <id>
+You can reference this session ID when you need to identify or report which
+conversation you are part of. This is your own session — you are self-aware of
+this identifier.
 ```
 
-有活跃运行（run）的会话会报 `isStreaming: true`，因此一轮进行中恰好只有一行为
-`true`。环境中不携带该 id——`shell` 工具没有 `$FUTURE_SESSION_ID`——所以这个列表
-是受支持的方式。`session list` 按 `updatedAtMs` 新的在前返回，其摘要刻意不含用量：
-token 与成本在 `session info <id>`。
+已对真实运行验证：发往 provider 的 system message 中的 id 与该会话在 `agent.db`
+中的行逐字节相同。因此检索可直接用自己的 id，无需查询、也无需猜。
+
+```sh
+future session list --json     # 用于「其他」会话；isStreaming 标记正在运行的那一个
+```
+
+`session list` 服务于你不在其中的会话（要恢复的旧对话）与交叉核对：有活跃 run 的
+会话报 `isStreaming: true`，因此一轮进行中恰好只有一行为 `true`。其摘要刻意不含
+用量——token 与成本在 `session info <id>`——行序为 `updatedAtMs` 新的在前。
+
+**行不通的做法**：`shell` 工具不导出 `$FUTURE_SESSION_ID`，环境中什么也没有；
+标题也不能当身份（多个会话可同名，新会话干脆没有）。
 
 ## 这是哪个构建
 
