@@ -51,18 +51,33 @@ pass on rather than a reason to create a recharge order.
 
 ## Finding your own session
 
-Searching needs a session id, and the interesting question is how an agent gets
-**its own**:
+An agent does not have to look up which session it is in — **its own system
+prompt carries the id**, in the environment section:
 
-```sh
-future session list --json     # the row with isStreaming: true is this session
+```
+Current session ID: <id>
+You can reference this session ID when you need to identify or report which
+conversation you are part of. This is your own session — you are self-aware of
+this identifier.
 ```
 
-A session with an active run reports `isStreaming: true`, so during a turn exactly
-one row is `true`. Nothing in the environment carries the id — the `shell` tool
-has no `$FUTURE_SESSION_ID` — so the list is the supported route. `session list`
-returns rows newest-first by `updatedAtMs`, and its summary deliberately holds no
-usage: tokens and cost are in `session info <id>`.
+Verified against a live run: the id in the outgoing system message is
+byte-identical to that session's row in `agent.db`. So a search can use its own
+id directly, with no lookup and no guessing.
+
+```sh
+future session list --json     # the *other* sessions; isStreaming marks the active one
+```
+
+`session list` is for sessions you are not in (a previous conversation to resume)
+and for cross-checking: a session executing an active run reports
+`isStreaming: true`, so during a turn exactly one row is `true`. Its summary
+deliberately holds no usage — tokens and cost are in `session info <id>` — and its
+rows are newest-first by `updatedAtMs`.
+
+What does **not** work: the `shell` tool exports no `$FUTURE_SESSION_ID`, so the
+environment carries nothing, and a title is not an identity (several sessions can
+share one, and a fresh session has none).
 
 ## Which build is this
 
