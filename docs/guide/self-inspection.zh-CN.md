@@ -40,6 +40,19 @@ Agent 既不需要读，也不应该读。
 login` 会失败——这是要如实报告的配置状态，而不是账户坏了。两条命令都免费（读余额
 不消耗额度），余额偏低应当转达，而不是去创建充值订单。
 
+## 找到自己所在的会话
+
+检索需要 session id，而真正有意思的问题是 Agent 如何拿到**自己那条**：
+
+```sh
+future session list --json     # isStreaming 为 true 的那一行就是本会话
+```
+
+有活跃运行（run）的会话会报 `isStreaming: true`，因此一轮进行中恰好只有一行为
+`true`。环境中不携带该 id——`shell` 工具没有 `$FUTURE_SESSION_ID`——所以这个列表
+是受支持的方式。`session list` 按 `updatedAtMs` 新的在前返回，其摘要刻意不含用量：
+token 与成本在 `session info <id>`。
+
 ## 这是哪个构建
 
 版本字符串往往不足以定位代码，所以 `future version --json` 会报出它承载不了的
@@ -153,8 +166,17 @@ future config set compaction.reserve_tokens 8192
 | `compaction.*`、`retry.*`、`maxTurns` | 下次 Agent 启动 |
 
 会话级设置仍用 `future session set <id>`（`--model`、`--thinking`、`--cwd`、
-`--title`），它对运行中的会话立即生效。能力面用
-`future skills install|uninstall|update` 调整。
+`--title`），它对运行中的会话立即生效；标题另可用 `future session rename <id>
+<name>`，按需压缩用 `future session compact --session <id>`（它只返回确认，不是
+完成的摘要，且忙时会拒绝）。能力面用 `future skills install|uninstall|update` 调整。
+
+两个最好提前知道、而不是踩到的缺口：
+
+- **会话的工具集没有 CLI 开关。** `--tools` / `--no-tools` / `--no-builtin-tools`
+  属于 `future run`（单次运行）；跨会话持久的工具集是 TUI 与桌面端调用的 RPC，
+  `future session set` 会拒绝该旗标。
+- **从未运行过的会话，改动要等首次运行时才落盘。** 已有记录的会话，其标题或 cwd
+  会立即写入；从未产生过 entry 的会话则在首次运行时一并存储。
 
 改设置会改变此后每一个会话的行为，所以技能把它当作用户的决定：说明旧值与新值，
 在用户同意后再改。

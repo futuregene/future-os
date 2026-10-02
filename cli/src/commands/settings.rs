@@ -307,6 +307,27 @@ mod tests {
         String::from_utf8(captured.lock().unwrap().clone()).expect("utf8")
     }
 
+    /// The help text is the only place a user learns the key names, and two
+    /// other help strings send readers to `config get --help` for them, so a key
+    /// that exists in the table but is missing from the help is unreachable
+    /// documentation. This caught exactly that: the key list lived in
+    /// `CONFIG_HELP` only, while `config set --help` said "Run `future config get
+    /// --help` for the settable keys".
+    #[test]
+    fn config_keys_are_documented_where_the_help_points() {
+        for help in [crate::help::CONFIG_GET_HELP, crate::help::CONFIG_HELP] {
+            for key in KEYS {
+                assert!(
+                    help.contains(key),
+                    "{key} is settable but absent from a help text that promises it"
+                );
+            }
+        }
+        // The pointer must keep existing, or the test above stops meaning
+        // anything: CONFIG_SET_HELP tells the reader where the list is.
+        assert!(crate::help::CONFIG_SET_HELP.contains("future config get --help"));
+    }
+
     /// `KEYS` is the single source of truth: every key must have a reader, a
     /// writer and a round trip through the Agent's own loader, so a key added
     /// to one list but not the others fails here instead of at runtime.

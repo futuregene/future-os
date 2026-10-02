@@ -106,6 +106,11 @@ Settable keys (the dotted names are the exact keys in settings.json):
   defaultModel                        model id    Global default model ("provider/id"; "" = none)"#;
 
 /// `future config get --help` output.
+///
+/// This is the canonical list of settable keys: `CONFIG_HELP` and
+/// `CONFIG_SET_HELP` both point readers here ("Run `future config get --help`
+/// for the settable keys"), so it has to carry them. `config_keys_are_documented`
+/// pins that every key the command accepts appears here.
 pub const CONFIG_GET_HELP: &str = r#"future config get — show the effective agent settings
 
 Usage:
@@ -118,7 +123,26 @@ whole effective document as JSON).
 
 Reads ~/.future/agent/settings.json and never writes it, so it works with the
 Agent stopped. It does not read auth.json: credentials are never part of the
-settings document."#;
+settings document.
+
+Settable keys (the dotted names are the exact keys in settings.json, which nests
+snake_case inside the camelCase top level):
+  compaction.enabled                  true|false  Auto-compaction on/off
+  compaction.reserve_tokens           integer     Context reserved for the reply
+  compaction.keep_recent_tokens       integer     Recent tokens kept verbatim
+  retry.enabled                       true|false  Automatic retry on/off
+  retry.max_retries                   integer     Retries per request
+  retry.base_delay_ms                 integer     Base backoff delay (ms)
+  retry.provider.max_retry_delay_ms   integer     Provider-level retry cap (ms)
+  maxTurns                            integer     Model+tool turns per prompt (0 = unlimited)
+  defaultPermissionLevel              all|workspace|none
+  defaultModel                        model id    Global default model ("provider/id"; "" = none)
+
+When a change takes effect:
+  defaultModel, defaultPermissionLevel   the next new session
+  compaction.*, retry.*, maxTurns        the next Agent start
+
+Change a value with `future config set <key> <value>`."#;
 
 /// `future config set --help` output.
 pub const CONFIG_SET_HELP: &str = r#"future config set — change one global agent setting

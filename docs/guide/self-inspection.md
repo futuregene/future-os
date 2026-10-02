@@ -49,6 +49,21 @@ login` — a configuration state to report, not a broken account. Both are free
 (reading a balance never spends credits), and a low balance is information to
 pass on rather than a reason to create a recharge order.
 
+## Finding your own session
+
+Searching needs a session id, and the interesting question is how an agent gets
+**its own**:
+
+```sh
+future session list --json     # the row with isStreaming: true is this session
+```
+
+A session with an active run reports `isStreaming: true`, so during a turn exactly
+one row is `true`. Nothing in the environment carries the id — the `shell` tool
+has no `$FUTURE_SESSION_ID` — so the list is the supported route. `session list`
+returns rows newest-first by `updatedAtMs`, and its summary deliberately holds no
+usage: tokens and cost are in `session info <id>`.
+
 ## Which build is this
 
 The version string is often not enough to identify the code, so
@@ -178,8 +193,21 @@ they are used*:
 | `compaction.*`, `retry.*`, `maxTurns` | The next Agent start |
 
 Session-scoped settings stay with `future session set <id>` (`--model`,
-`--thinking`, `--cwd`, `--title`), which reaches the running session at once.
-Capabilities move with `future skills install|uninstall|update`.
+`--thinking`, `--cwd`, `--title`), which reaches the running session at once,
+plus `future session rename <id> <name>` for a title and `future session compact
+--session <id>` for on-demand compaction (which acknowledges asynchronously — it
+is not a completed summary, and it rejects a busy session). Capabilities move
+with `future skills install|uninstall|update`.
+
+Two gaps are worth knowing rather than discovering:
+
+- **A session's tool set has no CLI switch.** `--tools` / `--no-tools` /
+  `--no-builtin-tools` belong to `future run` (one run); the persistent
+  per-session selection is an RPC the TUI and Desktop call, and `future session
+  set` rejects the flag.
+- **A never-run session stores a change only when it first runs.** A title or cwd
+  on a session that already has a record is written immediately; one that has
+  never produced an entry stores it with its first run.
 
 Changing a setting changes how every later session behaves, so the skill treats
 it as the user's decision: state the old value and the new one, and make the
