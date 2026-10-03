@@ -206,6 +206,30 @@ impl RunClient {
         .await
     }
 
+    /// One forward page of `get_session_entries`. `offset` is a display-entry
+    /// ordinal (not a byte offset) and `limit` counts entries (the Agent clamps
+    /// it to 1..=1000). A cut-short page answers with `hasMore`/`nextOffset`;
+    /// an exhausted one omits both. The longer timeout covers the Agent's
+    /// per-page materialization budget for a heavy session.
+    pub async fn get_session_entries_page(
+        &self,
+        session_id: &str,
+        offset: i64,
+        limit: i64,
+    ) -> Result<Value, String> {
+        self.execute_command(
+            "get_session_entries",
+            RpcCommand {
+                offset: Some(offset),
+                limit: Some(limit),
+                ..Default::default()
+            },
+            Some(session_id),
+            30,
+        )
+        .await
+    }
+
     /// Search original visible history. The existing message field carries the literal query.
     pub async fn search_session_history(
         &self,

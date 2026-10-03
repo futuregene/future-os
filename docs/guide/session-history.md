@@ -68,6 +68,46 @@ preserves exact text, including embedded newlines and NUL; tool arguments are
 serialized JSON **text fragments**, not necessarily a complete JSON object on
 every page. Returned block byte offsets let clients reconstruct each field.
 
+## The filtered transcript
+
+`future session history` is built for *finding* one passage. To *process* a whole
+conversation — read every user message, separate a tool's inputs from its
+outputs, pull out the file paths a tool touched, page through a long session —
+use `future session transcript`:
+
+```sh
+future session transcript --session SESSION_ID [options]
+```
+
+It reads the same display projection as `session info` — so `reasoning` blocks
+are visible, unlike `history search` — and makes no model call.
+
+| Option | Effect |
+|---|---|
+| `--select <list>` | Which slices to keep: `user`, `assistant`, `thinking`, `tool-call`, `tool-result`, `session`, `compaction`, `all`. Default `user,assistant,tool-call,tool-result` (reasoning is opt-in: it dominates a real session's bytes). |
+| `--tool <list>` | Only these tools' calls and results. |
+| `--input` / `--output` | Tool calls: the arguments only. Tool results: the result text only. |
+| `--paths` | Tool calls and results: the file paths they mention, and nothing else. |
+| `--grep <text>` | Keep only blocks whose content contains this text (case-insensitive; matches text, thinking, tool name and arguments). |
+| `--cursor N`, `--limit N`, `--all` | The window, in display-entry order. `--limit` (default 50, max 500) bounds matching entries, not raw ones. |
+| `--max-bytes N` | Stop before the output passes N bytes (default 262144; `0` disables). |
+| `--truncate N` | Truncate every emitted string longer than N characters. |
+| `--counts` | Print the window's distribution — entries, block kinds, tools, errors, bytes — instead of entries. |
+| `--json` | Machine-readable report. |
+
+The report carries `cursor`, `nextCursor`, `scannedEntries`, `hasMore` and the
+matching `entries`, so a caller pages with `--cursor nextCursor` until `hasMore`
+is false. `--counts` ignores `--select`/`--tool`/`--grep` and covers the whole
+session unless `--limit` bounds it, which makes it the cheap first look at an
+unfamiliar session.
+
+Two limits are worth stating. `--paths` is a heuristic: it takes structured
+path-ish argument keys from a call, and path-shaped tokens from a result's text.
+And `--tool` filters a tool *result* by the name of the call it pairs with, so a
+result whose call falls outside the scanned window cannot be attributed — it is
+skipped, and the report counts it in `skippedUnattributedToolResults` rather than
+pretending it belongs to the tool.
+
 ## Entry IDs versus tool-call IDs
 
 An `entry_id` is an Agent-generated journal identity, normally a timestamp plus a

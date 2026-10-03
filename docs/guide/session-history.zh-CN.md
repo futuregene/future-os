@@ -46,6 +46,40 @@ future session history get --session SESSION_ID --entry ENTRY_ID --offset 8192 -
 
 `--json` 保留准确文本，包括换行和 NUL。工具参数是序列化 JSON 的**文本片段**，分页片段不保证本身是完整 JSON。`omittedKinds` 告知被排除的非召回块类型。
 
+## 带筛选的会话全文
+
+`future session history` 面向「**找到**某一段」，而「**处理**整段对话」——读出全部用户消息、
+把工具调用的输入与输出分开、抽出工具碰过的文件路径、按页翻完一个长会话——用
+`future session transcript`：
+
+```sh
+future session transcript --session SESSION_ID [选项]
+```
+
+它读的是与 `session info` 相同的展示投影，因此 **thinking（reasoning）块在这里可见**（这点与
+`history search` 不同），且不调用模型。
+
+| 选项 | 作用 |
+|---|---|
+| `--select <列表>` | 保留哪些切片：`user`、`assistant`、`thinking`、`tool-call`、`tool-result`、`session`、`compaction`、`all`。默认 `user,assistant,tool-call,tool-result`（thinking 需显式选择：它在真实会话里占绝大多数字节）。 |
+| `--tool <列表>` | 只看这些工具的调用与结果。 |
+| `--input` / `--output` | 工具调用只留参数；工具结果只留输出文本。 |
+| `--paths` | 工具调用与结果只留其中提到的文件路径，其余内容全部去掉。 |
+| `--grep <文本>` | 只保留内容包含该文本的块（不区分大小写；覆盖 text、thinking、工具名与参数）。 |
+| `--cursor N`、`--limit N`、`--all` | 按展示顺序取窗口。`--limit`（默认 50，上限 500）限制的是**命中**条目数，不是原始条目数。 |
+| `--max-bytes N` | 输出超过 N 字节前停止（默认 262144；`0` 表示不限制）。 |
+| `--truncate N` | 对每个超过 N 个字符的字符串做截断。 |
+| `--counts` | 只打印窗口的分布（条目、块类型、工具、错误数、字节数），不打印条目。 |
+| `--json` | 机器可读结果。 |
+
+返回里带 `cursor`、`nextCursor`、`scannedEntries`、`hasMore` 与命中的 `entries`，调用方用
+`--cursor nextCursor` 翻页直到 `hasMore` 为 false。`--counts` 不受 `--select`/`--tool`/`--grep`
+影响，且默认覆盖整个会话（除非用 `--limit` 限定），因此适合作为了解陌生会话的第一步。
+
+有两条边界需要说明：`--paths` 是启发式的（调用取结构化参数里的路径类字段，结果取文本里像路径的
+词元）；`--tool` 是靠「配对的调用名」来筛工具**结果**的，所以配对调用落在窗口之外的结果无法归属，
+会被跳过并在返回的 `skippedUnattributedToolResults` 中计数，而不是假装它属于该工具。
+
 ## entry ID 是什么？
 
 entry ID 是 Agent 生成的历史记录标识，通常为时间戳加随机后缀，在会话内唯一。`_future_journal_entry_id` 只用于内部绑定，普通模型消息不会自动显示这个 ID。

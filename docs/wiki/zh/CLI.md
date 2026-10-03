@@ -208,7 +208,8 @@ future loop status        # loop 控制面：goal/todo/gate
 future session list
 future session set <id> [--parent <id>] [--title <name>] [--cwd <dir>]
                         [--model <id>] [--thinking <level>]
-future session info <id>
+future session info <id> [--json]
+future session transcript --help # 筛选并分窗查看单个会话的记录
 future session history --help   # 搜索并读取原始历史
 future session compact --help   # 请求手动压缩上下文
 future session rename <id> <name>
@@ -219,6 +220,12 @@ future session delete <id>
 处理过这件事」不必先知道是哪个会话。它扫描最近更新的 `--sessions` 个会话（默认 50），
 并返回 `scannedSessions` 与 `truncated`，所以只覆盖了一部分历史时是可见的，而不是被
 悄悄当成「从未讨论过」。详见[自我认知](../../guide/self-inspection.zh-CN.md)。
+
+`future session transcript --session <id>` 面向「处理」整段对话而非「找到」某一段：
+`--select` 选择切片（user、assistant、thinking、tool-call、tool-result、session、compaction），
+`--tool` 只看单个工具，`--input` / `--output` 取工具的输入或输出，`--paths` 只抽其中提到的
+文件路径，`--cursor` / `--limit` / `--max-bytes` 用于分窗翻页；`--counts` 是了解陌生会话的
+低成本第一步。`session info` 与 `transcript` 都支持 `--json`。
 
 `set` 修改**已有**会话的这些设置（只改传了的参数，其余不动，`--parent ""` 表示解除父会话）。
 `--parent` 只记录会话谱系，不复制父会话历史（那是 `fork` 的行为），且父会话必须是已存在的会话。

@@ -26,8 +26,9 @@ themselves.
 | `future account profile` / `balance` | The user's account and remaining credits |
 | `future skills list` | Installed vs. catalogued skills |
 | `future tools list` / `describe <name>` | Platform and browser tools the **CLI** can call (not the model's `read`/`write`/`edit`/`shell`, which are set per session) |
-| `future session list --json` | Every recorded session, newest first |
-| `future session info <id>` | One session's model, cwd, message/tool counts, tokens and cost |
+| `future session list --json` | Every recorded session, newest first (each with its `cwd`, model and title) |
+| `future session info <id> [--json]` | One session's model, cwd, message/tool counts, tokens and cost |
+| `future session transcript --session <id>` | One session's records, filtered and windowed — every user message, one tool's inputs or outputs, the paths it touched |
 | `future loop status` | Long-running goals for the current project directory |
 
 `future config get` reads `~/.future/agent/settings.json` through the same typed
@@ -184,6 +185,21 @@ Search is literal substring matching (ASCII case insensitive) over user and
 assistant text, tool arguments and tool results — not semantic search, and not
 over thinking/reasoning. When a query returns nothing, the query is usually the
 problem; refine it rather than concluding the record is empty.
+
+Search finds one passage; `future session transcript` is how a session is
+*processed* rather than searched. It projects the same records through a
+selectable lens — which roles and block kinds (`--select`, with thinking
+included), which tool (`--tool`), a tool's arguments versus its result
+(`--input` / `--output`), just the file paths either mentions (`--paths`), a
+literal content filter (`--grep`) — and windows the result with `--cursor` /
+`--limit` / `--all` and `--max-bytes`. `--counts` answers "what is in here" in
+one cheap call, and `--json` makes every case scriptable. `session info <id>
+--json` is the same idea for a session's identity: `cwd`, `model`,
+`thinkingLevel` and the computed stats at the top level, the raw session
+metadata alongside them. See
+[Session history recall](session-history.md#the-filtered-transcript) for the
+option table and the two documented limits (heuristic `--paths`, and the
+unattributed tool results `--tool` reports rather than mislabels).
 
 ## Changing settings
 
