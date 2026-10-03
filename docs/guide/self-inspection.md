@@ -28,8 +28,24 @@ themselves.
 | `future tools list` / `describe <name>` | Platform and browser tools the **CLI** can call (not the model's `read`/`write`/`edit`/`shell`, which are set per session) |
 | `future session list --json` | Every recorded session, newest first (each with its `cwd`, model and title) |
 | `future session info <id> [--json]` | One session's model, cwd, message/tool counts, tokens and cost |
-| `future session transcript --session <id>` | One session's records, filtered and windowed — every user message, one tool's inputs or outputs, the paths it touched |
+| `future session status <id> [--json] [--metrics]` | One session's **live** state: effective permission and sandbox tier, context occupancy, loaded context files and skills, active/queued runs, pending approvals |
+| `future session transcript --session <id>` | One session's records, filtered and windowed — every user message, thinking, one tool's inputs or outputs, the paths it touched, and per-run outcomes (`--runs`) |
+| `future session forks <id>` | The user turns that session can be branched at |
+| `future session approvals <id>` | Approval requests the session is parked on right now |
 | `future loop status` | Long-running goals for the current project directory |
+
+Two of those are worth separating carefully, because they answer different
+questions about the same session. `session info` reads the **persisted journal**
+— what the conversation contains and what it has cost over its whole life.
+`session status` reads the **live agent** — how the session is configured right
+now and what it is doing. A session pinned to `workspace` permission while the
+global default is `all`, or using 40% of its context window while having spent
+40M tokens lifetime, is only correct in the second view; `config get` and
+`session info` cannot express either.
+
+`session status` also reports the sandbox tier a session's policy was set to
+(`--sandbox` on `session set`), and distinguishes "never chose one" from an
+explicit `off`.
 
 `future config get` reads `~/.future/agent/settings.json` through the same typed
 loader the Agent uses, so it reports what the Agent would actually apply rather
@@ -192,14 +208,24 @@ selectable lens — which roles and block kinds (`--select`, with thinking
 included), which tool (`--tool`), a tool's arguments versus its result
 (`--input` / `--output`), just the file paths either mentions (`--paths`), a
 literal content filter (`--grep`) — and windows the result with `--cursor` /
-`--limit` / `--all` and `--max-bytes`. `--counts` answers "what is in here" in
-one cheap call, and `--json` makes every case scriptable. `session info <id>
---json` is the same idea for a session's identity: `cwd`, `model`,
-`thinkingLevel` and the computed stats at the top level, the raw session
-metadata alongside them. See
+`--limit` / `--all` and `--max-bytes`. Every emitted entry carries its run
+outcome and token usage, `--runs` is a one-row-per-run ledger (status, duration,
+tokens, error), and `--counts` answers "what is in here" in one cheap call.
+`--json` makes every case scriptable. `session info <id> --json` is the same idea
+for a session's identity: `cwd`, `model`, `thinkingLevel` and the computed stats
+at the top level, the raw session metadata alongside them. See
 [Session history recall](session-history.md#the-filtered-transcript) for the
 option table and the two documented limits (heuristic `--paths`, and the
 unattributed tool results `--tool` reports rather than mislabels).
+
+What happened, run by run:
+
+```sh
+future session transcript --session <id> --runs --json   # which runs failed, and why
+future session approvals <id>                            # what the session is waiting on
+future session approve <id> <request-id> [--allow <glob> --access read|write]
+future session abort <id>                                # stop the active run and clear the queue
+```
 
 ## Changing settings
 
@@ -225,22 +251,42 @@ they are used*:
 | `defaultModel`, `defaultPermissionLevel` | The next new session |
 | `compaction.*`, `retry.*`, `maxTurns` | The next Agent start |
 
-Session-scoped settings stay with `future session set <id>` (`--model`,
-`--thinking`, `--cwd`, `--title`), which reaches the running session at once,
-plus `future session rename <id> <name>` for a title and `future session compact
+Session-scoped settings stay with `future session set <id>`, which reaches the
+running session at once and covers two groups:
+
+```sh
+# recorded with the session
+future session set <id> --model <id> --thinking <level> --cwd <dir> --title <name> --parent <id>
+
+# applied to the live session (until this agent stops)
+future session set <id> --tools read,shell --permission workspace --sandbox manual
+future session set <id> --system-prompt "…" --append-system-prompt "…"
+future session set <id> --context-files off --auto-compact off --auto-retry on
+```
+
+`--tools` / `--no-tools` / `--no-builtin-tools` / `--system-prompt` /
+`--append-system-prompt` / `--permission` / `--sandbox` / `--context-files` /
+`--auto-compact` / `--auto-retry` are the live group. Read any of them back with
+`future session status <id>` — which is why `--sandbox` is no longer
+write-only. `--permission` is the approval gate and `--sandbox` the OS wrapping;
+they are independent, and `sandbox` is refused when the platform cannot provide
+one.
+
+Plus `future session rename <id> <name>` for a title, `future session compact
 --session <id>` for on-demand compaction (which acknowledges asynchronously — it
-is not a completed summary, and it rejects a busy session). Capabilities move
+is not a completed summary, and it rejects a busy session), and the lifecycle
+commands `future session new|fork|forks|clone|title|export`. Capabilities move
 with `future skills install|uninstall|update`.
 
-Two gaps are worth knowing rather than discovering:
+One gap is worth knowing rather than discovering: **a never-run session stores a
+change only when it first runs.** A title or cwd on a session that already has a
+record is written immediately; one that has never produced an entry stores it
+with its first run, so a new session is absent from `session list` until it runs.
 
-- **A session's tool set has no CLI switch.** `--tools` / `--no-tools` /
-  `--no-builtin-tools` belong to `future run` (one run); the persistent
-  per-session selection is an RPC the TUI and Desktop call, and `future session
-  set` rejects the flag.
-- **A never-run session stores a change only when it first runs.** A title or cwd
-  on a session that already has a record is written immediately; one that has
-  never produced an entry stores it with its first run.
+Two commands spend or act rather than read, and are explicit for that reason:
+`future session title <id>` asks the session's model for a title (a model call —
+it prints the suggestion and only renames with `--apply`), and
+`future session abort|cancel|approve|reject` act on live work.
 
 Changing a setting changes how every later session behaves, so the skill treats
 it as the user's decision: state the old value and the new one, and make the

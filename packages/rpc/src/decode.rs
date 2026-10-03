@@ -349,6 +349,7 @@ pub(crate) fn session_state_from_proto(state: &proto::SessionState) -> GetStateP
             .iter()
             .map(approval_card_from_proto)
             .collect(),
+        sandbox_tier: state.sandbox_tier.clone(),
     }
 }
 

@@ -109,6 +109,7 @@ pub(crate) fn get_state_to_proto(p: &GetStatePayload) -> proto::SessionState {
             .iter()
             .filter_map(approval_card_to_proto)
             .collect(),
+        sandbox_tier: p.sandbox_tier.clone(),
     }
 }
 

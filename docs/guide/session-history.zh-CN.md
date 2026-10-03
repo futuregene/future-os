@@ -69,12 +69,27 @@ future session transcript --session SESSION_ID [选项]
 | `--cursor N`、`--limit N`、`--all` | 按展示顺序取窗口。`--limit`（默认 50，上限 500）限制的是**命中**条目数，不是原始条目数。 |
 | `--max-bytes N` | 输出超过 N 字节前停止（默认 262144；`0` 表示不限制）。 |
 | `--truncate N` | 对每个超过 N 个字符的字符串做截断。 |
-| `--counts` | 只打印窗口的分布（条目、块类型、工具、错误数、字节数），不打印条目。 |
+| `--counts` | 只打印窗口的分布（条目、块类型、工具、run 结果、token、错误数、字节数），不打印条目。 |
+| `--runs` | 每个 run 一行：状态、耗时、token、错误。 |
 | `--json` | 机器可读结果。 |
 
+每个输出的条目都带该 run 的结果（`run`、`runId`），以及该 run 记录过的 token 用量
+（`usage`）——「哪个 run 失败了、为什么」因此不必再查第二条命令；`--runs` 是同一批数据
+的账目形式：
+
+```sh
+future session transcript --session SESSION_ID --runs
+# session=… runs=4 failed=1
+# [   1] run-…  completed 300.8s in=481K
+# [ 424] run-…  failed 12.4s
+#        error: upstream disconnected
+```
+
 返回里带 `cursor`、`nextCursor`、`scannedEntries`、`hasMore` 与命中的 `entries`，调用方用
-`--cursor nextCursor` 翻页直到 `hasMore` 为 false。`--counts` 不受 `--select`/`--tool`/`--grep`
-影响，且默认覆盖整个会话（除非用 `--limit` 限定），因此适合作为了解陌生会话的第一步。
+`--cursor nextCursor` 翻页直到 `hasMore` 为 false。`--counts` 与 `--runs` 是汇总：它们不受
+`--select`/`--tool`/`--grep` 影响、拒绝 `--cursor`，且默认覆盖整个会话（除非用 `--limit` 或
+`--all` 限定），因此 `--counts` 适合作为了解陌生会话的第一步。`--limit` 在条目模式下按命中
+条目计数，在 `--runs` 下按不同的 run 计数。
 
 有两条边界需要说明：`--paths` 是启发式的（调用取结构化参数里的路径类字段，结果取文本里像路径的
 词元）；`--tool` 是靠「配对的调用名」来筛工具**结果**的，所以配对调用落在窗口之外的结果无法归属，

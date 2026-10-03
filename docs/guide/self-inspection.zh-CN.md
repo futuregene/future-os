@@ -23,8 +23,20 @@
 | `future tools list` / `describe <name>` | **CLI** 可调用的平台/浏览器工具（不是模型的 `read`/`write`/`edit`/`shell`，那组按会话设置） |
 | `future session list --json` | 全部已记录会话（新的在前，每条带 `cwd`、模型与标题） |
 | `future session info <id> [--json]` | 单个会话的模型、cwd、消息/工具计数、token 与成本 |
-| `future session transcript --session <id>` | 单个会话记录的筛选/分窗视图——全部用户消息、某个工具的输入或输出、它碰过的文件路径 |
+| `future session status <id> [--json] [--metrics]` | 单个会话的**实时**状态：生效中的工具权限与沙箱档、上下文占用、已加载的上下文文件与技能、活动/排队 run、待审批项 |
+| `future session transcript --session <id>` | 单个会话记录的筛选/分窗视图——全部用户消息、thinking、某个工具的输入或输出、它碰过的文件路径，以及逐 run 结果（`--runs`） |
+| `future session forks <id>` | 该会话可以分叉的用户轮次 |
+| `future session approvals <id>` | 该会话当前正等待的审批请求 |
 | `future loop status` | 当前项目目录下的长程目标 |
+
+其中两条需要分清楚，因为它们回答的是同一个会话的不同问题。`session info` 读的是**落盘的
+journal**——这段对话包含什么、累计花了多少；`session status` 读的是**运行中的 agent**——
+这个会话现在怎么配置、正在做什么。一个会话权限是 `workspace` 而全局默认是 `all`，或
+上下文窗口用了 40% 而累计 token 有 40M——这两件事只有在第二个视图里才是对的，`config get`
+与 `session info` 都表达不了。
+
+`session status` 还会报告会话策略被设成的沙箱档（`session set --sandbox`），并区分「从未
+设置过」与显式的 `off`。
 
 `future config get` 用与 Agent 相同的类型化加载器读取
 `~/.future/agent/settings.json`，因此它报告的是 Agent 真正会生效的值，而不是文件里
@@ -164,11 +176,21 @@ future session history get --session <id> --entry <entry-id> [--offset N] [--lim
 记录按可选视角投影出来——要哪些角色与块类型（`--select`，包含 thinking）、哪个工具
 （`--tool`）、工具的参数还是结果（`--input` / `--output`）、只抽其中提到的文件路径
 （`--paths`）、按内容字面过滤（`--grep`）——再用 `--cursor` / `--limit` / `--all` 与
-`--max-bytes` 分窗。`--counts` 一次调用回答「里面有什么」，`--json` 让每种用法都可脚本化。
-`session info <id> --json` 则是同一思路用于会话身份：顶层给出 `cwd`、`model`、
-`thinkingLevel` 与统计值，旁边附原始会话元数据。选项表与两条已说明的边界（启发式的
-`--paths`，以及 `--tool` 会报告而非错标的无归属工具结果）见
+`--max-bytes` 分窗。每个输出的条目都带该 run 的结果与 token 用量，`--runs` 是「一个 run
+一行」的账目（状态、耗时、token、错误），`--counts` 一次调用回答「里面有什么」。
+`--json` 让每种用法都可脚本化。`session info <id> --json` 则是同一思路用于会话身份：顶层
+给出 `cwd`、`model`、`thinkingLevel` 与统计值，旁边附原始会话元数据。选项表与两条已说明的
+边界（启发式的 `--paths`，以及 `--tool` 会报告而非错标的无归属工具结果）见
 [会话历史回忆](session-history.zh-CN.md#带筛选的会话全文)。
+
+逐 run 看发生了什么：
+
+```sh
+future session transcript --session <id> --runs --json   # 哪些 run 失败了、为什么
+future session approvals <id>                            # 这个会话在等什么
+future session approve <id> <request-id> [--allow <glob> --access read|write]
+future session abort <id>                                # 停掉活动 run 并清空队列
+```
 
 ## 修改设置
 
@@ -191,18 +213,37 @@ future config set compaction.reserve_tokens 8192
 | `defaultModel`、`defaultPermissionLevel` | 下一个新会话 |
 | `compaction.*`、`retry.*`、`maxTurns` | 下次 Agent 启动 |
 
-会话级设置仍用 `future session set <id>`（`--model`、`--thinking`、`--cwd`、
-`--title`），它对运行中的会话立即生效；标题另可用 `future session rename <id>
-<name>`，按需压缩用 `future session compact --session <id>`（它只返回确认，不是
-完成的摘要，且忙时会拒绝）。能力面用 `future skills install|uninstall|update` 调整。
+会话级设置仍用 `future session set <id>`，它对运行中的会话立即生效，并分两组：
 
-两个最好提前知道、而不是踩到的缺口：
+```sh
+# 随会话记录落盘
+future session set <id> --model <id> --thinking <level> --cwd <dir> --title <name> --parent <id>
 
-- **会话的工具集没有 CLI 开关。** `--tools` / `--no-tools` / `--no-builtin-tools`
-  属于 `future run`（单次运行）；跨会话持久的工具集是 TUI 与桌面端调用的 RPC，
-  `future session set` 会拒绝该旗标。
-- **从未运行过的会话，改动要等首次运行时才落盘。** 已有记录的会话，其标题或 cwd
-  会立即写入；从未产生过 entry 的会话则在首次运行时一并存储。
+# 作用于运行中的会话（到该 agent 停止为止）
+future session set <id> --tools read,shell --permission workspace --sandbox manual
+future session set <id> --system-prompt "……" --append-system-prompt "……"
+future session set <id> --context-files off --auto-compact off --auto-retry on
+```
+
+`--tools` / `--no-tools` / `--no-builtin-tools` / `--system-prompt` /
+`--append-system-prompt` / `--permission` / `--sandbox` / `--context-files` /
+`--auto-compact` / `--auto-retry` 属于第二组。它们都能用
+`future session status <id>` 读回来——这也是 `--sandbox` 不再是「只写」的原因。
+`--permission` 是审批门，`--sandbox` 是操作系统包装，两者互相独立；平台无法提供
+沙箱时 `sandbox` 会被拒绝。
+
+另外还有 `future session rename <id> <name>`（改标题）、`future session compact
+--session <id>`（按需压缩，只返回确认，不是完成的摘要，且忙时会拒绝），以及生命周期
+命令 `future session new|fork|forks|clone|title|export`。能力面用
+`future skills install|uninstall|update` 调整。
+
+一个最好提前知道、而不是踩到的缺口：**从未运行过的会话，改动要等首次运行时才落盘。**
+已有记录的会话，其标题或 cwd 会立即写入；从未产生过 entry 的会话则在首次运行时一并存储，
+所以新建的会话在第一次运行前不会出现在 `session list` 里。
+
+有两条命令是「花钱」或「动手」而非读取，因此是显式的：`future session title <id>` 会请该
+会话的模型生成标题（一次模型调用；只打印建议，加 `--apply` 才改名），
+`future session abort|cancel|approve|reject` 作用于正在运行的工作。
 
 改设置会改变此后每一个会话的行为，所以技能把它当作用户的决定：说明旧值与新值，
 在用户同意后再改。

@@ -209,12 +209,34 @@ future session list
 future session set <id> [--parent <id>] [--title <name>] [--cwd <dir>]
                         [--model <id>] [--thinking <level>]
 future session info <id> [--json]
+future session status <id> [--json]     # 实时状态：权限、沙箱、上下文、run
 future session transcript --help # 筛选并分窗查看单个会话的记录
 future session history --help   # 搜索并读取原始历史
 future session compact --help   # 请求手动压缩上下文
 future session rename <id> <name>
+future session new [--cwd <dir>] [--name <text>]
+future session forks <id>                # 该会话可分叉的轮次
+future session fork <id> --entry <id>
+future session clone <id>
+future session title <id> [--apply]      # 生成标题（一次模型调用）
+future session export <id> [--out <path>]
+future session abort <id>                # 停掉活动 run 并清空队列
+future session cancel <id> --run <run-id>
+future session approvals <id>
+future session approve <id> <request-id> [--allow <glob>]
+future session reject <id> <request-id>
 future session delete <id>
 ```
+
+`session info` 读的是落盘 journal（对话包含什么、累计花了多少）；`session status` 读的是
+运行中的 agent（这个会话**现在**怎么配置：生效中的工具权限、沙箱档、上下文占用、已加载的
+上下文文件与技能、活动与排队 run、待审批项）。只有后者能回答「这个会话的设置与全局默认
+不同」这类问题。`session set` 写两组——随会话落盘的（`--model`、`--thinking`、`--cwd`、
+`--title`、`--parent`）与作用于运行中的（`--tools`、`--no-tools`、`--no-builtin-tools`、
+`--system-prompt`、`--append-system-prompt`、`--permission`、`--sandbox`、
+`--context-files`、`--auto-compact`、`--auto-retry`）——后者可用 `session status` 读回。
+`abort`/`cancel`/`approve`/`reject` 是 TUI `/stop`、`/cancel`、`/approve` 的 CLI 对应物，
+因此在脚本里发起的 run 也能从脚本里停掉。
 
 `future session history search --all --query "<关键词>"` 跨会话检索，因此「我们以前是否
 处理过这件事」不必先知道是哪个会话。它扫描最近更新的 `--sessions` 个会话（默认 50），

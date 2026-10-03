@@ -219,12 +219,38 @@ future session list
 future session set <id> [--parent <id>] [--title <name>] [--cwd <dir>]
                         [--model <id>] [--thinking <level>]
 future session info <id> [--json]
+future session status <id> [--json]     # live state: permission, sandbox, context, runs
 future session transcript --help # filter and window one session's records
 future session history --help   # search and read original history
 future session compact --help   # request manual context compaction
 future session rename <id> <name>
+future session new [--cwd <dir>] [--name <text>]
+future session forks <id>                # turns this session can be branched at
+future session fork <id> --entry <id>
+future session clone <id>
+future session title <id> [--apply]      # generate a title (a model call)
+future session export <id> [--out <path>]
+future session abort <id>                # stop the active run, clear the queue
+future session cancel <id> --run <run-id>
+future session approvals <id>
+future session approve <id> <request-id> [--allow <glob>]
+future session reject <id> <request-id>
 future session delete <id>
 ```
+
+`session info` reads the persisted journal (what the conversation contains and
+what it has cost); `session status` reads the live agent (how the session is
+configured *now*: the effective tool permission, the sandbox tier, context
+occupancy, loaded context files and skills, active and queued runs, and pending
+approvals). Only the second can answer a question about a session whose settings
+differ from the global defaults. `session set` writes both groups — the recorded
+options (`--model`, `--thinking`, `--cwd`, `--title`, `--parent`) and the live
+ones (`--tools`, `--no-tools`, `--no-builtin-tools`, `--system-prompt`,
+`--append-system-prompt`, `--permission`, `--sandbox`, `--context-files`,
+`--auto-compact`, `--auto-retry`) — and `session status` reads the live ones
+back. `abort`/`cancel`/`approve`/`reject` are the CLI counterpart of the TUI's
+`/stop`, `/cancel` and `/approve`, so a run started from a script can also be
+stopped from one.
 
 `future session history search --all --query "<text>"` searches across sessions
 instead of one, so "have we ever discussed this" does not require knowing which
