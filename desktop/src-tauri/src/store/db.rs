@@ -16,13 +16,15 @@ use super::schema::{
 };
 use super::util::now_millis;
 
+/// `~/.future/app/` — the directory the desktop app owns. The location is
+/// defined once in `future-app-settings`, which the CLI also reads, so a
+/// `future desktop settings` call reaches the same database.
 pub(super) fn app_dir() -> Result<PathBuf, crate::AppError> {
-    let home = crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?;
-    Ok(PathBuf::from(home).join(".future").join("app"))
+    Ok(future_app_settings::app_dir()?)
 }
 
 pub(super) fn db_path() -> Result<PathBuf, crate::AppError> {
-    Ok(app_dir()?.join("app.db"))
+    Ok(future_app_settings::app_db_path()?)
 }
 
 pub fn chat_workspace_path(id: &str) -> Result<PathBuf, crate::AppError> {

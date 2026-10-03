@@ -73,6 +73,7 @@ jobs:
             # drives the workspace-level fmt/clippy and cross-platform build.
             rust_workspace:
               - 'packages/remote-crypto/**'
+              - 'packages/app-settings/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.cargo/**'
@@ -100,6 +101,9 @@ jobs:
               - '.cargo/**'
               - 'rust-toolchain.toml'
               - 'packages/rpc/**'
+              # The CLI reads and writes the desktop settings document, whose
+              # schema lives in packages/app-settings.
+              - 'packages/app-settings/**'
               - 'tui/**'
               - 'cli/**'
             rust_channels_rpc_loop:
@@ -122,6 +126,8 @@ jobs:
               - 'Cargo.lock'
             desktop_tauri:
               - 'packages/remote-crypto/**'
+              # The desktop backend path-depends on the shared settings schema.
+              - 'packages/app-settings/**'
               - 'desktop/src-tauri/**'
               - '.cargo/**'
               - 'rust-toolchain.toml'
@@ -324,7 +330,7 @@ jobs:
             desktop: 'false'
           - name: tui, cli
             filter: rust_tui_cli
-            packages: -p future-tui -p future-cli
+            packages: -p future-tui -p future-cli -p future-app-settings
             desktop: 'false'
           - name: channels, rpc, loop
             filter: rust_channels_rpc_loop

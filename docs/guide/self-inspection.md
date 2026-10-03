@@ -18,6 +18,7 @@ themselves.
 | Command | What it reports |
 |---|---|
 | `future config get [<key>] [--json]` | The effective global settings, defaults included |
+| `future desktop settings [<key>] [--json]` | The desktop app's own settings (approval tier, hidden models, …), defaults included |
 | `future doctor` | One pass over login, agent connectivity, sandbox, providers, sessions and skills |
 | `future models --json` | Models this agent can use |
 | `future version --json` | Which build this is: version, commit, target, dirty state |
@@ -33,7 +34,8 @@ themselves.
 loader the Agent uses, so it reports what the Agent would actually apply rather
 than what the file literally contains: a key the file omits still shows its
 documented default. With a key it prints that value alone, which makes it usable
-in a script.
+in a script. `future config` covers the *agent's* document only; the desktop
+app's own preferences have their own command (see below).
 
 Credentials are a deliberate exception. `auth.json` is never part of this
 surface: `future config get` contains no key material, and the settings document
@@ -227,6 +229,32 @@ Two gaps are worth knowing rather than discovering:
 Changing a setting changes how every later session behaves, so the skill treats
 it as the user's decision: state the old value and the new one, and make the
 change when the user agrees.
+
+## The desktop app's settings
+
+The desktop app keeps its own preferences — approval tier, hidden models, the
+completion bell, the generated-title language and so on — in an `app_settings`
+table in `~/.future/app/app.db`. They are neither the agent's settings document
+(`future config`, `~/.future/agent/settings.json`) nor the models, providers
+and auth files, which the app and the agent share.
+
+```sh
+future desktop settings                        # everything, with defaults
+future desktop settings get approvalTier       # one value
+future desktop settings set approvalTier manual
+future desktop settings set hiddenModels "future/glm-5.3, future/kimi-k3"
+```
+
+Keys use the camelCase spelling of the desktop API; `future desktop --help`
+lists every key with its accepted values, and each preference the app's Settings
+screen can change is settable here too. A list value is a JSON array or a
+comma-separated list. Values are validated before the database is touched, so an
+invalid value or an unknown key leaves it exactly as it was; a read against a
+database the app has never written reports the defaults and does not create one.
+
+Reads and writes need no running desktop app, and the app picks the change up
+the next time it reads the settings; a change made in the app's own Settings
+screen applies immediately.
 
 ## Boundaries worth stating
 
