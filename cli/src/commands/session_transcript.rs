@@ -14,6 +14,7 @@
 //! blocks are visible here even though `session history search` excludes them
 //! by design. Media blocks are not emitted, matching history recall.
 
+use super::session::human_tokens;
 use crate::output::Output;
 use crate::rpc::{grpc_addr, RunClient};
 use serde_json::{json, Value};
@@ -46,14 +47,20 @@ Window (entries, in display order):
 Shape:
   --truncate <n>    Truncate every emitted string longer than n characters
   --counts          Print a distribution summary of the window instead of entries
+  --runs            Print one row per run: status, duration, tokens, error
   --json            Machine-readable output
   -h, --help        Show this help
 
 Entries are matching *display* entries; a window empty after filtering is normal.
---counts ignores --select/--tool/--grep, and counts the whole session unless
---limit or --all is given. --tool filters tool results by the name of the call
-they pair with; a result whose call is outside the scanned window cannot be
-attributed and is skipped (the summary reports how many).
+Every emitted entry also carries its run outcome (`run`, `runId`) and, where the
+run recorded one, its token `usage`.
+
+--counts and --runs are summaries: they ignore --select/--tool/--grep, always
+start at the beginning of the session, and cover the whole session unless
+--limit or --all is given (--runs counts distinct runs, not entries).
+--tool filters tool results by the name of the call they pair with; a result
+whose call is outside the scanned window cannot be attributed and is skipped
+(the summary reports how many).
 Reads original records through the Agent; no model call is made.";
 
 /// Entries requested per RPC page. Well inside the Agent's 1..=1000 clamp and
@@ -120,8 +127,13 @@ struct Options {
     limit_given: bool,
     all: bool,
     max_bytes: usize,
+    /// Whether `--max-bytes` was the caller's own choice. The summaries cover
+    /// the whole session unless they asked for a bound, so that a distribution
+    /// is never quietly partial.
+    max_bytes_given: bool,
     truncate: Option<usize>,
     counts: bool,
+    runs: bool,
     json: bool,
 }
 
@@ -136,8 +148,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut limit_given = false;
     let mut all = false;
     let mut max_bytes = DEFAULT_MAX_BYTES;
+    let mut max_bytes_given = false;
     let mut truncate = None;
     let mut counts = false;
+    let mut runs = false;
     let mut json = false;
     let mut seen = HashSet::new();
     let mut index = 0;
@@ -153,14 +167,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
         }
         if matches!(
             flag,
-            "--input" | "--output" | "--paths" | "--all" | "--counts"
+            "--input" | "--output" | "--paths" | "--all" | "--counts" | "--runs"
         ) {
             match flag {
                 "--input" => input_only = true,
                 "--output" => output_only = true,
                 "--paths" => paths_only = true,
                 "--all" => all = true,
-                _ => counts = true,
+                "--counts" => counts = true,
+                _ => runs = true,
             }
             index += 1;
             continue;
@@ -252,6 +267,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 if max_bytes > 64 * 1024 * 1024 {
                     return Err("--max-bytes must be at most 64 MiB".into());
                 }
+                max_bytes_given = true;
             }
             "--truncate" => {
                 let value: usize = raw.parse().map_err(|_| "--truncate must be an integer")?;
@@ -270,6 +286,19 @@ fn parse(args: &[String]) -> Result<Options, String> {
     if all && limit_given {
         return Err("--all and --limit are mutually exclusive".into());
     }
+    if counts && runs {
+        return Err("--counts and --runs are mutually exclusive".into());
+    }
+    // The two summary modes read the whole window; paging a summary would
+    // report a partial distribution as if it were the session's.
+    if (counts || runs) && cursor != 0 {
+        return Err("--cursor is not valid with --counts or --runs".into());
+    }
+    // Truncating a run's error text would hide the part worth reading, so the
+    // flag is refused rather than silently ignored.
+    if runs && truncate.is_some() {
+        return Err("--truncate is not valid with --runs".into());
+    }
     Ok(Options {
         session: session.ok_or("--session is required")?,
         select: select.unwrap_or_else(default_select),
@@ -283,8 +312,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
         limit_given,
         all,
         max_bytes,
+        max_bytes_given,
         truncate,
         counts,
+        runs,
         json,
     })
 }
@@ -493,13 +524,34 @@ struct Counts {
     blocks: BTreeMap<String, i64>,
     tools: BTreeMap<String, i64>,
     tool_errors: i64,
+    /// Run outcomes by status — the answer to "did anything fail here".
+    runs: BTreeMap<String, i64>,
     content_bytes: usize,
+    tokens: BTreeMap<String, i64>,
     first_at_ms: Option<i64>,
     last_at_ms: Option<i64>,
 }
 
 impl Counts {
     fn tally(&mut self, entry: &Value) {
+        // Run annotations ride on ordinary entries, so they are folded in
+        // before the per-kind work below.
+        if let Some(run) = entry.get("run").filter(|v| v.is_object()) {
+            let status = run["status"].as_str().unwrap_or("unknown");
+            *self.runs.entry(status.to_string()).or_insert(0) += 1;
+        }
+        if let Some(usage) = entry.get("usage").filter(|v| v.is_object()) {
+            for (key, field) in [
+                ("input", "inputTokens"),
+                ("output", "outputTokens"),
+                ("cacheRead", "cacheReadTokens"),
+                ("cacheWrite", "cacheWriteTokens"),
+            ] {
+                if let Some(count) = usage[field].as_i64() {
+                    *self.tokens.entry(key.to_string()).or_insert(0) += count;
+                }
+            }
+        }
         let kind = string(entry, "kind");
         *self.entries.entry(kind.clone()).or_insert(0) += 1;
         if let Some(ms) = entry["createdAtMs"].as_i64() {
@@ -530,6 +582,8 @@ impl Counts {
             "blocks": self.blocks,
             "tools": self.tools,
             "toolErrors": self.tool_errors,
+            "runs": self.runs,
+            "tokens": self.tokens,
             "contentBytes": self.content_bytes,
             "firstAtMs": self.first_at_ms,
             "lastAtMs": self.last_at_ms,
@@ -540,6 +594,96 @@ impl Counts {
 /// One entry that survived the selection.
 struct Kept {
     entry: Value,
+}
+
+/// Copy the run outcome and per-run token usage onto a projected entry.
+///
+/// The display projection already carries both (every entry of a run shares the
+/// same `run` object, and the run's final assistant carries `usage`), and they
+/// are tens of bytes against kilobytes of text — so dropping them would make
+/// "which run failed" and "what did this run cost" unanswerable without
+/// re-reading the journal. `--counts` and `--runs` summarise the same fields.
+fn attach_run_outcome(projected: &mut Value, entry: &Value) {
+    if let Some(run_id) = entry.get("runId").filter(|v| !v.is_null()) {
+        projected["runId"] = run_id.clone();
+    }
+    if let Some(run) = entry
+        .get("run")
+        .filter(|v| !v.is_null() && v.as_object().is_some_and(|o| !o.is_empty()))
+    {
+        projected["run"] = run.clone();
+    }
+    if let Some(usage) = entry
+        .get("usage")
+        .filter(|v| !v.is_null() && v.as_object().is_some_and(|o| !o.is_empty()))
+    {
+        projected["usage"] = usage.clone();
+    }
+}
+
+/// One run's outcome, as the `--runs` ledger reports it.
+#[derive(Debug, Default, Clone)]
+struct RunRow {
+    run_id: String,
+    status: String,
+    duration_ms: Option<i64>,
+    error: Option<String>,
+    first_ordinal: i64,
+    usage: Option<Value>,
+}
+
+impl RunRow {
+    fn to_json(&self) -> Value {
+        let mut value = json!({
+            "runId": self.run_id,
+            "status": self.status,
+            "firstOrdinal": self.first_ordinal,
+        });
+        if let Some(duration) = self.duration_ms {
+            value["durationMs"] = json!(duration);
+        }
+        if let Some(error) = self.error.as_deref().filter(|e| !e.is_empty()) {
+            value["error"] = json!(error);
+        }
+        if let Some(usage) = &self.usage {
+            value["usage"] = usage.clone();
+        }
+        value
+    }
+}
+
+/// Fold one entry's run annotation into the ledger, keeping the first position
+/// and upgrading to the entry that actually carries the token usage.
+fn record_run(ledger: &mut Vec<RunRow>, entry: &Value, ordinal: i64) {
+    let Some(run) = entry
+        .get("run")
+        .filter(|v| v.as_object().is_some_and(|o| !o.is_empty()))
+    else {
+        return;
+    };
+    let run_id = entry
+        .get("runId")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let usage = entry
+        .get("usage")
+        .filter(|v| v.as_object().is_some_and(|o| !o.is_empty()))
+        .cloned();
+    if let Some(row) = ledger.iter_mut().find(|row| row.run_id == run_id) {
+        if row.usage.is_none() {
+            row.usage = usage;
+        }
+        return;
+    }
+    ledger.push(RunRow {
+        run_id,
+        status: run["status"].as_str().unwrap_or("unknown").to_string(),
+        duration_ms: run["durationMs"].as_i64(),
+        error: run["error"].as_str().map(str::to_string),
+        first_ordinal: ordinal,
+        usage,
+    });
 }
 
 /// Project one display entry through the selection. `call_names` accumulates
@@ -585,9 +729,7 @@ fn filter_entry(
             "createdAtMs": entry["createdAtMs"],
         });
         projected[want.1] = payload;
-        if let Some(run_id) = entry.get("runId").filter(|v| !v.is_null()) {
-            projected["runId"] = run_id.clone();
-        }
+        attach_run_outcome(&mut projected, entry);
         return Some(Kept { entry: projected });
     }
 
@@ -725,9 +867,7 @@ fn filter_entry(
         "role": string(entry, "role"),
         "createdAtMs": entry["createdAtMs"],
     });
-    if let Some(run_id) = entry.get("runId").filter(|v| !v.is_null()) {
-        projected["runId"] = run_id.clone();
-    }
+    attach_run_outcome(&mut projected, entry);
     projected["blocks"] = Value::Array(blocks);
     Some(Kept { entry: projected })
 }
@@ -849,12 +989,59 @@ fn compact_paths(paths: &Value) -> String {
     }
 }
 
+/// The `--runs` ledger: one line per distinct run, in the order they started.
+fn format_run_ledger(
+    session: &str,
+    ledger: &[RunRow],
+    has_more: bool,
+    cut_by_bytes: bool,
+) -> String {
+    let failed = ledger
+        .iter()
+        .filter(|row| !matches!(row.status.as_str(), "completed"))
+        .count();
+    let mut out = format!("session={session} runs={} failed={failed}\n", ledger.len());
+    if ledger.is_empty() {
+        out.push_str("\nNo runs recorded in this window.\n");
+        return out;
+    }
+    for row in ledger {
+        let duration = row
+            .duration_ms
+            .map(|ms| format!(" {:.1}s", ms as f64 / 1000.0))
+            .unwrap_or_default();
+        let tokens = row
+            .usage
+            .as_ref()
+            .and_then(|usage| usage["inputTokens"].as_i64())
+            .map(|input| format!(" in={} ", human_tokens(input)))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "\n[{:>4}] {}  {}{}{}",
+            row.first_ordinal, row.run_id, row.status, duration, tokens
+        ));
+        if let Some(error) = row.error.as_deref().filter(|e| !e.is_empty()) {
+            out.push_str(&format!("\n       error: {error}"));
+        }
+        out.push('\n');
+    }
+    if has_more {
+        out.push_str(if cut_by_bytes {
+            "\nMore runs exist; this cut is from --max-bytes. Raise it for the whole ledger.\n"
+        } else {
+            "\nMore runs exist; raise --limit or pass --all.\n"
+        });
+    }
+    out
+}
+
 fn format_counts(
     session: &str,
     scanned: i64,
     counts: &Counts,
     has_more: bool,
     next_cursor: i64,
+    cut_by_bytes: bool,
 ) -> String {
     let mut out = format!(
         "session={session} scanned={scanned} hasMore={has_more} nextCursor={next_cursor}\n"
@@ -871,6 +1058,8 @@ fn format_counts(
     section("entries", &counts.entries);
     section("blocks", &counts.blocks);
     section("tools", &counts.tools);
+    section("runs", &counts.runs);
+    section("tokens", &counts.tokens);
     out.push_str(&format!(
         "\ntoolErrors={} contentBytes={}\n",
         counts.tool_errors, counts.content_bytes
@@ -882,7 +1071,11 @@ fn format_counts(
             format_timestamp(last)
         ));
     }
-    if has_more {
+    if has_more && cut_by_bytes {
+        // `--cursor` is refused with the summaries, so pointing at it would be
+        // advice the caller cannot follow.
+        out.push_str("\nPartial distribution: raise --max-bytes for the whole session.\n");
+    } else if has_more {
         out.push_str(&format!(
             "\nMore entries exist: repeat with --cursor {next_cursor}.\n"
         ));
@@ -898,19 +1091,28 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
     let options = parse(args)?;
     let client = RunClient::new(&grpc_addr());
 
-    // `--counts` describes the window: it ignores the content filters, and it
-    // covers the whole session unless the caller bounded it.
-    let bound: Option<i64> = if options.all || (options.counts && !options.limit_given) {
+    // The two summary modes describe the window: they ignore the content
+    // filters, and cover the whole session unless the caller bounded them.
+    let summary = options.counts || options.runs;
+    let bound: Option<i64> = if options.all || (summary && !options.limit_given) {
         None
     } else {
         Some(options.limit)
     };
 
+    // The byte budget is the caller's bound in the entry modes (a page of
+    // entries must stay readable), but in the summary modes it is only a bound
+    // they asked for: a distribution that silently covered part of a session
+    // would be worse than a slow one.
+    let byte_budget = !summary || options.max_bytes_given;
+
     let mut next_cursor = options.cursor;
     let mut scanned = 0i64;
     let mut emitted: Vec<Value> = Vec::new();
     let mut counts = Counts::default();
+    let mut ledger: Vec<RunRow> = Vec::new();
     let mut bytes = 0usize;
+    let mut cut_by_bytes = false;
     let mut unattributed = 0i64;
     let mut call_names: CallNames = HashMap::new();
     let mut keep_ids: HashSet<String> = HashSet::new();
@@ -929,8 +1131,15 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
         // must still advance past everything this scan did consume.
         let mut stop = false;
         for entry in &entries {
+            let ordinal = next_cursor + consumed;
+            // `--runs` counts distinct runs, so a run already in the ledger
+            // does not spend the caller's budget twice.
             let produced_so_far = if options.counts {
                 scanned
+            } else if options.runs {
+                // A run currently open (its id already in the ledger) does not
+                // add a row, so the bound is checked after the merge below.
+                ledger.len() as i64
             } else {
                 emitted.len() as i64
             };
@@ -940,13 +1149,13 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
                     break;
                 }
             }
-            let produced = if options.counts {
+            let produced = if summary {
                 None
             } else {
                 filter_entry(
                     entry,
                     &options,
-                    next_cursor + consumed,
+                    ordinal,
                     &mut call_names,
                     &mut keep_ids,
                     &mut unattributed,
@@ -956,10 +1165,12 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
                 .as_ref()
                 .map(|kept| json_len(&kept.entry))
                 .unwrap_or(0);
-            if options.max_bytes > 0 && bytes > 0 && bytes + size > options.max_bytes {
+            if byte_budget && options.max_bytes > 0 && bytes > 0 && bytes + size > options.max_bytes
+            {
                 // This entry does not fit; leave it for the next window so the
                 // cursor always points at unread content.
                 stop = true;
+                cut_by_bytes = true;
                 break;
             }
             consumed += 1;
@@ -967,6 +1178,8 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
             if options.counts {
                 counts.tally(entry);
                 bytes += json_len(entry);
+            } else if options.runs {
+                record_run(&mut ledger, entry, ordinal);
             } else if let Some(kept) = produced {
                 bytes += size;
                 emitted.push(kept.entry);
@@ -1000,6 +1213,33 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
                 &counts,
                 has_more,
                 next_cursor,
+                cut_by_bytes,
+            ));
+        }
+        return Ok(());
+    }
+
+    if options.runs {
+        let failed = ledger
+            .iter()
+            .filter(|row| !matches!(row.status.as_str(), "completed"))
+            .count();
+        if options.json {
+            let report = json!({
+                "sessionId": options.session,
+                "scannedEntries": scanned,
+                "hasMore": has_more,
+                "runs": ledger.len(),
+                "failedRuns": failed,
+                "ledger": ledger.iter().map(RunRow::to_json).collect::<Vec<_>>(),
+            });
+            out.log(&serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?);
+        } else {
+            out.log(&format_run_ledger(
+                &options.session,
+                &ledger,
+                has_more,
+                cut_by_bytes,
             ));
         }
         return Ok(());
@@ -1632,6 +1872,233 @@ mod tests {
         let (out, _cap) = Output::memory();
         let error = run(&args(&["--session", "s1"]), &out).await.unwrap_err();
         assert!(error.contains("Unable to load session history"), "{error}");
+    }
+
+    /// An entry as the Agent actually sends it: a run outcome on every entry of
+    /// the run, and the token usage on the run's final assistant.
+    fn run_entry(kind: &str, run_id: &str, status: &str, usage: Option<Value>) -> Value {
+        let mut entry = entry(kind, json!([text_block("body")]));
+        entry["runId"] = json!(run_id);
+        let mut run = json!({"status": status, "durationMs": 1500});
+        if status == "failed" {
+            run["error"] = json!("upstream disconnected");
+        }
+        entry["run"] = run;
+        if let Some(usage) = usage {
+            entry["usage"] = usage;
+        }
+        entry
+    }
+
+    #[test]
+    fn emitted_entries_carry_their_run_outcome_and_usage() {
+        let options = options(&["--select", "assistant"]);
+        let mut names = CallNames::new();
+        let mut ids = HashSet::new();
+        let usage = json!({"inputTokens": 100, "outputTokens": 5});
+        let kept = filter_entry(
+            &run_entry("assistant", "run-1", "failed", Some(usage.clone())),
+            &options,
+            0,
+            &mut names,
+            &mut ids,
+        )
+        .expect("kept");
+        assert_eq!(kept.entry["runId"], json!("run-1"));
+        assert_eq!(kept.entry["run"]["status"], json!("failed"));
+        assert_eq!(kept.entry["run"]["error"], json!("upstream disconnected"));
+        assert_eq!(kept.entry["run"]["durationMs"], json!(1500));
+        assert_eq!(kept.entry["usage"], usage);
+    }
+
+    #[test]
+    fn entries_without_a_run_annotation_do_not_gain_empty_objects() {
+        let options = options(&["--select", "assistant"]);
+        let mut names = CallNames::new();
+        let mut ids = HashSet::new();
+        let plain = entry("assistant", json!([text_block("hi")]));
+        let kept = filter_entry(&plain, &options, 0, &mut names, &mut ids).expect("kept");
+        assert!(kept.entry.get("run").is_none());
+        assert!(kept.entry.get("usage").is_none());
+        assert!(kept.entry.get("runId").is_none());
+    }
+
+    #[test]
+    fn the_run_ledger_dedupes_by_run_and_keeps_the_usage_carrying_entry() {
+        let mut ledger = Vec::new();
+        // Three entries of one run: the middle one carries the usage.
+        record_run(
+            &mut ledger,
+            &run_entry("user", "run-1", "completed", None),
+            0,
+        );
+        record_run(
+            &mut ledger,
+            &run_entry(
+                "assistant",
+                "run-1",
+                "completed",
+                Some(json!({"inputTokens": 9})),
+            ),
+            1,
+        );
+        record_run(
+            &mut ledger,
+            &run_entry("tool", "run-1", "completed", None),
+            2,
+        );
+        record_run(&mut ledger, &run_entry("user", "run-2", "failed", None), 3);
+
+        assert_eq!(ledger.len(), 2, "one row per run, not per entry");
+        assert_eq!(ledger[0].run_id, "run-1");
+        assert_eq!(ledger[0].first_ordinal, 0, "the run's first position wins");
+        assert_eq!(ledger[0].usage.as_ref().unwrap()["inputTokens"], json!(9));
+        assert_eq!(ledger[1].status, "failed");
+        assert_eq!(ledger[1].error.as_deref(), Some("upstream disconnected"));
+        // An entry with no run annotation contributes nothing.
+        record_run(
+            &mut ledger,
+            &entry("assistant", json!([text_block("x")])),
+            4,
+        );
+        assert_eq!(ledger.len(), 2);
+    }
+
+    #[test]
+    fn counts_report_run_outcomes_and_tokens() {
+        let mut counts = Counts::default();
+        counts.tally(&run_entry("assistant", "r1", "completed", None));
+        counts.tally(&run_entry(
+            "assistant",
+            "r2",
+            "failed",
+            Some(json!({"inputTokens": 100, "outputTokens": 7, "cacheReadTokens": 3})),
+        ));
+        assert_eq!(counts.runs["completed"], 1);
+        assert_eq!(counts.runs["failed"], 1);
+        assert_eq!(counts.tokens["input"], 100);
+        assert_eq!(counts.tokens["output"], 7);
+        assert_eq!(counts.tokens["cacheRead"], 3);
+        assert_eq!(counts.tokens.get("cacheWrite"), None, "unset stays absent");
+    }
+
+    #[test]
+    fn the_ledger_renders_status_duration_tokens_and_error() {
+        let mut ledger = Vec::new();
+        record_run(
+            &mut ledger,
+            &run_entry("user", "run-1", "completed", None),
+            0,
+        );
+        record_run(
+            &mut ledger,
+            &run_entry(
+                "assistant",
+                "run-2",
+                "failed",
+                Some(json!({"inputTokens": 2_500_000})),
+            ),
+            7,
+        );
+        let rendered = format_run_ledger("s1", &ledger, false, false);
+        assert!(rendered.contains("runs=2 failed=1"), "{rendered}");
+        assert!(rendered.contains("run-1  completed 1.5s"), "{rendered}");
+        assert!(rendered.contains("in=2.5M"), "{rendered}");
+        assert!(
+            rendered.contains("error: upstream disconnected"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("More runs exist"));
+        assert!(format_run_ledger("s1", &ledger, true, false).contains("raise --limit"));
+        assert!(format_run_ledger("s1", &ledger, true, true).contains("--max-bytes"));
+        assert!(format_run_ledger("s1", &[], false, false).contains("No runs recorded"));
+    }
+
+    /// A summary is either complete or says why it is not. `--cursor` is
+    /// refused with the summaries, so the truncation message must not send the
+    /// caller there.
+    #[test]
+    fn a_byte_cut_in_a_summary_points_at_max_bytes_not_the_cursor() {
+        let counts = Counts::default();
+        let cut = format_counts("s1", 10, &counts, true, 10, true);
+        assert!(cut.contains("Partial distribution"), "{cut}");
+        assert!(!cut.contains("--cursor"), "{cut}");
+        // An entry page keeps the cursor advice, which is the right move there.
+        let page = format_counts("s1", 10, &counts, true, 10, false);
+        assert!(page.contains("repeat with --cursor 10"), "{page}");
+    }
+
+    #[test]
+    fn summaries_cover_the_whole_session_unless_the_caller_bounds_them() {
+        // An explicit --max-bytes is respected by the summary...
+        let bounded = options(&["--counts", "--max-bytes", "1024"]);
+        assert!(bounded.max_bytes_given && bounded.counts);
+        // ...while the default is only the entry page's own budget.
+        let default = options(&["--counts"]);
+        assert!(!default.max_bytes_given);
+    }
+
+    #[tokio::test]
+    async fn transcript_runs_mode_lists_runs_not_entries() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = entries_agent(json!({
+            "entries": [
+                run_entry("user", "run-1", "completed", None),
+                run_entry("assistant", "run-1", "completed", Some(json!({"inputTokens": 10}))),
+                run_entry("user", "run-2", "failed", None),
+            ]
+        }));
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        run(&args(&["--session", "s1", "--runs", "--json"]), &out)
+            .await
+            .expect("runs");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let report: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(report["runs"], json!(2));
+        assert_eq!(report["failedRuns"], json!(1));
+        assert_eq!(report["ledger"][0]["runId"], json!("run-1"));
+        assert_eq!(report["ledger"][0]["usage"]["inputTokens"], json!(10));
+        assert_eq!(report["ledger"][1]["status"], json!("failed"));
+    }
+
+    #[tokio::test]
+    async fn transcript_runs_mode_honours_limit_as_a_run_count() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = entries_agent(json!({
+            "entries": [
+                run_entry("user", "run-1", "completed", None),
+                run_entry("assistant", "run-1", "completed", None),
+                run_entry("user", "run-2", "completed", None),
+                run_entry("user", "run-3", "completed", None),
+            ]
+        }));
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        run(
+            &args(&["--session", "s1", "--runs", "--json", "--limit", "2"]),
+            &out,
+        )
+        .await
+        .expect("runs");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let report: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(report["runs"], json!(2), "the limit counts runs");
+        assert_eq!(report["hasMore"], json!(true));
+    }
+
+    #[test]
+    fn summary_modes_reject_paging_and_truncate() {
+        assert!(parse(&args(&["--session", "s1", "--counts", "--cursor", "5"])).is_err());
+        assert!(parse(&args(&["--session", "s1", "--runs", "--cursor", "5"])).is_err());
+        assert!(parse(&args(&["--session", "s1", "--counts", "--runs"])).is_err());
+        // Refused at parse time — before any agent call — so a long session
+        // cannot be scanned only to fail at the end.
+        let error = parse(&args(&["--session", "s1", "--runs", "--truncate", "10"])).unwrap_err();
+        assert!(
+            error.contains("--truncate is not valid with --runs"),
+            "{error}"
+        );
     }
 
     #[tokio::test]

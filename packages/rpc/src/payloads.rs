@@ -62,6 +62,10 @@ pub struct GetStatePayload {
     pub requested_run: Option<Value>,
     /// Approval-request card payloads the session is parked on.
     pub pending_approvals: Vec<Value>,
+    /// The sandbox tier this session's policy was set to. `None` means no
+    /// policy was ever set, which is not the same as `Some("off")`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_tier: Option<String>,
 }
 
 /// A run's live state (get_state `activeRun` / `interruptedRun`; proto
@@ -246,6 +250,7 @@ mod tests {
             interrupted_run: None,
             requested_run: None,
             pending_approvals: vec![],
+            sandbox_tier: None,
         };
         let value = serde_json::to_value(&payload).unwrap();
 
@@ -255,6 +260,51 @@ mod tests {
         assert!(value.get("sessionName").is_none(), "empty name is omitted");
         assert!(value.get("session_name").is_none(), "no legacy alias");
         assert!(value.get("extensions").is_none());
+        // No policy set must not be spelled as "off" — that is a real choice.
+        assert!(
+            value.get("sandboxTier").is_none(),
+            "an unset sandbox tier is omitted, not defaulted"
+        );
+    }
+
+    /// A session that never chose a sandbox tier decodes as `None` from both an
+    /// absent key and an explicit `null`, and a chosen one survives the trip.
+    #[test]
+    fn sandbox_tier_is_optional_in_both_directions() {
+        let with_tier = json!({
+            "agentInstanceId": "a", "model": "m", "imageSupport": false,
+            "thinkingLevel": "off", "isStreaming": false, "isCompacting": false,
+            "explicitSession": true, "autoCompactionEnabled": true, "queryCount": 0,
+            "version": "v", "cwd": "/w", "skills": [], "contextFiles": [],
+            "contextWindow": 1, "contextTokens": 0, "contextPercent": 0.0,
+            "usage": {"inputTokens":0,"outputTokens":0,"cacheReadTokens":0,
+                      "cacheWriteTokens":0,"costCny":0.0},
+            "permissionLevel": "all", "createdBy": "cli", "sourceMeta": null,
+            "queuedRuns": [], "queuedCount": 0, "recentTerminalAcks": [],
+            "pendingApprovals": [], "sandboxTier": "sandbox"
+        });
+        let payload: GetStatePayload = serde_json::from_value(with_tier).unwrap();
+        assert_eq!(payload.sandbox_tier.as_deref(), Some("sandbox"));
+
+        for spelling in [json!(null), json!("missing")] {
+            let mut value = json!({
+                "agentInstanceId": "a", "model": "m", "imageSupport": false,
+                "thinkingLevel": "off", "isStreaming": false, "isCompacting": false,
+                "explicitSession": true, "autoCompactionEnabled": true, "queryCount": 0,
+                "version": "v", "cwd": "/w", "skills": [], "contextFiles": [],
+                "contextWindow": 1, "contextTokens": 0, "contextPercent": 0.0,
+                "usage": {"inputTokens":0,"outputTokens":0,"cacheReadTokens":0,
+                          "cacheWriteTokens":0,"costCny":0.0},
+                "permissionLevel": "all", "createdBy": "cli", "sourceMeta": null,
+                "queuedRuns": [], "queuedCount": 0, "recentTerminalAcks": [],
+                "pendingApprovals": []
+            });
+            if spelling == json!(null) {
+                value["sandboxTier"] = json!(null);
+            }
+            let payload: GetStatePayload = serde_json::from_value(value).unwrap();
+            assert_eq!(payload.sandbox_tier, None, "{spelling}");
+        }
     }
 
     #[test]
@@ -435,8 +485,10 @@ mod tests {
             interrupted_run: None,
             requested_run: None,
             pending_approvals: vec![],
+            sandbox_tier: Some("manual".to_string()),
         };
         let canonical = serde_json::to_value(&payload).unwrap();
+        assert_eq!(canonical["sandboxTier"], json!("manual"));
         let decoded: GetStatePayload = serde_json::from_value(canonical.clone()).unwrap();
         assert_eq!(serde_json::to_value(&decoded).unwrap(), canonical);
     }

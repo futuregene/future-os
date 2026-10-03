@@ -745,6 +745,13 @@ fn get_state_internal(
         interrupted_run,
         requested_run,
         pending_approvals,
+        // `None` until a client sets a policy, which is deliberately distinct
+        // from a policy of "off": the former means the default (no OS
+        // wrapping), the latter an explicit choice.
+        sandbox_tier: sess
+            .sandbox_policy
+            .as_ref()
+            .map(|policy| policy.tier.as_str().to_string()),
     })
     .unwrap_or_default();
     Some(payload)

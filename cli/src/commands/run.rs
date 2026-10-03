@@ -11,7 +11,11 @@ use std::path::Path;
 
 pub(crate) const VALID_THINKING_LEVELS: &[&str] =
     &["off", "minimal", "low", "medium", "high", "xhigh"];
-const VALID_PERMISSION_LEVELS: &[&str] = &["all", "workspace", "none"];
+pub(crate) const VALID_PERMISSION_LEVELS: &[&str] = &["all", "workspace", "none"];
+/// Approval tiers the agent accepts for `set_sandbox_policy` (proto
+/// `SandboxPolicy.tier`). The OS probe is the agent's job, not ours — a tier
+/// this list allows can still be refused at apply time.
+pub(crate) const VALID_SANDBOX_TIERS: &[&str] = &["off", "manual", "sandbox"];
 
 // ─── CLI Types ────────────────────────────────────────────────────────
 

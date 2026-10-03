@@ -462,6 +462,185 @@ impl RunClient {
         Ok(())
     }
 
+    /// `setSandboxPolicy(tier, sessionId?)` — `set_sandbox_policy`. Only the
+    /// approval tier travels over the wire; the agent probes the OS sandbox
+    /// before accepting `sandbox`, so a failure here is a real refusal.
+    pub async fn set_sandbox_policy(&self, tier: &str, session_id: &str) -> Result<Value, String> {
+        use future_rpc::proto::SandboxPolicy;
+        let cmd = RpcCommand {
+            sandbox_policy: Some(SandboxPolicy {
+                tier: tier.to_string(),
+            }),
+            ..Default::default()
+        };
+        self.execute_command("set_sandbox_policy", cmd, Some(session_id), 5)
+            .await
+    }
+
+    /// `setContextFiles(enabled, sessionId?)` — `set_context_files`. `enabled`
+    /// is inverted into the session's `no_context_files` flag.
+    pub async fn set_context_files(&self, enabled: bool, session_id: &str) -> Result<(), String> {
+        let cmd = RpcCommand {
+            enabled,
+            ..Default::default()
+        };
+        self.execute_command("set_context_files", cmd, Some(session_id), 5)
+            .await?;
+        Ok(())
+    }
+
+    /// `setAutoCompaction(enabled, sessionId?)` — `set_auto_compaction`.
+    pub async fn set_auto_compaction(&self, enabled: bool, session_id: &str) -> Result<(), String> {
+        let cmd = RpcCommand {
+            enabled,
+            ..Default::default()
+        };
+        self.execute_command("set_auto_compaction", cmd, Some(session_id), 5)
+            .await?;
+        Ok(())
+    }
+
+    /// `setAutoRetry(enabled, sessionId?)` — `set_auto_retry`.
+    pub async fn set_auto_retry(&self, enabled: bool, session_id: &str) -> Result<(), String> {
+        let cmd = RpcCommand {
+            enabled,
+            ..Default::default()
+        };
+        self.execute_command("set_auto_retry", cmd, Some(session_id), 5)
+            .await?;
+        Ok(())
+    }
+
+    /// `addSessionRule(glob, access, sessionId?)` — `add_session_rule`. Applies
+    /// an allow rule to the *live* session, the same-run counterpart of the
+    /// persisted approval rule the desktop writes.
+    pub async fn add_session_rule(
+        &self,
+        glob: &str,
+        access: &str,
+        session_id: &str,
+    ) -> Result<(), String> {
+        let cmd = RpcCommand {
+            message: glob.to_string(),
+            mode: access.to_string(),
+            ..Default::default()
+        };
+        self.execute_command("add_session_rule", cmd, Some(session_id), 5)
+            .await?;
+        Ok(())
+    }
+
+    /// `abortSession(sessionId?)` — `abort_session`: cancels every queued run
+    /// and requests an abort of the active one. Reports what it acted on.
+    pub async fn abort_session(&self, session_id: &str) -> Result<Value, String> {
+        self.execute_command("abort_session", RpcCommand::default(), Some(session_id), 5)
+            .await
+    }
+
+    /// `cancelQueuedRun(runId, sessionId?)` — `cancel_queued_run` for a run that
+    /// has not started yet.
+    pub async fn cancel_queued_run(&self, run_id: &str, session_id: &str) -> Result<Value, String> {
+        let cmd = RpcCommand {
+            run_id: run_id.to_string(),
+            ..Default::default()
+        };
+        self.execute_command("cancel_queued_run", cmd, Some(session_id), 5)
+            .await
+    }
+
+    /// `approvalDecision(requestId, mode, note, sessionId?)` — `approval_decision`.
+    /// `mode` is `approved`, `rejected` or `cancelled`.
+    pub async fn approval_decision(
+        &self,
+        request_id: &str,
+        mode: &str,
+        note: &str,
+        session_id: &str,
+    ) -> Result<Value, String> {
+        let cmd = RpcCommand {
+            entry_id: request_id.to_string(),
+            mode: mode.to_string(),
+            message: note.to_string(),
+            ..Default::default()
+        };
+        self.execute_command("approval_decision", cmd, Some(session_id), 10)
+            .await
+    }
+
+    /// `getForkMessages(sessionId)` — `get_fork_messages`: the user turns a
+    /// session can be forked at.
+    pub async fn get_fork_messages(&self, session_id: &str) -> Result<Value, String> {
+        self.execute_command(
+            "get_fork_messages",
+            RpcCommand::default(),
+            Some(session_id),
+            10,
+        )
+        .await
+    }
+
+    /// `cloneSession(sessionId)` — `clone`: fork at the latest settled point.
+    pub async fn clone_session(&self, session_id: &str) -> Result<Value, String> {
+        self.execute_command("clone", RpcCommand::default(), Some(session_id), 10)
+            .await
+    }
+
+    /// `generateSessionTitle(sessionId, language)` — `generate_session_title`.
+    /// This is a model call: it spends credits and can fail without a provider.
+    /// `mode` carries the UI locale, not a behaviour switch.
+    pub async fn generate_session_title(
+        &self,
+        session_id: &str,
+        language: &str,
+    ) -> Result<Value, String> {
+        let cmd = RpcCommand {
+            mode: language.to_string(),
+            ..Default::default()
+        };
+        self.execute_command("generate_session_title", cmd, Some(session_id), 60)
+            .await
+    }
+
+    /// `exportHtml(sessionId)` — `export_html` → `{path}` of the agent-written file.
+    pub async fn export_html(&self, session_id: &str) -> Result<Value, String> {
+        self.execute_command("export_html", RpcCommand::default(), Some(session_id), 30)
+            .await
+    }
+
+    /// `getRuntimeMetrics(sessionId)` — `get_runtime_metrics`.
+    pub async fn get_runtime_metrics(&self, session_id: &str) -> Result<Value, String> {
+        self.execute_command(
+            "get_runtime_metrics",
+            RpcCommand::default(),
+            Some(session_id),
+            5,
+        )
+        .await
+    }
+
+    /// `getSessionStats(sessionId)` — `get_session_stats`.
+    pub async fn get_session_stats(&self, session_id: &str) -> Result<Value, String> {
+        self.execute_command(
+            "get_session_stats",
+            RpcCommand::default(),
+            Some(session_id),
+            5,
+        )
+        .await
+    }
+
+    /// `newSession(cwd, name?)` — `new_session` with an optional title and
+    /// `createdBy: "cli"`. The name is applied when the agent creates the record.
+    pub async fn new_named_session(&self, cwd: &str, name: &str) -> Result<Value, String> {
+        let cmd = RpcCommand {
+            cwd: cwd.to_string(),
+            name: name.to_string(),
+            created_by: "cli".to_string(),
+            ..Default::default()
+        };
+        self.execute_command("new_session", cmd, None, 5).await
+    }
+
     /// `prompt(message, sessionId?, busyPolicy?)` — `prompt` with a 30 s timeout.
     /// Returns the parsed prompt acknowledgement (run_id / accepted_state / …)
     /// so callers can route the event stream to the accepted run.

@@ -92,14 +92,29 @@ are visible, unlike `history search` — and makes no model call.
 | `--cursor N`, `--limit N`, `--all` | The window, in display-entry order. `--limit` (default 50, max 500) bounds matching entries, not raw ones. |
 | `--max-bytes N` | Stop before the output passes N bytes (default 262144; `0` disables). |
 | `--truncate N` | Truncate every emitted string longer than N characters. |
-| `--counts` | Print the window's distribution — entries, block kinds, tools, errors, bytes — instead of entries. |
+| `--counts` | Print the window's distribution — entries, block kinds, tools, run outcomes, tokens, errors, bytes — instead of entries. |
+| `--runs` | Print one row per run — status, duration, tokens, error. |
 | `--json` | Machine-readable report. |
+
+Every emitted entry carries its run's outcome (`run`, `runId`) and, where the
+run recorded one, its token `usage`. That is what makes "which run failed, and
+why" answerable without a second command; `--runs` is the same data as a ledger:
+
+```sh
+future session transcript --session SESSION_ID --runs
+# session=… runs=4 failed=1
+# [   1] run-…  completed 300.8s in=481K
+# [ 424] run-…  failed 12.4s
+#        error: upstream disconnected
+```
 
 The report carries `cursor`, `nextCursor`, `scannedEntries`, `hasMore` and the
 matching `entries`, so a caller pages with `--cursor nextCursor` until `hasMore`
-is false. `--counts` ignores `--select`/`--tool`/`--grep` and covers the whole
-session unless `--limit` bounds it, which makes it the cheap first look at an
-unfamiliar session.
+is false. `--counts` and `--runs` are summaries: they ignore
+`--select`/`--tool`/`--grep`, refuse `--cursor`, and cover the whole session
+unless `--limit` (or `--all`) bounds them — which makes `--counts` the cheap
+first look at an unfamiliar session. `--limit` counts matching entries in the
+entry modes and distinct runs under `--runs`.
 
 Two limits are worth stating. `--paths` is a heuristic: it takes structured
 path-ish argument keys from a call, and path-shaped tokens from a result's text.

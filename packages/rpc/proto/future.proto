@@ -960,6 +960,11 @@ message SessionState {
   // approval UI.
   repeated ApprovalRequestInfo pending_approvals = 39;
   SessionUsage usage = 40;
+  // Approval tier this session's sandbox policy was set to: "off" | "manual"
+  // | "sandbox". Absent when the session never chose one, so a reader can tell
+  // "no policy set" from "set to off". Read-back counterpart of
+  // `set_sandbox_policy`; the OS availability of the tier is `probe_sandbox`.
+  optional string sandbox_tier = 41;
 }
 
 message SessionUsage {

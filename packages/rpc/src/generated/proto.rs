@@ -1029,6 +1029,12 @@ pub struct SessionState {
     pub pending_approvals: ::prost::alloc::vec::Vec<ApprovalRequestInfo>,
     #[prost(message, optional, tag = "40")]
     pub usage: ::core::option::Option<SessionUsage>,
+    /// Approval tier this session's sandbox policy was set to: "off" | "manual"
+    /// | "sandbox". Absent when the session never chose one, so a reader can tell
+    /// "no policy set" from "set to off". Read-back counterpart of
+    /// `set_sandbox_policy`; the OS availability of the tier is `probe_sandbox`.
+    #[prost(string, optional, tag = "41")]
+    pub sandbox_tier: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct SessionUsage {
