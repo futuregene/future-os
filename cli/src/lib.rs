@@ -125,6 +125,14 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
         }
     }
 
+    // if (group === "desktop") — the desktop app's own settings document.
+    if group == Some("desktop") {
+        return catch(out, async {
+            commands::desktop::desktop(command, rest, out)
+        })
+        .await;
+    }
+
     // if (group === "auth" && (!command || command === "--help" || command === "-h"))
     if group == Some("auth")
         && (command.is_none() || command == Some("--help") || command == Some("-h"))
@@ -482,6 +490,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn desktop_settings_dispatch_routes_reads_writes_and_help() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env = crate::test_env::EnvGuard::set(&[("HOME", dir.path().as_os_str().to_owned())]);
+
+        // A bare `desktop` and the settings help both print the group help.
+        for args in [
+            &["desktop"][..],
+            &["desktop", "--help"][..],
+            &["desktop", "settings", "--help"][..],
+        ] {
+            let (code, stdout, stderr) = run(args).await;
+            assert_eq!(code, 0, "{args:?}");
+            assert_eq!(stdout, format!("{}\n", help::DESKTOP_HELP), "{args:?}");
+            assert_eq!(stderr, "", "{args:?}");
+        }
+
+        // Reads report defaults before the desktop app has ever written one.
+        let (code, stdout, stderr) = run(&["desktop", "settings"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("approvalTier = off"), "{stdout}");
+        assert!(stdout.contains("bellOnComplete = true"), "{stdout}");
+
+        // A write is visible to the next read, bare for scripting.
+        let (code, _, stderr) =
+            run(&["desktop", "settings", "set", "bellOnComplete", "false"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        let (code, stdout, stderr) = run(&["desktop", "settings", "get", "bellOnComplete"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(stdout, "false\n");
+
+        // A rejected value is a command failure, not a traceback.
+        let (code, stdout, stderr) =
+            run(&["desktop", "settings", "set", "titleLanguage", "fr"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert!(
+            stderr.contains("titleLanguage must be en or zh"),
+            "{stderr}"
+        );
+
+        // An unknown subcommand reports the usage line.
+        let (code, stdout, stderr) = run(&["desktop", "bogus"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert!(stderr.contains("Unknown argument: bogus"), "{stderr}");
+    }
+
+    #[tokio::test]
     async fn auth_group_help_variants() {
         // Plain group help.
         let (code, stdout, stderr) = run(&["auth"]).await;
@@ -529,6 +586,17 @@ mod tests {
             (&["init", "-h"], help::INIT_HELP),
             (&["config", "--help"], help::CONFIG_HELP),
             (&["config", "-h"], help::CONFIG_HELP),
+            (&["desktop", "--help"], help::DESKTOP_HELP),
+            (&["desktop", "-h"], help::DESKTOP_HELP),
+            (&["desktop", "settings", "--help"], help::DESKTOP_HELP),
+            (
+                &["desktop", "settings", "get", "--help"],
+                help::DESKTOP_GET_HELP,
+            ),
+            (
+                &["desktop", "settings", "set", "--help"],
+                help::DESKTOP_SET_HELP,
+            ),
             (&["auth", "--help"], help::AUTH_GROUP_HELP),
             (&["auth", "-h"], help::AUTH_GROUP_HELP),
             (&["auth", "login", "--help"], help::AUTH_LOGIN_HELP),

@@ -11,6 +11,7 @@ Usage:
 Groups:
   init      Install built-in skills and initialize local commands
   config    Configure a model provider, and read/write global settings
+  desktop   Read and change the desktop app's settings
   auth      Authentication & API key management
   account   Platform account info
   run       Send a prompt to the agent (one-shot, non-interactive)
@@ -41,6 +42,7 @@ Quick start:
 Run 'future <group> --help' for per-group details.
   future init --help         Initialization behavior
   future config --help       Interactive model-provider setup
+  future desktop --help      Desktop app settings
   future run --help          All run options (model, fork, thinking, tools, etc.)
   future auth --help         Auth subcommands
   future account --help      Account subcommands
@@ -166,6 +168,73 @@ When a change takes effect:
 
 No Agent is required; a running one is unaffected, since these settings are read
 from disk when they are used."#;
+
+/// `future desktop --help` output.
+pub const DESKTOP_HELP: &str = r#"future desktop — read and change the desktop app's settings
+
+Usage:
+  future desktop settings [<key>] [--json]   Show the effective settings
+  future desktop settings get [<key>] [--json]
+  future desktop settings set <key> <value>
+
+The desktop app keeps its own preferences in an `app_settings` table in
+~/.future/app/app.db. They are separate from the agent settings document that
+`future config` writes, and from models/providers/auth, which the app and the
+agent share.
+
+With no key, prints the database path and every effective value (defaults
+included). A database the desktop app has never written reports the defaults and
+is not created. With a key, prints that value alone, which makes it usable in a
+script; --json prints it typed, or the whole document.
+
+No running desktop app is required. A running one picks the change up the next
+time it reads the settings.
+
+Settable keys (camelCase, as the desktop API spells them):
+  approvalTier            off|manual|sandbox  Approval tier for file access and shell
+  hiddenModels            list               Model ids hidden from the model picker
+  autoUpgradeSkills       true|false         Upgrade installed skills on app open
+  autoConnectRemote       true|false         Auto-connect the paired remote device
+  skillGuideDismissed     true|false         Skills onboarding banner dismissed
+  skillIntroDismissed     true|false         Skills intro bubble acknowledged
+  bellOnComplete          true|false         Bell when a run finishes
+  autoTitleFirstTurn      true|false         Generate a title after the first answer
+  titleLanguage           en|zh              Language used for generated titles
+  communityEdition        true|false         Use the community-edition UI
+  skillRecommend          true|false         Recommend one uninstalled skill
+
+A list value is a JSON array or a comma-separated list; an empty value clears it."#;
+
+/// `future desktop settings get --help` output.
+pub const DESKTOP_GET_HELP: &str = r#"future desktop settings get — show the desktop app's effective settings
+
+Usage:
+  future desktop settings [<key>] [--json]
+  future desktop settings get [<key>] [--json]
+
+With no key, prints the database path (default ~/.future/app/app.db) and every
+effective value, including the defaults for keys never written. With a key,
+prints that value alone, which makes it usable in a script. --json prints the
+value typed (or, with no key, the whole effective document as JSON).
+
+Reads only: a database the desktop app has never written reports the defaults
+rather than creating one. Credentials are never part of this document."#;
+
+/// `future desktop settings set --help` output.
+pub const DESKTOP_SET_HELP: &str = r#"future desktop settings set — change one desktop app setting
+
+Usage:
+  future desktop settings set <key> <value> [--json]
+
+Writes one key into ~/.future/app/app.db (created if missing) and prints the new
+value. Other keys are preserved. Values are validated before the database is
+touched, so an invalid value or an unknown key leaves it exactly as it was.
+
+Run `future desktop --help` for the settable keys, their accepted values and
+their defaults.
+
+The running desktop app is unaffected until it next reads the settings; a change
+made in the app's own Settings screen applies immediately."#;
 
 /// `future version --help` output.
 pub const VERSION_HELP: &str = r#"future version — print the build identity of this CLI

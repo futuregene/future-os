@@ -996,6 +996,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "future-app-settings"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "future-channel"
 version = "0.1.0"
 dependencies = [
@@ -1040,6 +1050,7 @@ dependencies = [
  "chrono",
  "dirs",
  "future-agent",
+ "future-app-settings",
  "future-channel",
  "future-loop",
  "future-rpc",

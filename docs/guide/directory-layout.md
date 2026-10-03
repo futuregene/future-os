@@ -181,7 +181,9 @@ backtrace when the TUI crashes. See [tui.md](tui.md).
 
 Owned by the Tauri desktop app (see `desktop/`):
 
-- `app.db` — the SQLite database (threads, runs, approval requests, …).
+- `app.db` — the SQLite database (threads, runs, approval requests, …). Its
+  `app_settings` table holds the app's own preferences, which `future desktop
+  settings` reads and writes (see [self-inspection](self-inspection.md)).
 - `images/` — persistent per-thread image tree (`<thread_id>/thumb/` and,
   for workspace conversations, `<thread_id>/origin/`). Kept under `~/.future`
   rather than the OS cache dir because macOS may purge the cache.

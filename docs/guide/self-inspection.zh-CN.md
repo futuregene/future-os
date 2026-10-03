@@ -13,6 +13,7 @@
 | 命令 | 报告什么 |
 |---|---|
 | `future config get [<key>] [--json]` | 生效中的全局设置（含默认值） |
+| `future desktop settings [<key>] [--json]` | 桌面端自己的设置（审批档、隐藏模型……，含默认值） |
 | `future doctor` | 一次检查登录、Agent 连接、沙箱、provider、会话与技能 |
 | `future models --json` | 本 Agent 可用的模型 |
 | `future version --json` | 这是哪个构建：版本、commit、目标平台、是否有未提交改动 |
@@ -27,7 +28,8 @@
 `future config get` 用与 Agent 相同的类型化加载器读取
 `~/.future/agent/settings.json`，因此它报告的是 Agent 真正会生效的值，而不是文件里
 字面写了什么：文件里省略的键依然显示其文档化默认值。带 key 时只打印该值，便于在
-脚本中使用。
+脚本中使用。`future config` 只管 **Agent 的**设置文档；桌面端自己的偏好有单独的命令
+（见下文）。
 
 凭据是刻意的例外。`auth.json` 从不属于这个面：`future config get` 不含任何密钥
 材料，设置文档里也没有存放密钥的字段。account 这两个命令会自己去读该文件——
@@ -193,6 +195,28 @@ future config set compaction.reserve_tokens 8192
 
 改设置会改变此后每一个会话的行为，所以技能把它当作用户的决定：说明旧值与新值，
 在用户同意后再改。
+
+## 桌面端的设置
+
+桌面端（FutureOS app）自己的偏好——审批档、隐藏模型、完成提示音、生成标题的语言
+等——存在 `~/.future/app/app.db` 的 `app_settings` 表里。它们既不是 Agent 的设置
+文档（`future config`，`~/.future/agent/settings.json`），也不是桌面端与 Agent 共用
+的 models / providers / auth 文件。
+
+```sh
+future desktop settings                        # 全部设置（含默认值）
+future desktop settings get approvalTier       # 单个值
+future desktop settings set approvalTier manual
+future desktop settings set hiddenModels "future/glm-5.3, future/kimi-k3"
+```
+
+键名用桌面端 API 的 camelCase 写法；`future desktop --help` 会列出所有键及其取值，
+桌面设置界面里能改的每一项在这里都能改。列表值可以写 JSON 数组，也可以写逗号分隔
+的列表。写入前先校验取值：非法取值或未知键会让数据库保持原样；桌面端从未写过的
+数据库，读取时报告默认值且不会创建它。
+
+读写都不需要桌面端在运行，桌面端会在下次读取设置时看到改动；在它自己的设置界面里
+做的修改则立即生效。
 
 ## 值得写明的边界
 

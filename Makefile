@@ -1,6 +1,6 @@
 .PHONY: help version \
 	build build-cli build-desktop build-desktop-headless build-mobile-android build-mobile-ios desktop-sidecars \
-	test test-agent test-channels test-cli test-tui test-cli-diff test-tui-diff test-tui-tmux \
+	test test-agent test-channels test-cli test-app-settings test-tui test-cli-diff test-tui-diff test-tui-tmux \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
 	check-docs test-docs-check \
@@ -197,7 +197,7 @@ build-mobile-ios:
 # The unit tests are the CI regression gate. The *-diff / *-tmux targets are
 # manual TS→Rust migration-acceptance gates (pre-release only).
 
-test: test-agent test-channels test-cli test-tui test-desktop test-desktop-rust test-mobile
+test: test-agent test-channels test-cli test-app-settings test-tui test-desktop test-desktop-rust test-mobile
 
 test-agent:
 	cargo test -p future-agent
@@ -207,6 +207,9 @@ test-channels:
 
 test-cli:
 	cargo test -p future-cli
+
+test-app-settings:
+	cargo test -p future-app-settings
 
 test-tui:
 	cargo test -p future-tui

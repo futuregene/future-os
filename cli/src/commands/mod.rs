@@ -9,6 +9,7 @@ pub mod account;
 pub mod auth;
 pub mod browser_tools;
 pub mod configure;
+pub mod desktop;
 pub mod doctor;
 pub mod init;
 pub mod mcp;
