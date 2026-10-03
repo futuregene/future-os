@@ -16,7 +16,8 @@ pub const SESSION_HELP: &str = "future session — manage agent sessions
 Usage:
   future session list [--json]                       List all sessions
   future session set <id> [options]                  Change settings on an existing session
-  future session info <id>                           Show session details + stats
+  future session info <id> [--json]                  Show session details + stats
+  future session transcript --help                   Filter/window one session's records
   future session history --help                      Search/read original history
   future session compact --help                      Request manual compaction
   future session rename <id> <name>                  Give a session a readable name
@@ -226,7 +227,7 @@ fn pad_end(s: &str, n: usize) -> String {
 // ─── Info ─────────────────────────────────────────────────────────────────
 
 /// `info(sessionId)`.
-async fn info(session_id: &str, out: &Output) -> Result<(), String> {
+async fn info(session_id: &str, json: bool, out: &Output) -> Result<(), String> {
     let client = RunClient::new(&grpc_addr());
     let data = client.get_session_entries(session_id).await?;
     // `const { entries } = ...; if (!data.entries || data.entries.length === 0)`
@@ -272,6 +273,51 @@ async fn info(session_id: &str, out: &Output) -> Result<(), String> {
         .unwrap_or(0);
     let compacted = roles.get("compaction").copied().unwrap_or(0);
 
+    // `Number(content?.tokens_in ?? 0)` etc.
+    let counts = InfoCounts {
+        messages: entries.len(),
+        users,
+        assistants,
+        tools,
+        system,
+        compacted,
+        tool_calls,
+        tokens_in: content["usage"]
+            .get("inputTokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        tokens_out: content["usage"]
+            .get("outputTokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        tokens_cache_r: content["usage"]
+            .get("cacheReadTokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        tokens_cache_w: content["usage"]
+            .get("cacheWriteTokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0),
+        total_cost: content["usage"]
+            .get("costCny")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0),
+    };
+
+    if json {
+        let value = info_json(
+            session_id,
+            &content,
+            model,
+            thinking_level,
+            session_name,
+            cwd,
+            &counts,
+        );
+        out.log(&serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?);
+        return Ok(());
+    }
+
     out.log(&format!("Session:  {session_id}"));
     out.log(&format!("  Name:        {session_name}"));
     out.log(&format!("  Model:       {model}"));
@@ -279,65 +325,96 @@ async fn info(session_id: &str, out: &Output) -> Result<(), String> {
     if !cwd.is_empty() {
         out.log(&format!("  CWD:         {cwd}"));
     }
-
-    // `Number(content?.tokens_in ?? 0)` etc.
-    let tokens_in = content["usage"]
-        .get("inputTokens")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let tokens_out = content["usage"]
-        .get("outputTokens")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let tokens_cache_r = content["usage"]
-        .get("cacheReadTokens")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let tokens_cache_w = content["usage"]
-        .get("cacheWriteTokens")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let total_cost = content["usage"]
-        .get("costCny")
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0);
-
     out.log(&format!(
         "  Messages:    {} ({} user, {} assistant, {} tool{}{})",
-        entries.len(),
-        users,
-        assistants,
-        tools,
-        if system > 0 {
-            format!(", {system} system")
+        counts.messages,
+        counts.users,
+        counts.assistants,
+        counts.tools,
+        if counts.system > 0 {
+            format!(", {} system", counts.system)
         } else {
             String::new()
         },
-        if compacted > 0 {
-            format!(", {compacted} compacted")
+        if counts.compacted > 0 {
+            format!(", {} compacted", counts.compacted)
         } else {
             String::new()
         }
     ));
-    out.log(&format!("  Tool calls:  {tool_calls}"));
-    if tokens_in + tokens_out > 0 {
+    out.log(&format!("  Tool calls:  {}", counts.tool_calls));
+    if counts.tokens_in + counts.tokens_out > 0 {
         out.log(&format!(
             "  Tokens:      in={} out={}",
-            human_tokens(tokens_in),
-            human_tokens(tokens_out)
+            human_tokens(counts.tokens_in),
+            human_tokens(counts.tokens_out)
         ));
-        if tokens_cache_r + tokens_cache_w > 0 {
+        if counts.tokens_cache_r + counts.tokens_cache_w > 0 {
             out.log(&format!(
                 "  Cache:       r={} w={}",
-                human_tokens(tokens_cache_r),
-                human_tokens(tokens_cache_w)
+                human_tokens(counts.tokens_cache_r),
+                human_tokens(counts.tokens_cache_w)
             ));
         }
-        if total_cost > 0.0 {
-            out.log(&format!("  Cost:        ¥{total_cost:.6}"));
+        if counts.total_cost > 0.0 {
+            out.log(&format!("  Cost:        ¥{:.6}", counts.total_cost));
         }
     }
     Ok(())
+}
+
+/// The machine-readable form of `session info`: identity and working directory
+/// at the top level, the raw session metadata alongside the computed stats, so
+/// an agent does not have to re-derive either.
+fn info_json(
+    session_id: &str,
+    session: &Value,
+    model: &str,
+    thinking_level: &str,
+    session_name: &str,
+    cwd: &str,
+    counts: &InfoCounts,
+) -> Value {
+    json!({
+        "id": session_id,
+        "sessionName": session_name,
+        "model": model,
+        "thinkingLevel": thinking_level,
+        "cwd": cwd,
+        "stats": {
+            "messages": counts.messages,
+            "userMessages": counts.users,
+            "assistantMessages": counts.assistants,
+            "toolMessages": counts.tools,
+            "systemMessages": counts.system,
+            "compactions": counts.compacted,
+            "toolCalls": counts.tool_calls,
+            "tokens": {
+                "input": counts.tokens_in,
+                "output": counts.tokens_out,
+                "cacheRead": counts.tokens_cache_r,
+                "cacheWrite": counts.tokens_cache_w,
+            },
+            "costCny": counts.total_cost,
+        },
+        "session": session,
+    })
+}
+
+/// The aggregate counts `session info` reports, text or JSON.
+struct InfoCounts {
+    messages: usize,
+    users: i64,
+    assistants: i64,
+    tools: i64,
+    system: i64,
+    compacted: i64,
+    tool_calls: i64,
+    tokens_in: i64,
+    tokens_out: i64,
+    tokens_cache_r: i64,
+    tokens_cache_w: i64,
+    total_cost: f64,
 }
 
 // ─── Rename ──────────────────────────────────────────────────────────────
@@ -629,6 +706,10 @@ pub async fn session(
         return super::session_history::run(args, out).await;
     }
 
+    if subcommand == "transcript" {
+        return super::session_transcript::run(args, out).await;
+    }
+
     if subcommand == "list" {
         list_sessions(args.iter().any(|a| a == "--json"), out).await?;
         return Ok(());
@@ -656,7 +737,8 @@ pub async fn session(
 
     match subcommand {
         "info" => {
-            info(&target_id, out).await?;
+            let json = args[1..].iter().any(|arg| arg == "--json");
+            info(&target_id, json, out).await?;
         }
         "rename" => {
             // `const name = args.slice(1).join(" ");`
@@ -945,6 +1027,35 @@ mod tests {
             stdout.contains("Cost:        ¥0.012345"),
             "stdout: {stdout}"
         );
+    }
+
+    #[tokio::test]
+    async fn info_json_reports_cwd_and_stats() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = crate::test_server::MockAgent::respond(
+            "get_session_entries",
+            r#"{"entries":[{"kind":"session_info","role":"system","session":{"sessionName":"Named","cwd":"/work","model":"m1","thinkingLevel":"high","usage":{"inputTokens":10,"outputTokens":2,"costCny":0.5}}},{"kind":"user","role":"user"},{"kind":"assistant","role":"assistant","blocks":[{"kind":"tool_call"}]}]}"#,
+        );
+        let (_agent, _env) = mock_env(agent).await;
+        let (out, cap) = Output::memory();
+        session(
+            Some("info"),
+            &["sess-1".to_string(), "--json".to_string()],
+            &out,
+        )
+        .await
+        .expect("info --json");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["id"], "sess-1");
+        assert_eq!(parsed["cwd"], "/work");
+        assert_eq!(parsed["model"], "m1");
+        assert_eq!(parsed["thinkingLevel"], "high");
+        assert_eq!(parsed["stats"]["messages"], json!(3));
+        assert_eq!(parsed["stats"]["toolCalls"], json!(1));
+        assert_eq!(parsed["stats"]["tokens"]["input"], json!(10));
+        assert_eq!(parsed["stats"]["costCny"], json!(0.5));
+        assert_eq!(parsed["session"]["cwd"], json!("/work"));
     }
 
     #[tokio::test]

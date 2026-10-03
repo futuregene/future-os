@@ -1975,8 +1975,13 @@ mod tests {
         assert_eq!(mcp_error_message(&json!({})), "unknown error");
     }
 
-    #[test]
-    fn find_tool_entry_and_image_output_dir() {
+    /// Reads `HOME`/`FUTURE_HOME` (via the home policy and the browser
+    /// catalog), so it must hold the shared env lock like every other
+    /// env-sensitive test — otherwise a concurrent test that repoints
+    /// `FUTURE_HOME` turns it into a flake.
+    #[tokio::test]
+    async fn find_tool_entry_and_image_output_dir() {
+        let _guard = crate::test_env::lock_env().await;
         assert!(find_tool_entry("search_paper").is_some());
         assert!(find_tool_entry("no-such-tool").is_none());
         // Browser tools are merged into the catalog too.

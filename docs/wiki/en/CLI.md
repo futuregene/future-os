@@ -218,7 +218,8 @@ future loop status        # loop control plane: goals/todos/gates
 future session list
 future session set <id> [--parent <id>] [--title <name>] [--cwd <dir>]
                         [--model <id>] [--thinking <level>]
-future session info <id>
+future session info <id> [--json]
+future session transcript --help # filter and window one session's records
 future session history --help   # search and read original history
 future session compact --help   # request manual context compaction
 future session rename <id> <name>
@@ -231,6 +232,14 @@ session first. It scans the most recently updated `--sessions` sessions (default
 50) and reports `scannedSessions` and `truncated`, so a partial scan is visible
 rather than silently reported as "never discussed". See
 [Self-inspection](../../guide/self-inspection.md).
+
+`future session transcript --session <id>` processes a whole conversation rather
+than finding one passage: `--select` picks the slices (user, assistant, thinking,
+tool-call, tool-result, session, compaction), `--tool` a single tool, `--input` /
+`--output` a tool's arguments versus its result, `--paths` just the file paths
+either mentions, and `--cursor` / `--limit` / `--max-bytes` window the output for
+paging. `--counts` is the cheap first look at an unfamiliar session. Both
+`session info` and `transcript` answer `--json`.
 
 `set` changes those settings on an existing session — only the options you pass are
 touched (`--parent ""` detaches). A parent records lineage only: no history is

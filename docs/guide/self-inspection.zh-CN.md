@@ -21,8 +21,9 @@
 | `future account profile` / `balance` | 用户账户与剩余额度 |
 | `future skills list` | 已安装与目录中的技能 |
 | `future tools list` / `describe <name>` | **CLI** 可调用的平台/浏览器工具（不是模型的 `read`/`write`/`edit`/`shell`，那组按会话设置） |
-| `future session list --json` | 全部已记录会话（新的在前） |
-| `future session info <id>` | 单个会话的模型、cwd、消息/工具计数、token 与成本 |
+| `future session list --json` | 全部已记录会话（新的在前，每条带 `cwd`、模型与标题） |
+| `future session info <id> [--json]` | 单个会话的模型、cwd、消息/工具计数、token 与成本 |
+| `future session transcript --session <id>` | 单个会话记录的筛选/分窗视图——全部用户消息、某个工具的输入或输出、它碰过的文件路径 |
 | `future loop status` | 当前项目目录下的长程目标 |
 
 `future config get` 用与 Agent 相同的类型化加载器读取
@@ -158,6 +159,16 @@ future session history get --session <id> --entry <entry-id> [--offset N] [--lim
 检索是字面子串匹配（ASCII 大小写不敏感），覆盖用户与助手的文本、工具参数与工具
 结果——不是语义检索，也不包含思考内容。检索无结果时，通常问题出在查询词本身：
 应该细化查询，而不是断定记录为空。
+
+检索用来「找到」某一段；要想「处理」一个会话，用 `future session transcript`。它把同一批
+记录按可选视角投影出来——要哪些角色与块类型（`--select`，包含 thinking）、哪个工具
+（`--tool`）、工具的参数还是结果（`--input` / `--output`）、只抽其中提到的文件路径
+（`--paths`）、按内容字面过滤（`--grep`）——再用 `--cursor` / `--limit` / `--all` 与
+`--max-bytes` 分窗。`--counts` 一次调用回答「里面有什么」，`--json` 让每种用法都可脚本化。
+`session info <id> --json` 则是同一思路用于会话身份：顶层给出 `cwd`、`model`、
+`thinkingLevel` 与统计值，旁边附原始会话元数据。选项表与两条已说明的边界（启发式的
+`--paths`，以及 `--tool` 会报告而非错标的无归属工具结果）见
+[会话历史回忆](session-history.zh-CN.md#带筛选的会话全文)。
 
 ## 修改设置
 
