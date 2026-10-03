@@ -68,13 +68,21 @@ fn db_path() -> Result<std::path::PathBuf, String> {
     future_app_settings::app_db_path().map_err(|error| error.to_string())
 }
 
-/// The effective settings. A database the desktop app has never written
-/// reports the defaults and is not created.
+/// The effective settings: stored values, or the documented defaults when the
+/// desktop app has no store yet. A store that exists but cannot be read is an
+/// error — the same distinction the app's own phone-facing handlers make, so
+/// defaults are never passed off as saved values.
 fn load() -> Result<future_app_settings::AppSettings, String> {
-    match future_app_settings::connect_existing().map_err(|error| error.to_string())? {
-        Some(conn) => future_app_settings::read(&conn).map_err(|error| error.to_string()),
-        None => Ok(future_app_settings::defaults()),
+    let Some(conn) = future_app_settings::connect_existing().map_err(|error| error.to_string())?
+    else {
+        return Ok(future_app_settings::defaults());
+    };
+    if !future_app_settings::table_exists(&conn).map_err(|error| error.to_string())? {
+        // The desktop app's connection created the file but no settings have
+        // been written yet.
+        return Ok(future_app_settings::defaults());
     }
+    future_app_settings::read(&conn).map_err(|error| error.to_string())
 }
 
 fn now_millis() -> i64 {
@@ -241,6 +249,25 @@ mod tests {
         assert!(listed.contains("hiddenModels = []"), "{listed}");
         // Reading reports the defaults; it must not create the database.
         assert!(!home.db().exists());
+    }
+
+    #[tokio::test]
+    async fn an_uninitialized_database_reads_as_defaults() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        // The desktop app's own connection creates the file before the schema
+        // is applied; reading it must report defaults, not an error.
+        std::fs::create_dir_all(home.db().parent().expect("parent")).expect("mkdir");
+        std::fs::write(home.db(), b"").expect("empty database");
+        let (out, captured) = Output::memory();
+        get(&args(&[]), &out).unwrap();
+        assert!(text(captured.out).contains("approvalTier = off"));
+        // A write fills the table in and is visible to the next read.
+        let (out, _captured) = Output::memory();
+        set(&args(&["bellOnComplete", "false"]), &out).unwrap();
+        let (out, captured) = Output::memory();
+        get(&args(&["bellOnComplete"]), &out).unwrap();
+        assert_eq!(text(captured.out), "false\n");
     }
 
     #[tokio::test]

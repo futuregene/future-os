@@ -369,8 +369,8 @@ pub fn normalize_tier(value: &str) -> String {
     }
 }
 
-/// The effective defaults, before anything has been written. Kept in one place
-/// so a reader with no table and a reader with an empty table agree.
+/// The effective defaults, before anything has been written. A reader with no
+/// database at all reports these instead of creating one.
 pub fn defaults() -> AppSettings {
     AppSettings {
         approval_tier: "off".to_string(),
@@ -387,7 +387,11 @@ pub fn defaults() -> AppSettings {
     }
 }
 
-fn table_exists(conn: &Connection) -> Result<bool, Error> {
+/// Whether the `app_settings` table exists. A reader uses this to tell "the app
+/// has never stored settings" from "the store is unreadable": the former is the
+/// documented defaults, the latter must be reported (see the desktop's
+/// `remote_host` tests).
+pub fn table_exists(conn: &Connection) -> Result<bool, Error> {
     conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'",
         [],
@@ -397,13 +401,14 @@ fn table_exists(conn: &Connection) -> Result<bool, Error> {
     .map_err(Error::from)
 }
 
-/// The effective settings: stored values, documented defaults elsewhere. A
-/// database with no table yet reads as all-defaults, so a pure reader never
-/// creates it (the CLI's `get` therefore needs no prior desktop run).
+/// The effective settings: stored values, documented defaults elsewhere.
+///
+/// A table that is missing is an **error**, not defaults: the desktop app's
+/// phone-facing handlers rely on a store fault being reported so a settings
+/// screen never renders defaults as if they were saved values. A caller that
+/// owns the "app has never written settings" case checks [`table_exists`]
+/// first (the CLI does, with [`defaults`]).
 pub fn read(conn: &Connection) -> Result<AppSettings, Error> {
-    if !table_exists(conn)? {
-        return Ok(defaults());
-    }
     let approval_tier = read_value(conn, KEY_APPROVAL_TIER)?
         .map(|value| normalize_tier(&value))
         .unwrap_or_else(|| "off".to_string());
@@ -616,6 +621,8 @@ mod tests {
         assert_eq!(normalize_tier("anything-else"), "off");
     }
 
+    /// An empty table (the schema exists, nothing written) equals the documented
+    /// defaults exactly — the two must not drift.
     #[test]
     fn defaults_apply_on_a_fresh_database() {
         let settings = read(&conn()).expect("read defaults");
@@ -627,13 +634,13 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_table_reads_as_defaults_without_creating_it() {
+    fn a_missing_table_is_a_read_error_without_creating_it() {
         let bare = Connection::open_in_memory().expect("in-memory database");
-        let settings = read(&bare).expect("read against a missing table");
-        assert_eq!(
-            serde_json::to_value(&settings).expect("serialize"),
-            serde_json::to_value(defaults()).expect("serialize")
-        );
+        assert!(!table_exists(&bare).expect("probe"));
+        // The desktop's phone-facing handlers depend on this being an error:
+        // an unreadable store must be reported, never rendered as defaults.
+        let error = read(&bare).expect_err("a missing table must not default");
+        assert!(error.to_string().contains("no such table"), "{error}");
         let table_count: i64 = bare
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'",
