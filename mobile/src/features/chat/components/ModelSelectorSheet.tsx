@@ -1,5 +1,7 @@
 import { Check, X } from "lucide-react-native";
+import { useEffect } from "react";
 import {
+  Keyboard,
   Modal,
   Pressable,
   ScrollView,
@@ -8,7 +10,7 @@ import {
   View,
 } from "react-native";
 import type { TFunction } from "i18next";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useRemote } from "../../../remote/RemoteContext";
 import { modelReference, type ThinkingLevel } from "../../../remote/types";
 import { colors, layout, radius, spacing } from "../../../theme/tokens";
@@ -28,6 +30,16 @@ export function ModelSelectorSheet({
   remote: Remote;
   t: TFunction;
 }) {
+  const insets = useSafeAreaInsets();
+  // The composer keeps the IME up when the sheet opens (the picker is opened
+  // from the composer toolbar, not from a dismiss-first panel), and a RN Modal
+  // is its own window, so a bottom-anchored sheet would sit behind the
+  // keyboard: the lower model rows become untappable. Dismiss it so the whole
+  // list is reachable, the same way the usage/files panels do.
+  const open = selector !== null;
+  useEffect(() => {
+    if (open) Keyboard.dismiss();
+  }, [open]);
   return (
     <Modal
       animationType="slide"
@@ -35,7 +47,11 @@ export function ModelSelectorSheet({
       transparent
       visible={selector !== null}
     >
-        <SafeAreaView style={styles.selectorOverlay}>
+        <View style={[styles.selectorOverlay, {
+          paddingBottom: insets.bottom + layout.gutter,
+          paddingLeft: insets.left + layout.gutter,
+          paddingRight: insets.right + layout.gutter,
+        }]}>
           <Pressable
             accessible={false}
             onPress={() => setSelector(null)}
@@ -114,7 +130,7 @@ export function ModelSelectorSheet({
                     })}
               </ScrollView>
             </View>
-        </SafeAreaView>
+        </View>
     </Modal>
   );
 }

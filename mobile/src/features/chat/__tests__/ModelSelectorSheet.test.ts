@@ -1,10 +1,12 @@
 import { createElement, type ComponentProps } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Modal, ScrollView, StyleSheet, View } from "react-native";
+import { Keyboard, Modal, ScrollView, StyleSheet, View } from "react-native";
 import { ModelSelectorSheet } from "../components/ModelSelectorSheet";
 
 jest.mock("lucide-react-native", () => ({ Check: "Check", X: "X" }));
-jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+jest.mock("react-native-safe-area-context", () => ({
+  useSafeAreaInsets: () => ({ top: 12, bottom: 24, left: 0, right: 0 }),
+}));
 jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
 
 const remote = {
@@ -88,4 +90,35 @@ test("tapping the scrim outside the sheet dismisses it without changing a settin
   expect(setSelector).toHaveBeenCalledWith(null);
   expect(remote.setModel).not.toHaveBeenCalled();
   expect(remote.setThinkingLevel).not.toHaveBeenCalled();
+});
+
+test("the sheet clears the composing keyboard so the lower model rows are reachable", () => {
+  // The picker is opened from the composer toolbar while the IME may still be
+  // up. A bottom-anchored Modal is its own window, so a retained keyboard sits
+  // on top of the sheet and swallows taps on the rows it covers.
+  const dismiss = jest.spyOn(Keyboard, "dismiss").mockImplementation(() => {});
+  try {
+    dismiss.mockClear();
+    act(() => { tree.update(createElement(ModelSelectorSheet, { ...props, selector: null })); });
+    expect(dismiss).not.toHaveBeenCalled();
+    act(() => { tree.update(createElement(ModelSelectorSheet, { ...props, selector: "model" })); });
+    expect(dismiss).toHaveBeenCalledTimes(1);
+    // Switching between the two pickers is not another open, so it must not
+    // dismiss an IME that was already cleared.
+    act(() => { tree.update(createElement(ModelSelectorSheet, { ...props, selector: "thinking" })); });
+    expect(dismiss).toHaveBeenCalledTimes(1);
+  } finally {
+    dismiss.mockRestore();
+  }
+});
+
+test("the sheet is padded clear of the system navigation area", () => {
+  const overlay = tree.root.findAllByType(View).find(node =>
+    StyleSheet.flatten(node.props.style)?.justifyContent === "flex-end")!;
+  // bottom inset (24) + the layout gutter (16); the left/right gutter is kept.
+  expect(StyleSheet.flatten(overlay.props.style)).toMatchObject({
+    paddingBottom: 40,
+    paddingLeft: 16,
+    paddingRight: 16,
+  });
 });
