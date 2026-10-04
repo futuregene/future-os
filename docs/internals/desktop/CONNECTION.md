@@ -863,6 +863,14 @@ pairing management remain in a separate This phone section.
   relays its operation id, and the phone reports the outcome only after the
   matching terminal `compaction_*` event (a missing event is reported as a
   missing result, never as a failure). An older host leaves the tool hidden.
+- Handshakes advertise `fork_v1`, and a settled reply on the phone offers the
+  same Fork action as the Desktop. `fork_session` is a session-scoped write:
+  the host resolves the parent conversation from the Agent session id, forks
+  the settled turn of the persisted `sourceEntryId` through the same path as
+  the Desktop's own Fork button, and answers the new session + thread so the
+  phone can open it. The command's own id is the idempotent request identity,
+  so a retried fork converges on one child. An older host leaves the action
+  hidden.
 - `get_desktop_settings` / `update_desktop_settings` expose only the four fields
   above. Writes are partial, allowlisted, and committed by the existing Desktop
   settings store, never persisted or queued on the phone. `list_settings_models`

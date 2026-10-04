@@ -19,6 +19,9 @@ pub(crate) struct IncomingCmd {
     pub(crate) message: String,
     // approval_decision
     pub(crate) entry_id: String,
+    // fork_session: the persisted user entry whose settled turn the phone forks
+    // at. The command's own `id` is the fork request identity (idempotent child).
+    pub(crate) source_entry_id: String,
     pub(crate) mode: String,
     // get_events_since (P1c backfill)
     pub(crate) run_id: String,
@@ -99,6 +102,7 @@ impl Default for IncomingCmd {
             session_id: String::new(),
             message: String::new(),
             entry_id: String::new(),
+            source_entry_id: String::new(),
             mode: String::new(),
             run_id: String::new(),
             prompt_id: String::new(),

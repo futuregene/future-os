@@ -83,6 +83,7 @@ export function messageToItems(message: AgentMessage): TimelineItem[] {
         kind: "message",
         role: "user",
         text,
+        ...(message.sourceEntryId ? { sourceEntryId: message.sourceEntryId } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
       },
     ];
@@ -449,6 +450,7 @@ function applyEvent(state: TimelineState, event: StreamEvent, batch?: {
         role: "user",
         text,
         runId: canonical?.runId ?? (event.runId || undefined),
+        ...(canonical?.sourceEntryId ? { sourceEntryId: canonical.sourceEntryId } : {}),
         ...(canonical?.attachments?.length
           ? { attachments: canonical.attachments.map(toHistoryAttachment) }
           : {}),

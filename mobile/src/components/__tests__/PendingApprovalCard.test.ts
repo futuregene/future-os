@@ -11,7 +11,7 @@ import "../../i18n";
 jest.mock("../MarkdownText", () => ({ MarkdownText: "MarkdownText" }));
 jest.mock("lucide-react-native", () => Object.fromEntries(
   ["AlertTriangle", "Brain", "Check", "ChevronDown", "ChevronUp", "CircleAlert", "Copy",
-    "FileText", "Paperclip", "Pencil", "TerminalSquare", "TriangleAlert", "Wrench", "X"]
+    "FileText", "GitBranch", "Paperclip", "Pencil", "TerminalSquare", "TriangleAlert", "Wrench", "X"]
     .map(name => [name, name]),
 ));
 

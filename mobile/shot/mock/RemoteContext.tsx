@@ -214,6 +214,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       "provider_management_v1",
       "workspace_pinning_v1",
       "compaction_v1",
+      "fork_v1",
       // What the shipping client declares (src/remote/client.ts); the lean
       // fixtures are the feed a desktop serves a client that asked for it.
       "lean_events_v1",
@@ -306,6 +307,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     downloadAttachment: async () => ({ uri: "http://127.0.0.1:7392/effect-size.png" }) as any,
 
     rename: async () => undefined,
+    // Fork is a Desktop write; the harness only needs the affordance to exist.
+    forkConversation: async () => undefined,
     generateTitle: async () => "多巴胺与风险决策：任务不确定性下的效应方向",
     // Manual compaction: the harness shows the request being accepted, then
     // reports the outcome the divider cannot (here: nothing to compact).

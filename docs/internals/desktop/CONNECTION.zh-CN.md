@@ -389,6 +389,7 @@ Desktop 新增的 `~/.future/remote_pending_revokes.json` 只记录配对 ID 与
 - 普通断网/续期保持访问身份；主动停止、Desktop 重开或休眠唤醒会更新身份。待发送记录缺少身份或身份不匹配时，自动恢复只能查询已接受回执；没有回执则清除自动投递意图，保留会话草稿。用户主动再次发送属于新的授权动作。
 - Agent 检测每轮最长 3 秒，间隔 3 秒，成功结果超过 10 秒不再视为可用；使用单调时钟。只连接既有 Agent，不启动第二个 Agent，也不创建常驻服务。
 - 手机端在 `/` 菜单首位提供与 Desktop 输入框相同的「压缩上下文」工具，握手以 `compaction_v1` 声明该能力；旧 Desktop 不显示该入口。`compact_context` 是会话级写操作：宿主转发同一个独立 `compact` RPC 并回传 operation id，手机只在匹配到终态 `compaction_*` 事件后才报告结果；缺少终态事件只报告"未收到结果"，不报告为失败。
+- 手机端对已完成的回复提供与 Desktop 相同的「分叉」操作，握手以 `fork_v1` 声明该能力；旧 Desktop 不显示该入口。`fork_session` 是会话级写操作：宿主按 Agent 会话 id 解析父会话，沿用 Desktop「分叉」按钮的同一条路径，在被持久化的 `sourceEntryId` 所开始的回合处创建子会话，并回传新会话与线程 id 供手机打开；命令自身的 id 即幂等请求标识，命令重试只会收敛到同一个子会话。
 - Desktop 分块协议仅处理 NATS 消息；文件路径许可、会话附件归属、上传暂存、缩略图及受控读取均在宿主适配层保留。架构分离不改变文件访问授权。
 
 验证在 CI（GitHub Actions）中执行：Desktop/Mobile TypeScript 与 ESLint、Tauri `cargo fmt --check`/Clippy、`git diff --check` 以及各测试套件。模拟器/实机生命周期、真实网关故障和 Desktop sidecar 退出仍需集中验收；静态检查和自动化测试不替代这些结果。

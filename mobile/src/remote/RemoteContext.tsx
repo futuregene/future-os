@@ -147,6 +147,8 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   deleteWorkspace(workspaceId: string): Promise<void>;
   setSessionPinned(sessionId: string, threadId: string, pinned: boolean): Promise<void>;
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
+  /** Fork the open conversation at a persisted user entry and open the child. */
+  forkConversation(sourceEntryId: string): Promise<void>;
   decideApproval(id: string, decision: "approved" | "rejected"): Promise<void>;
   clearError(): void;
   continueRun(sessionId: string, runId: string): Promise<void>;
@@ -358,6 +360,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     deleteSession,
     deleteWorkspace,
     decideApproval,
+    forkConversation,
   } = useConversationController({
     clientRef,
     selectedRef,
@@ -375,6 +378,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     recordError,
     removeSession,
     removeWorkspace,
+    refreshSessions,
     closeConversation,
   });
 
@@ -502,6 +506,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setSessionPinned,
       setWorkspacePinned,
       decideApproval,
+      forkConversation,
       clearError,
       continueRun,
     }),
@@ -526,6 +531,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       connectionPresentation,
       continueRun,
       decideApproval,
+      forkConversation,
       desktopOnline,
       hasConnectedContent,
       catalogSync,

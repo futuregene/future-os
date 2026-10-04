@@ -166,6 +166,9 @@ export function ChatScreen() {
   const supportsImages = activeModel
     ? activeModel.supportsImages !== false
     : true;
+  // Forking is a Desktop-hosted operation; an older host that does not
+  // advertise it leaves the affordance hidden rather than failing on tap.
+  const forkSupported = remote.capabilities.has("fork_v1");
 
   const { message, setMessage, attachments, setAttachments } = useComposerDraft(
     remote,
@@ -181,7 +184,7 @@ export function ChatScreen() {
   const openTimelineAttachment = fileDownload.openAttachment;
   const openTimelineFile = fileDownload.openFileLink;
   const compactContext = useCompactContext(remote, t);
-  const { send, retryMessage, continueMessage } = useSendMessage(
+  const { send, retryMessage, continueMessage, forkMessage } = useSendMessage(
     remote,
     t,
     message,
@@ -435,6 +438,7 @@ export function ChatScreen() {
     openFile: openTimelineFile,
     retry: retryMessage,
     continue: continueMessage,
+    fork: forkMessage,
     resolveToolTarget: remote.resolveToolCallTarget,
   });
   useEffect(() => {
@@ -443,10 +447,12 @@ export function ChatScreen() {
       openFile: openTimelineFile,
       retry: retryMessage,
       continue: continueMessage,
+      fork: forkMessage,
       resolveToolTarget: remote.resolveToolCallTarget,
     };
   }, [
     continueMessage,
+    forkMessage,
     openTimelineAttachment,
     openTimelineFile,
     remote.resolveToolCallTarget,
@@ -469,6 +475,10 @@ export function ChatScreen() {
     (item: TimelineItem) => timelineActionsRef.current.continue(item),
     [],
   );
+  const handleTimelineFork = useCallback(
+    (item: TimelineItem) => timelineActionsRef.current.fork(item),
+    [],
+  );
   const handleResolveToolTarget = useCallback(
     (toolCallId: string, runId: string) =>
       timelineActionsRef.current.resolveToolTarget(toolCallId, runId),
@@ -485,15 +495,18 @@ export function ChatScreen() {
           onOpenFile={handleTimelineFile}
           onRetry={handleTimelineRetry}
           onContinue={handleTimelineContinue}
+          onFork={forkSupported ? handleTimelineFork : undefined}
           onResolveToolTarget={handleResolveToolTarget}
         />
       </View>
     ),
     [
+      forkSupported,
       handleResolveToolTarget,
       handleTimelineAttachment,
       handleTimelineContinue,
       handleTimelineFile,
+      handleTimelineFork,
       handleTimelineRetry,
       latestAssistantId,
       onRowLayout,

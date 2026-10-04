@@ -184,6 +184,9 @@ describe("entry reducer", () => {
         kind: "message",
         role: "user",
         text: "check this",
+        // The persisted entry identity is what a fork points at, so it must
+        // survive the shared projection into the mobile render contract.
+        sourceEntryId: "e1",
         attachments: [
           { path: "/tmp/a.png", name: "a.png", kind: "image" },
           { path: "/tmp/b.pdf", name: "b.pdf", kind: "file" },

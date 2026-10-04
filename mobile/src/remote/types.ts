@@ -443,6 +443,12 @@ export type TimelineItem =
       role: "user" | "assistant";
       text: string;
       runId?: string;
+      /**
+       * The canonical persisted Agent entry this user bubble came from. Forking
+       * points at this identity (never rendered text), and an optimistic bubble
+       * that has no entry yet simply has none.
+       */
+      sourceEntryId?: string;
       // Live "in-flight" flag for assistant replies, mirroring the desktop app's
       // per-message `status === "streaming"`. While true the footer shows the
       // generating indicator instead of the copy button. Driven by agent_start /
@@ -518,6 +524,8 @@ export interface RemoteCommand {
   sessionId?: string;
   message?: string;
   entryId?: string;
+  /** fork_session: the persisted user entry whose settled turn to fork at. */
+  sourceEntryId?: string;
   mode?: string;
   runId?: string;
   promptId?: string;

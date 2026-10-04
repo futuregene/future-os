@@ -87,6 +87,7 @@ interface MountOpts {
   request?: jest.Mock;
   removeSession?: jest.Mock;
   removeWorkspace?: jest.Mock;
+  refreshSessions?: jest.Mock;
   closeConversation?: jest.Mock;
 }
 
@@ -119,6 +120,7 @@ async function mountController(opts: MountOpts = {}) {
   const recordError = jest.fn();
   const removeSession = opts.removeSession ?? jest.fn(async () => true);
   const removeWorkspace = opts.removeWorkspace ?? jest.fn(async () => true);
+  const refreshSessions = opts.refreshSessions ?? jest.fn(async () => {});
   const closeConversation = opts.closeConversation ?? jest.fn();
   const result: { current: ControllerResult | null } = { current: null };
   let renderer!: ReactTestRenderer;
@@ -141,6 +143,7 @@ async function mountController(opts: MountOpts = {}) {
       recordError,
       removeSession,
       removeWorkspace,
+      refreshSessions,
       closeConversation,
     });
     return null;
@@ -170,6 +173,7 @@ async function mountController(opts: MountOpts = {}) {
     prepareTimelineOpen,
     recordError,
     removeSession,
+    refreshSessions,
     closeConversation,
   };
 }
@@ -568,6 +572,73 @@ describe("selectSession", () => {
     expect(h.recordError).toHaveBeenCalledWith(expect.objectContaining({ message: "offline" }));
     const engine = h.syncEngineRef.current as unknown as { open: jest.Mock };
     expect(engine.open).toHaveBeenCalledWith("s1");
+  });
+});
+
+describe("forkConversation", () => {
+  it("forks the open conversation at the entry, then opens the child", async () => {
+    const request: jest.Mock = jest.fn(async () => ({ data: { sessionId: "child-1", threadId: "t-1" } }));
+    const h = await mountController({
+      selected: "parent-1",
+      request,
+      engine: fakeEngine(),
+    });
+    await act(async () => {
+      await current(h).forkConversation("entry-1");
+    });
+    const command = request.mock.calls[0][0] as { type: string; id: string; sessionId: string; sourceEntryId: string };
+    expect(command.type).toBe("fork_session");
+    expect(command.sessionId).toBe("parent-1");
+    expect(command.sourceEntryId).toBe("entry-1");
+    expect(command.id).toMatch(/^mobile-fork:/);
+    expect(request.mock.calls[0][1]).toBe("parent-1");
+    // The child is a store row the catalogue has not pulled yet.
+    expect(h.refreshSessions).toHaveBeenCalledTimes(1);
+    expect(h.setSelectedSessionId).toHaveBeenCalledWith("child-1");
+  });
+
+  it("reuses one request id across a failed retry so a lost reply cannot branch twice", async () => {
+    const request: jest.Mock = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce({ data: { sessionId: "child-1", threadId: "t-1" } });
+    const h = await mountController({ selected: "parent-1", request });
+    await act(async () => {
+      await expect(current(h).forkConversation("entry-1")).rejects.toThrow("offline");
+    });
+    await act(async () => {
+      await current(h).forkConversation("entry-1");
+    });
+    const first = request.mock.calls[0][0] as { id: string };
+    const second = request.mock.calls[1][0] as { id: string };
+    expect(second.id).toBe(first.id);
+  });
+
+  it("leaves the conversation put when the desktop refuses the fork", async () => {
+    const request = jest.fn(async () => {
+      throw new Error("Fork did not return a session.");
+    });
+    const h = await mountController({ selected: "parent-1", request });
+    await act(async () => {
+      await expect(current(h).forkConversation("entry-1")).rejects.toThrow(
+        "Fork did not return a session.",
+      );
+    });
+    expect(h.refreshSessions).not.toHaveBeenCalled();
+    expect(h.setSelectedSessionId).not.toHaveBeenCalled();
+  });
+
+  it("refuses a fork with no source entry or no open conversation", async () => {
+    const h = await mountController({ selected: "parent-1" });
+    await act(async () => {
+      await expect(current(h).forkConversation("  ")).rejects.toThrow("fork_source_missing");
+    });
+    expect(h.request).not.toHaveBeenCalled();
+
+    const closed = await mountController({ selected: "" });
+    await act(async () => {
+      await expect(current(closed).forkConversation("entry-1")).rejects.toThrow("not_connected");
+    });
   });
 });
 

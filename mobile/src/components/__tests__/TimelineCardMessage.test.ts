@@ -10,7 +10,7 @@ import i18n from "../../i18n";
 jest.mock("../MarkdownText", () => ({ MarkdownText: "MarkdownText" }));
 jest.mock("lucide-react-native", () => Object.fromEntries(
   ["AlertTriangle", "Brain", "Check", "ChevronDown", "ChevronUp", "CircleAlert", "Copy",
-    "FileText", "Paperclip", "Pencil", "TerminalSquare", "TriangleAlert", "Wrench", "X"]
+    "FileText", "GitBranch", "Paperclip", "Pencil", "TerminalSquare", "TriangleAlert", "Wrench", "X"]
     .map(name => [name, name]),
 ));
 jest.mock("../appAlerts", () => ({ AppAlert: { alert: jest.fn() } }));
@@ -213,6 +213,24 @@ describe("the settled footer", () => {
   test("a failed run the user stopped is not offered as recoverable", () => {
     render(message({ id: "latest", failed: true, stopped: true, runId: "run-1" }), { isLatestAssistant: true });
     expect(hasText("Retry")).toBe(false);
+  });
+
+  test("a settled reply offers Fork and hands back its own item", () => {
+    const onFork = jest.fn();
+    const item = message({ id: "a-fork", text: "an answer" });
+    render(item, { onFork });
+    expect(glyphs("GitBranch")).not.toHaveLength(0);
+    pressLabelled("Fork");
+    expect(onFork).toHaveBeenCalledWith(item);
+  });
+
+  test("a host without fork support offers no Fork, and a streaming reply hides it", () => {
+    render(message({ id: "a", text: "an answer" }));
+    expect(glyphs("GitBranch")).toHaveLength(0);
+
+    act(() => tree.unmount());
+    render(message({ id: "a", text: "an answer", streaming: true }), { onFork: jest.fn() });
+    expect(glyphs("GitBranch")).toHaveLength(0);
   });
 });
 

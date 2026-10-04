@@ -23,6 +23,7 @@ function remoteFor(overrides: Record<string, unknown> = {}) {
     cachedAttachment: jest.fn(() => null),
     compacting: false,
     continueRun: jest.fn(async () => {}),
+    forkConversation: jest.fn(async () => {}),
     downloadAttachment: jest.fn(async () => ({ uri: "file:///cache/downloaded.bin" })),
     prepareAttachment: jest.fn(async (attachment: HistoryAttachment) => ({
       mimeType: "application/pdf", name: `${attachment.name}.transfer`, path: "/tmp/x", size: 99,
@@ -271,6 +272,51 @@ describe("retrying a failed answer", () => {
     await act(async () => { api.retryMessage(assistant({ id: "a1" })); await Promise.resolve(); });
     expect(toast).toHaveBeenCalledWith("t:chat.compacting");
     expect(remote.sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("forking a settled turn", () => {
+  test("a fork points at the preceding user entry's persisted identity, not its text", async () => {
+    const remote = remoteFor();
+    remote.timeline.items = [
+      userMessage({ id: "u1", text: "first", sourceEntryId: "entry-1" }),
+      assistant({ id: "a1" }),
+      userMessage({ id: "u2", text: "second", sourceEntryId: "entry-2" }),
+      assistant({ id: "a2" }),
+    ];
+    mount({ remote });
+    await act(async () => { api.forkMessage(assistant({ id: "a2" })); await Promise.resolve(); });
+    expect(remote.forkConversation).toHaveBeenCalledWith("entry-2");
+  });
+
+  test("a prompt that was never persisted says so instead of forking the wrong turn", async () => {
+    const remote = remoteFor();
+    remote.timeline.items = [userMessage({ id: "u1", text: "second" }), assistant({ id: "a1" })];
+    mount({ remote });
+    await act(async () => { api.forkMessage(assistant({ id: "a1" })); await Promise.resolve(); });
+    expect(remote.forkConversation).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith("t:chat.forkFailed");
+  });
+
+  test("a fork the desktop refuses reports the desktop's own reason", async () => {
+    const remote = remoteFor({
+      forkConversation: jest.fn(async () => { throw new Error("Fork did not return a session."); }),
+    });
+    remote.timeline.items = [userMessage({ id: "u1", sourceEntryId: "entry-1" }), assistant({ id: "a1" })];
+    mount({ remote });
+    await act(async () => { api.forkMessage(assistant({ id: "a1" })); await Promise.resolve(); });
+    expect(toast).toHaveBeenCalledWith("t:chat.forkFailed");
+  });
+
+  test.each([
+    ["a user message", userMessage({ id: "u1", sourceEntryId: "entry-1" })],
+    ["a notice", { id: "n1", kind: "notice", tone: "warning", text: "careful" } as TimelineItem],
+  ])("a fork of %s is ignored", async (_label, item) => {
+    const remote = remoteFor();
+    remote.timeline.items = [userMessage({ id: "u1", sourceEntryId: "entry-1" }), item];
+    mount({ remote });
+    await act(async () => { api.forkMessage(item); await Promise.resolve(); });
+    expect(remote.forkConversation).not.toHaveBeenCalled();
   });
 });
 
