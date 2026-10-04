@@ -35,13 +35,14 @@ import remarkParse from "remark-parse";
 import { unified } from "unified";
 import { localFilePath } from "./localPath";
 import { remarkLatexMath } from "./remarkLatexMath";
+import { remarkMathFence } from "./remarkMathFence";
 import { remarkCjkEmphasis } from "./remarkCjkEmphasis";
 import { remarkAutolinkBoundary } from "./remarkAutolinkBoundary";
 
 // `remarkAutolinkBoundary` is registered before `remarkGfm` on purpose: its
 // text-node pass must see the source before GFM's own autolink pass turns a URL
 // into a link node (see the plugin).
-const markdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkAutolinkBoundary).use(remarkGfm).use(remarkLatexMath).use(remarkCjkEmphasis);
+const markdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkMathFence).use(remarkAutolinkBoundary).use(remarkGfm).use(remarkLatexMath).use(remarkCjkEmphasis);
 
 // Cross-instance parse cache: `useMemo([content])` in MarkdownContent only
 // survives within one mounted component, so a thread switch re-parses every

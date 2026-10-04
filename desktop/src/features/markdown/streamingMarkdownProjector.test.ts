@@ -42,6 +42,10 @@ describe("incremental single-table projection", () => {
     "| A | B |\n| --- | --- |\n| one | two |\n\n| C | D |\n| --- | --- |\n| three | four |",
     "| A | B |\n| --- | --- |\n| first | second |\n\n\n",
     "| one |\n| --- |\n| two |\n| three | extra |\n| last |",
+    // A `$$` block that opens and closes on formula lines: the projector's own
+    // tree decides the block boundaries, so it must read the fence the same way
+    // `parseFutureMarkdown` does or the block after it is swallowed.
+    "before\n\n$$a = b\n= c$$\n\n| A | B |\n| --- | --- |\n| one | two |\n\nafter",
   ])("matches the canonical parser at every partial prefix: %s", (source) => {
     const project = createStreamingMarkdownProjector();
     for (let length = 0; length <= source.length; length++) {

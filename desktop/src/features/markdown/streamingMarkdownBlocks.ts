@@ -1,12 +1,16 @@
 import type { FutureMarkdownDocument, MarkdownNode } from "@future-os/markdown";
 import type { Root } from "mdast";
-import { parseFutureMarkdown, remarkAutolinkBoundary, remarkCjkEmphasis, remarkLatexMath } from "@future-os/markdown";
+import { parseFutureMarkdown, remarkAutolinkBoundary, remarkCjkEmphasis, remarkLatexMath, remarkMathFence } from "@future-os/markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
 
-const streamingMarkdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkGfm).use(remarkLatexMath).use(remarkCjkEmphasis).use(remarkAutolinkBoundary);
+// `remarkMathFence` must match `parseFutureMarkdown`'s processor: this tree
+// decides where blocks start and end, and the documents it produces are what
+// the renderer paints — a `$$…$$` block that swallowed the rest of the reply
+// here would be rendered from this tree even after the reply settles.
+const streamingMarkdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkMathFence).use(remarkGfm).use(remarkLatexMath).use(remarkCjkEmphasis).use(remarkAutolinkBoundary);
 
 export interface StreamingMarkdownBlock {
   /** Stable source offset used as the renderer key while later text grows. */

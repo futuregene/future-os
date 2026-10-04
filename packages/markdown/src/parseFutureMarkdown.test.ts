@@ -314,6 +314,71 @@ describe("parseFutureMarkdown — math", () => {
   });
 });
 
+describe("parseFutureMarkdown — $$ display blocks", () => {
+  it("keeps the opening line when the fence shares it with the formula", () => {
+    // The shape models write: `$$` on the first formula line, the closing `$$`
+    // right after the last one. remark-math reads the first line as fence meta
+    // and never matches a closing fence, so the block used to swallow every
+    // node after it (a following table came back as literal `|` rows).
+    const nodes = parse("$$a = b\n= c + d$$\n\n| L |\n| - |\n| 1 |\n").nodes;
+    expect(nodes[0]).toEqual({ code: "a = b\n= c + d", type: "mathBlock" });
+    expect(nodeTypes(nodes.slice(1))).toEqual(["table"]);
+  });
+
+  it("keeps consecutive blocks apart and inside their containers", () => {
+    expect(parse("$$a\nb$$\n\n$$c\nd$$\n").nodes).toEqual([
+      { code: "a\nb", type: "mathBlock" },
+      { code: "c\nd", type: "mathBlock" },
+    ]);
+    expect(first("> $$a\n> b$$\n")).toEqual({
+      children: [{ code: "a\nb", type: "mathBlock" }],
+      type: "blockquote",
+    });
+  });
+
+  it("drops the fence's indentation from the formula", () => {
+    expect(parse("  $$\n  a + b\n  $$\n").nodes).toEqual([{ code: "a + b", type: "mathBlock" }]);
+    // An indented whitespace-only line is indentation, not formula text.
+    expect(parse("  $$\n  a\n  \n  b\n  $$\n").nodes).toEqual([{ code: "a\n\nb", type: "mathBlock" }]);
+    // With an unindented fence there is no indentation to strip, so the
+    // continuation line's own indentation is left to LaTeX (it ignores it).
+    expect(parse("$$\n  a + b\n$$\n").nodes).toEqual([{ code: "  a + b", type: "mathBlock" }]);
+  });
+
+  it("keeps a lone dollar inside the formula", () => {
+    expect(first("$$a $ b$$\n")).toEqual({ code: "a $ b", type: "mathBlock" });
+  });
+
+  it("leaves `$$…$$` to inline math when text follows the closing run", () => {
+    // `$$x$$ and more` is not a display block: the fence must end its line.
+    expect(first("$$x$$ and more\n")).toEqual({
+      children: [{ code: "x", displayMode: false, type: "mathInline" }, text(" and more")],
+      type: "paragraph",
+    });
+  });
+
+  it("keeps a lone dollar at a line start inline", () => {
+    expect(first("$x$ alone\n")).toEqual({
+      children: [{ code: "x", displayMode: false, type: "mathInline" }, text(" alone")],
+      type: "paragraph",
+    });
+  });
+
+  it("keeps a blank line inside the formula", () => {
+    expect(parse("$$\na\n\nb$$\n\nafter\n").nodes).toEqual([
+      { code: "a\n\nb", type: "mathBlock" },
+      { children: [text("after")], type: "paragraph" },
+    ]);
+  });
+
+  it("keeps an unterminated fence as a block when the reply ends mid-formula", () => {
+    // A streamed reply ends wherever the model stopped, with no closing fence
+    // and no trailing newline; what has arrived so far is still display math.
+    expect(parse("$$a\nb").nodes).toEqual([{ code: "a\nb", type: "mathBlock" }]);
+    expect(parse("$$a").nodes).toEqual([{ code: "a", type: "mathBlock" }]);
+  });
+});
+
 describe("parseFutureMarkdown — nesting guard", () => {
   function chain(depth: number) {
     let node: { type: string; children?: unknown[] } = { type: "leaf" };

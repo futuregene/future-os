@@ -9,6 +9,7 @@ export { parseFutureMarkdown } from "./parseFutureMarkdown";
 export { joinSoftBreaks } from "./softBreaks";
 export { createStreamingMarkdownParser } from "./streamingMarkdown";
 export { remarkLatexMath } from "./remarkLatexMath";
+export { remarkMathFence } from "./remarkMathFence";
 export { remarkCjkEmphasis } from "./remarkCjkEmphasis";
 export { remarkAutolinkBoundary } from "./remarkAutolinkBoundary";
 export { referenceKey } from "./types";
