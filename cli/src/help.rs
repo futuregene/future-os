@@ -85,9 +85,10 @@ Subcommands:
 Interactive setup (no subcommand):
   FutureOS  Reuse the device-code login flow. If a token is already configured,
             asks before replacing it.
-  Custom    Prompt for provider ID, API protocol, base URL, API key, model ID,
-            token limits, and image support; then update ~/.future/agent/models.json
-            and ~/.future/agent/auth.json.
+  Custom    Prompt for provider ID, API protocol, base URL and API key, then
+            keep, edit, delete or add models with their own token limits, image
+            support and per-1M-token prices; then update
+            ~/.future/agent/models.json and ~/.future/agent/auth.json.
 
 API keys are read without terminal echo. If Future Agent is running, custom
 provider changes take effect immediately; otherwise they apply on its next start.
