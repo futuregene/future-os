@@ -116,10 +116,11 @@ const mockFileDownload: {
   setFileAction: jest.fn(),
 };
 jest.mock("../useFileDownload", () => ({ useFileDownload: () => mockFileDownload }));
-const mockSendApi: { send: jest.Mock; retryMessage: jest.Mock; continueMessage: jest.Mock } = {
+const mockSendApi: { send: jest.Mock; retryMessage: jest.Mock; continueMessage: jest.Mock; forkMessage: jest.Mock } = {
   send: jest.fn(),
   retryMessage: jest.fn(),
   continueMessage: jest.fn(),
+  forkMessage: jest.fn(),
 };
 // The send/retry pair the timeline rows drive. `send` is asserted directly;
 // the two others exist so the row wiring has a real controller to reach.
@@ -828,6 +829,23 @@ describe("ChatScreen wiring", () => {
     expect(mockSendApi.retryMessage).toHaveBeenCalledWith(item);
     act(() => card.props.onContinue(item));
     expect(mockSendApi.continueMessage).toHaveBeenCalledWith(item);
+  });
+
+  test("fork stays hidden on a host that does not advertise it, and reaches the controller when it does", () => {
+    const item = { id: "a-last", kind: "message" as const, role: "assistant" as const, text: "answer" };
+    expect(view().findAllByType("TimelineCard" as never)[0]!.props.onFork).toBeUndefined();
+
+    const original = mockRemote.capabilities;
+    mockRemote.capabilities = new Set(["fork_v1"]);
+    try {
+      act(() => screen.update(createElement(ChatScreen)));
+      const card = view().findAllByType("TimelineCard" as never)[0]!;
+      expect(typeof card.props.onFork).toBe("function");
+      act(() => card.props.onFork(item));
+      expect(mockSendApi.forkMessage).toHaveBeenCalledWith(item);
+    } finally {
+      mockRemote.capabilities = original;
+    }
   });
 
   test("the file panel is told about the conversation and routes its file opens", () => {

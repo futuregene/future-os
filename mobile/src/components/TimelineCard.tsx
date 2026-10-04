@@ -7,6 +7,7 @@ import {
   CircleAlert,
   Copy,
   FileText,
+  GitBranch,
   Paperclip,
   Pencil,
   TerminalSquare,
@@ -58,6 +59,8 @@ export interface TimelineCardProps {
   onOpenFile?(path: string): void;
   onRetry?(item: TimelineItem): void;
   onContinue?(item: TimelineItem): void;
+  /** Fork the conversation at this reply's turn (desktop Fork parity). */
+  onFork?(item: TimelineItem): void;
   onResolveToolTarget?: ToolTargetResolver;
 }
 
@@ -995,6 +998,7 @@ function TimelineCardView({
   onOpenFile,
   onRetry,
   onContinue,
+  onFork,
   onResolveToolTarget,
 }: TimelineCardProps) {
   const { t, i18n } = useTranslation();
@@ -1111,6 +1115,17 @@ function TimelineCardView({
                   ) : (
                     <Copy color={colors.inkMuted} size={15} />
                   )}
+                </Pressable>
+              ) : null}
+              {onFork ? (
+                <Pressable
+                  accessibilityLabel={t("chat.fork")}
+                  accessibilityRole="button"
+                  hitSlop={8}
+                  onPress={() => onFork(item)}
+                  style={styles.copyButton}
+                >
+                  <GitBranch color={colors.inkMuted} size={15} />
                 </Pressable>
               ) : null}
               <Text style={styles.messageDuration}>

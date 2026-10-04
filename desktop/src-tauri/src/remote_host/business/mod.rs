@@ -54,6 +54,7 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
         | "set_session_name"
         | "set_session_pinned"
         | "delete_session"
+        | "fork_session"
         | "set_workspace_pinned"
         | "delete_workspace" => {
             catalog::execute(&cmd, sink).await;

@@ -1,6 +1,7 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useCallback, useRef, useState } from "react";
 import type { RemoteClient } from "./client";
+import { randomId } from "./codec";
 import {
   cachedPreviewForAttachment,
   downloadPrepared,
@@ -63,6 +64,8 @@ interface ConversationControllerOptions {
   recordError(error: unknown): void;
   removeSession(sessionId: string, threadId: string): Promise<boolean>;
   removeWorkspace(workspaceId: string): Promise<boolean>;
+  /** Re-read the session catalogue so a just-forked child is selectable. */
+  refreshSessions(): Promise<void>;
   closeConversation(): void;
 }
 
@@ -83,6 +86,7 @@ export function useConversationController({
   recordError,
   removeSession,
   removeWorkspace,
+  refreshSessions,
   closeConversation,
 }: ConversationControllerOptions) {
   const [modelId, setModelId] = useState("");
@@ -98,6 +102,13 @@ export function useConversationController({
    * so it is bounded by taps rather than by history size.
    */
   const toolTargetsRef = useRef(new Map<string, string | null>());
+  /**
+   * One idempotency key belongs to one fork intent (a parent session + source
+   * entry), not permanently to that point: it survives failed retries so a
+   * lost reply cannot create a second child, then is released on success so the
+   * user may deliberately branch from the same message again later.
+   */
+  const pendingForkRequestsRef = useRef(new Map<string, string>());
 
   const applySessionSettings = useCallback((sessionId: string, state: Pick<RemoteSessionState, "model" | "thinkingLevel" | "usage">) => {
     if (!sessionId || sessionId !== selectedRef.current) return;
@@ -446,6 +457,50 @@ export function useConversationController({
     [closeConversation, removeWorkspace],
   );
 
+  /**
+   * Fork the open conversation through the settled turn started by a persisted
+   * user entry, then open the child. The Desktop owns the fork (same path as
+   * its own Fork button) and answers the new session + thread; a stable request
+   * id makes a retry converge on the same child instead of branching twice.
+   */
+  const forkConversation = useCallback(
+    async (sourceEntryId: string) => {
+      const client = clientRef.current;
+      const parentSessionId = selectedRef.current;
+      if (!client || !parentSessionId) throw new Error("not_connected");
+      const source = sourceEntryId.trim();
+      if (!source) throw new Error("fork_source_missing");
+      const intentKey = `${parentSessionId}:${source}`;
+      let requestId = pendingForkRequestsRef.current.get(intentKey);
+      if (!requestId) {
+        requestId = `mobile-fork:${randomId("fork")}`;
+        pendingForkRequestsRef.current.set(intentKey, requestId);
+      }
+      const response = await client.request<{ sessionId?: string; threadId?: string }>(
+        {
+          type: "fork_session",
+          id: requestId,
+          sessionId: parentSessionId,
+          sourceEntryId: source,
+        },
+        parentSessionId,
+        60_000,
+      );
+      const forkedSessionId = response.data?.sessionId?.trim();
+      if (!forkedSessionId) throw new Error("fork_missing_session");
+      pendingForkRequestsRef.current.delete(intentKey);
+      // The child is a Desktop store row; pull the catalogue so the session is
+      // selectable (and titled) before the transcript opens onto it.
+      await refreshSessions();
+      // Only navigate while this phone is still reading the parent; a fork that
+      // resolved after the user moved on must not yank them elsewhere.
+      if (clientRef.current === client && selectedRef.current === parentSessionId) {
+        await selectSession(forkedSessionId);
+      }
+    },
+    [clientRef, refreshSessions, selectSession, selectedRef],
+  );
+
   const decideApproval = useCallback(
     async (id: string, decision: "approved" | "rejected") => {
       const client = clientRef.current;
@@ -486,6 +541,7 @@ export function useConversationController({
     setApprovalTier,
     deleteSession,
     deleteWorkspace,
+    forkConversation,
     decideApproval,
   };
 }

@@ -52,6 +52,86 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
             }
         }
+        "fork_session" => {
+            let parent_session_id = cmd.session_id.trim();
+            let source_entry_id = cmd.source_entry_id.trim();
+            let request_id = cmd.id.trim();
+            if parent_session_id.is_empty() || source_entry_id.is_empty() {
+                reply(
+                    sink,
+                    false,
+                    Value::Null,
+                    Some("missing session or source entry"),
+                )
+                .await;
+                return;
+            }
+            if request_id.is_empty() {
+                reply(sink, false, Value::Null, Some("missing request identity")).await;
+                return;
+            }
+            // The phone addresses the parent by its Agent session id, exactly
+            // like the other session-scoped mutations; the Desktop's fork path
+            // is thread-scoped.
+            let parent = match crate::store::find_thread_by_agent_session(parent_session_id) {
+                Ok(Some(thread)) => thread,
+                Ok(None) => {
+                    reply(
+                        sink,
+                        false,
+                        Value::Null,
+                        Some("Fork source thread could not be loaded."),
+                    )
+                    .await;
+                    return;
+                }
+                Err(error) => {
+                    reply(sink, false, Value::Null, Some(&error.to_string())).await;
+                    return;
+                }
+            };
+            // `cmd.id` doubles as the fork request identity: the Desktop's
+            // single-flight cache replays a retried command, and the Agent
+            // dedupes a repeated `client_request_id`, so a lost reply can never
+            // create a second child branch.
+            match crate::agent_bridge::fork_agent_session(&parent.id, source_entry_id, request_id)
+                .await
+            {
+                Ok(new_thread_id) => match crate::store::get_thread(&new_thread_id) {
+                    Ok(Some(thread)) => {
+                        let new_session_id = thread.agent_session_id.unwrap_or_default();
+                        if new_session_id.trim().is_empty() {
+                            reply(sink, false, Value::Null, Some("Fork produced no session."))
+                                .await;
+                            return;
+                        }
+                        // The child thread is a store write, so the phone's own
+                        // catalogue pull converges; these two events tell the
+                        // Desktop GUI to re-list and show the conversation.
+                        crate::emit_threads_updated();
+                        crate::emit_remote_activity(&new_thread_id);
+                        reply(
+                            sink,
+                            true,
+                            json!({ "threadId": new_thread_id, "sessionId": new_session_id }),
+                            None,
+                        )
+                        .await;
+                    }
+                    Ok(None) => {
+                        reply(
+                            sink,
+                            false,
+                            Value::Null,
+                            Some("Forked thread could not be loaded."),
+                        )
+                        .await
+                    }
+                    Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+                },
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            }
+        }
         "delete_session" => {
             if cmd.thread_id.is_empty() {
                 reply(sink, false, Value::Null, Some("missing thread_id")).await;
@@ -115,6 +195,155 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
 #[cfg(test)]
 mod dispatch_tests {
     use super::*;
+
+    /// Forking a conversation is the phone's copy of the Desktop's own
+    /// `fork_thread`. The parent is addressed by its Agent session id (like the
+    /// other session-scoped mutations), the point by the persisted user entry,
+    /// and the command's own `id` doubles as the idempotent request identity.
+    /// A successful fork answers the new thread + session so the phone can open
+    /// it, and the child carries the parent lineage the session list needs.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // mock_agent_lock serializes this family
+    async fn fork_session_creates_and_reports_the_child_conversation() {
+        let _lock = crate::remote::test_support::mock_agent_lock();
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-fork");
+        crate::remote::test_support::init_store();
+        let agent = crate::remote::test_support::ensure_mock_agent();
+        agent.clear_scripts();
+        crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Parent".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("sess-fork-parent".to_string()),
+        })
+        .expect("seed the parent conversation");
+        agent.script_for(
+            "fork",
+            "sess-fork-parent",
+            true,
+            json!({ "sessionId": "sess-fork-child" }),
+            "",
+        );
+        agent.set_session_entries(
+            "sess-fork-child",
+            json!({ "entries": [
+                {
+                    "id": "f1", "kind": "user", "role": "user", "createdAtMs": 1000,
+                    "runId": "fork-run-1",
+                    "blocks": [{ "kind": "text", "text": "question" }],
+                },
+                {
+                    "id": "f2", "kind": "assistant", "role": "assistant", "createdAtMs": 1001,
+                    "runId": "fork-run-1",
+                    "blocks": [{ "kind": "text", "text": "answer" }],
+                },
+            ] }),
+        );
+
+        let sink = crate::remote::test_support::RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "fork_session".into(),
+            id: "fork-request-1".into(),
+            session_id: "sess-fork-parent".into(),
+            source_entry_id: "f1".into(),
+            ..Default::default()
+        };
+        execute(&cmd, &sink).await;
+
+        let (success, data, error) = sink.last();
+        assert!(success, "fork must succeed: {error:?}");
+        assert_eq!(data["sessionId"], json!("sess-fork-child"));
+        let child_id = data["threadId"].as_str().expect("forked thread id");
+        let child = crate::store::get_thread(child_id)
+            .expect("get forked thread")
+            .expect("forked thread exists");
+        assert_eq!(child.agent_session_id.as_deref(), Some("sess-fork-child"));
+        assert_eq!(
+            child.parent_session_id.as_deref(),
+            Some("sess-fork-parent"),
+            "the session list needs the fork lineage"
+        );
+        // The Desktop forked the exact entry the phone pointed at, through the
+        // parent session; the Agent (not the Desktop) resolves the turn.
+        assert!(agent.served("fork", "sess-fork-parent"));
+        let fork_request = agent
+            .last_full_request("fork")
+            .expect("fork request recorded");
+        assert_eq!(fork_request.entry_id, "f1");
+        assert_eq!(fork_request.client_request_id, "fork-request-1");
+        assert_eq!(fork_request.mode, "through_turn");
+
+        agent.clear_scripts();
+    }
+
+    /// Argument validation happens before anything is read or written. An empty
+    /// source entry or missing request identity is the phone's own protocol
+    /// error, not a store failure, and must not reach the Agent or the store.
+    #[tokio::test]
+    async fn fork_session_rejects_missing_arguments_before_any_work() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-fork-args");
+        crate::remote::test_support::init_store();
+        let sink = crate::remote::test_support::RecordingSink::default();
+
+        let mut cmd = IncomingCmd {
+            cmd_type: "fork_session".into(),
+            id: "request".into(),
+            session_id: "sess".into(),
+            ..Default::default()
+        };
+        execute(&cmd, &sink).await;
+        let (success, _data, error) = sink.last();
+        assert!(!success);
+        assert!(
+            error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("source entry"),
+            "got: {error:?}"
+        );
+
+        cmd.source_entry_id = "entry".into();
+        cmd.id = String::new();
+        execute(&cmd, &sink).await;
+        let (success, _data, error) = sink.last();
+        assert!(!success);
+        assert!(
+            error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("request identity"),
+            "got: {error:?}"
+        );
+    }
+
+    /// A session id the Desktop's store does not own is a real error, not an
+    /// implicitly-created empty conversation: forking must target the parent
+    /// conversation the phone is actually reading.
+    #[tokio::test]
+    async fn fork_session_refuses_an_unknown_parent_session() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-fork-ghost");
+        crate::remote::test_support::init_store();
+        let sink = crate::remote::test_support::RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "fork_session".into(),
+            id: "request".into(),
+            session_id: "no-such-session".into(),
+            source_entry_id: "entry".into(),
+            ..Default::default()
+        };
+        execute(&cmd, &sink).await;
+        let (success, _data, error) = sink.last();
+        assert!(!success);
+        assert!(
+            error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("could not be loaded"),
+            "got: {error:?}"
+        );
+    }
 
     /// A phone that opens the workspace list before the desktop's store is
     /// ready must be told the catalogue is unavailable, not shown an empty
