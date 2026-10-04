@@ -504,6 +504,9 @@ impl SkillManager {
     }
 
     fn reconcile(&self, db: &mut Connection) -> Result<()> {
+        // Stored at the end, so the next `reconcile_once` can tell whether the
+        // tree scanned here is still the one on disk.
+        let fingerprint = self.skills_fingerprint();
         let previous = {
             let mut statement = db.prepare("SELECT location,source FROM skill_installations")?;
             let rows = statement
@@ -573,33 +576,73 @@ impl SkillManager {
             }
         }
         tx.execute(
-            "INSERT INTO skills_meta(key,value) VALUES('reconciled','1')
-             ON CONFLICT(key) DO UPDATE SET value='1'",
-            [],
+            "INSERT INTO skills_meta(key,value) VALUES('reconciled',?1)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![fingerprint],
         )?;
         tx.commit()?;
         Ok(())
     }
 
-    /// Reconcile at most once per database.
+    /// Reconcile only when the skill directories on disk changed since the last
+    /// pass.
     ///
     /// Reconciling rewrites `skill_installations` wholesale, which made a
     /// read-only RPC ("list the skills") a writer of the session database —
     /// the contention behind "session persistence ... database is locked".
     /// It is still needed to adopt skill directories that exist on disk with no
-    /// registry row (the v3 → v4 upgrade, or a directory placed by hand), so it
-    /// runs once, and afterwards only on the mutating operations, where its cost
-    /// is invisible next to the install itself.
+    /// registry row (the v3 → v4 upgrade, or a directory placed by hand), so the
+    /// marker records a [`Self::skills_fingerprint`] rather than a bare `1`: a
+    /// skill added, removed or edited outside the manager is adopted by the next
+    /// read, while an unchanged tree stays read-only. A marker written by an
+    /// older build holds `1`, which simply mismatches once and re-reconciles.
     fn reconcile_once(&self, db: &mut Connection) -> Result<()> {
-        let already: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM skills_meta WHERE key='reconciled')",
-            [],
-            |row| row.get(0),
-        )?;
-        if already {
+        let recorded: Option<String> = db
+            .query_row(
+                "SELECT value FROM skills_meta WHERE key='reconciled'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if recorded.as_deref() == Some(self.skills_fingerprint().as_str()) {
             return Ok(());
         }
         self.reconcile(db)
+    }
+
+    /// A cheap snapshot of the skill trees under both scopes: the newest mtime
+    /// seen anywhere, plus how many skills exist. The scope roots are included
+    /// so that a removal counts even when nothing else changed.
+    ///
+    /// Only change *detection* needs to be conservative here — `reconcile`
+    /// re-reads everything — so a pair of counters that agree only when the tree
+    /// is unchanged is enough, and far cheaper than the wholesale rewrite it
+    /// guards. This stats each skill directory and its manifest; `list_installed`
+    /// already reads every one of those manifests on the same call.
+    fn skills_fingerprint(&self) -> String {
+        let mut newest = 0u128;
+        let mut count = 0usize;
+        for root in [self.global_dir.clone(), self.app_dir()] {
+            newest = newest.max(mtime_nanos(&root));
+            let Ok(entries) = fs::read_dir(&root) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                // Reconciling scans the same shape: one level down, and only
+                // directories carrying a manifest.
+                if !path.is_dir() {
+                    continue;
+                }
+                let manifest = path.join("SKILL.md");
+                if !manifest.is_file() {
+                    continue;
+                }
+                count += 1;
+                newest = newest.max(mtime_nanos(&path)).max(mtime_nanos(&manifest));
+            }
+        }
+        format!("{newest}-{count}")
     }
 
     fn download(&self, id: &str, version: &str) -> Result<Vec<u8>> {
@@ -627,6 +670,18 @@ impl SkillManager {
 
 fn read_receipt(dir: &Path) -> Option<Receipt> {
     serde_json::from_slice(&fs::read(dir.join(RECEIPT)).ok()?).ok()
+}
+
+/// Modification time in nanoseconds, or 0 when the path is missing or predates
+/// the epoch. Used only to detect that a skill tree changed, never to order or
+/// version anything.
+fn mtime_nanos(path: &Path) -> u128 {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|delta| delta.as_nanos())
+        .unwrap_or(0)
 }
 
 fn flatten(dir: &Path) -> Result<()> {
@@ -1448,6 +1503,35 @@ mod tests {
         fs::create_dir_all(app.join("no-manifest")).unwrap();
         let listed = manager.list_installed().unwrap();
         assert!(listed.is_empty(), "{listed:?}");
+    }
+
+    /// A skill directory placed after the first read — by a user, by an editor,
+    /// or by the agent following a skill-authoring workflow — must be adopted by
+    /// the *next* read, with no mutating call and no manual step.
+    ///
+    /// Regression: the marker was a bare `1`, so `reconcile_once` never ran
+    /// again and the new directory never reached `skill_installations`. The agent
+    /// could use the skill while every client listed none, which reads as "the
+    /// skill does not exist" with no error anywhere.
+    #[test]
+    fn a_skill_placed_after_the_first_read_is_adopted_by_the_next_one() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(root.path(), "http://localhost".into());
+        // First read reconciles the empty tree and records its fingerprint.
+        assert!(manager.list_installed().unwrap().is_empty());
+
+        let placed = manager.app_dir().join("handmade");
+        fs::create_dir_all(&placed).unwrap();
+        fs::write(
+            placed.join("SKILL.md"),
+            "---\nname: handmade\ndescription: placed by hand\n---\n",
+        )
+        .unwrap();
+
+        let listed = manager.list_installed().unwrap();
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].id, "handmade");
+        assert_eq!(listed[0].source, "external");
     }
 
     /// The same skill can exist in both scopes; the app install wins and the
