@@ -104,6 +104,21 @@ pub struct ProviderUpsertSpec {
     pub clear_api_key: bool,
 }
 
+/// The model-entry keys [`apply_provider_upsert`] owns. Any other key already
+/// present on a same-id entry (`compat`, `hide`, `supportedParameters`, a
+/// legacy `limit`, and anything a future version adds) is preserved across an
+/// edit, because this RPC cannot express it and dropping it would silently
+/// change how the model behaves.
+const MANAGED_MODEL_FIELDS: [&str; 7] = [
+    "id",
+    "name",
+    "modalities",
+    "contextWindow",
+    "maxTokens",
+    "reasoning",
+    "cost",
+];
+
 impl ProviderUpsertSpec {
     /// Whether this mutation changes the models.json side of provider state.
     /// Non-empty model lists remain supported for older RPC clients that do
@@ -483,6 +498,16 @@ pub fn apply_provider_upsert(
         provider.remove("baseUrl");
     }
     if spec.replace_models || !spec.models.is_empty() {
+        // Replacing the array must not strip per-model fields this RPC does not
+        // carry: model-level `compat` (e.g. Qwen's `thinkingFormat`), `hide`,
+        // `supportedParameters`, a legacy `limit`, or any future key. Merge each
+        // new entry onto the existing entry with the same id — a removed model
+        // has no match and still goes away, and a renamed model starts clean.
+        let existing_models = provider
+            .get("models")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         let models = spec
             .models
             .iter()
@@ -505,6 +530,22 @@ pub fn apply_provider_upsert(
                         "cache_read": model.cost.cache_read,
                         "cache_write": model.cost.cache_write,
                     });
+                }
+                if let Some(existing) = existing_models
+                    .iter()
+                    .find(|existing| {
+                        existing.get("id").and_then(Value::as_str) == Some(model.id.as_str())
+                    })
+                    .and_then(Value::as_object)
+                {
+                    let entry = entry
+                        .as_object_mut()
+                        .expect("the entry was just built as an object");
+                    for (key, value) in existing {
+                        if !MANAGED_MODEL_FIELDS.contains(&key.as_str()) {
+                            entry.insert(key.clone(), value.clone());
+                        }
+                    }
                 }
                 entry
             })
@@ -846,6 +887,95 @@ mod tests {
         )
         .unwrap();
         assert_eq!(root["providers"]["myprov"]["models"], json!([]));
+    }
+
+    #[test]
+    fn upsert_preserves_unmanaged_fields_of_kept_models() {
+        // The RPC cannot carry `compat`/`hide`/`supportedParameters`, so an edit
+        // must merge them back onto the entry it already has for that id.
+        // Otherwise the CLI wizard — which does not know those keys — silently
+        // drops e.g. Qwen's thinkingFormat and the model stops thinking.
+        let mut root: Map<String, Value> = serde_json::from_str(
+            r#"{"providers":{"acme":{"models":[
+                {"id":"keep","name":"Keep","reasoning":true,
+                 "compat":{"thinkingFormat":"qwen-chat-template"},
+                 "hide":true,
+                 "supportedParameters":["max_completion_tokens"]},
+                {"id":"removed","name":"Removed"}
+            ]}}}"#,
+        )
+        .unwrap();
+        let spec = ProviderUpsertSpec {
+            id: "acme".to_string(),
+            replace_models: true,
+            models: vec![ProviderModelSpec {
+                id: "keep".to_string(),
+                name: "Keep".to_string(),
+                modalities: vec!["text".to_string()],
+                context_window: 204800,
+                max_tokens: 32768,
+                reasoning: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        apply_provider_upsert(&mut root, &spec).unwrap();
+
+        let models = root["providers"]["acme"]["models"].as_array().unwrap();
+        assert_eq!(models.len(), 1, "the removed model is gone: {models:?}");
+        let kept = &models[0];
+        assert_eq!(kept["id"], json!("keep"));
+        assert_eq!(
+            kept["contextWindow"],
+            json!(204800),
+            "managed fields are still overwritten: {kept}"
+        );
+        assert_eq!(
+            kept["compat"],
+            json!({"thinkingFormat": "qwen-chat-template"}),
+            "model-level compat must survive an edit: {kept}"
+        );
+        assert_eq!(kept["hide"], json!(true));
+        assert_eq!(
+            kept["supportedParameters"],
+            json!(["max_completion_tokens"])
+        );
+    }
+
+    #[test]
+    fn upsert_does_not_borrow_fields_for_a_different_model_id() {
+        // A renamed or brand-new model must not inherit the old entry's
+        // unmanaged fields: `compat` travels with the id it was written for.
+        let mut root: Map<String, Value> = serde_json::from_str(
+            r#"{"providers":{"acme":{"models":[{"id":"old","compat":{"thinkingFormat":"qwen"}}]}}}"#,
+        )
+        .unwrap();
+        apply_provider_upsert(
+            &mut root,
+            &ProviderUpsertSpec {
+                id: "acme".to_string(),
+                replace_models: true,
+                models: vec![ProviderModelSpec {
+                    id: "new".to_string(),
+                    name: "New".to_string(),
+                    modalities: vec!["text".to_string()],
+                    context_window: 4096,
+                    max_tokens: 1024,
+                    reasoning: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let models = root["providers"]["acme"]["models"].as_array().unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["id"], json!("new"));
+        assert!(
+            models[0].get("compat").is_none(),
+            "a new id starts clean: {:?}",
+            models[0]
+        );
     }
 
     #[test]

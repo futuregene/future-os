@@ -1431,6 +1431,55 @@ mod tests {
         assert!(stdout.contains("reasoner-v1"), "{stdout}");
     }
 
+    /// A client that does not know model-level `compat` (the CLI wizard) must
+    /// not strip it when it rewrites a provider: the agent merges the fields
+    /// the RPC cannot carry onto the entry that already had that model id.
+    #[tokio::test]
+    async fn editing_a_provider_keeps_model_level_compat() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = EnvGuard::temp_home();
+        write_models_json(serde_json::json!({
+            "providers": {
+                "omlx": {
+                    "name": "omlx",
+                    "api": "openai-completions",
+                    "baseUrl": "http://127.0.0.1:8000/v1",
+                    "models": [{
+                        "id": "Qwen3.8-27B-oQ4e-mtp",
+                        "name": "Qwen3.8-27B-oQ4e-mtp",
+                        "modalities": ["text", "image"],
+                        "contextWindow": 204800,
+                        "maxTokens": 32768,
+                        "reasoning": true,
+                        "compat": { "thinkingFormat": "qwen-chat-template" }
+                    }]
+                }
+            }
+        }))
+        .await;
+
+        let mut prompt = FakePrompter::new(&[
+            "2", "omlx", // custom provider, edit the existing one
+            "",     // name keeps
+            "",     // protocol keeps
+            "",     // base URL keeps
+            "",     // key blank leaves the stored credential alone
+            "",     // keep the model
+            "n",    // add no more models
+        ]);
+        let (out, _captured) = Output::memory();
+        configure_with(&mut prompt, &out).await.unwrap();
+
+        let models = read_models_json().await;
+        let entry = &models["providers"]["omlx"]["models"][0];
+        assert_eq!(entry["id"], "Qwen3.8-27B-oQ4e-mtp");
+        assert_eq!(
+            entry["compat"],
+            serde_json::json!({ "thinkingFormat": "qwen-chat-template" }),
+            "the wizard must not strip model-level compat: {models}"
+        );
+    }
+
     /// Editing one model only changes that model: its siblings are untouched
     /// and the edited one keeps the values that were not re-entered.
     #[tokio::test]
