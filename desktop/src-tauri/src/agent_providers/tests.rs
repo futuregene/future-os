@@ -1006,6 +1006,53 @@ fn upsert_local_persists_the_auth_key_on_success() {
     );
 }
 
+#[test]
+fn upsert_local_preserves_unmanaged_model_fields() {
+    // The GUI cannot carry model-level `compat`, so editing a provider must
+    // keep it on the entry that already had that id — production merges it in
+    // the agent's `apply_provider_upsert`, and this local stand-in has to
+    // match, or the storage-contract tests would bless a write that strips
+    // e.g. Qwen's thinkingFormat.
+    let _home = HomeGuard::new("wr-upsert-model-compat");
+    let catalog = fixture_catalog();
+    let path = models_json_path().unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        json!({
+            "providers": {
+                "acme": {
+                    "name": "Acme",
+                    "api": "openai-completions",
+                    "baseUrl": "https://api.example.com/v1",
+                    "models": [{
+                        "id": "m1",
+                        "name": "M1",
+                        "compat": { "thinkingFormat": "qwen-chat-template" },
+                        "hide": true
+                    }]
+                }
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let mut edit = input("acme", "Acme", false);
+    edit.models = vec![custom_model("m1", "M1", false)];
+    upsert_custom_provider_with_catalog(edit, &catalog).unwrap();
+
+    let stored = config_io::read_json_lenient(&path);
+    let stored_model = &stored["providers"]["acme"]["models"][0];
+    assert_eq!(stored_model["id"], json!("m1"));
+    assert_eq!(
+        stored_model["compat"],
+        json!({ "thinkingFormat": "qwen-chat-template" }),
+        "an edit must not strip model-level compat: {stored_model}"
+    );
+    assert_eq!(stored_model["hide"], json!(true));
+}
+
 #[tokio::test]
 async fn custom_provider_upsert_paths() {
     let _lock = mock_agent_lock();
