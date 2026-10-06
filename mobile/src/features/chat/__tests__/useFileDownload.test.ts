@@ -142,6 +142,118 @@ describe("download confirmation policy across entry points", () => {
   });
 });
 
+describe("the large-file question owns the screen", () => {
+  const platform = Platform.OS;
+  const cellular = { type: Network.NetworkStateType.CELLULAR };
+  const largeInfo: DownloadInfo = { ...info, size: 2 * 1024 * 1024 };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.useFakeTimers();
+    Platform.OS = "android";
+    jest.mocked(Network.getNetworkStateAsync).mockResolvedValue(cellular);
+  });
+  afterEach(() => {
+    act(() => jest.runOnlyPendingTimers());
+    jest.useRealTimers();
+    Platform.OS = platform;
+    jest.mocked(Network.getNetworkStateAsync).mockResolvedValue({ type: Network.NetworkStateType.WIFI });
+  });
+
+  test("a reveal that fires while the question is up cannot cover it", async () => {
+    const download = deferred<typeof file>();
+    const remote = {
+      cachedAttachment: jest.fn(() => null),
+      prepareAttachment: jest.fn(async () => largeInfo),
+      downloadAttachment: jest.fn(() => download.promise),
+    };
+    const confirm = deferred<boolean>();
+    jest.spyOn(downloadUtils, "confirmDownload").mockReturnValue(confirm.promise);
+    const h = await mount(remote);
+
+    let opening!: Promise<void>;
+    await act(async () => { opening = h.api.openFileLink("/notes.txt"); });
+    expect(downloadUtils.confirmDownload).toHaveBeenCalledTimes(1);
+    expect(h.api.activeDownload).toBeNull();
+
+    // The reader takes their time over the question. The transfer's reveal
+    // timer used to fire here and pop the progress dialog over the question,
+    // which on Android is its own window and leaves the question unanswerable.
+    await act(async () => { jest.advanceTimersByTime(PREPARE_REVEAL_DELAY_MS * 10); });
+    expect(h.api.activeDownload).toBeNull();
+
+    await act(async () => { confirm.resolve(true); });
+    // Accepting brings the dialog back for the transfer that asked.
+    expect(h.api.activeDownload).toMatchObject({ phase: "downloading", totalBytes: largeInfo.size });
+    await act(async () => { download.resolve(file as typeof file); await opening; });
+    act(() => jest.runOnlyPendingTimers());
+    expect(h.api.preview).toMatchObject({ text: "new" });
+    act(() => h.tree.unmount());
+  });
+
+  test("a dialog a slow prepare already revealed steps aside for the question", async () => {
+    const prepare = deferred<DownloadInfo>();
+    const download = deferred<typeof file>();
+    const remote = {
+      cachedAttachment: jest.fn(() => null),
+      prepareAttachment: jest.fn(() => prepare.promise),
+      downloadAttachment: jest.fn(() => download.promise),
+    };
+    const confirm = deferred<boolean>();
+    jest.spyOn(downloadUtils, "confirmDownload").mockReturnValue(confirm.promise);
+    const h = await mount(remote);
+
+    let opening!: Promise<void>;
+    await act(async () => { opening = h.api.openFileLink("/notes.txt"); });
+    await act(async () => { jest.advanceTimersByTime(PREPARE_REVEAL_DELAY_MS); });
+    // The prepare round trip outlived the reveal delay, so the dialog is up.
+    expect(h.api.activeDownload).toMatchObject({ phase: "preparing" });
+
+    await act(async () => { prepare.resolve(largeInfo); });
+    // The question owns the screen: the dialog gives way to it.
+    expect(h.api.activeDownload).toBeNull();
+    await act(async () => { jest.runOnlyPendingTimers(); });
+    expect(downloadUtils.confirmDownload).toHaveBeenCalledTimes(1);
+    expect(h.api.activeDownload).toBeNull();
+
+    await act(async () => { confirm.resolve(true); });
+    expect(h.api.activeDownload).toMatchObject({ phase: "downloading", totalBytes: largeInfo.size });
+    await act(async () => { download.resolve(file as typeof file); await opening; });
+    act(() => jest.runOnlyPendingTimers());
+    expect(h.api.preview).toMatchObject({ text: "new" });
+    act(() => h.tree.unmount());
+  });
+
+  test("iOS asks only once the reported dialog has really gone", async () => {
+    Platform.OS = "ios";
+    const prepare = deferred<DownloadInfo>();
+    const remote = {
+      cachedAttachment: jest.fn(() => null),
+      prepareAttachment: jest.fn(() => prepare.promise),
+      downloadAttachment: jest.fn(),
+    };
+    const confirm = deferred<boolean>();
+    jest.spyOn(downloadUtils, "confirmDownload").mockReturnValue(confirm.promise);
+    const h = await mount(remote);
+
+    let opening!: Promise<void>;
+    await act(async () => { opening = h.api.openFileLink("/notes.txt"); });
+    await act(async () => { jest.advanceTimersByTime(PREPARE_REVEAL_DELAY_MS); });
+    act(() => h.api.onDownloadModalShow());
+    await act(async () => { prepare.resolve(largeInfo); });
+    expect(h.api.activeDownload).toBeNull();
+    // UIKit has not reported the dismissal yet, so presenting the question
+    // now would race the dismiss animation.
+    expect(downloadUtils.confirmDownload).not.toHaveBeenCalled();
+
+    await act(async () => { h.api.flushPendingDownloadModal(); });
+    expect(downloadUtils.confirmDownload).toHaveBeenCalledTimes(1);
+    await act(async () => { confirm.resolve(false); await opening; });
+    expect(remote.downloadAttachment).not.toHaveBeenCalled();
+    act(() => h.tree.unmount());
+  });
+});
+
 describe("independent file operations", () => {
   const platform = Platform.OS;
   beforeEach(() => {

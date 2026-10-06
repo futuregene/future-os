@@ -197,6 +197,48 @@ export function useFileDownload(
     if (!handle?.controller.signal.aborted) present?.();
   }, []);
 
+  // The confirmation dialog and the progress Modal cannot share the screen: on
+  // Android the Modal is its own window that covers the dialog, and a reveal
+  // that fires while the question is up does the same on both platforms. Take
+  // the progress surface off screen and resolve once it is really gone, without
+  // releasing the transfer — the handle stays the active one, so the dialog
+  // comes back and the transfer resumes when the user accepts.
+  const hideDownload = useCallback(
+    (handle: DownloadHandle): Promise<void> => {
+      if (activeDownloadRef.current?.id !== handle.id) return Promise.resolve();
+      const onScreen = handle.visible;
+      if (handle.revealTimer !== null) {
+        clearTimeout(handle.revealTimer);
+        handle.revealTimer = null;
+      }
+      handle.visible = false;
+      setActiveDownload(null);
+      if (!onScreen) return Promise.resolve();
+      // `onDismiss` is iOS-only. Android continues after the state commit.
+      return new Promise<void>(resolve => {
+        pendingDownloadModalRef.current = () => resolve();
+        pendingDownloadHandleRef.current = handle;
+        if (Platform.OS !== "ios") deferPresentation(flushPendingDownloadModal);
+      });
+    },
+    [flushPendingDownloadModal],
+  );
+
+  /** `confirmDownload`, with the progress dialog out of the way for the answer. */
+  const confirmDownloadFor = useCallback(
+    async (
+      handle: DownloadHandle | undefined,
+      title: string,
+      message: string,
+      cancel: string,
+      accept: string,
+    ) => {
+      if (handle) await hideDownload(handle);
+      return confirmDownload(title, message, cancel, accept);
+    },
+    [hideDownload],
+  );
+
   const handoffDownloadModal = useCallback(
     (handle: DownloadHandle, present: () => void) => {
       if (handle.controller.signal.aborted || activeDownloadRef.current !== handle) return;
@@ -388,7 +430,8 @@ export function useFileDownload(
           const warning = await downloadWarning(info.size);
           if (handle.controller.signal.aborted) throw new TransferCancelledError();
           if (warning) {
-            const accepted = await confirmDownload(
+            const accepted = await confirmDownloadFor(
+              handle,
               t("attachment.downloadTitle"),
               t(warning, { size: formatBytes(info.size) }),
               t("chat.cancel"),
@@ -466,6 +509,7 @@ export function useFileDownload(
     },
     [
       beginDownload,
+      confirmDownloadFor,
       finishDownload,
       handoffDownloadAlert,
       handoffDownloadModal,
@@ -489,7 +533,8 @@ export function useFileDownload(
       const warning = await downloadWarning(info.size);
       if (handle?.controller.signal.aborted) throw new TransferCancelledError();
       if (warning) {
-        const accepted = await confirmDownload(
+        const accepted = await confirmDownloadFor(
+          handle,
           t("attachment.downloadTitle"),
           t(warning, { size: formatBytes(info.size) }),
           t("chat.cancel"),
@@ -532,7 +577,7 @@ export function useFileDownload(
         },
       );
     },
-    [remote, setTransferProgress, showDownload, t, updateDownload],
+    [confirmDownloadFor, remote, setTransferProgress, showDownload, t, updateDownload],
   );
 
   // Distinct native open/save/share operations on both platforms. Older iOS
