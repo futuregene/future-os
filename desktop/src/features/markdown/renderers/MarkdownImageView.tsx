@@ -8,11 +8,11 @@ import { Overlay } from "../../../components/ui/Overlay";
  * A source-keyed instance prevents an old load/error from poisoning a new URL.
  * Linked images leave activation to their enclosing anchor, never nest buttons.
  */
-export function MarkdownImageView(props: { alt: string; src: string; title?: string; linked?: boolean }) {
+export function MarkdownImageView(props: { alt: string; src: string; title?: string; linked?: boolean; width?: number }) {
   return <ImageView key={props.src} {...props} />;
 }
 
-function ImageView({ alt, src, title, linked = false }: { alt: string; src: string; title?: string; linked?: boolean }) {
+function ImageView({ alt, src, title, linked = false, width }: { alt: string; src: string; title?: string; linked?: boolean; width?: number }) {
   const { t } = useTranslation("markdown");
   const [failed, setFailed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -32,11 +32,12 @@ function ImageView({ alt, src, title, linked = false }: { alt: string; src: stri
       loading="lazy"
       onError={() => setFailed(true)}
       src={src}
+      style={width ? { maxWidth: width } : undefined}
       title={title}
     />
   );
   return (
-    <span className="my-2 inline-block max-w-full align-top">
+    <span className="my-2 block max-w-full" style={width ? { display: "flex", justifyContent: "center" } : undefined}>
       {linked
         ? image
         : (

@@ -71,11 +71,13 @@ export function SafeImage({
   alt,
   src,
   title,
+  width,
   linked,
 }: {
   alt: string;
   src: string;
   title?: string;
+  width?: number;
   linked?: boolean;
 }) {
   const { t } = useTranslation("markdown");
@@ -91,5 +93,5 @@ export function SafeImage({
     );
   }
 
-  return <MarkdownImageView alt={alt} linked={linked} src={safeSrc} title={title} />;
+  return <MarkdownImageView alt={alt} width={width} linked={linked} src={safeSrc} title={title} />;
 }

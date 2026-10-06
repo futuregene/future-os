@@ -45,13 +45,65 @@ describe("parseFutureMarkdown — block nodes", () => {
     expect(first("```\nplain\n```\n")).toEqual({ code: "plain", type: "code" });
   });
 
-  it("turns block-level HTML into an inert paragraph and drops the definition", () => {
+  it("turns block-level HTML into a rendered block and drops the definition", () => {
     expect(first("<div>\n  hi\n</div>\n")).toEqual({
-      children: [text("<div>\n  hi\n</div>")],
+      children: [text("hi")],
       type: "paragraph",
     });
     // A link definition contributes no node of its own.
     expect(parse("[x][1]\n\n[1]: https://example.com\n").nodes).toHaveLength(1);
+  });
+
+  it.each<[string, "center" | "left" | "right"]>([
+    ['<p align="center">hello</p>\n', "center"],
+    ['<p align="left">hello</p>\n', "left"],
+    ['<p align="right">hello</p>\n', "right"],
+  ])('applies a whitelisted <p align="%s">', (source, align) => {
+    expect(first(source)).toEqual({
+      align,
+      children: [text("hello")],
+      type: "paragraph",
+    });
+  });
+
+  it("renders a whitelisted heading with alignment", () => {
+    expect(first('<h3 align="center">Title</h3>\n')).toEqual({
+      align: "center",
+      children: [text("Title")],
+      level: 3,
+      type: "heading",
+    });
+  });
+
+  it("reads an <img> width and folds it into a centered paragraph when the wrapper is centered", () => {
+    expect(first('<img src="docs/a.png" width="120">\n')).toEqual({
+      children: [{ alt: "", src: "docs/a.png", type: "image", width: 120 }],
+      type: "paragraph",
+    });
+    expect(first('<div align="center">\n<img src="docs/a.png">\n</div>\n')).toEqual({
+      align: "center",
+      children: [{ alt: "", src: "docs/a.png", type: "image" }],
+      type: "paragraph",
+    });
+  });
+
+  it("keeps a <br> as a break, flattens a <details> summary and leaves a script inert", () => {
+    expect(first("line1<br>line2\n")).toEqual({
+      children: [text("line1"), { type: "break" }, text("line2")],
+      type: "paragraph",
+    });
+    // The summary survives as its own line; the body (a separate markdown
+    // block) is untouched; the closing </details> yields nothing.
+    expect(parse('<details><summary>more</summary>\n\ninner body\n\n</details>\n').nodes).toEqual([
+      { children: [text("more")], type: "paragraph" },
+      { children: [text("inner body")], type: "paragraph" },
+    ]);
+    // Non-whitelisted markup is kept verbatim as inert text (readable, never
+    // executed), not restructured.
+    expect(first("<script>alert(1)</script>\n")).toEqual({
+      children: [text("<script>alert(1)</script>")],
+      type: "paragraph",
+    });
   });
 
   it("keeps blockquotes nested", () => {
@@ -439,7 +491,7 @@ describe("parseFutureMarkdown — inline nodes", () => {
 
   it("compact-merges adjacent text produced by HTML comments and footnote refs", () => {
     expect(first("<!--c-->x[^1]y\n\n[^1]: n\n")).toEqual({
-      children: [text("<!--c-->x[^1]y")],
+      children: [text("x[^1]y")],
       type: "paragraph",
     });
   });
