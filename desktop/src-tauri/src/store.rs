@@ -35,9 +35,9 @@ pub use artifacts::{
 };
 pub use cleanup::{
     archive_finished_runs, get_thread_cleanup_summary, list_active_runs, list_interrupted_runs,
-    reanimate_run, reconcile_orphan_chat_workspaces, reconcile_orphan_images,
-    reconcile_orphan_review_repos, reconcile_orphan_sessions, settle_interrupted_run_from_agent,
-    ActiveRun,
+    reanimate_run, reconcile_empty_conversations, reconcile_orphan_chat_workspaces,
+    reconcile_orphan_images, reconcile_orphan_review_repos, reconcile_orphan_sessions,
+    settle_interrupted_run_from_agent, ActiveRun,
 };
 pub use db::{app_images_root, future_dir, get_approval_request, get_run, thread_images_dir};
 // Test-only: lets a fake-HOME guard release pooled connections before deleting
@@ -68,8 +68,8 @@ pub(crate) use runs::{append_run_event, flush_run_event_log_for_test};
 pub use skill_reco::{record_skill_reco, skill_reco_today, SkillRecoToday};
 pub use threads::{
     archive_thread, bind_thread_session_id, create_thread, delete_thread, delete_thread_tree,
-    find_thread_by_agent_session, get_or_create_thread_for_agent_session, get_recent_thread,
-    get_thread, inherit_thread_asset_root, list_threads, mark_thread_opened,
+    find_thread_by_agent_session, forget_thread_mirror, get_or_create_thread_for_agent_session,
+    get_recent_thread, get_thread, inherit_thread_asset_root, list_threads, mark_thread_opened,
     move_thread_to_workspace, pin_thread, purge_soft_deleted_threads,
     record_thread_message_activity, rename_thread, restore_thread, sync_thread_parent_session,
     sync_thread_title, thread_asset_root_id, thread_delete_closure, update_thread_model,
