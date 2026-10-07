@@ -67,7 +67,6 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
         | "delete_task"
         | "set_task_enabled"
         | "run_task"
-        | "fork_task_run"
         | "list_task_runs"
         | "list_task_deps"
         | "list_task_revisions"

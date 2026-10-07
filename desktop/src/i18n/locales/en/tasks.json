@@ -110,9 +110,7 @@
     "cwdPlaceholder": "Pick a folder, or type a path",
     "browse": "Browse"
   },
-  "forkRun": "Fork",
   "runNoSummary": "No summary recorded.",
-  "forkFailed": "Could not fork the conversation: {{message}}",
   "settings": "Settings",
   "colModel": "Model",
   "colThinking": "Thinking",

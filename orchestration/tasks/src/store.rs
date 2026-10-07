@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 
-pub const STORE_SCHEMA_VERSION: i64 = 2;
+pub const STORE_SCHEMA_VERSION: i64 = 3;
 pub const STORE_FILE: &str = "tasks.db";
 pub const STORE_DIR: &str = "tasks";
 
@@ -75,21 +75,21 @@ const SQL_CLEAR_DEP_STATE: &str = "
 /// The `task_runs` column list (see `TASK_COLUMNS`).
 const RUN_COLUMNS: &str = "
     id, task_id, kind, origin, actor, due_at, status, thread_id, session_id,
-    run_id, source_entry_id, prompt_version, result_summary, feedback, feedback_note,
+    run_id, prompt_version, result_summary, feedback, feedback_note,
     started_at, finished_at, error_message";
 
 const SQL_INSERT_RUN: &str = "
     INSERT INTO task_runs (
         id, task_id, kind, origin, actor, due_at, status, thread_id, session_id,
-        run_id, source_entry_id, prompt_version, result_summary, feedback, feedback_note,
+        run_id, prompt_version, result_summary, feedback, feedback_note,
         started_at, finished_at, error_message
-    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)";
+    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)";
 
 const SQL_UPDATE_RUN: &str = "
     UPDATE task_runs SET
         kind=?2, origin=?3, actor=?4, due_at=?5, status=?6, thread_id=?7, session_id=?8,
-        run_id=?9, source_entry_id=?10, prompt_version=?11, result_summary=?12,
-        feedback=?13, feedback_note=?14, started_at=?15, finished_at=?16, error_message=?17
+        run_id=?9, prompt_version=?10, result_summary=?11,
+        feedback=?12, feedback_note=?13, started_at=?14, finished_at=?15, error_message=?16
     WHERE id=?1";
 
 const SQL_RUNS_FOR_TASK: &str = "
@@ -124,20 +124,28 @@ const SQL_SET_SCHEMA_VERSION: &str = "
     INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
     ON CONFLICT(key) DO NOTHING";
 
-/// `(table, column, DDL)` applied when a database predates the column. Listed in
-/// application order; each entry is additive and idempotent, so a database that
-/// already has the column is left untouched.
-const MIGRATIONS: &[(&str, &str, &str)] = &[
-    (
+/// One schema step for a database written by an older build.
+enum Migration {
+    /// A column that database predates.
+    Add(&'static str, &'static str, &'static str),
+    /// A column the code stopped reading.
+    Drop(&'static str, &'static str),
+}
+
+use Migration::{Add, Drop};
+
+/// Applied in order on every open, each guarded by the column's own presence so
+/// the list is idempotent and a database settles on the schema in one pass.
+/// (`meta.schema_version` records when a database was born; it does not gate
+/// these — a database written by any older build is brought forward by content,
+/// not by version number.)
+const MIGRATIONS: &[Migration] = &[
+    Add(
         "tasks",
         "conversation_mode",
         "ALTER TABLE tasks ADD COLUMN conversation_mode TEXT NOT NULL DEFAULT 'workspace'",
     ),
-    (
-        "task_runs",
-        "source_entry_id",
-        "ALTER TABLE task_runs ADD COLUMN source_entry_id TEXT",
-    ),
+    Drop("task_runs", "source_entry_id"),
 ];
 
 /// The full schema. Single source of truth for a fresh database (see the
@@ -202,7 +210,6 @@ CREATE TABLE IF NOT EXISTS task_runs (
   thread_id      TEXT,
   session_id     TEXT,
   run_id         TEXT,
-  source_entry_id TEXT,
   prompt_version INTEGER,
   result_summary TEXT,
   feedback       TEXT,
@@ -255,12 +262,26 @@ impl Store {
 
     fn apply_schema(&self) -> Result<()> {
         self.conn.execute_batch(SCHEMA_SQL)?;
-        // Columns added after the first release. `CREATE TABLE IF NOT EXISTS`
-        // leaves an existing table alone, so a database written by an older
-        // build needs them added explicitly; a fresh one already has them.
-        for (table, column, sql) in MIGRATIONS {
-            if !self.has_column(table, column)? {
-                self.conn.execute_batch(sql)?;
+        for step in MIGRATIONS {
+            match step {
+                // `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, so
+                // a database written before a column needs it added explicitly;
+                // a fresh one already has it.
+                Migration::Add(table, column, sql) => {
+                    if !self.has_column(table, column)? {
+                        self.conn.execute_batch(sql)?;
+                    }
+                }
+                // SQLite has no `DROP COLUMN IF EXISTS`. The guard is what makes
+                // this re-runnable, and it is why a dropped column never has to
+                // be named in a query again — a database that still carries it is
+                // repaired on the next open rather than on the next query.
+                Migration::Drop(table, column) => {
+                    if self.has_column(table, column)? {
+                        self.conn
+                            .execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column}"))?;
+                    }
+                }
             }
         }
         let values = params![STORE_SCHEMA_VERSION.to_string()];
@@ -453,7 +474,6 @@ impl Store {
             run.thread_id,
             run.session_id,
             run.run_id,
-            run.source_entry_id,
             run.prompt_version,
             run.result_summary,
             run.feedback,
@@ -477,7 +497,6 @@ impl Store {
             run.thread_id,
             run.session_id,
             run.run_id,
-            run.source_entry_id,
             run.prompt_version,
             run.result_summary,
             run.feedback,
@@ -637,14 +656,13 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRun> {
         thread_id: row.get(7)?,
         session_id: row.get(8)?,
         run_id: row.get(9)?,
-        source_entry_id: row.get(10)?,
-        prompt_version: row.get(11)?,
-        result_summary: row.get(12)?,
-        feedback: row.get(13)?,
-        feedback_note: row.get(14)?,
-        started_at: row.get(15)?,
-        finished_at: row.get(16)?,
-        error_message: row.get(17)?,
+        prompt_version: row.get(10)?,
+        result_summary: row.get(11)?,
+        feedback: row.get(12)?,
+        feedback_note: row.get(13)?,
+        started_at: row.get(14)?,
+        finished_at: row.get(15)?,
+        error_message: row.get(16)?,
     })
 }
 
@@ -916,7 +934,6 @@ mod tests {
             thread_id: None,
             session_id: None,
             run_id: None,
-            source_entry_id: None,
             prompt_version: Some(1),
             result_summary: None,
             feedback: None,
@@ -990,6 +1007,36 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM meta", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rows, 1, "re-opening must not duplicate the meta row");
+    }
+
+    /// A database written before a column was dropped carries it until the next
+    /// open, and the repair must not disturb the rows around it.
+    #[test]
+    fn a_dropped_column_is_removed_from_a_database_that_still_carries_it() {
+        let dir = TempDir::new().unwrap();
+        let t = task("legacy");
+        {
+            let s = Store::open(dir.path()).unwrap();
+            s.insert_task(&t).unwrap();
+            s.insert_run(&run_row(&t.id, RunStatus::Completed, 1))
+                .unwrap();
+            // An older build's `task_runs` had this column.
+            s.conn
+                .execute_batch("ALTER TABLE task_runs ADD COLUMN source_entry_id TEXT")
+                .unwrap();
+            assert!(s.has_column("task_runs", "source_entry_id").unwrap());
+        }
+
+        let reopened = Store::open(dir.path()).unwrap();
+        assert!(
+            !reopened.has_column("task_runs", "source_entry_id").unwrap(),
+            "opening must bring the schema forward, not just tolerate the column"
+        );
+        // The rows are untouched, and reads work through the new column list.
+        let runs = reopened.list_runs_for_task(&t.id, 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, RunStatus::Completed);
+        assert_eq!(reopened.get_task(&t.id).unwrap().unwrap().name, "legacy");
     }
 
     // ─── tasks ────────────────────────────────────────────────────────────
@@ -1165,7 +1212,6 @@ mod tests {
             thread_id: None,
             session_id: None,
             run_id: None,
-            source_entry_id: None,
             prompt_version: Some(1),
             result_summary: None,
             feedback: None,

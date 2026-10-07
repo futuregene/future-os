@@ -150,7 +150,6 @@ fn claim(store: &Store, task: &Task) -> Result<(TaskRun, Vec<UpstreamSource>), S
                 thread_id: None,
                 session_id: None,
                 run_id: None,
-                source_entry_id: None,
                 prompt_version: Some(task.prompt_version),
                 result_summary: None,
                 feedback: None,
@@ -202,7 +201,6 @@ fn claim(store: &Store, task: &Task) -> Result<(TaskRun, Vec<UpstreamSource>), S
         thread_id: None,
         session_id: None,
         run_id: None,
-        source_entry_id: None,
         prompt_version: Some(task.prompt_version),
         result_summary: None,
         feedback: None,
@@ -367,19 +365,6 @@ async fn run_inner(
         return (store, Err(error));
     }
 
-    // The entry this run started from, resolved once here so every client can
-    // fork the conversation without searching the session for it.
-    let source_entry_id = run.run_id.clone();
-    if let Some(run_id) = source_entry_id {
-        match user_entry_for_run(&session_id, &run_id).await {
-            Ok(Some(entry_id)) => run.source_entry_id = Some(entry_id),
-            // A missing entry is not a failed run: the answer landed, the fork
-            // affordance simply stays hidden for this run.
-            Ok(None) => {}
-            Err(error) => eprintln!("FutureOS tasks: could not resolve the run's entry: {error}"),
-        }
-    }
-
     // The final assistant text is the run's result summary. Read it back from
     // the agent session (the durable source of truth).
     let text = match read_final_assistant_text(&session_id).await {
@@ -387,22 +372,6 @@ async fn run_inner(
         Err(error) => return (store, Err(error)),
     };
     (store, Ok(text))
-}
-
-/// The persisted user entry that started `run_id` ∈ `session_id` — the anchor a
-/// fork is taken at.
-async fn user_entry_for_run(session_id: &str, run_id: &str) -> Result<Option<String>, String> {
-    let mut client = crate::agent_bridge::connect_agent()
-        .await
-        .map_err(|e| e.to_string())?;
-    let entries =
-        crate::agent_bridge::fetch_all_session_entries_with_client(&mut client, session_id)
-            .await
-            .map_err(|e| e.to_string())?;
-    Ok(entries
-        .into_iter()
-        .find(|entry| entry.run_id.as_deref() == Some(run_id) && entry.role == "user")
-        .map(|entry| entry.id))
 }
 
 async fn create_new_session(task: &Task) -> Result<(String, String), String> {
@@ -444,44 +413,6 @@ async fn create_new_session(task: &Task) -> Result<(String, String), String> {
         set_session_cwd(&session_id, &task.cwd).await?;
     }
     Ok((thread.id, session_id))
-}
-
-/// Fork a finished run's conversation into the conversation list.
-///
-/// Shared by the desktop's own command and the phone's remote bridge, so both
-/// take the copy at exactly the same anchor. The anchor is the run's own user
-/// entry, so the copy carries that run (and anything before it) and nothing that
-/// came after. The conversation mode is inherited: forking a chat conversation
-/// yields a chat, a workspace conversation a workspace.
-///
-/// Returns `(thread_id, session_id)` — the new conversation and the agent
-/// session behind it.
-pub(crate) async fn fork_run(run_id: &str) -> Result<(String, String), String> {
-    let store = Store::open(&future_home()).map_err(|e| e.to_string())?;
-    let run = store
-        .get_run(run_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "run not found".to_string())?;
-    let thread_id = run
-        .thread_id
-        .clone()
-        .ok_or_else(|| "this run has no conversation".to_string())?;
-    let source_entry_id = run
-        .source_entry_id
-        .clone()
-        .ok_or_else(|| "this run has no message to fork from".to_string())?;
-    // A fresh request id per attempt: the task's conversation is its own history,
-    // so forking twice is a deliberate second copy rather than a retry.
-    let request_id = format!("task-fork:{}", new_run_id());
-    let new_thread_id =
-        crate::agent_bridge::fork_agent_session(&thread_id, &source_entry_id, &request_id)
-            .await
-            .map_err(|e| e.to_string())?;
-    let session_id = crate::store::get_thread(&new_thread_id)
-        .map_err(|e| e.to_string())?
-        .and_then(|thread| thread.agent_session_id)
-        .ok_or_else(|| "the forked conversation has no agent session".to_string())?;
-    Ok((new_thread_id, session_id))
 }
 
 /// Point an agent session at a working directory (the chat-mode repair above).
@@ -769,7 +700,6 @@ mod tests {
             started_at: Some(1),
             finished_at: Some(2),
             error_message: None,
-            source_entry_id: None,
         };
         store.insert_run(&finished).unwrap();
 
@@ -1086,7 +1016,6 @@ mod tests {
                 started_at: Some(1),
                 finished_at: None,
                 error_message: None,
-                source_entry_id: None,
             })
             .unwrap();
         assert!(store.has_running_run(&t.id).unwrap());

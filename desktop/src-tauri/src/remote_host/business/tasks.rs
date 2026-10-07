@@ -30,28 +30,8 @@ fn open_store() -> Result<future_tasks::Store, crate::AppError> {
     future_tasks::Store::open(&home).map_err(|e| crate::AppError::Message(e.to_string()))
 }
 
-/// Whether a run needs forking, or can simply be opened.
-///
-/// Mirrors the desktop command's rule: only a task that reuses one conversation
-/// (`existing`) needs a copy, because it compacts and appends to that
-/// conversation on every run. In `new` mode the run's own conversation is
-/// already in the list.
-fn run_is_forkable(
-    run: &future_tasks::TaskRun,
-    session_policy: future_tasks::SessionPolicy,
-) -> bool {
-    session_policy == future_tasks::SessionPolicy::Existing
-        && run.source_entry_id.is_some()
-        && run.thread_id.is_some()
-}
-
-fn run_summary_view(
-    run: future_tasks::TaskRun,
-    session_policy: future_tasks::SessionPolicy,
-) -> Value {
-    let forkable = run_is_forkable(&run, session_policy);
+fn run_summary_view(run: future_tasks::TaskRun) -> Value {
     json!({
-        "forkable": forkable,
         "id": run.id,
         "kind": format!("{:?}", run.kind).to_lowercase(),
         "origin": format!("{:?}", run.origin).to_lowercase(),
@@ -67,7 +47,6 @@ fn run_summary_view(
 
 /// The list row: identity + trigger state only, no prompt.
 fn task_list_view(store: &future_tasks::Store, task: future_tasks::Task) -> Value {
-    let session_policy = task.session_policy;
     let latest = store.latest_run_for_task(&task.id).ok().flatten();
     json!({
         "id": task.id,
@@ -78,13 +57,12 @@ fn task_list_view(store: &future_tasks::Store, task: future_tasks::Task) -> Valu
         "nextDueAt": task.next_due_at,
         "lastRunAt": task.last_run_at,
         "reflection": format!("{:?}", task.reflection).to_lowercase(),
-        "latestRun": latest.map(|run| run_summary_view(run, session_policy)),
+        "latestRun": latest.map(run_summary_view),
     })
 }
 
 /// The detail record (the only place the prompt crosses the wire).
 fn task_detail_view(store: &future_tasks::Store, task: future_tasks::Task) -> Value {
-    let session_policy = task.session_policy;
     let latest = store.latest_run_for_task(&task.id).ok().flatten();
     json!({
         "id": task.id,
@@ -103,7 +81,7 @@ fn task_detail_view(store: &future_tasks::Store, task: future_tasks::Task) -> Va
         "nextDueAt": task.next_due_at,
         "lastRunAt": task.last_run_at,
         "reflection": format!("{:?}", task.reflection).to_lowercase(),
-        "latestRun": latest.map(|run| run_summary_view(run, session_policy)),
+        "latestRun": latest.map(run_summary_view),
     })
 }
 
@@ -408,33 +386,12 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             }
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
-        "fork_task_run" => match crate::tasks::fork_run(&cmd.run_id).await {
-            Ok((thread_id, session_id)) => {
-                reply(
-                    sink,
-                    true,
-                    json!({ "threadId": thread_id, "sessionId": session_id }),
-                    None,
-                )
-                .await
-            }
-            Err(error) => reply(sink, false, Value::Null, Some(&error)).await,
-        },
         "list_task_runs" => match open_store() {
             Ok(store) => {
                 let limit = if cmd.limit > 0 { cmd.limit } else { 20 };
-                let session_policy = store
-                    .get_task(&cmd.task_id)
-                    .ok()
-                    .flatten()
-                    .map(|task| task.session_policy)
-                    .unwrap_or(future_tasks::SessionPolicy::New);
                 match store.list_runs_for_task(&cmd.task_id, limit) {
                     Ok(runs) => {
-                        let items: Vec<Value> = runs
-                            .into_iter()
-                            .map(|run| run_summary_view(run, session_policy))
-                            .collect();
+                        let items: Vec<Value> = runs.into_iter().map(run_summary_view).collect();
                         reply(sink, true, json!({ "runs": items }), None).await
                     }
                     Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
@@ -614,7 +571,6 @@ mod tests {
             started_at: Some(1),
             finished_at: Some(2),
             error_message: None,
-            source_entry_id: Some("ent_1".into()),
         }
     }
 
@@ -666,70 +622,6 @@ mod tests {
         assert_eq!(data["thinkingLevel"], "high");
         assert_eq!(data["sessionPolicy"], "existing");
         assert_eq!(data["conversationMode"], "workspace");
-    }
-
-    /// A run of a task that reuses one conversation can be forked; a run that
-    /// already owns its conversation cannot, because opening it is enough.
-    #[tokio::test]
-    async fn the_run_ledger_flags_only_a_reused_conversation_as_forkable() {
-        let _home = home("business-tasks-runs");
-        let store = open_store().expect("store");
-        let reused = task("reused", future_tasks::SessionPolicy::Existing);
-        let fresh = task("fresh", future_tasks::SessionPolicy::New);
-        store.insert_task(&reused).unwrap();
-        store.insert_task(&fresh).unwrap();
-        store.insert_run(&completed_run(&reused.id)).unwrap();
-        store.insert_run(&completed_run(&fresh.id)).unwrap();
-        drop(store);
-
-        for (id, expected) in [(&reused.id, true), (&fresh.id, false)] {
-            let sink = RecordingSink::default();
-            let mut cmd = command("list_task_runs");
-            cmd.task_id = id.clone();
-            super::execute(&cmd, &sink).await;
-            let data = sink.ok_data();
-            let runs = data["runs"].as_array().expect("runs array");
-            assert_eq!(runs.len(), 1);
-            assert_eq!(runs[0]["forkable"], expected, "task {id}");
-        }
-    }
-
-    /// A run with no conversation, or no recorded entry, has nothing to copy.
-    #[test]
-    fn a_run_without_a_conversation_is_not_forkable() {
-        let run = completed_run("tsk_1");
-        assert!(run_is_forkable(&run, future_tasks::SessionPolicy::Existing));
-        assert!(!run_is_forkable(&run, future_tasks::SessionPolicy::New));
-
-        let no_entry = future_tasks::TaskRun {
-            source_entry_id: None,
-            ..run.clone()
-        };
-        assert!(!run_is_forkable(
-            &no_entry,
-            future_tasks::SessionPolicy::Existing
-        ));
-
-        let no_thread = future_tasks::TaskRun {
-            thread_id: None,
-            ..run
-        };
-        assert!(!run_is_forkable(
-            &no_thread,
-            future_tasks::SessionPolicy::Existing
-        ));
-    }
-
-    /// Forking a run the ledger does not know is answered as a failure, not as
-    /// a conversation that never appeared.
-    #[tokio::test]
-    async fn forking_an_unknown_run_fails_on_the_wire() {
-        let _home = home("business-tasks-fork-missing");
-        let sink = RecordingSink::default();
-        let mut cmd = command("fork_task_run");
-        cmd.run_id = "trn_missing".into();
-        super::execute(&cmd, &sink).await;
-        assert!(sink.error_text().contains("not found"));
     }
 
     /// A phone may ask for the runs of a task that no longer exists; the ledger

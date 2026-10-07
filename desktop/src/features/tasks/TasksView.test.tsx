@@ -59,7 +59,6 @@ function run(overrides: Partial<TaskRunView> = {}): TaskRunView {
     promptVersion: 1,
     resultSummary: "all good",
     errorMessage: null,
-    forkable: true,
     ...overrides,
   };
 }
@@ -593,56 +592,6 @@ describe("tasksView", () => {
     expect(text).toContain("Every 1 h");
     expect(text).toContain("Every 1 d");
     expect(text).toContain("Every 90 min");
-  });
-
-  it("forks a finished run into the conversation list", async () => {
-    const onOpenThread = vi.fn();
-    const { container } = await renderView([task()], onOpenThread);
-    await click(rows(container)[0]);
-    mocks.invokeCommand.mockClear();
-    mocks.invokeCommand.mockImplementation(async (command: string) => {
-      if (command === "fork_task_run")
-        return "thr_forked";
-      if (command === "list_tasks")
-        return [task()];
-      if (command === "list_task_runs")
-        return [run()];
-      return [];
-    });
-    await click(buttonByText(container, "Fork"));
-    expect(mocks.invokeCommand).toHaveBeenCalledWith("fork_task_run", { runId: "trn_1" });
-    expect(onOpenThread).toHaveBeenCalledWith("thr_forked");
-  });
-
-  it("reports a fork that the backend refuses", async () => {
-    const onOpenThread = vi.fn();
-    const { container } = await renderView([task()], onOpenThread);
-    await click(rows(container)[0]);
-    mocks.invokeCommand.mockImplementation(async (command: string) => {
-      if (command === "fork_task_run")
-        throw new Error("no message to fork from");
-      if (command === "list_tasks")
-        return [task()];
-      if (command === "list_task_runs")
-        return [run()];
-      return [];
-    });
-    await click(buttonByText(container, "Fork"));
-    expect(onOpenThread).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("no message to fork from");
-  });
-
-  it("hides the fork action for a run with nothing to fork from", async () => {
-    const { container } = await renderView([task()]);
-    mocks.invokeCommand.mockImplementation(async (command: string) => {
-      if (command === "list_tasks")
-        return [task()];
-      if (command === "list_task_runs")
-        return [run({ forkable: false })];
-      return [];
-    });
-    await click(rows(container)[0]);
-    expect(buttonByText(container, "Fork")).toBeUndefined();
   });
 
   it("says so when a run recorded no summary", async () => {

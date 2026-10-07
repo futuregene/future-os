@@ -14,8 +14,6 @@ export interface RemoteTaskRun {
   promptVersion?: number | null;
   resultSummary?: string | null;
   errorMessage?: string | null;
-  /** Whether this run can be forked into the session list. */
-  forkable?: boolean;
 }
 
 export interface RemoteTaskRow {
