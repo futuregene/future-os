@@ -169,3 +169,46 @@ test("a slash action with no open query is ignored instead of clearing the draft
   expect(message).toBe("");
 });
 
+test("typed # opens the conversation query and inserting one writes the reference link", () => {
+  act(() => { tree = create(createElement(Harness, {})); });
+  act(() => completion.onFocus());
+  type("ask #fla");
+  expect(completion.session?.query).toBe("fla");
+  expect(completion.query).toBeNull();
+  act(() => completion.selectSession({ sessionId: "s-1", title: "Fix the flaky test" }));
+  // The session id travels in the link — that is what the agent acts on.
+  expect(message).toBe("ask [Fix the flaky test](futureos://session/s-1) ");
+  expect(completion.selection).toEqual({ start: 49, end: 49 });
+  expect(completion.session).toBeNull();
+  expect(focus).toHaveBeenCalled();
+});
+
+test("a `#` that is not opening a token stays literal", () => {
+  act(() => { tree = create(createElement(Harness, {})); });
+  act(() => completion.onFocus());
+  type("## heading");
+  expect(completion.session).toBeNull();
+  type("issue#12");
+  expect(completion.session).toBeNull();
+  // Neither trigger accepts a token containing the other's sigil, so `#/`
+  // opens no menu at all rather than guessing which one was meant.
+  type("x #/");
+  expect(completion.query).toBeNull();
+  expect(completion.session).toBeNull();
+  type("x #/f");
+  expect(completion.session).toBeNull();
+});
+
+test("closing the conversation menu keeps the draft, and a disabled composer cannot insert", () => {
+  act(() => { tree = create(createElement(Harness, {})); });
+  act(() => completion.onFocus());
+  type("#fix");
+  act(() => completion.close());
+  expect(completion.session).toBeNull();
+  expect(message).toBe("#fix");
+  type("#fix");
+  act(() => tree.update(createElement(Harness, { enabled: false })));
+  act(() => completion.selectSession({ sessionId: "s-1", title: "Fix" }));
+  expect(message).toBe("#fix");
+});
+

@@ -43,12 +43,14 @@ import {
 } from "../../../theme/tokens";
 import { COMPOSER_FADE_CLEARANCE, formatBytes } from "../utils";
 import { useSkillCompletion } from "../useSkillCompletion";
+import { sessionMentionGroups } from "../sessionMention";
 import type { PendingSuggestion } from "../useSkillRecommendation";
 import type { SlashAction } from "../skillCompletion";
 import { useStopRequest } from "../useStopRequest";
 import { SkillDetailsDialog } from "./SkillDetailsDialog";
 import { SkillSuggestionCard } from "./SkillSuggestionCard";
 import { SkillPicker, skillPickerHeight } from "./SkillPicker";
+import { SessionPicker, sessionPickerHeight } from "./SessionPicker";
 import { FloatingTimelineButton } from "./FloatingTimelineButton";
 
 type Remote = RemoteControls;
@@ -165,10 +167,27 @@ function ComposerDockView({
     handleSlashAction,
   );
   const pickerHeight = skillPickerHeight(height, keyboardHeight, slashActions.length);
+  // The `#` menu's conversations, filed by workspace — computed here (not in the
+  // picker) so its height can account for the headings it will draw.
+  const sessionGroups = useMemo(
+    () => sessionMentionGroups(
+      remote.sessions ?? [],
+      remote.workspaces ?? [],
+      completion.session?.query ?? "",
+      remote.selectedSessionId,
+    ),
+    [completion.session?.query, remote.sessions, remote.workspaces, remote.selectedSessionId],
+  );
+  const sessionHeight = sessionPickerHeight(
+    height,
+    keyboardHeight,
+    sessionGroups.reduce((count, group) => count + group.sessions.length, 0),
+    sessionGroups.length,
+  );
   const maxInputHeight = Math.max(
     INPUT_MIN_HEIGHT,
     Math.min(
-      completion.query ? 90 : INPUT_MAX_HEIGHT,
+      completion.query || completion.session ? 90 : INPUT_MAX_HEIGHT,
       Math.floor(height * 0.3),
     ),
   );
@@ -231,6 +250,14 @@ function ComposerDockView({
         />
       ) : null}
       <View style={styles.composerArea}>
+        {completion.session && (
+          <SessionPicker
+            groups={sessionGroups}
+            maxHeight={sessionHeight}
+            onClose={completion.close}
+            onSelect={completion.selectSession}
+          />
+        )}
         {completion.query && (
           <SkillPicker
             key={`${remote.credentials?.pairId}:${remote.presence?.bridgeInstanceId}:${remote.selectedSessionId}:${remote.draftWorkspaceId}`}

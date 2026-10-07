@@ -1,5 +1,6 @@
 import { useEffect, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { BackHandler, Keyboard, type TextInput } from "react-native";
+import { completeSessionReference, sessionQuery as findSessionQuery } from "./sessionCompletion";
 import { completeSkill, insertSkillSlash, removeSkillQuery, skillQuery, type SlashAction, type TextSelection } from "./skillCompletion";
 
 export function useSkillCompletion(message: string, setMessage: Dispatch<SetStateAction<string>>, enabled: boolean, inputRef: RefObject<TextInput | null>, onAction?: (action: SlashAction) => void) {
@@ -11,8 +12,13 @@ export function useSkillCompletion(message: string, setMessage: Dispatch<SetStat
   const [dismissed, setDismissed] = useState(false);
   const query = enabled && focused && !dismissed ? skillQuery(message, selection) : null;
   const open = query !== null;
+  // `#` (a conversation reference) shares this hook's caret tracking with `/`
+  // (skills and actions) because the two never both apply at one caret — `/`
+  // wins when they could, matching the desktop composer's trigger order.
+  const session = !query && enabled && focused && !dismissed ? findSessionQuery(message, selection) : null;
+  const menuOpen = open || session !== null;
   useEffect(() => {
-    if (!open) return;
+    if (!menuOpen) return;
     const back = BackHandler.addEventListener("hardwareBackPress", () => {
       setDismissed(true);
       return true;
@@ -20,10 +26,10 @@ export function useSkillCompletion(message: string, setMessage: Dispatch<SetStat
     // Android's IME can consume Back before RN's BackHandler sees it.
     const keyboard = Keyboard.addListener("keyboardDidHide", () => setDismissed(true));
     return () => { back.remove(); keyboard.remove(); };
-  }, [open]);
+  }, [menuOpen]);
 
   return {
-    selection, inputSelection, query,
+    selection, inputSelection, query, session,
     onSelectionChange: (next: TextSelection) => {
       setSelection(next);
       setInputSelection(undefined);
@@ -70,6 +76,16 @@ export function useSkillCompletion(message: string, setMessage: Dispatch<SetStat
     select: (name: string) => {
       if (!query || !enabled) return;
       const next = completeSkill(message, query, name);
+      setMessage(next.text);
+      setSelection(next.selection);
+      setInputSelection(next.selection);
+      setDismissed(true);
+      inputRef.current?.focus();
+    },
+    /** Insert the picked conversation as a reference carrying its session id. */
+    selectSession: (picked: { sessionId: string; title: string }) => {
+      if (!session || !enabled) return;
+      const next = completeSessionReference(message, session, picked);
       setMessage(next.text);
       setSelection(next.selection);
       setInputSelection(next.selection);
