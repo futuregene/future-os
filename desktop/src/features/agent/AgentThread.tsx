@@ -11,6 +11,7 @@ import type {
   StoredThread,
 } from "../../integrations/storage/threadStore";
 import type { ComposerSendPayload } from "./Composer";
+import type { SessionMentionOption } from "./sessionMention";
 import { ArrowDown, History } from "lucide-react";
 import { useCallback, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
@@ -44,6 +45,8 @@ const COMPACTION_TERMINAL_TIMEOUT_MS = 30 * 60 * 1000;
 interface AgentThreadProps {
   thread: StoredThread | null;
   workspacePath?: string | null;
+  /** Conversations offered by the composer's `#` menu (see `sessionMentionOptions`). */
+  sessionMentions?: SessionMentionOption[];
   agentConnection: AgentConnectionState;
   leftPanelExpanded: boolean;
   loadingStore: boolean;
@@ -89,6 +92,7 @@ interface AgentThreadProps {
 export function AgentThread({
   thread,
   workspacePath,
+  sessionMentions,
   agentConnection,
   leftPanelExpanded,
   loadingStore,
@@ -627,6 +631,7 @@ export function AgentThread({
               compactionInProgress={agentState?.isCompacting ?? false}
               onSend={handleComposerSend}
               workspaceId={thread?.workspaceId}
+              sessionMentions={sessionMentions}
               draftKey={thread?.id}
               skillRecommendation={{
                 card: recommendation.state.recommendation,

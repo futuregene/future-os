@@ -343,9 +343,10 @@ function MessageBlockImpl({
 
 /**
  * User messages render as plain text (never markdown — the user's `*`/`#`/`1.`
- * stay literal), except `@` file mentions, which show in the accent color like
- * the composer pill, and `[label](http…)` links (e.g. the coach prompt's manual
- * link), which render clickable via SafeLink. Everything else is verbatim.
+ * stay literal), except `@` file mentions and `#` session references, which show
+ * in the accent color like the composer pill, and `[label](http…)` links (e.g.
+ * the coach prompt's manual link), which render clickable via SafeLink.
+ * Everything else is verbatim.
  */
 function UserMessageText({ content }: { content: string }) {
   const segments = parseMentionSegments(content);
@@ -354,7 +355,14 @@ function UserMessageText({ content }: { content: string }) {
     <p className="whitespace-pre-wrap">
       {segments.map(segment =>
         segment.mention
-          ? <span key={segment.key} className="font-medium text-accent">{segment.text}</span>
+          ? (
+              <span key={segment.key} className="font-medium text-accent">
+                {/* A session reference keeps the composer's `#` marker, so a
+                    reference to another conversation cannot be mistaken for a
+                    file mention in a glance over the transcript. */}
+                {segment.sessionId ? `#${segment.text}` : segment.text}
+              </span>
+            )
           : (
               <Fragment key={segment.key}>
                 {splitExternalLinkSegments(segment.text).map(linkSegment =>

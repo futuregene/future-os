@@ -8,6 +8,7 @@ import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { saveComposerDraft } from "../../features/agent/composerDraft";
 import { NewConversation } from "../../features/agent/NewConversation";
+import { sessionMentionOptions } from "../../features/agent/sessionMention";
 import { startRemote, stopRemote } from "../../features/remote/remoteClient";
 import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
@@ -185,6 +186,13 @@ function ReadyAppShell({
       invokeCommand("observe_session", { threadId, sessionId }).catch(() => {});
     }
   }, [activeThread?.id, activeThread?.agentSessionId]);
+
+  // Conversations the composer's `#` menu offers: the rail's order, minus the
+  // conversation being composed in (referencing yourself would be a no-op).
+  const sessionMentions = useMemo(
+    () => sessionMentionOptions(threads, workspaces, activeThread?.agentSessionId),
+    [threads, workspaces, activeThread?.agentSessionId],
+  );
 
   // Refresh the store when the agent session's cwd changes (e.g. TUI /cwd),
   // so the thread moves to the correct workspace in the sidebar.
@@ -716,6 +724,7 @@ function ReadyAppShell({
                           onThinkingLevelChange={changeThinkingLevel}
                           pendingPrompt={pendingPrompt}
                           thread={activeThread}
+                          sessionMentions={sessionMentions}
                           workspacePath={activeWorkspace?.path ?? null}
                           onApprovalDecision={handleApprovalDecision}
                           leftPanelExpanded={showLeftPanel}

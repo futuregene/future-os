@@ -57,6 +57,8 @@ export interface TimelineCardProps {
   isLatestAssistant?: boolean;
   onOpenAttachment?(attachment: HistoryAttachment): void;
   onOpenFile?(path: string): void;
+  /** Opens the conversation a `#` reference in a sent message points at. */
+  onOpenSession?(sessionId: string): void;
   onRetry?(item: TimelineItem): void;
   onContinue?(item: TimelineItem): void;
   /** Fork the conversation at this reply's turn (desktop Fork parity). */
@@ -954,11 +956,30 @@ function SegmentBlock({
  * and tappable (file mentions open like assistant file links, external links in
  * the browser).
  */
-function UserMessageText({ text, onOpenFile }: { text: string; onOpenFile?(path: string): void }) {
+function UserMessageText({ text, onOpenFile, onOpenSession }: {
+  text: string;
+  onOpenFile?(path: string): void;
+  /** Opens the conversation a `#` reference points at (see the composer menu). */
+  onOpenSession?(sessionId: string): void;
+}) {
   const { t } = useTranslation();
   return (
     <Text selectable style={[styles.messageText, styles.userText]}>
       {splitUserTextSegments(text).map(segment => {
+        if (segment.kind === "session") {
+          // A reference to another conversation: the `#` marker is what tells it
+          // apart from a file mention at a glance. Tapping switches to it.
+          return (
+            <Text
+              accessibilityRole="link"
+              key={segment.key}
+              onPress={onOpenSession && segment.href ? () => onOpenSession(segment.href!) : undefined}
+              style={styles.userMention}
+            >
+              {`#${segment.text}`}
+            </Text>
+          );
+        }
         if (segment.kind === "mention") {
           return (
             <Text
@@ -996,6 +1017,7 @@ function TimelineCardView({
   isLatestAssistant,
   onOpenAttachment,
   onOpenFile,
+  onOpenSession,
   onRetry,
   onContinue,
   onFork,
@@ -1140,7 +1162,7 @@ function TimelineCardView({
       <View style={styles.userBlock}>
         {item.text.trim().length > 0 && (
           <View style={[styles.message, styles.userMessage]}>
-            <UserMessageText onOpenFile={onOpenFile} text={item.text} />
+            <UserMessageText onOpenFile={onOpenFile} onOpenSession={onOpenSession} text={item.text} />
           </View>
         )}
         {item.attachments && item.attachments.length > 0 && (

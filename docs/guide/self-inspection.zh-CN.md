@@ -245,6 +245,21 @@ future session set <id> --context-files off --auto-compact off --auto-retry on
 会话的模型生成标题（一次模型调用；只打印建议，加 `--apply` 才改名），
 `future session abort|cancel|approve|reject` 作用于正在运行的工作。
 
+还有一条命令同样是「动手」，而它就是「一个会话触达另一个会话」的方式：
+
+```sh
+future run --session <id> "<message>"     # 在那个会话里起一次 run
+```
+
+`--session` 要求该会话已存在（未知 id 会被 `switch_session` 拒绝，而不是新建一个），
+提示词追加到该会话 —— 默认排在正在进行的 run 之后，用 `--steer` 则打断它。
+它就是 `#` 选中的会话引用的「发送」那一半：用户消息里可以带
+`[标题](futureos://session/<id>)`，链接里的 id 正是 `--session` 的参数。
+这是另一个会话里的一次完整 run：会花积分，并且会阻塞到那次 run 结束
+（受 shell 工具自身的超时约束），所以应在用户要求时才做，而不是由模型自行发起。
+「读」的那一半是上面的 `future session transcript --session <id>` /
+`future session history search --session <id>`。
+
 改设置会改变此后每一个会话的行为，所以技能把它当作用户的决定：说明旧值与新值，
 在用户同意后再改。
 

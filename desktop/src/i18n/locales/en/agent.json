@@ -179,6 +179,8 @@
     "noSkillMatches": "No matching skills.",
     "noSlashMatches": "No matching tools or skills.",
     "skillsSection": "Skills",
+    "noSessionMatches": "No matching conversations.",
+    "sessionsSection": "Chats",
     "compactContext": "Compact",
     "compactContextDescription": "Compact this conversation's context",
     "compacting": "Compacting context…",

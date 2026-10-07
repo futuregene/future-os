@@ -288,6 +288,23 @@ Two commands spend or act rather than read, and are explicit for that reason:
 it prints the suggestion and only renames with `--apply`), and
 `future session abort|cancel|approve|reject` act on live work.
 
+One more command acts, and it is the way one conversation reaches another:
+
+```sh
+future run --session <id> "<message>"     # start a run in THAT session
+```
+
+`--session` requires the session to exist (`switch_session` refuses an unknown
+id rather than creating one) and the prompt is appended to it — behind an
+in-progress run by default, or interrupting it with `--steer`. This is the send
+half of a `#`-picked conversation reference: a user message can carry
+`[title](futureos://session/<id>)`, and the id in that link is what `--session`
+takes. It is a full run in the other conversation: it spends credits and it
+blocks until that run finishes (the shell tool's own timeout applies), so it is
+something to do when the user asked for it rather than on the model's own
+initiative. The read half is `future session transcript --session <id>` /
+`future session history search --session <id>` above.
+
 Changing a setting changes how every later session behaves, so the skill treats
 it as the user's decision: state the old value and the new one, and make the
 change when the user agrees.

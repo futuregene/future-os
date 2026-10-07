@@ -180,6 +180,8 @@
     "noSkillMatches": "没有匹配的技能。",
     "noSlashMatches": "没有匹配的工具或技能。",
     "skillsSection": "技能",
+    "noSessionMatches": "没有匹配的对话。",
+    "sessionsSection": "对话",
     "compactContext": "压缩",
     "compactContextDescription": "压缩此对话的上下文",
     "compacting": "正在压缩上下文…",
