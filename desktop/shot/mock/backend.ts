@@ -459,7 +459,7 @@ const handlers: Record<string, (args: any) => unknown> = {
       trigger: input.trigger ?? {},
       depJoin: input.depJoin ?? "all",
       nextDueAt: input.triggerKind === "schedule" ? Date.now() + 60 * 60_000 : null,
-      lastRunAt: null,
+      queued: false,
       reflection: input.reflection ?? "ask",
       latestRun: null,
     };

@@ -23,7 +23,7 @@ export interface RemoteTaskRow {
   triggerKind: string;
   trigger: Record<string, unknown>;
   nextDueAt?: number | null;
-  lastRunAt?: number | null;
+  queued?: boolean;
   reflection: string;
   latestRun?: RemoteTaskRun | null;
 }

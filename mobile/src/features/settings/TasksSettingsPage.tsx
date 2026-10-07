@@ -229,7 +229,11 @@ export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean })
                   <View style={styles.cardHeader}>
                     <Text style={styles.cardTitle} numberOfLines={1}>{task.name}</Text>
                     <Text style={settingsStyles.description}>
-                      {task.latestRun ? t(`tasks.status.${task.latestRun.status}`) : ""}
+                      {task.queued
+                        ? t("tasks.status.queued")
+                        : task.latestRun
+                        ? t(`tasks.status.${task.latestRun.status}`)
+                        : ""}
                     </Text>
                   </View>
                     <Text style={settingsStyles.description}>

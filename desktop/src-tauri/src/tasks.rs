@@ -83,18 +83,102 @@ async fn run_loop(notify: Notifier) {
     }
 }
 
+/// Why a task is being claimed this tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaimReason {
+    /// A dependency join came true (a chain wakeup).
+    Chain,
+    /// Someone asked for it: the UI button, the phone, or `future task run`.
+    Explicit,
+    /// The task's own schedule reached its next slot.
+    Schedule,
+}
+
+/// Which tasks run this tick, and why. At most one reason per task, so a task
+/// that is due *and* has a satisfied join runs once, not twice.
+///
+/// Dependency joins are evaluated here rather than pushed when the upstream
+/// finishes. A push would be a second write path that misses the cases where
+/// the marks stay behind — a manual run of the downstream leaves them intact —
+/// and this way the tick is the single place that decides what runs.
+fn candidates(store: &Store, now: i64) -> Result<Vec<(Task, ClaimReason)>, String> {
+    let due = store.list_due_tasks(now).map_err(|e| e.to_string())?;
+    let mut out: Vec<(Task, ClaimReason)> = due
+        .into_iter()
+        .map(|task| {
+            // An explicit request outranks the schedule: the user asked for a
+            // run *now*, and the run carries whatever the join satisfied.
+            let reason = if task.pending_request_at.is_some() {
+                ClaimReason::Explicit
+            } else {
+                ClaimReason::Schedule
+            };
+            (task, reason)
+        })
+        .collect();
+
+    // Chain wakeups: every enabled task with at least one dependency edge whose
+    // join is satisfied, and which is not already a candidate above.
+    let all_deps = store.list_all_deps().map_err(|e| e.to_string())?;
+    let downstream: std::collections::HashSet<&str> =
+        all_deps.iter().map(|d| d.task_id.as_str()).collect();
+    for id in downstream {
+        if out.iter().any(|(t, _)| t.id == id) {
+            continue;
+        }
+        let task = match store.get_task(id).map_err(|e| e.to_string())? {
+            Some(task) => task,
+            None => continue,
+        };
+        if !task.enabled || task.deleted_at.is_some() {
+            continue;
+        }
+        if join_is_satisfied(store, &task)? {
+            out.push((task, ClaimReason::Chain));
+        }
+    }
+    Ok(out)
+}
+
+/// Whether every edge the task's join policy requires has a satisfied mark.
+fn join_is_satisfied(store: &Store, task: &Task) -> Result<bool, String> {
+    let deps = store.list_deps(&task.id).map_err(|e| e.to_string())?;
+    let states = store.list_dep_states(&task.id).map_err(|e| e.to_string())?;
+    Ok(kernel::join_claim(task, &deps, &states).is_some())
+}
+
+/// Which tasks run this tick, as `(task_id, reason)` pairs. Test-only view of
+/// [`candidates`], for the command-level tests that assert a delete stops a
+/// chain rather than leaving it armed.
+#[cfg(test)]
+pub(crate) fn candidates_for_test(
+    store: &Store,
+    now: i64,
+) -> Result<Vec<(String, String)>, String> {
+    Ok(candidates(store, now)?
+        .into_iter()
+        .map(|(task, reason)| {
+            let label = match reason {
+                ClaimReason::Chain => "chain",
+                ClaimReason::Explicit => "explicit",
+                ClaimReason::Schedule => "schedule",
+            };
+            (task.id, label.to_string())
+        })
+        .collect())
+}
+
 /// One tick: claim due tasks, execute them, and let their completion mark
 /// downstream dependency edges. Sequential within one host (the single-writer
 /// discipline that keeps dep claims race-free); each task spawns its own run
 /// so a slow task does not block the next tick.
 async fn tick(notify: &Notifier) -> Result<(), String> {
     let store = Store::open(&future_home()).map_err(|e| e.to_string())?;
-    let due = store.list_due_tasks(now_ms()).map_err(|e| e.to_string())?;
-    for task in due {
+    for (task, reason) in candidates(&store, now_ms())? {
         if store.has_running_run(&task.id).map_err(|e| e.to_string())? {
             continue; // overlap: skip this tick, the next one retries
         }
-        let (run, upstream_sources) = claim(&store, &task)?;
+        let (run, upstream_sources) = claim(&store, &task, reason)?;
         let notify = notify.clone();
         tokio::spawn(async move {
             // A fresh store per run: `rusqlite::Connection` is not `Sync`, so
@@ -115,23 +199,25 @@ async fn tick(notify: &Notifier) -> Result<(), String> {
 }
 
 /// Claim one due task: insert the run row (running), advance `next_due_at`,
-/// clear `pending_request_at`. Chain triggers also consume their dep marks.
+/// clear `pending_request_at`, and consume satisfied dependency marks.
 /// Returns the run row plus the upstream sources for the envelope.
-fn claim(store: &Store, task: &Task) -> Result<(TaskRun, Vec<UpstreamSource>), String> {
+fn claim(
+    store: &Store,
+    task: &Task,
+    reason: ClaimReason,
+) -> Result<(TaskRun, Vec<UpstreamSource>), String> {
     let now = now_ms();
-    let is_pending = task.pending_request_at.is_some();
-    let (kind, origin, due_at) = if is_pending {
-        (
-            if task.pending_origin == Some(RunOrigin::Chain) {
-                RunKind::Chain
-            } else {
-                RunKind::Manual
-            },
+    // The reason picks the run's label: a chain wakeup is its own kind, an
+    // explicit request keeps whatever origin asked for it, a schedule slot is
+    // `main`. A schedule claim resolves its `due_at` to the slot it fired for.
+    let (kind, origin, due_at) = match reason {
+        ClaimReason::Chain => (RunKind::Chain, RunOrigin::Chain, None),
+        ClaimReason::Explicit => (
+            RunKind::Manual,
             task.pending_origin.unwrap_or(RunOrigin::Cli),
             None,
-        )
-    } else {
-        (RunKind::Main, RunOrigin::Schedule, task.next_due_at)
+        ),
+        ClaimReason::Schedule => (RunKind::Main, RunOrigin::Schedule, task.next_due_at),
     };
 
     // Cycle check (defense in depth; add/edit also checks). A cycle makes the
@@ -164,29 +250,34 @@ fn claim(store: &Store, task: &Task) -> Result<(TaskRun, Vec<UpstreamSource>), S
         }
     }
 
-    // Chain triggers consume dep marks; manual/schedule runs never do.
+    // Whatever the reason, a claim consumes the dependency marks that are
+    // satisfied right now, and the run carries those upstream results. The
+    // alternative — leaving them for a chain run — runs the task twice for one
+    // signal, which is what "run now" on a task with satisfied deps used to do.
     let mut consume: Vec<(String, String)> = Vec::new();
     let mut upstream_sources = Vec::new();
-    if kind == RunKind::Chain {
+    {
         let deps = store.list_deps(&task.id).map_err(|e| e.to_string())?;
-        let states = store.list_dep_states(&task.id).map_err(|e| e.to_string())?;
-        if let Some(c) = kernel::join_claim(task, &deps, &states) {
-            for (upstream_id, run_id) in &c {
-                if let (Some(upstream), Some(run)) = (
-                    store.get_task(upstream_id).map_err(|e| e.to_string())?,
-                    store.get_run(run_id).map_err(|e| e.to_string())?,
-                ) {
-                    upstream_sources.push(UpstreamSource {
-                        task_id: upstream.id.clone(),
-                        task_name: upstream.name.clone(),
-                        run_id: run.id.clone(),
-                        status: run.status,
-                        finished_at: run.finished_at,
-                        result_summary: run.result_summary.clone(),
-                    });
+        if !deps.is_empty() {
+            let states = store.list_dep_states(&task.id).map_err(|e| e.to_string())?;
+            if let Some(c) = kernel::join_claim(task, &deps, &states) {
+                for (upstream_id, run_id) in &c {
+                    if let (Some(upstream), Some(run)) = (
+                        store.get_task(upstream_id).map_err(|e| e.to_string())?,
+                        store.get_run(run_id).map_err(|e| e.to_string())?,
+                    ) {
+                        upstream_sources.push(UpstreamSource {
+                            task_id: upstream.id.clone(),
+                            task_name: upstream.name.clone(),
+                            run_id: run.id.clone(),
+                            status: run.status,
+                            finished_at: run.finished_at,
+                            result_summary: run.result_summary.clone(),
+                        });
+                    }
                 }
+                consume = c;
             }
-            consume = c;
         }
     }
 
@@ -573,7 +664,6 @@ mod tests {
             trigger_json: serde_json::json!({}),
             dep_join: DepJoin::All,
             next_due_at: None,
-            last_run_at: None,
             pending_request_at: None,
             pending_origin: None,
             pending_actor: None,
@@ -592,6 +682,29 @@ mod tests {
         t
     }
 
+    /// A terminal run row for `task_id`, the shape a dependency edge records.
+    fn finished_run(task_id: &str, run_id: &str, status: RunStatus) -> TaskRun {
+        TaskRun {
+            id: run_id.to_string(),
+            task_id: task_id.to_string(),
+            kind: RunKind::Main,
+            origin: RunOrigin::Schedule,
+            actor: None,
+            due_at: Some(1),
+            status,
+            thread_id: None,
+            session_id: None,
+            run_id: None,
+            prompt_version: Some(1),
+            result_summary: Some("upstream landed".into()),
+            feedback: None,
+            feedback_note: None,
+            started_at: Some(1),
+            finished_at: Some(2),
+            error_message: None,
+        }
+    }
+
     /// A schedule claim advances the schedule forward and leaves no pending
     /// request behind, so the next tick does not run it again.
     #[test]
@@ -600,7 +713,7 @@ mod tests {
         let t = scheduler();
         store.insert_task(&t).unwrap();
 
-        let (run, upstream) = claim(&store, &t).unwrap();
+        let (run, upstream) = claim(&store, &t, ClaimReason::Schedule).unwrap();
         assert!(upstream.is_empty());
         assert_eq!(run.kind, RunKind::Main);
         assert_eq!(run.origin, RunOrigin::Schedule);
@@ -622,7 +735,7 @@ mod tests {
         t.pending_actor = Some("cli".into());
         store.insert_task(&t).unwrap();
 
-        let (run, _) = claim(&store, &t).unwrap();
+        let (run, _) = claim(&store, &t, ClaimReason::Explicit).unwrap();
         assert_eq!(run.kind, RunKind::Manual);
         assert_eq!(run.origin, RunOrigin::Cli);
         assert!(run.due_at.is_none());
@@ -632,10 +745,13 @@ mod tests {
         assert_eq!(after.next_due_at, t.next_due_at, "run-now is not a slot");
     }
 
-    /// A manual run never consumes dependency marks — only a chain trigger may,
-    /// so pressing "run now" can't silently eat a pending dependency wakeup.
+    /// A manual claim consumes the dependency marks it found satisfied, and the
+    /// run carries those upstream results. Leaving them for a later chain run
+    /// would run the task twice for one signal — press "run now" on a task with
+    /// satisfied deps and you would get the run you asked for *and* a chain run
+    /// behind it.
     #[test]
-    fn a_manual_claim_does_not_consume_dependency_marks() {
+    fn a_manual_claim_consumes_satisfied_marks_and_carries_the_upstream_results() {
         let (_dir, store) = store();
         let upstream = task("upstream");
         let mut downstream = task("downstream");
@@ -650,25 +766,239 @@ mod tests {
                 on: DepOn::Success,
             })
             .unwrap();
+        let finished = finished_run(&upstream.id, "trn_done", RunStatus::Completed);
+        store.insert_run(&finished).unwrap();
         store
             .mark_dep_satisfied(&downstream.id, &upstream.id, "trn_done", 1)
             .unwrap();
 
-        let (run, _) = claim(&store, &downstream).unwrap();
-        assert_eq!(run.kind, RunKind::Manual);
+        let (run, sources) = claim(&store, &downstream, ClaimReason::Explicit).unwrap();
+        assert_eq!(
+            run.kind,
+            RunKind::Manual,
+            "the user's request drove this run"
+        );
+        assert_eq!(run.origin, RunOrigin::Ui);
+        assert_eq!(
+            sources.len(),
+            1,
+            "the consumed upstream travels with the run"
+        );
+        assert_eq!(sources[0].run_id, "trn_done");
         let state = store
             .get_dep_state(&downstream.id, &upstream.id)
             .unwrap()
             .unwrap();
-        assert_eq!(
-            state.satisfied_run_id.as_deref(),
-            Some("trn_done"),
-            "a manual run must leave the dependency mark for the chain trigger"
+        assert!(
+            state.satisfied_run_id.is_none(),
+            "the signal was used by this run, so it does not fire again"
         );
     }
 
-    /// A chain claim with every edge satisfied consumes them and carries the
-    /// upstream summaries into the envelope sources.
+    /// A dependency wakeup reaches the tick: a downstream task whose join is
+    /// satisfied is a candidate even though nothing asked for it and it has no
+    /// schedule of its own. This is the link that was missing — the edges and
+    /// their marks were written, but nothing ever looked at them.
+    #[test]
+    fn a_satisfied_join_makes_the_downstream_a_candidate() {
+        let (_dir, store) = store();
+        let upstream = task("upstream");
+        let downstream = task("downstream");
+        store.insert_task(&upstream).unwrap();
+        store.insert_task(&downstream).unwrap();
+        store
+            .add_dep(&TaskDep {
+                task_id: downstream.id.clone(),
+                upstream_task_id: upstream.id.clone(),
+                on: DepOn::Success,
+            })
+            .unwrap();
+
+        // Nothing satisfied yet: the downstream is untouched.
+        let before = candidates(&store, 1_000).unwrap();
+        assert!(
+            !before.iter().any(|(t, _)| t.id == downstream.id),
+            "an unsatisfied join must not fire"
+        );
+
+        store
+            .mark_dep_satisfied(&downstream.id, &upstream.id, "trn_done", 1)
+            .unwrap();
+        let after = candidates(&store, 1_000).unwrap();
+        let found = after
+            .iter()
+            .find(|(t, _)| t.id == downstream.id)
+            .expect("a satisfied join is a chain candidate");
+        assert_eq!(found.1, ClaimReason::Chain);
+    }
+
+    /// An `all` join waits for every edge. One satisfied edge is not enough,
+    /// and the candidate appears only once the last one lands.
+    #[test]
+    fn an_all_join_waits_for_every_edge() {
+        let (_dir, store) = store();
+        let a = task("a");
+        let b = task("b");
+        let downstream = task("downstream");
+        for t in [&a, &b, &downstream] {
+            store.insert_task(t).unwrap();
+        }
+        for upstream in [&a, &b] {
+            store
+                .add_dep(&TaskDep {
+                    task_id: downstream.id.clone(),
+                    upstream_task_id: upstream.id.clone(),
+                    on: DepOn::Success,
+                })
+                .unwrap();
+        }
+        store
+            .mark_dep_satisfied(&downstream.id, &a.id, "trn_a", 1)
+            .unwrap();
+        assert!(
+            !candidates(&store, 1_000)
+                .unwrap()
+                .iter()
+                .any(|(t, _)| t.id == downstream.id),
+            "one of two edges is not an `all` join"
+        );
+
+        store
+            .mark_dep_satisfied(&downstream.id, &b.id, "trn_b", 2)
+            .unwrap();
+        let found = candidates(&store, 1_000)
+            .unwrap()
+            .into_iter()
+            .find(|(t, _)| t.id == downstream.id)
+            .expect("both edges satisfied");
+        assert_eq!(found.1, ClaimReason::Chain);
+    }
+
+    /// An `any` join fires on the first edge to land.
+    #[test]
+    fn an_any_join_fires_on_the_first_edge() {
+        let (_dir, store) = store();
+        let a = task("a");
+        let b = task("b");
+        let mut downstream = task("downstream");
+        downstream.dep_join = DepJoin::Any;
+        for t in [&a, &b, &downstream] {
+            store.insert_task(t).unwrap();
+        }
+        for upstream in [&a, &b] {
+            store
+                .add_dep(&TaskDep {
+                    task_id: downstream.id.clone(),
+                    upstream_task_id: upstream.id.clone(),
+                    on: DepOn::Success,
+                })
+                .unwrap();
+        }
+
+        store
+            .mark_dep_satisfied(&downstream.id, &a.id, "trn_a", 1)
+            .unwrap();
+        assert!(
+            candidates(&store, 1_000)
+                .unwrap()
+                .iter()
+                .any(|(t, _)| t.id == downstream.id),
+            "one satisfied edge is enough for `any`"
+        );
+    }
+
+    /// A disabled or deleted downstream is never woken: disabling a task is how
+    /// you stop a chain without tearing it down. The live sibling is the
+    /// control — without it this would pass just as well if nothing woke.
+    #[test]
+    fn a_disabled_or_deleted_downstream_is_not_woken() {
+        let (_dir, store) = store();
+        let upstream = task("upstream");
+        let mut disabled = task("disabled");
+        disabled.enabled = false;
+        let mut deleted = task("deleted");
+        deleted.deleted_at = Some(5);
+        let live = task("live");
+        for t in [&upstream, &disabled, &deleted, &live] {
+            store.insert_task(t).unwrap();
+        }
+        for downstream in [&disabled, &deleted, &live] {
+            store
+                .add_dep(&TaskDep {
+                    task_id: downstream.id.clone(),
+                    upstream_task_id: upstream.id.clone(),
+                    on: DepOn::Success,
+                })
+                .unwrap();
+            store
+                .mark_dep_satisfied(&downstream.id, &upstream.id, "trn_done", 1)
+                .unwrap();
+        }
+
+        let found = candidates(&store, 1_000).unwrap();
+        assert!(
+            found.iter().any(|(t, _)| t.id == live.id),
+            "the live downstream is woken, so the others are skips and not a dead path"
+        );
+        assert!(
+            !found
+                .iter()
+                .any(|(t, _)| t.id == disabled.id || t.id == deleted.id),
+            "only enabled, live tasks are woken"
+        );
+    }
+
+    /// A task that is both schedule-due and chain-ready is one candidate with
+    /// one reason, so it runs once. Two reasons would run it twice for the same
+    /// moment in time. Its chain-only sibling proves the chain path is live.
+    #[test]
+    fn a_task_ready_for_two_reasons_is_one_candidate() {
+        let (_dir, store) = store();
+        let upstream = task("upstream");
+        let mut both = scheduler();
+        both.name = "both".into();
+        let chain_only = task("chain_only");
+        for t in [&upstream, &both, &chain_only] {
+            store.insert_task(t).unwrap();
+        }
+        for downstream in [&both, &chain_only] {
+            store
+                .add_dep(&TaskDep {
+                    task_id: downstream.id.clone(),
+                    upstream_task_id: upstream.id.clone(),
+                    on: DepOn::Success,
+                })
+                .unwrap();
+            store
+                .mark_dep_satisfied(&downstream.id, &upstream.id, "trn_done", 1)
+                .unwrap();
+        }
+
+        let found: Vec<_> = candidates(&store, 10_000)
+            .unwrap()
+            .into_iter()
+            .filter(|(t, _)| t.id == both.id || t.id == chain_only.id)
+            .collect();
+        assert!(
+            found
+                .iter()
+                .any(|(t, r)| t.id == chain_only.id && *r == ClaimReason::Chain),
+            "the chain path is live"
+        );
+        assert_eq!(
+            found.iter().filter(|(t, _)| t.id == both.id).count(),
+            1,
+            "one run per task per tick"
+        );
+        assert_eq!(
+            found.iter().find(|(t, _)| t.id == both.id).map(|(_, r)| *r),
+            Some(ClaimReason::Schedule),
+            "its own slot fired first"
+        );
+    }
+
+    /// A chain claim consumes them and carries the upstream summaries into the
+    /// envelope sources.
     #[test]
     fn a_chain_claim_consumes_marks_and_collects_upstream_sources() {
         let (_dir, store) = store();
@@ -682,25 +1012,11 @@ mod tests {
         assert!(upstream_run.is_none());
 
         // A finished upstream run is what a chain claim summarises.
-        let finished = future_tasks::TaskRun {
-            id: future_tasks::new_run_id(),
-            task_id: upstream.id.clone(),
-            kind: RunKind::Main,
-            origin: RunOrigin::Schedule,
-            actor: None,
-            due_at: Some(1),
-            status: RunStatus::Completed,
-            thread_id: None,
-            session_id: None,
-            run_id: None,
-            prompt_version: Some(1),
-            result_summary: Some("upstream landed".into()),
-            feedback: None,
-            feedback_note: None,
-            started_at: Some(1),
-            finished_at: Some(2),
-            error_message: None,
-        };
+        let finished = finished_run(
+            &upstream.id,
+            &future_tasks::new_run_id(),
+            RunStatus::Completed,
+        );
         store.insert_run(&finished).unwrap();
 
         let mut downstream = task("downstream");
@@ -719,7 +1035,7 @@ mod tests {
             .mark_dep_satisfied(&downstream.id, &upstream.id, &finished.id, 2)
             .unwrap();
 
-        let (run, sources) = claim(&store, &downstream).unwrap();
+        let (run, sources) = claim(&store, &downstream, ClaimReason::Chain).unwrap();
         assert_eq!(run.kind, RunKind::Chain);
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].task_name, "upstream");
@@ -765,7 +1081,7 @@ mod tests {
             })
             .unwrap();
 
-        let error = claim(&store, &a).unwrap_err();
+        let error = claim(&store, &a, ClaimReason::Chain).unwrap_err();
         assert!(error.contains("cycle"), "{error}");
         let run = store
             .list_runs_for_task(&a.id, 1)
@@ -833,7 +1149,7 @@ mod tests {
         let mut t = task("runs");
         t.prompt = "summarize yesterday".into();
         store.insert_task(&t).unwrap();
-        let (run, upstream) = claim(&store, &t).unwrap();
+        let (run, upstream) = claim(&store, &t, ClaimReason::Explicit).unwrap();
         script_agent_setup(&mock, "sess_task_1");
 
         let notified = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -911,7 +1227,7 @@ mod tests {
 
         let t = task("fails");
         store.insert_task(&t).unwrap();
-        let (run, upstream) = claim(&store, &t).unwrap();
+        let (run, upstream) = claim(&store, &t, ClaimReason::Explicit).unwrap();
         // The agent refuses to create the session.
         mock.push(
             "new_session",
@@ -956,7 +1272,7 @@ mod tests {
             crate::agent_bridge::test_support::seed_thread(&workspace.id, Some("sess_reused"));
         bind_task_thread(&store, &t, &thread.id).unwrap();
         let mut t = store.get_task(&t.id).unwrap().unwrap();
-        let (run, upstream) = claim(&store, &t).unwrap();
+        let (run, upstream) = claim(&store, &t, ClaimReason::Explicit).unwrap();
         t.updated_at += 1;
 
         // The compact request is refused. The rejection is queued as the FIRST

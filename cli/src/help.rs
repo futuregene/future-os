@@ -253,21 +253,41 @@ Usage:
         [--model M] [--thinking L] [--session new|existing]
         [--conversation workspace|chat]
         [--reflection off|ask|auto] [--disabled] [--json]
-        (--at "YYYY-MM-DD HH:MM" | --every 30m | --daily [--time 09:00]
+        [--depends-on A[:success|failure|completed]]… [--join-any]
+        (--manual | --at "YYYY-MM-DD HH:MM" | --every 30m
+         | --daily [--time 09:00]
          | --weekly --days mon,wed,fri [--time 10:00]
          | --monthly --day 31 [--time 09:00])
+  future task edit <id|name> [any add flag] [--enable|--disable]
+        [--join-all|--join-any] [--depends-on …] [--json]
+  future task enable|disable <id|name>
+  future task remove <id|name> [--yes]              Soft-delete; runs are kept
   future task run <id|name> [--wait] [--timeout 15m] [--json]
   future task runs <id|name> [--limit N] [--json]
+  future task feedback <run-id> good|bad [--note "…"]
+  future task upstream|deps <id|name> [--json]     Dependency edges + progress
+  future task prompt log <id|name> [--json]         Prompt versions, newest first
+  future task prompt apply <id|name> <revision-id>  Make a version active again
+  future task prompt revert <id|name>               Back to the previous version
 
 Triggers:
+  --manual    Only runs when triggered: `future task run`, the desktop panel,
+              the phone, or a dependency of another task. This is also what an
+              add without any trigger flag produces.
   --at        One-shot on a calendar date/time (local time).
   --every     Every N minutes (30m, 2h, 1d). Anchored to a grid; no drift.
   --daily     Every day at --time (default 09:00).
   --weekly    Every selected weekday at --time (default 09:00).
   --monthly   Every month on --day (1-31) at --time (default 09:00).
               Months without that day run on the last day of the month.
-  (none)      Manual: only runs when triggered (`future task run`, UI, or a
-              dependency of another task).
+
+Dependencies:
+  --depends-on A            Run when A finishes successfully.
+  --depends-on A:failure    …when A fails. Also :completed for either.
+  --join-any                Run when any one upstream has finished (default is
+                            to wait for all of them).
+  The upstream's result summary is injected into the run's prompt, and
+  `future task upstream` shows which edges have fired.
 
 Session:
   --session new       Each run opens a new conversation (default).
@@ -277,10 +297,21 @@ Session:
                             (default).
   --conversation chat       Open it as a chat conversation instead.
 
+Prompt versions:
+  Editing a prompt (here or in the desktop) records a new version and keeps the
+  one it replaced, so `prompt revert` can walk all the way back to the task's
+  first prompt. Version source reads as: user (manual edit), reflection (a
+  proposed revision), rollback (a version re-applied), superseded (an outgoing
+  version kept for the history).
+
 Reflection (prompt optimization suggestions):
   --reflection off   Never reflect.
   --reflection ask   Propose a revised prompt after each run (default).
   --reflection auto  Apply proposals automatically when confidence is high.
+  NOTE: the proposal pass itself is not wired up yet — the setting is stored
+  and shown, and prompt versions are recorded for edits and applied revisions,
+  but nothing generates a proposal on its own. Treat `feedback` below as the
+  record a proposal would later be written from.
 
 Execution:
   Runs are executed by the desktop (or headless desktop) tick loop, not by

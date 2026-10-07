@@ -23,11 +23,34 @@ pub fn task(command: Option<&str>, rest: &[String], out: &Output) -> Result<()> 
         Some("list") => list(rest, out),
         Some("show") => show(rest, out),
         Some("add") => add(rest, out),
+        Some("edit") => edit(rest, out),
+        Some("enable") => set_enabled(rest, out, true),
+        Some("disable") => set_enabled(rest, out, false),
+        Some("remove") => remove(rest, out),
         Some("run") => run(rest, out),
         Some("runs") => runs(rest, out),
+        Some("feedback") => feedback(rest, out),
+        Some("upstream" | "deps") => upstream(rest, out),
+        Some("prompt") => prompt(rest, out),
         Some(other) => Err(format!(
-            "Unknown argument: {other}\nUsage: future task [list|show|add|run|runs] …\nRun `future task --help` for details."
+            "Unknown argument: {other}\nUsage: future task [list|show|add|edit|enable|disable|remove|run|runs|feedback|upstream|prompt] …\nRun `future task --help` for details."
         )),
+    }
+}
+
+/// `future task prompt <log|apply|revert> …`.
+fn prompt(args: &[String], out: &Output) -> Result<()> {
+    match args.first().map(String::as_str) {
+        Some("log") => prompt_log(&args[1..], out),
+        Some("apply") => prompt_apply(&args[1..], out),
+        Some("revert") => prompt_revert(&args[1..], out),
+        _ => Err(
+            "usage: future task prompt log|apply|revert <id|name> [revision-id]\n\
+             \n  log     the prompt versions, newest first (who wrote each)\n\
+             \n  apply   make a stored version the active prompt again\n\
+             \n  revert  go back to the version before the active one"
+                .to_string(),
+        ),
     }
 }
 
@@ -142,6 +165,121 @@ fn parse_duration_minutes(s: &str) -> Option<i64> {
     }
 }
 
+/// Parse `A` or `A:failure` into an upstream reference and a condition.
+/// The default condition is `success`, so the common case is just a name.
+fn parse_dep_spec(spec: &str) -> Result<(String, future_tasks::DepOn)> {
+    let (name, condition) = match spec.split_once(':') {
+        Some((name, cond)) => (name, Some(cond)),
+        None => (spec, None),
+    };
+    if name.is_empty() {
+        return Err(format!("--depends-on needs a task name, got {spec:?}"));
+    }
+    let on = match condition {
+        None | Some("success") => future_tasks::DepOn::Success,
+        Some("failure") => future_tasks::DepOn::Failure,
+        Some("completed") => future_tasks::DepOn::Completed,
+        Some(other) => {
+            return Err(format!(
+                "unknown dependency condition {other:?}: expected success|failure|completed"
+            ));
+        }
+    };
+    Ok((name.to_string(), on))
+}
+
+/// Every `--depends-on` value, in order.
+fn dep_specs(args: &[String]) -> Result<Vec<(String, future_tasks::DepOn)>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--depends-on" {
+            let value = args
+                .get(i + 1)
+                .ok_or_else(|| "--depends-on requires a value".to_string())?;
+            out.push(parse_dep_spec(value)?);
+            i += 1;
+        }
+        i += 1;
+    }
+    Ok(out)
+}
+
+/// Write the dependency edges for `task_id`, resolving each upstream by id or
+/// name. Replaces the existing edges so re-running `add`/`edit` is idempotent.
+fn write_deps(store: &Store, task_id: &str, specs: &[(String, future_tasks::DepOn)]) -> Result<()> {
+    for existing in store.list_deps(task_id).map_err(|e| e.to_string())? {
+        store
+            .remove_dep(task_id, &existing.upstream_task_id)
+            .map_err(|e| e.to_string())?;
+    }
+    for (reference, on) in specs {
+        let upstream = find_task(store, reference)?;
+        if upstream.id == task_id {
+            return Err(format!("a task cannot depend on itself: {reference}"));
+        }
+        store
+            .add_dep(&future_tasks::TaskDep {
+                task_id: task_id.to_string(),
+                upstream_task_id: upstream.id,
+                on: *on,
+            })
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// The dependency edges as shown by `upstream`, with each edge's progress.
+fn dep_rows(store: &Store, task_id: &str) -> Result<Vec<serde_json::Value>> {
+    let mut rows = Vec::new();
+    for dep in store.list_deps(task_id).map_err(|e| e.to_string())? {
+        let upstream = store
+            .get_task(&dep.upstream_task_id)
+            .map_err(|e| e.to_string())?;
+        let satisfied = store
+            .get_dep_state(task_id, &dep.upstream_task_id)
+            .map_err(|e| e.to_string())?
+            .and_then(|state| state.satisfied_run_id);
+        rows.push(json!({
+            "upstreamTaskId": dep.upstream_task_id,
+            "upstreamName": upstream.map(|t| t.name),
+            "on": format!("{:?}", dep.on).to_lowercase(),
+            "satisfied": satisfied.is_some(),
+            "satisfiedRunId": satisfied,
+        }));
+    }
+    Ok(rows)
+}
+
+/// The resolved identity for a `<id|name>` argument, so the commands can print
+/// something a caller can use in the next invocation.
+fn task_json(t: &Task) -> serde_json::Value {
+    json!({
+        "id": t.id,
+        "name": t.name,
+        "enabled": t.enabled,
+        "trigger": format_trigger(t),
+        "nextDueAt": t.next_due_at,
+        "queued": t.pending_request_at.is_some(),
+        "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
+        "conversationMode": format!("{:?}", t.conversation_mode).to_lowercase(),
+        "reflection": format!("{:?}", t.reflection).to_lowercase(),
+    })
+}
+
+/// The next slot for a schedule, computed on an enabled clone of `task`: a
+/// paused task still resolves its schedule, so pausing and re-enabling does not
+/// lose the next due time.
+fn compute_next_due(t: &Task, now: i64) -> Option<i64> {
+    if t.trigger_kind != future_tasks::TriggerKind::Schedule {
+        return None;
+    }
+    let mut probe = t.clone();
+    probe.enabled = true;
+    probe.next_due_at = None;
+    future_tasks::next_due(&probe, now - 1)
+}
+
 fn list(args: &[String], out: &Output) -> Result<()> {
     let json_flag = args.iter().any(|a| a == "--json");
     let include_deleted = args.iter().any(|a| a == "--all");
@@ -159,7 +297,7 @@ fn list(args: &[String], out: &Output) -> Result<()> {
                     "enabled": t.enabled,
                     "trigger": format_trigger(t),
                     "nextDueAt": t.next_due_at,
-                    "lastRunAt": t.last_run_at,
+                    "queued": t.pending_request_at.is_some(),
                     "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
                     "conversationMode": format!("{:?}", t.conversation_mode).to_lowercase(),
                     "reflection": format!("{:?}", t.reflection).to_lowercase(),
@@ -220,7 +358,7 @@ fn show(args: &[String], out: &Output) -> Result<()> {
             "trigger": t.trigger_json,
             "depJoin": format!("{:?}", t.dep_join).to_lowercase(),
             "nextDueAt": t.next_due_at,
-            "lastRunAt": t.last_run_at,
+            "queued": t.pending_request_at.is_some(),
             "reflection": format!("{:?}", t.reflection).to_lowercase(),
             "latestRun": latest.map(|r| json!({
                 "id": r.id,
@@ -288,6 +426,7 @@ fn add(args: &[String], out: &Output) -> Result<()> {
     let mut trigger_json = serde_json::json!({});
     let mut trigger_kind = future_tasks::TriggerKind::Manual;
     let mut disabled = false;
+    let mut dep_join = future_tasks::DepJoin::All;
     let mut json_flag = false;
 
     let mut i = 0;
@@ -364,6 +503,15 @@ fn add(args: &[String], out: &Output) -> Result<()> {
                     .ok_or_else(|| "--conversation requires a value".to_string())?;
             }
             "--disabled" => disabled = true,
+            "--manual" => {
+                trigger_kind = future_tasks::TriggerKind::Manual;
+                trigger_json = serde_json::json!({});
+            }
+            "--join-any" => dep_join = future_tasks::DepJoin::Any,
+            "--depends-on" => {
+                // Parsed as a group by `dep_specs`; skip its value here.
+                i += 1;
+            }
             "--json" => json_flag = true,
             "--at" => {
                 i += 1;
@@ -451,11 +599,9 @@ fn add(args: &[String], out: &Output) -> Result<()> {
     };
 
     let now = now_ms();
-    let next_due = if trigger_kind == future_tasks::TriggerKind::Schedule {
-        // Computed from an *enabled* clone: `next_due` answers "when would this
-        // fire", and a task created with `--disabled` must still carry its next
-        // slot so enabling it later schedules it instead of doing nothing.
-        let t = Task {
+    let specs = dep_specs(args)?;
+    let next_due = compute_next_due(
+        &Task {
             id: String::new(),
             name: name.clone(),
             enabled: true,
@@ -469,9 +615,8 @@ fn add(args: &[String], out: &Output) -> Result<()> {
             thread_id: None,
             trigger_kind,
             trigger_json: trigger_json.clone(),
-            dep_join: future_tasks::DepJoin::All,
+            dep_join,
             next_due_at: None,
-            last_run_at: None,
             pending_request_at: None,
             pending_origin: None,
             pending_actor: None,
@@ -479,11 +624,9 @@ fn add(args: &[String], out: &Output) -> Result<()> {
             created_at: now,
             updated_at: now,
             deleted_at: None,
-        };
-        future_tasks::next_due(&t, now - 1)
-    } else {
-        None
-    };
+        },
+        now,
+    );
 
     let t = Task {
         id: future_tasks::new_task_id(),
@@ -499,9 +642,8 @@ fn add(args: &[String], out: &Output) -> Result<()> {
         thread_id: None,
         trigger_kind,
         trigger_json,
-        dep_join: future_tasks::DepJoin::All,
+        dep_join,
         next_due_at: next_due,
-        last_run_at: None,
         pending_request_at: None,
         pending_origin: None,
         pending_actor: None,
@@ -513,6 +655,7 @@ fn add(args: &[String], out: &Output) -> Result<()> {
 
     let store = open_store()?;
     store.insert_task(&t).map_err(|e| e.to_string())?;
+    write_deps(&store, &t.id, &specs)?;
 
     if json_flag {
         out.log(
@@ -520,6 +663,10 @@ fn add(args: &[String], out: &Output) -> Result<()> {
                 "id": t.id,
                 "name": t.name,
                 "nextDueAt": t.next_due_at,
+                "dependsOn": specs.iter().map(|(name, on)| json!({
+                    "upstream": name,
+                    "on": format!("{on:?}").to_lowercase(),
+                })).collect::<Vec<_>>(),
             }))
             .map_err(|e| e.to_string())?,
         );
@@ -528,8 +675,486 @@ fn add(args: &[String], out: &Output) -> Result<()> {
         if let Some(due) = t.next_due_at {
             out.log(&format!("  next due: {}", format_ms(Some(due))));
         }
+        for (name, on) in &specs {
+            out.log(&format!(
+                "  runs after: {name} ({})",
+                format!("{on:?}").to_lowercase()
+            ));
+        }
     }
     Ok(())
+}
+
+/// `future task edit <id|name> [flags]` — change any part of a task.
+///
+/// A prompt change is recorded as a new version (source `user`), the same way
+/// the desktop panel records one: the version history is what makes an
+/// unattended prompt improvable rather than a single opaque string.
+fn edit(args: &[String], out: &Output) -> Result<()> {
+    let json_flag = args.iter().any(|a| a == "--json");
+    // The reference is the first bare argument. Its *index* is what the flag
+    // scan below skips: matching on the string would also skip a flag value
+    // that happens to equal the task's name.
+    let reference_index = args
+        .iter()
+        .position(|a| !a.starts_with('-'))
+        .ok_or_else(|| "usage: future task edit <id|name> [--prompt …] [--cwd …]".to_string())?;
+    let reference = args[reference_index].clone();
+
+    let store = open_store()?;
+    let mut task = find_task(&store, &reference)?;
+
+    let mut prompt_file: Option<String> = None;
+    let mut i = 0;
+    let mut changed_prompt: Option<String> = None;
+    let mut trigger_json: Option<serde_json::Value> = None;
+    let mut trigger_kind: Option<future_tasks::TriggerKind> = None;
+    let mut join: Option<future_tasks::DepJoin> = None;
+    let mut enable: Option<bool> = None;
+    let mut rename: Option<String> = None;
+    // `--depends-on` replaces the whole edge set, so it is a flag *presence*
+    // check rather than an incremental edit.
+    let specs = dep_specs(args)?;
+    let sets_deps = args.iter().any(|a| a == "--depends-on");
+
+    while i < args.len() {
+        if i == reference_index {
+            i += 1;
+            continue;
+        }
+        let arg = args[i].as_str();
+        let value = |i: usize| -> Result<String> {
+            args.get(i + 1)
+                .cloned()
+                .ok_or_else(|| format!("{arg} requires a value"))
+        };
+        match arg {
+            "--name" => {
+                rename = Some(value(i)?);
+                i += 1;
+            }
+            "--prompt" => {
+                changed_prompt = Some(value(i)?);
+                i += 1;
+            }
+            "--prompt-file" => {
+                prompt_file = Some(value(i)?);
+                i += 1;
+            }
+            "--cwd" => {
+                task.cwd = value(i)?;
+                i += 1;
+            }
+            "--model" => {
+                task.model_id = Some(value(i)?);
+                i += 1;
+            }
+            "--thinking" => {
+                task.thinking_level = Some(value(i)?);
+                i += 1;
+            }
+            "--reflection" => {
+                task.reflection = match value(i)?.as_str() {
+                    "off" => future_tasks::Reflection::Off,
+                    "ask" => future_tasks::Reflection::Ask,
+                    "auto" => future_tasks::Reflection::Auto,
+                    other => {
+                        return Err(format!(
+                            "unknown --reflection {other:?}: expected off|ask|auto"
+                        ));
+                    }
+                };
+                i += 1;
+            }
+            "--session" => {
+                task.session_policy = match value(i)?.as_str() {
+                    "new" => future_tasks::SessionPolicy::New,
+                    "existing" => future_tasks::SessionPolicy::Existing,
+                    other => {
+                        return Err(format!(
+                            "unknown --session {other:?}: expected new|existing"
+                        ));
+                    }
+                };
+                i += 1;
+            }
+            "--conversation" => {
+                task.conversation_mode = match value(i)?.as_str() {
+                    "workspace" => future_tasks::ConversationMode::Workspace,
+                    "chat" => future_tasks::ConversationMode::Chat,
+                    other => {
+                        return Err(format!(
+                            "unknown --conversation {other:?}: expected workspace|chat"
+                        ));
+                    }
+                };
+                i += 1;
+            }
+            "--manual" => {
+                trigger_kind = Some(future_tasks::TriggerKind::Manual);
+                trigger_json = Some(serde_json::json!({}));
+            }
+            "--at" => {
+                let v = value(i)?;
+                let (date, time) = v
+                    .split_once(' ')
+                    .ok_or_else(|| "--at expects \"YYYY-MM-DD HH:MM\"".to_string())?;
+                trigger_json = Some(serde_json::json!({"mode":"once","date":date,"time":time}));
+                trigger_kind = Some(future_tasks::TriggerKind::Schedule);
+                i += 1;
+            }
+            "--every" => {
+                let mins = parse_duration_minutes(&value(i)?)
+                    .ok_or_else(|| "--every expects e.g. 30m, 2h, 1d".to_string())?;
+                trigger_json = Some(
+                    serde_json::json!({"mode":"interval","every_minutes":mins,"anchor":now_ms()}),
+                );
+                trigger_kind = Some(future_tasks::TriggerKind::Schedule);
+                i += 1;
+            }
+            "--daily" => {
+                let time = flag_value(args, "--time").unwrap_or_else(|| "09:00".to_string());
+                trigger_json = Some(serde_json::json!({"mode":"daily","time":time}));
+                trigger_kind = Some(future_tasks::TriggerKind::Schedule);
+            }
+            "--weekly" => {
+                let days = flag_value(args, "--days")
+                    .ok_or_else(|| "--weekly requires --days mon,wed,fri".to_string())?;
+                let days: Vec<&str> = days.split(',').map(|d| d.trim()).collect();
+                let time = flag_value(args, "--time").unwrap_or_else(|| "09:00".to_string());
+                trigger_json = Some(serde_json::json!({"mode":"weekly","days":days,"time":time}));
+                trigger_kind = Some(future_tasks::TriggerKind::Schedule);
+            }
+            "--monthly" => {
+                let day = flag_value(args, "--day")
+                    .and_then(|d| d.parse::<i64>().ok())
+                    .ok_or_else(|| "--monthly requires --day N (1-31)".to_string())?;
+                let time = flag_value(args, "--time").unwrap_or_else(|| "09:00".to_string());
+                trigger_json = Some(serde_json::json!({"mode":"monthly","day":day,"time":time}));
+                trigger_kind = Some(future_tasks::TriggerKind::Schedule);
+            }
+            "--join-any" => join = Some(future_tasks::DepJoin::Any),
+            "--join-all" => join = Some(future_tasks::DepJoin::All),
+            "--enable" => enable = Some(true),
+            "--disable" => enable = Some(false),
+            "--json" => {}
+            "--time" | "--days" | "--day" => i += 1,
+            "--depends-on" => i += 1,
+            other => return Err(format!("unknown flag: {other}")),
+        }
+        i += 1;
+    }
+
+    if let Some(file) = prompt_file {
+        changed_prompt = Some(
+            std::fs::read_to_string(&file).map_err(|e| format!("read prompt file {file}: {e}"))?,
+        );
+    }
+    if let Some(p) = changed_prompt {
+        let history = store.list_revisions(&task.id).map_err(|e| e.to_string())?;
+        // No reason prose: the field is shown verbatim in both UIs, so a
+        // backend-invented English sentence would leak into a Chinese panel.
+        let rows =
+            future_tasks::prompt_change_revisions(&task, &history, &p, "user", None, now_ms());
+        for row in &rows {
+            store.insert_revision(row).map_err(|e| e.to_string())?;
+        }
+        if let Some(last) = rows.last() {
+            // The helper owns the version arithmetic: applying its last row is
+            // what advances the task.
+            task.prompt = last.prompt.clone();
+            task.prompt_version = last.version;
+        }
+    }
+    if let Some(name) = rename {
+        task.name = name;
+    }
+    if let Some(kind) = trigger_kind {
+        task.trigger_kind = kind;
+        task.trigger_json = trigger_json.unwrap_or_else(|| serde_json::json!({}));
+        task.next_due_at = compute_next_due(&task, now_ms());
+    }
+    if let Some(j) = join {
+        task.dep_join = j;
+    }
+    if let Some(on) = enable {
+        task.enabled = on;
+        // Re-enabling re-resolves the schedule: a task paused across its slot
+        // would otherwise have no next due time and never fire again.
+        if on && task.trigger_kind == future_tasks::TriggerKind::Schedule {
+            task.next_due_at = compute_next_due(&task, now_ms());
+        }
+    }
+    task.updated_at = now_ms();
+    store.update_task(&task).map_err(|e| e.to_string())?;
+    if sets_deps {
+        write_deps(&store, &task.id, &specs)?;
+    }
+
+    if json_flag {
+        out.log(&serde_json::to_string_pretty(&task_json(&task)).map_err(|e| e.to_string())?);
+    } else {
+        out.log(&format!("Updated task {} ({})", task.name, task.id));
+        out.log(&format!("  trigger:  {}", format_trigger(&task)));
+        if task.prompt_version > 1 {
+            out.log(&format!("  prompt:   v{}", task.prompt_version));
+        }
+    }
+    Ok(())
+}
+
+/// `future task enable|disable <id|name>`.
+fn set_enabled(args: &[String], out: &Output, enabled: bool) -> Result<()> {
+    let reference = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .ok_or_else(|| "usage: future task enable|disable <id|name>".to_string())?;
+    let store = open_store()?;
+    let mut task = find_task(&store, reference)?;
+    task.enabled = enabled;
+    if enabled && task.trigger_kind == future_tasks::TriggerKind::Schedule {
+        task.next_due_at = compute_next_due(&task, now_ms());
+    }
+    task.updated_at = now_ms();
+    store.update_task(&task).map_err(|e| e.to_string())?;
+    out.log(&format!(
+        "{} is now {}",
+        task.name,
+        if enabled { "enabled" } else { "disabled" }
+    ));
+    if enabled {
+        if let Some(due) = task.next_due_at {
+            out.log(&format!("  next due: {}", format_ms(Some(due))));
+        }
+    }
+    Ok(())
+}
+
+/// `future task remove <id|name> [--yes]`.
+///
+/// Soft-deletes the task and drops the dependency edges pointing at it, so no
+/// downstream keeps waiting on something that can never report again. Runs and
+/// the conversations they produced are left alone.
+fn remove(args: &[String], out: &Output) -> Result<()> {
+    let yes = args.iter().any(|a| a == "--yes");
+    let reference = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .ok_or_else(|| "usage: future task remove <id|name> [--yes]".to_string())?;
+    let store = open_store()?;
+    let mut task = find_task(&store, reference)?;
+    if !yes {
+        return Err(format!(
+            "refusing to remove {} ({}) without --yes\n  Its runs and conversations are kept.",
+            task.name, task.id
+        ));
+    }
+    task.deleted_at = Some(now_ms());
+    task.enabled = false;
+    task.updated_at = now_ms();
+    store.update_task(&task).map_err(|e| e.to_string())?;
+    store
+        .remove_deps_pointing_at(&task.id)
+        .map_err(|e| e.to_string())?;
+    out.log(&format!("Removed task {} ({})", task.name, task.id));
+    Ok(())
+}
+
+/// `future task feedback <run-id> good|bad [--note …]`.
+fn feedback(args: &[String], out: &Output) -> Result<()> {
+    let positional: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+    let run_id = positional
+        .first()
+        .ok_or_else(|| "usage: future task feedback <run-id> good|bad [--note …]".to_string())?;
+    let verdict = positional
+        .get(1)
+        .ok_or_else(|| "usage: future task feedback <run-id> good|bad [--note …]".to_string())?;
+    if verdict.as_str() != "good" && verdict.as_str() != "bad" {
+        return Err(format!("verdict must be good|bad, got {verdict:?}"));
+    }
+    let note = flag_value(args, "--note");
+    let store = open_store()?;
+    let mut run = store
+        .get_run(run_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("run not found: {run_id}"))?;
+    run.feedback = Some(verdict.to_string());
+    run.feedback_note = note;
+    store.update_run(&run).map_err(|e| e.to_string())?;
+    out.log(&format!("Recorded {verdict} on run {run_id}"));
+    Ok(())
+}
+
+/// `future task upstream <id|name> [--json]` — the dependency edges and how far
+/// each has got.
+fn upstream(args: &[String], out: &Output) -> Result<()> {
+    let json_flag = args.iter().any(|a| a == "--json");
+    let reference = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .ok_or_else(|| "usage: future task upstream <id|name> [--json]".to_string())?;
+    let store = open_store()?;
+    let task = find_task(&store, reference)?;
+    let rows = dep_rows(&store, &task.id)?;
+    if json_flag {
+        out.log(
+            &serde_json::to_string_pretty(&json!({
+                "id": task.id,
+                "name": task.name,
+                "join": format!("{:?}", task.dep_join).to_lowercase(),
+                "upstream": rows,
+            }))
+            .map_err(|e| e.to_string())?,
+        );
+        return Ok(());
+    }
+    if rows.is_empty() {
+        out.log(&format!("{} has no upstream tasks.", task.name));
+        return Ok(());
+    }
+    out.log(&format!(
+        "{} — join {:?}",
+        task.name,
+        format!("{:?}", task.dep_join).to_lowercase()
+    ));
+    for row in &rows {
+        let name = row["upstreamName"]
+            .as_str()
+            .unwrap_or_else(|| row["upstreamTaskId"].as_str().unwrap_or("?"));
+        let state = if row["satisfied"] == json!(true) {
+            "satisfied"
+        } else {
+            "waiting"
+        };
+        out.log(&format!(
+            "  {name:<24} on {:<10} {state}",
+            row["on"].as_str().unwrap_or("?")
+        ));
+    }
+    Ok(())
+}
+
+/// `future task prompt log <id|name> [--json]`.
+fn prompt_log(args: &[String], out: &Output) -> Result<()> {
+    let json_flag = args.iter().any(|a| a == "--json");
+    let reference = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .ok_or_else(|| "usage: future task prompt log <id|name> [--json]".to_string())?;
+    let store = open_store()?;
+    let task = find_task(&store, reference)?;
+    let revisions = store.list_revisions(&task.id).map_err(|e| e.to_string())?;
+    if json_flag {
+        let items: Vec<_> = revisions
+            .iter()
+            .map(|r| {
+                json!({
+                    "id": r.id,
+                    "version": r.version,
+                    "source": r.source,
+                    "reason": r.reason,
+                    "active": r.version == task.prompt_version,
+                    "createdAt": r.created_at,
+                })
+            })
+            .collect();
+        out.log(&serde_json::to_string_pretty(&items).map_err(|e| e.to_string())?);
+        return Ok(());
+    }
+    if revisions.is_empty() {
+        out.log(&format!(
+            "{} has only its original prompt (v{}).",
+            task.name, task.prompt_version
+        ));
+        return Ok(());
+    }
+    out.log(&format!("{} — active v{}", task.name, task.prompt_version));
+    let mut ordered = revisions;
+    ordered.sort_by_key(|r| -r.version);
+    for r in ordered {
+        let mark = if r.version == task.prompt_version {
+            "active"
+        } else {
+            "      "
+        };
+        out.log(&format!(
+            "  v{:<4} {mark} {:<10} {:<16} {}",
+            r.version,
+            r.source,
+            format_ms(Some(r.created_at)),
+            r.reason.as_deref().unwrap_or("-")
+        ));
+    }
+    Ok(())
+}
+
+/// `future task prompt apply <id|name> <revision-id>`.
+fn prompt_apply(args: &[String], out: &Output) -> Result<()> {
+    let positional: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+    let reference = positional
+        .first()
+        .ok_or_else(|| "usage: future task prompt apply <id|name> <revision-id>".to_string())?;
+    let revision_id = positional
+        .get(1)
+        .ok_or_else(|| "usage: future task prompt apply <id|name> <revision-id>".to_string())?;
+    let store = open_store()?;
+    let mut task = find_task(&store, reference)?;
+    let revision = store
+        .list_revisions(&task.id)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|r| &r.id == *revision_id)
+        .ok_or_else(|| format!("revision not found: {revision_id}"))?;
+    let history = store.list_revisions(&task.id).map_err(|e| e.to_string())?;
+    let rows = future_tasks::prompt_change_revisions(
+        &task,
+        &history,
+        &revision.prompt,
+        "rollback",
+        Some(&format!(
+            "applied revision {} (v{})",
+            revision_id, revision.version
+        )),
+        now_ms(),
+    );
+    let Some(applied) = rows.last() else {
+        out.log(&format!(
+            "{} already runs that version; nothing to change.",
+            task.name
+        ));
+        return Ok(());
+    };
+    for row in &rows {
+        store.insert_revision(row).map_err(|e| e.to_string())?;
+    }
+    let previous = task.prompt_version;
+    task.prompt = applied.prompt.clone();
+    task.prompt_version = applied.version;
+    task.updated_at = now_ms();
+    store.update_task(&task).map_err(|e| e.to_string())?;
+    out.log(&format!(
+        "{} now runs v{} (was v{})",
+        task.name, task.prompt_version, previous
+    ));
+    Ok(())
+}
+
+/// `future task prompt revert <id|name>` — the version before the active one.
+fn prompt_revert(args: &[String], out: &Output) -> Result<()> {
+    let reference = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .ok_or_else(|| "usage: future task prompt revert <id|name>".to_string())?;
+    let store = open_store()?;
+    let task = find_task(&store, reference)?;
+    let previous = store
+        .list_revisions(&task.id)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|r| r.version < task.prompt_version)
+        .max_by_key(|r| r.version)
+        .ok_or_else(|| format!("{} has no earlier version to revert to", task.name))?;
+    prompt_apply(&[task.id.clone(), previous.id], out)
 }
 
 fn run(args: &[String], out: &Output) -> Result<()> {
@@ -654,6 +1279,7 @@ fn runs(args: &[String], out: &Output) -> Result<()> {
                     "id": r.id,
                     "kind": format!("{:?}", r.kind).to_lowercase(),
                     "origin": format!("{:?}", r.origin).to_lowercase(),
+                    "actor": r.actor,
                     "status": format!("{:?}", r.status).to_lowercase(),
                     "dueAt": r.due_at,
                     "startedAt": r.started_at,
@@ -661,6 +1287,12 @@ fn runs(args: &[String], out: &Output) -> Result<()> {
                     "promptVersion": r.prompt_version,
                     "resultSummary": r.result_summary,
                     "errorMessage": r.error_message,
+                    // A verdict recorded with `future task feedback` has to be
+                    // readable back, or recording it is a write-only gesture.
+                    "feedback": r.feedback,
+                    "feedbackNote": r.feedback_note,
+                    "threadId": r.thread_id,
+                    "sessionId": r.session_id,
                 })
             })
             .collect();
@@ -674,11 +1306,18 @@ fn runs(args: &[String], out: &Output) -> Result<()> {
     for r in &runs {
         let status = format!("{:?}", r.status).to_lowercase();
         let kind = format!("{:?}", r.kind).to_lowercase();
+        // A verdict is short; show it on the same line as the status.
+        let verdict = r
+            .feedback
+            .as_deref()
+            .map(|f| format!(" [{f}]"))
+            .unwrap_or_default();
         out.log(&format!(
-            "{:<14} {:<10} {:<10} {:<18} {}",
+            "{:<14} {:<10} {:<10}{:<10} {:<18} {}",
             r.id,
             kind,
             status,
+            verdict,
             format_ms(r.started_at),
             r.error_message.as_deref().unwrap_or("")
         ));
@@ -842,6 +1481,14 @@ mod tests {
     async fn the_group_dispatches_every_subcommand() {
         let _guard = crate::test_env::lock_env().await;
         let _home = Home::new();
+        // A task to address, so the new read/write commands get past their
+        // argument check and exercise their real bodies.
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&["--name", "t", "--prompt", "p", "--cwd", "/tmp"]),
+            &setup,
+        )
+        .unwrap();
         for (values, expect_ok) in [
             (vec![], true),
             (vec!["--help"], true),
@@ -850,6 +1497,23 @@ mod tests {
             (vec!["add"], false),
             (vec!["run"], false),
             (vec!["runs"], false),
+            (vec!["edit"], false),
+            (vec!["edit", "t"], true),
+            (vec!["enable"], false),
+            (vec!["enable", "t"], true),
+            (vec!["disable", "t"], true),
+            (vec!["upstream", "t"], true),
+            (vec!["deps", "t"], true),
+            (vec!["upstream"], false),
+            (vec!["feedback"], false),
+            (vec!["prompt"], false),
+            (vec!["prompt", "log", "t"], true),
+            (vec!["prompt", "apply", "t"], false),
+            (vec!["prompt", "revert", "t"], false),
+            // Removing is last: the commands above address `t`, and a deleted
+            // task is no longer found by name.
+            (vec!["remove", "t"], false),
+            (vec!["remove", "t", "--yes"], true),
             (vec!["frobnicate"], false),
         ] {
             let (out, _captured) = Output::memory();
@@ -861,6 +1525,978 @@ mod tests {
         let (out, captured) = Output::memory();
         task(None, &[], &out).unwrap();
         assert!(text(captured.out).contains("future task — manage FutureOS tasks"));
+    }
+
+    // ─── edit ─────────────────────────────────────────────────────────────
+
+    /// `edit` changes each field on the stored task, not just in its own
+    /// output: the point of the CLI is that the desktop's next tick sees it.
+    #[tokio::test]
+    async fn edit_changes_every_field_on_the_stored_task() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let prompt_file = home.dir.path().join("next.md");
+        std::fs::write(&prompt_file, "the second prompt").unwrap();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&["--name", "before", "--prompt", "p", "--cwd", "/tmp"]),
+            &setup,
+        )
+        .unwrap();
+
+        let (out, _captured) = Output::memory();
+        edit(
+            &args(&[
+                "before",
+                "--name",
+                "after",
+                "--prompt-file",
+                prompt_file.to_str().unwrap(),
+                "--cwd",
+                "/var",
+                "--model",
+                "future/gpt-5",
+                "--thinking",
+                "high",
+                "--session",
+                "existing",
+                "--conversation",
+                "chat",
+                "--reflection",
+                "off",
+                "--daily",
+                "--time",
+                "07:30",
+                "--join-any",
+                "--json",
+            ]),
+            &out,
+        )
+        .unwrap();
+
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let t = store.find_task_by_name("after").unwrap().unwrap();
+        assert_eq!(t.prompt, "the second prompt");
+        assert_eq!(t.cwd, "/var");
+        assert_eq!(t.model_id.as_deref(), Some("future/gpt-5"));
+        assert_eq!(t.thinking_level.as_deref(), Some("high"));
+        assert_eq!(t.session_policy, future_tasks::SessionPolicy::Existing);
+        assert_eq!(t.conversation_mode, future_tasks::ConversationMode::Chat);
+        assert_eq!(t.reflection, future_tasks::Reflection::Off);
+        assert_eq!(t.dep_join, future_tasks::DepJoin::Any);
+        assert_eq!(t.trigger_json["mode"], "daily");
+        assert_eq!(t.trigger_json["time"], "07:30");
+        assert!(t.next_due_at.is_some(), "a schedule resolves its next slot");
+    }
+
+    /// Switching back to manual clears the schedule: a manual task that kept a
+    /// `next_due_at` would still be picked up by the tick.
+    #[tokio::test]
+    async fn edit_back_to_manual_clears_the_schedule() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&[
+                "--name", "sched", "--prompt", "p", "--cwd", "/tmp", "--daily",
+            ]),
+            &setup,
+        )
+        .unwrap();
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        assert!(store
+            .find_task_by_name("sched")
+            .unwrap()
+            .unwrap()
+            .next_due_at
+            .is_some());
+
+        let (out, _captured) = Output::memory();
+        edit(&args(&["sched", "--manual"]), &out).unwrap();
+        let t = store.find_task_by_name("sched").unwrap().unwrap();
+        assert_eq!(t.trigger_kind, future_tasks::TriggerKind::Manual);
+        assert_eq!(t.next_due_at, None);
+    }
+
+    /// `--enable` / `--disable` on edit, including the re-enable that has to
+    /// re-resolve the schedule.
+    #[tokio::test]
+    async fn edit_enable_and_disable_round_trip() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&[
+                "--name", "pause", "--prompt", "p", "--cwd", "/tmp", "--daily",
+            ]),
+            &setup,
+        )
+        .unwrap();
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+
+        let (out, _captured) = Output::memory();
+        edit(&args(&["pause", "--disable"]), &out).unwrap();
+        assert!(!store.find_task_by_name("pause").unwrap().unwrap().enabled);
+
+        edit(&args(&["pause", "--enable"]), &out).unwrap();
+        let t = store.find_task_by_name("pause").unwrap().unwrap();
+        assert!(t.enabled);
+        assert!(
+            t.next_due_at.is_some(),
+            "re-enabling lands on a real slot instead of never firing"
+        );
+    }
+
+    /// `--depends-on` replaces the whole edge set, and a prompt edit keeps the
+    /// version it replaced so the original stays reachable.
+    #[tokio::test]
+    async fn edit_replaces_dependencies_and_keeps_the_replaced_prompt() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (setup, _c) = Output::memory();
+        for name in ["up-a", "up-b", "down"] {
+            add(
+                &args(&["--name", name, "--prompt", "p", "--cwd", "/tmp"]),
+                &setup,
+            )
+            .unwrap();
+        }
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+
+        let (out, _captured) = Output::memory();
+        edit(&args(&["down", "--depends-on", "up-a"]), &out).unwrap();
+        let down = store.find_task_by_name("down").unwrap().unwrap();
+        assert_eq!(store.list_deps(&down.id).unwrap().len(), 1);
+        assert_eq!(
+            store.list_deps(&down.id).unwrap()[0].on,
+            future_tasks::DepOn::Success,
+            "a bare name means success"
+        );
+
+        edit(
+            &args(&[
+                "down",
+                "--depends-on",
+                "up-b:failure",
+                "--depends-on",
+                "up-a:completed",
+            ]),
+            &out,
+        )
+        .unwrap();
+        let deps = store.list_deps(&down.id).unwrap();
+        assert_eq!(deps.len(), 2, "the old edge was replaced, not added to");
+        let on_for = |name: &str| {
+            let id = store.find_task_by_name(name).unwrap().unwrap().id;
+            deps.iter().find(|d| d.upstream_task_id == id).unwrap().on
+        };
+        assert_eq!(on_for("up-b"), future_tasks::DepOn::Failure);
+        assert_eq!(on_for("up-a"), future_tasks::DepOn::Completed);
+
+        // The prompt edit records v2 and keeps v1, so `prompt revert` can get
+        // back to where the task started.
+        let (edit_out, _c2) = Output::memory();
+        edit(&args(&["down", "--prompt", "the second prompt"]), &edit_out).unwrap();
+        let after = store.find_task_by_name("down").unwrap().unwrap();
+        assert_eq!(after.prompt_version, 2);
+        let versions: Vec<i64> = store
+            .list_revisions(&after.id)
+            .unwrap()
+            .iter()
+            .map(|r| r.version)
+            .collect();
+        assert!(versions.contains(&1), "v1 is kept: {versions:?}");
+        assert!(versions.contains(&2));
+
+        // A second edit is idempotent about the history: it does not add
+        // another copy of v1.
+        edit(&args(&["down", "--prompt", "the third"]), &edit_out).unwrap();
+        let v1s = store
+            .list_revisions(&after.id)
+            .unwrap()
+            .iter()
+            .filter(|r| r.version == 1)
+            .count();
+        assert_eq!(v1s, 1);
+    }
+
+    #[tokio::test]
+    async fn edit_refuses_bad_input_and_unknown_tasks() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&["--name", "t", "--prompt", "p", "--cwd", "/tmp"]),
+            &setup,
+        )
+        .unwrap();
+        let (out, _captured) = Output::memory();
+        for (values, expect) in [
+            (vec!["t", "--reflection", "sometimes"], "off|ask|auto"),
+            (vec!["t", "--session", "maybe"], "new|existing"),
+            (vec!["t", "--conversation", "either"], "workspace|chat"),
+            (vec!["t", "--bogus"], "unknown flag"),
+            (vec!["t", "--cwd"], "requires a value"),
+            (vec!["t", "--at", "nonsense"], "YYYY-MM-DD HH:MM"),
+            (vec!["t", "--every", "fortnightly"], "30m, 2h, 1d"),
+            (vec!["t", "--weekly"], "requires --days"),
+            (vec!["t", "--monthly"], "requires --day"),
+            (vec!["t", "--depends-on", "t"], "cannot depend on itself"),
+            (vec!["t", "--depends-on", ""], "needs a task name"),
+            (
+                vec!["t", "--depends-on", "up:maybe"],
+                "success|failure|completed",
+            ),
+            (vec!["t", "--depends-on", "ghost"], "not found"),
+            (vec!["ghost", "--cwd", "/x"], "not found"),
+            (
+                vec!["t", "--prompt-file", "/does/not/exist"],
+                "read prompt file",
+            ),
+        ] {
+            let error = edit(&args(&values), &out).unwrap_err();
+            assert!(
+                error.contains(expect),
+                "{values:?}: {error:?} should mention {expect:?}"
+            );
+        }
+    }
+
+    /// The positional task name is skipped by the flag scan by *index*: a flag
+    /// value that happens to equal the task's name must still be read as a
+    /// value. (Matching on the string skipped it and reported "unknown flag".)
+    #[tokio::test]
+    async fn edit_does_not_mistake_its_own_task_name_for_a_flag() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&["--name", "same", "--prompt", "p", "--cwd", "/tmp"]),
+            &setup,
+        )
+        .unwrap();
+        let (out, _captured) = Output::memory();
+        edit(&args(&["same", "--cwd", "same"]), &out).unwrap();
+        edit(&args(&["same", "--prompt", "same"]), &out).unwrap();
+    }
+
+    // ─── enable / disable ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn enable_and_disable_report_and_persist() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&[
+                "--name", "watch", "--prompt", "p", "--cwd", "/tmp", "--daily",
+            ]),
+            &setup,
+        )
+        .unwrap();
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+
+        let (out, captured) = Output::memory();
+        set_enabled(&args(&["watch"]), &out, false).unwrap();
+        assert!(text(captured.out).contains("watch is now disabled"));
+        assert!(!store.find_task_by_name("watch").unwrap().unwrap().enabled);
+
+        let (out, captured) = Output::memory();
+        set_enabled(&args(&["watch"]), &out, true).unwrap();
+        let shown = text(captured.out);
+        assert!(shown.contains("watch is now enabled"));
+        assert!(shown.contains("next due:"));
+        assert!(store.find_task_by_name("watch").unwrap().unwrap().enabled);
+
+        // A manual task has no slot to print, and enabling it must not invent
+        // one.
+        let (out, _c2) = Output::memory();
+        add(
+            &args(&["--name", "hand", "--prompt", "p", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+        let (out, captured) = Output::memory();
+        set_enabled(&args(&["hand"]), &out, true).unwrap();
+        assert!(!text(captured.out).contains("next due:"));
+        assert_eq!(
+            store
+                .find_task_by_name("hand")
+                .unwrap()
+                .unwrap()
+                .next_due_at,
+            None
+        );
+
+        let (out, _c3) = Output::memory();
+        assert!(set_enabled(&args(&[]), &out, true)
+            .unwrap_err()
+            .contains("usage: future task enable|disable"));
+        assert!(set_enabled(&args(&["nope"]), &out, true)
+            .unwrap_err()
+            .contains("not found"));
+    }
+
+    // ─── remove ───────────────────────────────────────────────────────────
+
+    /// Removing takes the edges that pointed at the task, so no downstream
+    /// keeps waiting on something that can never report again. The runs are
+    /// left alone: the conversations they produced are the user's.
+    #[tokio::test]
+    async fn remove_drops_the_edges_pointing_at_it_and_keeps_the_runs() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (setup, _c) = Output::memory();
+        for name in ["up", "down"] {
+            add(
+                &args(&["--name", name, "--prompt", "p", "--cwd", "/tmp"]),
+                &setup,
+            )
+            .unwrap();
+        }
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let (out, _c2) = Output::memory();
+        edit(&args(&["down", "--depends-on", "up"]), &out).unwrap();
+        let down = store.find_task_by_name("down").unwrap().unwrap();
+        let up = store.find_task_by_name("up").unwrap().unwrap();
+        store
+            .mark_dep_satisfied(&down.id, &up.id, "trn_1", 1)
+            .unwrap();
+
+        // Without --yes it refuses and changes nothing.
+        let error = remove(&args(&["up"]), &out).unwrap_err();
+        assert!(error.contains("--yes"), "{error}");
+        assert!(store.find_task_by_name("up").unwrap().is_some());
+
+        let (out, captured) = Output::memory();
+        remove(&args(&["up", "--yes"]), &out).unwrap();
+        assert!(text(captured.out).contains("Removed task up"));
+        assert!(store.list_deps(&down.id).unwrap().is_empty());
+        assert!(store.get_dep_state(&down.id, &up.id).unwrap().is_none());
+        // The tombstone is what makes the removal visible to `list --all`.
+        // `find_task_by_name` filters deleted rows, so read it by id.
+        assert!(store
+            .get_task(&up.id)
+            .unwrap()
+            .unwrap()
+            .deleted_at
+            .is_some());
+        assert!(store.find_task_by_name("up").unwrap().is_none());
+        assert!(
+            store
+                .list_tasks(false)
+                .unwrap()
+                .iter()
+                .all(|t| t.name != "up"),
+            "a plain list hides it"
+        );
+
+        let (out, _c3) = Output::memory();
+        assert!(remove(&args(&[]), &out)
+            .unwrap_err()
+            .contains("usage: future task remove"));
+        assert!(remove(&args(&["ghost", "--yes"]), &out)
+            .unwrap_err()
+            .contains("not found"));
+    }
+
+    // ─── feedback ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn feedback_records_a_verdict_on_the_run() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&["--name", "t", "--prompt", "p", "--cwd", "/tmp"]),
+            &setup,
+        )
+        .unwrap();
+        let task = store.find_task_by_name("t").unwrap().unwrap();
+        store
+            .insert_run(&future_tasks::TaskRun {
+                id: "trn_fb".into(),
+                task_id: task.id.clone(),
+                kind: future_tasks::RunKind::Main,
+                origin: future_tasks::RunOrigin::Schedule,
+                actor: None,
+                due_at: Some(1),
+                status: RunStatus::Completed,
+                thread_id: None,
+                session_id: None,
+                run_id: None,
+                prompt_version: Some(1),
+                result_summary: Some("too terse".into()),
+                feedback: None,
+                feedback_note: None,
+                started_at: Some(1),
+                finished_at: Some(2),
+                error_message: None,
+            })
+            .unwrap();
+
+        let (out, captured) = Output::memory();
+        feedback(
+            &args(&["trn_fb", "bad", "--note", "missed the trend"]),
+            &out,
+        )
+        .unwrap();
+        assert!(text(captured.out).contains("Recorded bad"));
+        let run = store.get_run("trn_fb").unwrap().unwrap();
+        assert_eq!(run.feedback.as_deref(), Some("bad"));
+        assert_eq!(run.feedback_note.as_deref(), Some("missed the trend"));
+
+        // good, with no note, clears the note rather than keeping a stale one.
+        let (out, _c2) = Output::memory();
+        feedback(&args(&["trn_fb", "good"]), &out).unwrap();
+        let run = store.get_run("trn_fb").unwrap().unwrap();
+        assert_eq!(run.feedback.as_deref(), Some("good"));
+        assert_eq!(run.feedback_note, None);
+
+        let (out, _c3) = Output::memory();
+        for (values, expect) in [
+            (vec![], "usage: future task feedback"),
+            (vec!["trn_fb"], "usage: future task feedback"),
+            (vec!["trn_fb", "maybe"], "must be good|bad"),
+            (vec!["trn_missing", "good"], "run not found"),
+        ] {
+            let error = feedback(&args(&values), &out).unwrap_err();
+            assert!(error.contains(expect), "{values:?}: {error:?}");
+        }
+    }
+
+    // ─── upstream ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn upstream_reports_edges_and_their_progress() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (setup, _c) = Output::memory();
+        for name in ["up", "down"] {
+            add(
+                &args(&["--name", name, "--prompt", "p", "--cwd", "/tmp"]),
+                &setup,
+            )
+            .unwrap();
+        }
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+
+        // No edges yet.
+        let (out, captured) = Output::memory();
+        upstream(&args(&["down"]), &out).unwrap();
+        assert!(text(captured.out).contains("no upstream tasks"));
+
+        let (out, _c2) = Output::memory();
+        edit(
+            &args(&["down", "--depends-on", "up:failure", "--join-any"]),
+            &out,
+        )
+        .unwrap();
+
+        let (out, captured) = Output::memory();
+        upstream(&args(&["down"]), &out).unwrap();
+        let shown = text(captured.out);
+        assert!(shown.contains("up"));
+        assert!(shown.contains("failure"));
+        assert!(shown.contains("waiting"));
+
+        let down = store.find_task_by_name("down").unwrap().unwrap();
+        let up = store.find_task_by_name("up").unwrap().unwrap();
+        store
+            .mark_dep_satisfied(&down.id, &up.id, "trn_9", 1)
+            .unwrap();
+        let (out, captured) = Output::memory();
+        upstream(&args(&["down"]), &out).unwrap();
+        assert!(text(captured.out).contains("satisfied"));
+
+        let (out, captured) = Output::memory();
+        upstream(&args(&["down", "--json"]), &out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert_eq!(parsed["join"], "any");
+        assert_eq!(parsed["upstream"][0]["on"], "failure");
+        assert_eq!(parsed["upstream"][0]["satisfied"], true);
+        assert_eq!(parsed["upstream"][0]["satisfiedRunId"], "trn_9");
+        assert_eq!(parsed["upstream"][0]["upstreamName"], "up");
+
+        // The empty case in JSON, and the argument guards.
+        let (out, captured) = Output::memory();
+        upstream(&args(&["up", "--json"]), &out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert_eq!(parsed["upstream"], serde_json::json!([]));
+
+        let (out, _c3) = Output::memory();
+        assert!(upstream(&args(&[]), &out)
+            .unwrap_err()
+            .contains("usage: future task upstream"));
+    }
+
+    // ─── prompt versions ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn prompt_log_lists_versions_and_labels_the_active_one() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&["--name", "t", "--prompt", "first", "--cwd", "/tmp"]),
+            &setup,
+        )
+        .unwrap();
+
+        // Nothing has been changed yet.
+        let (out, captured) = Output::memory();
+        prompt_log(&args(&["t"]), &out).unwrap();
+        assert!(text(captured.out).contains("only its original prompt"));
+
+        let (out, _c2) = Output::memory();
+        edit(&args(&["t", "--prompt", "second"]), &out).unwrap();
+        edit(&args(&["t", "--prompt", "third"]), &out).unwrap();
+
+        let (out, captured) = Output::memory();
+        prompt_log(&args(&["t"]), &out).unwrap();
+        let shown = text(captured.out);
+        assert!(shown.contains("active v3"), "{shown}");
+        assert!(
+            shown.contains("v1"),
+            "the original is in the history: {shown}"
+        );
+        assert!(shown.contains("superseded"), "{shown}");
+        assert!(shown.contains("user"), "{shown}");
+
+        let (out, captured) = Output::memory();
+        prompt_log(&args(&["t", "--json"]), &out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        let rows = parsed.as_array().unwrap();
+        assert_eq!(rows.len(), 3, "v1, v2, v3: {rows:?}");
+        assert_eq!(
+            rows.iter().filter(|r| r["active"] == true).count(),
+            1,
+            "exactly one version is active"
+        );
+
+        let (out, _c3) = Output::memory();
+        assert!(prompt_log(&args(&[]), &out)
+            .unwrap_err()
+            .contains("usage: future task prompt log"));
+    }
+
+    /// Applying a stored version makes it active again, and reverting walks
+    /// back one step — the workflow the skill is built around.
+    #[tokio::test]
+    async fn prompt_apply_and_revert_move_the_active_version() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&["--name", "t", "--prompt", "first", "--cwd", "/tmp"]),
+            &setup,
+        )
+        .unwrap();
+        let (out, _c2) = Output::memory();
+        edit(&args(&["t", "--prompt", "second"]), &out).unwrap();
+
+        let task = store.find_task_by_name("t").unwrap().unwrap();
+        let v1 = store
+            .list_revisions(&task.id)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.version == 1)
+            .expect("v1 was kept");
+
+        let (out, captured) = Output::memory();
+        prompt_apply(&args(&["t", &v1.id]), &out).unwrap();
+        assert!(text(captured.out).contains("now runs v3 (was v2)"));
+        let applied = store.find_task_by_name("t").unwrap().unwrap();
+        assert_eq!(applied.prompt, "first");
+        assert_eq!(applied.prompt_version, 3);
+
+        // Re-applying the same version is a no-op, not a version bump.
+        let (out, captured) = Output::memory();
+        prompt_apply(&args(&["t", &v1.id]), &out).unwrap();
+        assert!(text(captured.out).contains("already runs that version"));
+        assert_eq!(
+            store
+                .find_task_by_name("t")
+                .unwrap()
+                .unwrap()
+                .prompt_version,
+            3
+        );
+
+        let (out, captured) = Output::memory();
+        prompt_revert(&args(&["t"]), &out).unwrap();
+        assert!(text(captured.out).contains("now runs v4 (was v3)"));
+        let reverted = store.find_task_by_name("t").unwrap().unwrap();
+        assert_eq!(reverted.prompt, "second", "the version before v3");
+
+        let (out, _c3) = Output::memory();
+        assert!(prompt_apply(&args(&["t"]), &out)
+            .unwrap_err()
+            .contains("usage: future task prompt apply"));
+        assert!(prompt_apply(&args(&["t", "rev_missing"]), &out)
+            .unwrap_err()
+            .contains("revision not found"));
+
+        // A task whose only version is the current one has nothing to revert to.
+        let (out, _c4) = Output::memory();
+        add(
+            &args(&["--name", "fresh", "--prompt", "p", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+        assert!(prompt_revert(&args(&["fresh"]), &out)
+            .unwrap_err()
+            .contains("no earlier version"));
+        assert!(prompt_revert(&args(&[]), &out)
+            .unwrap_err()
+            .contains("usage: future task prompt revert"));
+    }
+
+    #[test]
+    fn the_prompt_subcommand_refuses_an_unknown_action() {
+        let (out, _captured) = Output::memory();
+        for values in [vec![], vec!["frobnicate"]] {
+            let error = prompt(&args(&values), &out).unwrap_err();
+            assert!(error.contains("prompt log|apply|revert"), "{error}");
+        }
+    }
+
+    // ─── dependency specs ─────────────────────────────────────────────────
+
+    #[test]
+    fn dependency_specs_parse_the_condition_and_its_default() {
+        assert_eq!(
+            parse_dep_spec("up").unwrap(),
+            ("up".to_string(), future_tasks::DepOn::Success)
+        );
+        assert_eq!(
+            parse_dep_spec("up:success").unwrap().1,
+            future_tasks::DepOn::Success
+        );
+        assert_eq!(
+            parse_dep_spec("up:failure").unwrap().1,
+            future_tasks::DepOn::Failure
+        );
+        assert_eq!(
+            parse_dep_spec("up:completed").unwrap().1,
+            future_tasks::DepOn::Completed
+        );
+        assert!(parse_dep_spec("up:maybe")
+            .unwrap_err()
+            .contains("success|failure|completed"));
+        assert!(parse_dep_spec("")
+            .unwrap_err()
+            .contains("needs a task name"));
+        assert!(parse_dep_spec(":failure")
+            .unwrap_err()
+            .contains("needs a task name"));
+
+        // Collection: repeated flags in order, and a missing value is refused.
+        assert!(dep_specs(&args(&["--depends-on"]))
+            .unwrap_err()
+            .contains("requires a value"));
+        assert!(dep_specs(&args(&["--name", "x"])).unwrap().is_empty());
+        let specs = dep_specs(&args(&["--depends-on", "a", "--depends-on", "b:failure"])).unwrap();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].0, "a");
+        assert_eq!(specs[1].1, future_tasks::DepOn::Failure);
+    }
+
+    // ─── trigger resolution ───────────────────────────────────────────────
+
+    /// The next-slot helper answers for a schedule and stays silent for a
+    /// manual task, so `--disabled`/`--disable` cannot lose the schedule.
+    #[tokio::test]
+    async fn next_due_helper_answers_only_for_schedules() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&[
+                "--name",
+                "s",
+                "--prompt",
+                "p",
+                "--cwd",
+                "/tmp",
+                "--daily",
+                "--disabled",
+            ]),
+            &setup,
+        )
+        .unwrap();
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let paused = store.find_task_by_name("s").unwrap().unwrap();
+        assert!(!paused.enabled);
+        assert!(
+            paused.next_due_at.is_some(),
+            "a schedule created while disabled still carries its slot"
+        );
+
+        let mut manual = paused.clone();
+        manual.trigger_kind = future_tasks::TriggerKind::Manual;
+        assert_eq!(compute_next_due(&manual, 1_000), None);
+        assert!(compute_next_due(&paused, 1_000).is_some());
+    }
+
+    /// The help text and the dispatcher must agree, in both directions.
+    ///
+    /// This is the guard for the failure mode that shipped once already: a
+    /// command surface was described (to users, to the skill, to other agents)
+    /// while the dispatcher had no arm for it, so the documented invocation
+    /// answered "Unknown argument". Reading the help out of the binary is the
+    /// only check that cannot drift, because both sides come from this file.
+    #[test]
+    fn the_help_text_and_the_dispatcher_list_the_same_commands() {
+        // Every subcommand `task()` can route, including the aliases.
+        let dispatched: std::collections::BTreeSet<&str> = [
+            "list", "show", "add", "edit", "enable", "disable", "remove", "run", "runs",
+            "feedback", "upstream", "deps", "prompt",
+        ]
+        .into_iter()
+        .collect();
+        let prompt_actions_dispatched: std::collections::BTreeSet<&str> =
+            ["log", "apply", "revert"].into_iter().collect();
+
+        // What the help advertises: the first word on every `future task …`
+        // usage line, with `enable|disable`-style pairs expanded.
+        let mut advertised: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut advertised_actions: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        for line in help::TASK_HELP.lines() {
+            let Some(rest) = line.trim().strip_prefix("future task ") else {
+                continue;
+            };
+            let mut words = rest.split_whitespace();
+            let Some(first) = words.next() else { continue };
+            // `enable|disable` names two subcommands on one line; the title line
+            // reads `future task — manage …` and names none.
+            let names: Vec<&str> = first.split('|').collect();
+            if !names
+                .iter()
+                .all(|n| n.chars().all(|c| c.is_ascii_lowercase()))
+            {
+                continue;
+            }
+            for name in names {
+                advertised.insert(name.to_string());
+                if name == "prompt" {
+                    // `future task prompt log|apply|revert <id|name> …`: every
+                    // lowercase token before the first placeholder names an
+                    // action. Stopping at the placeholder is what makes this
+                    // branch-free — the alternative (probe for "the next word")
+                    // has a "no next word" arm no help line can reach.
+                    let actions = words.by_ref().take_while(|word| {
+                        word.chars().all(|c| c.is_ascii_lowercase() || c == '|')
+                    });
+                    advertised_actions
+                        .extend(actions.flat_map(|group| group.split('|').map(str::to_string)));
+                }
+            }
+        }
+
+        assert_eq!(
+            advertised,
+            dispatched.iter().map(|s| (*s).to_string()).collect(),
+            "the help and the dispatcher disagree about which subcommands exist"
+        );
+        assert_eq!(
+            advertised_actions,
+            prompt_actions_dispatched
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+            "the help and the dispatcher disagree about `future task prompt`'s actions"
+        );
+    }
+
+    /// `add` takes `--manual` explicitly (the same thing an add with no trigger
+    /// flag produces), and records dependencies with their conditions.
+    #[tokio::test]
+    async fn add_manual_and_dependency_flags_are_recorded() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (out, _c) = Output::memory();
+        add(
+            &args(&["--name", "up", "--prompt", "p", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+
+        // Explicit --manual, with a plain-text confirmation of the edges.
+        let (out, captured) = Output::memory();
+        add(
+            &args(&[
+                "--name",
+                "down",
+                "--prompt",
+                "p",
+                "--cwd",
+                "/tmp",
+                "--manual",
+                "--depends-on",
+                "up:failure",
+                "--join-any",
+            ]),
+            &out,
+        )
+        .unwrap();
+        let shown = text(captured.out);
+        assert!(shown.contains("runs after: up (failure)"), "{shown}");
+
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let down = store.find_task_by_name("down").unwrap().unwrap();
+        assert_eq!(down.trigger_kind, future_tasks::TriggerKind::Manual);
+        assert_eq!(down.trigger_json, serde_json::json!({}));
+        assert_eq!(down.dep_join, future_tasks::DepJoin::Any);
+        assert_eq!(store.list_deps(&down.id).unwrap().len(), 1);
+
+        // The JSON form names the edge as the caller wrote it.
+        let (out, captured) = Output::memory();
+        add(
+            &args(&[
+                "--name",
+                "down2",
+                "--prompt",
+                "p",
+                "--cwd",
+                "/tmp",
+                "--depends-on",
+                "up:completed",
+                "--json",
+            ]),
+            &out,
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert_eq!(parsed["dependsOn"][0]["upstream"], "up");
+        assert_eq!(parsed["dependsOn"][0]["on"], "completed");
+    }
+
+    /// Every trigger flag `edit` accepts, so a task can be moved between all the
+    /// schedule shapes without being recreated (which would lose its runs).
+    #[tokio::test]
+    async fn edit_accepts_every_trigger_shape() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let store_home = home.dir.path().join(".future");
+        let (out, _c) = Output::memory();
+        add(
+            &args(&["--name", "t", "--prompt", "p", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+
+        for (values, mode, field, expect) in [
+            (
+                vec!["t", "--at", "2026-12-24 09:00"],
+                "once",
+                "date",
+                "2026-12-24",
+            ),
+            (
+                vec!["t", "--every", "2h"],
+                "interval",
+                "every_minutes",
+                "120",
+            ),
+            (
+                vec!["t", "--daily", "--time", "06:15"],
+                "daily",
+                "time",
+                "06:15",
+            ),
+            (
+                vec!["t", "--weekly", "--days", "mon,wed", "--time", "08:00"],
+                "weekly",
+                "time",
+                "08:00",
+            ),
+            (
+                vec!["t", "--monthly", "--day", "15", "--time", "09:30"],
+                "monthly",
+                "day",
+                "15",
+            ),
+        ] {
+            let (out, _captured) = Output::memory();
+            edit(&args(&values), &out).unwrap();
+            let store = Store::open(&store_home).unwrap();
+            let t = store.find_task_by_name("t").unwrap().unwrap();
+            assert_eq!(t.trigger_json["mode"], mode, "{values:?}");
+            assert_eq!(
+                t.trigger_json[field].to_string().trim_matches('"'),
+                expect,
+                "{values:?}"
+            );
+            assert!(t.next_due_at.is_some(), "{values:?} resolves a slot");
+        }
+
+        // A weekly edit without --time falls back to the default.
+        let (out, _captured) = Output::memory();
+        edit(&args(&["t", "--weekly", "--days", "sun"]), &out).unwrap();
+        let store = Store::open(&store_home).unwrap();
+        let t = store.find_task_by_name("t").unwrap().unwrap();
+        assert_eq!(t.trigger_json["time"], "09:00");
+        assert_eq!(t.trigger_json["days"][0], "sun");
+    }
+
+    /// A bare `--prompt` (not a file) records the new version too — the two
+    /// spellings must not diverge.
+    #[tokio::test]
+    async fn edit_accepts_an_inline_prompt() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (out, _c) = Output::memory();
+        add(
+            &args(&["--name", "t", "--prompt", "first", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+        let (out, captured) = Output::memory();
+        edit(&args(&["t", "--prompt", "second", "--json"]), &out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert!(parsed["id"].as_str().unwrap().starts_with("tsk_"));
+
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let t = store.find_task_by_name("t").unwrap().unwrap();
+        assert_eq!(t.prompt, "second");
+        assert_eq!(t.prompt_version, 2);
+    }
+
+    #[test]
+    fn task_json_carries_the_identity_a_caller_needs_next() {
+        let t = Task {
+            id: "tsk_1".into(),
+            name: "n".into(),
+            enabled: true,
+            prompt: "p".into(),
+            prompt_version: 1,
+            cwd: "/tmp".into(),
+            model_id: None,
+            thinking_level: None,
+            session_policy: future_tasks::SessionPolicy::New,
+            conversation_mode: future_tasks::ConversationMode::Workspace,
+            thread_id: None,
+            trigger_kind: future_tasks::TriggerKind::Manual,
+            trigger_json: serde_json::json!({}),
+            dep_join: future_tasks::DepJoin::All,
+            next_due_at: None,
+            pending_request_at: Some(5),
+            pending_origin: None,
+            pending_actor: None,
+            reflection: future_tasks::Reflection::Ask,
+            created_at: 1,
+            updated_at: 1,
+            deleted_at: None,
+        };
+        let json = task_json(&t);
+        assert_eq!(json["id"], "tsk_1");
+        assert_eq!(json["queued"], true);
+        assert_eq!(json["trigger"], "manual");
+        assert_eq!(json["sessionPolicy"], "new");
     }
 
     // ─── store location ───────────────────────────────────────────────────
@@ -1357,6 +2993,27 @@ mod tests {
         assert_eq!(parsed[0]["kind"], "chain");
         assert_eq!(parsed[0]["origin"], "chain");
         assert_eq!(parsed[0]["promptVersion"], 2);
+        assert_eq!(parsed[0]["actor"], "task:tsk_up");
+        assert_eq!(parsed[0]["feedback"], serde_json::Value::Null);
+        assert_eq!(parsed[0]["threadId"], serde_json::Value::Null);
+
+        // A verdict written by `feedback` is readable back through the same
+        // ledger, in both the JSON and the table — otherwise recording one
+        // would be a write-only gesture.
+        let run_id = parsed[0]["id"].as_str().unwrap().to_string();
+        let (out, _c2) = Output::memory();
+        feedback(&args(&[&run_id, "bad", "--note", "too terse"]), &out).unwrap();
+
+        let (out, captured) = Output::memory();
+        runs(&args(&["r", "--json"]), &out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert_eq!(parsed[0]["feedback"], "bad");
+        assert_eq!(parsed[0]["feedbackNote"], "too terse");
+
+        let (out, captured) = Output::memory();
+        runs(&args(&["r"]), &out).unwrap();
+        let printed = text(captured.out);
+        assert!(printed.contains("[bad]"), "{printed}");
     }
 
     #[tokio::test]
