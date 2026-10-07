@@ -1054,6 +1054,7 @@ dependencies = [
  "future-channel",
  "future-loop",
  "future-rpc",
+ "future-tasks",
  "future-tui",
  "futures-util",
  "indexmap 2.14.0",

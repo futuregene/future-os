@@ -133,6 +133,11 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
         .await;
     }
 
+    // if (group === "task") — reusable prompt + trigger + full-permission runs.
+    if group == Some("task") {
+        return catch(out, async { commands::task::task(command, rest, out) }).await;
+    }
+
     // if (group === "auth" && (!command || command === "--help" || command === "-h"))
     if group == Some("auth")
         && (command.is_none() || command == Some("--help") || command == Some("-h"))

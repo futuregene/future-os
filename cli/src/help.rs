@@ -16,6 +16,7 @@ Groups:
   account   Platform account info
   run       Send a prompt to the agent (one-shot, non-interactive)
   skills    Install & manage agent skills
+  task      Manage FutureOS tasks (reusable prompt + trigger + runs)
   tools     List, describe, and call platform & browser tools
   models    List available AI models from the agent
   session   List, inspect, update, rename, and delete agent sessions
@@ -47,6 +48,7 @@ Run 'future <group> --help' for per-group details.
   future auth --help         Auth subcommands
   future account --help      Account subcommands
   future skills --help       Skills subcommands
+  future task --help         Task management (list/show/add/run/runs)
   future tools --help        Tool subcommands
   future models --help       Model listing options
   future session --help      Session management options
@@ -236,6 +238,54 @@ their defaults.
 
 The running desktop app is unaffected until it next reads the settings; a change
 made in the app's own Settings screen applies immediately."#;
+
+/// `future task --help` output.
+pub const TASK_HELP: &str = r#"future task — manage FutureOS tasks (reusable prompt + trigger + full-permission runs)
+
+A task is a reusable work unit: prompt + working directory + model/thinking
+level, run at full permission when its trigger fires. Each run produces an
+ordinary conversation and a durable run-ledger entry.
+
+Usage:
+  future task list [--all] [--json]                 List tasks
+  future task show <id|name> [--json] [--prompt]    Show one task
+  future task add --name N --prompt P|--prompt-file F --cwd D
+        [--model M] [--thinking L] [--session new|existing]
+        [--reflection off|ask|auto] [--disabled] [--json]
+        (--at "YYYY-MM-DD HH:MM" | --every 30m | --daily [--time 09:00]
+         | --weekly --days mon,wed,fri [--time 10:00]
+         | --monthly --day 31 [--time 09:00])
+  future task run <id|name> [--wait] [--timeout 15m] [--json]
+  future task runs <id|name> [--limit N] [--json]
+
+Triggers:
+  --at        One-shot on a calendar date/time (local time).
+  --every     Every N minutes (30m, 2h, 1d). Anchored to a grid; no drift.
+  --daily     Every day at --time (default 09:00).
+  --weekly    Every selected weekday at --time (default 09:00).
+  --monthly   Every month on --day (1-31) at --time (default 09:00).
+              Months without that day run on the last day of the month.
+  (none)      Manual: only runs when triggered (`future task run`, UI, or a
+              dependency of another task).
+
+Session:
+  --session new       Each run opens a new conversation (default).
+  --session existing  Reuse one conversation; context is compacted before
+                      each run (pre-compact failure fails the run).
+
+Reflection (prompt optimization suggestions):
+  --reflection off   Never reflect.
+  --reflection ask   Propose a revised prompt after each run (default).
+  --reflection auto  Apply proposals automatically when confidence is high.
+
+Execution:
+  Runs are executed by the desktop (or headless desktop) tick loop, not by
+  this CLI. `future task run` queues a request; the next tick picks it up.
+  `--wait` blocks until the run reaches a terminal state and prints its
+  status, thread/session ids, and result summary.
+
+Not to be confused with `future loop todo` (long-running goals with evidence
+and gates). Tasks are fixed actions with triggers."#;
 
 /// `future version --help` output.
 pub const VERSION_HELP: &str = r#"future version — print the build identity of this CLI
