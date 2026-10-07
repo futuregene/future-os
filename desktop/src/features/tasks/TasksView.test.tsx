@@ -413,7 +413,8 @@ describe("tasksView", () => {
     expect(text).toContain("Manual");
     expect(text).toContain("2026-12-24 09:00");
     expect(text).toContain("Every 30 min");
-    expect(text).toContain("mon, fri 10:00");
+    // The weekday codes are localized, not printed raw.
+    expect(text).toContain("Mon, Fri 10:00");
     expect(text).toContain("15");
     expect(text).toContain("Daily");
   });

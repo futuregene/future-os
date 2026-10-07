@@ -265,7 +265,8 @@ test("summarises every trigger shape on the list row", async () => {
   const text = texts().join(" ");
   expect(text).toContain("2026-12-24 09:00");
   expect(text).toContain("tasks.trigger.every");
-  expect(text).toContain("mon, fri");
+  // The weekday codes are localized, not printed raw.
+  expect(text).toContain("tasks.weekday.mon");
   expect(text).toContain("tasks.trigger.monthly");
   expect(text).toContain("tasks.trigger.daily");
 });

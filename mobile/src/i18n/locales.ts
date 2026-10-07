@@ -765,6 +765,15 @@ export const resources = {
           chain: "chain",
           reflection: "reflection",
         },
+        weekday: {
+          mon: "Mon",
+          tue: "Tue",
+          wed: "Wed",
+          thu: "Thu",
+          fri: "Fri",
+          sat: "Sat",
+          sun: "Sun",
+        },
         on: {
           success: "after success",
           failure: "after failure",
@@ -1487,6 +1496,15 @@ export const resources = {
           manual: "手动",
           chain: "依赖触发",
           reflection: "反省",
+        },
+        weekday: {
+          mon: "周一",
+          tue: "周二",
+          wed: "周三",
+          thu: "周四",
+          fri: "周五",
+          sat: "周六",
+          sun: "周日",
         },
         on: {
           success: "成功后",

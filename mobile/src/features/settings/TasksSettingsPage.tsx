@@ -71,8 +71,11 @@ function summarize(t: (key: string, options?: Record<string, unknown>) => string
       return `${trigger.date} ${trigger.time}`;
     case "interval":
       return t("tasks.trigger.every", { minutes: Number(trigger.every_minutes ?? 0) });
-    case "weekly":
-      return `${(Array.isArray(trigger.days) ? trigger.days : []).join(", ")} ${trigger.time}`;
+    case "weekly": {
+      // The stored codes are `mon`/`fri`; showing them raw is untranslated.
+      const days = (Array.isArray(trigger.days) ? trigger.days : []) as string[];
+      return `${days.map(day => t(`tasks.weekday.${day}`)).join(", ")} ${trigger.time}`;
+    }
     case "monthly":
       return t("tasks.trigger.monthly", { day: Number(trigger.day ?? 1), time: String(trigger.time ?? "") });
     default:

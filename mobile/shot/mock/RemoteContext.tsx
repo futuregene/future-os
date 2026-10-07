@@ -44,6 +44,11 @@ import {
   demoRefreshedSessionUsage,
   demoSessionUsage,
   demoSkills,
+  demoTaskDeps,
+  demoTaskDetail,
+  demoTaskRevisions,
+  demoTaskRuns,
+  demoTasks,
   demoUnpricedSessionUsage,
   demoWorkspaces,
   multiTurnEntries,
@@ -215,6 +220,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       "workspace_pinning_v1",
       "compaction_v1",
       "fork_v1",
+      "tasks_v1",
       // What the shipping client declares (src/remote/client.ts); the lean
       // fixtures are the feed a desktop serves a client that asked for it.
       "lean_events_v1",
@@ -280,6 +286,19 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setProviders(current => ({ ...current, custom: current.custom.filter(item => item.id !== providerId) }));
       return providers;
     },
+    // Tasks: the phone manages the paired desktop's tasks (list rows carry no
+    // prompt body, matching the wire contract; the detail does).
+    listTasks: async () => demoTasks,
+    getTask: async () => demoTaskDetail,
+    listTaskRuns: async () => demoTaskRuns,
+    listTaskDeps: async () => demoTaskDeps,
+    listTaskRevisions: async () => demoTaskRevisions,
+    createTask: async () => demoTaskDetail,
+    updateTask: async () => demoTaskDetail,
+    deleteTask: async () => undefined,
+    setTaskEnabled: async () => demoTaskDetail,
+    runTask: async () => demoTaskDetail,
+    applyTaskRevision: async () => demoTaskDetail,
     listInstalledSkills: async (): Promise<InstalledSkill[]> => demoInstalledSkills,
     listAvailableSkills: async (): Promise<AvailableSkill[]> => demoAvailableSkills,
     installSkill: async () => undefined,
