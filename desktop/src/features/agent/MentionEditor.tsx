@@ -1,12 +1,15 @@
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent, Ref } from "react";
 import type { WorkspaceFileResult } from "../../integrations/storage/threadStore";
-import { Blocks, FileText, Minimize2 } from "lucide-react";
+import type { SessionMentionGroup, SessionMentionOption } from "./sessionMention";
+import { buildSessionReference } from "@future-os/markdown";
+import { Blocks, FileText, MessagesSquare, Minimize2 } from "lucide-react";
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { searchWorkspaceFiles } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { localPathsFromUriList } from "./clipboardAttachments";
 import { parseMentionSegments } from "./mentionMarkdown";
+import { filterSessionMentions, groupSessionMentions } from "./sessionMention";
 import { buildSlashMenuGroups, hasMixedSlashResults } from "./slashMenu";
 
 /** A skill offered by the `/` menu; `name` is the English slash-command name. */
@@ -64,6 +67,8 @@ interface MentionEditorProps {
   /** Common context actions shown above skills in the `/` menu. */
   contextTools?: ContextToolOption[];
   onContextToolSelect?: (toolId: string) => void;
+  /** Conversations offered by the `#` menu, in menu order; omit/empty to disable it. */
+  sessions?: SessionMentionOption[];
   disabled?: boolean;
   placeholder: string;
   className?: string;
@@ -100,6 +105,7 @@ export function MentionEditor({
   skills,
   contextTools = [],
   onContextToolSelect,
+  sessions = [],
   disabled,
   placeholder,
   className,
@@ -121,6 +127,9 @@ export function MentionEditor({
   // `/` trigger: null → inactive; "" → bare `/` (all tools and skills).
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [selectedSlashItem, setSelectedSlashItem] = useState(0);
+  // `#` trigger: null → inactive; "" → bare `#` (every conversation).
+  const [hashQuery, setHashQuery] = useState<string | null>(null);
+  const [selectedSession, setSelectedSession] = useState(0);
   const [empty, setEmpty] = useState(true);
   const emptyRef = useRef(true);
 
@@ -135,6 +144,18 @@ export function MentionEditor({
     ...slashGroups.skills.map(skill => ({ kind: "skill" as const, skill })),
   ], [slashGroups]);
   const slashMenuOpen = slashQuery !== null && (contextTools.length > 0 || (skills?.length ?? 0) > 0);
+  const sessionMenuOpen = hashQuery !== null && sessions.length > 0;
+  // The `#` menu is grouped by workspace (chats first), unlike the flat `/` menu.
+  const sessionGroups = useMemo<SessionMentionGroup[]>(
+    () => (hashQuery === null ? [] : groupSessionMentions(filterSessionMentions(sessions, hashQuery))),
+    [hashQuery, sessions],
+  );
+  // One flat row list, so keyboard navigation walks the same order the menu
+  // renders (group headings are not rows).
+  const sessionItems = useMemo(
+    () => sessionGroups.flatMap(group => group.sessions),
+    [sessionGroups],
+  );
 
   // Live mirror of the skills prop so the imperative restore() can rebuild
   // skill pills from `/name` tokens without re-declaring the handle.
@@ -177,14 +198,17 @@ export function MentionEditor({
     focus: () => editorRef.current?.focus(),
     insertMention,
     // Rebuild the DOM from markdown: verbatim text becomes text nodes, each
-    // `[name](./path)` mention becomes an atomic pill (same builder as a live
-    // pick), so the editor never re-hydrates raw markup.
+    // `[name](./path)` mention and `[title](futureos://session/<id>)` reference
+    // becomes an atomic pill (same builders as a live pick), so the editor
+    // never re-hydrates raw markup.
     restore: (content: string) => {
       const editor = editorRef.current;
       if (editor) {
         editor.innerHTML = "";
         for (const segment of content ? parseMentionSegments(content) : []) {
-          if (segment.mention && segment.path)
+          if (segment.mention && segment.sessionId)
+            editor.appendChild(buildSessionPill({ sessionId: segment.sessionId, title: segment.text }));
+          else if (segment.mention && segment.path)
             editor.appendChild(buildPill({ name: segment.text, path: segment.path.replace(/^\.\//, "") }));
           else if (segment.text)
             appendTextWithSkillPills(editor, segment.text);
@@ -208,26 +232,41 @@ export function MentionEditor({
     setQuery(null);
     setOpen(false);
     setSlashQuery(null);
+    setHashQuery(null);
   }
 
-  // Refresh the active trigger (`@` file mention or `/` skill) at the caret.
+  // Refresh the active trigger (`@` file mention, `/` skill or `#` conversation)
+  // at the caret.
   function updateTrigger() {
     const editor = editorRef.current;
     const mention = mentionContext(editor);
     if (mention) {
       setQuery(mention.query);
       setSlashQuery(null);
+      setHashQuery(null);
       return;
     }
     setQuery(null);
     const slash = slashContext(editor);
-    setSlashQuery(slash ? slash.query : null);
+    if (slash) {
+      setSlashQuery(slash.query);
+      setHashQuery(null);
+      return;
+    }
+    setSlashQuery(null);
+    const hash = hashContext(editor);
+    setHashQuery(hash ? hash.query : null);
   }
 
   // Reset the highlighted slash item whenever the `/` query changes.
   useEffect(() => {
     setSelectedSlashItem(0);
   }, [slashQuery]);
+
+  // Same for the `#` menu: a new query means a new (shorter) result list.
+  useEffect(() => {
+    setSelectedSession(0);
+  }, [hashQuery]);
 
   // Debounced workspace-file search driven by the active-mention query.
   useEffect(() => {
@@ -280,6 +319,19 @@ export function MentionEditor({
     pill.setAttribute("contenteditable", "false");
     pill.className = "text-accent";
     pill.textContent = `/${name}`;
+    return pill;
+  }
+
+  // Session pill: shows the conversation's title, carries its session id.
+  // serialize() writes the `futureos://session/<id>` link the agent resolves.
+  function buildSessionPill(session: { sessionId: string; title: string }): HTMLSpanElement {
+    const pill = document.createElement("span");
+    pill.setAttribute(PILL_ATTR, "session");
+    pill.setAttribute("data-session", session.sessionId);
+    pill.setAttribute("data-title", session.title);
+    pill.setAttribute("contenteditable", "false");
+    pill.className = "text-accent";
+    pill.textContent = `#${session.title}`;
     return pill;
   }
 
@@ -354,6 +406,20 @@ export function MentionEditor({
     range.setEnd(context.textNode, context.caretOffset);
     range.deleteContents();
     placePill(range, buildSkillPill(skill.name));
+  }
+
+  // Replace the typed `#query` with an atomic pill carrying the session id.
+  function insertSession(session: SessionMentionOption) {
+    const editor = editorRef.current;
+    const context = hashContext(editor);
+    if (!editor || !context)
+      return;
+
+    const range = document.createRange();
+    range.setStart(context.textNode, context.hashOffset);
+    range.setEnd(context.textNode, context.caretOffset);
+    range.deleteContents();
+    placePill(range, buildSessionPill(session));
   }
 
   /** Remove the typed `/query` and immediately run a context action. */
@@ -520,7 +586,26 @@ export function MentionEditor({
         return;
       }
     }
-    if (event.key === "Escape" && (open || slashMenuOpen)) {
+    if (sessionMenuOpen && sessionItems.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSelectedSession(index => (index + 1) % sessionItems.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSelectedSession(index => (index - 1 + sessionItems.length) % sessionItems.length);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        const item = sessionItems[selectedSession];
+        if (item)
+          insertSession(item);
+        return;
+      }
+    }
+    if (event.key === "Escape" && (open || slashMenuOpen || sessionMenuOpen)) {
       event.preventDefault();
       closeMenu();
       return;
@@ -602,6 +687,18 @@ export function MentionEditor({
               emptyLabel={t("composer.noSlashMatches")}
               skillsLabel={t("composer.skillsSection")}
               onSelect={selectSlashItem}
+            />
+          )
+        : null}
+      {sessionMenuOpen
+        ? (
+            <SessionMenu
+              groups={sessionGroups}
+              items={sessionItems}
+              selectedIndex={selectedSession}
+              emptyLabel={t("composer.noSessionMatches")}
+              chatsLabel={t("composer.sessionsSection")}
+              onSelect={insertSession}
             />
           )
         : null}
@@ -795,6 +892,82 @@ function SlashMenu({
   );
 }
 
+/**
+ * The `#` conversation menu: results grouped by workspace (chats first), with a
+ * heading per group. `items` is the flattened, navigable order that
+ * `selectedIndex` indexes into — headings are not rows.
+ */
+function SessionMenu({
+  chatsLabel,
+  emptyLabel,
+  groups,
+  items,
+  onSelect,
+  selectedIndex,
+}: {
+  chatsLabel: string;
+  emptyLabel: string;
+  groups: SessionMentionGroup[];
+  items: SessionMentionOption[];
+  onSelect: (session: SessionMentionOption) => void;
+  selectedIndex: number;
+}) {
+  // Keep the keyboard-highlighted row visible while the list scrolls.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    listRef.current
+      ?.querySelector(`[data-menu-index="${selectedIndex}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [selectedIndex]);
+
+  // A lone chats group needs no heading; any workspace group does (it names the
+  // workspace the conversations below it came from).
+  const headings = groups.length > 1 || Boolean(groups[0]?.workspace);
+  const indexOf = new Map(items.map((item, index) => [item.sessionId, index]));
+  return (
+    <div ref={listRef} className="absolute bottom-full left-2 z-30 mb-2 max-h-72 w-[min(30rem,calc(100%-1rem))] overflow-y-auto rounded-lg border border-line-soft bg-surface p-1 shadow-panel">
+      {items.length === 0
+        ? <div className="px-2 py-2 text-sm text-ink-muted">{emptyLabel}</div>
+        : null}
+      {groups.map((group) => {
+        return (
+          <div key={group.workspace?.id ?? "__chats"}>
+            {headings
+              ? (
+                  <div className="truncate px-2 pb-1 pt-2 text-xs font-medium text-ink-muted">
+                    {group.workspace?.name || chatsLabel}
+                  </div>
+                )
+              : null}
+            {group.sessions.map((session) => {
+              const index = indexOf.get(session.sessionId) ?? 0;
+              return (
+                <button
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors",
+                    index === selectedIndex ? "bg-surface-subtle" : "hover:bg-surface-subtle",
+                  )}
+                  data-menu-index={index}
+                  key={session.sessionId}
+                  onMouseDown={(event) => {
+                    // Keep the editor's selection/focus so insertion targets the caret.
+                    event.preventDefault();
+                    onSelect(session);
+                  }}
+                  type="button"
+                >
+                  <MessagesSquare className="size-4 shrink-0 text-ink-soft" />
+                  <span className="min-w-0 flex-1 truncate text-sm text-ink">{session.title}</span>
+                </button>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /** True when the editor has no text and no pills. */
 function isEditorEmpty(editor: HTMLDivElement | null): boolean {
   if (!editor)
@@ -870,7 +1043,39 @@ function slashContext(editor: HTMLDivElement | null): {
   };
 }
 
-/** Serialize the editor: text verbatim, pills → `[name](./path)` markdown links. */
+/**
+ * The active `#` conversation trigger at the caret, if any. Same caret scan as
+ * `slashContext`, but matches `#query`. A preceding word character, `.`, `/`,
+ * `@` or a second `#` suppresses the trigger, so `##` markdown headings,
+ * `a#b` and `issue#12` stay literal while `#fix the build` opens the menu.
+ */
+function hashContext(editor: HTMLDivElement | null): {
+  query: string;
+  textNode: Text;
+  hashOffset: number;
+  caretOffset: number;
+} | null {
+  const selection = window.getSelection();
+  if (!editor || !selection || selection.rangeCount === 0 || !selection.isCollapsed)
+    return null;
+  const node = selection.anchorNode;
+  if (!node || node.nodeType !== Node.TEXT_NODE || !editor.contains(node))
+    return null;
+  const caretOffset = selection.anchorOffset;
+  const before = (node.textContent ?? "").slice(0, caretOffset);
+  const match = before.match(/(^|[^\w.@/#])#([^\s#]*)$/);
+  if (!match)
+    return null;
+  const query = match[2] ?? "";
+  return {
+    query,
+    textNode: node as Text,
+    hashOffset: caretOffset - query.length - 1, // index of `#`
+    caretOffset,
+  };
+}
+
+/** Serialize the editor: text verbatim, pills → markdown links. */
 function serialize(editor: HTMLDivElement | null): string {
   if (!editor)
     return "";
@@ -886,6 +1091,15 @@ function serialize(editor: HTMLDivElement | null): string {
     const pillKind = element.getAttribute(PILL_ATTR);
     if (pillKind === "skill") {
       out += `/${element.getAttribute("data-skill") ?? ""}`;
+      return;
+    }
+    if (pillKind === "session") {
+      // The link form (not a bare `#id`) is the contract every client and the
+      // agent read; the session id travels in the destination.
+      out += buildSessionReference({
+        sessionId: element.getAttribute("data-session") ?? "",
+        title: element.getAttribute("data-title") ?? "",
+      });
       return;
     }
     if (pillKind) {
