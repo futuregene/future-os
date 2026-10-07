@@ -1,7 +1,7 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { TaskInput, TaskView } from "./useTasks";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, FolderOpen, GitFork, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { ChevronLeft, FolderOpen, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
@@ -153,7 +153,6 @@ export function TasksView({
     trigger: { ...emptyTrigger },
   });
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [forkError, setForkError] = useState<string | null>(null);
 
   useEffect(() => {
     void loadAgentModelOptions().then(setModels).catch(() => setModels([]));
@@ -232,18 +231,6 @@ export function TasksView({
     }
   }, [draft, selected, selectedId, store, t]);
 
-  /** Copy a finished run's conversation into the list, then open the copy. */
-  const forkRun = useCallback(async (runId: string) => {
-    setForkError(null);
-    try {
-      const forkedThreadId = await store.forkRun(runId);
-      onOpenThread(forkedThreadId);
-    }
-    catch (caught) {
-      setForkError(caught instanceof Error ? caught.message : String(caught));
-    }
-  }, [store, onOpenThread]);
-
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line-soft px-4">
@@ -260,9 +247,6 @@ export function TasksView({
         </Button>
       </header>
 
-      {forkError
-        ? <p className="border-b border-line-soft px-4 py-2 text-xs text-danger">{forkError}</p>
-        : null}
       <div className="flex min-h-0 flex-1">
         <div className="w-72 shrink-0 overflow-y-auto border-r border-line-soft">
           {store.error
@@ -314,7 +298,6 @@ export function TasksView({
                     store={store}
                     task={selected}
                     onEdit={() => startEdit(selected)}
-                    onForkRun={runId => void forkRun(runId)}
                     onOpenThread={onOpenThread}
                   />
                 )
@@ -590,13 +573,11 @@ function TaskDetail({
   task,
   store,
   onEdit,
-  onForkRun,
   onOpenThread,
 }: {
   task: TaskView;
   store: ReturnType<typeof useTasks>;
   onEdit: () => void;
-  onForkRun: (runId: string) => void;
   onOpenThread: (threadId: string) => void;
 }) {
   const { t, i18n } = useTranslation("tasks");
@@ -730,18 +711,6 @@ function TaskDetail({
                       <span className="min-w-0 flex-1 truncate text-ink-muted">
                         {run.startedAt ? formatEpoch(run.startedAt, locale) : ""}
                       </span>
-                      {run.forkable
-                        ? (
-                            <Button
-                              leftIcon={<GitFork className="size-3" />}
-                              size="xs"
-                              variant="ghost"
-                              onClick={() => onForkRun(run.id)}
-                            >
-                              {t("forkRun")}
-                            </Button>
-                          )
-                        : null}
                       {run.threadId
                         ? (
                             <Button size="xs" variant="ghost" onClick={() => onOpenThread(run.threadId as string)}>

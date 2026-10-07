@@ -986,7 +986,6 @@ mod tests {
                 started_at: Some(1_700_000_000_000),
                 finished_at: Some(1_700_000_060_000),
                 error_message: None,
-                source_entry_id: None,
             })
             .unwrap();
 
@@ -1235,7 +1234,6 @@ mod tests {
                 started_at: Some(started),
                 finished_at: Some(started + 1),
                 error_message: None,
-                source_entry_id: None,
             })
             .unwrap();
 
@@ -1305,7 +1303,6 @@ mod tests {
                 started_at: Some(now_ms() + 60_000),
                 finished_at: Some(now_ms() + 60_001),
                 error_message: Some("agent unreachable".into()),
-                source_entry_id: None,
             })
             .unwrap();
         let (out, captured) = Output::memory();
@@ -1344,7 +1341,6 @@ mod tests {
                 started_at: Some(1_700_000_000_000),
                 finished_at: Some(1_700_000_001_000),
                 error_message: Some("overlap".into()),
-                source_entry_id: None,
             })
             .unwrap();
 
@@ -1411,7 +1407,6 @@ mod tests {
                 started_at: Some(started),
                 finished_at: Some(started + 1),
                 error_message: None,
-                source_entry_id: None,
             })
             .unwrap();
 
@@ -1457,7 +1452,6 @@ mod tests {
                 started_at: Some(started),
                 finished_at: None,
                 error_message: None,
-                source_entry_id: None,
             })
             .unwrap();
 

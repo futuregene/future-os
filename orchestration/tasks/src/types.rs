@@ -148,10 +148,6 @@ pub struct TaskRun {
     pub thread_id: Option<String>,
     pub session_id: Option<String>,
     pub run_id: Option<String>,
-    /// The persisted user entry this run started from. Clients fork a run's
-    /// conversation through it, so it is resolved once at run time instead of
-    /// every client having to search the session for it.
-    pub source_entry_id: Option<String>,
     pub prompt_version: Option<i64>,
     /// Truncated final answer (head…tail, 2000 chars).
     pub result_summary: Option<String>,

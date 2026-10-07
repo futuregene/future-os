@@ -110,9 +110,7 @@
     "cwdPlaceholder": "选择文件夹，或直接输入路径",
     "browse": "浏览"
   },
-  "forkRun": "分叉",
   "runNoSummary": "本次没有记录摘要。",
-  "forkFailed": "分叉会话失败：{{message}}",
   "settings": "设置",
   "colModel": "模型",
   "colThinking": "思考等级",

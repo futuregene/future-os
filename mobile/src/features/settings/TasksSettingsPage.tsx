@@ -267,15 +267,6 @@ function TaskEditor({ detail, busy, deps, failed, revisions, runs, onBack, onMut
   const [conversationMode, setConversationMode] = useState(detail.conversationMode ?? "workspace");
   const [cwd, setCwd] = useState(detail.cwd);
 
-  /** Copy a finished run into the session list, then open the copy. */
-  const forkRun = async (runId: string) => {
-    const forked = await remote.forkTaskRun(runId);
-    if (forked.sessionId) {
-      await remote.selectSession(forked.sessionId);
-      onBack();
-    }
-  };
-
   const save = () => {
     const payload = triggerPayload(trigger);
     void onMutate(() => remote.updateTask(detail.id, {
@@ -448,9 +439,6 @@ function TaskEditor({ detail, busy, deps, failed, revisions, runs, onBack, onMut
                   <Text style={styles.runSummary}>
                     {run.errorMessage ?? run.resultSummary ?? t("tasks.runNoSummary")}
                   </Text>
-                  {run.forkable
-                    ? <Button label={t("tasks.forkRun")} disabled={busy} onPress={() => void onMutate(() => forkRun(run.id))} />
-                    : null}
                 </View>
               ))}
             </SettingsSection>

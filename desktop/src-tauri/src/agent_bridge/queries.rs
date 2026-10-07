@@ -315,7 +315,7 @@ pub async fn get_session_entries_before(
     }))
 }
 
-pub(crate) async fn fetch_all_session_entries_with_client(
+pub(super) async fn fetch_all_session_entries_with_client(
     client: &mut crate::agent_proto::FutureAgentClient<tonic::transport::Channel>,
     session_id: &str,
 ) -> Result<Vec<future_rpc::payloads::SessionEntryPayload>, crate::AppError> {

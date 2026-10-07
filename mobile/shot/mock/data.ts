@@ -620,7 +620,7 @@ export const demoTasks = [
     nextDueAt: Date.now() + 3 * 60 * 60_000,
     lastRunAt: Date.now() - 2 * 24 * 60 * 60_000,
     reflection: "ask",
-    latestRun: { id: "trn_r2", kind: "main", origin: "schedule", status: "completed", threadId: "sess_review", startedAt: Date.now() - 2 * 24 * 60 * 60_000, finishedAt: Date.now() - 2 * 24 * 60 * 60_000 + 60_000, promptVersion: 4, resultSummary: "写入 reports/weekly-2026-10-05.md：3 条结论变化。", errorMessage: null, forkable: true },
+    latestRun: { id: "trn_r2", kind: "main", origin: "schedule", status: "completed", threadId: "sess_review", startedAt: Date.now() - 2 * 24 * 60 * 60_000, finishedAt: Date.now() - 2 * 24 * 60 * 60_000 + 60_000, promptVersion: 4, resultSummary: "写入 reports/weekly-2026-10-05.md：3 条结论变化。", errorMessage: null },
   },
   {
     id: "tsk_lit_watch",
@@ -631,7 +631,7 @@ export const demoTasks = [
     nextDueAt: Date.now() + 6 * 60 * 60_000,
     lastRunAt: Date.now() - 6 * 60 * 60_000,
     reflection: "auto",
-    latestRun: { id: "trn_l9", kind: "main", origin: "schedule", status: "failed", threadId: "sess_lit", startedAt: Date.now() - 6 * 60 * 60_000, finishedAt: Date.now() - 6 * 60 * 60_000 + 40_000, promptVersion: 2, resultSummary: null, errorMessage: "检索服务返回 503", forkable: false },
+    latestRun: { id: "trn_l9", kind: "main", origin: "schedule", status: "failed", threadId: "sess_lit", startedAt: Date.now() - 6 * 60 * 60_000, finishedAt: Date.now() - 6 * 60 * 60_000 + 40_000, promptVersion: 2, resultSummary: null, errorMessage: "检索服务返回 503" },
   },
   {
     id: "tsk_month_end",
@@ -667,7 +667,7 @@ export const demoTaskDetail = {
 
 export const demoTaskRuns = [
   demoTasks[0]!.latestRun,
-  { id: "trn_r1", kind: "main", origin: "schedule", status: "completed", threadId: "sess_review", startedAt: Date.now() - 5 * 24 * 60 * 60_000, finishedAt: Date.now() - 5 * 24 * 60 * 60_000 + 120_000, promptVersion: 3, resultSummary: "写入 reports/weekly-2026-10-02.md：2 条结论变化。", errorMessage: null, forkable: true },
+  { id: "trn_r1", kind: "main", origin: "schedule", status: "completed", threadId: "sess_review", startedAt: Date.now() - 5 * 24 * 60 * 60_000, finishedAt: Date.now() - 5 * 24 * 60 * 60_000 + 120_000, promptVersion: 3, resultSummary: "写入 reports/weekly-2026-10-02.md：2 条结论变化。", errorMessage: null },
 ];
 
 export const demoTaskDeps = [
