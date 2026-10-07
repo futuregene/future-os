@@ -19,7 +19,7 @@ export type InlineNode =
   | { code: string; type: "code" }
   | { type: "break" }
   | { children: InlineNode[]; href: string; type: "link" }
-  | { alt: string; src: string; title?: string; type: "image" }
+  | { alt: string; src: string; title?: string; width?: number; type: "image" }
   | { reference: FutureReference; children?: InlineNode[]; type: "futureReference" }
   | { code: string; displayMode: false; type: "mathInline" };
 
@@ -36,8 +36,8 @@ export interface TableNode {
 }
 
 export type MarkdownNode =
-  | { children: InlineNode[]; level: 1 | 2 | 3 | 4 | 5 | 6; type: "heading" }
-  | { children: InlineNode[]; type: "paragraph" }
+  | { children: InlineNode[]; level: 1 | 2 | 3 | 4 | 5 | 6; type: "heading"; align?: "center" | "left" | "right" }
+  | { children: InlineNode[]; type: "paragraph"; align?: "center" | "left" | "right" }
   | { children: MarkdownNode[]; type: "blockquote" }
   | { code: string; language?: string; type: "code" }
   | { items: ListItemNode[]; ordered: boolean; start?: number; type: "list" }

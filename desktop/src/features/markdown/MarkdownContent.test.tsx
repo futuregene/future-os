@@ -50,6 +50,7 @@ describe("markdown content", () => {
     const html = renderToStaticMarkup(<MarkdownContent content="<script>alert(1)</script>" />);
 
     expect(html).not.toContain("<script>");
+    // Non-whitelisted markup is kept verbatim as inert text (escaped), never executed.
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
   });
 

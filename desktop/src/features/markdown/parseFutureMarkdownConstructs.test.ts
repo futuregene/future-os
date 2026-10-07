@@ -115,10 +115,12 @@ describe("parseFutureMarkdown block constructs", () => {
     expect(table.rows[1]).toHaveLength(2);
   });
 
-  it("renders html blocks as safe text paragraphs", () => {
+  it("unwraps a whitelisted html block, keeping its content as a paragraph", () => {
+    // A bare `<div>` opener is a whitelisted block wrapper: it contributes no
+    // text of its own, and the markdown that follows renders normally.
     const doc = parseFutureMarkdown("<div>\n\ntext");
     expect(types(doc.nodes)).toEqual(["paragraph", "paragraph"]);
-    expect(paragraphAt(doc, 0).children[0]).toMatchObject({ text: "<div>" });
+    expect(paragraphAt(doc, 1).children[0]).toMatchObject({ text: "text" });
   });
 
   it("recognizes futureos-file block embeds with view normalization", () => {

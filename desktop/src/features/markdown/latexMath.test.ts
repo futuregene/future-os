@@ -65,7 +65,9 @@ describe("latex math delimiters", () => {
       { type: "paragraph", children: [{ type: "link", href: "https://example.com/(x)" }] },
     ]);
     const html = String.raw`<div>\(x\)</div>`;
-    expect(parseFutureMarkdown(html).nodes).toEqual([{ type: "paragraph", children: [{ type: "text", text: html }] }]);
+    // A whitelisted `<div>` is unwrapped and its content kept as text; the
+    // escaped `\(x\)` is still not reinterpreted as math.
+    expect(parseFutureMarkdown(html).nodes).toEqual([{ type: "paragraph", children: [{ type: "text", text: String.raw`\(x\)` }] }]);
     expect(parseFutureMarkdown(String.raw`$\text{\(literal\)}$`).nodes).toEqual([block(String.raw`\text{\(literal\)}`)]);
   });
 

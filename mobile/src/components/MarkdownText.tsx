@@ -141,19 +141,21 @@ function inlineRuns(nodes: InlineNode[]): InlineRun[] {
   return runs;
 }
 
-function InlineContent({ nodes, openTarget, textStyle, heading = false }: {
+function InlineContent({ nodes, openTarget, textStyle, heading = false, align }: {
   nodes: InlineNode[];
   openTarget: OpenTarget;
   textStyle: StyleProp<TextStyle>;
   heading?: boolean;
+  align?: "center" | "left" | "right";
 }) {
+  const alignStyle = align ? { textAlign: align } : undefined;
   return inlineRuns(nodes).map((run, index) => {
     if ("nodes" in run) return (
-      <Text key={index} selectable accessibilityRole={heading ? "header" : undefined} style={textStyle}>
+      <Text key={index} selectable accessibilityRole={heading ? "header" : undefined} style={[textStyle, alignStyle]}>
         {renderInline(run.nodes, openTarget, `run${index}`)}
       </Text>
     );
-    return <MarkdownImage key={index} alt={run.image.alt} src={run.image.src} href={run.href} openTarget={openTarget} />;
+    return <MarkdownImage key={index} alt={run.image.alt} src={run.image.src} width={run.image.width} href={run.href} openTarget={openTarget} />;
   });
 }
 
@@ -245,11 +247,22 @@ function renderBlock(
   key: string,
   isLast: boolean,
 ): ReactNode {
+  // A block's own alignment (`<p align>`, `<h3 align>` from raw HTML): text
+  // centers via `textAlign`, and a narrower-than-container image centers via the
+  // wrapper's `alignItems`. A centered block also keeps its usual bottom margin;
+  // the last block drops it.
+  const blockAlign = node.type === "paragraph" || node.type === "heading"
+    ? node.align
+    : undefined;
+  const baseMargin = isLast ? undefined : styles.blockSpacing;
+  const wrapperStyle = blockAlign === "center"
+    ? (baseMargin ? [baseMargin, { alignItems: "center" as const }] : { alignItems: "center" as const })
+    : baseMargin;
   switch (node.type) {
     case "heading":
       return (
-        <View key={key} style={isLast ? undefined : styles.blockSpacing}>
-          <InlineContent nodes={node.children} openTarget={openTarget} heading textStyle={[styles.heading, headingSizes[node.level - 1]!]} />
+        <View key={key} style={wrapperStyle}>
+          <InlineContent nodes={node.children} openTarget={openTarget} heading align={blockAlign} textStyle={[styles.heading, headingSizes[node.level - 1]!]} />
         </View>
       );
     case "code":
@@ -298,8 +311,8 @@ function renderBlock(
     }
     default:
       return (
-        <View key={key} style={isLast ? undefined : styles.blockSpacing}>
-          <InlineContent nodes={node.children} openTarget={openTarget} textStyle={styles.bodyText} />
+        <View key={key} style={wrapperStyle}>
+          <InlineContent nodes={node.children} openTarget={openTarget} align={blockAlign} textStyle={styles.bodyText} />
         </View>
       );
   }

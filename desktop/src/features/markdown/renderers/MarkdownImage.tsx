@@ -16,26 +16,29 @@ export function MarkdownImage({
   title,
   workspaceId,
   linked,
+  width,
 }: {
   linked?: boolean;
   alt: string;
   src: string;
   title?: string;
+  width?: number;
   workspaceId?: string | null;
 }) {
   const preview = usePreviewMarkdown();
   const path = localFilePath(src);
   if (!path)
-    return <SafeImage alt={alt} linked={linked} src={src} title={title} />;
+    return <SafeImage alt={alt} width={width} linked={linked} src={src} title={title} />;
   if (preview)
-    return <PreviewLocalImage alt={alt} basePath={preview.basePath} key={`${preview.basePath}:${path}`} linked={linked} target={path} title={title} />;
-  return <WorkspaceLocalImage alt={alt} key={`${workspaceId}:${path}`} linked={linked} target={path} title={title} workspaceId={workspaceId} />;
+    return <PreviewLocalImage alt={alt} basePath={preview.basePath} key={`${preview.basePath}:${path}`} linked={linked} target={path} title={title} width={width} />;
+  return <WorkspaceLocalImage alt={alt} width={width} key={`${workspaceId}:${path}`} linked={linked} target={path} title={title} workspaceId={workspaceId} />;
 }
 
 function WorkspaceLocalImage({
   alt,
   target,
   title,
+  width,
   workspaceId,
   linked,
 }: {
@@ -43,6 +46,7 @@ function WorkspaceLocalImage({
   alt: string;
   target: string;
   title?: string;
+  width?: number;
   workspaceId?: string | null;
 }) {
   const resolved = useFutureReference(workspaceId, { targetId: target, targetType: "file" });
@@ -53,8 +57,8 @@ function WorkspaceLocalImage({
     ? resolved.data
     : null;
   return file
-    ? <ResolvedLocalImage alt={alt} file={file} key={file.path} linked={linked} title={title} />
-    : <LocalImageFallback alt={alt} path={target} />;
+    ? <ResolvedLocalImage alt={alt} width={width} file={file} key={file.path} linked={linked} title={title} />
+    : <LocalImageFallback alt={alt} width={width} path={target} />;
 }
 
 function PreviewLocalImage({
@@ -62,6 +66,7 @@ function PreviewLocalImage({
   basePath,
   target,
   title,
+  width,
   linked,
 }: {
   linked?: boolean;
@@ -69,13 +74,15 @@ function PreviewLocalImage({
   basePath: string;
   target: string;
   title?: string;
+  width?: number;
 }) {
   const resolved = usePreviewLinkPath(basePath, target);
   if (!resolved)
-    return <LocalImageFallback alt={alt} path={target} />;
+    return <LocalImageFallback alt={alt} width={width} path={target} />;
   return (
     <ResolvedLocalImage
       alt={alt}
+      width={width}
       key={resolved.path}
       linked={linked}
       file={{ insideWorkspace: false, name: resolved.name, path: resolved.path, relativePath: null }}
@@ -84,18 +91,19 @@ function PreviewLocalImage({
   );
 }
 
-function ResolvedLocalImage({ alt, file, title, linked }: { alt: string; file: StoredFile; title?: string; linked?: boolean }) {
+function ResolvedLocalImage({ alt, file, title, width, linked }: { alt: string; file: StoredFile; title?: string; width?: number; linked?: boolean }) {
   const { data: imageUrl, error, loading } = useAsyncResource<string | null>(
     () => prepareImagePreviewUrl(file.path),
     [file.path],
     null,
   );
   if (loading || error || !imageUrl)
-    return <LocalImageFallback alt={alt} path={file.path} />;
+    return <LocalImageFallback alt={alt} width={width} path={file.path} />;
 
   return (
     <MarkdownImageView
       alt={alt}
+      width={width}
       linked={linked}
       src={imageUrl}
       title={title ?? file.path}
@@ -103,11 +111,12 @@ function ResolvedLocalImage({ alt, file, title, linked }: { alt: string; file: S
   );
 }
 
-function LocalImageFallback({ alt, path }: { alt: string; path: string }) {
+function LocalImageFallback({ alt, path, width }: { alt: string; path: string; width?: number }) {
   const { t } = useTranslation("markdown");
   return (
     <span
       className="inline-flex max-w-full flex-wrap items-center gap-2 rounded-md border border-dashed border-line-soft bg-surface-subtle px-2 py-1 text-sm text-ink-muted"
+      style={width ? { maxWidth: width } : undefined}
       title={path}
     >
       <span className="break-all">{alt || t("image.unavailable")}</span>
