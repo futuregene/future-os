@@ -72,22 +72,22 @@ function triggerPayload(draft: DraftTrigger): { kind: string; trigger: Record<st
 
 function summarizeTrigger(t: (key: string, options?: Record<string, unknown>) => string, task: TaskView): string {
   if (task.triggerKind !== "schedule")
-    return t("tasks.trigger.manual");
+    return t("trigger.manual");
   const trigger = task.trigger as Record<string, unknown>;
   const mode = String(trigger.mode ?? "");
   switch (mode) {
     case "once":
       return `${trigger.date} ${trigger.time}`;
     case "interval":
-      return t("tasks.trigger.every", { minutes: Number(trigger.every_minutes ?? 0) });
+      return t("trigger.every", { minutes: Number(trigger.every_minutes ?? 0) });
     case "weekly": {
       const days = Array.isArray(trigger.days) ? (trigger.days as string[]).join(", ") : "";
       return `${days} ${trigger.time}`;
     }
     case "monthly":
-      return t("tasks.trigger.monthly", { day: Number(trigger.day ?? 1), time: String(trigger.time ?? "") });
+      return t("trigger.monthly", { day: Number(trigger.day ?? 1), time: String(trigger.time ?? "") });
     default:
-      return `${t("tasks.trigger.daily")} ${trigger.time}`;
+      return `${t("trigger.daily")} ${trigger.time}`;
   }
 }
 
@@ -179,7 +179,7 @@ export function TasksView({
       enabled: draft.enabled,
     };
     if (!input.name || !input.prompt || !input.cwd) {
-      setSaveError(t("tasks.form.required"));
+      setSaveError(t("form.required"));
       return;
     }
     try {
@@ -199,14 +199,14 @@ export function TasksView({
       <header className="flex h-14 shrink-0 items-center gap-2 border-b border-line-soft px-3">
         {!leftPanelExpanded
           ? (
-              <Button aria-label={t("tasks.showSidebar")} size="xs" variant="ghost" onClick={onToggleLeftPanel}>
+              <Button aria-label={t("showSidebar")} size="xs" variant="ghost" onClick={onToggleLeftPanel}>
                 <ChevronLeft className="size-4" />
               </Button>
             )
           : null}
-        <h1 className="min-w-0 flex-1 truncate text-sm font-semibold text-ink">{t("tasks.title")}</h1>
+        <h1 className="min-w-0 flex-1 truncate text-sm font-semibold text-ink">{t("title")}</h1>
         <Button leftIcon={<Plus className="size-3.5" />} size="sm" variant="primary" onClick={startCreate}>
-          {t("tasks.new")}
+          {t("new")}
         </Button>
       </header>
 
@@ -216,7 +216,7 @@ export function TasksView({
             ? <p className="p-3 text-xs text-danger">{store.error}</p>
             : null}
           {store.tasks.length === 0 && !store.loading
-            ? <p className="p-3 text-xs text-ink-muted">{t("tasks.empty")}</p>
+            ? <p className="p-3 text-xs text-ink-muted">{t("empty")}</p>
             : null}
           {store.tasks.map(task => (
             <button
@@ -232,7 +232,7 @@ export function TasksView({
                 <span className={`size-1.5 shrink-0 rounded-full ${task.enabled ? "bg-accent" : "bg-line"}`} />
                 <span className="min-w-0 flex-1 truncate text-sm text-ink">{task.name}</span>
                 {task.latestRun
-                  ? <span className="shrink-0 text-[11px] text-ink-muted">{t(`tasks.status.${task.latestRun.status}`)}</span>
+                  ? <span className="shrink-0 text-[11px] text-ink-muted">{t(`status.${task.latestRun.status}`)}</span>
                   : null}
               </span>
               <span className="truncate pl-3.5 text-[11px] text-ink-muted">
@@ -264,7 +264,7 @@ export function TasksView({
                     onOpenThread={onOpenThread}
                   />
                 )
-              : <p className="p-6 text-sm text-ink-muted">{t("tasks.selectHint")}</p>}
+              : <p className="p-6 text-sm text-ink-muted">{t("selectHint")}</p>}
         </div>
       </div>
     </section>
@@ -302,16 +302,16 @@ function TaskForm({
 
   return (
     <div className="space-y-4 p-6">
-      <h2 className="text-sm font-semibold text-ink">{t("tasks.form.title")}</h2>
+      <h2 className="text-sm font-semibold text-ink">{t("form.title")}</h2>
       {error ? <p className="text-xs text-danger">{error}</p> : null}
 
       <label className="block space-y-1">
-        <span className="text-xs text-ink-soft">{t("tasks.form.name")}</span>
+        <span className="text-xs text-ink-soft">{t("form.name")}</span>
         <TextInput value={draft.name} onChange={e => onChange({ name: e.target.value })} />
       </label>
 
       <label className="block space-y-1">
-        <span className="text-xs text-ink-soft">{t("tasks.form.prompt")}</span>
+        <span className="text-xs text-ink-soft">{t("form.prompt")}</span>
         <textarea
           className="min-h-32 w-full rounded-md border border-line-soft bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-focus focus:ring-2 focus:ring-focus"
           spellCheck={false}
@@ -321,15 +321,15 @@ function TaskForm({
       </label>
 
       <label className="block space-y-1">
-        <span className="text-xs text-ink-soft">{t("tasks.form.cwd")}</span>
+        <span className="text-xs text-ink-soft">{t("form.cwd")}</span>
         <TextInput value={draft.cwd} onChange={e => onChange({ cwd: e.target.value })} />
       </label>
 
       <div className="grid grid-cols-2 gap-3">
         <label className="block space-y-1">
-          <span className="text-xs text-ink-soft">{t("tasks.form.model")}</span>
+          <span className="text-xs text-ink-soft">{t("form.model")}</span>
           <Select value={draft.modelId} onChange={e => onChange({ modelId: e.target.value })}>
-            <option value="">{t("tasks.form.modelDefault")}</option>
+            <option value="">{t("form.modelDefault")}</option>
             {models.map(model => (
               <option key={`${model.provider}/${model.id}`} value={`${model.provider}/${model.id}`}>
                 {model.label || model.id}
@@ -338,9 +338,9 @@ function TaskForm({
           </Select>
         </label>
         <label className="block space-y-1">
-          <span className="text-xs text-ink-soft">{t("tasks.form.thinking")}</span>
+          <span className="text-xs text-ink-soft">{t("form.thinking")}</span>
           <Select value={draft.thinkingLevel} onChange={e => onChange({ thinkingLevel: e.target.value })}>
-            <option value="">{t("tasks.form.thinkingDefault")}</option>
+            <option value="">{t("form.thinkingDefault")}</option>
             {["off", "minimal", "low", "medium", "high", "xhigh"].map(level => (
               <option key={level} value={level}>{level}</option>
             ))}
@@ -350,45 +350,45 @@ function TaskForm({
 
       <div className="grid grid-cols-2 gap-3">
         <label className="block space-y-1">
-          <span className="text-xs text-ink-soft">{t("tasks.form.session")}</span>
+          <span className="text-xs text-ink-soft">{t("form.session")}</span>
           <Select value={draft.sessionPolicy} onChange={e => onChange({ sessionPolicy: e.target.value })}>
-            <option value="new">{t("tasks.form.sessionNew")}</option>
-            <option value="existing">{t("tasks.form.sessionExisting")}</option>
+            <option value="new">{t("form.sessionNew")}</option>
+            <option value="existing">{t("form.sessionExisting")}</option>
           </Select>
         </label>
         <label className="block space-y-1">
-          <span className="text-xs text-ink-soft">{t("tasks.form.reflection")}</span>
+          <span className="text-xs text-ink-soft">{t("form.reflection")}</span>
           <Select value={draft.reflection} onChange={e => onChange({ reflection: e.target.value })}>
-            <option value="off">{t("tasks.form.reflectionOff")}</option>
-            <option value="ask">{t("tasks.form.reflectionAsk")}</option>
-            <option value="auto">{t("tasks.form.reflectionAuto")}</option>
+            <option value="off">{t("form.reflectionOff")}</option>
+            <option value="ask">{t("form.reflectionAsk")}</option>
+            <option value="auto">{t("form.reflectionAuto")}</option>
           </Select>
         </label>
       </div>
       {draft.sessionPolicy === "existing"
-        ? <p className="text-[11px] text-ink-muted">{t("tasks.form.sessionExistingHint")}</p>
+        ? <p className="text-[11px] text-ink-muted">{t("form.sessionExistingHint")}</p>
         : null}
 
       <fieldset className="space-y-3 rounded-md border border-line-soft p-3">
-        <legend className="px-1 text-xs text-ink-soft">{t("tasks.form.trigger")}</legend>
+        <legend className="px-1 text-xs text-ink-soft">{t("form.trigger")}</legend>
         <Select value={trigger.mode} onChange={e => setTrigger({ mode: e.target.value as TriggerMode })}>
-          <option value="manual">{t("tasks.triggerMode.manual")}</option>
-          <option value="once">{t("tasks.triggerMode.once")}</option>
-          <option value="interval">{t("tasks.triggerMode.interval")}</option>
-          <option value="daily">{t("tasks.triggerMode.daily")}</option>
-          <option value="weekly">{t("tasks.triggerMode.weekly")}</option>
-          <option value="monthly">{t("tasks.triggerMode.monthly")}</option>
+          <option value="manual">{t("triggerMode.manual")}</option>
+          <option value="once">{t("triggerMode.once")}</option>
+          <option value="interval">{t("triggerMode.interval")}</option>
+          <option value="daily">{t("triggerMode.daily")}</option>
+          <option value="weekly">{t("triggerMode.weekly")}</option>
+          <option value="monthly">{t("triggerMode.monthly")}</option>
         </Select>
 
         {trigger.mode === "once"
           ? (
               <div className="grid grid-cols-2 gap-3">
                 <label className="block space-y-1">
-                  <span className="text-xs text-ink-soft">{t("tasks.form.date")}</span>
+                  <span className="text-xs text-ink-soft">{t("form.date")}</span>
                   <TextInput placeholder="2026-12-24" value={trigger.date} onChange={e => setTrigger({ date: e.target.value })} />
                 </label>
                 <label className="block space-y-1">
-                  <span className="text-xs text-ink-soft">{t("tasks.form.time")}</span>
+                  <span className="text-xs text-ink-soft">{t("form.time")}</span>
                   <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
                 </label>
               </div>
@@ -398,7 +398,7 @@ function TaskForm({
         {trigger.mode === "interval"
           ? (
               <label className="block space-y-1">
-                <span className="text-xs text-ink-soft">{t("tasks.form.everyMinutes")}</span>
+                <span className="text-xs text-ink-soft">{t("form.everyMinutes")}</span>
                 <TextInput
                   type="number"
                   min={1}
@@ -412,7 +412,7 @@ function TaskForm({
         {trigger.mode === "daily"
           ? (
               <label className="block space-y-1">
-                <span className="text-xs text-ink-soft">{t("tasks.form.time")}</span>
+                <span className="text-xs text-ink-soft">{t("form.time")}</span>
                 <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
               </label>
             )
@@ -434,11 +434,14 @@ function TaskForm({
                           setTrigger({ days });
                         }}
                       />
-                      {t(`tasks.weekday.${day}`)}
+                      {t(`weekday.${day}`)}
                     </label>
                   ))}
                 </div>
-                <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
+                <label className="block space-y-1">
+                  <span className="text-xs text-ink-soft">{t("form.time")}</span>
+                  <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
+                </label>
               </div>
             )
           : null}
@@ -447,7 +450,7 @@ function TaskForm({
           ? (
               <div className="space-y-2">
                 <label className="block space-y-1">
-                  <span className="text-xs text-ink-soft">{t("tasks.form.day")}</span>
+                  <span className="text-xs text-ink-soft">{t("form.day")}</span>
                   <TextInput
                     type="number"
                     max={31}
@@ -456,9 +459,12 @@ function TaskForm({
                     onChange={e => setTrigger({ day: Number(e.target.value) || 1 })}
                   />
                 </label>
-                <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
+                <label className="block space-y-1">
+                  <span className="text-xs text-ink-soft">{t("form.time")}</span>
+                  <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
+                </label>
                 {/* The short-month rule is user-visible by design. */}
-                <p className="text-[11px] text-ink-muted">{t("tasks.form.shortMonthHint")}</p>
+                <p className="text-[11px] text-ink-muted">{t("form.shortMonthHint")}</p>
               </div>
             )
           : null}
@@ -466,14 +472,14 @@ function TaskForm({
 
       <label className="flex items-center gap-2 text-xs text-ink">
         <input checked={draft.enabled} type="checkbox" onChange={e => onChange({ enabled: e.target.checked })} />
-        {t("tasks.form.enabled")}
+        {t("form.enabled")}
       </label>
 
-      <p className="text-[11px] text-warning">{t("tasks.form.fullPermissionWarning")}</p>
+      <p className="text-[11px] text-warning">{t("form.fullPermissionWarning")}</p>
 
       <div className="flex gap-2">
-        <Button size="sm" variant="primary" onClick={onSave}>{t("tasks.form.save")}</Button>
-        <Button size="sm" variant="ghost" onClick={onCancel}>{t("tasks.form.cancel")}</Button>
+        <Button size="sm" variant="primary" onClick={onSave}>{t("form.save")}</Button>
+        <Button size="sm" variant="ghost" onClick={onCancel}>{t("form.cancel")}</Button>
       </div>
     </div>
   );
@@ -518,26 +524,26 @@ function TaskDetail({
           <h2 className="truncate text-sm font-semibold text-ink">{task.name}</h2>
           <p className="text-xs text-ink-muted">
             {summarizeTrigger(t, task)}
-            {task.nextDueAt ? ` · ${t("tasks.nextDue")} ${formatEpoch(task.nextDueAt, locale)}` : ""}
+            {task.nextDueAt ? ` · ${t("nextDue")} ${formatEpoch(task.nextDueAt, locale)}` : ""}
           </p>
         </div>
         <Button leftIcon={<Play className="size-3.5" />} size="sm" variant="secondary" onClick={() => void store.runNow(task.id).then(refresh)}>
-          {t("tasks.runNow")}
+          {t("runNow")}
         </Button>
-        <Button size="sm" variant="secondary" onClick={onEdit}>{t("tasks.edit")}</Button>
+        <Button size="sm" variant="secondary" onClick={onEdit}>{t("edit")}</Button>
         <Button
           size="sm"
           variant={task.enabled ? "ghost" : "secondary"}
           onClick={() => void store.setEnabled(task.id, !task.enabled).then(refresh)}
         >
-          {task.enabled ? t("tasks.disable") : t("tasks.enable")}
+          {task.enabled ? t("disable") : t("enable")}
         </Button>
         <Button
-          aria-label={t("tasks.delete")}
+          aria-label={t("delete")}
           size="sm"
           variant="danger-soft"
           onClick={() => {
-            if (window.confirm(t("tasks.deleteConfirm", { name: task.name })))
+            if (window.confirm(t("deleteConfirm", { name: task.name })))
               void store.deleteTask(task.id);
           }}
         >
@@ -546,31 +552,31 @@ function TaskDetail({
       </div>
 
       <section className="space-y-1">
-        <h3 className="text-xs font-medium text-ink-soft">{t("tasks.prompt")}</h3>
+        <h3 className="text-xs font-medium text-ink-soft">{t("prompt")}</h3>
         <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-line-soft bg-surface-subtle p-3 text-xs text-ink">
           {task.prompt}
         </pre>
         <p className="text-[11px] text-ink-muted">
-          {t("tasks.promptVersion", { version: task.promptVersion })}
+          {t("promptVersion", { version: task.promptVersion })}
         </p>
       </section>
 
       <section className="space-y-2">
-        <h3 className="text-xs font-medium text-ink-soft">{t("tasks.deps")}</h3>
+        <h3 className="text-xs font-medium text-ink-soft">{t("deps")}</h3>
         {deps.length === 0
-          ? <p className="text-[11px] text-ink-muted">{t("tasks.depsNone")}</p>
+          ? <p className="text-[11px] text-ink-muted">{t("depsNone")}</p>
           : (
               <ul className="space-y-1">
                 {deps.map(dep => (
                   <li key={dep.upstreamTaskId} className="flex items-center gap-2 text-xs text-ink">
                     <span className={dep.satisfied ? "text-accent" : "text-ink-muted"}>
-                      {dep.satisfied ? t("tasks.depsReady") : t("tasks.depsWaiting")}
+                      {dep.satisfied ? t("depsReady") : t("depsWaiting")}
                     </span>
                     <span className="truncate">{dep.upstreamName}</span>
                     <span className="text-ink-muted">
-                      {t(`tasks.on.${dep.on}`)}
+                      {t(`on.${dep.on}`)}
                       {" · "}
-                      {t(`tasks.join.${task.depJoin}`)}
+                      {t(`join.${task.depJoin}`)}
                     </span>
                   </li>
                 ))}
@@ -579,15 +585,15 @@ function TaskDetail({
       </section>
 
       <section className="space-y-2">
-        <h3 className="text-xs font-medium text-ink-soft">{t("tasks.runs")}</h3>
+        <h3 className="text-xs font-medium text-ink-soft">{t("runs")}</h3>
         {runs.length === 0
-          ? <p className="text-[11px] text-ink-muted">{t("tasks.runsNone")}</p>
+          ? <p className="text-[11px] text-ink-muted">{t("runsNone")}</p>
           : (
               <ul className="space-y-1">
                 {runs.map(run => (
                   <li key={run.id} className="flex items-center gap-2 text-xs text-ink">
-                    <span className="w-16 shrink-0 text-ink-muted">{t(`tasks.kind.${run.kind}`)}</span>
-                    <span className="w-16 shrink-0">{t(`tasks.status.${run.status}`)}</span>
+                    <span className="w-16 shrink-0 text-ink-muted">{t(`kind.${run.kind}`)}</span>
+                    <span className="w-16 shrink-0">{t(`status.${run.status}`)}</span>
                     <span className="w-32 shrink-0 text-ink-muted">
                       {run.startedAt ? formatEpoch(run.startedAt, locale) : ""}
                     </span>
@@ -597,7 +603,7 @@ function TaskDetail({
                     {run.threadId
                       ? (
                           <Button size="xs" variant="ghost" onClick={() => onOpenThread(run.threadId as string)}>
-                            {t("tasks.openConversation")}
+                            {t("openConversation")}
                           </Button>
                         )
                       : null}
@@ -608,9 +614,9 @@ function TaskDetail({
       </section>
 
       <section className="space-y-2">
-        <h3 className="text-xs font-medium text-ink-soft">{t("tasks.revisions")}</h3>
+        <h3 className="text-xs font-medium text-ink-soft">{t("revisions")}</h3>
         {revisions.length === 0
-          ? <p className="text-[11px] text-ink-muted">{t("tasks.revisionsNone")}</p>
+          ? <p className="text-[11px] text-ink-muted">{t("revisionsNone")}</p>
           : (
               <ul className="space-y-1">
                 {revisions.map(revision => (
@@ -619,7 +625,7 @@ function TaskDetail({
                       v
                       {revision.version}
                     </span>
-                    <span className="w-20 shrink-0">{t(`tasks.source.${revision.source}`)}</span>
+                    <span className="w-20 shrink-0">{t(`source.${revision.source}`)}</span>
                     <span className="min-w-0 flex-1 truncate text-ink-muted">
                       {revision.reason ?? revision.prompt.slice(0, 60)}
                     </span>
@@ -629,7 +635,7 @@ function TaskDetail({
                       variant="ghost"
                       onClick={() => void store.applyRevision(task.id, revision.id).then(refresh)}
                     >
-                      {t("tasks.apply")}
+                      {t("apply")}
                     </Button>
                   </li>
                 ))}

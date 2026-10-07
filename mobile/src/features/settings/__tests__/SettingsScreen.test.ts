@@ -17,7 +17,7 @@ const mockRemote = {
     { pairId: "pair", desktopId: "desktop", name: "Work computer" },
   ],
   desktopOnline: true,
-  capabilities: new Set(["desktop_settings_v1", "skill_management_v1"]),
+  capabilities: new Set(["desktop_settings_v1", "skill_management_v1", "tasks_v1"]),
   desktopSettingsRevision: 0,
   skillsRevision: 0,
   approvalTier: "manual",
@@ -34,12 +34,14 @@ const mockRemote = {
 };
 jest.mock("../../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
 jest.mock("../../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
+jest.mock("../TasksSettingsPage", () => ({ TasksSettingsPage: (props: { desktopOnline: boolean }) => { tasksPageProps = props; return null; } }));
 jest.mock("lucide-react-native", () => ({ ArrowLeft: "ArrowLeft", Monitor: "Monitor", ChevronDown: "ChevronDown", ChevronRight: "ChevronRight" }));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string, options?: { name?: string }) => options?.name ? `${key}: ${options.name}` : key, i18n: { get language() { return mockLanguage; } } }) }));
 
 let tree: ReactTestRenderer;
 let providers: ProvidersView;
+let tasksPageProps: { desktopOnline: boolean } | null = null;
 const props = { onClose: jest.fn(), onCheckUpdate: jest.fn(), checkingUpdate: false };
 const link = (label: string) => tree.root.findAllByType(SettingsLink).find(node => node.props.label === label)!;
 const button = (label: string) => tree.root.findAllByType(Button).find(node => node.props.label === label)!;
@@ -63,7 +65,8 @@ beforeEach(async () => {
   installed = [{ id: "skill", name: "Skill", description: "", version: "1.0.0" }];
   mockLanguage = "en";
   mockRemote.desktopOnline = true;
-  mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1"]);
+  mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "tasks_v1"]);
+  tasksPageProps = null;
   mockRemote.desktopSettingsRevision = 0;
   mockRemote.skillsRevision = 0;
   mockRemote.getDesktopSettings.mockImplementation(async () => ({ ...stored }));
@@ -545,4 +548,27 @@ test("switching to the installed tab keeps the catalogue rows reachable", async 
   await flush();
   expect(button("desktopSettings.upgrade")).toBeDefined();
   expect(button("desktopSettings.install")).toBeUndefined();
+});
+
+test("task management is gated by the desktop's capability and opens the page", async () => {
+  expect(link("desktopSettings.tasks").props.disabled).toBe(false);
+
+  // An older desktop that never declared tasks_v1 cannot open the page.
+  mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1"]);
+  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  expect(link("desktopSettings.tasks").props.disabled).toBe(true);
+  expect(tree.root.findAllByType(Text).map(node => node.props.children)).toContain("desktopSettings.updateDesktop");
+
+  // Once the desktop declares it, the entry opens the page and hands it the
+  // connection state it needs to decide what is readable.
+  mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "tasks_v1"]);
+  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await act(async () => link("desktopSettings.tasks").props.onPress());
+  expect(tasksPageProps).toEqual({ desktopOnline: true });
+});
+
+test("task management is unavailable while the desktop is offline", async () => {
+  mockRemote.desktopOnline = false;
+  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  expect(link("desktopSettings.tasks").props.disabled).toBe(true);
 });

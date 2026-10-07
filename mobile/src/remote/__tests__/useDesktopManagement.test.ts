@@ -131,3 +131,45 @@ test("the provider surfaces read and write through the same command seam", async
   }
 });
 
+
+test("task commands address the desktop, with the phone never keeping a copy", async () => {
+  const h = mount();
+  try {
+    h.request.mockImplementation(async (command: { type: string }) => ({ data: command.type === "list_tasks" ? { tasks: [{ id: "tsk_1" }] } : {} }));
+    await h.api.listTasks();
+    expect(h.requestRetry).toHaveBeenCalledWith({ type: "list_tasks" }, "settings");
+
+    h.requestRetry.mockImplementation(async (command: { type: string }) => ({ data: command.type === "get_task" ? { id: "tsk_1" } : {} }));
+    await h.api.getTask("tsk_1");
+    expect(h.requestRetry).toHaveBeenCalledWith({ type: "get_task", taskId: "tsk_1" }, "settings");
+
+    const draft = { name: "n", prompt: "p", cwd: "/tmp" };
+    await h.api.createTask(draft);
+    expect(h.request).toHaveBeenCalledWith({ type: "create_task", task: draft }, "settings", 60_000);
+    await h.api.updateTask("tsk_1", draft);
+    expect(h.request).toHaveBeenCalledWith({ type: "update_task", taskId: "tsk_1", task: draft }, "settings", 60_000);
+    await h.api.deleteTask("tsk_1");
+    expect(h.request).toHaveBeenCalledWith({ type: "delete_task", taskId: "tsk_1" }, "settings", 60_000);
+    await h.api.setTaskEnabled("tsk_1", false);
+    expect(h.request).toHaveBeenCalledWith({ type: "set_task_enabled", taskId: "tsk_1", enabled: false }, "settings", 60_000);
+    await h.api.runTask("tsk_1");
+    expect(h.request).toHaveBeenCalledWith({ type: "run_task", taskId: "tsk_1" }, "settings", 60_000);
+
+    h.requestRetry.mockImplementation(async (command: { type: string }) => ({ data: { runs: [{ id: "trn_1" }] } }));
+    await expect(h.api.listTaskRuns("tsk_1")).resolves.toEqual([{ id: "trn_1" }]);
+    expect(h.requestRetry).toHaveBeenCalledWith({ type: "list_task_runs", taskId: "tsk_1", limit: 20 }, "settings");
+    await h.api.listTaskRuns("tsk_1", 5);
+    expect(h.requestRetry).toHaveBeenCalledWith({ type: "list_task_runs", taskId: "tsk_1", limit: 5 }, "settings");
+
+    h.requestRetry.mockImplementation(async () => ({ data: { deps: [{ upstreamTaskId: "tsk_up" }] } }));
+    await expect(h.api.listTaskDeps("tsk_1")).resolves.toEqual([{ upstreamTaskId: "tsk_up" }]);
+    expect(h.requestRetry).toHaveBeenCalledWith({ type: "list_task_deps", taskId: "tsk_1" }, "settings");
+
+    h.requestRetry.mockImplementation(async () => ({ data: { revisions: [{ id: "rev_1" }] } }));
+    await expect(h.api.listTaskRevisions("tsk_1")).resolves.toEqual([{ id: "rev_1" }]);
+    expect(h.requestRetry).toHaveBeenCalledWith({ type: "list_task_revisions", taskId: "tsk_1" }, "settings");
+
+    await h.api.applyTaskRevision("tsk_1", "rev_1");
+    expect(h.request).toHaveBeenCalledWith({ type: "apply_task_revision", taskId: "tsk_1", revisionId: "rev_1" }, "settings", 60_000);
+  } finally { act(() => h.tree.unmount()); }
+});

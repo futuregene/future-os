@@ -7,7 +7,7 @@
 //! retention); `truncate` is the shared byte-budget truncator.
 
 use crate::types::{DepJoin, Task, TaskDep, TaskDepState};
-use chrono::Datelike;
+use chrono::{Datelike, NaiveDate};
 use serde::Deserialize;
 
 /// Shared byte budget across all upstream sources (loop: `UPSTREAM_EVIDENCE_CHARS`).
@@ -21,19 +21,33 @@ pub const MAX_DEP_DEPTH: usize = 32;
 
 /// Truncate to `max` bytes, keeping the head (context) and tail (conclusion)
 /// with a single `…` marker. Byte-budget safe for any UTF-8 content.
+///
+/// A `max` too small to hold the marker and at least one tail byte takes the
+/// head alone: the subtraction below would otherwise underflow, and a budget
+/// that cannot fit `…` cannot fit a tail either.
 pub fn truncate(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_string();
     }
     const MARK: &str = "…";
-    let head_bytes = max * 3 / 4;
-    let tail_bytes = max - head_bytes - MARK.len();
+    // The marker and at least one byte on each side of it must fit; below that
+    // there is no room for a tail at all, so take the head alone.
+    if max <= MARK.len() + 1 {
+        return text[..floor_char_boundary(text, max)].to_string();
+    }
+    // Split what is left after the marker: 3/4 head (context), 1/4 tail
+    // (conclusion). Deriving both from the remaining budget keeps
+    // head + marker + tail == max with no underflow for any max.
+    let budget = max - MARK.len();
+    let head_bytes = budget * 3 / 4;
+    let tail_bytes = budget - head_bytes;
     let head = &text[..floor_char_boundary(text, head_bytes)];
     let tail_start = floor_char_boundary(text, text.len() - tail_bytes);
     let tail = &text[tail_start..];
     format!("{head}{MARK}{tail}")
 }
 
+/// Back up to the nearest char boundary at or before `idx` (never past the end).
 fn floor_char_boundary(s: &str, idx: usize) -> usize {
     let mut i = idx.min(s.len());
     while i > 0 && !s.is_char_boundary(i) {
@@ -76,12 +90,12 @@ pub fn next_due(task: &Task, after_ms: i64) -> Option<i64> {
 }
 
 fn next_due_for_mode(mode: &ScheduleMode, after_ms: i64) -> Option<i64> {
-    use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone};
+    use chrono::{DateTime, Duration, Local, TimeZone};
     let after = DateTime::from_timestamp_millis(after_ms)?.with_timezone(&Local);
     match mode {
         ScheduleMode::Once { date, time } => {
             let dt = parse_date_time(date, time)?;
-            let due = Local.from_local_datetime(&dt).single()?;
+            let due = Local.from_local_datetime(&dt).earliest()?;
             (due.timestamp_millis() > after_ms).then(|| due.timestamp_millis())
         }
         ScheduleMode::Interval {
@@ -99,7 +113,7 @@ fn next_due_for_mode(mode: &ScheduleMode, after_ms: i64) -> Option<i64> {
         }
         ScheduleMode::Daily { time } => {
             let t = parse_time(time)?;
-            let due = next_calendar_time(&after, t, 1)?;
+            let due = next_calendar_time(&after, t)?;
             (due.timestamp_millis() > after_ms).then(|| due.timestamp_millis())
         }
         ScheduleMode::Weekly { days, time } => {
@@ -108,42 +122,54 @@ fn next_due_for_mode(mode: &ScheduleMode, after_ms: i64) -> Option<i64> {
             if day_nums.is_empty() {
                 return None;
             }
-            let mut best: Option<DateTime<Local>> = None;
-            for delta in 0..=7 {
-                let cand_date = (after + Duration::days(delta)).date_naive();
-                let cand_wd = cand_date.weekday().num_days_from_monday();
-                if !day_nums.contains(&cand_wd) {
-                    continue;
-                }
-                let cand_dt = cand_date.and_time(t);
-                let cand = Local.from_local_datetime(&cand_dt).single()?;
-                if cand.timestamp_millis() > after_ms {
-                    best = Some(best.map_or(cand, |b| b.min(cand)));
-                }
-            }
-            best.map(|d| d.timestamp_millis())
+            (0..=7)
+                .filter_map(|delta| weekly_candidate(after_ms, &day_nums, t, delta))
+                .filter(|cand| cand.timestamp_millis() > after_ms)
+                .min()
+                .map(|d| d.timestamp_millis())
         }
         ScheduleMode::Monthly { day, time } => {
             let t = parse_time(time)?;
-            let mut best: Option<DateTime<Local>> = None;
-            for month_delta in 0..=12 {
-                let (y, m) = add_months(after.year(), after.month(), month_delta);
-                let days_in_month = days_in_month(y, m);
-                let dom = (*day).min(days_in_month as i64) as u32;
-                let Some(date) = NaiveDate::from_ymd_opt(y, m, dom) else {
-                    continue;
-                };
-                let cand_dt = date.and_time(t);
-                let Some(cand) = Local.from_local_datetime(&cand_dt).single() else {
-                    continue;
-                };
-                if cand.timestamp_millis() > after_ms {
-                    best = Some(best.map_or(cand, |b| b.min(cand)));
-                }
-            }
-            best.map(|d| d.timestamp_millis())
+            (0..=12)
+                .filter_map(|delta| monthly_candidate(after_ms, *day, t, delta))
+                .filter(|cand| cand.timestamp_millis() > after_ms)
+                .min()
+                .map(|d| d.timestamp_millis())
         }
     }
+}
+
+/// The `delta`-th weekday candidate for a weekly schedule, or `None` when that
+/// day is not selected (or does not exist locally, e.g. a spring-forward gap).
+fn weekly_candidate(
+    after_ms: i64,
+    day_nums: &[u32],
+    time: chrono::NaiveTime,
+    delta: i64,
+) -> Option<chrono::DateTime<chrono::Local>> {
+    use chrono::{Duration, Local, TimeZone};
+    let after = chrono::DateTime::from_timestamp_millis(after_ms)?.with_timezone(&Local);
+    let date = (after + Duration::days(delta)).date_naive();
+    let matches = day_nums.contains(&date.weekday().num_days_from_monday());
+    matches
+        .then(|| Local.from_local_datetime(&date.and_time(time)).earliest())
+        .flatten()
+}
+
+/// The `delta`-th monthly candidate, clamped to the month's last day when the
+/// requested day does not exist in it (day 31 in February).
+fn monthly_candidate(
+    after_ms: i64,
+    day: i64,
+    time: chrono::NaiveTime,
+    delta: i64,
+) -> Option<chrono::DateTime<chrono::Local>> {
+    use chrono::{DateTime, Local, TimeZone};
+    let after = DateTime::from_timestamp_millis(after_ms)?.with_timezone(&Local);
+    let (y, m) = add_months(after.year(), after.month(), delta);
+    let dom = day.min(days_in_month(y, m) as i64) as u32;
+    let date = NaiveDate::from_ymd_opt(y, m, dom)?;
+    Local.from_local_datetime(&date.and_time(time)).earliest()
 }
 
 fn parse_date_time(date: &str, time: &str) -> Option<chrono::NaiveDateTime> {
@@ -189,21 +215,11 @@ fn days_in_month(year: i32, month: u32) -> u32 {
 fn next_calendar_time(
     after: &chrono::DateTime<chrono::Local>,
     time: chrono::NaiveTime,
-    min_days_ahead: i64,
 ) -> Option<chrono::DateTime<chrono::Local>> {
     use chrono::{Duration, Local, TimeZone};
-    let mut date = after.date_naive();
-    let time_already_passed = after.time() >= time;
-    if time_already_passed {
-        date += Duration::days(1);
-    }
-    let extra_days = if min_days_ahead > 0 {
-        min_days_ahead - 1
-    } else {
-        0
-    };
-    date += Duration::days(extra_days);
-    Local.from_local_datetime(&date.and_time(time)).single()
+    let days = if after.time() >= time { 1 } else { 0 };
+    let date = after.date_naive() + Duration::days(days);
+    Local.from_local_datetime(&date.and_time(time)).earliest()
 }
 
 // ─── join claim ───────────────────────────────────────────────────────────
@@ -524,6 +540,69 @@ mod tests {
         assert_eq!(next_due(&t, ms_of(2026, 1, 1, 0, 0)), None);
     }
 
+    #[test]
+    fn a_disabled_or_deleted_task_never_schedules() {
+        let base = task(
+            serde_json::json!({"mode":"daily","time":"09:00"}),
+            TriggerKind::Schedule,
+        );
+        let after = ms_of(2026, 1, 1, 0, 0);
+        assert!(next_due(&base, after).is_some());
+
+        let mut disabled = base.clone();
+        disabled.enabled = false;
+        assert_eq!(next_due(&disabled, after), None);
+
+        let mut deleted = base.clone();
+        deleted.deleted_at = Some(1);
+        assert_eq!(next_due(&deleted, after), None);
+    }
+
+    #[test]
+    fn weekly_accepts_weekend_days_and_rejects_unknown_names() {
+        let after = ms_of(2026, 1, 5, 0, 0); // Monday
+        let weekend = task(
+            serde_json::json!({"mode":"weekly","days":["sat","sun"],"time":"10:00"}),
+            TriggerKind::Schedule,
+        );
+        // Saturday of that week.
+        assert_eq!(next_due(&weekend, after), Some(ms_of(2026, 1, 10, 10, 0)));
+
+        // Every name unknown → no candidate at all, rather than "every day".
+        let bogus = task(
+            serde_json::json!({"mode":"weekly","days":["noday"],"time":"10:00"}),
+            TriggerKind::Schedule,
+        );
+        assert_eq!(next_due(&bogus, after), None);
+    }
+
+    #[test]
+    fn an_out_of_range_monthly_day_has_no_candidate() {
+        let after = ms_of(2026, 1, 5, 0, 0);
+        // Day 0 (and anything below 1) is not a date, so every month is skipped.
+        let zero = task(
+            serde_json::json!({"mode":"monthly","day":0,"time":"09:00"}),
+            TriggerKind::Schedule,
+        );
+        assert_eq!(next_due(&zero, after), None);
+    }
+
+    #[test]
+    fn an_unparsable_date_or_time_schedules_nothing() {
+        let after = ms_of(2026, 1, 1, 0, 0);
+        for trigger in [
+            serde_json::json!({"mode":"once","date":"not-a-date","time":"09:00"}),
+            serde_json::json!({"mode":"once","date":"2026-12-24","time":"9am"}),
+            serde_json::json!({"mode":"daily","time":"25:00"}),
+            serde_json::json!({"mode":"monthly","day":5,"time":"nope"}),
+            serde_json::json!({"mode":"weekly","days":["mon"],"time":""}),
+            serde_json::json!({"mode":"nonsense"}),
+        ] {
+            let t = task(trigger.clone(), TriggerKind::Schedule);
+            assert_eq!(next_due(&t, after), None, "{trigger}");
+        }
+    }
+
     // ─── join_claim ───────────────────────────────────────────────────────
 
     fn dep(task: &str, upstream: &str, on: DepOn) -> TaskDep {
@@ -571,6 +650,34 @@ mod tests {
     }
 
     #[test]
+    fn a_task_without_dependencies_has_nothing_to_join() {
+        let t = task(serde_json::json!({}), TriggerKind::Manual);
+        assert!(join_claim(&t, &[], &[]).is_none());
+    }
+
+    #[test]
+    fn an_edge_with_no_recorded_progress_blocks_the_join() {
+        // `all`: an edge that was never satisfied stops the whole join, whether
+        // it has a state row or no row at all.
+        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
+        t.dep_join = crate::types::DepJoin::All;
+        let deps = vec![dep("C", "A", DepOn::Success), dep("C", "B", DepOn::Success)];
+        let satisfied = vec![state("C", "A", Some("trn_a")), state("C", "B", None)];
+        assert!(join_claim(&t, &deps, &satisfied).is_none());
+        let absent = vec![state("C", "A", Some("trn_a"))];
+        assert!(join_claim(&t, &deps, &absent).is_none());
+
+        // `any`: an edge with no row is simply not a reason to fire, but another
+        // edge that did fire still is.
+        t.dep_join = crate::types::DepJoin::Any;
+        let consume = join_claim(&t, &deps, &satisfied).unwrap();
+        assert_eq!(consume, vec![("A".to_string(), "trn_a".to_string())]);
+        let partial = vec![state("C", "B", Some("trn_b"))];
+        let consume = join_claim(&t, &deps, &partial).unwrap();
+        assert_eq!(consume, vec![("B".to_string(), "trn_b".to_string())]);
+    }
+
+    #[test]
     fn run_satisfies_edge_conditions() {
         assert!(run_satisfies(DepOn::Success, RunStatus::Completed));
         assert!(!run_satisfies(DepOn::Success, RunStatus::Failed));
@@ -606,6 +713,36 @@ mod tests {
         assert!(!would_cycle("C", &deps));
     }
 
+    #[test]
+    fn a_diamond_reaches_a_node_twice_without_looping() {
+        // Both A and B depend on X, and C depends on both — so C is reached from
+        // two paths. The walk must terminate on the second visit rather than
+        // recursing forever.
+        let deps = vec![
+            dep("A", "X", DepOn::Success),
+            dep("B", "X", DepOn::Success),
+            dep("C", "A", DepOn::Success),
+            dep("C", "B", DepOn::Success),
+        ];
+        assert!(!would_cycle("X", &deps));
+        assert!(!would_cycle("C", &deps));
+    }
+
+    #[test]
+    fn a_chain_past_the_depth_cap_counts_as_a_cycle() {
+        // Dependents of n0 chain past MAX_DEP_DEPTH; the walk must stop and
+        // report a cycle rather than traversing forever.
+        let mut deps = Vec::new();
+        for i in 0..(MAX_DEP_DEPTH + 5) {
+            deps.push(dep(
+                &format!("n{}", i + 1),
+                &format!("n{i}"),
+                DepOn::Success,
+            ));
+        }
+        assert!(would_cycle("n0", &deps));
+    }
+
     // ─── truncate ─────────────────────────────────────────────────────────
 
     #[test]
@@ -621,7 +758,31 @@ mod tests {
         assert!(out.ends_with("END-MARKER"));
     }
 
+    #[test]
+    fn truncate_never_splits_a_multibyte_character() {
+        // Every boundary lands inside a 2-byte character, so the floor steps
+        // must walk back to a real char boundary and the result must still be
+        // valid UTF-8 within budget.
+        let text = "é".repeat(200);
+        for max in [1, 2, 3, 5, 7, 9, 11] {
+            let out = truncate(&text, max);
+            assert!(out.len() <= max, "max {max}: len {}", out.len());
+            // A 1-byte budget cannot hold a 2-byte character: empty, never a
+            // half-character (the panic this test exists to prevent).
+            assert_eq!(out.is_empty(), max < 2, "max {max}: {out:?}");
+        }
+        // A budget too small for the marker takes the head alone.
+        assert_eq!(truncate(&"é".repeat(10), 2), "é".to_string());
+        assert_eq!(truncate(&"é".repeat(10), 3), "é".to_string());
+        assert_eq!(truncate(&"ab".repeat(10), 1), "a".to_string());
+    }
+
     // ─── upstream block ───────────────────────────────────────────────────
+
+    #[test]
+    fn an_empty_fan_in_composes_nothing() {
+        assert_eq!(compose_upstream_block(&[]), "");
+    }
 
     #[test]
     fn upstream_block_keeps_index_when_budget_exhausted() {
@@ -637,7 +798,7 @@ mod tests {
             });
         }
         let block = compose_upstream_block(&sources);
-        // Every source keeps its index line even though 1200/20=60 < 500.
+        // Every source keeps its index line even though 1200/20 = 60 < 500.
         for i in 0..20 {
             assert!(
                 block.contains(&format!("upstream tsk_{i}")),
@@ -649,5 +810,82 @@ mod tests {
             );
         }
         assert!(block.contains("future task output"));
+    }
+
+    #[test]
+    fn a_wide_fan_in_drops_snippets_but_never_the_index() {
+        // Past UPSTREAM_SUMMARY_CHARS / MIN_SNIPPET_CHARS sources the per-source
+        // budget is too small for any snippet; the index line must survive.
+        let sources: Vec<UpstreamSource> = (0..120)
+            .map(|i| UpstreamSource {
+                task_id: format!("tsk_{i}"),
+                task_name: format!("t{i}"),
+                run_id: format!("trn_{i}"),
+                status: RunStatus::Completed,
+                finished_at: Some(1_000),
+                result_summary: Some("y".repeat(100)),
+            })
+            .collect();
+        let block = compose_upstream_block(&sources);
+        assert!(block.contains("upstream tsk_0"), "{block}");
+        assert!(block.contains("upstream tsk_119"), "{block}");
+        assert!(
+            !block.contains("yyy"),
+            "no snippet survives a 10-byte budget"
+        );
+    }
+
+    #[test]
+    fn a_source_without_a_summary_or_finish_time_still_gets_a_line() {
+        let block = compose_upstream_block(&[UpstreamSource {
+            task_id: "tsk_a".into(),
+            task_name: "bare".into(),
+            run_id: "trn_a".into(),
+            status: RunStatus::Failed,
+            finished_at: None,
+            result_summary: None,
+        }]);
+        assert!(block.contains("upstream tsk_a \"bare\""), "{block}");
+        assert!(block.contains("[no summary]"), "{block}");
+        assert!(block.contains("finished=]"), "{block}");
+    }
+
+    // ─── envelope header ──────────────────────────────────────────────────
+
+    #[test]
+    fn the_envelope_header_carries_the_schema_and_optional_context() {
+        let mut t = task(
+            serde_json::json!({"mode":"daily","time":"09:00"}),
+            TriggerKind::Schedule,
+        );
+        t.name = "daily report".into();
+        t.id = "tsk_1".into();
+        t.prompt_version = 4;
+
+        let bare = compose_envelope_header(&t, crate::types::RunKind::Main, None, None);
+        assert!(bare.contains("schema=\"task-v1\""), "{bare}");
+        assert!(bare.contains("name=\"daily report\""), "{bare}");
+        assert!(bare.contains("id=\"tsk_1\""), "{bare}");
+        assert!(bare.contains("kind=\"Main\""), "{bare}");
+        assert!(bare.contains("prompt-version=\"4\""), "{bare}");
+        assert!(
+            !bare.contains("due="),
+            "a run with no due time omits it: {bare}"
+        );
+        assert!(!bare.contains("occurrence="), "{bare}");
+        assert!(bare.ends_with(" />\n\n"), "{bare}");
+
+        let full = compose_envelope_header(
+            &t,
+            crate::types::RunKind::Chain,
+            Some(1_760_000_000_000),
+            Some(7),
+        );
+        assert!(full.contains("due=\"2025-10-09T"), "{full}");
+        assert!(full.contains("occurrence=\"7\""), "{full}");
+
+        // An unrepresentable epoch lands in the same "omit" branch as None.
+        let absurd = compose_envelope_header(&t, crate::types::RunKind::Main, Some(i64::MAX), None);
+        assert!(!absurd.contains("due="), "{absurd}");
     }
 }
