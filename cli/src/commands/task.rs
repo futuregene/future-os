@@ -161,6 +161,7 @@ fn list(args: &[String], out: &Output) -> Result<()> {
                     "nextDueAt": t.next_due_at,
                     "lastRunAt": t.last_run_at,
                     "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
+                    "conversationMode": format!("{:?}", t.conversation_mode).to_lowercase(),
                     "reflection": format!("{:?}", t.reflection).to_lowercase(),
                 })
             })
@@ -214,6 +215,7 @@ fn show(args: &[String], out: &Output) -> Result<()> {
             "modelId": t.model_id,
             "thinkingLevel": t.thinking_level,
             "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
+            "conversationMode": format!("{:?}", t.conversation_mode).to_lowercase(),
             "triggerKind": format!("{:?}", t.trigger_kind).to_lowercase(),
             "trigger": t.trigger_json,
             "depJoin": format!("{:?}", t.dep_join).to_lowercase(),
@@ -251,6 +253,10 @@ fn show(args: &[String], out: &Output) -> Result<()> {
         format!("{:?}", t.session_policy).to_lowercase()
     ));
     out.log(&format!(
+        "  opens:    {}",
+        format!("{:?}", t.conversation_mode).to_lowercase()
+    ));
+    out.log(&format!(
         "  reflect:  {}",
         format!("{:?}", t.reflection).to_lowercase()
     ));
@@ -278,6 +284,7 @@ fn add(args: &[String], out: &Output) -> Result<()> {
     let mut thinking: Option<String> = None;
     let mut reflection = "ask".to_string();
     let mut session_policy = "new".to_string();
+    let mut conversation_mode = "workspace".to_string();
     let mut trigger_json = serde_json::json!({});
     let mut trigger_kind = future_tasks::TriggerKind::Manual;
     let mut disabled = false;
@@ -348,6 +355,13 @@ fn add(args: &[String], out: &Output) -> Result<()> {
                     .get(i)
                     .cloned()
                     .ok_or_else(|| "--session requires a value".to_string())?;
+            }
+            "--conversation" => {
+                i += 1;
+                conversation_mode = args
+                    .get(i)
+                    .cloned()
+                    .ok_or_else(|| "--conversation requires a value".to_string())?;
             }
             "--disabled" => disabled = true,
             "--json" => json_flag = true,
@@ -430,6 +444,12 @@ fn add(args: &[String], out: &Output) -> Result<()> {
         _ => return Err("--session must be new|existing".to_string()),
     };
 
+    let conversation_mode = match conversation_mode.as_str() {
+        "workspace" => future_tasks::ConversationMode::Workspace,
+        "chat" => future_tasks::ConversationMode::Chat,
+        _ => return Err("--conversation must be workspace|chat".to_string()),
+    };
+
     let now = now_ms();
     let next_due = if trigger_kind == future_tasks::TriggerKind::Schedule {
         // Computed from an *enabled* clone: `next_due` answers "when would this
@@ -445,6 +465,7 @@ fn add(args: &[String], out: &Output) -> Result<()> {
             model_id: model.clone(),
             thinking_level: thinking.clone(),
             session_policy,
+            conversation_mode,
             thread_id: None,
             trigger_kind,
             trigger_json: trigger_json.clone(),
@@ -474,6 +495,7 @@ fn add(args: &[String], out: &Output) -> Result<()> {
         model_id: model,
         thinking_level: thinking,
         session_policy,
+        conversation_mode,
         thread_id: None,
         trigger_kind,
         trigger_json,
@@ -964,6 +986,7 @@ mod tests {
                 started_at: Some(1_700_000_000_000),
                 finished_at: Some(1_700_000_060_000),
                 error_message: None,
+                source_entry_id: None,
             })
             .unwrap();
 
@@ -1012,6 +1035,8 @@ mod tests {
                 "high",
                 "--session",
                 "existing",
+                "--conversation",
+                "chat",
                 "--reflection",
                 "auto",
                 "--monthly",
@@ -1034,6 +1059,10 @@ mod tests {
         assert_eq!(stored.model_id.as_deref(), Some("future/gpt-5"));
         assert_eq!(stored.thinking_level.as_deref(), Some("high"));
         assert_eq!(stored.session_policy, future_tasks::SessionPolicy::Existing);
+        assert_eq!(
+            stored.conversation_mode,
+            future_tasks::ConversationMode::Chat
+        );
         assert_eq!(stored.reflection, future_tasks::Reflection::Auto);
         assert!(!stored.enabled);
         assert_eq!(stored.trigger_json["day"], 31);
@@ -1120,6 +1149,7 @@ mod tests {
 
         assert!(add(&with(&["--reflection", "sometimes"]), &out).is_err());
         assert!(add(&with(&["--session", "sometimes"]), &out).is_err());
+        assert!(add(&with(&["--conversation", "sometimes"]), &out).is_err());
         assert!(
             add(&with(&["--at", "2026-12-24"]), &out).is_err(),
             "--at needs a time"
@@ -1205,6 +1235,7 @@ mod tests {
                 started_at: Some(started),
                 finished_at: Some(started + 1),
                 error_message: None,
+                source_entry_id: None,
             })
             .unwrap();
 
@@ -1274,6 +1305,7 @@ mod tests {
                 started_at: Some(now_ms() + 60_000),
                 finished_at: Some(now_ms() + 60_001),
                 error_message: Some("agent unreachable".into()),
+                source_entry_id: None,
             })
             .unwrap();
         let (out, captured) = Output::memory();
@@ -1312,6 +1344,7 @@ mod tests {
                 started_at: Some(1_700_000_000_000),
                 finished_at: Some(1_700_000_001_000),
                 error_message: Some("overlap".into()),
+                source_entry_id: None,
             })
             .unwrap();
 
@@ -1378,6 +1411,7 @@ mod tests {
                 started_at: Some(started),
                 finished_at: Some(started + 1),
                 error_message: None,
+                source_entry_id: None,
             })
             .unwrap();
 
@@ -1423,6 +1457,7 @@ mod tests {
                 started_at: Some(started),
                 finished_at: None,
                 error_message: None,
+                source_entry_id: None,
             })
             .unwrap();
 

@@ -22,6 +22,7 @@ function task(overrides: Partial<TaskView> = {}): TaskView {
     modelId: null,
     thinkingLevel: null,
     sessionPolicy: "new",
+    conversationMode: "workspace",
     triggerKind: "schedule",
     trigger: { mode: "daily", time: "09:00" },
     depJoin: "all",

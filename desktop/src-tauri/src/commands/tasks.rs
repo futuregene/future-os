@@ -4,7 +4,8 @@
 //! manage tasks; execution stays in `crate::tasks`'s tick loop.
 
 use future_tasks::{
-    DepJoin, DepOn, Reflection, RunOrigin, SessionPolicy, Store, Task, TriggerKind,
+    ConversationMode, DepJoin, DepOn, Reflection, RunOrigin, SessionPolicy, Store, Task,
+    TriggerKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +44,7 @@ pub struct TaskView {
     pub model_id: Option<String>,
     pub thinking_level: Option<String>,
     pub session_policy: String,
+    pub conversation_mode: String,
     pub trigger_kind: String,
     pub trigger: serde_json::Value,
     pub dep_join: String,
@@ -67,9 +69,31 @@ pub struct RunView {
     pub prompt_version: Option<i64>,
     pub result_summary: Option<String>,
     pub error_message: Option<String>,
+    /// True when copying this run into a conversation of its own is the only
+    /// way to keep working on it (see `run_is_forkable`).
+    pub forkable: bool,
 }
 
-fn run_view(run: future_tasks::TaskRun) -> RunView {
+/// Whether a run needs forking, or can simply be opened.
+///
+/// A task in `existing` mode owns one conversation for its whole life and
+/// compacts and appends to it on every run, so chatting in it mixes the user's
+/// work into the task's context. Copying a run out is then the only way to keep
+/// that result. In `new` mode every run already has a conversation of its own in
+/// the list, so "open" is all that is needed and a fork would just be a
+/// duplicate.
+fn run_is_forkable(
+    run: &future_tasks::TaskRun,
+    session_policy: future_tasks::SessionPolicy,
+) -> bool {
+    session_policy == future_tasks::SessionPolicy::Existing
+        && run.source_entry_id.is_some()
+        && run.thread_id.is_some()
+}
+
+fn run_view(run: future_tasks::TaskRun, session_policy: future_tasks::SessionPolicy) -> RunView {
+    // Read what the derived flag needs before the fields are moved into the view.
+    let forkable = run_is_forkable(&run, session_policy);
     RunView {
         id: run.id,
         kind: format!("{:?}", run.kind).to_lowercase(),
@@ -83,15 +107,17 @@ fn run_view(run: future_tasks::TaskRun) -> RunView {
         prompt_version: run.prompt_version,
         result_summary: run.result_summary,
         error_message: run.error_message,
+        forkable,
     }
 }
 
 fn task_view(store: &Store, task: Task) -> TaskView {
+    let session_policy = task.session_policy;
     let latest_run = store
         .latest_run_for_task(&task.id)
         .ok()
         .flatten()
-        .map(run_view);
+        .map(|run| run_view(run, session_policy));
     TaskView {
         id: task.id,
         name: task.name,
@@ -102,6 +128,7 @@ fn task_view(store: &Store, task: Task) -> TaskView {
         model_id: task.model_id,
         thinking_level: task.thinking_level,
         session_policy: format!("{:?}", task.session_policy).to_lowercase(),
+        conversation_mode: format!("{:?}", task.conversation_mode).to_lowercase(),
         trigger_kind: format!("{:?}", task.trigger_kind).to_lowercase(),
         trigger: task.trigger_json,
         dep_join: format!("{:?}", task.dep_join).to_lowercase(),
@@ -125,6 +152,8 @@ pub struct TaskInput {
     #[serde(default)]
     pub session_policy: Option<String>,
     #[serde(default)]
+    pub conversation_mode: Option<String>,
+    #[serde(default)]
     pub reflection: Option<String>,
     #[serde(default)]
     pub trigger_kind: Option<String>,
@@ -134,6 +163,13 @@ pub struct TaskInput {
     pub dep_join: Option<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
+}
+
+fn parse_conversation_mode(raw: Option<&str>) -> ConversationMode {
+    match raw {
+        Some("chat") => ConversationMode::Chat,
+        _ => ConversationMode::Workspace,
+    }
 }
 
 fn parse_session_policy(raw: Option<&str>) -> SessionPolicy {
@@ -190,6 +226,7 @@ pub fn create_task(input: TaskInput) -> Result<TaskView, crate::AppError> {
         model_id: input.model_id,
         thinking_level: input.thinking_level,
         session_policy: parse_session_policy(input.session_policy.as_deref()),
+        conversation_mode: parse_conversation_mode(input.conversation_mode.as_deref()),
         thread_id: None,
         trigger_kind,
         trigger_json: trigger,
@@ -229,6 +266,7 @@ pub fn update_task(id: String, input: TaskInput) -> Result<TaskView, crate::AppE
     task.model_id = input.model_id;
     task.thinking_level = input.thinking_level;
     task.session_policy = parse_session_policy(input.session_policy.as_deref());
+    task.conversation_mode = parse_conversation_mode(input.conversation_mode.as_deref());
     task.trigger_kind = trigger_kind;
     task.trigger_json = trigger;
     task.dep_join = parse_dep_join(input.dep_join.as_deref());
@@ -323,10 +361,19 @@ pub fn run_task_now(id: String) -> Result<TaskView, crate::AppError> {
 #[tauri::command]
 pub fn list_task_runs(id: String, limit: Option<i64>) -> Result<Vec<RunView>, crate::AppError> {
     let store = open()?;
+    // The flag depends on the task's session policy, which lives on the task.
+    let session_policy = store
+        .get_task(&id)
+        .map_err(|e| crate::AppError::Message(e.to_string()))?
+        .map(|task| task.session_policy)
+        .unwrap_or(future_tasks::SessionPolicy::New);
     let runs = store
         .list_runs_for_task(&id, limit.unwrap_or(20))
         .map_err(|e| crate::AppError::Message(e.to_string()))?;
-    Ok(runs.into_iter().map(run_view).collect())
+    Ok(runs
+        .into_iter()
+        .map(|run| run_view(run, session_policy))
+        .collect())
 }
 
 /// Dependency edges for a task (upstream id/name + condition), for the UI.
@@ -357,6 +404,19 @@ pub fn list_task_deps(id: String) -> Result<Vec<DepView>, crate::AppError> {
         });
     }
     Ok(out)
+}
+
+/// Fork a finished run's conversation into the conversation list.
+///
+/// The work lives in `crate::tasks` so the phone's remote bridge forks at the
+/// same anchor with the same rules. Returns the new thread id, which is what the
+/// caller opens.
+#[tauri::command]
+pub async fn fork_task_run(run_id: String) -> Result<String, crate::AppError> {
+    crate::tasks::fork_run(&run_id)
+        .await
+        .map(|(thread_id, _session_id)| thread_id)
+        .map_err(crate::AppError::Message)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -502,6 +562,7 @@ mod tests {
             model_id: Some("future/gpt-5".into()),
             thinking_level: Some("high".into()),
             session_policy: Some("existing".into()),
+            conversation_mode: Some("chat".into()),
             reflection: Some("auto".into()),
             trigger_kind: Some("schedule".into()),
             trigger: Some(serde_json::json!({"mode": "daily", "time": "09:00"})),
@@ -725,6 +786,64 @@ mod tests {
         assert!(list_task_deps(downstream.id).unwrap().is_empty());
     }
 
+    /// Forking is for tasks that reuse one conversation: there, the task will
+    /// compact and append to it on every run, so a result can only be kept by
+    /// copying it out. A `new`-mode run already owns its conversation.
+    #[test]
+    fn only_a_reused_conversation_needs_forking() {
+        let run = future_tasks::TaskRun {
+            id: future_tasks::new_run_id(),
+            task_id: "tsk_1".into(),
+            kind: future_tasks::RunKind::Main,
+            origin: future_tasks::RunOrigin::Schedule,
+            actor: None,
+            due_at: Some(1),
+            status: future_tasks::RunStatus::Completed,
+            thread_id: Some("thr_1".into()),
+            session_id: Some("sess_1".into()),
+            run_id: None,
+            prompt_version: Some(1),
+            result_summary: Some("done".into()),
+            feedback: None,
+            feedback_note: None,
+            started_at: Some(1),
+            finished_at: Some(2),
+            error_message: None,
+            source_entry_id: Some("ent_1".into()),
+        };
+        assert!(run_is_forkable(&run, future_tasks::SessionPolicy::Existing));
+        assert!(!run_is_forkable(&run, future_tasks::SessionPolicy::New));
+
+        // Without a recorded entry there is nothing to fork from either way.
+        let no_entry = future_tasks::TaskRun {
+            source_entry_id: None,
+            ..run.clone()
+        };
+        assert!(!run_is_forkable(
+            &no_entry,
+            future_tasks::SessionPolicy::Existing
+        ));
+
+        // A run with no conversation cannot be forked at all.
+        let no_thread = future_tasks::TaskRun {
+            thread_id: None,
+            ..run
+        };
+        assert!(!run_is_forkable(
+            &no_thread,
+            future_tasks::SessionPolicy::Existing
+        ));
+    }
+
+    /// Asking for the runs of a task that no longer exists answers with no runs
+    /// rather than an error: the panel may hold an id it just deleted, and the
+    /// ledger is empty either way.
+    #[test]
+    fn runs_of_an_unknown_task_are_empty() {
+        let _home = init("cmd_tasks_runs_unknown");
+        assert!(list_task_runs("tsk_gone".into(), None).unwrap().is_empty());
+    }
+
     #[test]
     fn a_dependency_cycle_is_refused() {
         let _home = init("cmd_tasks_cycle");
@@ -762,6 +881,7 @@ mod tests {
                 started_at: Some(1),
                 finished_at: Some(2),
                 error_message: Some("agent unreachable".into()),
+                source_entry_id: None,
             })
             .expect("insert run");
 

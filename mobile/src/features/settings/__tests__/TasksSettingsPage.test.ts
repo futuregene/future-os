@@ -16,6 +16,12 @@ let mockLanguage = "en";
 // Untyped jest mocks: the seam under test is which command the page sends with
 // which payload, and a narrower fake would fight the real signatures.
 const mockRemote = {
+  // The page offers the paired desktop's workspaces as working-directory
+  // candidates, so the fake control plane has to carry them.
+  workspaces: [
+    { id: "ws_1", name: "future-os", path: "/Users/me/future-os" },
+    { id: "ws_2", name: "notes", path: "/Users/me/notes" },
+  ],
   listTasks: jest.fn(async () => [...rows]),
   getTask: jest.fn(async () => ({ ...detail })),
   listTaskRuns: jest.fn(async () => [...runs]),
@@ -58,6 +64,7 @@ function taskDetail(overrides: Partial<RemoteTaskDetail> = {}): RemoteTaskDetail
     prompt: "summarize yesterday",
     promptVersion: 3,
     cwd: "/tmp/repo",
+    conversationMode: "workspace",
     modelId: null,
     thinkingLevel: null,
     sessionPolicy: "new",
@@ -74,12 +81,14 @@ const inputUnder = (label: string) => {
   const labelled = field(label);
   return labelled.findAllByType(TextInput)[0]!;
 };
-/** The mode chips render one `Pressable` per trigger mode, in a fixed order. */
-const modeChip = (mode: string) => {
-  const index = ["manual", "once", "interval", "daily", "weekly", "monthly"].indexOf(mode);
-  const chips = tree.root.findAll(node => node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function");
-  return chips[index]!;
-};
+/**
+ * A chip by its label. Chips are located by text, not by index: the page has
+ * two chip groups (conversation type, trigger mode) and adding one must not
+ * silently retarget the other.
+ */
+const chip = (label: string) => tree.root
+  .findAll(node => node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function")
+  .find(node => node.findAllByType(Text).some(text => text.props.children === label))!;
 
 /** Pressable is a wrapper type, so rows are located by their press behaviour. */
 const pressables = () => tree.root.findAll(node => typeof node.props.onPress === "function" && node.props.accessibilityRole === "button");
@@ -179,35 +188,35 @@ test("edits every trigger shape and sends only its own fields", async () => {
     };
   };
 
-  await act(async () => modeChip("once").props.onPress());
+  await act(async () => chip("tasks.triggerMode.once").props.onPress());
   await act(async () => inputUnder("tasks.form.date").props.onChangeText("2026-12-24"));
   await act(async () => inputUnder("tasks.form.time").props.onChangeText("18:00"));
   expect(await save()).toMatchObject({ triggerKind: "schedule", trigger: { mode: "once", date: "2026-12-24", time: "18:00" } });
 
-  await act(async () => modeChip("interval").props.onPress());
+  await act(async () => chip("tasks.triggerMode.interval").props.onPress());
   await act(async () => inputUnder("tasks.form.everyMinutes").props.onChangeText("45"));
   expect(await save()).toMatchObject({ triggerKind: "schedule", trigger: { mode: "interval", every_minutes: 45 } });
 
-  await act(async () => modeChip("daily").props.onPress());
+  await act(async () => chip("tasks.triggerMode.daily").props.onPress());
   expect(await save()).toMatchObject({ triggerKind: "schedule", trigger: { mode: "daily", time: "18:00" } });
 
-  await act(async () => modeChip("weekly").props.onPress());
+  await act(async () => chip("tasks.triggerMode.weekly").props.onPress());
   await act(async () => inputUnder("tasks.form.days").props.onChangeText("mon, fri"));
   expect(await save()).toMatchObject({ triggerKind: "schedule", trigger: { mode: "weekly", days: ["mon", "fri"], time: "18:00" } });
 
-  await act(async () => modeChip("monthly").props.onPress());
+  await act(async () => chip("tasks.triggerMode.monthly").props.onPress());
   await act(async () => inputUnder("tasks.form.day").props.onChangeText("31"));
   expect(await save()).toMatchObject({ triggerKind: "schedule", trigger: { mode: "monthly", day: 31, time: "18:00" } });
 
-  await act(async () => modeChip("manual").props.onPress());
+  await act(async () => chip("tasks.triggerMode.manual").props.onPress());
   expect(await save()).toMatchObject({ triggerKind: "manual", trigger: {} });
 });
 
 test("explains the short-month rule and the full-permission warning", async () => {
   await act(async () => firstTask().props.onPress());
-  await act(async () => modeChip("monthly").props.onPress());
+  await act(async () => chip("tasks.triggerMode.monthly").props.onPress());
   expect(texts().some(text => String(text).includes("tasks.form.shortMonthHint"))).toBe(true);
-  await act(async () => modeChip("weekly").props.onPress());
+  await act(async () => chip("tasks.triggerMode.weekly").props.onPress());
   expect(texts()).toContain("tasks.form.fullPermissionWarning");
 });
 
@@ -263,12 +272,36 @@ test("summarises every trigger shape on the list row", async () => {
   ];
   await remount();
   const text = texts().join(" ");
-  expect(text).toContain("2026-12-24 09:00");
+  // A stored ISO day is rendered for the active locale, not printed verbatim.
+  expect(text).toContain("12/24/2026");
   expect(text).toContain("tasks.trigger.every");
   // The weekday codes are localized, not printed raw.
   expect(text).toContain("tasks.weekday.mon");
   expect(text).toContain("tasks.trigger.monthly");
   expect(text).toContain("tasks.trigger.daily");
+});
+
+test("shows what the task runs on, and offers the desktop's workspaces as its working directory", async () => {
+  await remount();
+  await act(async () => firstTask().props.onPress());
+  const text = texts().join(" ");
+  expect(text).toContain("tasks.colModel");
+  expect(text).toContain("tasks.modelDefault");
+  expect(text).toContain("tasks.colThinking");
+  // The stored path is in the editable field, and each known workspace is a
+  // one-tap candidate so a phone never has to type a path from memory.
+  expect(inputUnder("tasks.form.cwdPath").props.value).toBe("/tmp/repo");
+  expect(chip("future-os")).toBeTruthy();
+  await act(async () => chip("notes").props.onPress());
+  expect(inputUnder("tasks.form.cwdPath").props.value).toBe("/Users/me/notes");
+});
+
+test("sends the working directory picked from a workspace", async () => {
+  await remount();
+  await act(async () => firstTask().props.onPress());
+  await act(async () => chip("notes").props.onPress());
+  await act(async () => button("tasks.form.save").props.onPress());
+  expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({ cwd: "/Users/me/notes" }));
 });
 
 test("shows the loading state while the task list is in flight", async () => {

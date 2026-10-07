@@ -62,30 +62,70 @@ function triggerPayload(draft: DraftTrigger): { triggerKind: string; trigger: Re
   }
 }
 
-function summarize(t: (key: string, options?: Record<string, unknown>) => string, task: RemoteTaskRow): string {
+/** "Every N minutes", promoting exact hours and days (mirrors the desktop). */
+function intervalLabel(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  minutes: number,
+): string {
+  if (minutes > 0 && minutes % (24 * 60) === 0)
+    return t("tasks.trigger.everyDays", { days: minutes / (24 * 60) });
+  if (minutes > 0 && minutes % 60 === 0)
+    return t("tasks.trigger.everyHours", { hours: minutes / 60 });
+  return t("tasks.trigger.every", { minutes });
+}
+
+/**
+ * Date + time at minute precision, localized. Matches the desktop's
+ * `formatDateTime` so both clients describe the same instant the same way.
+ */
+function formatWhen(value: string | number, locale: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime()))
+    return String(value);
+  return new Intl.DateTimeFormat(locale, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function summarize(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  task: RemoteTaskRow,
+  locale: string,
+): string {
   if (task.triggerKind !== "schedule")
     return t("tasks.trigger.manual");
   const trigger = task.trigger ?? {};
+  const time = String(trigger.time ?? "");
   switch (String(trigger.mode ?? "")) {
-    case "once":
-      return `${trigger.date} ${trigger.time}`;
+    case "once": {
+      const date = String(trigger.date ?? "");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
+        return `${date} ${time}`.trim();
+      return formatWhen(`${date}T${time || "00:00"}:00`, locale);
+    }
     case "interval":
-      return t("tasks.trigger.every", { minutes: Number(trigger.every_minutes ?? 0) });
+      return intervalLabel(t, Number(trigger.every_minutes ?? 0));
     case "weekly": {
-      // The stored codes are `mon`/`fri`; showing them raw is untranslated.
       const days = (Array.isArray(trigger.days) ? trigger.days : []) as string[];
-      return `${days.map(day => t(`tasks.weekday.${day}`)).join(", ")} ${trigger.time}`;
+      return `${days.map(day => t(`tasks.weekday.${day}`)).join(", ")} ${time}`;
     }
     case "monthly":
-      return t("tasks.trigger.monthly", { day: Number(trigger.day ?? 1), time: String(trigger.time ?? "") });
+      return t("tasks.trigger.monthly", {
+        day: Number(trigger.day ?? 1),
+        time,
+      });
     default:
-      return `${t("tasks.trigger.daily")} ${trigger.time}`;
+      return `${t("tasks.trigger.daily")} ${time}`;
   }
 }
 
 /** Task management on the paired desktop (list, editor, runs, versions). */
 export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const remote = useRemoteControls();
   const tasks = useDesktopResource(remote.listTasks, 0, desktopOnline);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -182,20 +222,24 @@ export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean })
         {failed && openId ? <ResourceStatus loading={false} failed onReload={() => retryTask(openId)} /> : null}
         {(tasks.data ?? []).length === 0 && !tasks.loading
           ? <Text style={settingsStyles.description}>{t("tasks.empty")}</Text>
-          : (tasks.data ?? []).map(task => (
-              <Pressable accessibilityRole="button" key={task.id} onPress={() => open(task.id)} style={settingsStyles.card}>
-                <View style={settingsStyles.row}>
-                  <Text style={settingsStyles.label}>{task.name}</Text>
-                  <Text style={settingsStyles.description}>
-                    {task.latestRun ? t(`tasks.status.${task.latestRun.status}`) : ""}
-                  </Text>
-                </View>
-                <Text style={settingsStyles.description}>
-                  {summarize(t, task)}
-                  {task.nextDueAt ? ` · ${new Date(task.nextDueAt).toLocaleString()}` : ""}
-                </Text>
-              </Pressable>
-            ))}
+          : (
+              <View style={styles.stack}>
+                {(tasks.data ?? []).map(task => (
+                  <Pressable accessibilityRole="button" key={task.id} onPress={() => open(task.id)} style={styles.taskCard}>
+                  <View style={styles.cardHeader}>
+                    <Text style={styles.cardTitle} numberOfLines={1}>{task.name}</Text>
+                    <Text style={settingsStyles.description}>
+                      {task.latestRun ? t(`tasks.status.${task.latestRun.status}`) : ""}
+                    </Text>
+                  </View>
+                    <Text style={settingsStyles.description}>
+                      {summarize(t, task, i18n.language)}
+                      {task.nextDueAt ? ` · ${formatWhen(task.nextDueAt, i18n.language)}` : ""}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
       </SettingsSection>
       <Text style={settingsStyles.description}>{t("tasks.phoneHint")}</Text>
     </ScrollView>
@@ -220,16 +264,28 @@ function TaskEditor({ detail, busy, deps, failed, revisions, runs, onBack, onMut
   // instead of an effect writing state on every incoming snapshot.
   const [prompt, setPrompt] = useState(detail.prompt);
   const [trigger, setTrigger] = useState<DraftTrigger>(() => triggerFrom(detail));
+  const [conversationMode, setConversationMode] = useState(detail.conversationMode ?? "workspace");
+  const [cwd, setCwd] = useState(detail.cwd);
+
+  /** Copy a finished run into the session list, then open the copy. */
+  const forkRun = async (runId: string) => {
+    const forked = await remote.forkTaskRun(runId);
+    if (forked.sessionId) {
+      await remote.selectSession(forked.sessionId);
+      onBack();
+    }
+  };
 
   const save = () => {
     const payload = triggerPayload(trigger);
     void onMutate(() => remote.updateTask(detail.id, {
       name: detail.name,
       prompt,
-      cwd: detail.cwd,
+      cwd,
       modelId: detail.modelId,
       thinkingLevel: detail.thinkingLevel,
       sessionPolicy: detail.sessionPolicy,
+      conversationMode,
       reflection: detail.reflection,
       depJoin: detail.depJoin,
       enabled: detail.enabled,
@@ -246,9 +302,66 @@ function TaskEditor({ detail, busy, deps, failed, revisions, runs, onBack, onMut
         <Button label={t("common.back")} onPress={onBack} />
       </SettingsSection>
 
+      <SettingsSection title={t("tasks.settings")}>
+        <Text style={settingsStyles.description}>
+          {t("tasks.colModel")}
+          {": "}
+          {detail.modelId ?? t("tasks.modelDefault")}
+        </Text>
+        <Text style={settingsStyles.description}>
+          {t("tasks.colThinking")}
+          {": "}
+          {detail.thinkingLevel ? t(`tasks.thinkingLabels.${detail.thinkingLevel}`) : t("tasks.thinkingDefault")}
+        </Text>
+      </SettingsSection>
+
       <SettingsSection title={t("tasks.form.prompt")}>
         <TextInput multiline style={settingsStyles.input} value={prompt} onChangeText={setPrompt} />
         <Button label={t("tasks.form.save")} disabled={busy || prompt === detail.prompt} onPress={save} />
+      </SettingsSection>
+
+      <SettingsSection title={t("tasks.form.cwd")}>
+        <View style={settingsStyles.actions}>
+          {remote.workspaces.slice(0, 6).map(workspace => (
+            <Pressable
+              accessibilityRole="radio"
+              accessibilityState={{ selected: cwd === workspace.path }}
+              disabled={busy}
+              key={workspace.id}
+              onPress={() => setCwd(workspace.path)}
+              style={[styles.choice, cwd === workspace.path && styles.choiceSelected]}
+            >
+              <Text numberOfLines={1} style={settingsStyles.label}>{workspace.name || workspace.path}</Text>
+            </Pressable>
+          ))}
+        </View>
+        <SettingsField label={t("tasks.form.cwdPath")} hint={t("tasks.form.cwdHint")}>
+          <TextInput
+            accessibilityLabel={t("tasks.form.cwdPath")}
+            autoCapitalize="none"
+            style={settingsStyles.input}
+            value={cwd}
+            onChangeText={setCwd}
+          />
+        </SettingsField>
+      </SettingsSection>
+
+      <SettingsSection title={t("tasks.form.conversation")}>
+        <View style={settingsStyles.actions}>
+          {(["workspace", "chat"] as const).map(mode => (
+            <Pressable
+              accessibilityRole="radio"
+              accessibilityState={{ selected: conversationMode === mode }}
+              disabled={busy}
+              key={mode}
+              onPress={() => setConversationMode(mode)}
+              style={[styles.choice, conversationMode === mode && styles.choiceSelected]}
+            >
+              <Text style={settingsStyles.label}>{t(`tasks.form.conversation${mode === "chat" ? "Chat" : "Workspace"}`)}</Text>
+            </Pressable>
+          ))}
+        </View>
+        <Text style={settingsStyles.description}>{t("tasks.form.conversationHint")}</Text>
       </SettingsSection>
 
       <SettingsSection title={t("tasks.form.trigger")}>
@@ -309,9 +422,14 @@ function TaskEditor({ detail, busy, deps, failed, revisions, runs, onBack, onMut
         ? (
             <SettingsSection title={t("tasks.deps")}>
               {deps.map(dep => (
-                <Text key={dep.upstreamTaskId} style={settingsStyles.description}>
-                  {dep.upstreamName} · {t(`tasks.on.${dep.on}`)} · {dep.satisfied ? t("tasks.depsReady") : t("tasks.depsWaiting")}
-                </Text>
+                <View key={dep.upstreamTaskId} style={styles.depCard}>
+                  <Text style={settingsStyles.label} numberOfLines={1}>{dep.upstreamName}</Text>
+                  <Text style={settingsStyles.description}>
+                    {t(`tasks.on.${dep.on}`)}
+                    {" · "}
+                    {dep.satisfied ? t("tasks.depsReady") : t("tasks.depsWaiting")}
+                  </Text>
+                </View>
               ))}
             </SettingsSection>
           )
@@ -321,9 +439,19 @@ function TaskEditor({ detail, busy, deps, failed, revisions, runs, onBack, onMut
         ? (
             <SettingsSection title={t("tasks.runs")}>
               {runs.map(run => (
-                <Text key={run.id} style={settingsStyles.description}>
-                  {t(`tasks.kind.${run.kind}`)} · {t(`tasks.status.${run.status}`)} · {run.resultSummary ?? run.errorMessage ?? ""}
-                </Text>
+                <View key={run.id} style={styles.runCard}>
+                  <Text style={settingsStyles.description}>
+                    {t(`tasks.kind.${run.kind}`)}
+                    {" · "}
+                    {t(`tasks.status.${run.status}`)}
+                  </Text>
+                  <Text style={styles.runSummary}>
+                    {run.errorMessage ?? run.resultSummary ?? t("tasks.runNoSummary")}
+                  </Text>
+                  {run.forkable
+                    ? <Button label={t("tasks.forkRun")} disabled={busy} onPress={() => void onMutate(() => forkRun(run.id))} />
+                    : null}
+                </View>
               ))}
             </SettingsSection>
           )
@@ -347,6 +475,13 @@ function TaskEditor({ detail, busy, deps, failed, revisions, runs, onBack, onMut
 }
 
 const styles = StyleSheet.create({
-  choice: { minHeight: layout.touchTarget, justifyContent: "center", padding: spacing.sm, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
+  choice: { minHeight: layout.touchTarget, justifyContent: "center", paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
   choiceSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  stack: { gap: spacing.md },
+  taskCard: { gap: spacing.sm, padding: spacing.lg, borderWidth: 1, borderColor: colors.line, borderRadius: radius.lg, backgroundColor: colors.surface },
+  cardHeader: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+  cardTitle: { flex: 1, minWidth: 0, color: colors.inkStrong, fontSize: 15, fontWeight: "600" },
+  runCard: { gap: spacing.sm, padding: spacing.lg, borderWidth: 1, borderColor: colors.line, borderRadius: radius.lg, backgroundColor: colors.surface },
+  runSummary: { color: colors.inkSoft, fontSize: 13, lineHeight: 20 },
+  depCard: { gap: spacing.xs, padding: spacing.md, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
 });

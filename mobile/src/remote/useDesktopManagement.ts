@@ -82,6 +82,9 @@ export function useDesktopManagement(clientRef: RefObject<RemoteClient | null>) 
     setTaskEnabled: (taskId: string, enabled: boolean) =>
       request<RemoteTaskDetail>({ type: "set_task_enabled", taskId, enabled }, true),
     runTask: (taskId: string) => request<RemoteTaskDetail>({ type: "run_task", taskId }, true),
+    /** Fork a finished run into the session list; answers the child session. */
+    forkTaskRun: (runId: string) =>
+      request<{ threadId?: string; sessionId?: string }>({ type: "fork_task_run", runId }, true),
     listTaskRuns: async (taskId: string, limit = 20) =>
       (await request<{ runs: RemoteTaskRun[] }>({ type: "list_task_runs", taskId, limit })).runs,
     listTaskDeps: async (taskId: string) =>

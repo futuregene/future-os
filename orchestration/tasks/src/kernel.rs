@@ -405,6 +405,7 @@ mod tests {
             model_id: None,
             thinking_level: None,
             session_policy: SessionPolicy::New,
+            conversation_mode: crate::types::ConversationMode::Workspace,
             thread_id: None,
             trigger_kind: kind,
             trigger_json: trigger,

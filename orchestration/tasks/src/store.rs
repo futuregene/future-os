@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 
-pub const STORE_SCHEMA_VERSION: i64 = 1;
+pub const STORE_SCHEMA_VERSION: i64 = 2;
 pub const STORE_FILE: &str = "tasks.db";
 pub const STORE_DIR: &str = "tasks";
 
@@ -19,25 +19,25 @@ pub const STORE_DIR: &str = "tasks";
 /// this order, and `task_from_row` reads them positionally.
 const TASK_COLUMNS: &str = "
     id, name, enabled, prompt, prompt_version, cwd, model_id, thinking_level,
-    session_policy, thread_id, trigger_kind, trigger_json, dep_join,
+    session_policy, conversation_mode, thread_id, trigger_kind, trigger_json, dep_join,
     next_due_at, last_run_at, pending_request_at, pending_origin, pending_actor,
     reflection, created_at, updated_at, deleted_at";
 
 const SQL_INSERT_TASK: &str = "
     INSERT INTO tasks (
         id, name, enabled, prompt, prompt_version, cwd, model_id, thinking_level,
-        session_policy, thread_id, trigger_kind, trigger_json, dep_join,
+        session_policy, conversation_mode, thread_id, trigger_kind, trigger_json, dep_join,
         next_due_at, last_run_at, pending_request_at, pending_origin, pending_actor,
         reflection, created_at, updated_at, deleted_at
-    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)";
+    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)";
 
 const SQL_UPDATE_TASK: &str = "
     UPDATE tasks SET
         name=?2, enabled=?3, prompt=?4, prompt_version=?5, cwd=?6, model_id=?7,
-        thinking_level=?8, session_policy=?9, thread_id=?10, trigger_kind=?11,
-        trigger_json=?12, dep_join=?13, next_due_at=?14, last_run_at=?15,
-        pending_request_at=?16, pending_origin=?17, pending_actor=?18,
-        reflection=?19, updated_at=?20, deleted_at=?21
+        thinking_level=?8, session_policy=?9, conversation_mode=?10, thread_id=?11,
+        trigger_kind=?12, trigger_json=?13, dep_join=?14, next_due_at=?15, last_run_at=?16,
+        pending_request_at=?17, pending_origin=?18, pending_actor=?19,
+        reflection=?20, updated_at=?21, deleted_at=?22
     WHERE id=?1";
 
 /// `(enabled = 1)` plus "due now or explicitly requested" — the tick's query.
@@ -75,21 +75,21 @@ const SQL_CLEAR_DEP_STATE: &str = "
 /// The `task_runs` column list (see `TASK_COLUMNS`).
 const RUN_COLUMNS: &str = "
     id, task_id, kind, origin, actor, due_at, status, thread_id, session_id,
-    run_id, prompt_version, result_summary, feedback, feedback_note,
+    run_id, source_entry_id, prompt_version, result_summary, feedback, feedback_note,
     started_at, finished_at, error_message";
 
 const SQL_INSERT_RUN: &str = "
     INSERT INTO task_runs (
         id, task_id, kind, origin, actor, due_at, status, thread_id, session_id,
-        run_id, prompt_version, result_summary, feedback, feedback_note,
+        run_id, source_entry_id, prompt_version, result_summary, feedback, feedback_note,
         started_at, finished_at, error_message
-    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)";
+    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)";
 
 const SQL_UPDATE_RUN: &str = "
     UPDATE task_runs SET
         kind=?2, origin=?3, actor=?4, due_at=?5, status=?6, thread_id=?7, session_id=?8,
-        run_id=?9, prompt_version=?10, result_summary=?11, feedback=?12, feedback_note=?13,
-        started_at=?14, finished_at=?15, error_message=?16
+        run_id=?9, source_entry_id=?10, prompt_version=?11, result_summary=?12,
+        feedback=?13, feedback_note=?14, started_at=?15, finished_at=?16, error_message=?17
     WHERE id=?1";
 
 const SQL_RUNS_FOR_TASK: &str = "
@@ -124,6 +124,22 @@ const SQL_SET_SCHEMA_VERSION: &str = "
     INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
     ON CONFLICT(key) DO NOTHING";
 
+/// `(table, column, DDL)` applied when a database predates the column. Listed in
+/// application order; each entry is additive and idempotent, so a database that
+/// already has the column is left untouched.
+const MIGRATIONS: &[(&str, &str, &str)] = &[
+    (
+        "tasks",
+        "conversation_mode",
+        "ALTER TABLE tasks ADD COLUMN conversation_mode TEXT NOT NULL DEFAULT 'workspace'",
+    ),
+    (
+        "task_runs",
+        "source_entry_id",
+        "ALTER TABLE task_runs ADD COLUMN source_entry_id TEXT",
+    ),
+];
+
 /// The full schema. Single source of truth for a fresh database (see the
 /// module doc: `meta.schema_version` guards later migrations).
 const SCHEMA_SQL: &str = r#"
@@ -142,6 +158,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   model_id         TEXT,
   thinking_level   TEXT,
   session_policy   TEXT NOT NULL DEFAULT 'new',
+  conversation_mode TEXT NOT NULL DEFAULT 'workspace',
   thread_id        TEXT,
   trigger_kind     TEXT NOT NULL,
   trigger_json     TEXT NOT NULL,
@@ -185,6 +202,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
   thread_id      TEXT,
   session_id     TEXT,
   run_id         TEXT,
+  source_entry_id TEXT,
   prompt_version INTEGER,
   result_summary TEXT,
   feedback       TEXT,
@@ -237,9 +255,25 @@ impl Store {
 
     fn apply_schema(&self) -> Result<()> {
         self.conn.execute_batch(SCHEMA_SQL)?;
+        // Columns added after the first release. `CREATE TABLE IF NOT EXISTS`
+        // leaves an existing table alone, so a database written by an older
+        // build needs them added explicitly; a fresh one already has them.
+        for (table, column, sql) in MIGRATIONS {
+            if !self.has_column(table, column)? {
+                self.conn.execute_batch(sql)?;
+            }
+        }
         let values = params![STORE_SCHEMA_VERSION.to_string()];
         self.conn.execute(SQL_SET_SCHEMA_VERSION, values)?;
         Ok(())
+    }
+
+    fn has_column(&self, table: &str, column: &str) -> Result<bool> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"
+        ))?;
+        let mut rows = stmt.query(params![column])?;
+        Ok(rows.next()?.is_some())
     }
 
     // ─── tasks ────────────────────────────────────────────────────────────
@@ -255,6 +289,7 @@ impl Store {
             task.model_id,
             task.thinking_level,
             session_policy_str(task.session_policy),
+            conversation_mode_str(task.conversation_mode),
             task.thread_id,
             trigger_kind_str(task.trigger_kind),
             serde_json::to_string(&task.trigger_json)?,
@@ -284,6 +319,7 @@ impl Store {
             task.model_id,
             task.thinking_level,
             session_policy_str(task.session_policy),
+            conversation_mode_str(task.conversation_mode),
             task.thread_id,
             trigger_kind_str(task.trigger_kind),
             serde_json::to_string(&task.trigger_json)?,
@@ -417,6 +453,7 @@ impl Store {
             run.thread_id,
             run.session_id,
             run.run_id,
+            run.source_entry_id,
             run.prompt_version,
             run.result_summary,
             run.feedback,
@@ -440,6 +477,7 @@ impl Store {
             run.thread_id,
             run.session_id,
             run.run_id,
+            run.source_entry_id,
             run.prompt_version,
             run.result_summary,
             run.feedback,
@@ -566,22 +604,24 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         thinking_level: row.get(7)?,
         session_policy: parse_session_policy(&row.get::<_, String>(8)?)
             .unwrap_or(SessionPolicy::New),
-        thread_id: row.get(9)?,
-        trigger_kind: parse_trigger_kind(&row.get::<_, String>(10)?).unwrap_or(TriggerKind::Manual),
-        trigger_json: serde_json::from_str(&row.get::<_, String>(11)?)
+        conversation_mode: parse_conversation_mode(&row.get::<_, String>(9)?)
+            .unwrap_or(ConversationMode::Workspace),
+        thread_id: row.get(10)?,
+        trigger_kind: parse_trigger_kind(&row.get::<_, String>(11)?).unwrap_or(TriggerKind::Manual),
+        trigger_json: serde_json::from_str(&row.get::<_, String>(12)?)
             .unwrap_or(serde_json::Value::Null),
-        dep_join: parse_dep_join(&row.get::<_, String>(12)?).unwrap_or(DepJoin::All),
-        next_due_at: row.get(13)?,
-        last_run_at: row.get(14)?,
-        pending_request_at: row.get(15)?,
+        dep_join: parse_dep_join(&row.get::<_, String>(13)?).unwrap_or(DepJoin::All),
+        next_due_at: row.get(14)?,
+        last_run_at: row.get(15)?,
+        pending_request_at: row.get(16)?,
         pending_origin: row
-            .get::<_, Option<String>>(16)?
+            .get::<_, Option<String>>(17)?
             .and_then(|s| parse_run_origin(&s)),
-        pending_actor: row.get(17)?,
-        reflection: parse_reflection(&row.get::<_, String>(18)?).unwrap_or(Reflection::Ask),
-        created_at: row.get(19)?,
-        updated_at: row.get(20)?,
-        deleted_at: row.get(21)?,
+        pending_actor: row.get(18)?,
+        reflection: parse_reflection(&row.get::<_, String>(19)?).unwrap_or(Reflection::Ask),
+        created_at: row.get(20)?,
+        updated_at: row.get(21)?,
+        deleted_at: row.get(22)?,
     })
 }
 
@@ -597,13 +637,14 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRun> {
         thread_id: row.get(7)?,
         session_id: row.get(8)?,
         run_id: row.get(9)?,
-        prompt_version: row.get(10)?,
-        result_summary: row.get(11)?,
-        feedback: row.get(12)?,
-        feedback_note: row.get(13)?,
-        started_at: row.get(14)?,
-        finished_at: row.get(15)?,
-        error_message: row.get(16)?,
+        source_entry_id: row.get(10)?,
+        prompt_version: row.get(11)?,
+        result_summary: row.get(12)?,
+        feedback: row.get(13)?,
+        feedback_note: row.get(14)?,
+        started_at: row.get(15)?,
+        finished_at: row.get(16)?,
+        error_message: row.get(17)?,
     })
 }
 
@@ -649,6 +690,20 @@ fn parse_dep_on(s: &str) -> Option<DepOn> {
         "success" => Some(DepOn::Success),
         "failure" => Some(DepOn::Failure),
         "completed" => Some(DepOn::Completed),
+        _ => None,
+    }
+}
+
+fn conversation_mode_str(mode: ConversationMode) -> &'static str {
+    match mode {
+        ConversationMode::Chat => "chat",
+        ConversationMode::Workspace => "workspace",
+    }
+}
+fn parse_conversation_mode(s: &str) -> Option<ConversationMode> {
+    match s {
+        "chat" => Some(ConversationMode::Chat),
+        "workspace" => Some(ConversationMode::Workspace),
         _ => None,
     }
 }
@@ -761,6 +816,7 @@ mod tests {
             model_id: None,
             thinking_level: None,
             session_policy: SessionPolicy::New,
+            conversation_mode: ConversationMode::Workspace,
             thread_id: None,
             trigger_kind: TriggerKind::Schedule,
             trigger_json: serde_json::json!({"mode":"daily","time":"09:00"}),
@@ -860,6 +916,7 @@ mod tests {
             thread_id: None,
             session_id: None,
             run_id: None,
+            source_entry_id: None,
             prompt_version: Some(1),
             result_summary: None,
             feedback: None,
@@ -1108,6 +1165,7 @@ mod tests {
             thread_id: None,
             session_id: None,
             run_id: None,
+            source_entry_id: None,
             prompt_version: Some(1),
             result_summary: None,
             feedback: None,
