@@ -265,6 +265,68 @@ pub fn join_claim(
     }
 }
 
+/// The revision rows a prompt change must leave behind, in insert order.
+///
+/// Returns an empty list when the prompt is unchanged, so callers can treat a
+/// no-op edit as "nothing to record" without checking first.
+///
+/// The **outgoing** prompt is recorded whenever the history does not already
+/// carry a row for the version being replaced. Without it the chain has a hole
+/// at the start: a task's first prompt is the one nobody has a copy of, so
+/// `prompt revert` could walk back through every change except the one that
+/// actually got you out of trouble. Tasks written before this bookkeeping
+/// existed are repaired the same way — the first edit backfills their v1.
+///
+/// `reason` is the caller's text, not the helper's: it shows up verbatim in both
+/// UIs, so inventing English prose here would put an untranslated sentence in a
+/// Chinese panel. Pass `None` when there is nothing to say beyond the source.
+///
+/// The contract: the caller applies the result, and takes the active version
+/// and prompt from the last row. Callers must **not** advance
+/// `task.prompt_version` themselves.
+pub fn prompt_change_revisions(
+    task: &Task,
+    history: &[crate::types::PromptRevision],
+    new_prompt: &str,
+    source: &str,
+    reason: Option<&str>,
+    at_ms: i64,
+) -> Vec<crate::types::PromptRevision> {
+    if new_prompt == task.prompt {
+        return Vec::new();
+    }
+    let mut rows = Vec::new();
+    if !history.iter().any(|r| r.version == task.prompt_version) {
+        rows.push(crate::types::PromptRevision {
+            id: crate::types::new_revision_id(),
+            task_id: task.id.clone(),
+            version: task.prompt_version,
+            prompt: task.prompt.clone(),
+            // Who wrote it is not recorded anywhere, so the row says what is
+            // certain instead of guessing: this version was replaced.
+            source: "superseded".to_string(),
+            status: "superseded".to_string(),
+            reason: None,
+            confidence: None,
+            source_run_id: None,
+            created_at: at_ms,
+        });
+    }
+    rows.push(crate::types::PromptRevision {
+        id: crate::types::new_revision_id(),
+        task_id: task.id.clone(),
+        version: task.prompt_version + 1,
+        prompt: new_prompt.to_string(),
+        source: source.to_string(),
+        status: "active".to_string(),
+        reason: reason.map(str::to_string),
+        confidence: None,
+        source_run_id: None,
+        created_at: at_ms,
+    });
+    rows
+}
+
 /// Whether a finished upstream run satisfies a dependency edge.
 pub fn run_satisfies(dep_on: crate::types::DepOn, run_status: crate::types::RunStatus) -> bool {
     use crate::types::{DepOn, RunStatus};
@@ -411,7 +473,6 @@ mod tests {
             trigger_json: trigger,
             dep_join: crate::types::DepJoin::All,
             next_due_at: None,
-            last_run_at: None,
             pending_request_at: None,
             pending_origin: None,
             pending_actor: None,
@@ -888,5 +949,93 @@ mod tests {
         // An unrepresentable epoch lands in the same "omit" branch as None.
         let absurd = compose_envelope_header(&t, crate::types::RunKind::Main, Some(i64::MAX), None);
         assert!(!absurd.contains("due="), "{absurd}");
+    }
+
+    // ─── prompt versions ──────────────────────────────────────────────────
+
+    fn revision(version: i64, prompt: &str) -> crate::types::PromptRevision {
+        crate::types::PromptRevision {
+            id: format!("rev_{version}"),
+            task_id: "tsk_test".into(),
+            version,
+            prompt: prompt.into(),
+            source: "user".into(),
+            status: "active".into(),
+            reason: None,
+            confidence: None,
+            source_run_id: None,
+            created_at: 0,
+        }
+    }
+
+    /// An unchanged prompt records nothing, so a caller can treat a no-op edit
+    /// as "nothing to write" without checking first.
+    #[test]
+    fn an_unchanged_prompt_records_no_version() {
+        let t = task(serde_json::json!({}), TriggerKind::Manual);
+        assert!(prompt_change_revisions(&t, &[], "p", "user", Some("why"), 1).is_empty());
+    }
+
+    /// The first change records both the new prompt and the one it replaced.
+    /// Without the second row the task's original prompt is gone, and
+    /// `prompt revert` could never get back to where the task started.
+    #[test]
+    fn the_first_change_keeps_the_prompt_it_replaced() {
+        let t = task(serde_json::json!({}), TriggerKind::Manual);
+        let rows = prompt_change_revisions(&t, &[], "the new one", "user", Some("why"), 7);
+        assert_eq!(rows.len(), 2, "the outgoing prompt is kept once");
+
+        assert_eq!(rows[0].version, 1);
+        assert_eq!(rows[0].prompt, "p", "the text the task started with");
+        assert_eq!(rows[0].source, "superseded");
+        assert_eq!(rows[0].status, "superseded");
+        assert_eq!(
+            rows[0].reason, None,
+            "the helper does not invent reason prose: it would show up untranslated"
+        );
+        assert_eq!(rows[0].task_id, "tsk_test");
+
+        assert_eq!(rows[1].version, 2);
+        assert_eq!(rows[1].prompt, "the new one");
+        assert_eq!(rows[1].source, "user");
+        assert_eq!(rows[1].status, "active");
+        assert_eq!(rows[1].reason.as_deref(), Some("why"));
+        assert_eq!(rows[1].created_at, 7);
+        assert!(
+            rows.iter().all(|r| r.id != rows[0].id || r.version == 1),
+            "each row gets its own id"
+        );
+        assert_ne!(rows[0].id, rows[1].id);
+    }
+
+    /// Once the history carries the version being replaced, only the new prompt
+    /// is recorded — otherwise every edit would add another copy of the past.
+    #[test]
+    fn a_change_onto_a_recorded_version_only_adds_the_new_one() {
+        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
+        t.prompt_version = 2;
+        t.prompt = "second".into();
+        let history = vec![revision(1, "p"), revision(2, "second")];
+        let rows = prompt_change_revisions(&t, &history, "third", "reflection", Some("shorter"), 9);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].version, 3);
+        assert_eq!(rows[0].prompt, "third");
+        assert_eq!(rows[0].source, "reflection");
+    }
+
+    /// A task written before this bookkeeping existed has a gap at v1; the
+    /// first edit backfills it, so the repair needs no migration.
+    #[test]
+    fn a_legacy_task_gets_its_missing_version_backfilled() {
+        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
+        // v3 is current, but only v2 is in the history (v1 was never stored).
+        t.prompt_version = 3;
+        t.prompt = "third".into();
+        let history = vec![revision(2, "second")];
+        let rows = prompt_change_revisions(&t, &history, "fourth", "user", Some("why"), 11);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].version, 3, "the version being replaced");
+        assert_eq!(rows[0].prompt, "third");
+        assert_eq!(rows[1].version, 4);
     }
 }

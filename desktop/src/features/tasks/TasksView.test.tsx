@@ -38,7 +38,7 @@ function task(overrides: Partial<TaskView> = {}): TaskView {
     trigger: { mode: "daily", time: "09:00" },
     depJoin: "all",
     nextDueAt: 1_700_000_000_000,
-    lastRunAt: null,
+    queued: false,
     reflection: "ask",
     latestRun: null,
     ...overrides,
@@ -200,6 +200,25 @@ describe("tasksView", () => {
   it("says so when there are no tasks", async () => {
     const { container } = await renderView([]);
     expect(container.textContent).toContain("No tasks yet");
+  });
+
+  // Pressing "run now" while a run is in flight leaves the request queued for
+  // the tick. The row has to say so: otherwise the button looks like it did
+  // nothing until the in-flight run ends.
+  it("shows a queued request instead of the last run's status", async () => {
+    const { container } = await renderView([
+      task({ queued: true, latestRun: run({ status: "running" }) }),
+    ]);
+    const row = rows(container)[0]?.textContent ?? "";
+    expect(row).toContain("queued");
+    expect(row).not.toContain("running");
+  });
+
+  it("shows the last run's status when nothing is waiting", async () => {
+    const { container } = await renderView([
+      task({ queued: false, latestRun: run({ status: "completed" }) }),
+    ]);
+    expect(rows(container)[0]?.textContent ?? "").toContain("done");
   });
 
   it("shows the load failure", async () => {
@@ -373,7 +392,7 @@ describe("tasksView", () => {
       await setValue(triggerModeSelect(container), mode);
       await extra(container);
       mocks.invokeCommand.mockClear();
-      mocks.invokeCommand.mockResolvedValue([task()]);
+      backend([task()]);
       await click(buttonByText(container, "Save"));
       const call = mocks.invokeCommand.mock.calls.find(([command]) => command === "create_task");
       return (call?.[1] as { input: { triggerKind: string; trigger: Record<string, unknown> } }).input;
@@ -442,7 +461,7 @@ describe("tasksView", () => {
       boxes[0]!.click();
     });
     mocks.invokeCommand.mockClear();
-    mocks.invokeCommand.mockResolvedValue([task()]);
+    backend([task()]);
     await setValue(field(container, "Name") as HTMLInputElement, "w");
     await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
     await setValue(field(container, "Working directory") as HTMLInputElement, "/tmp");
@@ -498,7 +517,11 @@ describe("tasksView", () => {
     expect((triggerModeSelect(container) as HTMLSelectElement).value).toBe("manual");
     expect(container.querySelector("fieldset")!.querySelectorAll("input")).toHaveLength(0);
     mocks.invokeCommand.mockClear();
-    mocks.invokeCommand.mockResolvedValue([task()]);
+    // Re-install the canned backend rather than answering *every* command with
+    // the task list: a blanket mock also feeds task objects to the dependency
+    // list, whose rows are keyed by `upstreamTaskId` — undefined there, which
+    // React reports as a missing key and which would drown out a real one.
+    backend([task()]);
     await click(buttonByText(container, "Save"));
     const call = mocks.invokeCommand.mock.calls.find(([command]) => command === "update_task");
     expect(call?.[1]).toMatchObject({ id: "tsk_1", input: { triggerKind: "manual", trigger: {} } });
@@ -532,7 +555,7 @@ describe("tasksView", () => {
     });
 
     mocks.invokeCommand.mockClear();
-    mocks.invokeCommand.mockResolvedValue([task()]);
+    backend([task()]);
     await click(buttonByText(container, "Save"));
     const call = mocks.invokeCommand.mock.calls.find(([command]) => command === "create_task");
     expect(call?.[1]).toMatchObject({
@@ -555,7 +578,7 @@ describe("tasksView", () => {
     await click(buttonByText(container, "Edit"));
     await setValue(field(container, "Time") as HTMLInputElement, "23:15");
     mocks.invokeCommand.mockClear();
-    mocks.invokeCommand.mockResolvedValue([task()]);
+    backend([task()]);
     await click(buttonByText(container, "Save"));
     const call = mocks.invokeCommand.mock.calls.find(([command]) => command === "update_task");
     expect(call?.[1]).toMatchObject({ input: { trigger: { mode: "daily", time: "23:15" } } });
@@ -574,7 +597,7 @@ describe("tasksView", () => {
     await setValue(field(container, "Day of month") as HTMLInputElement, "15");
     await setValue(field(container, "Time") as HTMLInputElement, "06:45");
     mocks.invokeCommand.mockClear();
-    mocks.invokeCommand.mockResolvedValue([task()]);
+    backend([task()]);
     await click(buttonByText(container, "Save"));
     const call = mocks.invokeCommand.mock.calls.find(([command]) => command === "update_task");
     expect(call?.[1]).toMatchObject({
@@ -616,7 +639,7 @@ describe("tasksView", () => {
     await setValue(field(container, "Conversation type") as HTMLSelectElement, "chat");
     expect(container.textContent).toContain("appears under Chat");
     mocks.invokeCommand.mockClear();
-    mocks.invokeCommand.mockResolvedValue([task()]);
+    backend([task()]);
     await click(buttonByText(container, "Save"));
     const call = mocks.invokeCommand.mock.calls.find(([command]) => command === "create_task");
     expect(call?.[1]).toMatchObject({ input: { conversationMode: "chat" } });

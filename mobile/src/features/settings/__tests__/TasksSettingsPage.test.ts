@@ -51,7 +51,7 @@ function taskRow(overrides: Partial<RemoteTaskRow> = {}): RemoteTaskRow {
     triggerKind: "schedule",
     trigger: { mode: "daily", time: "09:00" },
     nextDueAt: 1_700_000_000_000,
-    lastRunAt: null,
+    queued: false,
     reflection: "ask",
     latestRun: null,
     ...overrides,
@@ -238,6 +238,23 @@ test("returns to the list from a task", async () => {
   await act(async () => firstTask().props.onPress());
   await act(async () => button("common.back").props.onPress());
   expect(sections()).toContain("tasks.title");
+});
+
+// Pressing "run now" while the desktop is busy leaves the request queued for
+// the tick. The row says so: otherwise the button looks like it did nothing
+// until the in-flight run finishes.
+test("shows a queued request instead of the last run's status", async () => {
+  rows = [taskRow({ queued: true, latestRun: { id: "trn_1", kind: "main", origin: "schedule", status: "running", resultSummary: null, errorMessage: null } })];
+  await remount();
+  const shown = texts().map(String);
+  expect(shown.some(text => text.includes("tasks.status.queued"))).toBe(true);
+  expect(shown.some(text => text.includes("tasks.status.running"))).toBe(false);
+});
+
+test("shows the last run's status when nothing is waiting", async () => {
+  rows = [taskRow({ queued: false, latestRun: { id: "trn_1", kind: "main", origin: "schedule", status: "completed", resultSummary: "ok", errorMessage: null } })];
+  await remount();
+  expect(texts().map(String).some(text => text.includes("tasks.status.completed"))).toBe(true);
 });
 
 test("summarises a manual task and a task with no runs", async () => {

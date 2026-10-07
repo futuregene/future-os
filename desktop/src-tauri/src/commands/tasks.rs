@@ -49,7 +49,8 @@ pub struct TaskView {
     pub trigger: serde_json::Value,
     pub dep_join: String,
     pub next_due_at: Option<i64>,
-    pub last_run_at: Option<i64>,
+    /// An explicit request is waiting for the tick (the task was busy).
+    pub queued: bool,
     pub reflection: String,
     pub latest_run: Option<RunView>,
 }
@@ -109,7 +110,7 @@ fn task_view(store: &Store, task: Task) -> TaskView {
         trigger: task.trigger_json,
         dep_join: format!("{:?}", task.dep_join).to_lowercase(),
         next_due_at: task.next_due_at,
-        last_run_at: task.last_run_at,
+        queued: task.pending_request_at.is_some(),
         reflection: format!("{:?}", task.reflection).to_lowercase(),
         latest_run,
     }
@@ -208,7 +209,6 @@ pub fn create_task(input: TaskInput) -> Result<TaskView, crate::AppError> {
         trigger_json: trigger,
         dep_join: parse_dep_join(input.dep_join.as_deref()),
         next_due_at: None,
-        last_run_at: None,
         pending_request_at: None,
         pending_origin: None,
         pending_actor: None,
@@ -235,7 +235,26 @@ pub fn update_task(id: String, input: TaskInput) -> Result<TaskView, crate::AppE
         .ok_or_else(|| crate::AppError::Message("task not found".to_string()))?;
     let trigger_kind = parse_trigger_kind(input.trigger_kind.as_deref());
     let trigger = input.trigger.unwrap_or_else(|| task.trigger_json.clone());
-    let prompt_changed = input.prompt != task.prompt;
+    // The version bookkeeping runs *before* `task.prompt` is overwritten: the
+    // helper compares the incoming prompt against the task's current one, so
+    // assigning first would look like an unchanged prompt and record nothing.
+    let prompt_revisions = if input.prompt != task.prompt {
+        let history = store
+            .list_revisions(&task.id)
+            .map_err(|e| crate::AppError::Message(e.to_string()))?;
+        // No reason prose, matching what this path wrote before: the field is
+        // rendered as-is, so an English sentence would show up untranslated.
+        future_tasks::prompt_change_revisions(
+            &task,
+            &history,
+            &input.prompt,
+            "user",
+            None,
+            now_ms(),
+        )
+    } else {
+        Vec::new()
+    };
     task.name = input.name;
     task.prompt = input.prompt;
     task.cwd = input.cwd;
@@ -256,23 +275,15 @@ pub fn update_task(id: String, input: TaskInput) -> Result<TaskView, crate::AppE
     } else {
         task.next_due_at = None;
     }
-    if prompt_changed {
-        task.prompt_version += 1;
-        let revision = future_tasks::PromptRevision {
-            id: future_tasks::new_revision_id(),
-            task_id: task.id.clone(),
-            version: task.prompt_version,
-            prompt: task.prompt.clone(),
-            source: "user".to_string(),
-            status: "active".to_string(),
-            reason: None,
-            confidence: None,
-            source_run_id: None,
-            created_at: now_ms(),
-        };
-        store
-            .insert_revision(&revision)
-            .map_err(|e| crate::AppError::Message(e.to_string()))?;
+    if !prompt_revisions.is_empty() {
+        for row in &prompt_revisions {
+            store
+                .insert_revision(row)
+                .map_err(|e| crate::AppError::Message(e.to_string()))?;
+        }
+        if let Some(last) = prompt_revisions.last() {
+            task.prompt_version = last.version;
+        }
     }
     store
         .update_task(&task)
@@ -292,6 +303,12 @@ pub fn delete_task(id: String) -> Result<(), crate::AppError> {
     task.updated_at = now_ms();
     store
         .update_task(&task)
+        .map_err(|e| crate::AppError::Message(e.to_string()))?;
+    // Edges pointing at this task go with it. A deleted upstream can never
+    // report another run, so a downstream left holding that edge would wait on
+    // a name that no longer resolves.
+    store
+        .remove_deps_pointing_at(&id)
         .map_err(|e| crate::AppError::Message(e.to_string()))
 }
 
@@ -466,30 +483,38 @@ pub fn apply_task_revision(id: String, revision_id: String) -> Result<TaskView, 
         .get_task(&id)
         .map_err(|e| crate::AppError::Message(e.to_string()))?
         .ok_or_else(|| crate::AppError::Message("task not found".to_string()))?;
-    let revision = store
+    let history = store
         .list_revisions(&id)
-        .map_err(|e| crate::AppError::Message(e.to_string()))?
-        .into_iter()
-        .find(|r| r.id == revision_id)
-        .ok_or_else(|| crate::AppError::Message("revision not found".to_string()))?;
-    task.prompt = revision.prompt;
-    task.prompt_version += 1;
-    task.updated_at = now_ms();
-    let applied = future_tasks::PromptRevision {
-        id: future_tasks::new_revision_id(),
-        task_id: task.id.clone(),
-        version: task.prompt_version,
-        prompt: task.prompt.clone(),
-        source: "rollback".to_string(),
-        status: "active".to_string(),
-        reason: Some(format!("applied revision {}", revision.id)),
-        confidence: None,
-        source_run_id: None,
-        created_at: now_ms(),
-    };
-    store
-        .insert_revision(&applied)
         .map_err(|e| crate::AppError::Message(e.to_string()))?;
+    let revision = history
+        .iter()
+        .find(|r| r.id == revision_id)
+        .ok_or_else(|| crate::AppError::Message("revision not found".to_string()))?
+        .clone();
+    let rows = future_tasks::prompt_change_revisions(
+        &task,
+        &history,
+        &revision.prompt,
+        "rollback",
+        Some(&format!(
+            "applied revision {} (v{})",
+            revision_id, revision.version
+        )),
+        now_ms(),
+    );
+    let Some(applied) = rows.last() else {
+        // Already active: report the task unchanged rather than bumping a
+        // version for a no-op.
+        return Ok(task_view(&store, task));
+    };
+    for row in &rows {
+        store
+            .insert_revision(row)
+            .map_err(|e| crate::AppError::Message(e.to_string()))?;
+    }
+    task.prompt = applied.prompt.clone();
+    task.prompt_version = applied.version;
+    task.updated_at = now_ms();
     store
         .update_task(&task)
         .map_err(|e| crate::AppError::Message(e.to_string()))?;
@@ -593,11 +618,18 @@ mod tests {
         assert_eq!(updated.prompt_version, 2, "editing the prompt bumps it");
         assert!(updated.next_due_at.is_none(), "manual work has no schedule");
 
-        // The prompt edit is recorded as a revision the UI can list and apply.
+        // The edit records the new prompt *and* the one it replaced, so the
+        // version the task started with stays reachable by `prompt revert`.
         let revisions = list_task_revisions(created.id.clone()).expect("revisions");
-        assert_eq!(revisions.len(), 1);
-        assert_eq!(revisions[0].version, 2);
-        assert_eq!(revisions[0].source, "user");
+        assert_eq!(revisions.len(), 2);
+        let by_version = |v: i64| {
+            revisions
+                .iter()
+                .find(|r| r.version == v)
+                .unwrap_or_else(|| panic!("no revision for v{v}: {revisions:?}"))
+        };
+        assert_eq!(by_version(1).source, "superseded");
+        assert_eq!(by_version(2).source, "user");
 
         delete_task(created.id.clone()).expect("delete");
         assert!(
@@ -629,7 +661,7 @@ mod tests {
 
         let applied = apply_task_revision(created.id.clone(), first).expect("apply");
         assert_eq!(applied.prompt_version, 3, "applying adds a revision");
-        let after = list_task_revisions(created.id).expect("revisions");
+        let after = list_task_revisions(created.id.clone()).expect("revisions");
         assert_eq!(after.last().unwrap().source, "rollback");
         assert_eq!(
             after
@@ -639,6 +671,16 @@ mod tests {
                 .as_deref()
                 .map(|r| r.starts_with("applied revision")),
             Some(true)
+        );
+
+        // Applying the version that is already active changes nothing: a bump
+        // for a no-op would fill the history with identical copies.
+        let active = after.last().unwrap().id.clone();
+        let again = apply_task_revision(created.id.clone(), active).expect("apply again");
+        assert_eq!(again.prompt_version, 3, "no version is spent on a no-op");
+        assert_eq!(
+            list_task_revisions(created.id).expect("revisions").len(),
+            after.len()
         );
     }
 
@@ -707,6 +749,28 @@ mod tests {
         let task = store.get_task(&created.id).unwrap().unwrap();
         assert!(task.pending_request_at.is_some());
         assert_eq!(task.pending_actor.as_deref(), Some("user"));
+
+        // The view says so too. Pressing "run now" while a run is in flight
+        // makes the tick hold the request until the run ends; without this flag
+        // the panel would look like the button did nothing.
+        assert!(queued.queued, "the queued request is visible to the caller");
+        assert!(
+            list_scheduled_tasks_includes(&created.id).queued,
+            "and to a list refresh"
+        );
+
+        // A task with nothing waiting is not reported as queued.
+        let idle = create_task(input("idle")).expect("create idle");
+        assert!(!idle.queued);
+    }
+
+    /// The list view for one task (the command returns them all).
+    fn list_scheduled_tasks_includes(id: &str) -> TaskView {
+        list_tasks()
+            .expect("list")
+            .into_iter()
+            .find(|t| t.id == id)
+            .expect("the task is listed")
     }
 
     #[test]
@@ -738,6 +802,71 @@ mod tests {
 
         remove_task_dep(downstream.id.clone(), upstream.id.clone()).expect("remove");
         assert!(list_task_deps(downstream.id).unwrap().is_empty());
+    }
+
+    /// Deleting an upstream takes the edges pointing at it. Otherwise the
+    /// downstream keeps an edge to a task that can never report again, and the
+    /// panel shows it a dependency it cannot resolve — the id falls through to
+    /// the name column as a bare `tsk_...`.
+    #[test]
+    fn deleting_a_task_drops_the_edges_pointing_at_it() {
+        let _home = init("cmd_tasks_delete_upstream");
+        let upstream = create_task(input("upstream")).expect("create upstream");
+        let downstream = create_task(input("downstream")).expect("create downstream");
+        let other = create_task(input("other")).expect("create other");
+        set_task_dep(downstream.id.clone(), upstream.id.clone(), None).expect("set");
+        set_task_dep(other.id.clone(), upstream.id.clone(), None).expect("set other");
+
+        let store = open().expect("store");
+        store
+            .mark_dep_satisfied(&downstream.id, &upstream.id, "trn_1", 1)
+            .expect("mark");
+
+        delete_task(upstream.id.clone()).expect("delete upstream");
+
+        assert!(
+            list_task_deps(downstream.id.clone()).unwrap().is_empty(),
+            "the downstream waits on nothing"
+        );
+        assert!(list_task_deps(other.id).unwrap().is_empty());
+        assert!(
+            store
+                .get_dep_state(&downstream.id, &upstream.id)
+                .unwrap()
+                .is_none(),
+            "the stale progress goes too"
+        );
+        // The deleted task's own definition survives as a tombstone.
+        assert!(store
+            .get_task(&upstream.id)
+            .unwrap()
+            .unwrap()
+            .deleted_at
+            .is_some());
+    }
+
+    /// A downstream whose upstream was deleted is not a chain candidate: there
+    /// is nothing left that could satisfy the join.
+    #[test]
+    fn a_downstream_with_a_deleted_upstream_never_fires() {
+        let _home = init("cmd_tasks_delete_upstream_chain");
+        let upstream = create_task(input("upstream")).expect("create upstream");
+        let downstream = create_task(input("downstream")).expect("create downstream");
+        set_task_dep(downstream.id.clone(), upstream.id.clone(), None).expect("set");
+        let store = open().expect("store");
+        store
+            .mark_dep_satisfied(&downstream.id, &upstream.id, "trn_1", 1)
+            .expect("mark");
+
+        delete_task(upstream.id.clone()).expect("delete upstream");
+
+        assert!(
+            !crate::tasks::candidates_for_test(&store, 1_000)
+                .unwrap()
+                .iter()
+                .any(|(task_id, _)| *task_id == downstream.id),
+            "a gone upstream cannot wake the downstream"
+        );
     }
 
     /// Asking for the runs of a task that no longer exists answers with no runs

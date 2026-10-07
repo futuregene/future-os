@@ -186,7 +186,7 @@ tick（30s，墙上时钟）
 
 ## 7. 反省（prompt 优化建议）—— **设计保留，尚未实现**
 
-> 状态：`tasks.reflection` 档位已经落库并在 UI/CLI 可见可改，但**反思本身还没接线**。当前每次运行只写台账（`task_runs.result_summary`）；不会自动追加一次反省 run，也不会生成提案。`feedback` / `prompt log|apply|revert` 这些配套入口同理（desktop 面板与 remote 桥有"应用历史版本"，靠的是用户编辑产生的 revision，不是反省提案）。
+> 状态：`tasks.reflection` 档位已经落库并在 UI/CLI 可见可改，但**反思本身还没接线**。当前每次运行只写台账（`task_runs.result_summary`）；不会自动追加一次反省 run，也不会生成提案。`feedback` 现在**有写入者**（CLI 的 `future task feedback`、desktop 面板），但还没有读取者——没有反省环节，就没有东西消费它；`prompt log|apply|revert` 可用，且版本历史是完整的（含任务最初那版），但版本来自用户编辑与重新应用，不是反省提案。
 
 设计意图（接线时照此实现）：
 
@@ -218,30 +218,50 @@ host 现状：
 - **mobile**：不 host；经 remote 桥管理（能力 `tasks_v1`）。
 - **TUI**：**未接**。crate 与 CLI 已经可用，TUI 面板是后续增量。
 
-## 9. CLI（`future task`，当前已实现）
+## 9. CLI（`future task`）
 
 ```
 future task list [--all] [--json]
 future task show <id|name> [--json] [--prompt]
 future task add --name N --prompt P|--prompt-file F --cwd D
                 [--model M] [--thinking L] [--session new|existing]
+                [--conversation workspace|chat]
                 [--reflection off|ask|auto] [--disabled] [--json]
-                (--at | --every | --daily | --weekly | --monthly)
+                [--depends-on A[:success|failure|completed]]… [--join-any]
+                (--manual | --at | --every | --daily | --weekly | --monthly)
+future task edit <id|name> [any add flag] [--enable|--disable]
+future task enable|disable <id|name>
+future task remove <id|name> [--yes]
 future task run <id|name> [--wait] [--timeout 15m] [--json]
 future task runs <id|name> [--limit N] [--json]
+future task feedback <run-id> good|bad [--note "…"]
+future task upstream|deps <id|name> [--json]
+future task prompt log|apply|revert <id|name> [revision-id]
 ```
 
 - CLI 只是同一份 `tasks.db` 的客户端：写立即落盘，desktop 下个 tick 生效；**CLI 从不自己执行 run**。
-- `run` 默认只排队并如实说明；`--wait` 轮询台账到终态，打印 status/thread/session/result_summary。
+- `run` 默认只排队并如实说明；`--wait` 轮询台账到终态，`--json` 给出 `status` / `runId` / `threadId` / `resultSummary`。
+- **prompt 版本语义**（`orchestration/tasks/src/kernel.rs::prompt_change_revisions`，写入者共用）：
+  改动 prompt 时记录新版本，并**保留被替换的那一版**（含任务最初那版）。否则版本链在开头断掉——
+  改过一次之后就再也回不到最初那版。desktop 端同理。
+- `enable` 会为 schedule 重算下次时间（暂停跨过时间点的任务否则永不触发）；`remove` 软删并清掉指向它的依赖边。
 - 帮助里明确与 `future loop todo` 区分。
 
-**尚未实现（设计保留）**：`edit` / `enable` / `disable` / `remove` / `output <run-id> --full` / `feedback` / `prompt log|apply|revert` / `deps`。这些不是遗漏，而是本版范围之外：desktop 面板与 remote 桥已覆盖增删改查、依赖查看、版本应用与历史，CLI 侧补的是同一批命令的脚本化入口。
+**实现与文档必须一致**：`cli/src/commands/task.rs` 有一个测试逐行解析 `help::TASK_HELP`，
+要求它与分发器列出**同一批**子命令（双向集合相等）。这是为已经真实发生过的一类缺陷设的闸门：
+命令面被描述给用户/技能/其它 agent，而分发器没有对应分支，文档里的调用直接报 `Unknown argument`。
 
 ## 10. 技能 `future-task`
 
 `skills/builtin/future-task/SKILL.md`（skills 子模块，独立 PR）。内容以"prompt 怎么写"为主：无人值守下的 8 条约束、触发器选择（含短月顺延必须告知用户）、`run → 判读 → feedback → 改 → 再跑` 的迭代闭环、以及其它 agent 用 `future task run --wait --json` 触发的约定（有外部副作用的先取得用户同意）。
 
-技能里引用的命令限定在 §9 已实现的那批。
+- 技能里引用的命令必须限定在 §9 已实现的那批——首版技能描述了一批不存在的子命令（`edit`/`feedback`/`prompt log`/`upstream`/`--depends-on`），
+  已按实际实现修正。
+- **技能与 CLI 的版本对齐没有自动化守卫**：skills 是独立仓库且父仓库的 CI 不检出该 submodule，
+  所以"技能写了、CLI 没有"只能靠人核对（或本文件的 §9 与技能一起改）。父仓库里那条帮助/分发一致性测试覆盖不了跨仓库这一层。
+- 技能里明确写出反射尚未接线，避免向用户承诺不会发生的提案。
+
+**已实现的配套命令（与技能同步）**：`edit` / `enable` / `disable` / `remove` / `feedback` / `upstream` / `prompt log|apply|revert`。
 
 ## 11. UI
 

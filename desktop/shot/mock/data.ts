@@ -820,7 +820,7 @@ export interface MockTask {
   trigger: Record<string, unknown>;
   depJoin: string;
   nextDueAt: number | null;
-  lastRunAt: number | null;
+  queued: boolean;
   reflection: string;
   latestRun: MockTaskRun | null;
 }
@@ -849,7 +849,7 @@ export const tasks: MockTask[] = [
     trigger: { mode: "weekly", days: ["mon", "fri"], time: "10:00" },
     depJoin: "all",
     nextDueAt: now + 2 * hour + 40 * minute,
-    lastRunAt: now - 2 * day,
+    queued: false,
     reflection: "ask",
     latestRun: {
       id: "trn_report_2",
@@ -886,7 +886,7 @@ export const tasks: MockTask[] = [
     trigger: { mode: "interval", every_minutes: 720 },
     depJoin: "all",
     nextDueAt: now + 6 * hour,
-    lastRunAt: now - 6 * hour,
+    queued: true,
     reflection: "auto",
     latestRun: {
       id: "trn_lit_9",
@@ -922,7 +922,7 @@ export const tasks: MockTask[] = [
     trigger: { mode: "monthly", day: 31, time: "09:00" },
     depJoin: "all",
     nextDueAt: now + 24 * day,
-    lastRunAt: null,
+    queued: false,
     reflection: "ask",
     latestRun: null,
   },
@@ -945,7 +945,7 @@ export const tasks: MockTask[] = [
     trigger: {},
     depJoin: "all",
     nextDueAt: null,
-    lastRunAt: now - 6 * hour,
+    queued: false,
     reflection: "ask",
     latestRun: {
       id: "trn_notify_1",
@@ -1008,7 +1008,10 @@ export const taskRevisions: Record<string, Array<{ id: string; version: number; 
       id: "rev_w1",
       version: 1,
       prompt: "整理本周进展。",
-      source: "user",
+      // What the prompt-change bookkeeping writes for the version being
+      // replaced: who wrote it was never recorded, so the row says what is
+      // certain instead of guessing.
+      source: "superseded",
       status: "superseded",
       reason: null,
       confidence: null,

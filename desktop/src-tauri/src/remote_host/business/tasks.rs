@@ -55,7 +55,7 @@ fn task_list_view(store: &future_tasks::Store, task: future_tasks::Task) -> Valu
         "triggerKind": format!("{:?}", task.trigger_kind).to_lowercase(),
         "trigger": task.trigger_json,
         "nextDueAt": task.next_due_at,
-        "lastRunAt": task.last_run_at,
+        "queued": task.pending_request_at.is_some(),
         "reflection": format!("{:?}", task.reflection).to_lowercase(),
         "latestRun": latest.map(run_summary_view),
     })
@@ -79,7 +79,7 @@ fn task_detail_view(store: &future_tasks::Store, task: future_tasks::Task) -> Va
         "trigger": task.trigger_json,
         "depJoin": format!("{:?}", task.dep_join).to_lowercase(),
         "nextDueAt": task.next_due_at,
-        "lastRunAt": task.last_run_at,
+        "queued": task.pending_request_at.is_some(),
         "reflection": format!("{:?}", task.reflection).to_lowercase(),
         "latestRun": latest.map(run_summary_view),
     })
@@ -207,7 +207,6 @@ fn task_from_payload(
             .or_else(|| base.as_ref().map(|t| t.dep_join))
             .unwrap_or(future_tasks::DepJoin::All),
         next_due_at: None,
-        last_run_at: base.as_ref().and_then(|t| t.last_run_at),
         pending_request_at: base.as_ref().and_then(|t| t.pending_request_at),
         pending_origin: base.as_ref().and_then(|t| t.pending_origin),
         pending_actor: base.as_ref().and_then(|t| t.pending_actor.clone()),
@@ -541,7 +540,6 @@ mod tests {
             trigger_json: serde_json::json!({"mode": "daily", "time": "09:00"}),
             dep_join: future_tasks::DepJoin::All,
             next_due_at: Some(now + 60_000),
-            last_run_at: None,
             pending_request_at: None,
             pending_origin: None,
             pending_actor: None,
@@ -600,6 +598,19 @@ mod tests {
         assert_eq!(items[0]["triggerKind"], "schedule");
         assert_eq!(items[0]["nextDueAt"], saved.next_due_at.unwrap());
         assert_eq!(items[0]["latestRun"]["status"], "completed");
+
+        // Nothing is waiting, so the phone is not told otherwise.
+        assert_eq!(items[0]["queued"], false);
+
+        // A pending request is surfaced: the phone pressed "run now" while the
+        // desktop was busy, and the row has to say so rather than look ignored.
+        let mut waiting = store.get_task(&saved.id).unwrap().unwrap();
+        waiting.pending_request_at = Some(9_000);
+        waiting.pending_origin = Some(future_tasks::RunOrigin::Ui);
+        store.update_task(&waiting).unwrap();
+        let sink = RecordingSink::default();
+        super::execute(&command("list_tasks"), &sink).await;
+        assert_eq!(sink.ok_data()["tasks"][0]["queued"], true);
     }
 
     /// The detail record is the only place the prompt crosses the wire, and it

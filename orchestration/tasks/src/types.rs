@@ -123,7 +123,6 @@ pub struct Task {
     pub dep_join: DepJoin,
     /// Next due (epoch ms); `None` = no longer scheduled.
     pub next_due_at: Option<i64>,
-    pub last_run_at: Option<i64>,
     /// Pending explicit/chain trigger (tick consumes).
     pub pending_request_at: Option<i64>,
     pub pending_origin: Option<RunOrigin>,

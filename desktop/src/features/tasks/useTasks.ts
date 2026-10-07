@@ -32,7 +32,8 @@ export interface TaskView {
   trigger: Record<string, unknown>;
   depJoin: string;
   nextDueAt: number | null;
-  lastRunAt: number | null;
+  /** An explicit request is waiting for the tick (the task was busy). */
+  queued: boolean;
   reflection: string;
   latestRun: TaskRunView | null;
 }

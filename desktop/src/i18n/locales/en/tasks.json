@@ -44,7 +44,8 @@
     "running": "running",
     "completed": "done",
     "failed": "failed",
-    "skipped": "skipped"
+    "skipped": "skipped",
+    "queued": "queued"
   },
   "kind": {
     "main": "scheduled",
@@ -64,7 +65,8 @@
   "source": {
     "user": "Manual edit",
     "reflection": "Reflection",
-    "rollback": "Rollback"
+    "rollback": "Rollback",
+    "superseded": "Earlier version"
   },
   "weekday": {
     "mon": "Mon",

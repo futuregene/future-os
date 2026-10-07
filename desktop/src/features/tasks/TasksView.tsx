@@ -255,29 +255,40 @@ export function TasksView({
           {store.tasks.length === 0 && !store.loading
             ? <p className="px-4 py-6 text-xs text-ink-muted">{t("empty")}</p>
             : null}
-          {store.tasks.map(task => (
-            <button
-              key={task.id}
-              className={`flex w-full flex-col gap-1.5 border-b border-line-soft px-4 py-3 text-left transition-colors hover:bg-surface-subtle ${task.id === selectedId ? "bg-surface-subtle" : ""}`}
-              type="button"
-              onClick={() => {
-                setSelectedId(task.id);
-                setEditing(false);
-              }}
-            >
-              <span className="flex items-center gap-2">
-                <span className={`size-1.5 shrink-0 rounded-full ${task.enabled ? "bg-accent" : "bg-line"}`} />
-                <span className="min-w-0 flex-1 truncate text-sm text-ink">{task.name}</span>
-                {task.latestRun
-                  ? <span className="shrink-0 text-xs text-ink-muted">{t(`status.${task.latestRun.status}`)}</span>
-                  : null}
-              </span>
-              <span className="truncate pl-3.5 text-xs text-ink-muted">
-                {summarizeTrigger(t, task, locale)}
-                {task.nextDueAt ? ` · ${formatEpoch(task.nextDueAt, locale)}` : ""}
-              </span>
-            </button>
-          ))}
+          {store.tasks.map((task) => {
+            // A queued request wins over the last run's status: it is what the
+            // user is waiting on after pressing "run now" while the task was
+            // busy, and the panel would otherwise look like the button did
+            // nothing until the in-flight run ends.
+            const status = task.queued
+              ? t("status.queued")
+              : task.latestRun
+                ? t(`status.${task.latestRun.status}`)
+                : null;
+            return (
+              <button
+                key={task.id}
+                className={`flex w-full flex-col gap-1.5 border-b border-line-soft px-4 py-3 text-left transition-colors hover:bg-surface-subtle ${task.id === selectedId ? "bg-surface-subtle" : ""}`}
+                type="button"
+                onClick={() => {
+                  setSelectedId(task.id);
+                  setEditing(false);
+                }}
+              >
+                <span className="flex items-center gap-2">
+                  <span className={`size-1.5 shrink-0 rounded-full ${task.enabled ? "bg-accent" : "bg-line"}`} />
+                  <span className="min-w-0 flex-1 truncate text-sm text-ink">{task.name}</span>
+                  {status
+                    ? <span className={`shrink-0 text-xs ${task.queued ? "text-accent" : "text-ink-muted"}`}>{status}</span>
+                    : null}
+                </span>
+                <span className="truncate pl-3.5 text-xs text-ink-muted">
+                  {summarizeTrigger(t, task, locale)}
+                  {task.nextDueAt ? ` · ${formatEpoch(task.nextDueAt, locale)}` : ""}
+                </span>
+              </button>
+            );
+          })}
         </div>
 
         <div className="min-w-0 flex-1 overflow-y-auto">

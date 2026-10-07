@@ -705,6 +705,18 @@
           },
           {
             "shot": "d-tasks-detail.png"
+          },
+          {
+            "eval": "(() => { const scrollers = [...document.querySelectorAll('div,main,section')].filter(el => el.scrollHeight > el.clientHeight + 40 && /auto|scroll/.test(getComputedStyle(el).overflowY)); if (!scrollers.length) throw new Error('no scroll container'); const target = scrollers.sort((a, b) => b.scrollHeight - a.scrollHeight)[0]; target.scrollTop = target.scrollHeight; return target.scrollTop;})()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => { const rows = [...document.querySelectorAll('li')].map(li => (li.textContent || '').trim()).filter(t => t.startsWith('v')); if (!rows.length) throw new Error('no prompt-version rows rendered'); const joined = rows.join(' | '); if (!joined.includes('更早的版本')) throw new Error('a superseded version is not labelled: ' + joined); if (!joined.includes('反省')) throw new Error('a reflection version is not labelled: ' + joined); })()"
+          },
+          {
+            "shot": "d-tasks-detail-versions.png"
           }
         ]
       },

@@ -767,6 +767,7 @@ export const resources = {
           completed: "done",
           failed: "failed",
           skipped: "skipped",
+          queued: "queued",
         },
         kind: {
           main: "scheduled",
@@ -792,6 +793,7 @@ export const resources = {
           user: "Manual edit",
           reflection: "Reflection",
           rollback: "Rollback",
+          superseded: "Earlier version",
         },
         form: {
           prompt: "Prompt",
@@ -1515,6 +1517,7 @@ export const resources = {
           completed: "完成",
           failed: "失败",
           skipped: "已跳过",
+          queued: "已排队",
         },
         kind: {
           main: "定时",
@@ -1540,6 +1543,7 @@ export const resources = {
           user: "手动编辑",
           reflection: "反省",
           rollback: "回滚",
+          superseded: "更早的版本",
         },
         form: {
           prompt: "提示词",

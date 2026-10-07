@@ -44,7 +44,8 @@
     "running": "运行中",
     "completed": "完成",
     "failed": "失败",
-    "skipped": "已跳过"
+    "skipped": "已跳过",
+    "queued": "已排队"
   },
   "kind": {
     "main": "定时",
@@ -64,7 +65,8 @@
   "source": {
     "user": "手动编辑",
     "reflection": "反省",
-    "rollback": "回滚"
+    "rollback": "回滚",
+    "superseded": "更早的版本"
   },
   "weekday": {
     "mon": "周一",

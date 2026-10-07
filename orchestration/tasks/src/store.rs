@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 
-pub const STORE_SCHEMA_VERSION: i64 = 3;
+pub const STORE_SCHEMA_VERSION: i64 = 4;
 pub const STORE_FILE: &str = "tasks.db";
 pub const STORE_DIR: &str = "tasks";
 
@@ -20,24 +20,24 @@ pub const STORE_DIR: &str = "tasks";
 const TASK_COLUMNS: &str = "
     id, name, enabled, prompt, prompt_version, cwd, model_id, thinking_level,
     session_policy, conversation_mode, thread_id, trigger_kind, trigger_json, dep_join,
-    next_due_at, last_run_at, pending_request_at, pending_origin, pending_actor,
+    next_due_at, pending_request_at, pending_origin, pending_actor,
     reflection, created_at, updated_at, deleted_at";
 
 const SQL_INSERT_TASK: &str = "
     INSERT INTO tasks (
         id, name, enabled, prompt, prompt_version, cwd, model_id, thinking_level,
         session_policy, conversation_mode, thread_id, trigger_kind, trigger_json, dep_join,
-        next_due_at, last_run_at, pending_request_at, pending_origin, pending_actor,
+        next_due_at, pending_request_at, pending_origin, pending_actor,
         reflection, created_at, updated_at, deleted_at
-    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)";
+    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)";
 
 const SQL_UPDATE_TASK: &str = "
     UPDATE tasks SET
         name=?2, enabled=?3, prompt=?4, prompt_version=?5, cwd=?6, model_id=?7,
         thinking_level=?8, session_policy=?9, conversation_mode=?10, thread_id=?11,
-        trigger_kind=?12, trigger_json=?13, dep_join=?14, next_due_at=?15, last_run_at=?16,
-        pending_request_at=?17, pending_origin=?18, pending_actor=?19,
-        reflection=?20, updated_at=?21, deleted_at=?22
+        trigger_kind=?12, trigger_json=?13, dep_join=?14, next_due_at=?15,
+        pending_request_at=?16, pending_origin=?17, pending_actor=?18,
+        reflection=?19, updated_at=?20, deleted_at=?21
     WHERE id=?1";
 
 /// `(enabled = 1)` plus "due now or explicitly requested" — the tick's query.
@@ -53,6 +53,11 @@ const SQL_ADD_DEP: &str =
 const SQL_DROP_DEP: &str = "DELETE FROM task_deps WHERE task_id = ?1 AND upstream_task_id = ?2";
 const SQL_DROP_DEP_STATE: &str =
     "DELETE FROM task_dep_state WHERE task_id = ?1 AND upstream_task_id = ?2";
+/// Edges that point *at* a task, from whatever downstream. Used when a task is
+/// deleted: the downstream must not keep waiting on something that is gone.
+const SQL_DROP_DEPS_POINTING_AT: &str = "DELETE FROM task_deps WHERE upstream_task_id = ?1";
+const SQL_DROP_DEP_STATES_POINTING_AT: &str =
+    "DELETE FROM task_dep_state WHERE upstream_task_id = ?1";
 const SQL_LIST_DEPS: &str =
     "SELECT task_id, upstream_task_id, on_condition FROM task_deps WHERE task_id = ?1";
 const SQL_LIST_ALL_DEPS: &str = "SELECT task_id, upstream_task_id, on_condition FROM task_deps";
@@ -146,6 +151,7 @@ const MIGRATIONS: &[Migration] = &[
         "ALTER TABLE tasks ADD COLUMN conversation_mode TEXT NOT NULL DEFAULT 'workspace'",
     ),
     Drop("task_runs", "source_entry_id"),
+    Drop("tasks", "last_run_at"),
 ];
 
 /// The full schema. Single source of truth for a fresh database (see the
@@ -172,7 +178,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   trigger_json     TEXT NOT NULL,
   dep_join         TEXT NOT NULL DEFAULT 'all',
   next_due_at      INTEGER,
-  last_run_at      INTEGER,
   pending_request_at INTEGER,
   pending_origin   TEXT,
   pending_actor    TEXT,
@@ -316,7 +321,6 @@ impl Store {
             serde_json::to_string(&task.trigger_json)?,
             dep_join_str(task.dep_join),
             task.next_due_at,
-            task.last_run_at,
             task.pending_request_at,
             task.pending_origin.map(run_origin_str),
             task.pending_actor,
@@ -346,7 +350,6 @@ impl Store {
             serde_json::to_string(&task.trigger_json)?,
             dep_join_str(task.dep_join),
             task.next_due_at,
-            task.last_run_at,
             task.pending_request_at,
             task.pending_origin.map(run_origin_str),
             task.pending_actor,
@@ -406,6 +409,17 @@ impl Store {
         let values = params![task_id, upstream_task_id];
         self.conn.execute(SQL_DROP_DEP, values)?;
         self.conn.execute(SQL_DROP_DEP_STATE, values)?;
+        Ok(())
+    }
+
+    /// Drop every edge that points at `upstream_task_id`, whichever task holds
+    /// it. Deleting a task has to do this: an edge is a promise that the
+    /// upstream will report a run, and a deleted task never will — the
+    /// downstream would wait forever on a name that resolves to nothing.
+    pub fn remove_deps_pointing_at(&self, upstream_task_id: &str) -> Result<()> {
+        let values = params![upstream_task_id];
+        self.conn.execute(SQL_DROP_DEPS_POINTING_AT, values)?;
+        self.conn.execute(SQL_DROP_DEP_STATES_POINTING_AT, values)?;
         Ok(())
     }
 
@@ -631,16 +645,15 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
             .unwrap_or(serde_json::Value::Null),
         dep_join: parse_dep_join(&row.get::<_, String>(13)?).unwrap_or(DepJoin::All),
         next_due_at: row.get(14)?,
-        last_run_at: row.get(15)?,
-        pending_request_at: row.get(16)?,
+        pending_request_at: row.get(15)?,
         pending_origin: row
-            .get::<_, Option<String>>(17)?
+            .get::<_, Option<String>>(16)?
             .and_then(|s| parse_run_origin(&s)),
-        pending_actor: row.get(18)?,
-        reflection: parse_reflection(&row.get::<_, String>(19)?).unwrap_or(Reflection::Ask),
-        created_at: row.get(20)?,
-        updated_at: row.get(21)?,
-        deleted_at: row.get(22)?,
+        pending_actor: row.get(17)?,
+        reflection: parse_reflection(&row.get::<_, String>(18)?).unwrap_or(Reflection::Ask),
+        created_at: row.get(19)?,
+        updated_at: row.get(20)?,
+        deleted_at: row.get(21)?,
     })
 }
 
@@ -840,7 +853,6 @@ mod tests {
             trigger_json: serde_json::json!({"mode":"daily","time":"09:00"}),
             dep_join: DepJoin::All,
             next_due_at: Some(1_000),
-            last_run_at: None,
             pending_request_at: None,
             pending_origin: None,
             pending_actor: None,
@@ -1037,6 +1049,122 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].status, RunStatus::Completed);
         assert_eq!(reopened.get_task(&t.id).unwrap().unwrap().name, "legacy");
+    }
+
+    /// The other half of the migration list: a database written before a column
+    /// existed gets it added, and the guard makes a second open a no-op.
+    #[test]
+    fn a_missing_column_is_added_to_a_database_that_predates_it() {
+        let dir = TempDir::new().unwrap();
+        {
+            let s = Store::open(dir.path()).unwrap();
+            s.insert_task(&task("old")).unwrap();
+            // Mimic a database from before `conversation_mode` was introduced.
+            s.conn
+                .execute_batch("ALTER TABLE tasks DROP COLUMN conversation_mode")
+                .unwrap();
+            assert!(!s.has_column("tasks", "conversation_mode").unwrap());
+        }
+
+        let reopened = Store::open(dir.path()).unwrap();
+        assert!(
+            reopened.has_column("tasks", "conversation_mode").unwrap(),
+            "opening adds the column rather than failing on the missing one"
+        );
+        // Rows written against the old schema read back on the default.
+        let t = reopened.find_task_by_name("old").unwrap().unwrap();
+        assert_eq!(t.conversation_mode, ConversationMode::Workspace);
+
+        // Re-running the list is idempotent: the column is there, so the step
+        // does nothing and the open still succeeds.
+        drop(reopened);
+        let third = Store::open(dir.path()).unwrap();
+        assert_eq!(third.find_task_by_name("old").unwrap().unwrap().name, "old");
+    }
+
+    /// Deleting a task has to take the edges pointing at it: an edge is a
+    /// promise the upstream will report again, and a deleted one never will.
+    #[test]
+    fn edges_pointing_at_a_task_are_dropped_together() {
+        let (_dir, s) = store();
+        let upstream = task("upstream");
+        let a = task("a");
+        let b = task("b");
+        for t in [&upstream, &a, &b] {
+            s.insert_task(t).unwrap();
+        }
+        for downstream in [&a, &b] {
+            s.add_dep(&TaskDep {
+                task_id: downstream.id.clone(),
+                upstream_task_id: upstream.id.clone(),
+                on: DepOn::Success,
+            })
+            .unwrap();
+            s.mark_dep_satisfied(&downstream.id, &upstream.id, "trn_1", 1)
+                .unwrap();
+        }
+        // An unrelated edge survives.
+        s.add_dep(&TaskDep {
+            task_id: b.id.clone(),
+            upstream_task_id: a.id.clone(),
+            on: DepOn::Success,
+        })
+        .unwrap();
+
+        s.remove_deps_pointing_at(&upstream.id).unwrap();
+
+        assert!(s.list_deps(&a.id).unwrap().is_empty());
+        assert!(s.get_dep_state(&a.id, &upstream.id).unwrap().is_none());
+        assert!(s.get_dep_state(&b.id, &upstream.id).unwrap().is_none());
+        assert_eq!(
+            s.list_deps(&b.id).unwrap().len(),
+            1,
+            "an edge that does not point at the removed task is left alone"
+        );
+        assert_eq!(s.list_all_deps().unwrap().len(), 1);
+
+        // Idempotent: nothing left to remove is not an error.
+        s.remove_deps_pointing_at(&upstream.id).unwrap();
+    }
+
+    /// Both conversation modes round-trip, and an unparseable value falls back
+    /// to the behaviour every task had before the setting existed.
+    #[test]
+    fn conversation_mode_round_trips_and_defaults_to_workspace() {
+        let (_dir, s) = store();
+        for mode in [ConversationMode::Chat, ConversationMode::Workspace] {
+            let mut t = task("m");
+            t.name = format!("{mode:?}");
+            t.conversation_mode = mode;
+            s.insert_task(&t).unwrap();
+            let read = s.find_task_by_name(&t.name).unwrap().unwrap();
+            assert_eq!(read.conversation_mode, mode);
+        }
+
+        // A row written by something that did not know the column: blank it out
+        // and read it back.
+        let mut t = task("blank");
+        s.insert_task(&t).unwrap();
+        s.conn
+            .execute(
+                "UPDATE tasks SET conversation_mode = 'nonsense' WHERE id = ?1",
+                params![t.id],
+            )
+            .unwrap();
+        let read = s.find_task_by_name("blank").unwrap().unwrap();
+        assert_eq!(read.conversation_mode, ConversationMode::Workspace);
+
+        // A `Task` serialized by a build that did not have the field deserializes
+        // onto the mode every task had before the setting existed.
+        t.conversation_mode = ConversationMode::Chat;
+        assert_eq!(
+            serde_json::to_string(&t.conversation_mode).unwrap(),
+            "\"chat\""
+        );
+        let mut json = serde_json::to_value(&t).unwrap();
+        json.as_object_mut().unwrap().remove("conversation_mode");
+        let restored: Task = serde_json::from_value(json).unwrap();
+        assert_eq!(restored.conversation_mode, ConversationMode::Workspace);
     }
 
     // ─── tasks ────────────────────────────────────────────────────────────
