@@ -704,6 +704,17 @@ Provider、模型与登录凭证不进 GUI 的 SQLite，而是读写 agent 的�
 - **模型可见性**：GUI 用应用设置里的 `hiddenModels`（opt-out）控制展示；agent 的 `enabledModels`（opt-in 白名单）非空时会限制 `list_models` 返回集——两者叠加时新登录 provider 的模型可能被旧白名单挡住（见 PLAN.md 待办）。
 - **字段校验**：自定义 provider 的 id（小写 `[a-z0-9_-]`）/ 名称（ASCII，禁中文 / emoji / 全角）/ Base URL（http(s)）/ 模型 等规则见 PLAN.md「自定义 Provider 字段校验」，前端即时 + 后端权威。
 
+### 6.10 任务用独立存储，不落 GUI SQLite
+
+任务（可复用提示词 + 触发器，全权限运行）由 `future-tasks` crate 拥有，持久化在 `<home>/.future/tasks/tasks.db`——是 `agent.db`、`app.db` 之外的第三份存储，GUI、CLI（`future task`）与远程桥以完全相同的方式读写它。不放进 `app.db` 的原因有两条：
+
+- **CLI 不该打开 GUI 数据库。** `app.db` 有已发布 schema 与自己的版本化迁移、单一所有者；`future desktop settings` 能写它，是因为 `future-app-settings` 持有共享 schema。任务是第一等的 CLI 能力，需要的是两端共享的所有者，而不是给 GUI 的库再加第二个写者。
+- **TUI 与无头桌面要能跑同一批任务。** 存储根由 FutureOS home 解析（`FUTURE_HOME` 替换整根），因此同一份任务列表对所有客户端可见，执行器可以寄宿在任意一端。
+
+所以 GUI **没有任何任务表、也没有任务迁移**。任务会话就是普通 Thread：按任务标题出现在侧栏，任务 → 会话的关联是任务库里的 `task_runs.thread_id`（经任务面板/运行记录查询）。用于侧栏徽标的 `threads.task_id` 列**刻意延后**——它需要一条 `app.db` 版本化迁移，而标题已经满足「会话出现在列表里」。
+
+执行只发生在 desktop（或无头 desktop）的 tick 循环里，它是唯一写者：CLI 与手机只写 `pending_request_at`、只读运行台账。`task_runs` 是审计轨迹——kind、origin、actor、状态、时间、提示词版本与截断后的结果摘要。
+
 ## 7. Agent SQLite 存储
 
 ### 7.1 所有权与事务边界

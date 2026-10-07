@@ -9,8 +9,11 @@
 ## 0. 定位
 
 - **位置**：新增 crate `orchestration/tasks`（crate 名 `future-tasks`），与 `orchestration/loop` 同层。
-- **宿主**：desktop（GUI）、headless desktop、TUI 三个 host 共用同一份执行器；mobile 不 host，走 desktop 远程桥。
-- **分层**：确定性内核（`next_due` / join / claim / 截断）全是纯函数，与 host 无关；执行器通过 `Executor` trait 接 agent；反省（LLM）只能提**提案**，永不直接改状态。
+- **宿主**：desktop（GUI）与 headless desktop 已接，共用同一份 tick 循环；TUI 未接；mobile 不 host，走 desktop 远程桥。
+- **分层**：确定性内核（`next_due` / join / claim / 截断）全是纯函数，与 host 无关；执行器只有一份，host 差异收敛成 `Notifier` 闭包（见 §8）。
+
+> **本版落地范围**：内核 + store + `future task` CLI（list/show/add/run/runs）+ desktop tick 与面板 + headless + mobile 桥与页面 + `future-task` 技能。
+> **设计保留、尚未实现**：反省闭环（§7）、CLI 的 edit/enable/remove/feedback/prompt/deps/output（§9）、TUI host、`threads.task_id` 徽标（§2）、实例级 `.lock`（当前靠单 host + `has_running_run` 的 overlap 判定，足以避免重复执行）。
 
 ---
 
@@ -18,9 +21,9 @@
 
 | Loop 的做法 | Tasks 的对应 |
 |---|---|
-| 内核确定性、agent 只做判断（floors/signals/bounds） | claim/`next_due`/join/`truncate` 纯函数；反省只提议 |
-| "先提交、后尽力刷新"（`sync_compat`） | 任务的投影刷新（会话徽标/通知）失败不回滚已提交的运行 |
-| turn envelope：schema 头 + 上游预算 + 头尾截断 + 索引永不丢 + 全文指针 | 任务信封 `<task ... schema="task-v1">` + `future task output <run-id>` 指针 |
+| 内核确定性、agent 只做判断（floors/signals/bounds） | claim/`next_due`/join/`truncate` 纯函数（已实现）；反省只提议（待接线） |
+| "先提交、后尽力刷新"（`sync_compat`） | 通知失败不回滚已提交的运行（`notify` 不参与结果判定） |
+| turn envelope：schema 头 + 上游预算 + 头尾截断 + 索引永不丢 | 任务信封 `<task ... schema="task-v1">` + 上游摘要预算/索引保留（已实现）；全文指针命令待补 |
 | 独立 task class 防 frontier 误认领 | `task_runs.kind`（`main`/`manual`/`chain`/`reflection`）分开 |
 | 独立状态根（`<cwd>/.future/loop/`） | 独立状态根 `<home>/.future/tasks/`（独立 SQLite，不进 app.db） |
 
@@ -30,7 +33,9 @@
 
 ## 2. 数据模型
 
-状态根：`<home>/.future/tasks/`（`<home>` = 每个 host 自己的 FutureOS home）。实例级互斥：`<home>/.future/tasks/.lock`（单 host tick 持锁）。
+状态根：`<home>/.future/tasks/`（`<home>` = 每个 host 自己的 FutureOS home；`FUTURE_HOME` 覆盖整根，与 agent 一致）。
+
+> 设计中的 `<home>/.future/tasks/.lock` 实例互斥**未实现**：当前靠单一 host 执行 + `has_running_run` 的 overlap 判定避免重复跑同一条任务。两个 host 指向同一个 home 同时 tick 是已知未覆盖场景。
 
 SQLite：`tasks.db`，WAL + `busy_timeout=5000`。
 
@@ -108,7 +113,9 @@ CREATE TABLE task_prompt_revisions (
 );
 ```
 
-桌面投影：`app.db` 的 `threads` 表加可选列 `task_id TEXT`（无 FK）。会话行显示小徽标 + 任务名；任务/运行台账不回 app.db。
+桌面投影：任务**不进 `app.db`**。任务会话就是普通会话，靠标题「任务名 · 时间」在会话列表里辨认；任务 ↔ 会话的映射由 `task_runs.thread_id` 承担（可从任务侧反查，也可从 Runs 面板打开）。
+
+> 待办（本版刻意未做）：在 `app.db` 的 `threads` 上加可选列 `task_id`，让侧栏直接给任务会话打徽标。它需要一条 GUI 版本化迁移（`desktop/CLAUDE.md` 规则 7）与 `ER.md` 同步，而标题已经能满足"会话出现在列表里"这一需求，所以留到有真实需要时再加。
 
 ---
 
@@ -177,7 +184,11 @@ tick（30s，墙上时钟）
 
 压缩语义：手动 RPC `compact` 异步 worker（`operationId` + `compaction_unchanged`/`compaction_failed`）；与 run 互斥（run 在跑时 `session_busy`）。
 
-## 7. 反省（prompt 优化建议）
+## 7. 反省（prompt 优化建议）—— **设计保留，尚未实现**
+
+> 状态：`tasks.reflection` 档位已经落库并在 UI/CLI 可见可改，但**反思本身还没接线**。当前每次运行只写台账（`task_runs.result_summary`）；不会自动追加一次反省 run，也不会生成提案。`feedback` / `prompt log|apply|revert` 这些配套入口同理（desktop 面板与 remote 桥有"应用历史版本"，靠的是用户编辑产生的 revision，不是反省提案）。
+
+设计意图（接线时照此实现）：
 
 - **范围**：只看本次 run 窗口——本次 prompt、result_summary、run 状态、本会话内 run 结束后用户追加消息数。
 - **输出**：末段 JSON `{verdict, prompt, reason, confidence}`。
@@ -185,52 +196,58 @@ tick（30s，墙上时钟）
 - **防震荡**：轻量检查（不喂历史）——新 prompt ≠ 最近被拒版本；同天不重复同内容提案。
 - **护栏参数**：代码常量，不进 DB。
 
-## 8. Executor trait
+在此之前，`reflection` 档位的语义是"用户愿意接受建议"，而建议由用户自己（或 skill 指引的迭代闭环）产生——所以默认为它写入 DB 并在两端口可见，接线后无需迁移。
+
+## 8. Host 抽象（实际实现：`Notifier`，不是 Executor trait）
+
+执行器只有一份，住在 desktop 的 `tasks.rs`；host 差异只有「跑完之后怎么通知」，因此抽象是一个闭包而不是 trait：
 
 ```rust
-pub trait Executor {
-    fn ensure_agent(&self) -> Result<AgentHandle>;
-    fn create_or_open_session(&self, t: &Task, due: i64) -> Result<Session>;
-    fn pre_compact_if_reused(&self, s: &Session) -> Result<()>;
-    fn run_prompt(&self, s: &Session, t: &Task, envelope: &str) -> Result<RunOutcome>;
-    fn notify(&self, event: &TaskEvent);
-}
+pub type Notifier = Arc<dyn Fn(Option<&str /* thread_id */>) + Send + Sync>;
+
+pub fn start<R: tauri::Runtime>(app: AppHandle<R>)  // GUI：emit_remote_activity + emit_threads_updated
+pub fn start_headless()                            // 无 GUI：通知降级为空，台账就是信号
+async fn run_loop(notify: Notifier)                // 启动对账 + 每 30s tick
 ```
 
-host 实现：
-- **GUI desktop**：sidecar supervisor + `create_thread`/`provision_agent_session_with_policy` + `emit_remote_activity`/`emit_threads_updated`。
-- **headless desktop**：同实现，`notify` 只写台账。
-- **TUI**：agent gRPC 起独立会话（不创建 desktop thread）；`notify` 更新 TUI 状态。
-- **mobile**：不 host，走 desktop 远程桥（能力 `tasks_v1`）。
+理由：`Executor` trait 需要 5 个方法，但它们全部只被这一份实现调用，且都是对 `agent_bridge` 既有函数的薄包装——加一层 trait 只增加间接性。tick 循环本身与 GUI 无关（`start_headless` 与 GUI 走同一个 `run_loop`），所以"headless 也支持"是同一份代码少一个通知出口，而不是第二套实现。
 
-## 9. CLI（`future task`）
+host 现状：
+- **GUI desktop**：已接（`lib.rs` setup 里 `tasks::start`）。
+- **headless desktop**：已接（`headless/mod.rs` 里 `tasks::start_headless`）。
+- **mobile**：不 host；经 remote 桥管理（能力 `tasks_v1`）。
+- **TUI**：**未接**。crate 与 CLI 已经可用，TUI 面板是后续增量。
+
+## 9. CLI（`future task`，当前已实现）
 
 ```
-future task list|show|add|edit|enable|disable|remove
-future task run <id|name> [--prompt-file DRAFT] [--wait] [--timeout 15m] [--json]
-future task runs <id> [--limit 20] [--json]
-future task output <run-id> [--format markdown|json] [--tail N] [--full]
-future task feedback <run-id> good|bad [--note "..."]
-future task prompt log|apply|revert <id>
-future task deps <id> [--json]
+future task list [--all] [--json]
+future task show <id|name> [--json] [--prompt]
+future task add --name N --prompt P|--prompt-file F --cwd D
+                [--model M] [--thinking L] [--session new|existing]
+                [--reflection off|ask|auto] [--disabled] [--json]
+                (--at | --every | --daily | --weekly | --monthly)
+future task run <id|name> [--wait] [--timeout 15m] [--json]
+future task runs <id|name> [--limit N] [--json]
 ```
 
-- `run` 默认只排队；`--wait` 阻塞到终态并打印 status/thread_id/result_summary。
-- `output` 走 agent gRPC `get_session_entries`（agent 不在时回落到 `task_runs.result_summary`，并明确提示全文需要 agent）。
+- CLI 只是同一份 `tasks.db` 的客户端：写立即落盘，desktop 下个 tick 生效；**CLI 从不自己执行 run**。
+- `run` 默认只排队并如实说明；`--wait` 轮询台账到终态，打印 status/thread/session/result_summary。
 - 帮助里明确与 `future loop todo` 区分。
+
+**尚未实现（设计保留）**：`edit` / `enable` / `disable` / `remove` / `output <run-id> --full` / `feedback` / `prompt log|apply|revert` / `deps`。这些不是遗漏，而是本版范围之外：desktop 面板与 remote 桥已覆盖增删改查、依赖查看、版本应用与历史，CLI 侧补的是同一批命令的脚本化入口。
 
 ## 10. 技能 `future-task`
 
-`skills/builtin/future-task/SKILL.md`（skills 子模块独立 PR），`allowed-tools: Bash(future:*)`。
+`skills/builtin/future-task/SKILL.md`（skills 子模块，独立 PR）。内容以"prompt 怎么写"为主：无人值守下的 8 条约束、触发器选择（含短月顺延必须告知用户）、`run → 判读 → feedback → 改 → 再跑` 的迭代闭环、以及其它 agent 用 `future task run --wait --json` 触发的约定（有外部副作用的先取得用户同意）。
 
-- prompt 约束：自包含 / 无交互 / 单次有界 / 副作用最小 / 输出契约 / 可验收 / 稳定可归因 / 禁止自我扩散权限。
-- 迭代工作流：`add → run --wait → feedback → edit --prompt-file → run --prompt-file → 满意落库 → 观察 ask 提案 → 视情况升 auto`。
-- 版本对齐：SKILL.md 写"最低 `future` 版本 x.y.z"。
+技能里引用的命令限定在 §9 已实现的那批。
 
 ## 11. UI
 
-- **desktop**：左侧导航「任务」（`ActivityRail` 新增 `tasks` 分区）；列表/编辑/运行台账/prompt 版本 diff/依赖视图（all/any + "等待 2/3 个上游"）；单行紧凑，低频操作收进行内菜单。
-- **mobile**：Settings 栈内「任务」页（能力 `tasks_v1` 判定）；列表只带截断摘要（wire 预算）；详情/编辑/运行历史/版本。
+- **desktop（已实现）**：左侧导航「任务」（`ActivityRail` 展开/收起两种形态都有）；面板含列表、编辑器（prompt/cwd/模型/思考等级/会话策略/反省档位/5 种触发 + 短月提示）、运行台账、提示词版本与应用。
+- **mobile（已实现）**：Settings 栈内「任务」页，由 `tasks_v1` 能力门控；列表不带 prompt 正文（wire 预算），详情单独取；含运行记录、依赖状态、版本应用。
+
 
 ## 12. 明确不做
 
