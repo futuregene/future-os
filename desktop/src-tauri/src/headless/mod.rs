@@ -123,6 +123,10 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
     crate::agent_bridge::spawn_session_discovery();
     crate::agent_bridge::spawn_delete_outbox_worker();
     crate::agent_bridge::spawn_active_run_watchdog();
+    // User-defined tasks run here too: headless desktop has no webview, so the
+    // executor's notifications downgrade to ledger-only (the run rows are the
+    // signal). This is what lets a server box run tasks with no GUI attached.
+    crate::tasks::start_headless();
     tokio::spawn(async {
         crate::agent_bridge::reconcile_interrupted_runs().await;
         crate::agent_bridge::reconcile_pending_approvals().await;

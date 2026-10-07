@@ -98,7 +98,7 @@ function buttonByText(container: HTMLElement, text: string) {
  *  order. Discovered from a deliberate mismatch while writing the guard test
  *  below; the trailing two come from that test's workspace/account fixtures.
  */
-const EXPECTED_NAV_ENTRIES = ["New Chat", "Models", "Skills", "Phone Control", "Alpha", "Aalice"];
+const EXPECTED_NAV_ENTRIES = ["New Chat", "Models", "Skills", "Phone Control", "Tasks", "Alpha", "Aalice"];
 
 beforeEach(() => {
   localStorage.clear();

@@ -1,0 +1,104 @@
+{
+  "title": "任务",
+  "new": "新建任务",
+  "showSidebar": "显示侧栏",
+  "empty": "还没有任务。点「新建任务」创建一个。",
+  "selectHint": "选择一个任务，或新建一个。",
+  "nextDue": "下次",
+  "runNow": "立即运行",
+  "edit": "编辑",
+  "enable": "启用",
+  "disable": "停用",
+  "delete": "删除任务",
+  "deleteConfirm": "删除任务「{{name}}」？它已生成的会话会保留。",
+  "prompt": "提示词",
+  "promptVersion": "提示词版本 v{{version}}",
+  "deps": "依赖",
+  "depsNone": "没有上游任务，本任务按自己的触发器运行。",
+  "depsReady": "已到达",
+  "depsWaiting": "未到达",
+  "runs": "运行记录",
+  "runsNone": "还没有运行记录。",
+  "openConversation": "打开会话",
+  "revisions": "提示词版本",
+  "revisionsNone": "还没有提示词版本记录。",
+  "apply": "应用",
+  "trigger": {
+    "manual": "手动",
+    "every": "每 {{minutes}} 分钟",
+    "daily": "每天",
+    "monthly": "每月 {{day}} 日 {{time}}"
+  },
+  "triggerMode": {
+    "manual": "手动（仅在被触发时运行）",
+    "once": "指定日期运行一次",
+    "interval": "每隔 N 分钟",
+    "daily": "每天",
+    "weekly": "每周",
+    "monthly": "每月"
+  },
+  "status": {
+    "running": "运行中",
+    "completed": "完成",
+    "failed": "失败",
+    "skipped": "已跳过"
+  },
+  "kind": {
+    "main": "定时",
+    "manual": "手动",
+    "chain": "依赖触发",
+    "reflection": "反省"
+  },
+  "on": {
+    "success": "成功后",
+    "failure": "失败后",
+    "completed": "结束后"
+  },
+  "join": {
+    "all": "全部到齐",
+    "any": "任一到达"
+  },
+  "source": {
+    "user": "编辑",
+    "reflection": "反省",
+    "rollback": "回滚"
+  },
+  "weekday": {
+    "mon": "周一",
+    "tue": "周二",
+    "wed": "周三",
+    "thu": "周四",
+    "fri": "周五",
+    "sat": "周六",
+    "sun": "周日"
+  },
+  "form": {
+    "title": "任务",
+    "name": "名称",
+    "prompt": "提示词",
+    "cwd": "工作目录",
+    "model": "模型",
+    "modelDefault": "默认模型",
+    "thinking": "思考等级",
+    "thinkingDefault": "默认",
+    "session": "会话",
+    "sessionNew": "每次新建会话",
+    "sessionExisting": "复用同一会话",
+    "sessionExistingHint": "每次运行前会自动压缩该会话；压缩失败则本次运行失败。",
+    "reflection": "提示词优化建议",
+    "reflectionOff": "关闭",
+    "reflectionAsk": "提出建议（默认）",
+    "reflectionAuto": "自动应用",
+    "trigger": "触发器",
+    "date": "日期",
+    "time": "时间",
+    "everyMinutes": "间隔分钟",
+    "day": "每月几号",
+    "shortMonthHint": "没有该日期的月份自动顺延到当月最后一天。",
+    "enabled": "启用",
+    "fullPermissionWarning": "任务以完全权限运行，不会弹出审批。",
+    "required": "名称、提示词和工作目录必填。",
+    "save": "保存",
+    "cancel": "取消"
+  }
+}

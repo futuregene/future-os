@@ -163,7 +163,18 @@ pub(super) async fn set_agent_sandbox_policy(
             "manual".to_string()
         }
     };
-    let policy = crate::agent_proto::SandboxPolicy { tier: tier.clone() };
+    set_agent_sandbox_policy_tier(client, session_id, &tier).await
+}
+
+/// Push an explicit sandbox tier (used by tasks, which always run fully open).
+pub async fn set_agent_sandbox_policy_tier(
+    client: &mut super::client::AgentClient,
+    session_id: &str,
+    tier: &str,
+) -> Result<(), crate::AppError> {
+    let policy = crate::agent_proto::SandboxPolicy {
+        tier: tier.to_string(),
+    };
     let response = client
         .execute_command(set_sandbox_policy_command(policy, session_id.to_string()))
         .await

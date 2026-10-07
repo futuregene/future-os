@@ -543,10 +543,22 @@ pub(crate) async fn provision_agent_session(
     model_id: Option<String>,
     thinking_level: Option<String>,
 ) -> Result<String, crate::AppError> {
+    provision_agent_session_with_policy(thread_id, model_id, thinking_level, "workspace", None)
+        .await
+}
+
+/// Provision an agent session with an explicit permission level and sandbox
+/// tier. Used by tasks (full permission, no approval prompts) — the default
+/// `provision_agent_session` keeps the GUI's workspace-level default.
+pub async fn provision_agent_session_with_policy(
+    thread_id: &str,
+    model_id: Option<String>,
+    thinking_level: Option<String>,
+    permission_level: &str,
+    sandbox_tier: Option<&str>,
+) -> Result<String, crate::AppError> {
     let cwd = workspace_path_for_thread(thread_id)?;
     let mut client = connect_agent().await?;
-    // Empty stored id → the agent generates a real session id, seeded with the
-    // caller's model / thinking selections (matches the GUI new-chat draft).
     let ensured = ensure_agent_session(
         &mut client,
         "",
@@ -557,8 +569,11 @@ pub(crate) async fn provision_agent_session(
     .await?;
     let session_id = ensured.session_id;
     crate::store::bind_thread_session_id(thread_id, &session_id)?;
-    set_agent_permission_level(&mut client, &session_id, "workspace").await?;
-    set_agent_sandbox_policy(&mut client, &session_id, thread_id).await?;
+    set_agent_permission_level(&mut client, &session_id, permission_level).await?;
+    match sandbox_tier {
+        Some(tier) => set_agent_sandbox_policy_tier(&mut client, &session_id, tier).await?,
+        None => set_agent_sandbox_policy(&mut client, &session_id, thread_id).await?,
+    }
     Ok(session_id)
 }
 

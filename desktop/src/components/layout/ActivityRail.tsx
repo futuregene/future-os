@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronRight,
   Folder,
+  ListChecks,
   MessageSquare,
   PanelLeft,
   Pin,
@@ -38,7 +39,7 @@ import { useRailSelection } from "./hooks/useRailSelection";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, visibleThreadRows } from "./threadTree";
 
-export type ActivitySection = "chat" | "workspace" | "skill" | "remote" | "settings";
+export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote" | "settings";
 
 interface ActivityRailProps {
   active: ActivitySection;
@@ -356,6 +357,7 @@ export function ActivityRail({
                   {showRemote
                     ? <NavButton icon={Smartphone} indicator={remoteDot} label={t("activityRail.remote")} active={active === "remote"} onClick={() => onChange("remote")} />
                     : null}
+                  <NavButton icon={ListChecks} label={t("activityRail.tasks")} active={active === "tasks"} onClick={() => onChange("tasks")} />
                 </div>
                 {featureItems.length > 0
                   ? (
@@ -666,6 +668,12 @@ export function ActivityRail({
                     />
                   );
                 })}
+                <IconButton
+                  icon={<ListChecks className="size-4" />}
+                  label={t("activityRail.tasks")}
+                  active={active === "tasks"}
+                  onClick={() => onChange("tasks")}
+                />
                 <IconButton
                   icon={<Folder className="size-4" />}
                   label={t("activityRail.workspace")}

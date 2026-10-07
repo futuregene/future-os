@@ -33,6 +33,8 @@ mod settings;
 #[cfg(feature = "gui")]
 mod skills;
 #[cfg(feature = "gui")]
+mod tasks;
+#[cfg(feature = "gui")]
 mod terminal;
 #[cfg(feature = "gui")]
 mod threads;
@@ -67,6 +69,8 @@ pub use self::runs::*;
 pub use self::settings::*;
 #[cfg(feature = "gui")]
 pub use self::skills::*;
+#[cfg(feature = "gui")]
+pub use self::tasks::*;
 #[cfg(feature = "gui")]
 pub use self::terminal::*;
 #[cfg(feature = "gui")]

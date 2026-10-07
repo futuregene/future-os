@@ -42,6 +42,7 @@ mod skills;
 mod skills_bootstrap;
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
 mod store;
+mod tasks;
 #[cfg(feature = "gui")]
 mod terminal;
 #[cfg(all(feature = "gui", target_os = "windows"))]
@@ -889,6 +890,10 @@ mod gui {
                 // Future balance (1h), and Future models (24h). Missed ticks while
                 // suspended are skipped; each task runs at most once after resume.
                 scheduler::start(app.handle().clone());
+                // User-defined tasks: the tick loop claims due tasks and runs
+                // them through the sidecar agent (full permission). Headless
+                // desktop starts the same loop from `headless/mod.rs`.
+                tasks::start(app.handle().clone());
                 // Do not preemptively cancel non-terminal GUI rows at startup. The
                 // Agent is authoritative and may have survived a GUI crash; the
                 // watchdog below reattaches or settles each row only after it can
@@ -1071,6 +1076,18 @@ mod gui {
                 probe_windows_sandbox,
                 reset_windows_sandbox,
                 agent_prompt,
+                list_tasks,
+                create_task,
+                update_task,
+                delete_task,
+                set_task_enabled,
+                run_task_now,
+                list_task_runs,
+                list_task_deps,
+                set_task_dep,
+                remove_task_dep,
+                list_task_revisions,
+                apply_task_revision,
                 list_installed_skills,
                 list_available_skills,
                 get_skill_guide,
