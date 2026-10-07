@@ -756,6 +756,205 @@ mod tests {
         assert!(!run_satisfies(DepOn::Completed, RunStatus::Skipped));
     }
 
+    // ─── the executor (mock agent) ────────────────────────────────────────
+
+    /// Script the commands a run sends before its stream: session creation,
+    /// the permission/sandbox push, and the compaction probe.
+    fn script_agent_setup(mock: &crate::agent_bridge::test_support::MockAgentGuard, session: &str) {
+        mock.push_data("new_session", serde_json::json!({ "sessionId": session }));
+        mock.push_data("set_permission_level", serde_json::json!({}));
+        mock.push_data(
+            "set_sandbox_policy",
+            serde_json::json!({ "sandboxAvailable": true }),
+        );
+        // `get_state` must be typed: the idle probe decodes the typed payload.
+        // Several are queued because each phase (pre-compact idle, post-compact
+        // settle) probes again.
+        for _ in 0..4 {
+            mock.push_typed_data(
+                "get_state",
+                crate::agent_bridge::test_support::get_state_payload(session, false),
+            );
+        }
+        mock.push_data(
+            "compact",
+            serde_json::json!({ "accepted": true, "operationId": "cmp_1" }),
+        );
+        mock.push_data(
+            "get_last_assistant_text",
+            serde_json::json!({ "text": "the finished answer" }),
+        );
+    }
+
+    /// A whole run: the task opens a conversation, drives one prompt turn, and
+    /// records the agent's answer on the run row.
+    #[tokio::test]
+    async fn a_run_opens_a_conversation_prompts_and_records_the_answer() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-execute");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut t = task("runs");
+        t.prompt = "summarize yesterday".into();
+        store.insert_task(&t).unwrap();
+        let (run, upstream) = claim(&store, &t).unwrap();
+        script_agent_setup(&mock, "sess_task_1");
+
+        let notified = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = notified.clone();
+        let notify: Notifier = std::sync::Arc::new(move |thread_id| {
+            seen.lock().unwrap().push(thread_id.map(str::to_string));
+        });
+
+        // The prompt stream is what `run_prepared_prompt_*` collects; a clean
+        // `agent_end` is what makes the run complete.
+        // `@attach` binds to the canonical run id the prompt pipeline picks,
+        // which the desktop generates at prompt time.
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
+            vec![crate::agent_bridge::test_support::stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        execute(&notify, store, t.clone(), run.clone(), upstream)
+            .await
+            .expect("execute");
+
+        // Re-open the store the same way the tick loop does.
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Completed, "{finished:?}");
+        assert!(finished.thread_id.is_some(), "the run owns a conversation");
+        assert_eq!(finished.session_id.as_deref(), Some("sess_task_1"));
+        assert_eq!(
+            finished.result_summary.as_deref(),
+            Some("the finished answer")
+        );
+        assert!(finished.error_message.is_none());
+
+        // The prompt carried the envelope, and the task's own text follows it.
+        let prompts = mock.requests_of("prompt");
+        let prompt = prompts.first().expect("one prompt");
+        assert!(
+            prompt.message.contains("schema=\"task-v1\""),
+            "{}",
+            prompt.message
+        );
+        assert!(
+            prompt.message.contains("summarize yesterday"),
+            "{}",
+            prompt.message
+        );
+
+        // The conversation is a real desktop thread the sidebar can show.
+        let thread_id = finished.thread_id.clone().unwrap();
+        let thread = crate::store::get_thread(&thread_id).unwrap().unwrap();
+        assert_eq!(thread.agent_session_id.as_deref(), Some("sess_task_1"));
+        assert!(thread.title.starts_with("runs · "), "{}", thread.title);
+
+        // The host was told, so the UI can refresh.
+        assert_eq!(
+            notified.lock().unwrap().as_slice(),
+            &[Some(thread_id)],
+            "the notifier receives the conversation id"
+        );
+    }
+
+    /// A run that fails to reach the agent is recorded as failed with the
+    /// reason, and still marks only the edges its status satisfies.
+    #[tokio::test]
+    async fn a_run_without_an_agent_fails_with_the_reason() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-execute-fail");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let t = task("fails");
+        store.insert_task(&t).unwrap();
+        let (run, upstream) = claim(&store, &t).unwrap();
+        // The agent refuses to create the session.
+        mock.push(
+            "new_session",
+            crate::agent_bridge::test_support::Reply::Reject("no capacity".into()),
+        );
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        execute(&notify, store, t, run.clone(), upstream)
+            .await
+            .expect("execute records the failure instead of returning it");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Failed);
+        assert!(
+            finished
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("no capacity"),
+            "{finished:?}"
+        );
+        assert!(finished.thread_id.is_none(), "no conversation was created");
+    }
+
+    /// A reused conversation is compacted before the prompt, and a compaction
+    /// that fails fails the run rather than prompting with stale context.
+    #[tokio::test]
+    async fn a_reused_conversation_is_compacted_and_a_failure_fails_the_run() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-execute-compact");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        // An existing task bound to a conversation. The binding is in place
+        // before the claim, exactly as a task that ran once already would be.
+        let mut t = task("reuses");
+        t.session_policy = SessionPolicy::Existing;
+        store.insert_task(&t).unwrap();
+        let workspace = crate::agent_bridge::test_support::seed_workspace(_home.path(), "ws");
+        let thread =
+            crate::agent_bridge::test_support::seed_thread(&workspace.id, Some("sess_reused"));
+        bind_task_thread(&store, &t, &thread.id).unwrap();
+        let mut t = store.get_task(&t.id).unwrap().unwrap();
+        let (run, upstream) = claim(&store, &t).unwrap();
+        t.updated_at += 1;
+
+        // The compact request is refused. The rejection is queued as the FIRST
+        // compact reply (the queues are FIFO), so the failure belongs to the
+        // pre-compact step rather than to the prompt.
+        mock.push(
+            "compact",
+            crate::agent_bridge::test_support::Reply::Reject("compaction exploded".into()),
+        );
+        script_agent_setup(&mock, "sess_reused");
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        execute(&notify, store, t.clone(), run.clone(), upstream)
+            .await
+            .expect("execute");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Failed, "{finished:?}");
+        assert!(
+            finished
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("compaction exploded"),
+            "{finished:?}"
+        );
+        assert!(
+            mock.requests_of("prompt").is_empty(),
+            "a failed compaction must not be followed by a prompt"
+        );
+    }
+
     /// Overlap: a task with a live run is not claimed again.
     #[test]
     fn a_running_run_blocks_another_claim() {

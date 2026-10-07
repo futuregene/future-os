@@ -50,6 +50,7 @@ const children = vi.hoisted(() => ({
   remoteView: null as unknown,
   settingsDialog: null as unknown,
   skillsView: null as unknown,
+  tasksView: null as unknown,
   terminalPanel: null as unknown,
   workspaceDialogs: null as unknown,
 }));
@@ -119,6 +120,15 @@ vi.mock("../../features/skills/SkillsView", async () => {
     },
   };
 });
+vi.mock("../../features/tasks/TasksView", async () => {
+  const { createElement } = await import("react");
+  return {
+    TasksView: (props: unknown) => {
+      children.tasksView = props;
+      return createElement("div", { "data-child": "tasks-view" });
+    },
+  };
+});
 vi.mock("../../features/terminal/TerminalPanel", async () => {
   const { createElement } = await import("react");
   return {
@@ -185,6 +195,7 @@ vi.mock("./ActivityRail", async () => {
       return createElement("nav", { "data-child": "activity-rail" }, [
         createElement("button", { key: "chat", onClick: () => (props.onChange as (s: string) => void)("chat"), type: "button" }, "rail:chat"),
         createElement("button", { key: "skill", onClick: () => (props.onChange as (s: string) => void)("skill"), type: "button" }, "rail:skill"),
+        createElement("button", { key: "tasks", onClick: () => (props.onChange as (s: string) => void)("tasks"), type: "button" }, "rail:tasks"),
         createElement("button", { key: "remote", onClick: () => (props.onChange as (s: string) => void)("remote"), type: "button" }, "rail:remote"),
         createElement("button", { key: "settings", onClick: () => (props.onChange as (s: string) => void)("settings"), type: "button" }, "rail:settings"),
       ]);
@@ -752,6 +763,25 @@ describe("app shell layout", () => {
     act(() => railButton(view.container, "rail:remote").click());
     expect(view.container.querySelector("[data-child=\"remote-view\"]")).not.toBeNull();
     expect(view.container.querySelector("[data-child=\"context-panel\"]")).toBeNull();
+    view.unmount();
+  });
+
+  it("opens the Tasks panel and follows a run to its conversation", () => {
+    const view = mount(<AppShell />);
+    act(() => railButton(view.container, "rail:tasks").click());
+    expect(view.container.querySelector("[data-child=\"tasks-view\"]")).not.toBeNull();
+
+    // A conversation the panel reports that the local list already knows about
+    // is opened directly.
+    const onOpenThread = (children.tasksView as { onOpenThread: (id: string) => void }).onOpenThread;
+    act(() => onOpenThread("t1"));
+    expect(view.container.querySelector("[data-child=\"agent-thread\"]")).not.toBeNull();
+
+    // One the shell has not listed yet (the tick loop created it) still opens,
+    // with a catalog refresh so the sidebar catches up.
+    mocks.refreshStore.mockClear();
+    act(() => onOpenThread("thread-not-listed"));
+    expect(mocks.refreshStore).toHaveBeenCalledWith();
     view.unmount();
   });
 

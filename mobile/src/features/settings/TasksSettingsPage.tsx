@@ -93,6 +93,11 @@ export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean })
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const active = useRef(true);
+  // Re-entrancy guard for writes. State updates land after the render that set
+  // them, so two presses in one tick would both pass a `busy` check; the ref is
+  // set synchronously and drops the second one (same shape as the desktop's
+  // `writing` guard).
+  const writing = useRef(false);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
 
   const loadDetail = useCallback(async (taskId: string) => {
@@ -117,8 +122,21 @@ export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean })
     });
   }, [loadDetail]);
 
+  /**
+   * Clear the failure and re-read the task it belongs to. Every failure on this
+   * page is a task read or write (the list read has its own banner through
+   * `tasks.failed`), so the retry re-opens that task rather than guessing.
+   */
+  const retryTask = useCallback((taskId: string) => {
+    setFailed(false);
+    void loadDetail(taskId).catch(() => {
+      if (active.current) setFailed(true);
+    });
+  }, [loadDetail]);
+
   const mutate = async (operation: () => Promise<unknown>) => {
-    if (busy) return;
+    if (writing.current) return;
+    writing.current = true;
     setBusy(true);
     setFailed(false);
     try {
@@ -130,6 +148,7 @@ export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean })
       if (active.current) setFailed(true);
     }
     finally {
+      writing.current = false;
       if (active.current) setBusy(false);
     }
   };
@@ -146,6 +165,7 @@ export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean })
         runs={runs}
         onBack={() => setOpenId(null)}
         onMutate={mutate}
+        onRetry={() => retryTask(detail.id)}
       />
     );
   }
@@ -154,6 +174,9 @@ export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean })
     <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
       <SettingsSection title={t("tasks.title")}>
         {tasks.loading || tasks.failed ? <ResourceStatus loading={tasks.loading} failed={tasks.failed} onReload={() => void tasks.reload()} /> : null}
+        {/* A task that could not be read leaves the list on screen, so the
+            failure belongs here; a mutation failure renders in the editor. */}
+        {failed && openId ? <ResourceStatus loading={false} failed onReload={() => retryTask(openId)} /> : null}
         {(tasks.data ?? []).length === 0 && !tasks.loading
           ? <Text style={settingsStyles.description}>{t("tasks.empty")}</Text>
           : (tasks.data ?? []).map(task => (
@@ -176,7 +199,7 @@ export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean })
   );
 }
 
-function TaskEditor({ detail, busy, deps, failed, revisions, runs, onBack, onMutate }: {
+function TaskEditor({ detail, busy, deps, failed, revisions, runs, onBack, onMutate, onRetry }: {
   detail: RemoteTaskDetail;
   busy: boolean;
   deps: RemoteTaskDep[];
@@ -185,6 +208,7 @@ function TaskEditor({ detail, busy, deps, failed, revisions, runs, onBack, onMut
   runs: RemoteTaskRun[];
   onBack(): void;
   onMutate(operation: () => Promise<unknown>): Promise<void>;
+  onRetry(): void;
 }) {
   const { t } = useTranslation();
   const remote = useRemoteControls();
@@ -212,7 +236,7 @@ function TaskEditor({ detail, busy, deps, failed, revisions, runs, onBack, onMut
 
   return (
     <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
-      {failed ? <ResourceStatus loading={false} failed onReload={() => void onMutate(async () => undefined)} /> : null}
+      {failed ? <ResourceStatus loading={false} failed onReload={onRetry} /> : null}
       <SettingsSection title={detail.name}>
         <Button label={t("tasks.runNow")} disabled={busy} onPress={() => void onMutate(() => remote.runTask(detail.id))} />
         <Button label={detail.enabled ? t("tasks.disable") : t("tasks.enable")} disabled={busy} onPress={() => void onMutate(() => remote.setTaskEnabled(detail.id, !detail.enabled))} />

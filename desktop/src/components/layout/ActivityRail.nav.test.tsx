@@ -121,6 +121,8 @@ describe("activity rail navigation", () => {
     expect(p.onChange).toHaveBeenCalledWith("skill");
     act(() => buttonByText(view.container, "Phone Control")!.click());
     expect(p.onChange).toHaveBeenLastCalledWith("remote");
+    act(() => buttonByText(view.container, "Tasks")!.click());
+    expect(p.onChange).toHaveBeenLastCalledWith("tasks");
 
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"New workspace\"]")!.click());
     expect(p.onNewWorkspace).toHaveBeenCalledTimes(1);
@@ -163,13 +165,14 @@ describe("activity rail navigation", () => {
   it("routes the collapsed rail's icon buttons", () => {
     const p = props([thread("root")], { expanded: false });
     const view = mount(<ActivityRail {...p} />);
-
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"New chat\"]")!.click());
     expect(p.onNewChat).toHaveBeenCalledWith();
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Models\"]")!.click());
     expect(p.onOpenModels).toHaveBeenCalledTimes(1);
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Phone Control\"]")!.click());
     expect(p.onChange).toHaveBeenCalledWith("remote");
+    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Tasks\"]")!.click());
+    expect(p.onChange).toHaveBeenLastCalledWith("tasks");
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Workspace\"]")!.click());
     expect(p.onChange).toHaveBeenCalledWith("workspace");
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Chat\"]")!.click());

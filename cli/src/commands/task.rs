@@ -432,10 +432,13 @@ fn add(args: &[String], out: &Output) -> Result<()> {
 
     let now = now_ms();
     let next_due = if trigger_kind == future_tasks::TriggerKind::Schedule {
+        // Computed from an *enabled* clone: `next_due` answers "when would this
+        // fire", and a task created with `--disabled` must still carry its next
+        // slot so enabling it later schedules it instead of doing nothing.
         let t = Task {
             id: String::new(),
             name: name.clone(),
-            enabled: !disabled,
+            enabled: true,
             prompt: prompt.clone(),
             prompt_version: 1,
             cwd: cwd.clone(),
@@ -809,5 +812,666 @@ mod tests {
         let (out, captured) = Output::memory();
         runs(&args(&["r"]), &out).unwrap();
         assert_eq!(text(captured.out), "No runs yet.\n");
+    }
+
+    // ─── dispatch ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn the_group_dispatches_every_subcommand() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        for (values, expect_ok) in [
+            (vec![], true),
+            (vec!["--help"], true),
+            (vec!["list"], true),
+            (vec!["show"], false),
+            (vec!["add"], false),
+            (vec!["run"], false),
+            (vec!["runs"], false),
+            (vec!["frobnicate"], false),
+        ] {
+            let (out, _captured) = Output::memory();
+            let sub = values.first().copied().unwrap_or("list");
+            let rest: Vec<String> = values.iter().skip(1).map(|v| (*v).to_string()).collect();
+            let result = task(Some(sub), &rest, &out);
+            assert_eq!(result.is_ok(), expect_ok, "{values:?}: {result:?}");
+        }
+        let (out, captured) = Output::memory();
+        task(None, &[], &out).unwrap();
+        assert!(text(captured.out).contains("future task — manage FutureOS tasks"));
+    }
+
+    // ─── store location ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn future_home_override_owns_the_store() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let override_dir = dir.path().join("isolated-home");
+        let _env =
+            crate::test_env::EnvGuard::set(&[("FUTURE_HOME", override_dir.as_os_str().to_owned())]);
+        let (out, _captured) = Output::memory();
+        add(
+            &args(&["--name", "isolated", "--prompt", "p", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+        assert!(
+            override_dir.join("tasks").join("tasks.db").exists(),
+            "FUTURE_HOME replaces the whole root"
+        );
+    }
+
+    // ─── list / show output shapes ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_json_reports_every_task_and_the_empty_case_is_stated() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (out, captured) = Output::memory();
+        list(&[], &out).unwrap();
+        assert!(text(captured.out).contains("No tasks."));
+
+        let (out, _captured) = Output::memory();
+        add(
+            &args(&[
+                "--name", "j", "--prompt", "p", "--cwd", "/tmp", "--every", "2h",
+            ]),
+            &out,
+        )
+        .unwrap();
+        let (out, captured) = Output::memory();
+        list(&args(&["--json"]), &out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert_eq!(parsed[0]["name"], "j");
+        assert_eq!(parsed[0]["trigger"], "every 120m");
+        assert_eq!(parsed[0]["sessionPolicy"], "new");
+        assert_eq!(parsed[0]["reflection"], "ask");
+    }
+
+    #[tokio::test]
+    async fn show_names_every_trigger_shape_in_plain_and_json_output() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let cases: [(&str, &[&str], &str); 6] = [
+            ("m1", &["--at", "2026-12-24 09:00"], "once 2026-12-24 09:00"),
+            ("m2", &["--every", "30m"], "every 30m"),
+            ("m3", &["--daily", "--time", "08:15"], "daily 08:15"),
+            (
+                "m4",
+                &["--weekly", "--days", "mon,wed", "--time", "10:00"],
+                "weekly mon,wed 10:00",
+            ),
+            ("m5", &["--monthly", "--day", "31"], "monthly 31 09:00"),
+            ("m6", &[], "manual"),
+        ];
+        for (name, flags, expected) in cases {
+            let (out, _captured) = Output::memory();
+            let mut values = vec!["--name", name, "--prompt", "p", "--cwd", "/tmp"];
+            values.extend_from_slice(flags);
+            add(&args(&values), &out).unwrap();
+
+            let (out, captured) = Output::memory();
+            show(&args(&[name, "--prompt"]), &out).unwrap();
+            let printed = text(captured.out);
+            assert!(printed.contains(expected), "{name}: {printed}");
+            assert!(
+                printed.contains("p"),
+                "--prompt prints the prompt: {printed}"
+            );
+        }
+
+        let (out, captured) = Output::memory();
+        show(&args(&["m2", "--json"]), &out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert_eq!(parsed["triggerKind"], "schedule");
+        assert_eq!(parsed["depJoin"], "all");
+    }
+
+    #[tokio::test]
+    async fn show_finds_a_task_by_id_and_reports_its_last_run() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (out, captured) = Output::memory();
+        add(
+            &args(&["--name", "byId", "--prompt", "p", "--cwd", "/tmp", "--json"]),
+            &out,
+        )
+        .unwrap();
+        let id = serde_json::from_str::<serde_json::Value>(&text(captured.out)).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // A finished run shows up in the plain output and the JSON summary.
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        store
+            .insert_run(&future_tasks::TaskRun {
+                id: future_tasks::new_run_id(),
+                task_id: id.clone(),
+                kind: future_tasks::RunKind::Main,
+                origin: future_tasks::RunOrigin::Schedule,
+                actor: None,
+                due_at: Some(1),
+                status: future_tasks::RunStatus::Completed,
+                thread_id: None,
+                session_id: None,
+                run_id: None,
+                prompt_version: Some(1),
+                result_summary: Some("done".into()),
+                feedback: None,
+                feedback_note: None,
+                started_at: Some(1_700_000_000_000),
+                finished_at: Some(1_700_000_060_000),
+                error_message: None,
+            })
+            .unwrap();
+
+        let (out, captured) = Output::memory();
+        show(&args(&[&id]), &out).unwrap();
+        let printed = text(captured.out);
+        assert!(printed.contains("last run:"), "{printed}");
+        assert!(printed.contains("[Completed]"), "{printed}");
+
+        let (out, captured) = Output::memory();
+        show(&args(&[&id, "--json"]), &out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert_eq!(parsed["latestRun"]["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn show_refuses_an_unknown_task() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (out, _captured) = Output::memory();
+        assert!(show(&args(&["nope"]), &out)
+            .unwrap_err()
+            .contains("task not found"));
+    }
+
+    // ─── add flag matrix ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn add_accepts_every_documented_flag() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let prompt_file = home.dir.path().join("prompt.md");
+        std::fs::write(&prompt_file, "from a file").unwrap();
+        let (out, captured) = Output::memory();
+        add(
+            &args(&[
+                "--name",
+                "full",
+                "--prompt-file",
+                prompt_file.to_str().unwrap(),
+                "--cwd",
+                "/tmp",
+                "--model",
+                "future/gpt-5",
+                "--thinking",
+                "high",
+                "--session",
+                "existing",
+                "--reflection",
+                "auto",
+                "--monthly",
+                "--day",
+                "31",
+                "--time",
+                "07:30",
+                "--disabled",
+                "--json",
+            ]),
+            &out,
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert!(parsed["nextDueAt"].is_number());
+
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let stored = store.find_task_by_name("full").unwrap().unwrap();
+        assert_eq!(stored.prompt, "from a file");
+        assert_eq!(stored.model_id.as_deref(), Some("future/gpt-5"));
+        assert_eq!(stored.thinking_level.as_deref(), Some("high"));
+        assert_eq!(stored.session_policy, future_tasks::SessionPolicy::Existing);
+        assert_eq!(stored.reflection, future_tasks::Reflection::Auto);
+        assert!(!stored.enabled);
+        assert_eq!(stored.trigger_json["day"], 31);
+    }
+
+    #[tokio::test]
+    async fn add_refuses_unknown_flags_and_missing_values() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (out, _captured) = Output::memory();
+        let base = ["--name", "n", "--prompt", "p", "--cwd", "/tmp"];
+
+        let mut values = args(&base);
+        values.push("--nope".into());
+        assert!(add(&values, &out).unwrap_err().contains("unknown flag"));
+
+        for (index, flag) in [
+            "--name",
+            "--prompt",
+            "--prompt-file",
+            "--cwd",
+            "--model",
+            "--thinking",
+            "--reflection",
+            "--session",
+            "--at",
+            "--every",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // Every attempt gets its own name: the store allows one live task
+            // per name, so a repeated name would fail for the wrong reason.
+            let mut values = args(&[
+                "--name",
+                &format!("f{index}"),
+                "--prompt",
+                "p",
+                "--cwd",
+                "/tmp",
+            ]);
+            values.push(flag.into());
+            assert!(
+                add(&values, &out).is_err(),
+                "{flag} without a value must fail"
+            );
+        }
+
+        // `--time` / `--days` / `--day` belong to the trigger flag above them, so
+        // a bare occurrence is consumed rather than reported as dangling.
+        for (index, flag) in ["--time", "--days", "--day"].into_iter().enumerate() {
+            let mut values = args(&[
+                "--name",
+                &format!("d{index}"),
+                "--prompt",
+                "p",
+                "--cwd",
+                "/tmp",
+            ]);
+            values.push(flag.into());
+            assert!(add(&values, &out).is_ok(), "{flag} alone is ignored");
+        }
+    }
+
+    #[tokio::test]
+    async fn add_validates_trigger_and_policy_values() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (out, _captured) = Output::memory();
+        let mut attempted = 0;
+        let mut with = |extra: &[&str]| {
+            attempted += 1;
+            let mut values = args(&[
+                "--name",
+                &format!("n{attempted}"),
+                "--prompt",
+                "p",
+                "--cwd",
+                "/tmp",
+            ]);
+            values.extend(extra.iter().map(|v| v.to_string()));
+            values
+        };
+
+        assert!(add(&with(&["--reflection", "sometimes"]), &out).is_err());
+        assert!(add(&with(&["--session", "sometimes"]), &out).is_err());
+        assert!(
+            add(&with(&["--at", "2026-12-24"]), &out).is_err(),
+            "--at needs a time"
+        );
+        assert!(add(&with(&["--every", "soon"]), &out).is_err());
+        assert!(add(&with(&["--every", "30x"]), &out).is_err());
+        assert!(
+            add(&with(&["--weekly", "--time", "10:00"]), &out).is_err(),
+            "--weekly needs --days"
+        );
+        assert!(
+            add(&with(&["--monthly", "--time", "10:00"]), &out).is_err(),
+            "--monthly needs --day"
+        );
+        assert!(add(&with(&["--reflection", "off"]), &out).is_ok());
+        assert!(add(&with(&["--every", "1d"]), &out).is_ok());
+
+        // A prompt file that cannot be read is an error, and is only consulted
+        // when no inline prompt was given.
+        let file_only = args(&[
+            "--name",
+            "from-file",
+            "--prompt-file",
+            "/nonexistent/prompt.md",
+            "--cwd",
+            "/tmp",
+        ]);
+        assert!(add(&file_only, &out)
+            .unwrap_err()
+            .contains("read prompt file"));
+    }
+
+    // ─── run / runs ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn run_prints_where_the_request_went() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (out, _captured) = Output::memory();
+        add(
+            &args(&["--name", "q", "--prompt", "p", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+        let (out, captured) = Output::memory();
+        run(&args(&["q"]), &out).unwrap();
+        let printed = text(captured.out);
+        assert!(printed.contains("Queued run for q"), "{printed}");
+        assert!(printed.contains("--wait"), "{printed}");
+    }
+
+    #[tokio::test]
+    async fn run_wait_reports_the_finished_run() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (out, _captured) = Output::memory();
+        add(
+            &args(&["--name", "w", "--prompt", "p", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+
+        // A terminal run that starts after the request is what `--wait` polls for.
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let task = store.find_task_by_name("w").unwrap().unwrap();
+        let started = now_ms() + 60_000;
+        store
+            .insert_run(&future_tasks::TaskRun {
+                id: future_tasks::new_run_id(),
+                task_id: task.id.clone(),
+                kind: future_tasks::RunKind::Manual,
+                origin: future_tasks::RunOrigin::Cli,
+                actor: Some("cli".into()),
+                due_at: None,
+                status: future_tasks::RunStatus::Completed,
+                thread_id: Some("thr_1".into()),
+                session_id: Some("sess_1".into()),
+                run_id: None,
+                prompt_version: Some(1),
+                result_summary: Some("the summary".into()),
+                feedback: None,
+                feedback_note: None,
+                started_at: Some(started),
+                finished_at: Some(started + 1),
+                error_message: None,
+            })
+            .unwrap();
+
+        // The timeout is measured from the request time the caller reports, so
+        // that is what a real `future task run --wait` passes.
+        let request_at = now_ms();
+        let (out, captured) = Output::memory();
+        wait_for_run(&store, &task.id, request_at, 5_000, &out, false).unwrap();
+        let printed = text(captured.out);
+        assert!(printed.contains("[Completed]"), "{printed}");
+        assert!(printed.contains("the summary"), "{printed}");
+
+        let (out, captured) = Output::memory();
+        wait_for_run(&store, &task.id, request_at, 5_000, &out, true).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert_eq!(parsed["status"], "completed");
+        assert_eq!(parsed["threadId"], "thr_1");
+        assert_eq!(parsed["resultSummary"], "the summary");
+    }
+
+    #[tokio::test]
+    async fn run_wait_gives_up_after_the_timeout_instead_of_hanging() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (out, _captured) = Output::memory();
+        add(
+            &args(&["--name", "t", "--prompt", "p", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let task = store.find_task_by_name("t").unwrap().unwrap();
+        let (out, _captured) = Output::memory();
+        // A zero timeout expires on the first poll: no run has been accepted.
+        let error = wait_for_run(&store, &task.id, now_ms(), 0, &out, false).unwrap_err();
+        assert!(error.contains("did not finish within timeout"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn run_wait_reports_an_error_run() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (out, _captured) = Output::memory();
+        add(
+            &args(&["--name", "e", "--prompt", "p", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let task = store.find_task_by_name("e").unwrap().unwrap();
+        store
+            .insert_run(&future_tasks::TaskRun {
+                id: future_tasks::new_run_id(),
+                task_id: task.id.clone(),
+                kind: future_tasks::RunKind::Main,
+                origin: future_tasks::RunOrigin::Schedule,
+                actor: None,
+                due_at: Some(1),
+                status: future_tasks::RunStatus::Failed,
+                thread_id: None,
+                session_id: None,
+                run_id: None,
+                prompt_version: Some(1),
+                result_summary: None,
+                feedback: None,
+                feedback_note: None,
+                started_at: Some(now_ms() + 60_000),
+                finished_at: Some(now_ms() + 60_001),
+                error_message: Some("agent unreachable".into()),
+            })
+            .unwrap();
+        let (out, captured) = Output::memory();
+        wait_for_run(&store, &task.id, now_ms(), 5_000, &out, false).unwrap();
+        assert!(text(captured.out).contains("error: agent unreachable"));
+    }
+
+    #[tokio::test]
+    async fn runs_lists_the_ledger_and_its_json_form() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (out, _captured) = Output::memory();
+        add(
+            &args(&["--name", "r", "--prompt", "p", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let task = store.find_task_by_name("r").unwrap().unwrap();
+        store
+            .insert_run(&future_tasks::TaskRun {
+                id: future_tasks::new_run_id(),
+                task_id: task.id.clone(),
+                kind: future_tasks::RunKind::Chain,
+                origin: future_tasks::RunOrigin::Chain,
+                actor: Some("task:tsk_up".into()),
+                due_at: None,
+                status: future_tasks::RunStatus::Skipped,
+                thread_id: None,
+                session_id: None,
+                run_id: None,
+                prompt_version: Some(2),
+                result_summary: None,
+                feedback: None,
+                feedback_note: None,
+                started_at: Some(1_700_000_000_000),
+                finished_at: Some(1_700_000_001_000),
+                error_message: Some("overlap".into()),
+            })
+            .unwrap();
+
+        let (out, captured) = Output::memory();
+        runs(&args(&["r", "--limit", "5"]), &out).unwrap();
+        let printed = text(captured.out);
+        assert!(printed.contains("chain"), "{printed}");
+        assert!(printed.contains("skipped"), "{printed}");
+        assert!(printed.contains("overlap"), "{printed}");
+
+        let (out, captured) = Output::memory();
+        runs(&args(&["r", "--json"]), &out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert_eq!(parsed[0]["kind"], "chain");
+        assert_eq!(parsed[0]["origin"], "chain");
+        assert_eq!(parsed[0]["promptVersion"], 2);
+    }
+
+    #[tokio::test]
+    async fn runs_rejects_a_non_numeric_limit() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (out, _captured) = Output::memory();
+        add(
+            &args(&["--name", "r", "--prompt", "p", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+        // An unparsable limit falls back to the default rather than failing.
+        let (out, captured) = Output::memory();
+        runs(&args(&["r", "--limit", "lots"]), &out).unwrap();
+        assert!(text(captured.out).contains("No runs yet."));
+    }
+
+    #[tokio::test]
+    async fn wait_reports_a_run_once_it_settles() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (out, _captured) = Output::memory();
+        add(
+            &args(&["--name", "settling", "--prompt", "p", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let task = store.find_task_by_name("settling").unwrap().unwrap();
+        let started = now_ms() + 60_000;
+        store
+            .insert_run(&future_tasks::TaskRun {
+                id: future_tasks::new_run_id(),
+                task_id: task.id.clone(),
+                kind: future_tasks::RunKind::Manual,
+                origin: future_tasks::RunOrigin::Cli,
+                actor: Some("cli".into()),
+                due_at: None,
+                status: future_tasks::RunStatus::Completed,
+                thread_id: None,
+                session_id: None,
+                run_id: None,
+                prompt_version: Some(1),
+                result_summary: None,
+                feedback: None,
+                feedback_note: None,
+                started_at: Some(started),
+                finished_at: Some(started + 1),
+                error_message: None,
+            })
+            .unwrap();
+
+        // `future task run --wait` hands its own clock to the wait, so this is
+        // the shape a caller sees.
+        let (out, captured) = Output::memory();
+        run(&args(&["settling", "--wait", "--timeout", "5m"]), &out).unwrap();
+        let printed = text(captured.out);
+        assert!(printed.contains("[Completed]"), "{printed}");
+    }
+
+    #[tokio::test]
+    async fn wait_keeps_polling_while_the_run_is_still_going() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (out, _captured) = Output::memory();
+        add(
+            &args(&["--name", "busy", "--prompt", "p", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let task = store.find_task_by_name("busy").unwrap().unwrap();
+        // A run that belongs to this request but has not finished is not a
+        // result: the wait polls again (one interval, then its deadline).
+        let started = now_ms() + 60_000;
+        store
+            .insert_run(&future_tasks::TaskRun {
+                id: future_tasks::new_run_id(),
+                task_id: task.id.clone(),
+                kind: future_tasks::RunKind::Manual,
+                origin: future_tasks::RunOrigin::Cli,
+                actor: Some("cli".into()),
+                due_at: None,
+                status: future_tasks::RunStatus::Running,
+                thread_id: None,
+                session_id: None,
+                run_id: None,
+                prompt_version: Some(1),
+                result_summary: None,
+                feedback: None,
+                feedback_note: None,
+                started_at: Some(started),
+                finished_at: None,
+                error_message: None,
+            })
+            .unwrap();
+
+        let (out, _captured) = Output::memory();
+        let error = wait_for_run(&store, &task.id, now_ms(), 1_000, &out, false).unwrap_err();
+        assert!(error.contains("did not finish within timeout"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn list_names_a_manual_task_and_an_unrecognised_schedule() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (out, _captured) = Output::memory();
+        add(
+            &args(&["--name", "manual-one", "--prompt", "p", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+        // A trigger written by a newer build (or by hand) still prints a row.
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let mut odd = store.find_task_by_name("manual-one").unwrap().unwrap();
+        odd.trigger_kind = future_tasks::TriggerKind::Schedule;
+        odd.trigger_json = serde_json::json!({"mode": "fortnightly"});
+        store.update_task(&odd).unwrap();
+
+        let (out, captured) = Output::memory();
+        list(&[], &out).unwrap();
+        let printed = text(captured.out);
+        assert!(printed.contains("schedule"), "{printed}");
+
+        let mut manual = store.find_task_by_name("manual-one").unwrap().unwrap();
+        manual.trigger_kind = future_tasks::TriggerKind::Manual;
+        manual.trigger_json = serde_json::json!({});
+        store.update_task(&manual).unwrap();
+        let (out, captured) = Output::memory();
+        list(&[], &out).unwrap();
+        assert!(
+            text(captured.out).contains("manual"),
+            "a manual task says so"
+        );
+    }
+
+    #[test]
+    fn duration_parsing_accepts_minutes_hours_and_days() {
+        assert_eq!(parse_duration_minutes("30m"), Some(30));
+        assert_eq!(parse_duration_minutes("2h"), Some(120));
+        assert_eq!(parse_duration_minutes(" 1d "), Some(1440));
+        assert_eq!(parse_duration_minutes("30"), None);
+        assert_eq!(parse_duration_minutes("m"), None);
+        assert_eq!(parse_duration_minutes("30x"), None);
     }
 }
