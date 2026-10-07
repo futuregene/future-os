@@ -23,16 +23,10 @@ const PRE_COMPACT_TIMEOUT: Duration = Duration::from_secs(120);
 /// Poll cadence while waiting for the agent to go idle / compaction to settle.
 const AGENT_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
-/// FutureOS home root (`<home>/agent`, `<home>/tasks`, …), normally `~/.future`.
+/// FutureOS home root (shared with the CLI and the remote bridge, so every
+/// writer resolves the same `tasks.db`).
 fn future_home() -> PathBuf {
-    if let Some(override_dir) = future_rpc::home::future_home_override() {
-        return override_dir;
-    }
-    // Same resolution as the desktop app dir (HOME first, then USERPROFILE).
-    future_app_settings::app_dir()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| std::env::temp_dir().join(".future"))
+    crate::future_home_root()
 }
 
 fn now_ms() -> i64 {

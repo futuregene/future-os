@@ -101,6 +101,21 @@ fn install_rustls_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
+/// FutureOS home root (`<home>/agent`, `<home>/tasks`, …), normally `~/.future`.
+///
+/// `FUTURE_HOME` replaces the whole root (matching the agent); otherwise the
+/// desktop app dir's parent is used, so the tasks store and the GUI store can
+/// never disagree about which home they belong to.
+pub(crate) fn future_home_root() -> std::path::PathBuf {
+    if let Some(override_dir) = future_rpc::home::future_home_override() {
+        return override_dir;
+    }
+    future_app_settings::app_dir()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
+        .unwrap_or_else(|| std::env::temp_dir().join(".future"))
+}
+
 #[cfg(feature = "gui")]
 pub use gui::run;
 #[cfg(feature = "gui")]

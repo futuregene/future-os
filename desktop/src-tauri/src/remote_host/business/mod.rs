@@ -9,6 +9,7 @@ mod history;
 mod prompt;
 mod providers;
 mod settings;
+mod tasks;
 mod transfers;
 mod wire_limits;
 pub(crate) use prompt::*;
@@ -58,6 +59,19 @@ pub(crate) async fn execute(cmd: IncomingCmd, sink: &dyn ReplySink) {
         | "set_workspace_pinned"
         | "delete_workspace" => {
             catalog::execute(&cmd, sink).await;
+        }
+        "list_tasks"
+        | "get_task"
+        | "create_task"
+        | "update_task"
+        | "delete_task"
+        | "set_task_enabled"
+        | "run_task"
+        | "list_task_runs"
+        | "list_task_deps"
+        | "list_task_revisions"
+        | "apply_task_revision" => {
+            tasks::execute(&cmd, sink).await;
         }
         "list_providers"
         | "update_builtin_provider"

@@ -42,6 +42,13 @@ pub(crate) struct IncomingCmd {
     pub(crate) settings: serde_json::Value,
     pub(crate) skill_id: String,
     pub(crate) version: String,
+    // Task management (one whole task write, like `provider`; plus the ids a
+    // revisions/run command addresses).
+    pub(crate) task: serde_json::Value,
+    pub(crate) task_id: String,
+    pub(crate) revision_id: String,
+    // set_task_enabled
+    pub(crate) enabled: bool,
     // suggest_skill: the draft to recommend for, and the UNINSTALLED skill
     // candidates the phone offers. The candidates travel from the phone because
     // the catalogue is the client's to fetch; the desktop only forwards them to
@@ -118,6 +125,10 @@ impl Default for IncomingCmd {
             settings: serde_json::Value::Null,
             skill_id: String::new(),
             version: String::new(),
+            task: serde_json::Value::Null,
+            task_id: String::new(),
+            revision_id: String::new(),
+            enabled: false,
             query: String::new(),
             candidates: serde_json::Value::Null,
             message_hash: String::new(),

@@ -14,6 +14,7 @@ import { ModelsSettingsPage } from "./ModelsSettingsPage";
 import { ProviderKeyPage } from "./ProviderKeyPage";
 import { ProvidersSettingsPage } from "./ProvidersSettingsPage";
 import { SkillsSettingsPage } from "./SkillsSettingsPage";
+import { TasksSettingsPage } from "./TasksSettingsPage";
 import { ResourceStatus, SettingsLink, SettingsSection, SettingsSwitch, settingsStyles } from "./SettingsPrimitives";
 import { useDesktopResource } from "./useDesktopResource";
 
@@ -25,12 +26,12 @@ export type SettingsScreenHandle = { goBack(): void };
  * desktop dialog's single-level tabs cannot express.
  */
 type SettingsRoute =
-  | { name: "home" | "preferences" | "models" | "skills" | "language" | "providers" | "followAccount" }
+  | { name: "home" | "preferences" | "models" | "skills" | "tasks" | "language" | "providers" | "followAccount" }
   | { name: "providerKey"; provider: RemoteBuiltinProvider }
   | { name: "providerForm"; provider: RemoteCustomProvider | null };
 
 /** Levels that show the paired-desktop scope banner. */
-const SCOPED_LEVELS = new Set(["home", "preferences", "models", "skills", "providers"]);
+const SCOPED_LEVELS = new Set(["home", "preferences", "models", "skills", "tasks", "providers"]);
 
 export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, ref }: {
   onClose(): void; onCheckUpdate(): void; checkingUpdate: boolean; ref?: Ref<SettingsScreenHandle>;
@@ -55,6 +56,7 @@ export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, ref }: 
   const supported = remote.capabilities?.has("desktop_settings_v1") ?? false;
   const skillsSupported = remote.capabilities?.has("skill_management_v1") ?? false;
   const providersSupported = remote.capabilities?.has("provider_management_v1") ?? false;
+  const tasksSupported = remote.capabilities?.has("tasks_v1") ?? false;
   const enabled = remote.desktopOnline && supported;
   const resource = useDesktopResource(remote.getDesktopSettings, remote.desktopSettingsRevision, enabled);
   const disabled = !enabled || saving || resource.loading || resource.failed || !resource.data;
@@ -113,6 +115,8 @@ export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, ref }: 
           : null;
       case "skills":
         return remote.desktopOnline && skillsSupported ? <SkillsSettingsPage /> : null;
+      case "tasks":
+        return remote.desktopOnline && tasksSupported ? <TasksSettingsPage desktopOnline={remote.desktopOnline} /> : null;
       case "language":
         return <ScrollView contentContainerStyle={settingsStyles.content}>
           <SettingsSection title={t("desktopSettings.thisPhone")}><View style={settingsStyles.card}><LanguageSettings /></View></SettingsSection>
@@ -156,7 +160,8 @@ export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, ref }: 
             <SettingsLink label={t("desktopSettings.models")} disabled={!enabled} onPress={() => push({ name: "models" })} />
             <SettingsLink label={t("desktopSettings.providers")} disabled={!remote.desktopOnline || !providersSupported} onPress={() => push({ name: "providers" })} />
             <SettingsLink label={t("desktopSettings.skills")} disabled={!remote.desktopOnline || !skillsSupported} onPress={() => push({ name: "skills" })} />
-            {remote.desktopOnline && (!supported || !skillsSupported || !providersSupported) ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text> : null}
+            <SettingsLink label={t("desktopSettings.tasks")} disabled={!remote.desktopOnline || !tasksSupported} onPress={() => push({ name: "tasks" })} />
+            {remote.desktopOnline && (!supported || !skillsSupported || !providersSupported || !tasksSupported) ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text> : null}
           </SettingsSection>
           <SettingsSection title={t("desktopSettings.thisPhone")}>
             <SettingsLink label={t("language.title")} onPress={() => push({ name: "language" })} />

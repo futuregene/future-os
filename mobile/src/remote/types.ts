@@ -545,6 +545,13 @@ export interface RemoteCommand {
   provider?: CustomProviderUpsert | BuiltinProviderUpdate;
   skillId?: string;
   version?: string;
+  /** Task management: one whole task write (like `provider`), plus the ids a
+   * run/revision command addresses. */
+  task?: Record<string, unknown>;
+  taskId?: string;
+  revisionId?: string;
+  /** set_task_enabled */
+  enabled?: boolean;
   /** suggest_skill: the draft to recommend for, and the candidates to choose from. */
   query?: string;
   candidates?: { name: string; description: string }[];
