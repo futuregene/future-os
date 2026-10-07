@@ -251,6 +251,7 @@ Usage:
   future task show <id|name> [--json] [--prompt]    Show one task
   future task add --name N --prompt P|--prompt-file F --cwd D
         [--model M] [--thinking L] [--session new|existing]
+        [--conversation workspace|chat]
         [--reflection off|ask|auto] [--disabled] [--json]
         (--at "YYYY-MM-DD HH:MM" | --every 30m | --daily [--time 09:00]
          | --weekly --days mon,wed,fri [--time 10:00]
@@ -272,6 +273,9 @@ Session:
   --session new       Each run opens a new conversation (default).
   --session existing  Reuse one conversation; context is compacted before
                       each run (pre-compact failure fails the run).
+  --conversation workspace  File the conversation under the working directory
+                            (default).
+  --conversation chat       Open it as a chat conversation instead.
 
 Reflection (prompt optimization suggestions):
   --reflection off   Never reflect.
