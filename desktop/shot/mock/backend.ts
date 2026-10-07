@@ -94,6 +94,22 @@ const EMPTY_REMOTE_STATUS = {
   warningCode: null,
 };
 
+/**
+ * Mirror the backend's fork rule: a run can be copied only when the task reuses
+ * one conversation (`existing` mode), because that conversation is compacted and
+ * appended to on every run. In `new` mode the run already owns a conversation in
+ * the list, so there is nothing to fork. The mock must apply the same rule, or a
+ * capture would render a button the shipping app hides.
+ */
+function withForkable<T extends { sourceEntryId?: string | null; threadId?: string | null } | null>(
+  run: T,
+  sessionPolicy: string | undefined,
+): T {
+  if (!run)
+    return run;
+  return { ...run, forkable: sessionPolicy === "existing" && Boolean(run.sourceEntryId && run.threadId) };
+}
+
 /** Command name → implementation. Anything missing goes to the fallback. */
 /** Mutable copy so a capture can show a task being toggled or deleted. */
 const taskList = tasks.map(task => ({ ...task }));
@@ -441,7 +457,7 @@ const handlers: Record<string, (args: any) => unknown> = {
   // ── Tasks ──────────────────────────────────────────────────────────────
   // The panel reads through these; mutations are applied to the in-memory list
   // so a capture shows the same list a real write would produce.
-  list_tasks: () => taskList,
+  list_tasks: () => taskList.map(task => ({ ...task, latestRun: withForkable(task.latestRun, task.sessionPolicy) })),
   create_task: (args) => {
     const input = args?.input ?? {};
     const created = {
@@ -454,6 +470,7 @@ const handlers: Record<string, (args: any) => unknown> = {
       modelId: input.modelId ?? null,
       thinkingLevel: input.thinkingLevel ?? null,
       sessionPolicy: input.sessionPolicy ?? "new",
+      conversationMode: input.conversationMode ?? "workspace",
       triggerKind: input.triggerKind ?? "manual",
       trigger: input.trigger ?? {},
       depJoin: input.depJoin ?? "all",
@@ -504,7 +521,7 @@ const handlers: Record<string, (args: any) => unknown> = {
     return target;
   },
   run_task_now: args => taskList.find(task => task.id === args?.id) ?? null,
-  list_task_runs: args => taskRuns[args?.id] ?? [],
+  list_task_runs: args => (taskRuns[args?.id] ?? []).map(run => withForkable(run, taskList.find(task => task.id === args?.id)?.sessionPolicy)),
   list_task_deps: args => taskDeps[args?.id] ?? [],
   list_task_revisions: args => taskRevisions[args?.id] ?? [],
   apply_task_revision: (args) => {

@@ -11,9 +11,13 @@ import { TasksView } from "./TasksView";
 const mocks = vi.hoisted(() => ({
   invokeCommand: vi.fn(),
   loadAgentModelOptions: vi.fn(),
+  openDialog: vi.fn(),
 }));
 
 vi.mock("../../integrations/tauri/invoke", () => ({ invokeCommand: mocks.invokeCommand }));
+// The working-directory picker opens the OS directory chooser; the fake stands
+// in for the native tree so the field's contract can be asserted.
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.openDialog }));
 vi.mock("../../integrations/agent/agentClient", () => ({
   loadAgentModelOptions: mocks.loadAgentModelOptions,
 }));
@@ -29,6 +33,7 @@ function task(overrides: Partial<TaskView> = {}): TaskView {
     modelId: null,
     thinkingLevel: null,
     sessionPolicy: "new",
+    conversationMode: "workspace",
     triggerKind: "schedule",
     trigger: { mode: "daily", time: "09:00" },
     depJoin: "all",
@@ -54,6 +59,7 @@ function run(overrides: Partial<TaskRunView> = {}): TaskRunView {
     promptVersion: 1,
     resultSummary: "all good",
     errorMessage: null,
+    forkable: true,
     ...overrides,
   };
 }
@@ -64,6 +70,7 @@ beforeEach(() => {
   void i18n.changeLanguage("en");
   mocks.invokeCommand.mockReset();
   mocks.loadAgentModelOptions.mockReset();
+  mocks.openDialog.mockReset();
   mocks.loadAgentModelOptions.mockResolvedValue([
     { id: "gpt-5", label: "GPT-5", provider: "future" },
   ]);
@@ -226,7 +233,53 @@ describe("tasksView", () => {
     expect(onOpenThread).toHaveBeenCalledWith("thr_1");
     // Applied prompt versions are listed with their source.
     expect(container.textContent).toContain("v2");
-    expect(container.textContent).toContain("reflection");
+    expect(container.textContent).toContain("Reflection");
+  });
+
+  it("shows the model, thinking level and working directory of a task", async () => {
+    const { container } = await renderView([task({ modelId: "future/gpt-5", thinkingLevel: "high" })]);
+    await click(rows(container)[0]);
+    const text = container.textContent ?? "";
+    // A detail page that omits these cannot answer "what will this run on?".
+    expect(text).toContain("Model");
+    expect(text).toContain("future/gpt-5");
+    expect(text).toContain("Thinking");
+    expect(text).toContain("High");
+    expect(text).toContain("Working directory");
+    expect(text).toContain("/tmp/repo");
+  });
+
+  it("falls back to the defaults when a task pins neither model nor thinking level", async () => {
+    const { container } = await renderView();
+    await click(rows(container)[0]);
+    const text = container.textContent ?? "";
+    expect(text).toContain("Default model");
+    expect(text).toContain("Default");
+  });
+
+  it("picks the working directory through the directory chooser", async () => {
+    const { container } = await renderView();
+    await click(rows(container)[0]);
+    await click(buttonByText(container, "Edit"));
+    mocks.openDialog.mockResolvedValueOnce("/Users/me/finally-a-real-folder");
+    await click(buttonByText(container, "Browse"));
+    // The chooser is asked for a directory, and its answer lands in the field.
+    expect(mocks.openDialog).toHaveBeenCalledWith(expect.objectContaining({ directory: true }));
+    expect(field(container, "Working directory").value).toBe("/Users/me/finally-a-real-folder");
+  });
+
+  it("ignores a cancelled directory pick and reports one that cannot open", async () => {
+    const { container } = await renderView();
+    await click(rows(container)[0]);
+    await click(buttonByText(container, "Edit"));
+    // Cancelling answers null; the path the user already has must survive.
+    mocks.openDialog.mockResolvedValueOnce(null);
+    await click(buttonByText(container, "Browse"));
+    expect(field(container, "Working directory").value).toBe("/tmp/repo");
+
+    mocks.openDialog.mockRejectedValueOnce(new Error("no picker here"));
+    await click(buttonByText(container, "Browse"));
+    expect((container.textContent ?? "")).toContain("no picker here");
   });
 
   it("runs, toggles and deletes through the backend", async () => {
@@ -411,7 +464,8 @@ describe("tasksView", () => {
     const { container } = await renderView(tasks);
     const text = rows(container).map(row => row.textContent ?? "").join("\n");
     expect(text).toContain("Manual");
-    expect(text).toContain("2026-12-24 09:00");
+    // The stored ISO day is formatted for the active locale, not printed raw.
+    expect(text).toContain("12/24/2026");
     expect(text).toContain("Every 30 min");
     // The weekday codes are localized, not printed raw.
     expect(text).toContain("Mon, Fri 10:00");
@@ -527,5 +581,102 @@ describe("tasksView", () => {
     expect(call?.[1]).toMatchObject({
       input: { trigger: { mode: "monthly", day: 15, time: "06:45" } },
     });
+  });
+
+  it("promotes exact intervals to hours and days", async () => {
+    const { container } = await renderView([
+      task({ id: "t1", name: "hourly", trigger: { mode: "interval", every_minutes: 60 } }),
+      task({ id: "t2", name: "daily", trigger: { mode: "interval", every_minutes: 1440 } }),
+      task({ id: "t3", name: "odd", trigger: { mode: "interval", every_minutes: 90 } }),
+    ]);
+    const text = rows(container).map(row => row.textContent ?? "").join("\n");
+    expect(text).toContain("Every 1 h");
+    expect(text).toContain("Every 1 d");
+    expect(text).toContain("Every 90 min");
+  });
+
+  it("forks a finished run into the conversation list", async () => {
+    const onOpenThread = vi.fn();
+    const { container } = await renderView([task()], onOpenThread);
+    await click(rows(container)[0]);
+    mocks.invokeCommand.mockClear();
+    mocks.invokeCommand.mockImplementation(async (command: string) => {
+      if (command === "fork_task_run")
+        return "thr_forked";
+      if (command === "list_tasks")
+        return [task()];
+      if (command === "list_task_runs")
+        return [run()];
+      return [];
+    });
+    await click(buttonByText(container, "Fork"));
+    expect(mocks.invokeCommand).toHaveBeenCalledWith("fork_task_run", { runId: "trn_1" });
+    expect(onOpenThread).toHaveBeenCalledWith("thr_forked");
+  });
+
+  it("reports a fork that the backend refuses", async () => {
+    const onOpenThread = vi.fn();
+    const { container } = await renderView([task()], onOpenThread);
+    await click(rows(container)[0]);
+    mocks.invokeCommand.mockImplementation(async (command: string) => {
+      if (command === "fork_task_run")
+        throw new Error("no message to fork from");
+      if (command === "list_tasks")
+        return [task()];
+      if (command === "list_task_runs")
+        return [run()];
+      return [];
+    });
+    await click(buttonByText(container, "Fork"));
+    expect(onOpenThread).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("no message to fork from");
+  });
+
+  it("hides the fork action for a run with nothing to fork from", async () => {
+    const { container } = await renderView([task()]);
+    mocks.invokeCommand.mockImplementation(async (command: string) => {
+      if (command === "list_tasks")
+        return [task()];
+      if (command === "list_task_runs")
+        return [run({ forkable: false })];
+      return [];
+    });
+    await click(rows(container)[0]);
+    expect(buttonByText(container, "Fork")).toBeUndefined();
+  });
+
+  it("says so when a run recorded no summary", async () => {
+    const { container } = await renderView([task()]);
+    mocks.invokeCommand.mockImplementation(async (command: string) => {
+      if (command === "list_tasks")
+        return [task()];
+      if (command === "list_task_runs")
+        return [run({ resultSummary: null, errorMessage: null })];
+      return [];
+    });
+    await click(rows(container)[0]);
+    expect(container.textContent).toContain("No summary recorded");
+  });
+
+  it("creates a chat conversation when the task asks for one", async () => {
+    const { container } = await renderView([]);
+    await click(buttonByText(container, "New task"));
+    await setValue(field(container, "Name") as HTMLInputElement, "chatty");
+    await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
+    await setValue(field(container, "Working directory") as HTMLInputElement, "/tmp");
+    await setValue(field(container, "Conversation type") as HTMLSelectElement, "chat");
+    expect(container.textContent).toContain("appears under Chat");
+    mocks.invokeCommand.mockClear();
+    mocks.invokeCommand.mockResolvedValue([task()]);
+    await click(buttonByText(container, "Save"));
+    const call = mocks.invokeCommand.mock.calls.find(([command]) => command === "create_task");
+    expect(call?.[1]).toMatchObject({ input: { conversationMode: "chat" } });
+  });
+
+  it("opens a stored task on its own conversation type", async () => {
+    const { container } = await renderView([task({ conversationMode: "chat" })]);
+    await click(rows(container)[0]);
+    await click(buttonByText(container, "Edit"));
+    expect((field(container, "Conversation type") as HTMLSelectElement).value).toBe("chat");
   });
 });

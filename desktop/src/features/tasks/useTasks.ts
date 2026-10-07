@@ -15,6 +15,8 @@ export interface TaskRunView {
   promptVersion: number | null;
   resultSummary: string | null;
   errorMessage: string | null;
+  /** Whether this run can be forked into the conversation list. */
+  forkable: boolean;
 }
 
 export interface TaskView {
@@ -27,6 +29,7 @@ export interface TaskView {
   modelId: string | null;
   thinkingLevel: string | null;
   sessionPolicy: string;
+  conversationMode: string;
   triggerKind: string;
   trigger: Record<string, unknown>;
   depJoin: string;
@@ -43,6 +46,7 @@ export interface TaskInput {
   modelId?: string | null;
   thinkingLevel?: string | null;
   sessionPolicy?: string;
+  conversationMode?: string;
   reflection?: string;
   triggerKind?: string;
   trigger?: Record<string, unknown>;
@@ -147,6 +151,12 @@ export function useTasks() {
     [],
   );
 
+  /** Fork a run's conversation into the conversation list; returns its id. */
+  const forkRun = useCallback(
+    (runId: string) => invokeCommand<string>("fork_task_run", { runId }),
+    [],
+  );
+
   const applyRevision = useCallback(async (id: string, revisionId: string) => {
     await invokeCommand<TaskView>("apply_task_revision", { id, revisionId });
     await reload();
@@ -168,5 +178,6 @@ export function useTasks() {
     removeDep,
     listRevisions,
     applyRevision,
+    forkRun,
   };
 }

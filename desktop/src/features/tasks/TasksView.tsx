@@ -1,7 +1,8 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { TaskInput, TaskView } from "./useTasks";
-import { ChevronLeft, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { ChevronLeft, FolderOpen, GitFork, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
@@ -70,27 +71,56 @@ function triggerPayload(draft: DraftTrigger): { kind: string; trigger: Record<st
   }
 }
 
-function summarizeTrigger(t: (key: string, options?: Record<string, unknown>) => string, task: TaskView): string {
+/**
+ * "Every N minutes", promoting exact hours and days to their own wording — a
+ * 720-minute cadence reads as "every 12 hours", not as a wall of minutes.
+ */
+function intervalLabel(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  minutes: number,
+): string {
+  if (minutes > 0 && minutes % (24 * 60) === 0)
+    return t("trigger.everyDays", { days: minutes / (24 * 60) });
+  if (minutes > 0 && minutes % 60 === 0)
+    return t("trigger.everyHours", { hours: minutes / 60 });
+  return t("trigger.every", { minutes });
+}
+
+function summarizeTrigger(
+  t: (key: string, options?: Record<string, unknown>) => string,
+  task: TaskView,
+  locale: string,
+): string {
   if (task.triggerKind !== "schedule")
     return t("trigger.manual");
   const trigger = task.trigger as Record<string, unknown>;
-  const mode = String(trigger.mode ?? "");
-  switch (mode) {
-    case "once":
-      return `${trigger.date} ${trigger.time}`;
+  const time = String(trigger.time ?? "");
+  switch (String(trigger.mode ?? "")) {
+    case "once": {
+      // The stored value is an ISO day; a task list that prints `2026-12-24
+      // 09:00` verbatim is untranslated in a locale that writes dates its own
+      // way. Format it, and fall back to the raw pair if it is unparsable.
+      const date = String(trigger.date ?? "");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
+        return `${date} ${time}`.trim();
+      return formatDateTime(`${date}T${time || "00:00"}:00`, locale);
+    }
     case "interval":
-      return t("trigger.every", { minutes: Number(trigger.every_minutes ?? 0) });
+      return intervalLabel(t, Number(trigger.every_minutes ?? 0));
     case "weekly": {
       // The stored codes are `mon`/`fri`; a list that shows them raw is
       // untranslated in a Chinese UI. Localize each selected day.
       const days = Array.isArray(trigger.days) ? (trigger.days as string[]) : [];
       const labels = days.map(day => t(`weekday.${day}`));
-      return `${labels.join(", ")} ${trigger.time}`;
+      return `${labels.join(", ")} ${time}`;
     }
     case "monthly":
-      return t("trigger.monthly", { day: Number(trigger.day ?? 1), time: String(trigger.time ?? "") });
+      return t("trigger.monthly", {
+        day: Number(trigger.day ?? 1),
+        time,
+      });
     default:
-      return `${t("trigger.daily")} ${trigger.time}`;
+      return `${t("trigger.daily")} ${time}`;
   }
 }
 
@@ -117,11 +147,13 @@ export function TasksView({
     modelId: "",
     thinkingLevel: "",
     sessionPolicy: "new",
+    conversationMode: "workspace",
     reflection: "ask",
     enabled: true,
     trigger: { ...emptyTrigger },
   });
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [forkError, setForkError] = useState<string | null>(null);
 
   useEffect(() => {
     void loadAgentModelOptions().then(setModels).catch(() => setModels([]));
@@ -143,6 +175,7 @@ export function TasksView({
       modelId: "",
       thinkingLevel: "",
       sessionPolicy: "new",
+      conversationMode: "workspace",
       reflection: "ask",
       enabled: true,
       trigger: { ...emptyTrigger },
@@ -160,6 +193,7 @@ export function TasksView({
       modelId: task.modelId ?? "",
       thinkingLevel: task.thinkingLevel ?? "",
       sessionPolicy: task.sessionPolicy,
+      conversationMode: task.conversationMode,
       reflection: task.reflection,
       enabled: task.enabled,
       trigger: triggerFromTask(task),
@@ -175,6 +209,7 @@ export function TasksView({
       modelId: draft.modelId || null,
       thinkingLevel: draft.thinkingLevel || null,
       sessionPolicy: draft.sessionPolicy,
+      conversationMode: draft.conversationMode,
       reflection: draft.reflection,
       triggerKind: kind,
       trigger,
@@ -197,9 +232,21 @@ export function TasksView({
     }
   }, [draft, selected, selectedId, store, t]);
 
+  /** Copy a finished run's conversation into the list, then open the copy. */
+  const forkRun = useCallback(async (runId: string) => {
+    setForkError(null);
+    try {
+      const forkedThreadId = await store.forkRun(runId);
+      onOpenThread(forkedThreadId);
+    }
+    catch (caught) {
+      setForkError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }, [store, onOpenThread]);
+
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
-      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-line-soft px-3">
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line-soft px-4">
         {!leftPanelExpanded
           ? (
               <Button aria-label={t("showSidebar")} size="xs" variant="ghost" onClick={onToggleLeftPanel}>
@@ -213,18 +260,21 @@ export function TasksView({
         </Button>
       </header>
 
+      {forkError
+        ? <p className="border-b border-line-soft px-4 py-2 text-xs text-danger">{forkError}</p>
+        : null}
       <div className="flex min-h-0 flex-1">
         <div className="w-72 shrink-0 overflow-y-auto border-r border-line-soft">
           {store.error
-            ? <p className="p-3 text-xs text-danger">{store.error}</p>
+            ? <p className="px-4 py-3 text-xs text-danger">{store.error}</p>
             : null}
           {store.tasks.length === 0 && !store.loading
-            ? <p className="p-3 text-xs text-ink-muted">{t("empty")}</p>
+            ? <p className="px-4 py-6 text-xs text-ink-muted">{t("empty")}</p>
             : null}
           {store.tasks.map(task => (
             <button
               key={task.id}
-              className={`flex w-full flex-col gap-1 border-b border-line-soft px-3 py-2 text-left transition-colors hover:bg-surface-subtle ${task.id === selectedId ? "bg-surface-subtle" : ""}`}
+              className={`flex w-full flex-col gap-1.5 border-b border-line-soft px-4 py-3 text-left transition-colors hover:bg-surface-subtle ${task.id === selectedId ? "bg-surface-subtle" : ""}`}
               type="button"
               onClick={() => {
                 setSelectedId(task.id);
@@ -235,11 +285,11 @@ export function TasksView({
                 <span className={`size-1.5 shrink-0 rounded-full ${task.enabled ? "bg-accent" : "bg-line"}`} />
                 <span className="min-w-0 flex-1 truncate text-sm text-ink">{task.name}</span>
                 {task.latestRun
-                  ? <span className="shrink-0 text-[11px] text-ink-muted">{t(`status.${task.latestRun.status}`)}</span>
+                  ? <span className="shrink-0 text-xs text-ink-muted">{t(`status.${task.latestRun.status}`)}</span>
                   : null}
               </span>
-              <span className="truncate pl-3.5 text-[11px] text-ink-muted">
-                {summarizeTrigger(t, task)}
+              <span className="truncate pl-3.5 text-xs text-ink-muted">
+                {summarizeTrigger(t, task, locale)}
                 {task.nextDueAt ? ` · ${formatEpoch(task.nextDueAt, locale)}` : ""}
               </span>
             </button>
@@ -264,10 +314,11 @@ export function TasksView({
                     store={store}
                     task={selected}
                     onEdit={() => startEdit(selected)}
+                    onForkRun={runId => void forkRun(runId)}
                     onOpenThread={onOpenThread}
                   />
                 )
-              : <p className="p-6 text-sm text-ink-muted">{t("selectHint")}</p>}
+              : <p className="px-6 py-10 text-sm text-ink-muted">{t("selectHint")}</p>}
         </div>
       </div>
     </section>
@@ -289,6 +340,7 @@ function TaskForm({
     modelId: string;
     thinkingLevel: string;
     sessionPolicy: string;
+    conversationMode: string;
     reflection: string;
     enabled: boolean;
     trigger: DraftTrigger;
@@ -300,20 +352,38 @@ function TaskForm({
   onSave: () => void;
 }) {
   const { t } = useTranslation("tasks");
+  const [browseError, setBrowseError] = useState<string | null>(null);
   const trigger = draft.trigger;
   const setTrigger = (patch: Partial<DraftTrigger>) => onChange({ trigger: { ...trigger, ...patch } });
 
+  /**
+   * Pick the working directory in the OS directory chooser. Cancelling leaves
+   * the field alone (the dialog answers null, not an error), and a picker that
+   * cannot open at all must not clear a path the user already typed.
+   */
+  const chooseDirectory = async () => {
+    try {
+      const picked = await open({ directory: true, multiple: false, defaultPath: draft.cwd || undefined });
+      if (typeof picked === "string")
+        onChange({ cwd: picked });
+    }
+    catch (error) {
+      setBrowseError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
   return (
-    <div className="space-y-4 p-6">
+    <div className="space-y-5 px-6 py-5 pb-10">
       <h2 className="text-sm font-semibold text-ink">{t("form.title")}</h2>
       {error ? <p className="text-xs text-danger">{error}</p> : null}
+      {browseError ? <p className="text-xs text-danger">{browseError}</p> : null}
 
-      <label className="block space-y-1">
+      <label className="block space-y-1.5">
         <span className="text-xs text-ink-soft">{t("form.name")}</span>
         <TextInput value={draft.name} onChange={e => onChange({ name: e.target.value })} />
       </label>
 
-      <label className="block space-y-1">
+      <label className="block space-y-1.5">
         <span className="text-xs text-ink-soft">{t("form.prompt")}</span>
         <textarea
           className="min-h-32 w-full rounded-md border border-line-soft bg-surface px-3 py-2 text-sm text-ink outline-none focus:border-focus focus:ring-2 focus:ring-focus"
@@ -323,13 +393,28 @@ function TaskForm({
         />
       </label>
 
-      <label className="block space-y-1">
+      <div className="block space-y-1.5">
         <span className="text-xs text-ink-soft">{t("form.cwd")}</span>
-        <TextInput value={draft.cwd} onChange={e => onChange({ cwd: e.target.value })} />
-      </label>
+        <div className="flex items-center gap-2">
+          <TextInput
+            aria-label={t("form.cwd")}
+            placeholder={t("form.cwdPlaceholder")}
+            value={draft.cwd}
+            onChange={e => onChange({ cwd: e.target.value })}
+          />
+          <Button
+            leftIcon={<FolderOpen className="size-3.5" />}
+            size="md"
+            variant="secondary"
+            onClick={() => void chooseDirectory()}
+          >
+            {t("form.browse")}
+          </Button>
+        </div>
+      </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <label className="block space-y-1">
+        <label className="block space-y-1.5">
           <span className="text-xs text-ink-soft">{t("form.model")}</span>
           <Select value={draft.modelId} onChange={e => onChange({ modelId: e.target.value })}>
             <option value="">{t("form.modelDefault")}</option>
@@ -340,26 +425,26 @@ function TaskForm({
             ))}
           </Select>
         </label>
-        <label className="block space-y-1">
+        <label className="block space-y-1.5">
           <span className="text-xs text-ink-soft">{t("form.thinking")}</span>
           <Select value={draft.thinkingLevel} onChange={e => onChange({ thinkingLevel: e.target.value })}>
             <option value="">{t("form.thinkingDefault")}</option>
             {["off", "minimal", "low", "medium", "high", "xhigh"].map(level => (
-              <option key={level} value={level}>{level}</option>
+              <option key={level} value={level}>{t(`agent:composer.thinkingLevelLabels.${level}`)}</option>
             ))}
           </Select>
         </label>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <label className="block space-y-1">
-          <span className="text-xs text-ink-soft">{t("form.session")}</span>
-          <Select value={draft.sessionPolicy} onChange={e => onChange({ sessionPolicy: e.target.value })}>
-            <option value="new">{t("form.sessionNew")}</option>
-            <option value="existing">{t("form.sessionExisting")}</option>
+      <div className="grid grid-cols-2 gap-4">
+        <label className="block space-y-1.5">
+          <span className="text-xs text-ink-soft">{t("form.conversationMode")}</span>
+          <Select value={draft.conversationMode} onChange={e => onChange({ conversationMode: e.target.value })}>
+            <option value="workspace">{t("form.conversationWorkspace")}</option>
+            <option value="chat">{t("form.conversationChat")}</option>
           </Select>
         </label>
-        <label className="block space-y-1">
+        <label className="block space-y-1.5">
           <span className="text-xs text-ink-soft">{t("form.reflection")}</span>
           <Select value={draft.reflection} onChange={e => onChange({ reflection: e.target.value })}>
             <option value="off">{t("form.reflectionOff")}</option>
@@ -368,8 +453,19 @@ function TaskForm({
           </Select>
         </label>
       </div>
+      <p className="text-xs text-ink-muted">{t("form.conversationModeHint")}</p>
+
+      <div className="grid grid-cols-2 gap-4">
+        <label className="block space-y-1.5">
+          <span className="text-xs text-ink-soft">{t("form.session")}</span>
+          <Select value={draft.sessionPolicy} onChange={e => onChange({ sessionPolicy: e.target.value })}>
+            <option value="new">{t("form.sessionNew")}</option>
+            <option value="existing">{t("form.sessionExisting")}</option>
+          </Select>
+        </label>
+      </div>
       {draft.sessionPolicy === "existing"
-        ? <p className="text-[11px] text-ink-muted">{t("form.sessionExistingHint")}</p>
+        ? <p className="text-xs text-ink-muted">{t("form.sessionExistingHint")}</p>
         : null}
 
       <fieldset className="space-y-3 rounded-md border border-line-soft p-3">
@@ -386,11 +482,11 @@ function TaskForm({
         {trigger.mode === "once"
           ? (
               <div className="grid grid-cols-2 gap-3">
-                <label className="block space-y-1">
+                <label className="block space-y-1.5">
                   <span className="text-xs text-ink-soft">{t("form.date")}</span>
                   <TextInput placeholder="2026-12-24" value={trigger.date} onChange={e => setTrigger({ date: e.target.value })} />
                 </label>
-                <label className="block space-y-1">
+                <label className="block space-y-1.5">
                   <span className="text-xs text-ink-soft">{t("form.time")}</span>
                   <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
                 </label>
@@ -400,7 +496,7 @@ function TaskForm({
 
         {trigger.mode === "interval"
           ? (
-              <label className="block space-y-1">
+              <label className="block space-y-1.5">
                 <span className="text-xs text-ink-soft">{t("form.everyMinutes")}</span>
                 <TextInput
                   type="number"
@@ -414,7 +510,7 @@ function TaskForm({
 
         {trigger.mode === "daily"
           ? (
-              <label className="block space-y-1">
+              <label className="block space-y-1.5">
                 <span className="text-xs text-ink-soft">{t("form.time")}</span>
                 <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
               </label>
@@ -441,7 +537,7 @@ function TaskForm({
                     </label>
                   ))}
                 </div>
-                <label className="block space-y-1">
+                <label className="block space-y-1.5">
                   <span className="text-xs text-ink-soft">{t("form.time")}</span>
                   <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
                 </label>
@@ -452,7 +548,7 @@ function TaskForm({
         {trigger.mode === "monthly"
           ? (
               <div className="space-y-2">
-                <label className="block space-y-1">
+                <label className="block space-y-1.5">
                   <span className="text-xs text-ink-soft">{t("form.day")}</span>
                   <TextInput
                     type="number"
@@ -462,7 +558,7 @@ function TaskForm({
                     onChange={e => setTrigger({ day: Number(e.target.value) || 1 })}
                   />
                 </label>
-                <label className="block space-y-1">
+                <label className="block space-y-1.5">
                   <span className="text-xs text-ink-soft">{t("form.time")}</span>
                   <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
                 </label>
@@ -478,9 +574,11 @@ function TaskForm({
         {t("form.enabled")}
       </label>
 
-      <p className="text-[11px] text-warning">{t("form.fullPermissionWarning")}</p>
+      <p className="rounded-md border border-warning-line bg-warning-soft px-3 py-2 text-xs text-warning">
+        {t("form.fullPermissionWarning")}
+      </p>
 
-      <div className="flex gap-2">
+      <div className="flex gap-2 pt-1">
         <Button size="sm" variant="primary" onClick={onSave}>{t("form.save")}</Button>
         <Button size="sm" variant="ghost" onClick={onCancel}>{t("form.cancel")}</Button>
       </div>
@@ -492,11 +590,13 @@ function TaskDetail({
   task,
   store,
   onEdit,
+  onForkRun,
   onOpenThread,
 }: {
   task: TaskView;
   store: ReturnType<typeof useTasks>;
   onEdit: () => void;
+  onForkRun: (runId: string) => void;
   onOpenThread: (threadId: string) => void;
 }) {
   const { t, i18n } = useTranslation("tasks");
@@ -521,12 +621,12 @@ function TaskDetail({
   }, [refresh]);
 
   return (
-    <div className="space-y-5 p-6">
-      <div className="flex items-start gap-3">
+    <div className="space-y-6 px-6 py-5 pb-10">
+      <div className="flex items-start gap-2.5">
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-sm font-semibold text-ink">{task.name}</h2>
-          <p className="text-xs text-ink-muted">
-            {summarizeTrigger(t, task)}
+          <p className="mt-1 text-xs text-ink-muted">
+            {summarizeTrigger(t, task, locale)}
             {task.nextDueAt ? ` · ${t("nextDue")} ${formatEpoch(task.nextDueAt, locale)}` : ""}
           </p>
         </div>
@@ -554,92 +654,142 @@ function TaskDetail({
         </Button>
       </div>
 
-      <section className="space-y-1">
-        <h3 className="text-xs font-medium text-ink-soft">{t("prompt")}</h3>
-        <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-line-soft bg-surface-subtle p-3 text-xs text-ink">
+      <section className="space-y-2">
+        <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("settings")}</h3>
+        <dl className="grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)] gap-x-4 gap-y-2.5 rounded-md border border-line-soft bg-surface-subtle px-3.5 py-3.5 text-xs">
+          {[
+            // What the run will actually be: the model and thinking level are
+            // per-task, so a detail page that omits them cannot answer "what
+            // does this run on?".
+            [t("colModel"), task.modelId ?? t("modelDefault")],
+            [t("colThinking"), task.thinkingLevel ? t(`agent:composer.thinkingLevelLabels.${task.thinkingLevel}`) : t("thinkingDefault")],
+            [t("colCwd"), task.cwd],
+            [t("colConversation"), t(task.conversationMode === "chat" ? "form.conversationChat" : "form.conversationWorkspace")],
+            [t("form.session"), t(task.sessionPolicy === "existing" ? "form.sessionExisting" : "form.sessionNew")],
+            [t("colReflection"), t(`form.reflection${task.reflection === "off" ? "Off" : task.reflection === "auto" ? "Auto" : "Ask"}`)],
+          ].map(([label, value]) => (
+            <Fragment key={label}>
+              <dt className="text-ink-soft">{label}</dt>
+              <dd className="min-w-0 wrap-break-word text-ink">{value}</dd>
+            </Fragment>
+          ))}
+        </dl>
+      </section>
+
+      <section className="space-y-2">
+        <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("prompt")}</h3>
+        <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-line-soft bg-surface-subtle px-3.5 py-3.5 text-xs leading-relaxed text-ink">
           {task.prompt}
         </pre>
-        <p className="text-[11px] text-ink-muted">
+        <p className="pl-3.5 text-xs text-ink-muted">
           {t("promptVersion", { version: task.promptVersion })}
         </p>
       </section>
 
       <section className="space-y-2">
-        <h3 className="text-xs font-medium text-ink-soft">{t("deps")}</h3>
+        <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("deps")}</h3>
         {deps.length === 0
-          ? <p className="text-[11px] text-ink-muted">{t("depsNone")}</p>
+          ? <p className="pl-3.5 text-xs text-ink-muted">{t("depsNone")}</p>
           : (
-              <ul className="space-y-1">
+              <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
                 {deps.map(dep => (
-                  <li key={dep.upstreamTaskId} className="flex items-center gap-2 text-xs text-ink">
-                    <span className={dep.satisfied ? "text-accent" : "text-ink-muted"}>
-                      {dep.satisfied ? t("depsReady") : t("depsWaiting")}
-                    </span>
-                    <span className="truncate">{dep.upstreamName}</span>
-                    <span className="text-ink-muted">
+                  <li key={dep.upstreamTaskId} className="space-y-1 px-3.5 py-3">
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="min-w-0 flex-1 truncate text-ink">{dep.upstreamName}</span>
+                      <span className={dep.satisfied ? "text-accent" : "text-ink-muted"}>
+                        {dep.satisfied ? t("depsReady") : t("depsWaiting")}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-ink-muted">
                       {t(`on.${dep.on}`)}
                       {" · "}
                       {t(`join.${task.depJoin}`)}
-                    </span>
+                    </p>
                   </li>
                 ))}
               </ul>
             )}
       </section>
 
-      <section className="space-y-2">
-        <h3 className="text-xs font-medium text-ink-soft">{t("runs")}</h3>
+      <section className="space-y-3">
+        <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("runs")}</h3>
         {runs.length === 0
-          ? <p className="text-[11px] text-ink-muted">{t("runsNone")}</p>
+          ? <p className="pl-3.5 text-xs text-ink-muted">{t("runsNone")}</p>
           : (
-              <ul className="space-y-1">
+              <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
                 {runs.map(run => (
-                  <li key={run.id} className="flex items-center gap-2 text-xs text-ink">
-                    <span className="w-16 shrink-0 text-ink-muted">{t(`kind.${run.kind}`)}</span>
-                    <span className="w-16 shrink-0">{t(`status.${run.status}`)}</span>
-                    <span className="w-32 shrink-0 text-ink-muted">
-                      {run.startedAt ? formatEpoch(run.startedAt, locale) : ""}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-ink-muted">
-                      {run.errorMessage ?? run.resultSummary ?? ""}
-                    </span>
-                    {run.threadId
-                      ? (
-                          <Button size="xs" variant="ghost" onClick={() => onOpenThread(run.threadId as string)}>
-                            {t("openConversation")}
-                          </Button>
-                        )
-                      : null}
+                  // Two lines per run rather than fixed columns: a CJK status and
+                  // an English one are different widths, and columns padded to the
+                  // wider script leave the other one visibly misaligned.
+                  <li key={run.id} className="space-y-1.5 px-3.5 py-3">
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="text-ink-muted">{t(`kind.${run.kind}`)}</span>
+                      <span aria-hidden className="text-line">·</span>
+                      <span className="text-ink">{t(`status.${run.status}`)}</span>
+                      <span aria-hidden className="text-line">·</span>
+                      <span className="min-w-0 flex-1 truncate text-ink-muted">
+                        {run.startedAt ? formatEpoch(run.startedAt, locale) : ""}
+                      </span>
+                      {run.forkable
+                        ? (
+                            <Button
+                              leftIcon={<GitFork className="size-3" />}
+                              size="xs"
+                              variant="ghost"
+                              onClick={() => onForkRun(run.id)}
+                            >
+                              {t("forkRun")}
+                            </Button>
+                          )
+                        : null}
+                      {run.threadId
+                        ? (
+                            <Button size="xs" variant="ghost" onClick={() => onOpenThread(run.threadId as string)}>
+                              {t("openConversation")}
+                            </Button>
+                          )
+                        : null}
+                    </div>
+                    <p className="text-xs leading-relaxed text-ink-soft">
+                      {run.errorMessage ?? run.resultSummary ?? t("runNoSummary")}
+                    </p>
                   </li>
                 ))}
               </ul>
             )}
       </section>
 
-      <section className="space-y-2">
-        <h3 className="text-xs font-medium text-ink-soft">{t("revisions")}</h3>
+      <section className="space-y-3">
+        <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("revisions")}</h3>
         {revisions.length === 0
-          ? <p className="text-[11px] text-ink-muted">{t("revisionsNone")}</p>
+          ? <p className="pl-3.5 text-xs text-ink-muted">{t("revisionsNone")}</p>
           : (
-              <ul className="space-y-1">
+              <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
                 {revisions.map(revision => (
-                  <li key={revision.id} className="flex items-center gap-2 text-xs text-ink">
-                    <span className="w-10 shrink-0 text-ink-muted">
-                      v
-                      {revision.version}
-                    </span>
-                    <span className="w-20 shrink-0">{t(`source.${revision.source}`)}</span>
-                    <span className="min-w-0 flex-1 truncate text-ink-muted">
-                      {revision.reason ?? revision.prompt.slice(0, 60)}
-                    </span>
-                    <Button
-                      leftIcon={<RotateCcw className="size-3" />}
-                      size="xs"
-                      variant="ghost"
-                      onClick={() => void store.applyRevision(task.id, revision.id).then(refresh)}
-                    >
-                      {t("apply")}
-                    </Button>
+                  // Version rows follow the same two-line shape as runs and
+                  // dependencies: a fixed column would drift as soon as one
+                  // locale's source label is wider than the other's.
+                  <li key={revision.id} className="space-y-1.5 px-3.5 py-3">
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="text-ink-muted">
+                        v
+                        {revision.version}
+                      </span>
+                      <span aria-hidden className="text-line">·</span>
+                      <span className="text-ink">{t(`source.${revision.source}`)}</span>
+                      <span className="min-w-0 flex-1" />
+                      <Button
+                        leftIcon={<RotateCcw className="size-3" />}
+                        size="xs"
+                        variant="ghost"
+                        onClick={() => void store.applyRevision(task.id, revision.id).then(refresh)}
+                      >
+                        {t("apply")}
+                      </Button>
+                    </div>
+                    <p className="text-[11px] text-ink-muted">
+                      {revision.reason ?? t("revisionsNoReason")}
+                    </p>
                   </li>
                 ))}
               </ul>

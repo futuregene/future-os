@@ -803,6 +803,8 @@ export interface MockTaskRun {
   promptVersion: number | null;
   resultSummary: string | null;
   errorMessage: string | null;
+  /** Set when the run recorded the entry a fork would copy. */
+  sourceEntryId: string | null;
 }
 
 export interface MockTask {
@@ -815,6 +817,7 @@ export interface MockTask {
   modelId: string | null;
   thinkingLevel: string | null;
   sessionPolicy: string;
+  conversationMode: string;
   triggerKind: string;
   trigger: Record<string, unknown>;
   depJoin: string;
@@ -842,7 +845,8 @@ export const tasks: MockTask[] = [
     cwd: "~/Research/dopamine-decision",
     modelId: "future/deepseek-v4-pro",
     thinkingLevel: "high",
-    sessionPolicy: "new",
+    sessionPolicy: "existing",
+    conversationMode: "workspace",
     triggerKind: "schedule",
     trigger: { mode: "weekly", days: ["mon", "fri"], time: "10:00" },
     depJoin: "all",
@@ -862,6 +866,7 @@ export const tasks: MockTask[] = [
       promptVersion: 4,
       resultSummary: "写入 reports/weekly-2026-10-05.md：3 条结论变化、2 条新增证据；下周待办已列出。",
       errorMessage: null,
+      sourceEntryId: "ent_report_2",
     },
   },
   {
@@ -878,7 +883,8 @@ export const tasks: MockTask[] = [
     cwd: "~/Research/dopamine-decision",
     modelId: null,
     thinkingLevel: null,
-    sessionPolicy: "existing",
+    sessionPolicy: "new",
+    conversationMode: "workspace",
     triggerKind: "schedule",
     trigger: { mode: "interval", every_minutes: 720 },
     depJoin: "all",
@@ -898,6 +904,7 @@ export const tasks: MockTask[] = [
       promptVersion: 2,
       resultSummary: null,
       errorMessage: "上游检索服务返回 503；未写入文件。",
+      sourceEntryId: "ent_lit_1",
     },
   },
   {
@@ -914,6 +921,7 @@ export const tasks: MockTask[] = [
     modelId: null,
     thinkingLevel: "medium",
     sessionPolicy: "new",
+    conversationMode: "workspace",
     triggerKind: "schedule",
     trigger: { mode: "monthly", day: 31, time: "09:00" },
     depJoin: "all",
@@ -936,6 +944,7 @@ export const tasks: MockTask[] = [
     modelId: null,
     thinkingLevel: "low",
     sessionPolicy: "new",
+    conversationMode: "workspace",
     triggerKind: "manual",
     trigger: {},
     depJoin: "all",
@@ -955,6 +964,7 @@ export const tasks: MockTask[] = [
       promptVersion: 1,
       resultSummary: "已在 reports/incidents.md 追加一条：文献监控 503，需人工确认检索服务。",
       errorMessage: null,
+      sourceEntryId: "ent_notify_1",
     },
   },
 ];
@@ -976,6 +986,7 @@ export const taskRuns: Record<string, MockTaskRun[]> = {
       promptVersion: 3,
       resultSummary: "写入 reports/weekly-2026-10-02.md：2 条结论变化；提示词已由建议更新到 v4。",
       errorMessage: null,
+      sourceEntryId: null,
     },
   ],
   tsk_lit_watch: [tasks[1]!.latestRun!],

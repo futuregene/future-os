@@ -27,7 +27,10 @@
     "manual": "Manual",
     "every": "Every {{minutes}} min",
     "daily": "Daily",
-    "monthly": "Monthly on day {{day}} at {{time}}"
+    "monthly": "Monthly on day {{day}} at {{time}}",
+    "once": "Once",
+    "everyHours": "Every {{hours}} h",
+    "everyDays": "Every {{days}} d"
   },
   "triggerMode": {
     "manual": "Manual (only when triggered)",
@@ -59,9 +62,9 @@
     "any": "any upstream"
   },
   "source": {
-    "user": "edit",
-    "reflection": "reflection",
-    "rollback": "rollback"
+    "user": "Manual edit",
+    "reflection": "Reflection",
+    "rollback": "Rollback"
   },
   "weekday": {
     "mon": "Mon",
@@ -99,6 +102,24 @@
     "fullPermissionWarning": "Tasks run with full permission and never prompt for approval.",
     "required": "Name, prompt and working directory are required.",
     "save": "Save",
-    "cancel": "Cancel"
-  }
+    "cancel": "Cancel",
+    "conversationMode": "Conversation type",
+    "conversationWorkspace": "Workspace conversation",
+    "conversationChat": "Chat conversation",
+    "conversationModeHint": "A workspace conversation is filed under the working directory; a chat one appears under Chat. Either way the task runs in its working directory.",
+    "cwdPlaceholder": "Pick a folder, or type a path",
+    "browse": "Browse"
+  },
+  "forkRun": "Fork",
+  "runNoSummary": "No summary recorded.",
+  "forkFailed": "Could not fork the conversation: {{message}}",
+  "settings": "Settings",
+  "colModel": "Model",
+  "colThinking": "Thinking",
+  "colCwd": "Working directory",
+  "colConversation": "Conversation type",
+  "colReflection": "Prompt suggestions",
+  "modelDefault": "Default model",
+  "thinkingDefault": "Default",
+  "revisionsNoReason": "No reason recorded."
 }
