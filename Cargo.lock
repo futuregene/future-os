@@ -1124,6 +1124,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "future-tasks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "future-rpc",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "future-tui"
 version = "0.0.0"
 dependencies = [
