@@ -47,6 +47,20 @@ pub enum SessionPolicy {
     Existing,
 }
 
+/// What kind of conversation a task opens.
+///
+/// `Workspace` anchors the conversation to the task's working directory (the
+/// default, and what a task that touches files needs). `Chat` is the temporary
+/// -workspace conversation a user reaches from "new chat": the agent session
+/// still runs *in* the task's `cwd`, but the conversation is filed under Chat
+/// rather than under that directory in the sidebar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConversationMode {
+    Chat,
+    Workspace,
+}
+
 /// Reflection cadence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -99,6 +113,9 @@ pub struct Task {
     pub model_id: Option<String>,
     pub thinking_level: Option<String>,
     pub session_policy: SessionPolicy,
+    /// What kind of conversation this task opens (see [`ConversationMode`]).
+    #[serde(default = "default_conversation_mode")]
+    pub conversation_mode: ConversationMode,
     /// Host-side conversation binding (lazy when `existing`).
     pub thread_id: Option<String>,
     pub trigger_kind: TriggerKind,
@@ -131,6 +148,10 @@ pub struct TaskRun {
     pub thread_id: Option<String>,
     pub session_id: Option<String>,
     pub run_id: Option<String>,
+    /// The persisted user entry this run started from. Clients fork a run's
+    /// conversation through it, so it is resolved once at run time instead of
+    /// every client having to search the session for it.
+    pub source_entry_id: Option<String>,
     pub prompt_version: Option<i64>,
     /// Truncated final answer (head…tail, 2000 chars).
     pub result_summary: Option<String>,
@@ -186,4 +207,10 @@ pub fn new_run_id() -> String {
 /// Generate a revision id.
 pub fn new_revision_id() -> String {
     format!("{}{}", REVISION_ID_PREFIX, uuid::Uuid::new_v4().simple())
+}
+
+/// The conversation mode a task has when it does not declare one: the
+/// behaviour every task had before the setting existed.
+fn default_conversation_mode() -> ConversationMode {
+    ConversationMode::Workspace
 }

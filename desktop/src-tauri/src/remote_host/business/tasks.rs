@@ -30,8 +30,28 @@ fn open_store() -> Result<future_tasks::Store, crate::AppError> {
     future_tasks::Store::open(&home).map_err(|e| crate::AppError::Message(e.to_string()))
 }
 
-fn run_summary_view(run: future_tasks::TaskRun) -> Value {
+/// Whether a run needs forking, or can simply be opened.
+///
+/// Mirrors the desktop command's rule: only a task that reuses one conversation
+/// (`existing`) needs a copy, because it compacts and appends to that
+/// conversation on every run. In `new` mode the run's own conversation is
+/// already in the list.
+fn run_is_forkable(
+    run: &future_tasks::TaskRun,
+    session_policy: future_tasks::SessionPolicy,
+) -> bool {
+    session_policy == future_tasks::SessionPolicy::Existing
+        && run.source_entry_id.is_some()
+        && run.thread_id.is_some()
+}
+
+fn run_summary_view(
+    run: future_tasks::TaskRun,
+    session_policy: future_tasks::SessionPolicy,
+) -> Value {
+    let forkable = run_is_forkable(&run, session_policy);
     json!({
+        "forkable": forkable,
         "id": run.id,
         "kind": format!("{:?}", run.kind).to_lowercase(),
         "origin": format!("{:?}", run.origin).to_lowercase(),
@@ -47,6 +67,7 @@ fn run_summary_view(run: future_tasks::TaskRun) -> Value {
 
 /// The list row: identity + trigger state only, no prompt.
 fn task_list_view(store: &future_tasks::Store, task: future_tasks::Task) -> Value {
+    let session_policy = task.session_policy;
     let latest = store.latest_run_for_task(&task.id).ok().flatten();
     json!({
         "id": task.id,
@@ -57,12 +78,13 @@ fn task_list_view(store: &future_tasks::Store, task: future_tasks::Task) -> Valu
         "nextDueAt": task.next_due_at,
         "lastRunAt": task.last_run_at,
         "reflection": format!("{:?}", task.reflection).to_lowercase(),
-        "latestRun": latest.map(run_summary_view),
+        "latestRun": latest.map(|run| run_summary_view(run, session_policy)),
     })
 }
 
 /// The detail record (the only place the prompt crosses the wire).
 fn task_detail_view(store: &future_tasks::Store, task: future_tasks::Task) -> Value {
+    let session_policy = task.session_policy;
     let latest = store.latest_run_for_task(&task.id).ok().flatten();
     json!({
         "id": task.id,
@@ -74,14 +96,22 @@ fn task_detail_view(store: &future_tasks::Store, task: future_tasks::Task) -> Va
         "modelId": task.model_id,
         "thinkingLevel": task.thinking_level,
         "sessionPolicy": format!("{:?}", task.session_policy).to_lowercase(),
+        "conversationMode": format!("{:?}", task.conversation_mode).to_lowercase(),
         "triggerKind": format!("{:?}", task.trigger_kind).to_lowercase(),
         "trigger": task.trigger_json,
         "depJoin": format!("{:?}", task.dep_join).to_lowercase(),
         "nextDueAt": task.next_due_at,
         "lastRunAt": task.last_run_at,
         "reflection": format!("{:?}", task.reflection).to_lowercase(),
-        "latestRun": latest.map(run_summary_view),
+        "latestRun": latest.map(|run| run_summary_view(run, session_policy)),
     })
+}
+
+fn parse_conversation_mode(raw: Option<&str>) -> future_tasks::ConversationMode {
+    match raw {
+        Some("chat") => future_tasks::ConversationMode::Chat,
+        _ => future_tasks::ConversationMode::Workspace,
+    }
 }
 
 fn parse_session_policy(raw: Option<&str>) -> future_tasks::SessionPolicy {
@@ -183,6 +213,12 @@ fn task_from_payload(
             .map(|raw| parse_session_policy(Some(raw)))
             .or_else(|| base.as_ref().map(|t| t.session_policy))
             .unwrap_or(future_tasks::SessionPolicy::New),
+        conversation_mode: payload
+            .get("conversationMode")
+            .and_then(Value::as_str)
+            .map(|raw| parse_conversation_mode(Some(raw)))
+            .or_else(|| base.as_ref().map(|t| t.conversation_mode))
+            .unwrap_or(future_tasks::ConversationMode::Workspace),
         thread_id: base.as_ref().and_then(|t| t.thread_id.clone()),
         trigger_kind,
         trigger_json: trigger,
@@ -372,12 +408,33 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             }
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
+        "fork_task_run" => match crate::tasks::fork_run(&cmd.run_id).await {
+            Ok((thread_id, session_id)) => {
+                reply(
+                    sink,
+                    true,
+                    json!({ "threadId": thread_id, "sessionId": session_id }),
+                    None,
+                )
+                .await
+            }
+            Err(error) => reply(sink, false, Value::Null, Some(&error)).await,
+        },
         "list_task_runs" => match open_store() {
             Ok(store) => {
                 let limit = if cmd.limit > 0 { cmd.limit } else { 20 };
+                let session_policy = store
+                    .get_task(&cmd.task_id)
+                    .ok()
+                    .flatten()
+                    .map(|task| task.session_policy)
+                    .unwrap_or(future_tasks::SessionPolicy::New);
                 match store.list_runs_for_task(&cmd.task_id, limit) {
                     Ok(runs) => {
-                        let items: Vec<Value> = runs.into_iter().map(run_summary_view).collect();
+                        let items: Vec<Value> = runs
+                            .into_iter()
+                            .map(|run| run_summary_view(run, session_policy))
+                            .collect();
                         reply(sink, true, json!({ "runs": items }), None).await
                     }
                     Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
@@ -494,5 +551,205 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             )
             .await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::remote::protocol::IncomingCmd;
+    use crate::remote::test_support::{HomeGuard, RecordingSink};
+
+    /// A private FutureOS home: `open_store` resolves the task database from it,
+    /// so each test owns its rows.
+    fn home(label: &str) -> HomeGuard {
+        HomeGuard::new(label)
+    }
+
+    fn task(name: &str, policy: future_tasks::SessionPolicy) -> future_tasks::Task {
+        let now = 1_000_000;
+        future_tasks::Task {
+            id: future_tasks::new_task_id(),
+            name: name.into(),
+            enabled: true,
+            prompt: "summarise the week".into(),
+            prompt_version: 3,
+            cwd: "/tmp/repo".into(),
+            model_id: Some("future/gpt-5".into()),
+            thinking_level: Some("high".into()),
+            session_policy: policy,
+            conversation_mode: future_tasks::ConversationMode::Workspace,
+            thread_id: None,
+            trigger_kind: future_tasks::TriggerKind::Schedule,
+            trigger_json: serde_json::json!({"mode": "daily", "time": "09:00"}),
+            dep_join: future_tasks::DepJoin::All,
+            next_due_at: Some(now + 60_000),
+            last_run_at: None,
+            pending_request_at: None,
+            pending_origin: None,
+            pending_actor: None,
+            reflection: future_tasks::Reflection::Ask,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+        }
+    }
+
+    fn completed_run(task_id: &str) -> future_tasks::TaskRun {
+        future_tasks::TaskRun {
+            id: future_tasks::new_run_id(),
+            task_id: task_id.into(),
+            kind: future_tasks::RunKind::Main,
+            origin: future_tasks::RunOrigin::Schedule,
+            actor: None,
+            due_at: Some(1),
+            status: future_tasks::RunStatus::Completed,
+            thread_id: Some("thr_1".into()),
+            session_id: Some("sess_1".into()),
+            run_id: None,
+            prompt_version: Some(3),
+            result_summary: Some("wrote reports/weekly.md".into()),
+            feedback: None,
+            feedback_note: None,
+            started_at: Some(1),
+            finished_at: Some(2),
+            error_message: None,
+            source_entry_id: Some("ent_1".into()),
+        }
+    }
+
+    fn command(cmd_type: &str) -> IncomingCmd {
+        IncomingCmd {
+            cmd_type: cmd_type.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// The phone's list carries the trigger, the next due time and the last
+    /// run's state — everything the row renders without fetching the detail.
+    #[tokio::test]
+    async fn the_list_answers_with_each_task_and_its_last_run() {
+        let _home = home("business-tasks-list");
+        let store = open_store().expect("store");
+        let saved = task("weekly report", future_tasks::SessionPolicy::New);
+        store.insert_task(&saved).unwrap();
+        store.insert_run(&completed_run(&saved.id)).unwrap();
+
+        let sink = RecordingSink::default();
+        super::execute(&command("list_tasks"), &sink).await;
+        let data = sink.ok_data();
+        let items = data["tasks"].as_array().expect("tasks array");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["name"], "weekly report");
+        assert_eq!(items[0]["triggerKind"], "schedule");
+        assert_eq!(items[0]["nextDueAt"], saved.next_due_at.unwrap());
+        assert_eq!(items[0]["latestRun"]["status"], "completed");
+    }
+
+    /// The detail record is the only place the prompt crosses the wire, and it
+    /// must state what the run will actually be (model, thinking, conversation).
+    #[tokio::test]
+    async fn the_detail_carries_the_prompt_and_the_run_settings() {
+        let _home = home("business-tasks-detail");
+        let store = open_store().expect("store");
+        let saved = task("detail", future_tasks::SessionPolicy::Existing);
+        store.insert_task(&saved).unwrap();
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("get_task");
+        cmd.task_id = saved.id.clone();
+        super::execute(&cmd, &sink).await;
+        let data = sink.ok_data();
+        assert_eq!(data["prompt"], "summarise the week");
+        assert_eq!(data["promptVersion"], 3);
+        assert_eq!(data["modelId"], "future/gpt-5");
+        assert_eq!(data["thinkingLevel"], "high");
+        assert_eq!(data["sessionPolicy"], "existing");
+        assert_eq!(data["conversationMode"], "workspace");
+    }
+
+    /// A run of a task that reuses one conversation can be forked; a run that
+    /// already owns its conversation cannot, because opening it is enough.
+    #[tokio::test]
+    async fn the_run_ledger_flags_only_a_reused_conversation_as_forkable() {
+        let _home = home("business-tasks-runs");
+        let store = open_store().expect("store");
+        let reused = task("reused", future_tasks::SessionPolicy::Existing);
+        let fresh = task("fresh", future_tasks::SessionPolicy::New);
+        store.insert_task(&reused).unwrap();
+        store.insert_task(&fresh).unwrap();
+        store.insert_run(&completed_run(&reused.id)).unwrap();
+        store.insert_run(&completed_run(&fresh.id)).unwrap();
+        drop(store);
+
+        for (id, expected) in [(&reused.id, true), (&fresh.id, false)] {
+            let sink = RecordingSink::default();
+            let mut cmd = command("list_task_runs");
+            cmd.task_id = id.clone();
+            super::execute(&cmd, &sink).await;
+            let data = sink.ok_data();
+            let runs = data["runs"].as_array().expect("runs array");
+            assert_eq!(runs.len(), 1);
+            assert_eq!(runs[0]["forkable"], expected, "task {id}");
+        }
+    }
+
+    /// A run with no conversation, or no recorded entry, has nothing to copy.
+    #[test]
+    fn a_run_without_a_conversation_is_not_forkable() {
+        let run = completed_run("tsk_1");
+        assert!(run_is_forkable(&run, future_tasks::SessionPolicy::Existing));
+        assert!(!run_is_forkable(&run, future_tasks::SessionPolicy::New));
+
+        let no_entry = future_tasks::TaskRun {
+            source_entry_id: None,
+            ..run.clone()
+        };
+        assert!(!run_is_forkable(
+            &no_entry,
+            future_tasks::SessionPolicy::Existing
+        ));
+
+        let no_thread = future_tasks::TaskRun {
+            thread_id: None,
+            ..run
+        };
+        assert!(!run_is_forkable(
+            &no_thread,
+            future_tasks::SessionPolicy::Existing
+        ));
+    }
+
+    /// Forking a run the ledger does not know is answered as a failure, not as
+    /// a conversation that never appeared.
+    #[tokio::test]
+    async fn forking_an_unknown_run_fails_on_the_wire() {
+        let _home = home("business-tasks-fork-missing");
+        let sink = RecordingSink::default();
+        let mut cmd = command("fork_task_run");
+        cmd.run_id = "trn_missing".into();
+        super::execute(&cmd, &sink).await;
+        assert!(sink.error_text().contains("not found"));
+    }
+
+    /// A phone may ask for the runs of a task that no longer exists; the ledger
+    /// is empty, not an error.
+    #[tokio::test]
+    async fn runs_of_an_unknown_task_are_empty() {
+        let _home = home("business-tasks-runs-unknown");
+        let sink = RecordingSink::default();
+        let mut cmd = command("list_task_runs");
+        cmd.task_id = "tsk_gone".into();
+        super::execute(&cmd, &sink).await;
+        assert!(sink.ok_data()["runs"].as_array().expect("runs").is_empty());
+    }
+
+    /// An unknown task command is refused rather than silently succeeding.
+    #[tokio::test]
+    async fn an_unknown_task_command_is_unsupported() {
+        let _home = home("business-tasks-unknown");
+        let sink = RecordingSink::default();
+        super::execute(&command("task_bogus"), &sink).await;
+        assert!(sink.error_text().contains("Unsupported task command"));
     }
 }

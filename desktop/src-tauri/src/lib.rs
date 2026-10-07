@@ -1097,6 +1097,7 @@ mod gui {
                 delete_task,
                 set_task_enabled,
                 run_task_now,
+                fork_task_run,
                 list_task_runs,
                 list_task_deps,
                 set_task_dep,

@@ -92,7 +92,7 @@ use self::client::{base_command, prompt_command};
 use self::delete_outbox::{delete_outbox_interval, TEST_OUTBOX_STOP};
 #[cfg(test)]
 use self::prompt::auto_name_thread;
-use self::queries::fetch_all_session_entries_with_client;
+pub(crate) use self::queries::fetch_all_session_entries_with_client;
 #[cfg(test)]
 use self::queries::{next_events_cursor, EVENTS_PAGE_SIZE};
 #[cfg(test)]
