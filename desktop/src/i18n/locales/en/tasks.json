@@ -1,0 +1,104 @@
+{
+  "title": "Tasks",
+  "new": "New task",
+  "showSidebar": "Show sidebar",
+  "empty": "No tasks yet. Create one with \"New task\".",
+  "selectHint": "Select a task, or create a new one.",
+  "nextDue": "Next",
+  "runNow": "Run now",
+  "edit": "Edit",
+  "enable": "Enable",
+  "disable": "Disable",
+  "delete": "Delete task",
+  "deleteConfirm": "Delete task \"{{name}}\"? Conversations it already created are kept.",
+  "prompt": "Prompt",
+  "promptVersion": "Prompt version v{{version}}",
+  "deps": "Dependencies",
+  "depsNone": "No upstream tasks. This task runs on its own trigger.",
+  "depsReady": "ready",
+  "depsWaiting": "waiting",
+  "runs": "Runs",
+  "runsNone": "No runs yet.",
+  "openConversation": "Open",
+  "revisions": "Prompt versions",
+  "revisionsNone": "No prompt versions recorded yet.",
+  "apply": "Apply",
+  "trigger": {
+    "manual": "Manual",
+    "every": "Every {{minutes}} min",
+    "daily": "Daily",
+    "monthly": "Monthly on day {{day}} at {{time}}"
+  },
+  "triggerMode": {
+    "manual": "Manual (only when triggered)",
+    "once": "Once on a date",
+    "interval": "Every N minutes",
+    "daily": "Every day",
+    "weekly": "Every week",
+    "monthly": "Every month"
+  },
+  "status": {
+    "running": "running",
+    "completed": "done",
+    "failed": "failed",
+    "skipped": "skipped"
+  },
+  "kind": {
+    "main": "scheduled",
+    "manual": "manual",
+    "chain": "chain",
+    "reflection": "reflection"
+  },
+  "on": {
+    "success": "after success",
+    "failure": "after failure",
+    "completed": "after any result"
+  },
+  "join": {
+    "all": "all upstreams",
+    "any": "any upstream"
+  },
+  "source": {
+    "user": "edit",
+    "reflection": "reflection",
+    "rollback": "rollback"
+  },
+  "weekday": {
+    "mon": "Mon",
+    "tue": "Tue",
+    "wed": "Wed",
+    "thu": "Thu",
+    "fri": "Fri",
+    "sat": "Sat",
+    "sun": "Sun"
+  },
+  "form": {
+    "title": "Task",
+    "name": "Name",
+    "prompt": "Prompt",
+    "cwd": "Working directory",
+    "model": "Model",
+    "modelDefault": "Default model",
+    "thinking": "Thinking level",
+    "thinkingDefault": "Default",
+    "session": "Conversation",
+    "sessionNew": "New conversation each run",
+    "sessionExisting": "Reuse one conversation",
+    "sessionExistingHint": "The conversation is compacted before every run; a failed compaction fails that run.",
+    "reflection": "Prompt suggestions",
+    "reflectionOff": "Off",
+    "reflectionAsk": "Propose changes (default)",
+    "reflectionAuto": "Apply automatically",
+    "trigger": "Trigger",
+    "date": "Date",
+    "time": "Time",
+    "everyMinutes": "Minutes between runs",
+    "day": "Day of month",
+    "shortMonthHint": "Months without this day run on the last day of the month.",
+    "enabled": "Enabled",
+    "fullPermissionWarning": "Tasks run with full permission and never prompt for approval.",
+    "required": "Name, prompt and working directory are required.",
+    "save": "Save",
+    "cancel": "Cancel"
+  }
+}

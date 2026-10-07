@@ -23,4 +23,5 @@ mod session_status;
 mod session_transcript;
 pub mod settings;
 pub mod skills;
+pub mod task;
 pub mod tools;

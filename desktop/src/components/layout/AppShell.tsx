@@ -13,6 +13,7 @@ import { startRemote, stopRemote } from "../../features/remote/remoteClient";
 import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
+import { TasksView } from "../../features/tasks/TasksView";
 import { terminalTarget } from "../../features/terminal/panelTarget";
 import { TerminalPanel } from "../../features/terminal/TerminalPanel";
 import { TerminalToggleButton } from "../../features/terminal/TerminalToggleButton";
@@ -470,6 +471,22 @@ function ReadyAppShell({
     setNewChatWorkspaceId(null);
   }
 
+  /// Open the conversation a task run produced (from the Tasks panel).
+  function handleOpenTaskThread(threadId: string) {
+    const thread = threads.find(candidate => candidate.id === threadId);
+    if (thread) {
+      handleSelectThread(thread);
+      return;
+    }
+    // A run's conversation may not be in the local list yet (it was created by
+    // the tick loop); refresh the catalog and open it by id.
+    setSection("chat");
+    setActiveThreadId(threadId);
+    setCenterMode("thread");
+    setNewChatWorkspaceId(null);
+    void refreshStore();
+  }
+
   function handleSelectWorkspace(_workspace: StoredWorkspace, workspaceThreads: StoredThread[]) {
     const latestThread = workspaceThreads[0];
     setSection("workspace");
@@ -695,57 +712,61 @@ function ReadyAppShell({
                 ? (
                     <SkillsView leftPanelExpanded={showLeftPanel} onToggleLeftPanel={handleToggleLeftPanel} onStartCoachConversation={handleStartCoachConversation} onTrySkill={handleTrySkill} />
                   )
-                : section === "remote"
+                : section === "tasks"
                   ? (
-                      <RemoteView appSettings={appSettings} leftPanelExpanded={showLeftPanel} onChangeSettings={patch => void changeSettings(patch)} onToggleLeftPanel={handleToggleLeftPanel} remoteStatus={remoteStatus} onRefreshRemote={refreshRemote} />
+                      <TasksView leftPanelExpanded={showLeftPanel} onToggleLeftPanel={handleToggleLeftPanel} onOpenThread={handleOpenTaskThread} />
                     )
-                  : storeError
+                  : section === "remote"
                     ? (
-                        <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
-                          {t("appShell.storeInitFailed")}
-                          {storeError}
-                        </div>
+                        <RemoteView appSettings={appSettings} leftPanelExpanded={showLeftPanel} onChangeSettings={patch => void changeSettings(patch)} onToggleLeftPanel={handleToggleLeftPanel} remoteStatus={remoteStatus} onRefreshRemote={refreshRemote} />
                       )
-                    : (
-                        <AgentThread
+                    : storeError
+                      ? (
+                          <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
+                            {t("appShell.storeInitFailed")}
+                            {storeError}
+                          </div>
+                        )
+                      : (
+                          <AgentThread
                           // One instance per conversation: switching threads
                           // remounts, so a conversation's messages, listeners and
                           // in-flight writes can never bleed into another.
-                          key={activeThread?.id ?? "__none"}
-                          activeApproval={activeApproval}
-                          agentConnection={agentConnection}
-                          approvalTier={appSettings.approvalTier}
-                          loadingStore={loadingStore}
-                          modelId={activeThreadModelId}
-                          modelOptions={visibleModelOptions}
-                          onModelChange={changeModel}
-                          onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
-                          thinkingLevel={activeThinkingLevel}
-                          onThinkingLevelChange={changeThinkingLevel}
-                          pendingPrompt={pendingPrompt}
-                          thread={activeThread}
-                          sessionMentions={sessionMentions}
-                          workspacePath={activeWorkspace?.path ?? null}
-                          onApprovalDecision={handleApprovalDecision}
-                          leftPanelExpanded={showLeftPanel}
-                          onRetryAgentConnection={() => void refreshAgentModels()}
-                          onOpenAccount={handleOpenAccount}
-                          onOpenModels={handleOpenModels}
-                          onOpenProviders={handleOpenProviders}
-                          onToggleLeftPanel={handleToggleLeftPanel}
-                          skillRecommend={appSettings.skillRecommend}
-                          futureSessionStatus={futureSessionStatus}
-                          futureBalance={futureBalance}
-                          headerAction={terminalHeaderAction}
-                          onPromptConsumed={consumePendingPrompt}
-                          onForked={(forkedThreadId: string) => {
-                            void refreshStore(forkedThreadId);
-                          }}
-                          onThreadActivity={() => {
-                            void refreshStore(activeThread?.id ?? undefined);
-                          }}
-                        />
-                      )}
+                            key={activeThread?.id ?? "__none"}
+                            activeApproval={activeApproval}
+                            agentConnection={agentConnection}
+                            approvalTier={appSettings.approvalTier}
+                            loadingStore={loadingStore}
+                            modelId={activeThreadModelId}
+                            modelOptions={visibleModelOptions}
+                            onModelChange={changeModel}
+                            onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
+                            thinkingLevel={activeThinkingLevel}
+                            onThinkingLevelChange={changeThinkingLevel}
+                            pendingPrompt={pendingPrompt}
+                            thread={activeThread}
+                            sessionMentions={sessionMentions}
+                            workspacePath={activeWorkspace?.path ?? null}
+                            onApprovalDecision={handleApprovalDecision}
+                            leftPanelExpanded={showLeftPanel}
+                            onRetryAgentConnection={() => void refreshAgentModels()}
+                            onOpenAccount={handleOpenAccount}
+                            onOpenModels={handleOpenModels}
+                            onOpenProviders={handleOpenProviders}
+                            onToggleLeftPanel={handleToggleLeftPanel}
+                            skillRecommend={appSettings.skillRecommend}
+                            futureSessionStatus={futureSessionStatus}
+                            futureBalance={futureBalance}
+                            headerAction={terminalHeaderAction}
+                            onPromptConsumed={consumePendingPrompt}
+                            onForked={(forkedThreadId: string) => {
+                              void refreshStore(forkedThreadId);
+                            }}
+                            onThreadActivity={() => {
+                              void refreshStore(activeThread?.id ?? undefined);
+                            }}
+                          />
+                        )}
           </main>
           {/* Views without thread context hide the right panel entirely, including
           the collapsed expand affordance. */}

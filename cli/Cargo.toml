@@ -30,6 +30,7 @@ future-agent = { path = "../agent" }
 future-tui = { path = "../tui" }
 future-channel = { path = "../channels" }
 future-loop = { path = "../orchestration/loop" }
+future-tasks = { path = "../orchestration/tasks" }
 serde.workspace = true
 # preserve_order: JSON object key order must match the TS CLI's JS semantics
 # (JSON.parse preserves insertion order; serde_json's default BTreeMap sorts).
