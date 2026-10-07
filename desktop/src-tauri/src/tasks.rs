@@ -761,12 +761,12 @@ mod tests {
     /// Script the commands a run sends before its stream: session creation,
     /// the permission/sandbox push, and the compaction probe.
     fn script_agent_setup(mock: &crate::agent_bridge::test_support::MockAgentGuard, session: &str) {
-        mock.push_data(
-            "new_session",
-            serde_json::json!({ "sessionId": session }),
-        );
+        mock.push_data("new_session", serde_json::json!({ "sessionId": session }));
         mock.push_data("set_permission_level", serde_json::json!({}));
-        mock.push_data("set_sandbox_policy", serde_json::json!({ "sandboxAvailable": true }));
+        mock.push_data(
+            "set_sandbox_policy",
+            serde_json::json!({ "sandboxAvailable": true }),
+        );
         // `get_state` must be typed: the idle probe decodes the typed payload.
         // Several are queued because each phase (pre-compact idle, post-compact
         // settle) probes again.
@@ -776,7 +776,10 @@ mod tests {
                 crate::agent_bridge::test_support::get_state_payload(session, false),
             );
         }
-        mock.push_data("compact", serde_json::json!({ "accepted": true, "operationId": "cmp_1" }));
+        mock.push_data(
+            "compact",
+            serde_json::json!({ "accepted": true, "operationId": "cmp_1" }),
+        );
         mock.push_data(
             "get_last_assistant_text",
             serde_json::json!({ "text": "the finished answer" }),
@@ -837,8 +840,16 @@ mod tests {
         // The prompt carried the envelope, and the task's own text follows it.
         let prompts = mock.requests_of("prompt");
         let prompt = prompts.first().expect("one prompt");
-        assert!(prompt.message.contains("schema=\"task-v1\""), "{}", prompt.message);
-        assert!(prompt.message.contains("summarize yesterday"), "{}", prompt.message);
+        assert!(
+            prompt.message.contains("schema=\"task-v1\""),
+            "{}",
+            prompt.message
+        );
+        assert!(
+            prompt.message.contains("summarize yesterday"),
+            "{}",
+            prompt.message
+        );
 
         // The conversation is a real desktop thread the sidebar can show.
         let thread_id = finished.thread_id.clone().unwrap();
@@ -867,7 +878,10 @@ mod tests {
         store.insert_task(&t).unwrap();
         let (run, upstream) = claim(&store, &t).unwrap();
         // The agent refuses to create the session.
-        mock.push("new_session", crate::agent_bridge::test_support::Reply::Reject("no capacity".into()));
+        mock.push(
+            "new_session",
+            crate::agent_bridge::test_support::Reply::Reject("no capacity".into()),
+        );
 
         let notify: Notifier = std::sync::Arc::new(|_| {});
         execute(&notify, store, t, run.clone(), upstream)

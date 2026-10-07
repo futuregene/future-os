@@ -559,7 +559,10 @@ mod tests {
         assert_eq!(created.dep_join, "any");
         assert_eq!(created.trigger_kind, "schedule");
         assert_eq!(created.prompt_version, 1);
-        assert!(created.next_due_at.is_some(), "a schedule must know its slot");
+        assert!(
+            created.next_due_at.is_some(),
+            "a schedule must know its slot"
+        );
 
         let listed = list_tasks().expect("list");
         assert_eq!(listed.len(), 1);
@@ -582,7 +585,10 @@ mod tests {
         assert_eq!(revisions[0].source, "user");
 
         delete_task(created.id.clone()).expect("delete");
-        assert!(list_tasks().expect("list").is_empty(), "deleted tasks are hidden");
+        assert!(
+            list_tasks().expect("list").is_empty(),
+            "deleted tasks are hidden"
+        );
     }
 
     #[test]
@@ -591,7 +597,9 @@ mod tests {
         let created = create_task(input("stable")).expect("create");
         let again = update_task(created.id.clone(), input("stable")).expect("update");
         assert_eq!(again.prompt_version, 1);
-        assert!(list_task_revisions(created.id).expect("revisions").is_empty());
+        assert!(list_task_revisions(created.id)
+            .expect("revisions")
+            .is_empty());
     }
 
     #[test]
@@ -608,7 +616,15 @@ mod tests {
         assert_eq!(applied.prompt_version, 3, "applying adds a revision");
         let after = list_task_revisions(created.id).expect("revisions");
         assert_eq!(after.last().unwrap().source, "rollback");
-        assert_eq!(after.last().unwrap().reason.as_deref().map(|r| r.starts_with("applied revision")), Some(true));
+        assert_eq!(
+            after
+                .last()
+                .unwrap()
+                .reason
+                .as_deref()
+                .map(|r| r.starts_with("applied revision")),
+            Some(true)
+        );
     }
 
     #[test]
@@ -685,7 +701,12 @@ mod tests {
         let downstream = create_task(input("downstream")).expect("create downstream");
         assert!(list_task_deps(downstream.id.clone()).unwrap().is_empty());
 
-        set_task_dep(downstream.id.clone(), upstream.id.clone(), Some("failure".into())).expect("set");
+        set_task_dep(
+            downstream.id.clone(),
+            upstream.id.clone(),
+            Some("failure".into()),
+        )
+        .expect("set");
         let deps = list_task_deps(downstream.id.clone()).expect("list");
         assert_eq!(deps.len(), 1);
         assert_eq!(deps[0].upstream_task_id, upstream.id);
@@ -756,6 +777,8 @@ mod tests {
         assert_eq!(listed[0].latest_run.as_ref().unwrap().id, runs[0].id);
 
         // The limit is honoured.
-        assert!(list_task_runs(created.id, Some(0)).expect("runs").is_empty());
+        assert!(list_task_runs(created.id, Some(0))
+            .expect("runs")
+            .is_empty());
     }
 }
