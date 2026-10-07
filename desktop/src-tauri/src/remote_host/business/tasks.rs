@@ -123,6 +123,23 @@ fn parse_dep_join(raw: Option<&str>) -> future_tasks::DepJoin {
 
 /// Build a Task from the phone's `task` payload (a whole-record write, the
 /// same convention as provider writes).
+/// A nullable string field, where **absent** and **explicit null** differ.
+///
+/// `get(key).and_then(as_str)` conflates the two: a payload that sets a model to
+/// `null` — the phone's "use the default model" choice — looked identical to a
+/// payload that never mentioned it, and fell back to the value already stored.
+/// The user could pick a model from the phone but never go back to the default.
+/// Absent means "leave it"; present-null means "clear it".
+fn optional_str_field(payload: &Value, key: &str, base: Option<&String>) -> Option<String> {
+    match payload.get(key) {
+        None => base.cloned(),
+        Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.clone()),
+        // A wrong type is a caller error, not a instruction to clear the field.
+        Some(_) => base.cloned(),
+    }
+}
+
 fn task_from_payload(
     payload: &Value,
     existing: Option<future_tasks::Task>,
@@ -175,16 +192,16 @@ fn task_from_payload(
         prompt,
         prompt_version: base.as_ref().map(|t| t.prompt_version).unwrap_or(1),
         cwd,
-        model_id: payload
-            .get("modelId")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| base.as_ref().and_then(|t| t.model_id.clone())),
-        thinking_level: payload
-            .get("thinkingLevel")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| base.as_ref().and_then(|t| t.thinking_level.clone())),
+        model_id: optional_str_field(
+            payload,
+            "modelId",
+            base.as_ref().and_then(|t| t.model_id.as_ref()),
+        ),
+        thinking_level: optional_str_field(
+            payload,
+            "thinkingLevel",
+            base.as_ref().and_then(|t| t.thinking_level.as_ref()),
+        ),
         session_policy: payload
             .get("sessionPolicy")
             .and_then(Value::as_str)
@@ -285,32 +302,46 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         return;
                     }
                 };
-                let previous_version = existing.prompt_version;
+                // Prompt versions go through the same helper as the CLI and the
+                // desktop panel. A hand-rolled row here did three things wrong:
+                // it dropped the version it replaced (so the task's first prompt
+                // became unreachable), it invented English reason text (rendered
+                // verbatim, so it surfaced untranslated in a Chinese panel), and
+                // it discarded the insert error, losing history silently.
+                let history = match store.list_revisions(&existing.id) {
+                    Ok(history) => history,
+                    Err(error) => {
+                        reply(sink, false, Value::Null, Some(&error.to_string())).await;
+                        return;
+                    }
+                };
+                let incoming_prompt = cmd
+                    .task
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&existing.prompt)
+                    .to_string();
+                let revisions = future_tasks::prompt_change_revisions(
+                    &existing,
+                    &history,
+                    &incoming_prompt,
+                    "user",
+                    None,
+                    now_ms(),
+                );
                 match task_from_payload(&cmd.task, Some(existing)).and_then(|task| {
+                    for row in &revisions {
+                        store
+                            .insert_revision(row)
+                            .map_err(|e| crate::AppError::Message(e.to_string()))?;
+                    }
                     let saved = task.clone();
                     store
                         .update_task(&task)
                         .map(|()| saved)
                         .map_err(|e| crate::AppError::Message(e.to_string()))
                 }) {
-                    Ok(task) => {
-                        if task.prompt_version != previous_version {
-                            let revision = future_tasks::PromptRevision {
-                                id: future_tasks::new_revision_id(),
-                                task_id: task.id.clone(),
-                                version: task.prompt_version,
-                                prompt: task.prompt.clone(),
-                                source: "user".to_string(),
-                                status: "active".to_string(),
-                                reason: Some("edited from phone".to_string()),
-                                confidence: None,
-                                source_run_id: None,
-                                created_at: now_ms(),
-                            };
-                            let _ = store.insert_revision(&revision);
-                        }
-                        reply(sink, true, task_detail_view(&store, task), None).await
-                    }
+                    Ok(task) => reply(sink, true, task_detail_view(&store, task), None).await,
                     Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
                 }
             }
@@ -330,6 +361,13 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         task.updated_at = now_ms();
                         store
                             .update_task(&task)
+                            .map_err(|e| crate::AppError::Message(e.to_string()))?;
+                        // Edges pointing at this task go with it: a deleted
+                        // upstream can never report another run, so a downstream
+                        // left holding that edge waits on a name that no longer
+                        // resolves. The desktop panel does the same.
+                        store
+                            .remove_deps_pointing_at(&task.id)
                             .map_err(|e| crate::AppError::Message(e.to_string()))
                     });
                 reply_unit(sink, result).await
@@ -647,6 +685,79 @@ mod tests {
         assert!(sink.ok_data()["runs"].as_array().expect("runs").is_empty());
     }
 
+    /// An absent field leaves what the task has; an explicit `null` clears it.
+    /// The phone's "default model" choice sends `null`, so conflating the two
+    /// meant a model could be picked from the phone but never un-picked.
+    #[test]
+    fn absent_and_null_fields_are_not_the_same_instruction() {
+        let base = Some("future/gpt-5".to_string());
+
+        // Absent: keep what the task already has.
+        assert_eq!(
+            optional_str_field(&json!({}), "modelId", base.as_ref()),
+            Some("future/gpt-5".to_string())
+        );
+        // Explicit null: clear it.
+        assert_eq!(
+            optional_str_field(&json!({"modelId": null}), "modelId", base.as_ref()),
+            None
+        );
+        // A value replaces it.
+        assert_eq!(
+            optional_str_field(&json!({"modelId": "future/o3"}), "modelId", base.as_ref()),
+            Some("future/o3".to_string())
+        );
+        // A wrong type is a caller error, not an instruction to clear.
+        assert_eq!(
+            optional_str_field(&json!({"modelId": 7}), "modelId", base.as_ref()),
+            Some("future/gpt-5".to_string())
+        );
+        // No base and no value is still "nothing".
+        assert_eq!(optional_str_field(&json!({}), "modelId", None), None);
+    }
+
+    /// Through the command surface: clearing the model sticks, and a payload
+    /// that omits the field leaves it alone.
+    #[tokio::test]
+    async fn clearing_a_model_from_the_phone_sticks() {
+        let _home = home("business-tasks-clear-model");
+        let store = open_store().expect("store");
+        let saved = task("pinned", future_tasks::SessionPolicy::New);
+        store.insert_task(&saved).unwrap();
+        assert!(saved.model_id.is_some());
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("update_task");
+        cmd.task_id = saved.id.clone();
+        cmd.task = json!({"modelId": null, "thinkingLevel": null});
+        super::execute(&cmd, &sink).await;
+        let data = sink.ok_data();
+        assert_eq!(data["modelId"], Value::Null, "cleared, not kept");
+        assert_eq!(data["thinkingLevel"], Value::Null);
+        let stored = store.get_task(&saved.id).unwrap().unwrap();
+        assert_eq!(stored.model_id, None);
+        assert_eq!(stored.thinking_level, None);
+
+        // Setting one back works, and a later update that omits it keeps it.
+        let sink = RecordingSink::default();
+        let mut cmd = command("update_task");
+        cmd.task_id = saved.id.clone();
+        cmd.task = json!({"modelId": "future/o3"});
+        super::execute(&cmd, &sink).await;
+        assert_eq!(sink.ok_data()["modelId"], "future/o3");
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("update_task");
+        cmd.task_id = saved.id.clone();
+        cmd.task = json!({"name": "renamed"});
+        super::execute(&cmd, &sink).await;
+        assert_eq!(
+            sink.ok_data()["modelId"],
+            "future/o3",
+            "a field the payload omits is left alone"
+        );
+    }
+
     /// An unknown task command is refused rather than silently succeeding.
     #[tokio::test]
     async fn an_unknown_task_command_is_unsupported() {
@@ -654,5 +765,113 @@ mod tests {
         let sink = RecordingSink::default();
         super::execute(&command("task_bogus"), &sink).await;
         assert!(sink.error_text().contains("Unsupported task command"));
+    }
+
+    /// A prompt edited from the phone records the same history the desktop and
+    /// the CLI do. The version being replaced is kept, so the task's original
+    /// prompt stays reachable — the hand-rolled row this replaced recorded only
+    /// the new one.
+    #[tokio::test]
+    async fn editing_a_prompt_from_the_phone_keeps_the_version_it_replaced() {
+        let _home = home("business-tasks-prompt-history");
+        let store = open_store().expect("store");
+        let saved = task("weekly", future_tasks::SessionPolicy::New);
+        store.insert_task(&saved).unwrap();
+        assert_eq!(saved.prompt_version, 3, "the fixture starts at v3");
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("update_task");
+        cmd.task_id = saved.id.clone();
+        cmd.task = json!({
+            "name": saved.name,
+            "prompt": "a rewritten prompt",
+            "cwd": saved.cwd,
+            "triggerKind": "schedule",
+            "trigger": {"mode": "daily", "time": "09:00"},
+        });
+        super::execute(&cmd, &sink).await;
+        assert_eq!(sink.ok_data()["promptVersion"], 4);
+
+        let history = store.list_revisions(&saved.id).unwrap();
+        let by_version = |v: i64| {
+            history
+                .iter()
+                .find(|r| r.version == v)
+                .unwrap_or_else(|| panic!("no revision for v{v}: {history:?}"))
+        };
+        assert_eq!(
+            by_version(3).prompt,
+            "summarise the week",
+            "the replaced prompt is kept"
+        );
+        assert_eq!(by_version(3).source, "superseded");
+        assert_eq!(
+            by_version(3).reason,
+            None,
+            "no invented reason prose: the field renders verbatim"
+        );
+        assert_eq!(by_version(4).prompt, "a rewritten prompt");
+        assert_eq!(by_version(4).source, "user");
+        assert_eq!(
+            by_version(4).reason,
+            None,
+            "the phone does not invent English prose for a Chinese panel"
+        );
+
+        // A no-op prompt does not spend a version.
+        let before = store.list_revisions(&saved.id).unwrap().len();
+        let sink = RecordingSink::default();
+        let mut again = command("update_task");
+        again.task_id = saved.id.clone();
+        again.task = json!({ "prompt": "a rewritten prompt" });
+        super::execute(&again, &sink).await;
+        assert_eq!(sink.ok_data()["promptVersion"], 4, "no version for a no-op");
+        assert_eq!(store.list_revisions(&saved.id).unwrap().len(), before);
+    }
+
+    /// Deleting from the phone takes the dependency edges pointing at the task,
+    /// matching the desktop panel: a downstream left holding that edge would
+    /// wait forever on an upstream that can never report again.
+    #[tokio::test]
+    async fn deleting_from_the_phone_drops_the_edges_pointing_at_it() {
+        let _home = home("business-tasks-delete-edges");
+        let store = open_store().expect("store");
+        let upstream = task("upstream", future_tasks::SessionPolicy::New);
+        let mut downstream = task("downstream", future_tasks::SessionPolicy::New);
+        downstream.name = "downstream".into();
+        store.insert_task(&upstream).unwrap();
+        store.insert_task(&downstream).unwrap();
+        store
+            .add_dep(&future_tasks::TaskDep {
+                task_id: downstream.id.clone(),
+                upstream_task_id: upstream.id.clone(),
+                on: future_tasks::DepOn::Success,
+            })
+            .unwrap();
+        store
+            .mark_dep_satisfied(&downstream.id, &upstream.id, "trn_1", 1)
+            .unwrap();
+        assert_eq!(store.list_deps(&downstream.id).unwrap().len(), 1);
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("delete_task");
+        cmd.task_id = upstream.id.clone();
+        super::execute(&cmd, &sink).await;
+        sink.ok_data();
+
+        assert!(
+            store.list_deps(&downstream.id).unwrap().is_empty(),
+            "the downstream waits on nothing"
+        );
+        assert!(store
+            .get_dep_state(&downstream.id, &upstream.id)
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get_task(&upstream.id)
+            .unwrap()
+            .unwrap()
+            .deleted_at
+            .is_some());
     }
 }

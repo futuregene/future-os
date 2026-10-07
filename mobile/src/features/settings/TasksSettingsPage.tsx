@@ -3,6 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/Button";
 import { useRemoteControls } from "../../remote/RemoteContext";
+import type { RemoteModel } from "../../remote/types";
 import type { RemoteTaskDep, RemoteTaskDetail, RemoteTaskRevision, RemoteTaskRow, RemoteTaskRun } from "../../remote/taskTypes";
 import { colors, layout, radius, spacing } from "../../theme/tokens";
 import { ResourceStatus, SettingsField, SettingsSection, settingsStyles } from "./SettingsPrimitives";
@@ -26,6 +27,26 @@ const defaultTrigger: DraftTrigger = {
   days: "mon",
   day: "1",
 };
+
+/** Thinking levels the agent accepts, in the composer's order. */
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+/**
+ * Everything the editor can change. The desktop keeps the same shape in its
+ * own draft, so the two forms send the same payload.
+ */
+interface Draft {
+  name: string;
+  prompt: string;
+  cwd: string;
+  modelId: string;
+  thinkingLevel: string;
+  sessionPolicy: string;
+  conversationMode: string;
+  reflection: string;
+  enabled: boolean;
+  trigger: DraftTrigger;
+}
 
 function triggerFrom(detail: RemoteTaskDetail): DraftTrigger {
   if (detail.triggerKind !== "schedule")
@@ -60,6 +81,74 @@ function triggerPayload(draft: DraftTrigger): { triggerKind: string; trigger: Re
     default:
       return { triggerKind: "schedule", trigger: { mode: "daily", time } };
   }
+}
+
+/** A stored task as an editable draft. */
+function draftFrom(detail: RemoteTaskDetail): Draft {
+  return {
+    name: detail.name,
+    prompt: detail.prompt,
+    cwd: detail.cwd,
+    modelId: detail.modelId ?? "",
+    thinkingLevel: detail.thinkingLevel ?? "",
+    sessionPolicy: detail.sessionPolicy ?? "new",
+    conversationMode: detail.conversationMode ?? "workspace",
+    reflection: detail.reflection ?? "ask",
+    enabled: detail.enabled,
+    trigger: triggerFrom(detail),
+  };
+}
+
+/**
+ * A blank draft for a new task. The working directory starts on the desktop's
+ * first workspace rather than empty: a task with no directory cannot run, and
+ * the phone cannot browse the desktop's filesystem to pick one.
+ */
+function newDraft(firstWorkspacePath: string): Draft {
+  return {
+    name: "",
+    prompt: "",
+    cwd: firstWorkspacePath,
+    modelId: "",
+    thinkingLevel: "",
+    sessionPolicy: "new",
+    conversationMode: "workspace",
+    reflection: "ask",
+    // A new task starts enabled, like the desktop's form does.
+    enabled: true,
+    trigger: { ...defaultTrigger },
+  };
+}
+
+/** The payload `createTask` / `updateTask` take, from the draft. */
+function draftPayload(draft: Draft): Record<string, unknown> {
+  return {
+    name: draft.name.trim(),
+    prompt: draft.prompt,
+    cwd: draft.cwd.trim(),
+    // `null` means "clear it" on the desktop side, which is how the pickers'
+    // "default" choice is expressed. An omitted key would mean "leave it".
+    modelId: draft.modelId || null,
+    thinkingLevel: draft.thinkingLevel || null,
+    sessionPolicy: draft.sessionPolicy,
+    conversationMode: draft.conversationMode,
+    reflection: draft.reflection,
+    enabled: draft.enabled,
+    ...triggerPayload(draft.trigger),
+  };
+}
+
+/** Why the form cannot be submitted yet, or null when it can. */
+function draftProblem(draft: Draft): "name" | "prompt" | "cwd" | "date" | null {
+  if (!draft.name.trim())
+    return "name";
+  if (!draft.prompt.trim())
+    return "prompt";
+  if (!draft.cwd.trim())
+    return "cwd";
+  if (draft.trigger.mode === "once" && !/^\d{4}-\d{2}-\d{2}$/.test(draft.trigger.date.trim()))
+    return "date";
+  return null;
 }
 
 /** "Every N minutes", promoting exact hours and days (mirrors the desktop). */
@@ -123,12 +212,34 @@ function summarize(
   }
 }
 
-/** Task management on the paired desktop (list, editor, runs, versions). */
+/** A one-of-N choice row, sized as a touch target. */
+function Choice({ label, selected, disabled, onPress }: {
+  label: string;
+  selected: boolean;
+  disabled: boolean;
+  onPress(): void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityState={{ selected, disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      style={[styles.choice, selected && styles.choiceSelected]}
+    >
+      <Text numberOfLines={1} style={settingsStyles.label}>{label}</Text>
+    </Pressable>
+  );
+}
+
+/** Task management on the paired desktop (list, create, edit, delete, runs). */
 export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean }) {
   const { t, i18n } = useTranslation();
   const remote = useRemoteControls();
   const tasks = useDesktopResource(remote.listTasks, 0, desktopOnline);
   const [openId, setOpenId] = useState<string | null>(null);
+  /** Creating opens the same editor with no task behind it. */
+  const [creating, setCreating] = useState(false);
   const [detail, setDetail] = useState<RemoteTaskDetail | null>(null);
   const [runs, setRuns] = useState<RemoteTaskRun[]>([]);
   const [deps, setDeps] = useState<RemoteTaskDep[]>([]);
@@ -158,12 +269,19 @@ export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean })
   }, [remote]);
 
   const open = useCallback((taskId: string) => {
+    setCreating(false);
     setOpenId(taskId);
     setDetail(null);
     void loadDetail(taskId).catch(() => {
       if (active.current) setFailed(true);
     });
   }, [loadDetail]);
+
+  const close = useCallback(() => {
+    setCreating(false);
+    setOpenId(null);
+    setDetail(null);
+  }, []);
 
   /**
    * Clear the failure and re-read the task it belongs to. Every failure on this
@@ -196,17 +314,45 @@ export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean })
     }
   };
 
+  /**
+   * Delete, then leave the editor: the task it describes is gone. The task is a
+   * parameter rather than read from state, because the only caller renders when
+   * a task is loaded — a guard for "no task" would be unreachable code.
+   */
+  const remove = (task: RemoteTaskDetail) => {
+    void mutate(async () => {
+      await remote.deleteTask(task.id);
+      close();
+    });
+  };
+
+  if (creating) {
+    return (
+      <TaskForm
+        busy={busy}
+        desktopOnline={desktopOnline}
+        failed={failed}
+        kind="create"
+        onCancel={close}
+        onCreate={draft => void mutate(() => remote.createTask(draftPayload(draft)).then(close))}
+      />
+    );
+  }
+
   if (openId && detail) {
     return (
-      <TaskEditor
+      <TaskForm
         key={`${detail.id}:${detail.promptVersion}`}
-        detail={detail}
         busy={busy}
         deps={deps}
+        detail={detail}
+        desktopOnline={desktopOnline}
         failed={failed}
+        kind="edit"
         revisions={revisions}
         runs={runs}
-        onBack={() => setOpenId(null)}
+        onBack={close}
+        onDelete={() => remove(detail)}
         onMutate={mutate}
         onRetry={() => retryTask(detail.id)}
       />
@@ -216,6 +362,7 @@ export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean })
   return (
     <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
       <SettingsSection title={t("tasks.title")}>
+        <Button label={t("tasks.new")} disabled={!desktopOnline} onPress={() => setCreating(true)} />
         {tasks.loading || tasks.failed ? <ResourceStatus loading={tasks.loading} failed={tasks.failed} onReload={() => void tasks.reload()} /> : null}
         {/* A task that could not be read leaves the list on screen, so the
             failure belongs here; a mutation failure renders in the editor. */}
@@ -250,166 +397,280 @@ export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean })
   );
 }
 
-function TaskEditor({ detail, busy, deps, failed, revisions, runs, onBack, onMutate, onRetry }: {
-  detail: RemoteTaskDetail;
+/**
+ * The task editor, for both a new task and an existing one.
+ *
+ * `create` has no `detail` to read from, so the draft starts blank; `edit`
+ * starts from the stored task and keys the component by prompt version, so a
+ * save (or a reload) remounts it with fresh values instead of an effect writing
+ * state on every incoming snapshot.
+ */
+function TaskForm({
+  kind, detail, busy, deps = [], desktopOnline, failed, revisions = [], runs = [],
+  onBack, onCancel, onCreate, onDelete, onMutate, onRetry,
+}: {
+  kind: "create" | "edit";
+  detail?: RemoteTaskDetail;
   busy: boolean;
-  deps: RemoteTaskDep[];
+  deps?: RemoteTaskDep[];
+  desktopOnline: boolean;
   failed: boolean;
-  revisions: RemoteTaskRevision[];
-  runs: RemoteTaskRun[];
-  onBack(): void;
-  onMutate(operation: () => Promise<unknown>): Promise<void>;
-  onRetry(): void;
+  revisions?: RemoteTaskRevision[];
+  runs?: RemoteTaskRun[];
+  onBack?(): void;
+  onCancel?(): void;
+  onCreate?(draft: Draft): void;
+  onDelete?(): void;
+  onMutate?(operation: () => Promise<unknown>): Promise<void>;
+  onRetry?(): void;
 }) {
   const { t } = useTranslation();
   const remote = useRemoteControls();
-  // The draft is initial state only: the parent keys this component by the
-  // loaded revision, so a save (or a reload) remounts it with fresh values
-  // instead of an effect writing state on every incoming snapshot.
-  const [prompt, setPrompt] = useState(detail.prompt);
-  const [trigger, setTrigger] = useState<DraftTrigger>(() => triggerFrom(detail));
-  const [conversationMode, setConversationMode] = useState(detail.conversationMode ?? "workspace");
-  const [cwd, setCwd] = useState(detail.cwd);
+  const models = useDesktopResource(remote.listSettingsModels, 0, desktopOnline);
+  const [draft, setDraft] = useState<Draft>(() =>
+    detail ? draftFrom(detail) : newDraft(remote.workspaces[0]?.path ?? ""));
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const patch = (values: Partial<Draft>) => setDraft(current => ({ ...current, ...values }));
+  const patchTrigger = (values: Partial<DraftTrigger>) =>
+    setDraft(current => ({ ...current, trigger: { ...current.trigger, ...values } }));
+  const problem = draftProblem(draft);
+  const trigger = draft.trigger;
 
   const save = () => {
-    const payload = triggerPayload(trigger);
-    void onMutate(() => remote.updateTask(detail.id, {
-      name: detail.name,
-      prompt,
-      cwd,
-      modelId: detail.modelId,
-      thinkingLevel: detail.thinkingLevel,
-      sessionPolicy: detail.sessionPolicy,
-      conversationMode,
-      reflection: detail.reflection,
-      depJoin: detail.depJoin,
-      enabled: detail.enabled,
-      ...payload,
-    }));
+    // Create goes through `onCreate` (the parent owns the request); edit goes
+    // through `onMutate`, which also handles the in-flight guard and reload.
+    // Requiring both would make either mode silently do nothing.
+    if (problem) return;
+    if (kind === "create")
+      onCreate?.(draft);
+    else if (onMutate)
+      void onMutate(() => remote.updateTask(detail!.id, draftPayload(draft)));
   };
 
   return (
     <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
-      {failed ? <ResourceStatus loading={false} failed onReload={onRetry} /> : null}
-      <SettingsSection title={detail.name}>
-        <Button label={t("tasks.runNow")} disabled={busy} onPress={() => void onMutate(() => remote.runTask(detail.id))} />
-        <Button label={detail.enabled ? t("tasks.disable") : t("tasks.enable")} disabled={busy} onPress={() => void onMutate(() => remote.setTaskEnabled(detail.id, !detail.enabled))} />
-        <Button label={t("common.back")} onPress={onBack} />
-      </SettingsSection>
+      {/* Editing can re-read the task, so its failure banner retries that read.
+          A failed create has nothing to re-read: the draft is still on screen
+          and Save is the retry, so it gets a plain message and no button that
+          would pretend to do something else. */}
+      {failed
+        ? kind === "edit" && onRetry
+          ? <ResourceStatus loading={false} failed onReload={onRetry} />
+          : <Text accessibilityRole="alert" style={settingsStyles.error}>{t("desktopSettings.loadFailed")}</Text>
+        : null}
 
-      <SettingsSection title={t("tasks.settings")}>
-        <Text style={settingsStyles.description}>
-          {t("tasks.colModel")}
-          {": "}
-          {detail.modelId ?? t("tasks.modelDefault")}
-        </Text>
-        <Text style={settingsStyles.description}>
-          {t("tasks.colThinking")}
-          {": "}
-          {detail.thinkingLevel ? t(`tasks.thinkingLabels.${detail.thinkingLevel}`) : t("tasks.thinkingDefault")}
-        </Text>
-      </SettingsSection>
-
-      <SettingsSection title={t("tasks.form.prompt")}>
-        <TextInput multiline style={settingsStyles.input} value={prompt} onChangeText={setPrompt} />
-        <Button label={t("tasks.form.save")} disabled={busy || prompt === detail.prompt} onPress={save} />
-      </SettingsSection>
-
-      <SettingsSection title={t("tasks.form.cwd")}>
+      <SettingsSection title={kind === "create" ? t("tasks.newTitle") : detail!.name}>
+        {/* One compact row, not a stack of full-width buttons: the phone's
+            vertical space belongs to the form, and the desktop puts these on
+            one line too. Delete stays two-step (armed, then confirmed). */}
         <View style={settingsStyles.actions}>
-          {remote.workspaces.slice(0, 6).map(workspace => (
-            <Pressable
-              accessibilityRole="radio"
-              accessibilityState={{ selected: cwd === workspace.path }}
-              disabled={busy}
-              key={workspace.id}
-              onPress={() => setCwd(workspace.path)}
-              style={[styles.choice, cwd === workspace.path && styles.choiceSelected]}
-            >
-              <Text numberOfLines={1} style={settingsStyles.label}>{workspace.name || workspace.path}</Text>
-            </Pressable>
-          ))}
+          {kind === "edit"
+            ? (
+                <>
+                  <Button compact label={t("tasks.runNow")} disabled={busy} onPress={() => void onMutate?.(() => remote.runTask(detail!.id))} />
+                  <Button compact label={detail!.enabled ? t("tasks.disable") : t("tasks.enable")} disabled={busy} variant="secondary" onPress={() => void onMutate?.(() => remote.setTaskEnabled(detail!.id, !detail!.enabled))} />
+                </>
+              )
+            : null}
+          {kind === "edit"
+            ? (
+                confirmDelete
+                  ? (
+                      <>
+                        <Button compact label={t("tasks.deleteConfirmAction")} variant="danger" disabled={busy} onPress={() => onDelete?.()} />
+                        <Button compact label={t("chat.cancel")} variant="secondary" disabled={busy} onPress={() => setConfirmDelete(false)} />
+                      </>
+                    )
+                  : <Button compact label={t("tasks.delete")} variant="secondary" disabled={busy} onPress={() => setConfirmDelete(true)} />
+              )
+            : null}
+          <Button compact label={kind === "create" ? t("tasks.form.cancel") : t("common.back")} variant="secondary" onPress={kind === "create" ? onCancel! : onBack!} />
         </View>
-        <SettingsField label={t("tasks.form.cwdPath")} hint={t("tasks.form.cwdHint")}>
+        {/* The confirmation is a sentence, so it gets its own line under the row. */}
+        {kind === "edit" && confirmDelete
+          ? <Text style={settingsStyles.description}>{t("tasks.deleteConfirm", { name: detail!.name })}</Text>
+          : null}
+      </SettingsSection>
+
+      <SettingsSection title={t("tasks.form.details")}>
+        <SettingsField label={t("tasks.form.name")}>
+          <TextInput
+            accessibilityLabel={t("tasks.form.name")}
+            style={settingsStyles.input}
+            value={draft.name}
+            onChangeText={name => patch({ name })}
+          />
+        </SettingsField>
+
+        <SettingsField label={t("tasks.form.prompt")}>
+          <TextInput
+            accessibilityLabel={t("tasks.form.prompt")}
+            multiline
+            style={settingsStyles.input}
+            value={draft.prompt}
+            onChangeText={prompt => patch({ prompt })}
+          />
+        </SettingsField>
+
+        <SettingsField label={t("tasks.form.cwd")} hint={t("tasks.form.cwdHint")}>
+          <View style={settingsStyles.actions}>
+            {remote.workspaces.slice(0, 6).map(workspace => (
+              <Choice
+                disabled={busy}
+                key={workspace.id}
+                label={workspace.name || workspace.path}
+                onPress={() => patch({ cwd: workspace.path })}
+                selected={draft.cwd === workspace.path}
+              />
+            ))}
+          </View>
           <TextInput
             accessibilityLabel={t("tasks.form.cwdPath")}
             autoCapitalize="none"
             style={settingsStyles.input}
-            value={cwd}
-            onChangeText={setCwd}
+            value={draft.cwd}
+            onChangeText={cwd => patch({ cwd })}
           />
         </SettingsField>
-      </SettingsSection>
 
-      <SettingsSection title={t("tasks.form.conversation")}>
-        <View style={settingsStyles.actions}>
-          {(["workspace", "chat"] as const).map(mode => (
-            <Pressable
-              accessibilityRole="radio"
-              accessibilityState={{ selected: conversationMode === mode }}
-              disabled={busy}
-              key={mode}
-              onPress={() => setConversationMode(mode)}
-              style={[styles.choice, conversationMode === mode && styles.choiceSelected]}
-            >
-              <Text style={settingsStyles.label}>{t(`tasks.form.conversation${mode === "chat" ? "Chat" : "Workspace"}`)}</Text>
-            </Pressable>
-          ))}
-        </View>
-        <Text style={settingsStyles.description}>{t("tasks.form.conversationHint")}</Text>
+        <SettingsField label={t("tasks.form.model")} hint={models.failed ? t("tasks.form.modelsFailed") : undefined}>
+          <View style={settingsStyles.actions}>
+            <Choice disabled={busy} label={t("tasks.modelDefault")} onPress={() => patch({ modelId: "" })} selected={draft.modelId === ""} />
+            {(models.data ?? []).map(model => (
+              <Choice
+                disabled={busy}
+                key={modelKey(model)}
+                label={model.label || model.id}
+                onPress={() => patch({ modelId: modelKey(model) })}
+                selected={draft.modelId === modelKey(model)}
+              />
+            ))}
+          </View>
+        </SettingsField>
+
+        <SettingsField label={t("tasks.form.thinking")}>
+          <View style={settingsStyles.actions}>
+            <Choice disabled={busy} label={t("tasks.thinkingDefault")} onPress={() => patch({ thinkingLevel: "" })} selected={draft.thinkingLevel === ""} />
+            {THINKING_LEVELS.map(level => (
+              <Choice
+                disabled={busy}
+                key={level}
+                label={t(`tasks.thinkingLabels.${level}`)}
+                onPress={() => patch({ thinkingLevel: level })}
+                selected={draft.thinkingLevel === level}
+              />
+            ))}
+          </View>
+        </SettingsField>
+
+        <SettingsField label={t("tasks.form.session")} hint={draft.sessionPolicy === "existing" ? t("tasks.form.sessionExistingHint") : undefined}>
+          <View style={settingsStyles.actions}>
+            {(["new", "existing"] as const).map(policy => (
+              <Choice
+                disabled={busy}
+                key={policy}
+                label={t(policy === "existing" ? "tasks.form.sessionExisting" : "tasks.form.sessionNew")}
+                onPress={() => patch({ sessionPolicy: policy })}
+                selected={draft.sessionPolicy === policy}
+              />
+            ))}
+          </View>
+        </SettingsField>
+
+        <SettingsField label={t("tasks.form.conversation")} hint={t("tasks.form.conversationHint")}>
+          <View style={settingsStyles.actions}>
+            {(["workspace", "chat"] as const).map(mode => (
+              <Choice
+                disabled={busy}
+                key={mode}
+                label={t(`tasks.form.conversation${mode === "chat" ? "Chat" : "Workspace"}`)}
+                onPress={() => patch({ conversationMode: mode })}
+                selected={draft.conversationMode === mode}
+              />
+            ))}
+          </View>
+        </SettingsField>
+
+        <SettingsField label={t("tasks.form.enablement")}>
+          <View style={settingsStyles.actions}>
+            {([true, false] as const).map(on => (
+              <Choice
+                disabled={busy}
+                key={String(on)}
+                label={t(on ? "tasks.form.enabled" : "tasks.form.disabled")}
+                onPress={() => patch({ enabled: on })}
+                selected={draft.enabled === on}
+              />
+            ))}
+          </View>
+        </SettingsField>
+
+        <SettingsField label={t("tasks.form.reflection")} hint={t("tasks.form.reflectionHint")}>
+          <View style={settingsStyles.actions}>
+            {(["off", "ask", "auto"] as const).map(level => (
+              <Choice
+                disabled={busy}
+                key={level}
+                label={t(`tasks.form.reflection${level === "off" ? "Off" : level === "auto" ? "Auto" : "Ask"}`)}
+                onPress={() => patch({ reflection: level })}
+                selected={draft.reflection === level}
+              />
+            ))}
+          </View>
+        </SettingsField>
       </SettingsSection>
 
       <SettingsSection title={t("tasks.form.trigger")}>
         <View style={settingsStyles.actions}>
           {(["manual", "once", "interval", "daily", "weekly", "monthly"] as const).map(mode => (
-            <Pressable
-              accessibilityRole="radio"
-              accessibilityState={{ selected: trigger.mode === mode }}
+            <Choice
               disabled={busy}
               key={mode}
-              onPress={() => setTrigger(current => ({ ...current, mode }))}
-              style={[styles.choice, trigger.mode === mode && styles.choiceSelected]}
-            >
-              <Text style={settingsStyles.label}>{t(`tasks.triggerMode.${mode}`)}</Text>
-            </Pressable>
+              label={t(`tasks.triggerMode.${mode}`)}
+              onPress={() => patchTrigger({ mode })}
+              selected={trigger.mode === mode}
+            />
           ))}
         </View>
         {trigger.mode === "once"
           ? (
               <SettingsField label={t("tasks.form.date")}>
-                <TextInput placeholder="2026-12-24" style={settingsStyles.input} value={trigger.date} onChangeText={date => setTrigger(current => ({ ...current, date }))} />
+                <TextInput accessibilityLabel={t("tasks.form.date")} placeholder="2026-12-24" style={settingsStyles.input} value={trigger.date} onChangeText={date => patchTrigger({ date })} />
               </SettingsField>
             )
           : null}
         {trigger.mode !== "manual" && trigger.mode !== "interval"
           ? (
               <SettingsField label={t("tasks.form.time")}>
-                <TextInput style={settingsStyles.input} value={trigger.time} onChangeText={time => setTrigger(current => ({ ...current, time }))} />
+                <TextInput accessibilityLabel={t("tasks.form.time")} style={settingsStyles.input} value={trigger.time} onChangeText={time => patchTrigger({ time })} />
               </SettingsField>
             )
           : null}
         {trigger.mode === "interval"
           ? (
               <SettingsField label={t("tasks.form.everyMinutes")}>
-                <TextInput keyboardType="number-pad" style={settingsStyles.input} value={trigger.everyMinutes} onChangeText={everyMinutes => setTrigger(current => ({ ...current, everyMinutes }))} />
+                <TextInput accessibilityLabel={t("tasks.form.everyMinutes")} keyboardType="number-pad" style={settingsStyles.input} value={trigger.everyMinutes} onChangeText={everyMinutes => patchTrigger({ everyMinutes })} />
               </SettingsField>
             )
           : null}
         {trigger.mode === "weekly"
           ? (
               <SettingsField label={t("tasks.form.days")} hint="mon,tue,wed">
-                <TextInput autoCapitalize="none" style={settingsStyles.input} value={trigger.days} onChangeText={days => setTrigger(current => ({ ...current, days }))} />
+                <TextInput accessibilityLabel={t("tasks.form.days")} autoCapitalize="none" style={settingsStyles.input} value={trigger.days} onChangeText={days => patchTrigger({ days })} />
               </SettingsField>
             )
           : null}
         {trigger.mode === "monthly"
           ? (
               <SettingsField label={t("tasks.form.day")} hint={t("tasks.form.shortMonthHint")}>
-                <TextInput keyboardType="number-pad" style={settingsStyles.input} value={trigger.day} onChangeText={day => setTrigger(current => ({ ...current, day }))} />
+                <TextInput accessibilityLabel={t("tasks.form.day")} keyboardType="number-pad" style={settingsStyles.input} value={trigger.day} onChangeText={day => patchTrigger({ day })} />
               </SettingsField>
             )
           : null}
-        <Button label={t("tasks.form.save")} disabled={busy} onPress={save} />
+        {problem
+          ? <Text accessibilityRole="alert" style={settingsStyles.error}>{t(`tasks.form.problem.${problem}`)}</Text>
+          : null}
+        <Button label={t("tasks.form.save")} disabled={busy || problem !== null} onPress={save} />
         <Text style={settingsStyles.description}>{t("tasks.form.fullPermissionWarning")}</Text>
       </SettingsSection>
 
@@ -456,7 +717,7 @@ function TaskEditor({ detail, busy, deps, failed, revisions, runs, onBack, onMut
                 <View key={revision.id} style={settingsStyles.card}>
                   <Text style={settingsStyles.label}>{`v${revision.version} · ${t(`tasks.source.${revision.source}`)}`}</Text>
                   <Text style={settingsStyles.description}>{revision.reason ?? revision.promptPreview}</Text>
-                  <Button label={t("tasks.apply")} disabled={busy} onPress={() => void onMutate(() => remote.applyTaskRevision(detail.id, revision.id))} />
+                  <Button label={t("tasks.apply")} disabled={busy} onPress={() => void onMutate?.(() => remote.applyTaskRevision(detail!.id, revision.id))} />
                 </View>
               ))}
             </SettingsSection>
@@ -464,6 +725,14 @@ function TaskEditor({ detail, busy, deps, failed, revisions, runs, onBack, onMut
         : null}
     </ScrollView>
   );
+}
+
+/**
+ * The stable identity of a catalogue model. A model id is only unique within its
+ * provider, so the two together are what a task stores (`provider/id`).
+ */
+function modelKey(model: RemoteModel): string {
+  return model.provider ? `${model.provider}/${model.id}` : model.id;
 }
 
 const styles = StyleSheet.create({

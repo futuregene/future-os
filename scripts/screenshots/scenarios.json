@@ -2273,7 +2273,7 @@
             "wait": 1200
           },
           {
-            "eval": "(() => { const t = document.body.innerText; if (!t.includes('每周进展周报')) throw new Error('mobile task list did not render'); })()"
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('新建任务')) throw new Error('the list has no create control'); if (!t.includes('每周进展周报')) throw new Error('the list lost its rows'); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
           },
           {
             "shot": "m-settings-tasks.png"
@@ -2357,6 +2357,126 @@
           },
           {
             "shot": "m-settings-tasks-history.png"
+          }
+        ]
+      },
+      "settings-tasks-form": {
+        "url": "http://localhost:8099/",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; const missing = [\"任务信息\", \"名称\", \"提示词\", \"工作目录\", \"模型\", \"思考等级\", \"会话策略\", \"会话类型\", \"状态\", \"提示词优化建议\", \"删除\", \"返回\"].filter(k => !t.includes(k)); if (missing.length) throw new Error('MISSING:' + missing.join('/')); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
+          },
+          {
+            "shot": "m-settings-tasks-form.png"
+          }
+        ]
+      },
+      "settings-tasks-create": {
+        "url": "http://localhost:8099/",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "新建任务"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; const missing = ['新建任务', '任务信息', '名称', '提示词', '工作目录'].filter(k => !t.includes(k)); if (missing.length) throw new Error('MISSING:' + missing.join('/')); const blank = [...document.querySelectorAll('input,textarea')].filter(el => el.value === '').length; if (blank < 2) throw new Error('the create form is not blank: ' + blank); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
+          },
+          {
+            "shot": "m-settings-tasks-create.png"
+          }
+        ]
+      },
+      "settings-tasks-create-bottom": {
+        "url": "http://localhost:8099/",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "新建任务"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => { const scrollers = [...document.querySelectorAll('div')].filter(el => el.scrollHeight > el.clientHeight + 40 && /auto|scroll/.test(getComputedStyle(el).overflowY)); if (!scrollers.length) throw new Error('no scroll container'); const target = scrollers.sort((a, b) => b.scrollHeight - a.scrollHeight)[0]; target.scrollTop = target.scrollHeight; return target.scrollTop;})()"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; const missing = [\"触发器\", \"保存\", \"任务以完全权限运行\", \"取消\", \"给任务起个名字\"].filter(k => !t.includes(k)); if (missing.length) throw new Error('MISSING:' + missing.join('/')); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
+          },
+          {
+            "shot": "m-settings-tasks-create-bottom.png"
           }
         ]
       }
