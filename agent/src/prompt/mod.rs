@@ -418,6 +418,17 @@ fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
             "Use the shell tool (PowerShell) for command-line exploration such as Get-ChildItem and Select-String; but to read a known file's contents use the read tool, not Get-Content. Prefer write/edit tools for ordinary file writes."
                 .to_string(),
         );
+        // A `#`-picked conversation reaches the model as
+        // `[title](futureos://session/<id>)`, so the id is already in the
+        // message. Acting on it goes through the ordinary `future` CLI rather
+        // than a dedicated tool, the same way the agent inspects itself (see
+        // docs/guide/self-inspection.md): this guideline only has to name the
+        // two commands the reference is for, since the id alone is not
+        // self-explanatory.
+        guidelines.push(
+            "A user message may reference another conversation as [title](futureos://session/<session-id>): the id in that link identifies that conversation. Read it with the shell tool — `future session transcript --session <id>` (add --select/--grep/--limit/--counts to read it cheaply, --runs for its run outcomes) or `future session history search --session <id> --query \"<text>\"` to find a passage. To send a message to it use `future run --session <id> \"<message>\"`: that starts a real run in that conversation and spends the user's credits, so do it when the user asked for it and otherwise confirm first, and expect the command to block until that run finishes (raise the shell tool's timeout for long ones)."
+                .to_string(),
+        );
     }
 
     guidelines
@@ -882,6 +893,31 @@ mod tests {
         assert!(has_tool(&tools, "shell"));
         assert!(has_tool(&tools, "read"));
         assert!(!has_tool(&tools, "nonexistent"));
+    }
+
+    /// A `#`-picked conversation arrives as a link carrying its session id, and
+    /// the model acts on it through the `future` CLI — the commands have to be
+    /// named in the prompt, and only when a shell tool can run them.
+    #[test]
+    fn session_reference_guideline_needs_a_shell_tool() {
+        let with_shell = build_prompt(&PromptOptions {
+            tools: vec![crate::tools::shell_tool()],
+            ..Default::default()
+        });
+        assert!(with_shell.contains("futureos://session/<session-id>"));
+        assert!(with_shell.contains("future session transcript --session <id>"));
+        assert!(with_shell.contains("future run --session <id>"));
+        // Sending spends credits and blocks, so the prompt must say both.
+        assert!(with_shell.contains("spends the user's credits"));
+        assert!(with_shell.contains("block until that run finishes"));
+
+        // Without a shell there is no way to run either command, so promising
+        // them would only invite the model to try.
+        let read_only = build_prompt(&PromptOptions {
+            tools: vec![crate::tools::read_tool()],
+            ..Default::default()
+        });
+        assert!(!read_only.contains("futureos://session/<session-id>"));
     }
 
     #[test]
