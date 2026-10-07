@@ -308,39 +308,40 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 // became unreachable), it invented English reason text (rendered
                 // verbatim, so it surfaced untranslated in a Chinese panel), and
                 // it discarded the insert error, losing history silently.
-                let history = match store.list_revisions(&existing.id) {
-                    Ok(history) => history,
-                    Err(error) => {
-                        reply(sink, false, Value::Null, Some(&error.to_string())).await;
-                        return;
-                    }
-                };
+                //
+                // One chain, one error path: the history read cannot fail on
+                // its own here (the store recreates its schema on open), so a
+                // match arm for it would be a branch nothing can reach.
                 let incoming_prompt = cmd
                     .task
                     .get("prompt")
                     .and_then(Value::as_str)
                     .unwrap_or(&existing.prompt)
                     .to_string();
-                let revisions = future_tasks::prompt_change_revisions(
-                    &existing,
-                    &history,
-                    &incoming_prompt,
-                    "user",
-                    None,
-                    now_ms(),
-                );
-                match task_from_payload(&cmd.task, Some(existing)).and_then(|task| {
-                    for row in &revisions {
+                let result = store
+                    .list_revisions(&existing.id)
+                    .map_err(|e| crate::AppError::Message(e.to_string()))
+                    .and_then(|history| {
+                        let revisions = future_tasks::prompt_change_revisions(
+                            &existing,
+                            &history,
+                            &incoming_prompt,
+                            "user",
+                            None,
+                            now_ms(),
+                        );
+                        let task = task_from_payload(&cmd.task, Some(existing))?;
+                        for row in &revisions {
+                            store
+                                .insert_revision(row)
+                                .map_err(|e| crate::AppError::Message(e.to_string()))?;
+                        }
                         store
-                            .insert_revision(row)
+                            .update_task(&task)
                             .map_err(|e| crate::AppError::Message(e.to_string()))?;
-                    }
-                    let saved = task.clone();
-                    store
-                        .update_task(&task)
-                        .map(|()| saved)
-                        .map_err(|e| crate::AppError::Message(e.to_string()))
-                }) {
+                        Ok(task)
+                    });
+                match result {
                     Ok(task) => reply(sink, true, task_detail_view(&store, task), None).await,
                     Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
                 }
