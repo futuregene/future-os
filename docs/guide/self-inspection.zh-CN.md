@@ -253,10 +253,12 @@ future run --session <id> "<message>"     # 在那个会话里起一次 run
 
 `--session` 要求该会话已存在（未知 id 会被 `switch_session` 拒绝，而不是新建一个），
 提示词追加到该会话 —— 默认排在正在进行的 run 之后，用 `--steer` 则打断它。
+选哪一种由调用方自己判断，而不是固定行为：追加不动已经在跑的工作，打断则抢占它，
+只有调用方知道用户真正想要什么。
 它就是 `#` 选中的会话引用的「发送」那一半：用户消息里可以带
 `[标题](futureos://session/<id>)`，链接里的 id 正是 `--session` 的参数。
-这是另一个会话里的一次完整 run：会花积分，并且会阻塞到那次 run 结束
-（受 shell 工具自身的超时约束），所以应在用户要求时才做，而不是由模型自行发起。
+这是另一个会话里的一次完整 run，因此会花积分；命令会在那次 run 结束时返回
+（受 shell 工具自身的超时约束），长时间的任务需要相应调大超时。
 「读」的那一半是上面的 `future session transcript --session <id>` /
 `future session history search --session <id>`。
 
