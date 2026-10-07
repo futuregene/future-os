@@ -296,13 +296,15 @@ future run --session <id> "<message>"     # start a run in THAT session
 
 `--session` requires the session to exist (`switch_session` refuses an unknown
 id rather than creating one) and the prompt is appended to it — behind an
-in-progress run by default, or interrupting it with `--steer`. This is the send
-half of a `#`-picked conversation reference: a user message can carry
-`[title](futureos://session/<id>)`, and the id in that link is what `--session`
-takes. It is a full run in the other conversation: it spends credits and it
-blocks until that run finishes (the shell tool's own timeout applies), so it is
-something to do when the user asked for it rather than on the model's own
-initiative. The read half is `future session transcript --session <id>` /
+in-progress run by default, or interrupting it with `--steer`. Which of those two
+is right is the caller's judgement, not a fixed behaviour: appending leaves work
+already under way alone, interrupting pre-empts it, and only the caller knows
+what the user actually wanted. This is the send half of a `#`-picked conversation
+reference: a user message can carry `[title](futureos://session/<id>)`, and the id
+in that link is what `--session` takes. It is a full run in the other
+conversation, so it spends credits, and the command returns when that run ends
+(the shell tool's own timeout applies) — a long one needs a raised timeout. The
+read half is `future session transcript --session <id>` /
 `future session history search --session <id>` above.
 
 Changing a setting changes how every later session behaves, so the skill treats

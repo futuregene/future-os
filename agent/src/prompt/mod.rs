@@ -426,7 +426,7 @@ fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
         // two commands the reference is for, since the id alone is not
         // self-explanatory.
         guidelines.push(
-            "A user message may reference another conversation as [title](futureos://session/<session-id>): the id in that link identifies that conversation. Read it with the shell tool — `future session transcript --session <id>` (add --select/--grep/--limit/--counts to read it cheaply, --runs for its run outcomes) or `future session history search --session <id> --query \"<text>\"` to find a passage. To send a message to it use `future run --session <id> \"<message>\"`: that starts a real run in that conversation and spends the user's credits, so do it when the user asked for it and otherwise confirm first, and expect the command to block until that run finishes (raise the shell tool's timeout for long ones)."
+            "A user message may reference another conversation as [title](futureos://session/<session-id>): the id in that link identifies that conversation. Read it with the shell tool — `future session transcript --session <id>` (add --select/--grep/--limit/--counts to read it cheaply, --runs for its run outcomes) or `future session history search --session <id> --query \"<text>\"` to find a passage. To send it a message use `future run --session <id> \"<message>\"`, which starts a real run there and spends the user's credits; if that conversation is mid-run, you decide whether to append behind it (the default) or interrupt it with --steer. The command returns when that run ends, so raise the shell tool's timeout for a long one."
                 .to_string(),
         );
     }
@@ -907,9 +907,16 @@ mod tests {
         assert!(with_shell.contains("futureos://session/<session-id>"));
         assert!(with_shell.contains("future session transcript --session <id>"));
         assert!(with_shell.contains("future run --session <id>"));
-        // Sending spends credits and blocks, so the prompt must say both.
+        // Sending spends credits, so the prompt must say so.
         assert!(with_shell.contains("spends the user's credits"));
-        assert!(with_shell.contains("block until that run finishes"));
+        // Both ways to handle a run already in progress are named, and the
+        // prompt says the choice is the model's — naming only the default would
+        // leave it unable to judge, and naming only one would be an instruction.
+        assert!(with_shell.contains("you decide whether to append behind it"));
+        assert!(with_shell.contains("--steer"));
+        // The command waits for that run either way; without this the model
+        // cannot size the shell timeout.
+        assert!(with_shell.contains("raise the shell tool's timeout"));
 
         // Without a shell there is no way to run either command, so promising
         // them would only invite the model to try.
