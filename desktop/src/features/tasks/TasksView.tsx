@@ -81,8 +81,11 @@ function summarizeTrigger(t: (key: string, options?: Record<string, unknown>) =>
     case "interval":
       return t("trigger.every", { minutes: Number(trigger.every_minutes ?? 0) });
     case "weekly": {
-      const days = Array.isArray(trigger.days) ? (trigger.days as string[]).join(", ") : "";
-      return `${days} ${trigger.time}`;
+      // The stored codes are `mon`/`fri`; a list that shows them raw is
+      // untranslated in a Chinese UI. Localize each selected day.
+      const days = Array.isArray(trigger.days) ? (trigger.days as string[]) : [];
+      const labels = days.map(day => t(`weekday.${day}`));
+      return `${labels.join(", ")} ${trigger.time}`;
     }
     case "monthly":
       return t("trigger.monthly", { day: Number(trigger.day ?? 1), time: String(trigger.time ?? "") });

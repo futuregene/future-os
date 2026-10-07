@@ -24,6 +24,10 @@ import {
   reviewFiles,
   runs,
   sessionUsage,
+  taskDeps,
+  taskRevisions,
+  taskRuns,
+  tasks,
   threads,
   toolCalls,
   toolOutputs,
@@ -91,6 +95,9 @@ const EMPTY_REMOTE_STATUS = {
 };
 
 /** Command name → implementation. Anything missing goes to the fallback. */
+/** Mutable copy so a capture can show a task being toggled or deleted. */
+const taskList = tasks.map(task => ({ ...task }));
+
 const handlers: Record<string, (args: any) => unknown> = {
   // ── App bootstrap ──────────────────────────────────────────────────────
   initialize_app_store: () => null,
@@ -430,6 +437,85 @@ const handlers: Record<string, (args: any) => unknown> = {
     port: 7391,
     maxSessions: 8,
   }),
+
+  // ── Tasks ──────────────────────────────────────────────────────────────
+  // The panel reads through these; mutations are applied to the in-memory list
+  // so a capture shows the same list a real write would produce.
+  list_tasks: () => taskList,
+  create_task: (args) => {
+    const input = args?.input ?? {};
+    const created = {
+      id: `tsk_${Date.now()}`,
+      name: input.name,
+      enabled: input.enabled ?? true,
+      prompt: input.prompt,
+      promptVersion: 1,
+      cwd: input.cwd,
+      modelId: input.modelId ?? null,
+      thinkingLevel: input.thinkingLevel ?? null,
+      sessionPolicy: input.sessionPolicy ?? "new",
+      triggerKind: input.triggerKind ?? "manual",
+      trigger: input.trigger ?? {},
+      depJoin: input.depJoin ?? "all",
+      nextDueAt: input.triggerKind === "schedule" ? Date.now() + 60 * 60_000 : null,
+      lastRunAt: null,
+      reflection: input.reflection ?? "ask",
+      latestRun: null,
+    };
+    taskList.push(created);
+    return created;
+  },
+  update_task: (args) => {
+    const target = taskList.find(task => task.id === args?.id);
+    if (!target)
+      throw new Error("task not found");
+    const input = args?.input ?? {};
+    const promptChanged = input.prompt !== undefined && input.prompt !== target.prompt;
+    Object.assign(target, {
+      name: input.name ?? target.name,
+      prompt: input.prompt ?? target.prompt,
+      cwd: input.cwd ?? target.cwd,
+      modelId: input.modelId ?? null,
+      thinkingLevel: input.thinkingLevel ?? null,
+      sessionPolicy: input.sessionPolicy ?? target.sessionPolicy,
+      reflection: input.reflection ?? target.reflection,
+      triggerKind: input.triggerKind ?? target.triggerKind,
+      trigger: input.trigger ?? target.trigger,
+      depJoin: input.depJoin ?? target.depJoin,
+      enabled: input.enabled ?? target.enabled,
+      promptVersion: promptChanged ? target.promptVersion + 1 : target.promptVersion,
+      nextDueAt: (input.triggerKind ?? target.triggerKind) === "schedule" ? Date.now() + 60 * 60_000 : null,
+    });
+    return target;
+  },
+  delete_task: (args) => {
+    const index = taskList.findIndex(task => task.id === args?.id);
+    if (index >= 0)
+      taskList.splice(index, 1);
+    return null;
+  },
+  set_task_enabled: (args) => {
+    const target = taskList.find(task => task.id === args?.id);
+    if (!target)
+      throw new Error("task not found");
+    target.enabled = !!args?.enabled;
+    if (target.enabled && target.triggerKind === "schedule")
+      target.nextDueAt = Date.now() + 60 * 60_000;
+    return target;
+  },
+  run_task_now: args => taskList.find(task => task.id === args?.id) ?? null,
+  list_task_runs: args => taskRuns[args?.id] ?? [],
+  list_task_deps: args => taskDeps[args?.id] ?? [],
+  list_task_revisions: args => taskRevisions[args?.id] ?? [],
+  apply_task_revision: (args) => {
+    const target = taskList.find(task => task.id === args?.id);
+    const revision = (taskRevisions[args?.id] ?? []).find(entry => entry.id === args?.revisionId);
+    if (!target || !revision)
+      throw new Error("revision not found");
+    target.prompt = revision.prompt;
+    target.promptVersion += 1;
+    return target;
+  },
 
   // ── Settings pages ─────────────────────────────────────────────────────
   clear_app_data: () => null,

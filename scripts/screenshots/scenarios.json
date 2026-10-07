@@ -661,6 +661,99 @@
             "shot": "d-skill-reco-card.png"
           }
         ]
+      },
+      "tasks-list": {
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('每周进展周报')) throw new Error('task list did not render'); if (!/周一.*周五/.test(t) && !/Mon.*Fri/.test(t)) throw new Error('the weekly trigger summary shows raw weekday codes'); if (/\\bmon\\b|\\bfri\\b/.test(t)) throw new Error('untranslated weekday codes are visible'); })()"
+          },
+          {
+            "shot": "d-tasks-list.png"
+          }
+        ]
+      },
+      "tasks-detail": {
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; ['提示词', '运行记录', '依赖', '提示词版本'].forEach(k => { if (!t.includes(k)) throw new Error('detail is missing ' + k); }); })()"
+          },
+          {
+            "shot": "d-tasks-detail.png"
+          }
+        ]
+      },
+      "tasks-editor": {
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "编辑"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('触发器')) throw new Error('editor is missing the trigger section'); if (!t.includes('完全权限')) throw new Error('the full-permission warning is not shown'); })()"
+          },
+          {
+            "shot": "d-tasks-editor.png"
+          },
+          {
+            "eval": "(() => { const labels = [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim()); ['保存', '取消'].forEach(k => { if (!labels.includes(k)) throw new Error('the editor is missing its ' + k + ' button'); }); })()"
+          },
+          {
+            "eval": "(() => { const scrollers = [...document.querySelectorAll('div,main,section')]   .filter(el => el.scrollHeight > el.clientHeight + 40 && /auto|scroll/.test(getComputedStyle(el).overflowY)); if (!scrollers.length) throw new Error('no scroll container'); const target = scrollers.sort((a, b) => b.scrollHeight - a.scrollHeight)[0]; target.scrollTop = target.scrollHeight; return target.scrollTop;})()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => { const labels = [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim()); ['保存', '取消'].forEach(k => { if (!labels.includes(k)) throw new Error('the editor is missing its ' + k + ' button'); }); })()"
+          },
+          {
+            "shot": "d-tasks-editor-actions.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",
@@ -668,7 +761,7 @@
   },
   "mobile": {
     "port": 8099,
-    "assetsPort": 7392,
+    "assetsPort": 7391,
     "url": "http://localhost:8099/",
     "settle": 600,
     "viewport": {
@@ -2141,6 +2234,117 @@
           },
           {
             "shot": "m-tabs-annotated.png"
+          }
+        ]
+      },
+      "settings-tasks": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('每周进展周报')) throw new Error('mobile task list did not render'); })()"
+          },
+          {
+            "shot": "m-settings-tasks.png"
+          }
+        ]
+      },
+      "settings-tasks-detail": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('提示词')) throw new Error('mobile detail is missing the prompt section'); })()"
+          },
+          {
+            "shot": "m-settings-tasks-detail.png"
+          }
+        ]
+      },
+      "settings-tasks-history": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => { const scrollers = [...document.querySelectorAll('div')].filter(el => el.scrollHeight > el.clientHeight + 40 && /auto|scroll/.test(getComputedStyle(el).overflowY)); if (!scrollers.length) throw new Error('no scroll container'); scrollers[scrollers.length - 1].scrollTop = scrollers[scrollers.length - 1].scrollHeight; })()"
+          },
+          {
+            "wait": 800
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; ['运行记录', '提示词版本'].forEach(k => { if (!t.includes(k)) throw new Error('scrolled view is missing ' + k); }); if (!t.includes('写入 reports/weekly-2026-10-05.md')) throw new Error('the run summary is missing'); })()"
+          },
+          {
+            "shot": "m-settings-tasks-history.png"
           }
         ]
       }
