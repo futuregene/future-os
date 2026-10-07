@@ -4,6 +4,7 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { listAvailableSkills } from "../../integrations/skills/skillsClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { ContextToolOption, MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
+import type { SessionMentionOption } from "./sessionMention";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUp, ChevronDown, Loader2, Paperclip, ShieldCheck, ShieldOff, ShieldQuestion, Square, TriangleAlert, X } from "lucide-react";
@@ -124,6 +125,12 @@ interface ComposerProps {
   textareaClassName?: string;
   workspaceId?: string | null;
   /**
+   * Conversations offered by the `#` menu, already ordered and with the current
+   * conversation excluded (see `sessionMentionOptions`). Omit/empty to disable
+   * the menu.
+   */
+  sessionMentions?: SessionMentionOption[];
+  /**
    * Identifies the conversation whose unsent input (text, mentions, attachments)
    * this composer holds. The draft is scoped to this key in sessionStorage, so
    * switching conversations never carries content across; undefined disables
@@ -159,6 +166,7 @@ function ComposerImpl({
   placeholder,
   textareaClassName,
   workspaceId,
+  sessionMentions,
   draftKey,
   onDragStateChange,
 }: ComposerProps) {
@@ -862,6 +870,7 @@ function ComposerImpl({
         workspaceId={workspaceId}
         skills={skills}
         contextTools={contextTools}
+        sessions={sessionMentions}
         // Locked while the recommender is being asked: the message about to be
         // sent must be the one that was evaluated, and a box that silently
         // ignores the send button reads as broken (the send button below spins

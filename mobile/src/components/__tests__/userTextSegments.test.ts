@@ -26,4 +26,22 @@ describe("splitUserTextSegments", () => {
     const text = "a * b # c 1. [x](not-a-link) [y](ftp://z)";
     expect(splitUserTextSegments(text)).toEqual([{ text, kind: "plain", key: 0 }]);
   });
+
+  test("recognizes a conversation reference and keeps its session id", () => {
+    expect(splitUserTextSegments("ask [Fix CI](futureos://session/s-1) about it")).toEqual([
+      { text: "ask ", kind: "plain", key: 0 },
+      { text: "Fix CI", kind: "session", href: "s-1", key: 4 },
+      { text: " about it", kind: "plain", key: 36 },
+    ]);
+  });
+
+  test("keeps a session reference and a file mention in source order", () => {
+    expect(splitUserTextSegments("[s](futureos://session/one)[f](./a.ts)").map(segment => [segment.kind, segment.text]))
+      .toEqual([["session", "s"], ["mention", "f"]]);
+  });
+
+  test("leaves a non-session futureos link literal", () => {
+    const text = "[x](futureos://run/1)";
+    expect(splitUserTextSegments(text)).toEqual([{ text, kind: "plain", key: 0 }]);
+  });
 });

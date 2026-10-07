@@ -467,6 +467,12 @@ export function ChatScreen() {
     (path: string) => void timelineActionsRef.current.openFile(path),
     [],
   );
+  // Tapping a `#` reference in a sent message opens that conversation, the same
+  // way picking one from the composer menu referenced it.
+  const handleTimelineSession = useCallback(
+    (sessionId: string) => void controls.selectSession(sessionId),
+    [controls],
+  );
   const handleTimelineRetry = useCallback(
     (item: TimelineItem) => timelineActionsRef.current.retry(item),
     [],
@@ -493,6 +499,7 @@ export function ChatScreen() {
           isLatestAssistant={item.id === latestAssistantId}
           onOpenAttachment={handleTimelineAttachment}
           onOpenFile={handleTimelineFile}
+          onOpenSession={handleTimelineSession}
           onRetry={handleTimelineRetry}
           onContinue={handleTimelineContinue}
           onFork={forkSupported ? handleTimelineFork : undefined}
@@ -508,6 +515,7 @@ export function ChatScreen() {
       handleTimelineFile,
       handleTimelineFork,
       handleTimelineRetry,
+      handleTimelineSession,
       latestAssistantId,
       onRowLayout,
     ],
