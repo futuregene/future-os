@@ -507,3 +507,283 @@ async fn read_final_assistant_text(session_id: &str) -> Result<String, String> {
         .unwrap_or_default()
         .to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use future_tasks::{new_task_id, DepJoin, DepOn, Reflection, Task, TaskDep, TriggerKind};
+    use tempfile::TempDir;
+
+    /// A store rooted at a throwaway directory (the real `future_home()` is
+    /// never touched by these tests).
+    fn store() -> (TempDir, Store) {
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        (dir, store)
+    }
+
+    fn task(name: &str) -> Task {
+        Task {
+            id: new_task_id(),
+            name: name.into(),
+            enabled: true,
+            prompt: "do the thing".into(),
+            prompt_version: 1,
+            cwd: "/tmp".into(),
+            model_id: None,
+            thinking_level: None,
+            session_policy: SessionPolicy::New,
+            thread_id: None,
+            trigger_kind: TriggerKind::Manual,
+            trigger_json: serde_json::json!({}),
+            dep_join: DepJoin::All,
+            next_due_at: None,
+            last_run_at: None,
+            pending_request_at: None,
+            pending_origin: None,
+            pending_actor: None,
+            reflection: Reflection::Ask,
+            created_at: 1,
+            updated_at: 1,
+            deleted_at: None,
+        }
+    }
+
+    fn scheduler() -> Task {
+        let mut t = task("scheduled");
+        t.trigger_kind = TriggerKind::Schedule;
+        t.trigger_json = serde_json::json!({"mode":"daily","time":"09:00"});
+        t.next_due_at = Some(1);
+        t
+    }
+
+    /// A schedule claim advances the schedule forward and leaves no pending
+    /// request behind, so the next tick does not run it again.
+    #[test]
+    fn claim_for_a_schedule_advances_next_due_and_clears_pending() {
+        let (_dir, store) = store();
+        let t = scheduler();
+        store.insert_task(&t).unwrap();
+
+        let (run, upstream) = claim(&store, &t).unwrap();
+        assert!(upstream.is_empty());
+        assert_eq!(run.kind, RunKind::Main);
+        assert_eq!(run.origin, RunOrigin::Schedule);
+        assert_eq!(run.status, RunStatus::Running);
+
+        let after = store.get_task(&t.id).unwrap().unwrap();
+        assert!(after.next_due_at.unwrap() > t.next_due_at.unwrap());
+        assert!(after.pending_request_at.is_none());
+    }
+
+    /// An explicit (manual/UI/CLI) claim consumes the pending request. It must
+    /// NOT touch `next_due_at`: pressing "run now" is not a scheduled slot.
+    #[test]
+    fn claim_for_a_pending_request_clears_pending_and_keeps_the_schedule() {
+        let (_dir, store) = store();
+        let mut t = scheduler();
+        t.pending_request_at = Some(1_000);
+        t.pending_origin = Some(RunOrigin::Cli);
+        t.pending_actor = Some("cli".into());
+        store.insert_task(&t).unwrap();
+
+        let (run, _) = claim(&store, &t).unwrap();
+        assert_eq!(run.kind, RunKind::Manual);
+        assert_eq!(run.origin, RunOrigin::Cli);
+        assert!(run.due_at.is_none());
+
+        let after = store.get_task(&t.id).unwrap().unwrap();
+        assert!(after.pending_request_at.is_none());
+        assert_eq!(after.next_due_at, t.next_due_at, "run-now is not a slot");
+    }
+
+    /// A manual run never consumes dependency marks — only a chain trigger may,
+    /// so pressing "run now" can't silently eat a pending dependency wakeup.
+    #[test]
+    fn a_manual_claim_does_not_consume_dependency_marks() {
+        let (_dir, store) = store();
+        let upstream = task("upstream");
+        let mut downstream = task("downstream");
+        downstream.pending_request_at = Some(1_000);
+        downstream.pending_origin = Some(RunOrigin::Ui);
+        store.insert_task(&upstream).unwrap();
+        store.insert_task(&downstream).unwrap();
+        store
+            .add_dep(&TaskDep {
+                task_id: downstream.id.clone(),
+                upstream_task_id: upstream.id.clone(),
+                on: DepOn::Success,
+            })
+            .unwrap();
+        store
+            .mark_dep_satisfied(&downstream.id, &upstream.id, "trn_done", 1)
+            .unwrap();
+
+        let (run, _) = claim(&store, &downstream).unwrap();
+        assert_eq!(run.kind, RunKind::Manual);
+        let state = store
+            .get_dep_state(&downstream.id, &upstream.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state.satisfied_run_id.as_deref(),
+            Some("trn_done"),
+            "a manual run must leave the dependency mark for the chain trigger"
+        );
+    }
+
+    /// A chain claim with every edge satisfied consumes them and carries the
+    /// upstream summaries into the envelope sources.
+    #[test]
+    fn a_chain_claim_consumes_marks_and_collects_upstream_sources() {
+        let (_dir, store) = store();
+        let upstream = task("upstream");
+        store.insert_task(&upstream).unwrap();
+        let upstream_run = store
+            .list_runs_for_task(&upstream.id, 1)
+            .unwrap()
+            .into_iter()
+            .next();
+        assert!(upstream_run.is_none());
+
+        // A finished upstream run is what a chain claim summarises.
+        let finished = future_tasks::TaskRun {
+            id: future_tasks::new_run_id(),
+            task_id: upstream.id.clone(),
+            kind: RunKind::Main,
+            origin: RunOrigin::Schedule,
+            actor: None,
+            due_at: Some(1),
+            status: RunStatus::Completed,
+            thread_id: None,
+            session_id: None,
+            run_id: None,
+            prompt_version: Some(1),
+            result_summary: Some("upstream landed".into()),
+            feedback: None,
+            feedback_note: None,
+            started_at: Some(1),
+            finished_at: Some(2),
+            error_message: None,
+        };
+        store.insert_run(&finished).unwrap();
+
+        let mut downstream = task("downstream");
+        downstream.pending_request_at = Some(1_000);
+        downstream.pending_origin = Some(RunOrigin::Chain);
+        downstream.pending_actor = Some(format!("task:{}", upstream.id));
+        store.insert_task(&downstream).unwrap();
+        store
+            .add_dep(&TaskDep {
+                task_id: downstream.id.clone(),
+                upstream_task_id: upstream.id.clone(),
+                on: DepOn::Success,
+            })
+            .unwrap();
+        store
+            .mark_dep_satisfied(&downstream.id, &upstream.id, &finished.id, 2)
+            .unwrap();
+
+        let (run, sources) = claim(&store, &downstream).unwrap();
+        assert_eq!(run.kind, RunKind::Chain);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].task_name, "upstream");
+        assert_eq!(
+            sources[0].result_summary.as_deref(),
+            Some("upstream landed")
+        );
+
+        let state = store
+            .get_dep_state(&downstream.id, &upstream.id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            state.satisfied_run_id.is_none(),
+            "a chain claim must consume the edge it acted on"
+        );
+    }
+
+    /// A dependency cycle fails the chain claim instead of running forever.
+    #[test]
+    fn a_cyclic_chain_claim_fails_instead_of_looping() {
+        let (_dir, store) = store();
+        let mut a = task("a");
+        a.pending_request_at = Some(1);
+        a.pending_origin = Some(RunOrigin::Chain);
+        let mut b = task("b");
+        b.pending_request_at = Some(1);
+        b.pending_origin = Some(RunOrigin::Chain);
+        store.insert_task(&a).unwrap();
+        store.insert_task(&b).unwrap();
+        store
+            .add_dep(&TaskDep {
+                task_id: b.id.clone(),
+                upstream_task_id: a.id.clone(),
+                on: DepOn::Success,
+            })
+            .unwrap();
+        store
+            .add_dep(&TaskDep {
+                task_id: a.id.clone(),
+                upstream_task_id: b.id.clone(),
+                on: DepOn::Success,
+            })
+            .unwrap();
+
+        let error = claim(&store, &a).unwrap_err();
+        assert!(error.contains("cycle"), "{error}");
+        let run = store
+            .list_runs_for_task(&a.id, 1)
+            .unwrap()
+            .into_iter()
+            .next()
+            .expect("the failed claim is recorded");
+        assert_eq!(run.status, RunStatus::Failed);
+        assert!(run.error_message.unwrap().contains("cycle"));
+    }
+
+    /// A finished run marks only the edges whose condition it satisfies.
+    #[test]
+    fn finishing_a_run_marks_only_matching_downstream_edges() {
+        use future_tasks::kernel::run_satisfies;
+
+        assert!(run_satisfies(DepOn::Completed, RunStatus::Completed));
+        assert!(run_satisfies(DepOn::Completed, RunStatus::Failed));
+        assert!(run_satisfies(DepOn::Success, RunStatus::Completed));
+        assert!(!run_satisfies(DepOn::Success, RunStatus::Failed));
+        assert!(run_satisfies(DepOn::Failure, RunStatus::Failed));
+        assert!(!run_satisfies(DepOn::Failure, RunStatus::Completed));
+        assert!(!run_satisfies(DepOn::Completed, RunStatus::Skipped));
+    }
+
+    /// Overlap: a task with a live run is not claimed again.
+    #[test]
+    fn a_running_run_blocks_another_claim() {
+        let (_dir, store) = store();
+        let t = task("busy");
+        store.insert_task(&t).unwrap();
+        assert!(!store.has_running_run(&t.id).unwrap());
+        store
+            .insert_run(&future_tasks::TaskRun {
+                id: future_tasks::new_run_id(),
+                task_id: t.id.clone(),
+                kind: RunKind::Main,
+                origin: RunOrigin::Schedule,
+                actor: None,
+                due_at: Some(1),
+                status: RunStatus::Running,
+                thread_id: None,
+                session_id: None,
+                run_id: None,
+                prompt_version: Some(1),
+                result_summary: None,
+                feedback: None,
+                feedback_note: None,
+                started_at: Some(1),
+                finished_at: None,
+                error_message: None,
+            })
+            .unwrap();
+        assert!(store.has_running_run(&t.id).unwrap());
+    }
+}
