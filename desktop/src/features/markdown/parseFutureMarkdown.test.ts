@@ -182,6 +182,8 @@ describe("parseFutureMarkdown", () => {
   });
 
   it("keeps raw HTML as safe text rather than renderable markup", () => {
+    // Non-whitelisted markup (a `<script>`) is never restructured; it is kept
+    // verbatim as inert text so it reads but can never run.
     const document = parseFutureMarkdown("<script>alert(1)</script>");
     const paragraph = document.nodes[0];
     expect(paragraph?.type).toBe("paragraph");

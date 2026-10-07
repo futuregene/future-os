@@ -115,7 +115,7 @@ function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined,
           : "text-sm font-semibold leading-6 text-ink";
       const children = renderInline(node.children, workspaceId, key);
       const Heading = `h${node.level}` as const;
-      return <Heading className={className} key={key}>{children}</Heading>;
+      return <Heading className={className} key={key} style={node.align ? { textAlign: node.align } : undefined}>{children}</Heading>;
     }
     case "list": {
       const Tag = node.ordered ? "ol" : "ul";
@@ -186,12 +186,15 @@ function renderBlock(node: MarkdownNode, workspaceId: string | null | undefined,
       );
     case "thematicBreak":
       return <hr className="border-line-soft" key={key} />;
-    default:
+    default: {
+      // `node` is narrowed to the paragraph variant here.
+      const align = node.align ? { textAlign: node.align } : undefined;
       return (
-        <p className="whitespace-pre-wrap" key={key}>
+        <p className="whitespace-pre-wrap" style={align} key={key}>
           {renderInline(node.children, workspaceId, key)}
         </p>
       );
+    }
   }
 }
 
@@ -216,7 +219,7 @@ function renderInline(nodes: InlineNode[], workspaceId: string | null | undefine
       case "link":
         return <SafeLink href={node.href} key={key}>{renderInline(node.children, workspaceId, key, true)}</SafeLink>;
       case "image":
-        return <MarkdownImage alt={node.alt} key={key} linked={linked} src={node.src} title={node.title} workspaceId={workspaceId} />;
+        return <MarkdownImage alt={node.alt} width={node.width} key={key} linked={linked} src={node.src} title={node.title} workspaceId={workspaceId} />;
       case "futureReference":
         return (
           <FutureReferenceChip key={key} reference={node.reference} workspaceId={workspaceId}>

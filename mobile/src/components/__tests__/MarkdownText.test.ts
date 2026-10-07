@@ -203,6 +203,19 @@ describe("MarkdownText layout and fidelity", () => {
     expect(sizes).toEqual([...sizes].sort((a, b) => b - a));
   });
 
+  test("a centered HTML block aligns its text and caps/centers a widthed image", () => {
+    const root = render('<p align="center">hello</p>\n\n<div align="center">\n<img src="https://example.com/a.png" width="120">\n</div>');
+    // The centered paragraph's text carries textAlign.
+    const hello = root.findAllByType(Text).find(
+      node => Array.isArray(node.props.children) && node.props.children[0] === "hello",
+    );
+    expect(StyleSheet.flatten(hello?.props.style)).toMatchObject({ textAlign: "center" });
+    // The widthed image is capped at 120 and centered within its block.
+    const image = root.findByType(Image);
+    const style = StyleSheet.flatten(image.props.style);
+    expect(style).toMatchObject({ width: "100%", maxWidth: 120, alignSelf: "center" });
+  });
+
   test("ordered markers retain start values and do not have a fixed clipping width", () => {
     const root = render("99. First\n100. Second\n\n- [x] done\n- [ ] todo");
     const markers = root.findAllByType(Text).filter(node => ["99.", "100."].includes(node.props.children));
