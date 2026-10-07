@@ -187,6 +187,13 @@ Relations:
   the final constraint under concurrent imports, and notifications, event
   stream reconnects, and low-frequency full reconciliation reuse the same
   get-or-create semantics.
+- A session is mirrored only once its journal holds a message. A client
+  announces a session when it *creates* it, before its first prompt exists, so
+  the announcement alone is not a conversation: mirroring that interval would
+  add an empty row (and the throw-away temp workspace it needs) to every list.
+  The low-frequency pass imports the session as soon as a message exists, and
+  the same rule sweeps rows that older builds stored for sessions that were
+  never prompted.
 - The Desktop's install-level `device_id` is the source of
   `session_created.creatorId`; it is independent of remote pairing and
   survives Debug Reset. `createdBy` only expresses the client category; a
