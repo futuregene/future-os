@@ -1,6 +1,6 @@
 import type { FutureMarkdownDocument, MarkdownNode } from "@future-os/markdown";
 import type { Root } from "mdast";
-import { parseFutureMarkdown, remarkAutolinkBoundary, remarkCjkEmphasis, remarkLatexMath, remarkMathFence } from "@future-os/markdown";
+import { parseFutureMarkdown, remarkAutolinkBoundary, remarkCjkEmphasis, remarkLatexMath, remarkMathFence, remarkUnclosedLink } from "@future-os/markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import remarkParse from "remark-parse";
@@ -9,8 +9,11 @@ import { unified } from "unified";
 // `remarkMathFence` must match `parseFutureMarkdown`'s processor: this tree
 // decides where blocks start and end, and the documents it produces are what
 // the renderer paints — a `$$…$$` block that swallowed the rest of the reply
-// here would be rendered from this tree even after the reply settles.
-const streamingMarkdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkMathFence).use(remarkGfm).use(remarkLatexMath).use(remarkCjkEmphasis).use(remarkAutolinkBoundary);
+// here would be rendered from this tree even after the reply settles. The same
+// holds for every other repair plugin (`remarkUnclosedLink`): the single-block
+// and independent-subtree paths hand this tree straight to `parseFutureMarkdown`,
+// so a repair missing here is a repair missing in the rendered document.
+const streamingMarkdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkMathFence).use(remarkGfm).use(remarkLatexMath).use(remarkCjkEmphasis).use(remarkAutolinkBoundary).use(remarkUnclosedLink);
 
 export interface StreamingMarkdownBlock {
   /** Stable source offset used as the renderer key while later text grows. */
