@@ -669,7 +669,7 @@
             "wait": 1200
           },
           {
-            "tap": "任务设置"
+            "tap": "任务"
           },
           {
             "wait": 900
@@ -689,7 +689,7 @@
             "wait": 1200
           },
           {
-            "tap": "任务设置"
+            "tap": "任务"
           },
           {
             "wait": 900
@@ -701,7 +701,7 @@
             "wait": 900
           },
           {
-            "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行记录')) throw new Error('the run history is not on the opened page'); if (!t.includes('提示词版本')) throw new Error('the version list is not on the opened page'); if (document.querySelector('dl')) throw new Error('a definition list is rendered while folded'); ['工作目录', '本周新增或改动', '全部上游到齐'].forEach(k => { if (t.includes(k)) throw new Error('the definition is not folded: ' + k + ' is visible'); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (!toggle) throw new Error('the settings disclosure is missing'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the settings start expanded'); })()"
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行记录')) throw new Error('the run history is not on the opened page'); if (!t.includes('提示词版本')) throw new Error('the version list is not on the opened page'); if (document.querySelector('dl')) throw new Error('a definition list is rendered while folded'); ['工作目录', '本周新增或改动', '全部到齐'].forEach(k => { if (t.includes(k)) throw new Error('the definition is not folded: ' + k + ' is visible'); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (!toggle) throw new Error('the settings disclosure is missing'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the settings start expanded'); const runs = [...document.querySelectorAll('h3')].find(h => (h.textContent || '').trim() === '运行记录'); if (!runs) throw new Error('the run history heading is missing'); if (toggle.compareDocumentPosition(runs) & Node.DOCUMENT_POSITION_PRECEDING) throw new Error('the settings fold is below the run history'); })()"
           },
           {
             "shot": "d-tasks-detail.png"
@@ -713,7 +713,7 @@
             "wait": 400
           },
           {
-            "eval": "(() => { const t = document.body.innerText; if (!document.querySelector('dl')) throw new Error('the unfolded definition has no settings list'); ['工作目录', '本周新增或改动', '全部上游到齐'].forEach(k => { if (!t.includes(k)) throw new Error('the unfolded definition is missing ' + k); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (toggle.getAttribute('aria-expanded') !== 'true') throw new Error('the disclosure did not report itself open'); })()"
+            "eval": "(() => { const t = document.body.innerText; if (!document.querySelector('dl')) throw new Error('the unfolded definition has no settings list'); ['工作目录', '本周新增或改动', '全部到齐'].forEach(k => { if (!t.includes(k)) throw new Error('the unfolded definition is missing ' + k); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (toggle.getAttribute('aria-expanded') !== 'true') throw new Error('the disclosure did not report itself open'); })()"
           },
           {
             "eval": "(() => { const scrollers = [...document.querySelectorAll('div,main,section')].filter(el => el.scrollHeight > el.clientHeight + 40 && /auto|scroll/.test(getComputedStyle(el).overflowY)); if (!scrollers.length) throw new Error('no scroll container'); const target = scrollers.sort((a, b) => b.scrollHeight - a.scrollHeight)[0]; target.scrollTop = target.scrollHeight; return target.scrollTop;})()"
@@ -736,7 +736,7 @@
             "wait": 1200
           },
           {
-            "tap": "任务设置"
+            "tap": "任务"
           },
           {
             "wait": 900
@@ -755,6 +755,15 @@
           },
           {
             "eval": "(() => { const t = document.body.innerText; if (!t.includes('触发器')) throw new Error('editor is missing the trigger section'); if (!t.includes('完全权限')) throw new Error('the full-permission warning is not shown'); })()"
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行后会话')) throw new Error('the editor has no conversation-retention field'); const select = [...document.querySelectorAll('select')].find(s => [...s.options].some(o => (o.textContent || '').trim() === '删除')); if (!select) throw new Error('the retention select has no delete option'); if (select.value !== 'keep') throw new Error('a stored task should default to keep, got ' + select.value); select.value = 'delete'; select.dispatchEvent(new Event('change', { bubbles: true })); return 'switched to delete'; })()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('删除它的会话')) throw new Error('the consequence of deleting the conversation is not stated'); })()"
           },
           {
             "eval": "(() => { const browse = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '浏览'); if (!browse) throw new Error('the working-directory row has no browse button'); const box = browse.getBoundingClientRect(); const panel = browse.closest('section').getBoundingClientRect(); if (box.right > panel.right + 1) throw new Error('the browse button runs past the panel edge: button ' + Math.round(box.right) + ' vs panel ' + Math.round(panel.right)); if (box.width < 56) throw new Error('the browse button is squeezed to ' + Math.round(box.width) + 'px'); const field = document.querySelector(\"input[aria-label='工作目录']\"); if (!field) throw new Error('a workspace conversation has no directory field'); const fieldBox = field.getBoundingClientRect(); if (fieldBox.right > box.left + 1) throw new Error('the field overlaps the button'); })()"
@@ -786,7 +795,7 @@
             "wait": 1200
           },
           {
-            "tap": "任务设置"
+            "tap": "任务"
           },
           {
             "wait": 900
@@ -848,7 +857,7 @@
             "wait": 1200
           },
           {
-            "tap": "任务设置"
+            "tap": "任务"
           },
           {
             "wait": 900

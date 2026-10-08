@@ -42,12 +42,16 @@ pub async fn task(command: Option<&str>, rest: &[String], out: &Output) -> Resul
 /// `future task output <run-id>` — the full answer a run gave.
 ///
 /// A run's ledger entry carries a truncated summary (the head and tail, 2000
-/// chars); this prints the conversation's actual last answer, which is what an
-/// agent reading an upstream result needs when the summary is not enough. The
-/// header names the run being read, because a task that reuses one conversation
-/// writes every run's answer into it — the *last* one is not necessarily the
-/// run that was asked for, and a reader who cannot tell would attribute the
-/// wrong answer to the wrong run.
+/// chars); this prints the whole answer, which is what an agent reading an
+/// upstream result needs when the summary is not enough.
+///
+/// The answer saved on the run wins whenever there is one: it *is* this run's
+/// answer, and it is still there after a task that deletes its conversations
+/// (or a user) has removed the conversation. Only a run recorded before the
+/// answer was stored falls back to reading the conversation's last text — and
+/// that path names the run being read, because a task that reuses one
+/// conversation writes every run's answer into it: the *last* one is not
+/// necessarily the run that was asked for.
 async fn output(args: &[String], out: &Output) -> Result<()> {
     let json_flag = args.iter().any(|a| a == "--json");
     let tail = flag_value(args, "--tail").and_then(|value| value.parse::<usize>().ok());
@@ -61,27 +65,42 @@ async fn output(args: &[String], out: &Output) -> Result<()> {
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("run not found: {run_id}"))?;
     let task = store.get_task(&run.task_id).map_err(|e| e.to_string())?;
-    let session_id = run.session_id.clone().ok_or_else(|| {
-        format!(
-            "run {run_id} has no conversation (it {}).",
-            run.error_message
-                .as_deref()
-                .unwrap_or("failed before prompting")
-        )
-    })?;
-    let newer = store
-        .list_runs_for_task(&run.task_id, 200)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter(|other| {
-            other.session_id.as_deref() == Some(session_id.as_str())
-                && other.started_at.unwrap_or(0) > run.started_at.unwrap_or(0)
-        })
-        .max_by_key(|other| other.started_at.unwrap_or(0));
-    let text = crate::rpc::RunClient::new(&crate::rpc::grpc_addr())
-        .last_assistant_text(&session_id)
-        .await
-        .map_err(|error| format!("could not read the run's conversation: {error}"))?;
+    let saved = store.run_output(run_id).map_err(|e| e.to_string())?;
+    let mut session_id = run.session_id.clone();
+    // Only read the conversation when the run has no saved answer: for anything
+    // recorded since the answer was stored on the run, the conversation cannot
+    // answer the question any better (and may be gone).
+    let (text, newer) = match &saved {
+        Some(text) => (text.clone(), None),
+        None => {
+            let live = session_id.clone().ok_or_else(|| {
+                format!(
+                    "run {run_id} has no answer and no conversation (it {}).",
+                    run.error_message
+                        .as_deref()
+                        .unwrap_or("failed before prompting")
+                )
+            })?;
+            let older = store
+                .list_runs_for_task(&run.task_id, 200)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .filter(|other| {
+                    other.session_id.as_deref() == Some(live.as_str())
+                        && other.started_at.unwrap_or(0) > run.started_at.unwrap_or(0)
+                })
+                .max_by_key(|other| other.started_at.unwrap_or(0));
+            let text = crate::rpc::RunClient::new(&crate::rpc::grpc_addr())
+                .last_assistant_text(&live)
+                .await
+                .map_err(|error| format!("could not read the run's conversation: {error}"))?;
+            (text, older)
+        }
+    };
+    // A run whose conversation was deleted has none left to name.
+    if run.session_deleted {
+        session_id = None;
+    }
 
     if json_flag {
         out.log(
@@ -92,9 +111,13 @@ async fn output(args: &[String], out: &Output) -> Result<()> {
                 "status": format!("{:?}", run.status).to_lowercase(),
                 "promptVersion": run.prompt_version,
                 "sessionId": session_id,
+                "sessionDeleted": run.session_deleted,
                 "finishedAt": run.finished_at,
                 "summary": run.result_summary,
                 "text": text,
+                // Where the text came from: the run's own saved answer, or the
+                // conversation (only for a run recorded before it was saved).
+                "source": if saved.is_some() { "run" } else { "conversation" },
                 "newerRunOnSameConversation": newer.as_ref().map(|other| other.id.clone()),
             }))
             .map_err(|e| e.to_string())?,
@@ -103,7 +126,7 @@ async fn output(args: &[String], out: &Output) -> Result<()> {
     }
 
     out.log(&format!(
-        "{} · run {} · {} · prompt v{} · session {}",
+        "{} · run {} · {} · prompt v{}{}",
         task.as_ref()
             .map(|t| t.name.as_str())
             .unwrap_or("(task gone)"),
@@ -112,8 +135,27 @@ async fn output(args: &[String], out: &Output) -> Result<()> {
         run.prompt_version
             .map(|v| v.to_string())
             .unwrap_or_else(|| "?".to_string()),
-        session_id
+        match &session_id {
+            Some(id) => format!(" · session {id}"),
+            None => String::new(),
+        }
     ));
+    if run.session_deleted {
+        // Say where this came from: the conversation is gone by design, and a
+        // reader who expected to find it needs to know the answer is the record.
+        let capped = text.chars().count() >= future_tasks::kernel::RUN_OUTPUT_CHARS;
+        out.log(&format!(
+            "note: this run's conversation was deleted after it settled; the answer below is the one saved on the run{}.",
+            if capped {
+                format!(
+                    " (capped at {} characters, head…tail)",
+                    future_tasks::kernel::RUN_OUTPUT_CHARS
+                )
+            } else {
+                String::new()
+            }
+        ));
+    }
     if let Some(other) = newer {
         out.log(&format!(
             "note: this conversation was used again by run {}; the text below is its latest answer.",
@@ -391,6 +433,7 @@ fn task_json(t: &Task, dep_count: usize) -> serde_json::Value {
         "nextDueAt": t.next_due_at,
         "queued": t.pending_request_at.is_some(),
         "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
+        "sessionRetention": format!("{:?}", t.session_retention).to_lowercase(),
         "conversationMode": format!("{:?}", t.conversation_mode).to_lowercase(),
     })
 }
@@ -431,6 +474,7 @@ fn list(args: &[String], out: &Output) -> Result<()> {
                     "nextDueAt": t.next_due_at,
                     "queued": t.pending_request_at.is_some(),
                     "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
+                    "sessionRetention": format!("{:?}", t.session_retention).to_lowercase(),
                     "conversationMode": format!("{:?}", t.conversation_mode).to_lowercase(),
                 })
             })
@@ -498,6 +542,7 @@ fn show(args: &[String], out: &Output) -> Result<()> {
             "modelId": t.model_id,
             "thinkingLevel": t.thinking_level,
             "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
+            "sessionRetention": format!("{:?}", t.session_retention).to_lowercase(),
             "conversationMode": format!("{:?}", t.conversation_mode).to_lowercase(),
             "triggerKind": format!("{:?}", t.trigger_kind).to_lowercase(),
             "trigger": t.trigger_json,
@@ -533,7 +578,14 @@ fn show(args: &[String], out: &Output) -> Result<()> {
     ));
     out.log(&format!(
         "  session:  {}",
-        format!("{:?}", t.session_policy).to_lowercase()
+        match (t.session_policy, t.session_retention) {
+            // The two settings answer one question ("which conversation, and for
+            // how long"), so they read as one line. `delete` with `existing` is
+            // not offered anywhere and behaves as keep — say what happens.
+            (future_tasks::SessionPolicy::New, future_tasks::SessionRetention::Delete) =>
+                "new per run, deleted after it".to_string(),
+            (policy, _) => format!("{:?}", policy).to_lowercase(),
+        }
     ));
     out.log(&format!(
         "  opens:    {}",
@@ -562,6 +614,7 @@ fn add(args: &[String], out: &Output) -> Result<()> {
     let mut model: Option<String> = None;
     let mut thinking: Option<String> = None;
     let mut session_policy = "new".to_string();
+    let mut session_retention = "keep".to_string();
     let mut conversation_mode = "workspace".to_string();
     let mut trigger_json = serde_json::json!({});
     let mut trigger_kind = future_tasks::TriggerKind::Manual;
@@ -627,6 +680,13 @@ fn add(args: &[String], out: &Output) -> Result<()> {
                     .get(i)
                     .cloned()
                     .ok_or_else(|| "--session requires a value".to_string())?;
+            }
+            "--session-retention" => {
+                i += 1;
+                session_retention = args
+                    .get(i)
+                    .cloned()
+                    .ok_or_else(|| "--session-retention requires a value".to_string())?;
             }
             "--conversation" => {
                 i += 1;
@@ -725,6 +785,23 @@ fn add(args: &[String], out: &Output) -> Result<()> {
         _ => return Err("--conversation must be workspace|chat".to_string()),
     };
 
+    let session_retention = match session_retention.as_str() {
+        "keep" => future_tasks::SessionRetention::Keep,
+        "delete" => future_tasks::SessionRetention::Delete,
+        _ => return Err("--session-retention must be keep|delete".to_string()),
+    };
+    // Deleting the conversation each run only means something when each run has
+    // its own: with `--session existing` the next run continues that one, so a
+    // delete would silently turn reuse into "start over every time".
+    if session_retention == future_tasks::SessionRetention::Delete
+        && session_policy != future_tasks::SessionPolicy::New
+    {
+        return Err(
+            "--session-retention delete needs --session new: a reused conversation is what the next run continues."
+                .to_string(),
+        );
+    }
+
     let now = now_ms();
     let specs = dep_specs(args)?;
     let next_due = compute_next_due(
@@ -738,6 +815,7 @@ fn add(args: &[String], out: &Output) -> Result<()> {
             model_id: model.clone(),
             thinking_level: thinking.clone(),
             session_policy,
+            session_retention,
             conversation_mode,
             thread_id: None,
             trigger_kind,
@@ -764,6 +842,7 @@ fn add(args: &[String], out: &Output) -> Result<()> {
         model_id: model,
         thinking_level: thinking,
         session_policy,
+        session_retention,
         conversation_mode,
         thread_id: None,
         trigger_kind,
@@ -876,6 +955,18 @@ fn edit(args: &[String], out: &Output) -> Result<()> {
             }
             "--thinking" => {
                 task.thinking_level = Some(value(i)?);
+                i += 1;
+            }
+            "--session-retention" => {
+                task.session_retention = match value(i)?.as_str() {
+                    "keep" => future_tasks::SessionRetention::Keep,
+                    "delete" => future_tasks::SessionRetention::Delete,
+                    other => {
+                        return Err(format!(
+                            "unknown --session-retention {other:?}: expected keep|delete"
+                        ));
+                    }
+                };
                 i += 1;
             }
             "--session" => {
@@ -2056,6 +2147,7 @@ mod tests {
                 started_at: Some(1),
                 finished_at: Some(2),
                 error_message: None,
+                session_deleted: false,
             })
             .unwrap();
 
@@ -2611,6 +2703,7 @@ mod tests {
             pending_request_at: None,
             pending_origin: None,
             pending_actor: None,
+            session_retention: future_tasks::SessionRetention::Keep,
             created_at: 1,
             updated_at: 1,
             deleted_at: None,
@@ -2773,6 +2866,7 @@ mod tests {
                 started_at: Some(1_700_000_000_000),
                 finished_at: Some(1_700_000_060_000),
                 error_message: None,
+                session_deleted: false,
             })
             .unwrap();
 
@@ -3015,6 +3109,7 @@ mod tests {
                 started_at: Some(started),
                 finished_at: Some(started + 1),
                 error_message: None,
+                session_deleted: false,
             })
             .unwrap();
 
@@ -3084,6 +3179,7 @@ mod tests {
                 started_at: Some(now_ms() + 60_000),
                 finished_at: Some(now_ms() + 60_001),
                 error_message: Some("agent unreachable".into()),
+                session_deleted: false,
             })
             .unwrap();
         let (out, captured) = Output::memory();
@@ -3122,6 +3218,7 @@ mod tests {
                 started_at: Some(1_700_000_000_000),
                 finished_at: Some(1_700_000_001_000),
                 error_message: Some("overlap".into()),
+                session_deleted: false,
             })
             .unwrap();
 
@@ -3209,6 +3306,7 @@ mod tests {
                 started_at: Some(started),
                 finished_at: Some(started + 1),
                 error_message: None,
+                session_deleted: false,
             })
             .unwrap();
 
@@ -3254,6 +3352,7 @@ mod tests {
                 started_at: Some(started),
                 finished_at: None,
                 error_message: None,
+                session_deleted: false,
             })
             .unwrap();
 
@@ -3336,6 +3435,7 @@ mod tests {
                 started_at: Some(1),
                 finished_at: Some(2),
                 error_message: None,
+                session_deleted: false,
             })
             .unwrap();
         let (out, _c) = Output::memory();
@@ -3461,6 +3561,97 @@ mod tests {
         );
     }
 
+    /// `--session-retention delete` is only meaningful for a task that opens a
+    /// conversation per run, so the contradictory combination is refused where
+    /// the user can still fix it rather than silently stored.
+    #[tokio::test]
+    async fn session_retention_delete_requires_a_new_conversation_per_run() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (out, _c) = Output::memory();
+        add(
+            &args(&[
+                "--name",
+                "ephemeral",
+                "--prompt",
+                "p",
+                "--cwd",
+                "/tmp",
+                "--session",
+                "new",
+                "--session-retention",
+                "delete",
+            ]),
+            &out,
+        )
+        .expect("a per-run conversation with delete is fine");
+
+        let store = open_store().unwrap();
+        let stored = find_task(&store, "ephemeral").unwrap();
+        assert_eq!(
+            stored.session_retention,
+            future_tasks::SessionRetention::Delete
+        );
+        // `show` says what will happen rather than making the reader join two
+        // settings in their head.
+        let (out, captured) = Output::memory();
+        show(&args(&["ephemeral"]), &out).unwrap();
+        let shown = text(captured.out);
+        assert!(shown.contains("new per run, deleted after it"), "{shown}");
+
+        // Reuse + delete is refused: the conversation is what the next run
+        // continues.
+        let (out, _c) = Output::memory();
+        let error = add(
+            &args(&[
+                "--name",
+                "contradiction",
+                "--prompt",
+                "p",
+                "--cwd",
+                "/tmp",
+                "--session",
+                "existing",
+                "--session-retention",
+                "delete",
+            ]),
+            &out,
+        )
+        .unwrap_err();
+        assert!(error.contains("needs --session new"), "{error}");
+
+        // …and so is a value nobody understands.
+        let (out, _c) = Output::memory();
+        let error = add(
+            &args(&[
+                "--name",
+                "typo",
+                "--prompt",
+                "p",
+                "--cwd",
+                "/tmp",
+                "--session-retention",
+                "sometimes",
+            ]),
+            &out,
+        )
+        .unwrap_err();
+        assert!(error.contains("keep|delete"), "{error}");
+
+        // `edit` carries the same setting.
+        let (out, _c) = Output::memory();
+        edit(&args(&["ephemeral", "--session-retention", "keep"]), &out).unwrap();
+        assert_eq!(
+            open_store()
+                .unwrap()
+                .find_task_by_name("ephemeral")
+                .unwrap()
+                .unwrap()
+                .session_retention,
+            future_tasks::SessionRetention::Keep
+        );
+    }
+
     /// `output` prints a run's full answer, and says which run the text belongs
     /// to — a reused conversation holds every run's answer, so an unlabelled
     /// text would be attributed to the wrong one.
@@ -3502,6 +3693,7 @@ mod tests {
                 started_at: Some(1_000),
                 finished_at: Some(2_000),
                 error_message: None,
+                session_deleted: false,
             })
             .unwrap();
 
@@ -3529,17 +3721,57 @@ mod tests {
         assert!(shown.trim_end().ends_with("second line"), "{shown}");
         assert!(!shown.contains("the whole answer"), "{shown}");
 
-        // A run with no conversation (it failed before prompting) is a message,
-        // not a panic, and the CLI does not call the agent for it.
+        // The answer saved on the run wins, and the conversation is not read at
+        // all — it may not even be there any more.
+        let store = open_store().unwrap();
+        store
+            .set_run_output("trn_read", "the saved answer")
+            .unwrap();
+        store
+            .mark_run_conversation_deleted("trn_read")
+            .expect("deleted");
+        let (out, captured) = Output::memory();
+        output(&args(&["trn_read"]), &out).await.unwrap();
+        let shown = text(captured.out);
+        assert!(shown.contains("the saved answer"), "{shown}");
+        assert!(
+            shown.contains("was deleted after it settled"),
+            "the reader is told where the answer comes from: {shown}"
+        );
+        assert!(
+            !shown.contains("session sess_1"),
+            "a deleted conversation is not named as if it were openable: {shown}"
+        );
+        assert_eq!(
+            agent.seen_of("get_last_assistant_text").len(),
+            2,
+            "a saved answer needs no agent round trip"
+        );
+
+        let (out, captured) = Output::memory();
+        output(&args(&["trn_read", "--json"]), &out).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert_eq!(parsed["text"], "the saved answer");
+        assert_eq!(parsed["source"], "run");
+        assert_eq!(parsed["sessionDeleted"], true);
+        assert!(parsed["sessionId"].is_null());
+
+        // A run with neither an answer nor a conversation (it failed before
+        // prompting) is a message, not a panic, and the CLI does not call the
+        // agent for it.
         let store = open_store().unwrap();
         let mut orphan = store.get_run("trn_read").unwrap().unwrap();
         orphan.id = "trn_orphan".to_string();
         orphan.session_id = None;
+        orphan.session_deleted = false;
         orphan.error_message = Some("agent unreachable".to_string());
         store.insert_run(&orphan).unwrap();
         let (out, _c) = Output::memory();
         let error = output(&args(&["trn_orphan"]), &out).await.unwrap_err();
-        assert!(error.contains("has no conversation"), "{error}");
+        assert!(
+            error.contains("has no answer and no conversation"),
+            "{error}"
+        );
         assert!(error.contains("agent unreachable"), "{error}");
         assert_eq!(agent.seen_of("get_last_assistant_text").len(), 2);
         let _ = home;

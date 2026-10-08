@@ -52,6 +52,7 @@ CREATE TABLE tasks (
   model_id         TEXT,                      -- provider/model；表单要求必选，CLI 可留空=用应用默认
   thinking_level   TEXT,                      -- off|minimal|low|medium|high|xhigh；表单要求必选
   session_policy   TEXT NOT NULL DEFAULT 'new',  -- new | existing
+  session_retention TEXT NOT NULL DEFAULT 'keep', -- keep | delete（见 §6.1；只对 new 生效）
   conversation_mode TEXT NOT NULL DEFAULT 'workspace',  -- workspace | chat（新任务的表单默认 chat）
   thread_id        TEXT,                      -- session_policy=existing 时的宿主会话绑定（懒建）
   trigger_kind     TEXT NOT NULL,             -- manual | schedule
@@ -94,7 +95,9 @@ CREATE TABLE task_runs (
   status         TEXT NOT NULL,               -- running|completed|failed|skipped
   thread_id      TEXT, session_id TEXT, run_id TEXT,
   prompt_version INTEGER,
-  result_summary TEXT,                        -- 截断到 2000 字符（head…tail）
+  result_summary TEXT,                        -- 截断到 2000 字符（head…tail）：列表与下游注入都读它
+  result_text    TEXT,                        -- 整段回答（16000 上限，head…tail）；不在共享列里，用 run_output 单独取
+  session_deleted INTEGER NOT NULL DEFAULT 0,  -- 会话已按 §6.1 删除（id 同时清空）
   feedback       TEXT, feedback_note TEXT,    -- good | bad + 备注
   started_at INTEGER, finished_at INTEGER, error_message TEXT,
   UNIQUE(task_id, due_at)                     -- NULL 互不冲突：manual/chain 不受约束
@@ -168,8 +171,11 @@ tick（30s，墙上时钟；`Run now` 写入 pending_request_at 后会把循环�
            3. 合成信封（`future_tasks_run_envelope_v1`：身份/run/trigger/settings 块 + 上游摘要预算 1200 + 索引保留 + 全文指针 → `Instruction:` → 完成契约）
            4. provision + run_prompt（permission="all"，sandbox tier="off"）
            5. 收尾：task_runs ← status/finished_at/result_summary
+                    + result_text（整段回答；先落盘，再谈删会话）
                     + 标记上游边（命中 on）
-           6. notify（host 决定：GUI 发事件 / headless 只写台账）
+           6. session_retention=delete 时删掉这次运行的会话，并记
+              session_deleted / 清 thread_id、session_id（删失败则保留，只记日志）
+           7. notify（host 决定：GUI 发事件 / headless 只写台账）
 ```
 
 **崩溃残留**：启动对账把 `status='running'` 且进程已死的 run 标 `failed("interrupted")`；链式等待在与上游收尾同一个 SQLite 事务里，进程死在中间不丢触发。

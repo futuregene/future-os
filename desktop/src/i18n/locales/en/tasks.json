@@ -96,6 +96,10 @@
     "sessionNew": "New conversation each run",
     "sessionExisting": "Reuse one conversation",
     "sessionExistingHint": "Each run continues that same conversation, so it can build on what earlier runs did. Nothing is compacted for you — compact it yourself if it gets long.",
+    "sessionRetention": "Conversation after the run",
+    "sessionRetentionKeep": "Keep",
+    "sessionRetentionDelete": "Delete",
+    "sessionRetentionHint": "Delete the run's conversation once it settles, success or failure. The run's status, summary and full output stay on the run, and a dependent task still receives the summary.",
     "trigger": "Trigger",
     "date": "Date",
     "time": "Time",
@@ -129,6 +133,7 @@
     "depJoin": "With several upstreams, run"
   },
   "runNoSummary": "No summary recorded.",
+  "runSessionDeleted": "This run's conversation was deleted as configured; the output is saved on the run (still readable with future task output).",
   "settings": "Settings",
   "colModel": "Model",
   "colThinking": "Thinking",

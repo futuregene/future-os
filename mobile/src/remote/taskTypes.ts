@@ -9,8 +9,12 @@ export interface RemoteTaskRun {
   origin: string;
   status: string;
   threadId?: string | null;
-  /** The conversation this run ran in (absent on an older desktop). */
+  /** The conversation this run ran in (absent on an older desktop, and
+   * cleared when the task deletes its conversations). */
   sessionId?: string | null;
+  /** The run's conversation was deleted after it settled (absent on an older
+   * desktop). */
+  sessionDeleted?: boolean;
   startedAt?: number | null;
   finishedAt?: number | null;
   promptVersion?: number | null;
@@ -38,6 +42,8 @@ export interface RemoteTaskDetail extends RemoteTaskRow {
   modelId?: string | null;
   thinkingLevel?: string | null;
   sessionPolicy: string;
+  /** `keep` (default) or `delete`; only meaningful with `sessionPolicy: "new"`. */
+  sessionRetention?: string;
   conversationMode?: string;
   depJoin: string;
 }

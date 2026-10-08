@@ -16,6 +16,8 @@ export interface TaskRunView {
   promptVersion: number | null;
   resultSummary: string | null;
   errorMessage: string | null;
+  /** This run's conversation was deleted after it settled. */
+  sessionDeleted: boolean;
 }
 
 export interface TaskView {
@@ -28,6 +30,8 @@ export interface TaskView {
   modelId: string | null;
   thinkingLevel: string | null;
   sessionPolicy: string;
+  /** `keep` (default) or `delete`; only meaningful with `sessionPolicy: "new"`. */
+  sessionRetention: string;
   conversationMode: string;
   triggerKind: string;
   trigger: Record<string, unknown>;
@@ -47,6 +51,7 @@ export interface TaskInput {
   modelId?: string | null;
   thinkingLevel?: string | null;
   sessionPolicy?: string;
+  sessionRetention?: string;
   conversationMode?: string;
   triggerKind?: string;
   trigger?: Record<string, unknown>;

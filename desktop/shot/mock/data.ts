@@ -815,6 +815,7 @@ export interface MockTask {
   modelId: string | null;
   thinkingLevel: string | null;
   sessionPolicy: string;
+  sessionRetention: string;
   conversationMode: string;
   triggerKind: string;
   trigger: Record<string, unknown>;
@@ -846,6 +847,7 @@ export const tasks: MockTask[] = [
     modelId: "future/deepseek-v4-pro",
     thinkingLevel: "high",
     sessionPolicy: "existing",
+    sessionRetention: "keep",
     conversationMode: "workspace",
     triggerKind: "schedule",
     trigger: { mode: "weekly", days: ["mon", "fri"], time: "10:00" },
@@ -883,6 +885,7 @@ export const tasks: MockTask[] = [
     modelId: null,
     thinkingLevel: null,
     sessionPolicy: "new",
+    sessionRetention: "keep",
     conversationMode: "workspace",
     triggerKind: "schedule",
     trigger: { mode: "interval", every_minutes: 720 },
@@ -920,6 +923,7 @@ export const tasks: MockTask[] = [
     modelId: null,
     thinkingLevel: "medium",
     sessionPolicy: "new",
+    sessionRetention: "keep",
     conversationMode: "workspace",
     triggerKind: "schedule",
     trigger: { mode: "monthly", day: 31, time: "09:00" },
@@ -943,6 +947,7 @@ export const tasks: MockTask[] = [
     modelId: null,
     thinkingLevel: "low",
     sessionPolicy: "new",
+    sessionRetention: "keep",
     conversationMode: "workspace",
     triggerKind: "manual",
     trigger: {},

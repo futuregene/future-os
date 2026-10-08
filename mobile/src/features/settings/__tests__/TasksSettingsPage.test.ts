@@ -129,6 +129,15 @@ async function openTask() {
   await act(async () => settingsToggle().props.onPress());
 }
 
+/**
+ * The form's session-retention chips, or `undefined` when the choice is not
+ * offered (which is the point of the test that uses this). `chip()` below
+ * asserts presence instead.
+ */
+const retentionChip = (label: string) => tree.root
+  .findAll(node => node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function")
+  .find(node => node.findAllByType(Text).map(text => text.props.children).flat().includes(label));
+
 /** Let the resource's promise settle before asserting on the rendered rows. */
 async function flush() { await act(async () => { await Promise.resolve(); }); }
 
@@ -832,6 +841,64 @@ test("the detail opens on the run history, with the form folded", async () => {
   await act(async () => settingsToggle().props.onPress());
   expect(tree.root.findAllByType(TextInput).length).toBeGreaterThan(0);
   expect(texts()).toContain("tasks.form.name");
+});
+
+// The way into the settings sits above the history: with many runs behind it,
+// a fold at the bottom would be a long scroll away (and the page opens on what
+// the task did anyway).
+test("the settings fold is above the run history", async () => {
+  runs = [{ id: "trn_2", kind: "main", origin: "schedule", status: "completed", threadId: null, startedAt: 3, finishedAt: 4, resultSummary: "the newer run", errorMessage: null }];
+  await remount();
+  await act(async () => firstTask().props.onPress());
+
+  // Render order, straight from the tree: the fold's label is a Text inside a
+  // Pressable, the section heading is a Text of its own.
+  const labels = tree.root.findAllByType(Text)
+    .map(node => node.props.children)
+    .flat()
+    .filter(child => typeof child === "string");
+  const fold = labels.findIndex(text => (text as string).includes("tasks.settings"));
+  const heading = labels.indexOf("tasks.runs");
+  expect(fold).toBeGreaterThanOrEqual(0);
+  expect(heading).toBeGreaterThanOrEqual(0);
+  // The fold is above the history, so a task with many runs never buries it.
+  expect(`${fold} < ${heading}`).toBeTruthy();
+  expect(fold).toBeLessThan(heading);
+});
+
+// Deleting the run's conversation is offered only where it means something: a
+// conversation opened per run. A reused one is what the next run continues.
+test("offers the delete-after-run choice only for a per-run conversation", async () => {
+  await openTask();
+  // A per-run task (the default) offers it; a reused conversation has nothing
+  // to delete, so the choice is not rendered at all.
+  expect(retentionChip("tasks.form.sessionRetentionDelete")).toBeDefined();
+
+  await act(async () => chip("tasks.form.sessionExisting").props.onPress());
+  expect(retentionChip("tasks.form.sessionRetentionDelete")).toBeUndefined();
+
+  await act(async () => chip("tasks.form.sessionNew").props.onPress());
+  await act(async () => retentionChip("tasks.form.sessionRetentionDelete")!.props.onPress());
+  // The consequence is stated where the choice is made.
+  expect(texts()).toContain("tasks.form.sessionRetentionHint");
+
+  await act(async () => button("tasks.form.save").props.onPress());
+  expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({
+    sessionPolicy: "new",
+    sessionRetention: "delete",
+  }));
+});
+
+// The run keeps its output; the conversation is the part that went away.
+test("says when a run's conversation was deleted, and hides its open link", async () => {
+  runs = [{ id: "trn_2", kind: "main", origin: "schedule", status: "completed", threadId: null, sessionId: null, sessionDeleted: true, startedAt: 3, finishedAt: 4, resultSummary: "the saved answer", errorMessage: null }];
+  await remount({ onOpenConversation: () => {} });
+  await act(async () => firstTask().props.onPress());
+
+  const shown = texts();
+  expect(shown).toContain("the saved answer");
+  expect(shown).toContain("tasks.runSessionDeleted");
+  expect(shown).not.toContain("tasks.openConversation");
 });
 
 test("opens a run's conversation", async () => {

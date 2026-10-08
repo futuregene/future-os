@@ -69,6 +69,7 @@ const emptyDraft = {
   modelId: "",
   thinkingLevel: "",
   sessionPolicy: "new",
+  sessionRetention: "keep",
   conversationMode: "chat",
   enabled: true,
   trigger: { ...emptyTrigger },
@@ -234,6 +235,7 @@ export function TasksView({
       modelId: task.modelId ?? "",
       thinkingLevel: task.thinkingLevel ?? "",
       sessionPolicy: task.sessionPolicy,
+      sessionRetention: task.sessionRetention,
       conversationMode: task.conversationMode,
       enabled: task.enabled,
       trigger: triggerFromTask(task),
@@ -255,6 +257,9 @@ export function TasksView({
       modelId: draft.modelId || null,
       thinkingLevel: draft.thinkingLevel || null,
       sessionPolicy: draft.sessionPolicy,
+      // Only a per-run conversation can be deleted, so the form never sends the
+      // combination that means nothing (see `parse_session_retention`).
+      sessionRetention: draft.sessionPolicy === "new" ? draft.sessionRetention : "keep",
       conversationMode: draft.conversationMode,
       triggerKind: kind,
       trigger,
@@ -551,9 +556,26 @@ function TaskForm({
             <option value="existing">{t("form.sessionExisting")}</option>
           </Select>
         </label>
+        {/* Only a conversation that is opened per run can be thrown away after
+            it: deleting a reused one would delete what the next run continues,
+            so the choice is not offered there. */}
+        {draft.sessionPolicy === "new"
+          ? (
+              <label className="block space-y-1.5">
+                <span className="text-xs text-ink-soft">{t("form.sessionRetention")}</span>
+                <Select value={draft.sessionRetention} onChange={e => onChange({ sessionRetention: e.target.value })}>
+                  <option value="keep">{t("form.sessionRetentionKeep")}</option>
+                  <option value="delete">{t("form.sessionRetentionDelete")}</option>
+                </Select>
+              </label>
+            )
+          : null}
       </div>
       {draft.sessionPolicy === "existing"
         ? <p className="text-xs text-ink-muted">{t("form.sessionExistingHint")}</p>
+        : null}
+      {draft.sessionPolicy === "new" && draft.sessionRetention === "delete"
+        ? <p className="text-xs text-ink-muted">{t("form.sessionRetentionHint")}</p>
         : null}
 
       <fieldset className="space-y-3 rounded-md border border-line-soft p-3">
@@ -855,6 +877,96 @@ function TaskDetail({
         </Button>
       </div>
 
+      {/* The way into the definition sits above the history, not below it: a
+          task that has run many times would otherwise push a one-line control
+          far out of reach. The definition itself is still folded — you come
+          here to see what happened, and the form is one click away. */}
+      <section className="space-y-2">
+        <button
+          aria-expanded={settingsOpen}
+          className="flex w-full cursor-pointer items-center gap-1.5 pl-3.5 text-left text-xs font-medium text-ink-soft hover:text-ink"
+          onClick={() => setSettingsOpen(open => !open)}
+          type="button"
+        >
+          {settingsOpen
+            ? <ChevronDown className="size-3.5" />
+            : <ChevronRight className="size-3.5" />}
+          {t("settings")}
+        </button>
+        {settingsOpen
+          ? (
+              <div className="space-y-6 pt-1">
+                <section className="space-y-2">
+                  {/* The disclosure button above *is* this block's heading;
+                      repeating it here would read as a second, nested
+                      "Settings". */}
+                  <dl className="grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)] gap-x-4 gap-y-2.5 rounded-md border border-line-soft bg-surface-subtle px-3.5 py-3.5 text-xs">
+                    {[
+                      // What the run will actually be: the model and thinking level are
+                      // per-task, so a detail page that omits them cannot answer "what
+                      // does this run on?".
+                      [t("colModel"), task.modelId ?? t("modelDefault")],
+                      [t("colThinking"), task.thinkingLevel ? t(`agent:composer.thinkingLevelLabels.${task.thinkingLevel}`) : t("thinkingDefault")],
+                      // A chat task may name no directory at all: it runs in its own
+                      // conversation's workspace, and an empty row would read as "missing".
+                      [t("colCwd"), task.cwd.trim() || (task.conversationMode === "chat" ? t("cwdChatWorkspace") : "—")],
+                      [t("colConversation"), t(task.conversationMode === "chat" ? "form.conversationChat" : "form.conversationWorkspace")],
+                      [t("form.session"), t(task.sessionPolicy === "existing" ? "form.sessionExisting" : "form.sessionNew")],
+                      [
+                        t("form.sessionRetention"),
+                        t(task.sessionPolicy === "new" && task.sessionRetention === "delete"
+                          ? "form.sessionRetentionDelete"
+                          : "form.sessionRetentionKeep"),
+                      ],
+                    ].map(([label, value]) => (
+                      <Fragment key={label}>
+                        <dt className="text-ink-soft">{label}</dt>
+                        <dd className="min-w-0 wrap-break-word text-ink">{value}</dd>
+                      </Fragment>
+                    ))}
+                  </dl>
+                </section>
+
+                <section className="space-y-2">
+                  <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("prompt")}</h3>
+                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-line-soft bg-surface-subtle px-3.5 py-3.5 text-xs leading-relaxed text-ink">
+                    {task.prompt}
+                  </pre>
+                  <p className="pl-3.5 text-xs text-ink-muted">
+                    {t("promptVersion", { version: task.promptVersion })}
+                  </p>
+                </section>
+
+                <section className="space-y-2">
+                  <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("deps")}</h3>
+                  {deps.length === 0
+                    ? <p className="pl-3.5 text-xs text-ink-muted">{t("depsNone")}</p>
+                    : (
+                        <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
+                          {deps.map(dep => (
+                            <li key={dep.upstreamTaskId} className="space-y-1 px-3.5 py-3">
+                              <div className="flex items-center gap-2 text-xs">
+                                <span className="min-w-0 flex-1 truncate text-ink">{dep.upstreamName}</span>
+                                <span className={dep.satisfied ? "text-accent" : "text-ink-muted"}>
+                                  {dep.satisfied ? t("depsReady") : t("depsWaiting")}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-ink-muted">
+                                {t(`on.${dep.on}`)}
+                                {" · "}
+                                {t(`join.${task.depJoin}`)}
+                              </p>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                </section>
+
+              </div>
+            )
+          : null}
+      </section>
+
       <section className="space-y-3">
         <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("runs")}</h3>
         {runs.length === 0
@@ -896,6 +1008,12 @@ function TaskDetail({
                       <p className="text-xs leading-relaxed text-ink-soft">
                         {run.errorMessage ?? run.resultSummary ?? t("runNoSummary")}
                       </p>
+                      {/* The run's conversation is gone by design: say so, so the
+                          missing "open conversation" reads as intended rather
+                          than broken, and point at where the output is. */}
+                      {run.sessionDeleted
+                        ? <p className="text-[11px] text-ink-muted">{t("runSessionDeleted")}</p>
+                        : null}
                     </div>
                   </li>
                 ))}
@@ -950,88 +1068,6 @@ function TaskDetail({
             )}
       </section>
 
-      {/* The definition is what the page is *not* opened for: you come here to
-          see what happened. It stays one click away instead of pushing the run
-          history off the first screen. */}
-      <section className="space-y-2">
-        <button
-          aria-expanded={settingsOpen}
-          className="flex w-full cursor-pointer items-center gap-1.5 pl-3.5 text-left text-xs font-medium text-ink-soft hover:text-ink"
-          onClick={() => setSettingsOpen(open => !open)}
-          type="button"
-        >
-          {settingsOpen
-            ? <ChevronDown className="size-3.5" />
-            : <ChevronRight className="size-3.5" />}
-          {t("settings")}
-        </button>
-        {settingsOpen
-          ? (
-              <div className="space-y-6 pt-1">
-                <section className="space-y-2">
-                  {/* The disclosure button above *is* this block's heading;
-                      repeating it here would read as a second, nested
-                      "Settings". */}
-                  <dl className="grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)] gap-x-4 gap-y-2.5 rounded-md border border-line-soft bg-surface-subtle px-3.5 py-3.5 text-xs">
-                    {[
-                      // What the run will actually be: the model and thinking level are
-                      // per-task, so a detail page that omits them cannot answer "what
-                      // does this run on?".
-                      [t("colModel"), task.modelId ?? t("modelDefault")],
-                      [t("colThinking"), task.thinkingLevel ? t(`agent:composer.thinkingLevelLabels.${task.thinkingLevel}`) : t("thinkingDefault")],
-                      // A chat task may name no directory at all: it runs in its own
-                      // conversation's workspace, and an empty row would read as "missing".
-                      [t("colCwd"), task.cwd.trim() || (task.conversationMode === "chat" ? t("cwdChatWorkspace") : "—")],
-                      [t("colConversation"), t(task.conversationMode === "chat" ? "form.conversationChat" : "form.conversationWorkspace")],
-                      [t("form.session"), t(task.sessionPolicy === "existing" ? "form.sessionExisting" : "form.sessionNew")],
-                    ].map(([label, value]) => (
-                      <Fragment key={label}>
-                        <dt className="text-ink-soft">{label}</dt>
-                        <dd className="min-w-0 wrap-break-word text-ink">{value}</dd>
-                      </Fragment>
-                    ))}
-                  </dl>
-                </section>
-
-                <section className="space-y-2">
-                  <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("prompt")}</h3>
-                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-line-soft bg-surface-subtle px-3.5 py-3.5 text-xs leading-relaxed text-ink">
-                    {task.prompt}
-                  </pre>
-                  <p className="pl-3.5 text-xs text-ink-muted">
-                    {t("promptVersion", { version: task.promptVersion })}
-                  </p>
-                </section>
-
-                <section className="space-y-2">
-                  <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("deps")}</h3>
-                  {deps.length === 0
-                    ? <p className="pl-3.5 text-xs text-ink-muted">{t("depsNone")}</p>
-                    : (
-                        <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
-                          {deps.map(dep => (
-                            <li key={dep.upstreamTaskId} className="space-y-1 px-3.5 py-3">
-                              <div className="flex items-center gap-2 text-xs">
-                                <span className="min-w-0 flex-1 truncate text-ink">{dep.upstreamName}</span>
-                                <span className={dep.satisfied ? "text-accent" : "text-ink-muted"}>
-                                  {dep.satisfied ? t("depsReady") : t("depsWaiting")}
-                                </span>
-                              </div>
-                              <p className="text-[11px] text-ink-muted">
-                                {t(`on.${dep.on}`)}
-                                {" · "}
-                                {t(`join.${task.depJoin}`)}
-                              </p>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                </section>
-
-              </div>
-            )
-          : null}
-      </section>
     </div>
   );
 }

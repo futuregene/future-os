@@ -4,7 +4,8 @@
 //! manage tasks; execution stays in `crate::tasks`'s tick loop.
 
 use future_tasks::{
-    ConversationMode, DepJoin, DepOn, RunOrigin, SessionPolicy, Store, Task, TriggerKind,
+    ConversationMode, DepJoin, DepOn, RunOrigin, SessionPolicy, SessionRetention, Store, Task,
+    TriggerKind,
 };
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +44,9 @@ pub struct TaskView {
     pub model_id: Option<String>,
     pub thinking_level: Option<String>,
     pub session_policy: String,
+    /// `keep` (default) or `delete`; see [`SessionRetention`]. Only meaningful
+    /// with `session_policy = new`, and the clients only offer it there.
+    pub session_retention: String,
     pub conversation_mode: String,
     pub trigger_kind: String,
     pub trigger: serde_json::Value,
@@ -72,6 +76,9 @@ pub struct RunView {
     pub prompt_version: Option<i64>,
     pub result_summary: Option<String>,
     pub error_message: Option<String>,
+    /// The conversation this run used was deleted after it settled, so the
+    /// panel shows the run without an "open conversation" link and says why.
+    pub session_deleted: bool,
 }
 
 fn run_view(run: future_tasks::TaskRun) -> RunView {
@@ -88,6 +95,7 @@ fn run_view(run: future_tasks::TaskRun) -> RunView {
         prompt_version: run.prompt_version,
         result_summary: run.result_summary,
         error_message: run.error_message,
+        session_deleted: run.session_deleted,
     }
 }
 
@@ -113,6 +121,7 @@ fn task_view(store: &Store, task: Task) -> TaskView {
         model_id: task.model_id,
         thinking_level: task.thinking_level,
         session_policy: format!("{:?}", task.session_policy).to_lowercase(),
+        session_retention: format!("{:?}", task.session_retention).to_lowercase(),
         conversation_mode: format!("{:?}", task.conversation_mode).to_lowercase(),
         trigger_kind: format!("{:?}", task.trigger_kind).to_lowercase(),
         trigger: task.trigger_json,
@@ -139,6 +148,8 @@ pub struct TaskInput {
     #[serde(default)]
     pub conversation_mode: Option<String>,
     #[serde(default)]
+    pub session_retention: Option<String>,
+    #[serde(default)]
     pub trigger_kind: Option<String>,
     #[serde(default)]
     pub trigger: Option<serde_json::Value>,
@@ -159,6 +170,18 @@ fn parse_session_policy(raw: Option<&str>) -> SessionPolicy {
     match raw {
         Some("existing") => SessionPolicy::Existing,
         _ => SessionPolicy::New,
+    }
+}
+
+/// `delete` is only meaningful for a task that opens a conversation per run, so
+/// the combination is normalized here rather than stored: what the user asked
+/// for survives in the column, and `kernel::deletes_run_conversation` decides
+/// what actually happens. A client that offers the choice only for `new` never
+/// produces the other combination anyway.
+fn parse_session_retention(raw: Option<&str>, policy: SessionPolicy) -> SessionRetention {
+    match (raw, policy) {
+        (Some("delete"), SessionPolicy::New) => SessionRetention::Delete,
+        _ => SessionRetention::Keep,
     }
 }
 
@@ -201,6 +224,10 @@ pub fn create_task(input: TaskInput) -> Result<TaskView, crate::AppError> {
         model_id: input.model_id,
         thinking_level: input.thinking_level,
         session_policy: parse_session_policy(input.session_policy.as_deref()),
+        session_retention: parse_session_retention(
+            input.session_retention.as_deref(),
+            parse_session_policy(input.session_policy.as_deref()),
+        ),
         conversation_mode: parse_conversation_mode(input.conversation_mode.as_deref()),
         thread_id: None,
         trigger_kind,
@@ -258,6 +285,8 @@ pub fn update_task(id: String, input: TaskInput) -> Result<TaskView, crate::AppE
     task.model_id = input.model_id;
     task.thinking_level = input.thinking_level;
     task.session_policy = parse_session_policy(input.session_policy.as_deref());
+    task.session_retention =
+        parse_session_retention(input.session_retention.as_deref(), task.session_policy);
     task.conversation_mode = parse_conversation_mode(input.conversation_mode.as_deref());
     task.trigger_kind = trigger_kind;
     task.trigger_json = trigger;
@@ -512,6 +541,7 @@ mod tests {
             thinking_level: Some("high".into()),
             session_policy: Some("existing".into()),
             conversation_mode: Some("chat".into()),
+            session_retention: None,
             trigger_kind: Some("schedule".into()),
             trigger: Some(serde_json::json!({"mode": "daily", "time": "09:00"})),
             dep_join: Some("any".into()),
@@ -933,6 +963,7 @@ mod tests {
                 started_at: Some(1),
                 finished_at: Some(2),
                 error_message: Some("agent unreachable".into()),
+                session_deleted: false,
             })
             .expect("insert run");
 

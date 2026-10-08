@@ -22,6 +22,11 @@ pub const MIN_SNIPPET_CHARS: usize = 12;
 pub const LEGACY_PROPOSED_STATUS: &str = "proposed";
 /// Stored `result_summary` cap (head…tail).
 pub const RESULT_SUMMARY_CHARS: usize = 2_000;
+/// Cap on the answer saved alongside a run (`task_runs.result_text`). The
+/// summary above is what lists and downstream runs read; this is the whole
+/// answer, kept so a run stays readable after its conversation is gone —
+/// head…tail, and large enough for a report rather than a paragraph.
+pub const RUN_OUTPUT_CHARS: usize = 16_000;
 /// Maximum chain depth when cycle-checking (defense in depth).
 pub const MAX_DEP_DEPTH: usize = 32;
 
@@ -226,6 +231,20 @@ fn next_calendar_time(
     let days = if after.time() >= time { 1 } else { 0 };
     let date = after.date_naive() + Duration::days(days);
     Local.from_local_datetime(&date.and_time(time)).earliest()
+}
+
+// ─── session retention ────────────────────────────────────────────────────
+
+/// Whether the conversation a run used should be deleted once the run settles.
+///
+/// Pure, and the single place the combination is decided: the setting only
+/// means something for a task that opens a conversation per run, so
+/// `existing` + `delete` (which a hand-edited database or an older client could
+/// produce) reads as `keep` rather than deleting the conversation the next run
+/// is supposed to continue.
+pub fn deletes_run_conversation(task: &Task) -> bool {
+    task.session_retention == crate::types::SessionRetention::Delete
+        && task.session_policy == crate::types::SessionPolicy::New
 }
 
 // ─── join claim ───────────────────────────────────────────────────────────
@@ -588,7 +607,7 @@ pub fn compose_run_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{DepOn, RunStatus, SessionPolicy, Task, TriggerKind};
+    use crate::types::{DepOn, RunStatus, SessionPolicy, SessionRetention, Task, TriggerKind};
     use chrono::{Local, NaiveDate, TimeZone, Timelike};
 
     fn task(trigger: serde_json::Value, kind: TriggerKind) -> Task {
@@ -611,6 +630,7 @@ mod tests {
             pending_request_at: None,
             pending_origin: None,
             pending_actor: None,
+            session_retention: SessionRetention::Keep,
             created_at: 0,
             updated_at: 0,
             deleted_at: None,
@@ -1277,6 +1297,28 @@ mod tests {
         assert_eq!(rows[0].version, 3, "the version being replaced");
         assert_eq!(rows[0].prompt, "third");
         assert_eq!(rows[1].version, 4);
+    }
+
+    /// Deleting the conversation is only meaningful for a task that opens one
+    /// per run. The combination a hand-edited database or an older client could
+    /// produce (reuse + delete) must not delete the conversation the next run is
+    /// supposed to continue.
+    #[test]
+    fn only_a_per_run_conversation_is_deleted_after_the_run() {
+        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
+
+        t.session_policy = SessionPolicy::New;
+        t.session_retention = SessionRetention::Keep;
+        assert!(!deletes_run_conversation(&t), "the default keeps it");
+
+        t.session_retention = SessionRetention::Delete;
+        assert!(deletes_run_conversation(&t));
+
+        t.session_policy = SessionPolicy::Existing;
+        assert!(
+            !deletes_run_conversation(&t),
+            "a reused conversation is what the next run continues"
+        );
     }
 
     /// A version row that is not `active`/`superseded` (a suggestion recorded by

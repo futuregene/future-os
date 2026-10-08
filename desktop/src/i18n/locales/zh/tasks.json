@@ -96,6 +96,10 @@
     "sessionNew": "每次新建会话",
     "sessionExisting": "复用同一会话",
     "sessionExistingHint": "每次运行都接着同一条会话，可以沿用之前几轮的结果。不会自动压缩；上下文变长时请自行压缩。",
+    "sessionRetention": "运行后会话",
+    "sessionRetentionKeep": "保留",
+    "sessionRetentionDelete": "删除",
+    "sessionRetentionHint": "每次运行结束后删除它的会话（成功或失败都一样）。运行的状态、摘要与完整输出仍保留在运行记录里，后续依赖的任务也照常拿到摘要。",
     "trigger": "触发器",
     "date": "日期",
     "time": "时间",
@@ -129,6 +133,7 @@
     "depJoin": "多个上游的到达条件"
   },
   "runNoSummary": "本次没有记录摘要。",
+  "runSessionDeleted": "这次运行的会话已按设置删除；输出保存在运行记录里（仍可用 future task output 查看）。",
   "settings": "设置",
   "colModel": "模型",
   "colThinking": "思考等级",
