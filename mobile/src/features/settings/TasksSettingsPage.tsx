@@ -3,7 +3,8 @@ import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/Button";
 import { useRemoteControls } from "../../remote/RemoteContext";
-import type { RemoteModel } from "../../remote/types";
+import type { DesktopSettings, RemoteModel } from "../../remote/types";
+import { modelReference } from "../../remote/types";
 import type { RemoteTaskDep, RemoteTaskDetail, RemoteTaskRevision, RemoteTaskRow, RemoteTaskRun } from "../../remote/taskTypes";
 import { colors, layout, radius, spacing } from "../../theme/tokens";
 import { ResourceStatus, SettingsField, SettingsSection, settingsStyles } from "./SettingsPrimitives";
@@ -100,19 +101,24 @@ function draftFrom(detail: RemoteTaskDetail): Draft {
 }
 
 /**
- * A blank draft for a new task. The working directory starts on the desktop's
- * first workspace rather than empty: a task with no directory cannot run, and
- * the phone cannot browse the desktop's filesystem to pick one.
+ * A blank draft for a new task.
+ *
+ * It leaves the model and the thinking level unset on purpose: both are
+ * spending decisions the user makes, so the form asks instead of inheriting an
+ * app default nobody chose. The conversation type starts on chat, which needs
+ * no working directory at all (the phone cannot browse the desktop's
+ * filesystem, and a chat conversation brings its own workspace); switching to
+ * a workspace conversation is what asks for a path.
  */
-function newDraft(firstWorkspacePath: string): Draft {
+function newDraft(): Draft {
   return {
     name: "",
     prompt: "",
-    cwd: firstWorkspacePath,
+    cwd: "",
     modelId: "",
     thinkingLevel: "",
     sessionPolicy: "new",
-    conversationMode: "workspace",
+    conversationMode: "chat",
     reflection: "ask",
     // A new task starts enabled, like the desktop's form does.
     enabled: true,
@@ -139,13 +145,18 @@ function draftPayload(draft: Draft): Record<string, unknown> {
 }
 
 /** Why the form cannot be submitted yet, or null when it can. */
-function draftProblem(draft: Draft): "name" | "prompt" | "cwd" | "date" | null {
+function draftProblem(draft: Draft): "name" | "prompt" | "cwd" | "model" | "thinking" | "date" | null {
   if (!draft.name.trim())
     return "name";
   if (!draft.prompt.trim())
     return "prompt";
-  if (!draft.cwd.trim())
+  // A workspace conversation *is* its directory; a chat one carries its own.
+  if (draft.conversationMode === "workspace" && !draft.cwd.trim())
     return "cwd";
+  if (!draft.modelId)
+    return "model";
+  if (!draft.thinkingLevel)
+    return "thinking";
   if (draft.trigger.mode === "once" && !/^\d{4}-\d{2}-\d{2}$/.test(draft.trigger.date.trim()))
     return "date";
   return null;
@@ -233,7 +244,11 @@ function Choice({ label, selected, disabled, onPress }: {
 }
 
 /** Task management on the paired desktop (list, create, edit, delete, runs). */
-export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean }) {
+export function TasksSettingsPage({ desktopOnline, settings }: {
+  desktopOnline: boolean;
+  /** The desktop's settings, for the enabled-model list (Settings → Models). */
+  settings: DesktopSettings | null;
+}) {
   const { t, i18n } = useTranslation();
   const remote = useRemoteControls();
   const tasks = useDesktopResource(remote.listTasks, 0, desktopOnline);
@@ -333,6 +348,7 @@ export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean })
         desktopOnline={desktopOnline}
         failed={failed}
         kind="create"
+        settings={settings}
         onCancel={close}
         onCreate={draft => void mutate(() => remote.createTask(draftPayload(draft)).then(close))}
       />
@@ -351,6 +367,7 @@ export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean })
         kind="edit"
         revisions={revisions}
         runs={runs}
+        settings={settings}
         onBack={close}
         onDelete={() => remove(detail)}
         onMutate={mutate}
@@ -406,11 +423,13 @@ export function TasksSettingsPage({ desktopOnline }: { desktopOnline: boolean })
  * state on every incoming snapshot.
  */
 function TaskForm({
-  kind, detail, busy, deps = [], desktopOnline, failed, revisions = [], runs = [],
+  kind, detail, settings, busy, deps = [], desktopOnline, failed, revisions = [], runs = [],
   onBack, onCancel, onCreate, onDelete, onMutate, onRetry,
 }: {
   kind: "create" | "edit";
   detail?: RemoteTaskDetail;
+  /** The desktop's own settings — the enabled-model list comes from them. */
+  settings: DesktopSettings | null;
   busy: boolean;
   deps?: RemoteTaskDep[];
   desktopOnline: boolean;
@@ -427,9 +446,18 @@ function TaskForm({
   const { t } = useTranslation();
   const remote = useRemoteControls();
   const models = useDesktopResource(remote.listSettingsModels, 0, desktopOnline);
-  const [draft, setDraft] = useState<Draft>(() =>
-    detail ? draftFrom(detail) : newDraft(remote.workspaces[0]?.path ?? ""));
+  const [draft, setDraft] = useState<Draft>(() => detail ? draftFrom(detail) : newDraft());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // Only the models the user has enabled (Settings → Models), like the
+  // composer — plus the task's own model when it has since been disabled, so
+  // editing another field cannot silently rewrite it.
+  const enabledModels = (models.data ?? []).filter(
+    model => !(settings?.hiddenModels ?? []).includes(modelReference(model)),
+  );
+  const pinnedModel = draft.modelId && !enabledModels.some(model => modelKey(model) === draft.modelId)
+    ? draft.modelId
+    : null;
+  const workspaceConversation = draft.conversationMode === "workspace";
   const patch = (values: Partial<Draft>) => setDraft(current => ({ ...current, ...values }));
   const patchTrigger = (values: Partial<DraftTrigger>) =>
     setDraft(current => ({ ...current, trigger: { ...current.trigger, ...values } }));
@@ -512,31 +540,62 @@ function TaskForm({
           />
         </SettingsField>
 
-        <SettingsField label={t("tasks.form.cwd")} hint={t("tasks.form.cwdHint")}>
+        {/* The conversation type decides whether a directory is needed at all,
+            so it is asked before the directory row (and the row only exists for
+            a workspace conversation — a chat one brings its own). */}
+        <SettingsField label={t("tasks.form.conversation")} hint={t("tasks.form.conversationHint")}>
           <View style={settingsStyles.actions}>
-            {remote.workspaces.slice(0, 6).map(workspace => (
+            {(["chat", "workspace"] as const).map(mode => (
               <Choice
                 disabled={busy}
-                key={workspace.id}
-                label={workspace.name || workspace.path}
-                onPress={() => patch({ cwd: workspace.path })}
-                selected={draft.cwd === workspace.path}
+                key={mode}
+                label={t(`tasks.form.conversation${mode === "chat" ? "Chat" : "Workspace"}`)}
+                onPress={() => patch({ conversationMode: mode })}
+                selected={draft.conversationMode === mode}
               />
             ))}
           </View>
-          <TextInput
-            accessibilityLabel={t("tasks.form.cwdPath")}
-            autoCapitalize="none"
-            style={settingsStyles.input}
-            value={draft.cwd}
-            onChangeText={cwd => patch({ cwd })}
-          />
         </SettingsField>
+
+        {workspaceConversation
+          ? (
+              <SettingsField label={t("tasks.form.cwd")} hint={t("tasks.form.cwdHint")}>
+                <View style={settingsStyles.actions}>
+                  {remote.workspaces.slice(0, 6).map(workspace => (
+                    <Choice
+                      disabled={busy}
+                      key={workspace.id}
+                      label={workspace.name || workspace.path}
+                      onPress={() => patch({ cwd: workspace.path })}
+                      selected={draft.cwd === workspace.path}
+                    />
+                  ))}
+                </View>
+                <TextInput
+                  accessibilityLabel={t("tasks.form.cwdPath")}
+                  autoCapitalize="none"
+                  style={settingsStyles.input}
+                  value={draft.cwd}
+                  onChangeText={cwd => patch({ cwd })}
+                />
+              </SettingsField>
+            )
+          : null}
 
         <SettingsField label={t("tasks.form.model")} hint={models.failed ? t("tasks.form.modelsFailed") : undefined}>
           <View style={settingsStyles.actions}>
-            <Choice disabled={busy} label={t("tasks.modelDefault")} onPress={() => patch({ modelId: "" })} selected={draft.modelId === ""} />
-            {(models.data ?? []).map(model => (
+            {pinnedModel
+              ? (
+                  <Choice
+                    disabled={busy}
+                    key={pinnedModel}
+                    label={pinnedModel}
+                    onPress={() => patch({ modelId: pinnedModel })}
+                    selected={draft.modelId === pinnedModel}
+                  />
+                )
+              : null}
+            {enabledModels.map(model => (
               <Choice
                 disabled={busy}
                 key={modelKey(model)}
@@ -550,7 +609,6 @@ function TaskForm({
 
         <SettingsField label={t("tasks.form.thinking")}>
           <View style={settingsStyles.actions}>
-            <Choice disabled={busy} label={t("tasks.thinkingDefault")} onPress={() => patch({ thinkingLevel: "" })} selected={draft.thinkingLevel === ""} />
             {THINKING_LEVELS.map(level => (
               <Choice
                 disabled={busy}
@@ -572,20 +630,6 @@ function TaskForm({
                 label={t(policy === "existing" ? "tasks.form.sessionExisting" : "tasks.form.sessionNew")}
                 onPress={() => patch({ sessionPolicy: policy })}
                 selected={draft.sessionPolicy === policy}
-              />
-            ))}
-          </View>
-        </SettingsField>
-
-        <SettingsField label={t("tasks.form.conversation")} hint={t("tasks.form.conversationHint")}>
-          <View style={settingsStyles.actions}>
-            {(["workspace", "chat"] as const).map(mode => (
-              <Choice
-                disabled={busy}
-                key={mode}
-                label={t(`tasks.form.conversation${mode === "chat" ? "Chat" : "Workspace"}`)}
-                onPress={() => patch({ conversationMode: mode })}
-                selected={draft.conversationMode === mode}
               />
             ))}
           </View>

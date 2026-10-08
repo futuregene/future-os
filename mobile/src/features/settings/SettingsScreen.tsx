@@ -116,7 +116,7 @@ export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, ref }: 
       case "skills":
         return remote.desktopOnline && skillsSupported ? <SkillsSettingsPage /> : null;
       case "tasks":
-        return remote.desktopOnline && tasksSupported ? <TasksSettingsPage desktopOnline={remote.desktopOnline} /> : null;
+        return remote.desktopOnline && tasksSupported ? <TasksSettingsPage desktopOnline={remote.desktopOnline} settings={resource.data} /> : null;
       case "language":
         return <ScrollView contentContainerStyle={settingsStyles.content}>
           <SettingsSection title={t("desktopSettings.thisPhone")}><View style={settingsStyles.card}><LanguageSettings /></View></SettingsSection>
