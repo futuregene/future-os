@@ -137,6 +137,17 @@ fn parse_dep_join(raw: Option<&str>) -> future_tasks::DepJoin {
     }
 }
 
+/// The condition a dependency edge fires on. A bare `set_task_dep` (no `on`)
+/// means the successful finish, the same default the CLI's `--depends-on NAME`
+/// and the desktop's add-row take.
+fn parse_dep_on(raw: &str) -> future_tasks::DepOn {
+    match raw {
+        "failure" => future_tasks::DepOn::Failure,
+        "completed" => future_tasks::DepOn::Completed,
+        _ => future_tasks::DepOn::Success,
+    }
+}
+
 /// Build a Task from the phone's `task` payload (a whole-record write, the
 /// same convention as provider writes).
 /// A nullable string field, where **absent** and **explicit null** differ.
@@ -412,6 +423,46 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     Ok(task) => reply(sink, true, task_detail_view(&store, task), None).await,
                     Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
                 }
+            }
+            Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+        },
+        "set_task_dep" | "remove_task_dep" => match open_store() {
+            Ok(store) => {
+                let result = if cmd.cmd_type == "remove_task_dep" {
+                    store
+                        .remove_dep(&cmd.task_id, &cmd.upstream_task_id)
+                        .map_err(|e| crate::AppError::Message(e.to_string()))
+                } else {
+                    let dep = future_tasks::TaskDep {
+                        task_id: cmd.task_id.clone(),
+                        upstream_task_id: cmd.upstream_task_id.clone(),
+                        on: parse_dep_on(&cmd.on),
+                    };
+                    // The same cycle refusal the desktop panel and the CLI go
+                    // through: a phone write is a write like any other, and an
+                    // edge that closes a loop would never fire again.
+                    let with_edge = (|| -> Result<Vec<future_tasks::TaskDep>, crate::AppError> {
+                        let mut all = store
+                            .list_all_deps()
+                            .map_err(|e| crate::AppError::Message(e.to_string()))?;
+                        all.retain(|d| {
+                            !(d.task_id == dep.task_id
+                                && d.upstream_task_id == dep.upstream_task_id)
+                        });
+                        all.push(dep.clone());
+                        Ok(all)
+                    })();
+                    match with_edge {
+                        Err(error) => Err(error),
+                        Ok(all) if future_tasks::would_cycle(&dep.task_id, &all) => Err(
+                            crate::AppError::Message("dependency cycle detected".to_string()),
+                        ),
+                        Ok(_) => store
+                            .add_dep(&dep)
+                            .map_err(|e| crate::AppError::Message(e.to_string())),
+                    }
+                };
+                reply_unit(sink, result).await
             }
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
@@ -897,5 +948,80 @@ mod tests {
             .unwrap()
             .deleted_at
             .is_some());
+    }
+
+    /// The phone can wire a dependency the same way the panel and the CLI do:
+    /// set an edge with its condition, and take it away again.
+    #[tokio::test]
+    async fn the_phone_sets_and_removes_a_dependency_edge() {
+        let _home = home("business-tasks-set-dep");
+        let store = open_store().expect("store");
+        let upstream = task("upstream", future_tasks::SessionPolicy::New);
+        let downstream = task("downstream", future_tasks::SessionPolicy::New);
+        store.insert_task(&upstream).unwrap();
+        store.insert_task(&downstream).unwrap();
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("set_task_dep");
+        cmd.task_id = downstream.id.clone();
+        cmd.upstream_task_id = upstream.id.clone();
+        cmd.on = "failure".into();
+        super::execute(&cmd, &sink).await;
+        sink.ok_data();
+
+        let deps = store.list_deps(&downstream.id).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].upstream_task_id, upstream.id);
+        assert_eq!(deps[0].on, future_tasks::DepOn::Failure);
+
+        // A bare set (no condition) means the successful finish, the same
+        // default the CLI's `--depends-on NAME` takes.
+        let sink = RecordingSink::default();
+        let mut again = command("set_task_dep");
+        again.task_id = downstream.id.clone();
+        again.upstream_task_id = upstream.id.clone();
+        super::execute(&again, &sink).await;
+        sink.ok_data();
+        let deps = store.list_deps(&downstream.id).unwrap();
+        assert_eq!(deps.len(), 1, "the same edge, not a second one");
+        assert_eq!(deps[0].on, future_tasks::DepOn::Success);
+
+        let sink = RecordingSink::default();
+        let mut remove = command("remove_task_dep");
+        remove.task_id = downstream.id.clone();
+        remove.upstream_task_id = upstream.id.clone();
+        super::execute(&remove, &sink).await;
+        sink.ok_data();
+        assert!(store.list_deps(&downstream.id).unwrap().is_empty());
+    }
+
+    /// A phone write is a write like any other: an edge that closes a loop is
+    /// refused here too, with the same wording the panel shows.
+    #[tokio::test]
+    async fn the_phone_refuses_a_dependency_cycle() {
+        let _home = home("business-tasks-dep-cycle");
+        let store = open_store().expect("store");
+        let a = task("a", future_tasks::SessionPolicy::New);
+        let b = task("b", future_tasks::SessionPolicy::New);
+        store.insert_task(&a).unwrap();
+        store.insert_task(&b).unwrap();
+        store
+            .add_dep(&future_tasks::TaskDep {
+                task_id: b.id.clone(),
+                upstream_task_id: a.id.clone(),
+                on: future_tasks::DepOn::Success,
+            })
+            .unwrap();
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("set_task_dep");
+        cmd.task_id = a.id.clone();
+        cmd.upstream_task_id = b.id.clone();
+        super::execute(&cmd, &sink).await;
+        assert!(sink.error_text().contains("dependency cycle"));
+        assert!(
+            store.list_deps(&a.id).unwrap().is_empty(),
+            "a refused edge is not stored"
+        );
     }
 }

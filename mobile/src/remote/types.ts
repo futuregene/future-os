@@ -552,6 +552,9 @@ export interface RemoteCommand {
   revisionId?: string;
   /** set_task_enabled */
   enabled?: boolean;
+  /** set_task_dep: the upstream to wait for, and the condition it fires on. */
+  upstreamTaskId?: string;
+  on?: string;
   /** suggest_skill: the draft to recommend for, and the candidates to choose from. */
   query?: string;
   candidates?: { name: string; description: string }[];

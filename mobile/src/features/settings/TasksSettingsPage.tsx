@@ -36,6 +36,13 @@ const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as 
  * Everything the editor can change. The desktop keeps the same shape in its
  * own draft, so the two forms send the same payload.
  */
+/** One dependency edge as the editor holds it (upstream label + condition). */
+interface DraftDep {
+  upstreamTaskId: string;
+  name: string;
+  on: string;
+}
+
 interface Draft {
   name: string;
   prompt: string;
@@ -47,6 +54,9 @@ interface Draft {
   reflection: string;
   enabled: boolean;
   trigger: DraftTrigger;
+  /** The dependency edges the form wants, as a whole set (see `reconcileDeps`). */
+  deps: DraftDep[];
+  depJoin: string;
 }
 
 function triggerFrom(detail: RemoteTaskDetail): DraftTrigger {
@@ -85,7 +95,7 @@ function triggerPayload(draft: DraftTrigger): { triggerKind: string; trigger: Re
 }
 
 /** A stored task as an editable draft. */
-function draftFrom(detail: RemoteTaskDetail): Draft {
+function draftFrom(detail: RemoteTaskDetail, deps: RemoteTaskDep[]): Draft {
   return {
     name: detail.name,
     prompt: detail.prompt,
@@ -97,6 +107,12 @@ function draftFrom(detail: RemoteTaskDetail): Draft {
     reflection: detail.reflection ?? "ask",
     enabled: detail.enabled,
     trigger: triggerFrom(detail),
+    deps: deps.map(dep => ({
+      upstreamTaskId: dep.upstreamTaskId,
+      name: dep.upstreamName,
+      on: dep.on,
+    })),
+    depJoin: detail.depJoin ?? "all",
   };
 }
 
@@ -123,6 +139,10 @@ function newDraft(): Draft {
     // A new task starts enabled, like the desktop's form does.
     enabled: true,
     trigger: { ...defaultTrigger },
+    // …and with no upstream: it runs on its own trigger until the user says
+    // otherwise.
+    deps: [],
+    depJoin: "all",
   };
 }
 
@@ -140,8 +160,38 @@ function draftPayload(draft: Draft): Record<string, unknown> {
     conversationMode: draft.conversationMode,
     reflection: draft.reflection,
     enabled: draft.enabled,
+    depJoin: draft.depJoin,
     ...triggerPayload(draft.trigger),
   };
+}
+
+/**
+ * Make a task's dependency edges say exactly `wanted`, and nothing else.
+ *
+ * The editor holds the whole set, so the write is a reconciliation rather than
+ * add/remove calls poured out of the UI: an edge that is kept as it was is not
+ * written again, a changed condition is one call, an edge the user dropped is
+ * removed, and a new one is added. It compares against the desktop's current
+ * edges (re-read here), so an edit made elsewhere in between is not silently
+ * reverted.
+ */
+async function reconcileDeps(
+  remote: Pick<ReturnType<typeof useRemoteControls>, "listTaskDeps" | "setTaskDep" | "removeTaskDep">,
+  taskId: string,
+  wanted: DraftDep[],
+): Promise<void> {
+  const current = await remote.listTaskDeps(taskId);
+  const byUpstream = new Map(wanted.map(dep => [dep.upstreamTaskId, dep.on]));
+  for (const dep of current) {
+    const on = byUpstream.get(dep.upstreamTaskId);
+    if (on === undefined)
+      await remote.removeTaskDep(taskId, dep.upstreamTaskId);
+    else if (on !== dep.on)
+      await remote.setTaskDep(taskId, dep.upstreamTaskId, on);
+    byUpstream.delete(dep.upstreamTaskId);
+  }
+  for (const [upstreamTaskId, on] of byUpstream)
+    await remote.setTaskDep(taskId, upstreamTaskId, on);
 }
 
 /** Why the form cannot be submitted yet, or null when it can. */
@@ -345,12 +395,18 @@ export function TasksSettingsPage({ desktopOnline, settings }: {
     return (
       <TaskForm
         busy={busy}
+        candidates={tasks.data ?? []}
         desktopOnline={desktopOnline}
         failed={failed}
         kind="create"
         settings={settings}
         onCancel={close}
-        onCreate={draft => void mutate(() => remote.createTask(draftPayload(draft)).then(close))}
+        onCreate={draft => void mutate(async () => {
+          const created = await remote.createTask(draftPayload(draft));
+          // The edges need both ids, so they are written once the task exists.
+          await reconcileDeps(remote, created.id, draft.deps);
+          close();
+        })}
       />
     );
   }
@@ -360,6 +416,7 @@ export function TasksSettingsPage({ desktopOnline, settings }: {
       <TaskForm
         key={`${detail.id}:${detail.promptVersion}`}
         busy={busy}
+        candidates={tasks.data ?? []}
         deps={deps}
         detail={detail}
         desktopOnline={desktopOnline}
@@ -372,6 +429,7 @@ export function TasksSettingsPage({ desktopOnline, settings }: {
         onDelete={() => remove(detail)}
         onMutate={mutate}
         onRetry={() => retryTask(detail.id)}
+        onSaveDraft={draft => reconcileDeps(remote, detail.id, draft.deps)}
       />
     );
   }
@@ -426,13 +484,15 @@ export function TasksSettingsPage({ desktopOnline, settings }: {
  * state on every incoming snapshot.
  */
 function TaskForm({
-  kind, detail, settings, busy, deps = [], desktopOnline, failed, revisions = [], runs = [],
-  onBack, onCancel, onCreate, onDelete, onMutate, onRetry,
+  kind, detail, settings, candidates = [], busy, deps = [], desktopOnline, failed, revisions = [], runs = [],
+  onBack, onCancel, onCreate, onDelete, onMutate, onRetry, onSaveDraft,
 }: {
   kind: "create" | "edit";
   detail?: RemoteTaskDetail;
   /** The desktop's own settings — the enabled-model list comes from them. */
   settings: DesktopSettings | null;
+  /** The desktop's tasks: the upstreams a dependency can point at. */
+  candidates?: RemoteTaskRow[];
   busy: boolean;
   deps?: RemoteTaskDep[];
   desktopOnline: boolean;
@@ -445,12 +505,17 @@ function TaskForm({
   onDelete?(): void;
   onMutate?(operation: () => Promise<unknown>): Promise<void>;
   onRetry?(): void;
+  /** Write the draft's dependency edges (edit mode; create goes through `onCreate`). */
+  onSaveDraft?(draft: Draft): Promise<void>;
 }) {
   const { t } = useTranslation();
   const remote = useRemoteControls();
   const models = useDesktopResource(remote.listSettingsModels, 0, desktopOnline);
-  const [draft, setDraft] = useState<Draft>(() => detail ? draftFrom(detail) : newDraft());
+  const [draft, setDraft] = useState<Draft>(() => detail ? draftFrom(detail, deps) : newDraft());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // Editing edges needs a desktop that implements them; an older one keeps the
+  // read-only list below the form.
+  const canEditDeps = remote.capabilities?.has("task_deps_v1") ?? false;
   // Only the models the user has enabled (Settings → Models), like the
   // composer — plus the task's own model when it has since been disabled, so
   // editing another field cannot silently rewrite it.
@@ -464,18 +529,29 @@ function TaskForm({
   const patch = (values: Partial<Draft>) => setDraft(current => ({ ...current, ...values }));
   const patchTrigger = (values: Partial<DraftTrigger>) =>
     setDraft(current => ({ ...current, trigger: { ...current.trigger, ...values } }));
+  // The other tasks a dependency can point at. The desktop refuses a cycle, so
+  // this list only has to exclude the task itself.
+  const addable = candidates.filter(
+    candidate => candidate.id !== detail?.id
+      && !draft.deps.some(dep => dep.upstreamTaskId === candidate.id),
+  );
   const problem = draftProblem(draft);
   const trigger = draft.trigger;
 
   const save = () => {
     // Create goes through `onCreate` (the parent owns the request); edit goes
     // through `onMutate`, which also handles the in-flight guard and reload.
-    // Requiring both would make either mode silently do nothing.
+    // Requiring both would make either mode silently do nothing. The dependency
+    // edges are written inside the same operation, so a refused edge fails the
+    // save the user pressed rather than the next unrelated one.
     if (problem) return;
     if (kind === "create")
       onCreate?.(draft);
     else if (onMutate)
-      void onMutate(() => remote.updateTask(detail!.id, draftPayload(draft)));
+      void onMutate(async () => {
+        await remote.updateTask(detail!.id, draftPayload(draft));
+        await onSaveDraft?.(draft);
+      });
   };
 
   return (
@@ -721,7 +797,93 @@ function TaskForm({
         <Text style={settingsStyles.description}>{t("tasks.form.fullPermissionWarning")}</Text>
       </SettingsSection>
 
-      {deps.length > 0
+      {/* A dependency is the other half of "when does this run": its own
+          trigger, or an upstream task finishing. */}
+      <SettingsSection title={t("tasks.form.deps")}>
+        {!canEditDeps
+          ? <Text style={settingsStyles.description}>{t("tasks.form.depsUnsupported")}</Text>
+          : (
+              <>
+                {draft.deps.length === 0
+                  ? <Text style={settingsStyles.description}>{t("tasks.form.depsNone")}</Text>
+                  : draft.deps.map(dep => (
+                      <View key={dep.upstreamTaskId} style={styles.depCard}>
+                        <Text style={settingsStyles.label} numberOfLines={1}>{dep.name || dep.upstreamTaskId}</Text>
+                        <View style={settingsStyles.actions}>
+                          {(["success", "failure", "completed"] as const).map(on => (
+                            <Choice
+                              disabled={busy}
+                              key={on}
+                              label={t(`tasks.on.${on}`)}
+                              onPress={() => patch({
+                                deps: draft.deps.map(item => (
+                                  item.upstreamTaskId === dep.upstreamTaskId ? { ...item, on } : item
+                                )),
+                              })}
+                              selected={dep.on === on}
+                            />
+                          ))}
+                        </View>
+                        <Button
+                          compact
+                          disabled={busy}
+                          label={t("tasks.form.depRemove", { name: dep.name || dep.upstreamTaskId })}
+                          variant="secondary"
+                          onPress={() => patch({
+                            deps: draft.deps.filter(item => item.upstreamTaskId !== dep.upstreamTaskId),
+                          })}
+                        />
+                      </View>
+                    ))}
+
+                {addable.length === 0
+                  ? <Text style={settingsStyles.description}>{t("tasks.form.depNoCandidates")}</Text>
+                  : (
+                      <View style={settingsStyles.actions}>
+                        {addable.map(candidate => (
+                          <Choice
+                            disabled={busy}
+                            key={candidate.id}
+                            label={candidate.name}
+                            // A new edge waits for a successful finish: the
+                            // common case, and what the CLI's bare
+                            // `--depends-on NAME` means.
+                            onPress={() => patch({
+                              deps: [
+                                ...draft.deps,
+                                { upstreamTaskId: candidate.id, name: candidate.name, on: "success" },
+                              ],
+                            })}
+                            selected={false}
+                          />
+                        ))}
+                      </View>
+                    )}
+
+                {draft.deps.length > 1
+                  ? (
+                      <SettingsField label={t("tasks.form.depJoin")}>
+                        <View style={settingsStyles.actions}>
+                          {(["all", "any"] as const).map(join => (
+                            <Choice
+                              disabled={busy}
+                              key={join}
+                              label={t(`tasks.join.${join}`)}
+                              onPress={() => patch({ depJoin: join })}
+                              selected={draft.depJoin === join}
+                            />
+                          ))}
+                        </View>
+                      </SettingsField>
+                    )
+                  : null}
+              </>
+            )}
+      </SettingsSection>
+
+      {/* The dependency editor above owns this list when the desktop supports
+          it; an older desktop gets the read-only view instead of nothing. */}
+      {!canEditDeps && deps.length > 0
         ? (
             <SettingsSection title={t("tasks.deps")}>
               {deps.map(dep => (

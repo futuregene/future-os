@@ -119,22 +119,51 @@ afterEach(() => {
  * array so a mutation can be observed the way the real backend would report it.
  */
 function backend(tasks: TaskView[], runs: TaskRunView[] = [run()], revisions: unknown[] = [defaultRevision()]) {
-  mocks.invokeCommand.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
-    switch (command) {
-      case "list_tasks":
-        return tasks;
-      case "list_task_runs":
-        return args?.id === "tsk_1" ? runs : [];
-      case "list_task_deps":
-        return args?.id === "tsk_1"
-          ? [{ upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "success", satisfied: false }]
-          : [];
-      case "list_task_revisions":
-        return args?.id === "tsk_1" ? revisions : [];
-      default:
-        return undefined;
-    }
-  });
+  mocks.invokeCommand.mockImplementation(
+    async (command: string, args?: Record<string, unknown>) => backendFor(tasks, command, args, runs, revisions),
+  );
+}
+
+/** The canned answers of the read commands, so a test can wrap them. */
+function backendFor(
+  tasks: TaskView[],
+  command: string,
+  args?: Record<string, unknown>,
+  runs: TaskRunView[] = [run()],
+  revisions: unknown[] = [defaultRevision()],
+) {
+  switch (command) {
+    case "list_tasks":
+      return tasks;
+    // A write answers with the stored task (the shape the backend returns), so
+    // a save that creates one can go on to write its dependency edges.
+    case "create_task":
+    case "update_task":
+      return tasks[0];
+    case "list_task_runs":
+      return args?.id === "tsk_1" ? runs : [];
+    case "list_task_deps":
+      return args?.id === "tsk_1"
+        ? [{ upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "success", satisfied: false }]
+        : [];
+    case "list_task_revisions":
+      return args?.id === "tsk_1" ? revisions : [];
+    default:
+      return undefined;
+  }
+}
+
+/** A second live task, so a dependency has somewhere to point. */
+function upstreamTask(overrides: Partial<TaskView> = {}): TaskView {
+  return task({ id: "tsk_up2", name: "upstream two", depJoin: "all", ...overrides });
+}
+
+/** The `[command, args]` pairs a mock recorded, in order. */
+function calls() {
+  return mocks.invokeCommand.mock.calls.map(([command, args]) => ({
+    command: command as string,
+    args: args as Record<string, unknown> | undefined,
+  }));
 }
 
 /** A stored prompt version with its source. */
@@ -207,6 +236,25 @@ function triggerModeSelect(container: HTMLElement) {
   if (!select)
     throw new Error(`no trigger select; body=${container.innerHTML.slice(0, 400)}`);
   return select;
+}
+
+/** A control by its aria-label (the dependency rows carry names in theirs). */
+function labelled(container: HTMLElement, label: string) {
+  const control = container.querySelector<HTMLInputElement | HTMLSelectElement>(
+    `[aria-label="${label}"]`,
+  );
+  if (!control)
+    throw new Error(`no control labelled ${label}`);
+  return control;
+}
+
+/** The dependency fieldset, by the legend it carries. */
+function depsFieldset(container: HTMLElement) {
+  const fieldset = [...container.querySelectorAll("fieldset")]
+    .find(node => (node.querySelector("legend")?.textContent ?? "").trim() === "Dependency triggers");
+  if (!fieldset)
+    throw new Error("no dependency fieldset");
+  return fieldset;
 }
 
 async function click(button: HTMLButtonElement | undefined) {
@@ -318,6 +366,134 @@ describe("tasksView", () => {
     expect(text).toContain("High");
     expect(text).toContain("Working directory");
     expect(text).toContain("/tmp/repo");
+  });
+
+  // A task can be created from the editor with the upstream it waits on. The
+  // edges are written once the task exists (an edge needs both ids).
+  it("creates a task that depends on another task", async () => {
+    const { container } = await renderView([task(), upstreamTask()]);
+    await click(buttonByText(container, "New task"));
+    await setValue(field(container, "Name") as HTMLInputElement, "downstream");
+    await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
+    await chooseModelAndThinking(container);
+
+    const picker = labelled(depsFieldset(container), "Add an upstream task") as HTMLSelectElement;
+    expect([...picker.options].map(option => option.textContent)).toEqual([
+      "Pick an upstream task",
+      "daily report",
+      "upstream two",
+    ]);
+    await setValue(picker, "tsk_up2");
+    await click(buttonByText(depsFieldset(container), "Add"));
+    expect(depsFieldset(container).textContent).toContain("upstream two");
+
+    mocks.invokeCommand.mockClear();
+    backend([task(), upstreamTask()]);
+    await click(buttonByText(container, "Save"));
+
+    const sent = calls();
+    expect(sent.find(call => call.command === "create_task")?.args).toMatchObject({
+      input: { depJoin: "all" },
+    });
+    expect(sent).toContainEqual({
+      command: "set_task_dep",
+      args: { id: "tsk_1", upstreamTaskId: "tsk_up2", on: "success" },
+    });
+  });
+
+  it("edits and removes a task's dependencies", async () => {
+    const { container } = await renderView([
+      task({ depJoin: "all" }),
+      upstreamTask(),
+      task({ id: "tsk_up3", name: "upstream three", depJoin: "all" }),
+    ]);
+    await click(rows(container)[0]);
+    await click(buttonByText(container, "Edit"));
+
+    // The stored edge opens with its condition, and the condition is editable.
+    const fieldset = depsFieldset(container);
+    expect(fieldset.textContent).toContain("upstream");
+    const dbg = container.ownerDocument.defaultView as unknown;
+    void dbg;
+    const condition = labelled(fieldset, "When upstream finishes") as HTMLSelectElement;
+    expect(condition.value).toBe("success");
+    await setValue(condition, "failure");
+
+    // A second upstream makes the join policy meaningful, so it appears.
+    await setValue(labelled(fieldset, "Add an upstream task") as HTMLSelectElement, "tsk_up3");
+    await click(buttonByText(fieldset, "Add"));
+    const join = labelled(depsFieldset(container), "With several upstreams, run") as HTMLSelectElement;
+    await setValue(join, "any");
+
+    mocks.invokeCommand.mockClear();
+    backend([task()]);
+    await click(buttonByText(container, "Save"));
+
+    const sent = calls();
+    expect(sent).toContainEqual({
+      command: "set_task_dep",
+      args: { id: "tsk_1", upstreamTaskId: "tsk_up", on: "failure" },
+    });
+    expect(sent).toContainEqual({
+      command: "set_task_dep",
+      args: { id: "tsk_1", upstreamTaskId: "tsk_up3", on: "success" },
+    });
+    expect(sent.find(call => call.command === "update_task")?.args).toMatchObject({
+      input: { depJoin: "any" },
+    });
+
+    // Dropping the stored edge removes it rather than leaving it behind.
+    await click(rows(container)[0]);
+    await click(buttonByText(container, "Edit"));
+    await click(buttonByText(depsFieldset(container), "Remove"));
+    mocks.invokeCommand.mockClear();
+    backend([task()]);
+    await click(buttonByText(container, "Save"));
+    expect(calls()).toContainEqual({
+      command: "remove_task_dep",
+      args: { id: "tsk_1", upstreamTaskId: "tsk_up" },
+    });
+  });
+
+  // A refused edge (the backend sees a cycle the editor cannot) must not make
+  // the user create the task again: the task is stored, so the editor stays on
+  // update.
+  it("keeps a created task when its dependency is refused", async () => {
+    const { container } = await renderView([task(), upstreamTask()]);
+    await click(buttonByText(container, "New task"));
+    await setValue(field(container, "Name") as HTMLInputElement, "downstream");
+    await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
+    await chooseModelAndThinking(container);
+    await setValue(labelled(depsFieldset(container), "Add an upstream task") as HTMLSelectElement, "tsk_up2");
+    await click(buttonByText(depsFieldset(container), "Add"));
+
+    mocks.invokeCommand.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "create_task")
+        return task({ id: "tsk_new", name: "downstream" });
+      if (command === "set_task_dep")
+        throw new Error("dependency cycle detected");
+      return backendFor([task(), upstreamTask()], command, args);
+    });
+    await click(buttonByText(container, "Save"));
+
+    expect(container.textContent).toContain("dependency cycle detected");
+    // Still in the editor, now editing the task that was created: saving again
+    // updates it instead of creating a second one.
+    mocks.invokeCommand.mockClear();
+    backend([task()]);
+    await click(buttonByText(container, "Save"));
+    const commands = calls().map(call => call.command);
+    expect(commands).toContain("update_task");
+    expect(commands).not.toContain("create_task");
+  });
+
+  it("offers no upstream candidates when this is the only task", async () => {
+    const { container } = await renderView([task()]);
+    await click(rows(container)[0]);
+    await click(buttonByText(container, "Edit"));
+    const fieldset = depsFieldset(container);
+    expect(fieldset.textContent).toContain("no other task to depend on");
+    expect([...((labelled(fieldset, "Add an upstream task") as HTMLSelectElement).options)]).toHaveLength(1);
   });
 
   it("falls back to the defaults when a task pins neither model nor thinking level", async () => {

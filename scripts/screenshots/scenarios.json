@@ -799,6 +799,68 @@
           }
         ]
       },
+      "tasks-deps": {
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "编辑"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const fs = [...document.querySelectorAll('fieldset')].find(f => (f.querySelector('legend') || {}).textContent === '依赖触发'); if (!fs) throw new Error('the editor has no dependency fieldset'); const stored = fs.querySelector('select[aria-label=\"文献监控 的触发条件\"]'); if (!stored) throw new Error('the stored edge has no condition picker: ' + fs.innerText.slice(0, 200)); if (stored.value !== 'completed') throw new Error('the stored condition is not shown: ' + stored.value); const picker = fs.querySelector('select[aria-label=\"添加上游任务\"]'); if (!picker) throw new Error('no upstream picker'); const offered = [...picker.options].map(o => o.textContent); if (!offered.includes('月末归档')) throw new Error('the other tasks are not offered: ' + offered.join(',')); if (offered.includes('每周进展周报')) throw new Error('a task offers itself as its own upstream: ' + offered.join(',')); })()"
+          },
+          {
+            "eval": "(() => { const fieldset = [...document.querySelectorAll('fieldset')].find(f => (f.querySelector('legend') || {}).textContent === '依赖触发'); if (!fieldset) throw new Error('no dependency fieldset'); fieldset.scrollIntoView({ block: 'center' }); return 'scrolled'; })()"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "shot": "d-tasks-deps.png"
+          },
+          {
+            "eval": "(() => { const fs = [...document.querySelectorAll('fieldset')].find(f => (f.querySelector('legend') || {}).textContent === '依赖触发'); const picker = fs.querySelector('select[aria-label=\"添加上游任务\"]'); const option = [...picker.options].find(o => o.textContent === '月末归档'); const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set; setter.call(picker, option.value); picker.dispatchEvent(new Event('change', { bubbles: true })); return 'picked'; })()"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "eval": "(() => { const fs = [...document.querySelectorAll('fieldset')].find(f => (f.querySelector('legend') || {}).textContent === '依赖触发'); const button = [...fs.querySelectorAll('button')].find(b => b.textContent.trim() === '添加'); if (!button) throw new Error('no add button'); if (button.disabled) throw new Error('the add button is disabled after picking an upstream'); button.click(); return 'added'; })()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => { const fs = [...document.querySelectorAll('fieldset')].find(f => (f.querySelector('legend') || {}).textContent === '依赖触发'); const rows = [...fs.querySelectorAll('li')].map(li => li.innerText.replace(/\\n/g, ' ')); if (rows.length !== 2) throw new Error('expected two dependency rows, got ' + rows.length + ': ' + rows.join(' | ')); if (!rows.some(r => r.includes('月末归档'))) throw new Error('the added upstream is not listed: ' + rows.join(' | ')); if (!fs.querySelector('select[aria-label=\"多个上游的到达条件\"]')) throw new Error('two upstreams do not offer the join policy'); })()"
+          },
+          {
+            "eval": "(() => { const fieldset = [...document.querySelectorAll('fieldset')].find(f => (f.querySelector('legend') || {}).textContent === '依赖触发'); if (!fieldset) throw new Error('no dependency fieldset'); fieldset.scrollIntoView({ block: 'center' }); return 'scrolled'; })()"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "shot": "d-tasks-deps-two.png"
+          }
+        ]
+      },
       "tasks-new": {
         "url": "http://localhost:5299/shot/?lang=zh",
         "steps": [

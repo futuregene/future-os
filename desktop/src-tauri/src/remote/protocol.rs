@@ -49,6 +49,10 @@ pub(crate) struct IncomingCmd {
     pub(crate) revision_id: String,
     // set_task_enabled
     pub(crate) enabled: bool,
+    // set_task_dep: the upstream a task waits for, and the condition it fires
+    // on. `remove_task_dep` needs only the id pair.
+    pub(crate) upstream_task_id: String,
+    pub(crate) on: String,
     // suggest_skill: the draft to recommend for, and the UNINSTALLED skill
     // candidates the phone offers. The candidates travel from the phone because
     // the catalogue is the client's to fetch; the desktop only forwards them to
@@ -129,6 +133,8 @@ impl Default for IncomingCmd {
             task_id: String::new(),
             revision_id: String::new(),
             enabled: false,
+            upstream_task_id: String::new(),
+            on: String::new(),
             query: String::new(),
             candidates: serde_json::Value::Null,
             message_hash: String::new(),

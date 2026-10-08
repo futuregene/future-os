@@ -224,4 +224,66 @@ describe("useTasks", () => {
     expect(mocks.invokeCommand).toHaveBeenLastCalledWith("list_task_revisions", { id: "tsk_1" });
     hook.unmount();
   });
+
+  // The form holds the dependency set the user wants, so the write reconciles:
+  // kept edges are left alone, a changed condition is one call, a dropped edge
+  // is removed, a new one is added.
+  it("reconciles a dependency set against what is stored", async () => {
+    mocks.invokeCommand.mockImplementation(async (command: string) => {
+      if (command === "list_task_deps") {
+        return [
+          { upstreamTaskId: "tsk_keep", upstreamName: "keep", on: "success", satisfied: false },
+          { upstreamTaskId: "tsk_change", upstreamName: "change", on: "success", satisfied: false },
+          { upstreamTaskId: "tsk_drop", upstreamName: "drop", on: "success", satisfied: false },
+        ];
+      }
+      return [];
+    });
+    const hook = await renderHook();
+    mocks.invokeCommand.mockClear();
+
+    await act(async () => {
+      await hook.api().saveDeps("tsk_1", [
+        { upstreamTaskId: "tsk_keep", on: "success" },
+        { upstreamTaskId: "tsk_change", on: "failure" },
+        { upstreamTaskId: "tsk_new", on: "completed" },
+      ]);
+    });
+
+    const written = mocks.invokeCommand.mock.calls
+      .filter(([command]) => command === "set_task_dep" || command === "remove_task_dep")
+      .map(([command, args]) => [command, args]);
+    // The kept edge (tsk_keep) is not written at all; the changed one is
+    // rewritten, the dropped one removed, the new one added.
+    expect(written).toEqual([
+      ["set_task_dep", { id: "tsk_1", upstreamTaskId: "tsk_change", on: "failure" }],
+      ["remove_task_dep", { id: "tsk_1", upstreamTaskId: "tsk_drop" }],
+      ["set_task_dep", { id: "tsk_1", upstreamTaskId: "tsk_new", on: "completed" }],
+    ]);
+    // The list is re-read, so the panel shows what the store now holds.
+    expect(mocks.invokeCommand).toHaveBeenLastCalledWith("list_tasks");
+    hook.unmount();
+  });
+
+  it("writes nothing when the dependency set is already what is stored", async () => {
+    mocks.invokeCommand.mockImplementation(async (command: string) => {
+      if (command === "list_task_deps") {
+        return [
+          { upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "failure", satisfied: true },
+        ];
+      }
+      return [];
+    });
+    const hook = await renderHook();
+    mocks.invokeCommand.mockClear();
+
+    await act(async () => {
+      await hook.api().saveDeps("tsk_1", [{ upstreamTaskId: "tsk_up", on: "failure" }]);
+    });
+    const writes = mocks.invokeCommand.mock.calls.filter(
+      ([command]) => command === "set_task_dep" || command === "remove_task_dep",
+    );
+    expect(writes).toEqual([]);
+    hook.unmount();
+  });
 });
