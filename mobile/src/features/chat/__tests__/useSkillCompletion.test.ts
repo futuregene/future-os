@@ -217,18 +217,51 @@ test("a slash action with no open query is ignored instead of clearing the draft
   expect(message).toBe("");
 });
 
-test("typed # opens the conversation query and inserting one writes the reference link", () => {
-  act(() => { tree = create(createElement(Harness, {})); });
+test("typed # opens the conversation query and inserting one writes the reference token", () => {
+  const remember = jest.fn();
+  const refs = {};
+  function Harness() {
+    const [text, setText] = useState("");
+    const input = useRef({ focus } as unknown as TextInput);
+    const result = useSkillCompletion(text, setText, true, input, undefined, { refs, remember });
+    useLayoutEffect(() => { message = text; completion = result; });
+    return null;
+  }
+  act(() => { tree = create(createElement(Harness)); });
   act(() => completion.onFocus());
   type("ask #fla");
   expect(completion.session?.query).toBe("fla");
   expect(completion.query).toBeNull();
   act(() => completion.selectSession({ sessionId: "s-1", title: "Fix the flaky test" }));
-  // The session id travels in the link — that is what the agent acts on.
-  expect(message).toBe("ask [Fix the flaky test](futureos://session/s-1) ");
-  expect(completion.selection).toEqual({ start: 49, end: 49 });
+  // The draft shows what the desktop's pill shows; the id is kept aside for the
+  // send (a phone TextInput cannot style part of its text).
+  expect(message).toBe("ask #Fix the flaky test ");
+  expect(remember).toHaveBeenCalledWith("#Fix the flaky test", { sessionId: "s-1", title: "Fix the flaky test" });
+  expect(completion.selection).toEqual({ start: 24, end: 24 });
   expect(completion.session).toBeNull();
   expect(focus).toHaveBeenCalled();
+});
+
+test("a second conversation sharing a title gets its own token", () => {
+  // Without the disambiguated token the map would hold one entry for two
+  // conversations and the send would expand both to the same one.
+  const first = { sessionId: "s-1", title: "未命名" };
+  const refs = { "#未命名": first };
+  const remember = jest.fn();
+  function Harness() {
+    const [text, setText] = useState("#未命名 ");
+    const input = useRef({ focus } as unknown as TextInput);
+    const result = useSkillCompletion(text, setText, true, input, undefined, { refs, remember });
+    useLayoutEffect(() => { message = text; completion = result; });
+    return null;
+  }
+  act(() => { tree = create(createElement(Harness)); });
+  act(() => completion.onFocus());
+  act(() => completion.onChangeText("看到 #未命名 和 #未"));
+  expect(completion.session?.query).toBe("未");
+  act(() => completion.selectSession({ sessionId: "s-2", title: "未命名" }));
+  expect(message).toBe("看到 #未命名 和 #未命名·s-2 ");
+  expect(remember).toHaveBeenCalledWith("#未命名·s-2", { sessionId: "s-2", title: "未命名" });
 });
 
 test("a `#` that is not opening a token stays literal", () => {

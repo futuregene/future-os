@@ -118,6 +118,23 @@ export interface Presence {
   workspaces?: RemoteWorkspace[];
 }
 
+/**
+ * A conversation the composer's draft refers to. The draft carries it as a
+ * compact token (`#title`) and the message it sends carries the link
+ * `[title](futureos://session/<id>)` — the id is the payload.
+ */
+export interface SessionReferenceTarget {
+  sessionId: string;
+  title: string;
+}
+
+/**
+ * The references a draft holds, keyed by the token that stands in for each one.
+ * Kept with the draft (see `draftStorage`) because the token alone does not
+ * carry the id: losing the map would turn a reference back into plain text.
+ */
+export type SessionReferenceMap = Record<string, SessionReferenceTarget>;
+
 /** Installed skills discovered by the connected Agent (same catalogue as desktop). */
 export interface RemoteSkill {
   name: string;

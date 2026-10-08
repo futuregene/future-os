@@ -170,7 +170,7 @@ export function ChatScreen() {
   // advertise it leaves the affordance hidden rather than failing on tap.
   const forkSupported = remote.capabilities.has("fork_v1");
 
-  const { message, setMessage, attachments, setAttachments } = useComposerDraft(
+  const { message, setMessage, attachments, setAttachments, sessionRefs, rememberSessionRef } = useComposerDraft(
     remote,
     t,
   );
@@ -192,6 +192,7 @@ export function ChatScreen() {
     setMessage,
     setAttachments,
     setTransferProgress,
+    sessionRefs,
     compactContext.pending,
   );
 
@@ -782,6 +783,8 @@ export function ChatScreen() {
                 keyboardHeight={keyboardHeight}
                 message={message}
                 setMessage={setMessage}
+                sessionRefs={sessionRefs}
+                rememberSessionRef={rememberSessionRef}
                 attachments={attachments}
                 setAttachments={setAttachments}
                 supportsImages={supportsImages}

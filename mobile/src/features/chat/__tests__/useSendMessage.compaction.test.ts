@@ -18,7 +18,7 @@ test("pending manual compaction blocks send, retry and continue without consumin
   const setMessage = jest.fn(), setAttachments = jest.fn();
   let api!: SendMessageApi;
   function Harness({ pending }: { pending: boolean }) {
-    api = useSendMessage(remote, ((key: string) => key) as Parameters<typeof useSendMessage>[1], "draft", [], setMessage, setAttachments, jest.fn(), pending);
+    api = useSendMessage(remote, ((key: string) => key) as Parameters<typeof useSendMessage>[1], "draft", [], setMessage, setAttachments, jest.fn(), undefined, pending);
     return null;
   }
   let tree!: ReactTestRenderer;

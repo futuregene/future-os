@@ -33,7 +33,7 @@ import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { PendingApprovalCard } from "../../../components/TimelineCard";
 import type { RemoteControls } from "../../../remote/RemoteContext";
 import { deleteTemporaryAttachment } from "../../../remote/files";
-import type { MobileAttachment, RemoteSkill, TimelineItem } from "../../../remote/types";
+import type { MobileAttachment, RemoteSkill, SessionReferenceMap, SessionReferenceTarget, TimelineItem } from "../../../remote/types";
 import {
   chatTypography,
   colors,
@@ -63,6 +63,8 @@ const INPUT_MAX_HEIGHT = 240;
 function ComposerDockView({
   message,
   setMessage,
+  sessionRefs,
+  rememberSessionRef,
   attachments,
   setAttachments,
   supportsImages,
@@ -90,6 +92,12 @@ function ComposerDockView({
 }: {
   message: string;
   setMessage: Dispatch<SetStateAction<string>>;
+  /**
+   * The draft's conversation references: the `#title` tokens it shows and the
+   * conversations they stand for (see `useComposerDraft`).
+   */
+  sessionRefs: SessionReferenceMap;
+  rememberSessionRef: (token: string, target: SessionReferenceTarget) => void;
   attachments: MobileAttachment[];
   setAttachments: Dispatch<SetStateAction<MobileAttachment[]>>;
   supportsImages: boolean;
@@ -191,6 +199,7 @@ function ComposerDockView({
     editable && selector === null,
     inputRef,
     handleSlashAction,
+    { refs: sessionRefs, remember: rememberSessionRef },
   );
   const pickerHeight = skillPickerHeight(height, keyboardHeight, slashActions.length);
   // The `#` menu's conversations, filed by workspace — computed here (not in the
