@@ -115,6 +115,49 @@ describe("session draft storage", () => {
     expect(mockedAsync.setItem).not.toHaveBeenCalled();
   });
 
+  test("a draft's conversation references round-trip with it", async () => {
+    // The token in the text carries no id, so a draft that lost this map would
+    // send `#title` as plain text and the reference would stop working.
+    const refs = { "#Fix the flaky test": { sessionId: "sess-1", title: "Fix the flaky test" } };
+    await saveSessionDraft("s1", { text: "ask #Fix the flaky test", attachments: [], refs });
+    mockedAsync.getItem.mockResolvedValueOnce(
+      JSON.stringify({ version: 1, text: "ask #Fix the flaky test", attachments: [], refs }),
+    );
+    expect(await loadSessionDraft("s1")).toEqual({
+      version: 1, text: "ask #Fix the flaky test", attachments: [], refs,
+    });
+  });
+
+  test("a draft written before references existed reads without a map", async () => {
+    mockedAsync.getItem.mockResolvedValueOnce(
+      JSON.stringify({ version: 1, text: "plain", attachments: [] }),
+    );
+    expect(await loadSessionDraft("s1")).toEqual({ version: 1, text: "plain", attachments: [] });
+  });
+
+  test("malformed reference entries are dropped, not half-restored", async () => {
+    // An entry that is not the shape we wrote could only make the send expand
+    // the wrong conversation; the rest of the draft is still usable.
+    mockedAsync.getItem.mockResolvedValueOnce(JSON.stringify({
+      version: 1,
+      text: "#A #B #C #D #E",
+      attachments: [],
+      refs: {
+        "#A": { sessionId: "sess-a", title: "A" },
+        "#B": { sessionId: "", title: "B" },
+        "#C": { title: "C" },
+        "no-hash": { sessionId: "sess-d", title: "D" },
+        "#E": "sess-e",
+      },
+    }));
+    expect(await loadSessionDraft("s1")).toEqual({
+      version: 1,
+      text: "#A #B #C #D #E",
+      attachments: [],
+      refs: { "#A": { sessionId: "sess-a", title: "A" } },
+    });
+  });
+
   test("stale-version draft is discarded", async () => {
     mockedAsync.getItem.mockResolvedValueOnce(
       JSON.stringify({ version: 999, text: "old", attachments: [] }),

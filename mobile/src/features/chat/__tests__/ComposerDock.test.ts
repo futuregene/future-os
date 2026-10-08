@@ -526,8 +526,9 @@ test("typing # opens the conversation picker and picking one writes the referenc
     expect(picker.props.groups.flatMap((group: { sessions: { sessionId: string }[] }) => group.sessions.map(item => item.sessionId)))
       .toEqual(["s3", "s2"]);
     act(() => picker.props.onSelect({ sessionId: "s2", title: "Fix the flaky test" }));
+    // The draft shows the compact token, the way the desktop's pill reads.
     expect(tree.root.findByType(TextInput).props.value)
-      .toBe("[Fix the flaky test](futureos://session/s2) ");
+      .toBe("#Fix the flaky test ");
     expect(tree.root.findAllByType(SessionPicker)).toHaveLength(0);
   } finally {
     act(() => tree.unmount());
@@ -612,6 +613,9 @@ test("both languages define the history retry label", () => {
 function baseProps(overrides: Record<string, unknown> = {}) {
   return {
     message: "", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
+    // The draft's conversation references (see `useComposerDraft`): the tests
+    // that exercise `#` override these.
+    sessionRefs: {}, rememberSessionRef: jest.fn(),
     supportsImages: true, activeModelLabel: "model", t: (key: string) => key,
     remote: {
       draft: false, selectedSessionId: "s1", desktopOnline: true,
