@@ -18,12 +18,13 @@ interface DraftTrigger {
    * (they live in their own table), and choosing it opens the editor below
    * instead of a date/time field.
    */
-  mode: "manual" | "dependency" | "once" | "interval" | "daily" | "weekly" | "monthly";
+  mode: "manual" | "dependency" | "once" | "interval" | "daily" | "weekly" | "monthly" | "yearly";
   date: string;
   time: string;
   everyMinutes: string;
   days: string;
   day: string;
+  month: string;
 }
 
 const defaultTrigger: DraftTrigger = {
@@ -33,6 +34,7 @@ const defaultTrigger: DraftTrigger = {
   everyMinutes: "60",
   days: "mon",
   day: "1",
+  month: "12",
 };
 
 /** Thinking levels the agent accepts, in the composer's order. */
@@ -82,6 +84,7 @@ function triggerFrom(detail: RemoteTaskDetail): DraftTrigger {
     everyMinutes: String(trigger.every_minutes ?? 60),
     days: Array.isArray(trigger.days) ? (trigger.days as string[]).join(",") : "mon",
     day: String(trigger.day ?? 1),
+    month: String(trigger.month ?? 12),
   };
 }
 
@@ -100,6 +103,16 @@ function triggerPayload(draft: DraftTrigger): { triggerKind: string; trigger: Re
     }
     case "monthly":
       return { triggerKind: "schedule", trigger: { mode: "monthly", day: Number(draft.day) || 1, time } };
+    case "yearly":
+      return {
+        triggerKind: "schedule",
+        trigger: {
+          mode: "yearly",
+          month: Number(draft.month) || 1,
+          day: Number(draft.day) || 1,
+          time,
+        },
+      };
     default:
       return { triggerKind: "schedule", trigger: { mode: "daily", time } };
   }
@@ -278,6 +291,12 @@ function summarize(
     }
     case "monthly":
       return t("tasks.trigger.monthly", {
+        day: Number(trigger.day ?? 1),
+        time,
+      });
+    case "yearly":
+      return t("tasks.trigger.yearly", {
+        month: Number(trigger.month ?? 1),
         day: Number(trigger.day ?? 1),
         time,
       });
@@ -915,7 +934,7 @@ function TaskForm({
 
             <SettingsSection title={t("tasks.form.trigger")}>
               <View style={settingsStyles.actions}>
-                {(["manual", "dependency", "once", "interval", "daily", "weekly", "monthly"] as const).map(mode => (
+                {(["manual", "dependency", "once", "interval", "daily", "weekly", "monthly", "yearly"] as const).map(mode => (
                   <Choice
                     disabled={busy}
                     key={mode}
@@ -951,6 +970,18 @@ function TaskForm({
                     <SettingsField label={t("tasks.form.days")} hint="mon,tue,wed">
                       <TextInput accessibilityLabel={t("tasks.form.days")} autoCapitalize="none" style={settingsStyles.input} value={trigger.days} onChangeText={days => patchTrigger({ days })} />
                     </SettingsField>
+                  )
+                : null}
+              {trigger.mode === "yearly"
+                ? (
+                    <>
+                      <SettingsField label={t("tasks.form.month")}>
+                        <TextInput accessibilityLabel={t("tasks.form.month")} keyboardType="number-pad" style={settingsStyles.input} value={trigger.month} onChangeText={month => patchTrigger({ month })} />
+                      </SettingsField>
+                      <SettingsField label={t("tasks.form.dayOfMonth")} hint={t("tasks.form.shortMonthHint")}>
+                        <TextInput accessibilityLabel={t("tasks.form.dayOfMonth")} keyboardType="number-pad" style={settingsStyles.input} value={trigger.day} onChangeText={day => patchTrigger({ day })} />
+                      </SettingsField>
+                    </>
                   )
                 : null}
               {trigger.mode === "monthly"
