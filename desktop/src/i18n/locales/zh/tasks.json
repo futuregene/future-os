@@ -119,7 +119,17 @@
     "conversationChat": "对话会话",
     "conversationModeHint": "对话会话出现在「对话」里，工作区就是它自己的临时目录，无需设置；工作区会话归档在工作目录下，需要指定目录。",
     "cwdPlaceholder": "选择文件夹，或直接输入路径",
-    "browse": "浏览"
+    "browse": "浏览",
+    "deps": "依赖触发",
+    "depsNone": "没有上游任务：本任务只按自己的触发器运行。",
+    "depAdd": "添加上游任务",
+    "depAddPlaceholder": "选择一个上游任务",
+    "depAddAction": "添加",
+    "depNoCandidates": "没有其它任务可以依赖；先新建一个上游任务。",
+    "depCondition": "{{name}} 的触发条件",
+    "depRemove": "移除对 {{name}} 的依赖",
+    "depRemoveShort": "移除",
+    "depJoin": "多个上游的到达条件"
   },
   "runNoSummary": "本次没有记录摘要。",
   "settings": "设置",

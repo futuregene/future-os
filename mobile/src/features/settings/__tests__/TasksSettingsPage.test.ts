@@ -38,6 +38,11 @@ const mockRemote = {
   runTask: jest.fn(async () => ({ ...detail })),
   setTaskEnabled: jest.fn(async () => ({ ...detail })),
   applyTaskRevision: jest.fn(async () => ({ ...detail })),
+  setTaskDep: jest.fn(async () => undefined),
+  removeTaskDep: jest.fn(async () => undefined),
+  // The dependency editor is gated on the desktop declaring it. Tests that want
+  // the editor replace this set; the rest exercise the older-desktop path.
+  capabilities: new Set<string>(["tasks_v1"]),
 };
 jest.mock("../../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
 jest.mock("lucide-react-native", () => ({ ChevronRight: "ChevronRight", ChevronDown: "ChevronDown" }));
@@ -130,6 +135,7 @@ async function remount() {
 beforeEach(async () => {
   jest.clearAllMocks();
   mockLanguage = "en";
+  mockRemote.capabilities = new Set(["tasks_v1"]);
   rows = [taskRow()];
   detail = taskDetail();
   runs = [{ id: "trn_1", kind: "main", origin: "schedule", status: "completed", threadId: "thr_1", startedAt: 1, finishedAt: 2, resultSummary: "all good", errorMessage: null }];
@@ -850,4 +856,93 @@ test("reports a delete the desktop refused, and stays on the task", async () => 
   await act(async () => button("tasks.deleteConfirmAction").props.onPress());
   expect(texts()).toContain("desktopSettings.loadFailed");
   expect(sections()).toContain("daily report");
+});
+
+// ─── dependency triggers ────────────────────────────────────────────────────
+
+// The editor writes the whole dependency set: kept edges are left alone, a
+// changed condition is one call, a dropped edge removed, a new one added.
+test("edits a task's dependencies and its join policy", async () => {
+  mockRemote.capabilities = new Set(["tasks_v1", "task_deps_v1"]);
+  rows = [
+    taskRow(),
+    taskRow({ id: "tsk_keep", name: "keep", triggerKind: "manual", trigger: {} }),
+    taskRow({ id: "tsk_change", name: "change", triggerKind: "manual", trigger: {} }),
+    taskRow({ id: "tsk_three", name: "upstream three", triggerKind: "manual", trigger: {} }),
+  ];
+  deps = [
+    { upstreamTaskId: "tsk_keep", upstreamName: "keep", on: "success", satisfied: false },
+    { upstreamTaskId: "tsk_change", upstreamName: "change", on: "success", satisfied: false },
+  ];
+  detail = taskDetail({ depJoin: "all" });
+  await remount();
+  await act(async () => firstTask().props.onPress());
+
+  expect(sections()).toContain("tasks.form.deps");
+  // The stored edges are listed with their conditions…
+  expect(texts().map(String).filter(text => text === "tasks.on.success").length).toBe(2);
+  // …and the first one ("keep") is switched to "after failure". The chip list
+  // is per edge, so the first failure chip belongs to the first edge.
+  await act(async () => chip("tasks.on.failure").props.onPress());
+
+  // A third task is added as an upstream: a new edge waits for success.
+  await act(async () => chip("upstream three").props.onPress());
+
+  // With several upstreams the join policy is offered; switch it to "any".
+  expect(texts()).toContain("tasks.form.depJoin");
+  await act(async () => chip("tasks.join.any").props.onPress());
+  await act(async () => button("tasks.form.save").props.onPress());
+
+  expect(mockRemote.updateTask).toHaveBeenCalledWith(
+    "tsk_1",
+    expect.objectContaining({ depJoin: "any" }),
+  );
+  expect(mockRemote.setTaskDep).toHaveBeenCalledWith("tsk_1", "tsk_keep", "failure");
+  expect(mockRemote.setTaskDep).toHaveBeenCalledWith("tsk_1", "tsk_three", "success");
+  // The edge that was not touched is not rewritten.
+  expect(mockRemote.setTaskDep).not.toHaveBeenCalledWith("tsk_1", "tsk_change", "success");
+  expect(mockRemote.removeTaskDep).not.toHaveBeenCalled();
+});
+
+test("removes an edge the user dropped", async () => {
+  mockRemote.capabilities = new Set(["tasks_v1", "task_deps_v1"]);
+  deps = [{ upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "success", satisfied: false }];
+  await remount();
+  await act(async () => firstTask().props.onPress());
+  await act(async () => button("tasks.form.depRemove:{\"name\":\"upstream\"}").props.onPress());
+  await act(async () => button("tasks.form.save").props.onPress());
+
+  expect(mockRemote.removeTaskDep).toHaveBeenCalledWith("tsk_1", "tsk_up");
+  expect(mockRemote.setTaskDep).not.toHaveBeenCalled();
+});
+
+test("does not offer the dependency editor on an older desktop", async () => {
+  deps = [{ upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "success", satisfied: false }];
+  await remount();
+  await act(async () => firstTask().props.onPress());
+  // The read-only list stays, the controls do not appear.
+  expect(texts()).toContain("tasks.form.depsUnsupported");
+  expect(texts()).not.toContain("tasks.form.depRemove:{\"name\":\"upstream\"}");
+  expect(mockRemote.setTaskDep).not.toHaveBeenCalled();
+});
+
+test("creates a task with an upstream it waits for", async () => {
+  mockRemote.capabilities = new Set(["tasks_v1", "task_deps_v1"]);
+  rows = [taskRow(), taskRow({ id: "tsk_up2", name: "upstream two", triggerKind: "manual", trigger: {} })];
+  await remount();
+  await act(async () => button("tasks.new").props.onPress());
+  await act(async () => input("tasks.form.name").props.onChangeText("downstream"));
+  await act(async () => input("tasks.form.prompt").props.onChangeText("p"));
+  await act(async () => chip("DeepSeek V4 Pro").props.onPress());
+  await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
+  // The candidate list offers the other task; adding it makes it an upstream.
+  await act(async () => chip("upstream two").props.onPress());
+  await act(async () => button("tasks.form.save").props.onPress());
+
+  expect(mockRemote.createTask).toHaveBeenCalledWith(expect.objectContaining({
+    name: "downstream",
+    depJoin: "all",
+  }));
+  // The edge is written against the created task's id.
+  expect(mockRemote.setTaskDep).toHaveBeenCalledWith("tsk_1", "tsk_up2", "success");
 });

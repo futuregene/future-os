@@ -119,7 +119,17 @@
     "conversationChat": "Chat conversation",
     "conversationModeHint": "A chat conversation appears under Chat and brings its own temporary working directory — nothing to set. A workspace conversation is filed under its working directory, so it needs one.",
     "cwdPlaceholder": "Pick a folder, or type a path",
-    "browse": "Browse"
+    "browse": "Browse",
+    "deps": "Dependency triggers",
+    "depsNone": "No upstream tasks: this task runs on its own trigger alone.",
+    "depAdd": "Add an upstream task",
+    "depAddPlaceholder": "Pick an upstream task",
+    "depAddAction": "Add",
+    "depNoCandidates": "There is no other task to depend on yet — create the upstream task first.",
+    "depCondition": "When {{name}} finishes",
+    "depRemove": "Remove the dependency on {{name}}",
+    "depRemoveShort": "Remove",
+    "depJoin": "With several upstreams, run"
   },
   "runNoSummary": "No summary recorded.",
   "settings": "Settings",
