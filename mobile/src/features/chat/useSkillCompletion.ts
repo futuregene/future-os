@@ -96,10 +96,24 @@ export function useSkillCompletion(message: string, setMessage: Dispatch<SetStat
       if (!query || !enabled) return;
       // Clear the typed command first: it is a control, not part of the draft.
       const next = removeSkillQuery(message, query);
-      setMessage(next.text);
-      setSelection(next.selection);
-      setInputSelection(next.selection);
-      setDismissed(true);
+      // An action may leave a token behind (see `SlashAction.insert`): the draft
+      // then reads as if the token had been typed, which is what opens the menu
+      // that token belongs to.
+      const placed = action.insert
+        ? {
+            text: `${next.text.slice(0, next.selection.start)}${action.insert}${next.text.slice(next.selection.start)}`,
+            selection: {
+              start: next.selection.start + action.insert.length,
+              end: next.selection.start + action.insert.length,
+            },
+          }
+        : next;
+      setMessage(placed.text);
+      setSelection(placed.selection);
+      setInputSelection(placed.selection);
+      // Keep the composer's menu open when the action handed over to another one
+      // — dismissing would close the conversation list before it was shown.
+      setDismissed(!action.insert);
       inputRef.current?.focus();
       onAction?.(action);
     },

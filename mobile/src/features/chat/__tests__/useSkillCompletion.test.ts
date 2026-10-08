@@ -145,6 +145,54 @@ test("an edit with nothing in common places the caret at the end", () => {
   expect(completion.selection).toEqual({ start: 3, end: 3 });
 });
 
+test("an action may hand over to another menu by leaving its token behind", () => {
+  // The `/` menu is how the phone reaches the `#` one: tapping "Reference a
+  // conversation" must leave `#` in the draft, because that token is what opens
+  // the conversation list. It must also keep the menu open — dismissing would
+  // close the list before it was ever shown.
+  const onAction = jest.fn();
+  function Harness() {
+    const [text, setText] = useState("");
+    const input = useRef({ focus } as unknown as TextInput);
+    const result = useSkillCompletion(text, setText, true, input, onAction);
+    useLayoutEffect(() => { message = text; completion = result; });
+    return null;
+  }
+  act(() => { tree = create(createElement(Harness)); });
+  act(() => completion.onFocus());
+  type("/ref");
+  expect(completion.query?.query).toBe("ref");
+  act(() => completion.runAction({
+    id: "reference",
+    label: "Reference a conversation",
+    description: "",
+    searchText: "#",
+    insert: "#",
+  }));
+  expect(message).toBe("#");
+  expect(completion.query).toBeNull();
+  expect(completion.session?.query).toBe("");
+  expect(onAction).toHaveBeenCalledTimes(1);
+  // The caret sits after the token, ready to narrow the conversation list.
+  expect(completion.selection).toEqual({ start: 1, end: 1 });
+});
+
+test("an action that leaves a token keeps the surrounding draft", () => {
+  function Harness() {
+    const [text, setText] = useState("看一下 ");
+    const input = useRef({ focus } as unknown as TextInput);
+    const result = useSkillCompletion(text, setText, true, input);
+    useLayoutEffect(() => { message = text; completion = result; });
+    return null;
+  }
+  act(() => { tree = create(createElement(Harness)); });
+  act(() => completion.onFocus());
+  act(() => completion.onChangeText("看一下 /ref"));
+  act(() => completion.runAction({ id: "reference", label: "", description: "", searchText: "", insert: "#" }));
+  expect(message).toBe("看一下 #");
+  expect(completion.selection).toEqual({ start: 5, end: 5 });
+});
+
 test("a slash action with no open query is ignored instead of clearing the draft", () => {
   const onAction = jest.fn();
   function ActionHarness() {
