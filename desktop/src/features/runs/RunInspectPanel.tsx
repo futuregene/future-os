@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type {
   StoredRun,
   StoredToolCall,
@@ -140,13 +141,12 @@ export function RunInspectPanel({
             <BackButton onBack={onBack} />
           )}
 
-      <ApprovalAssessments run={run} toolCallId={compact ? primaryTool?.id : undefined} />
-
       {compact
         ? (
             primaryTool
               ? (
                   <ToolCallDetail
+                    approval={<ApprovalAssessments className="mt-2" run={run} toolCallId={primaryTool.id} />}
                     fill
                     outputs={outputsByTool[primaryTool.id] ?? []}
                     showHeader={false}
@@ -225,6 +225,8 @@ export function RunInspectPanel({
                     )
                   : null}
               </section>
+
+              <ApprovalAssessments run={run} />
 
               <section className="space-y-2">
                 <label className="relative block">
@@ -327,12 +329,14 @@ function dispatchRunRecovery(run: StoredRun, action: "continue" | "retry") {
 }
 
 function ToolCallDetail({
+  approval,
   fill = false,
   outputs,
   showHeader = true,
   showStatus = true,
   tool,
 }: {
+  approval?: ReactNode;
   fill?: boolean;
   outputs: StoredToolOutput[];
   showHeader?: boolean;
@@ -390,6 +394,7 @@ function ToolCallDetail({
         noTopMargin={!showHeader}
         tool={tool}
       />
+      {approval}
       <div className="mt-2 shrink-0">
         <div className="mb-1 text-[11px] font-medium text-ink-muted">
           {details.command

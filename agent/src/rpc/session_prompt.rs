@@ -523,7 +523,11 @@ impl ServerSession {
                 .map(crate::sandbox::SandboxPolicy::from_mode)
         } else {
             self.sandbox_policy.clone()
-        };
+        }
+        .map(|policy| {
+            let signed_in = !policy.model_reviewer || crate::skill_reco::endpoint().is_some();
+            crate::approval_review::account_sandbox_policy(policy, signed_in)
+        });
 
         let cwd_path = std::path::Path::new(&run_cwd);
         crate::utils::ensure_workspace_accessible(
@@ -824,13 +828,15 @@ impl ServerSession {
         {
             run_loop.tool_review_annotations =
                 Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
-            approval_gate =
-                approval_gate.with_model_reviewer(crate::approval_review::ReviewContext::new(
+            approval_gate = approval_gate.with_model_reviewer(
+                crate::approval_review::ReviewContext::new(
                     prompt.message.to_string(),
                     run_loop.interrupt_flag(),
                     approval_gate.generation.clone(),
                     run_loop.tool_review_annotations.clone(),
-                ));
+                )
+                .with_user_history(&initial_messages[..initial_messages.len() - 1]),
+            );
         }
 
         // Build per-session StreamContext (callbacks) — these are session-

@@ -11,33 +11,59 @@ existing values. Auto sends `tier=sandbox, reviewer=model`; unsupported hosts us
 review while retaining the user's automatic preference. A Desktop checks the Agent's
 reviewer acknowledgment before accepting automatic mode. Remote mobile clients offer
 this mode only when the Desktop advertises `auto_approval_v1`.
+Automatic review requires a signed-in FutureOS account. Composer and Settings disable
+it while signed out, invalid, or checking sign-in. A saved automatic preference is
+persistently downgraded to sandbox on confirmed sign-out or invalid credentials; signing
+in again does not restore it. Temporary account verification failures retain the preference.
+Desktop settings writes and prompt setup also check for the Future credential. Agent policy
+configuration and queued/historical run snapshots remove the model reviewer when the
+credential is absent, preserving the OS sandbox and the existing human approval flow.
+If the sandbox is unavailable after that downgrade, the existing Manual fallback applies.
 
 Deterministic Allow/Deny rules run first. Only Ask requests invoke the classifier.
 The classifier uses the existing Future System One endpoint, account credential and
 `jev` route shared with skill recommendation. It answers three bounded Choices: risk,
-authorization and reason code. The Agent validates the probabilities, derives the unique
+authorization and reason code. The Agent validates the probabilities, derives the
 maximum when only probabilities are returned, and checks any supplied choice/confidence.
+Rounded ties are valid distributions but cannot meet the approval confidence threshold;
+any supplied choice must still be a maximum. Gateway `id` is retained as the provider request ID.
 The effective confidence is the more conservative selected probability and confidence.
 Provider text never grants execution permission.
 
-| Risk | Authorization required |
-| --- | --- |
-| low | any |
-| medium | medium or high |
-| high | high |
-| critical | never approved |
+| Risk | Allowed authorization probability (≥ 0.75) | Other confidence required (≥ 0.75) |
+| --- | --- | --- |
+| low | P(low) + P(medium) + P(high) | risk and reason |
+| medium | P(medium) + P(high) | risk and reason |
+| high | P(high) | risk and reason |
+| critical | never approved | — |
 
 The reason catalog has 12 entries. Specific reasons impose minimum risk; scope mismatch
 caps authorization at low. Insufficient information produces an uncertain denial.
-Approval additionally requires all three confidences at least 0.75. The total deadline
+Policy version 2 measures authorization support by summing the permitted outcomes of
+the validated probability distribution; Unknown is excluded for every risk level.
+The native confidence describes certainty in an individual authorization label and is
+preserved for audit, without being used to scale this combined probability. The sum is
+stored as `confidence.authorization_support`. Thus a distribution of High 49%, Medium
+19%, Low 31%, Unknown 1% supports Low-risk approval at 99%, but supports Medium at 68%
+and High at 49%, which remain uncertain denials. Reason risk floors and scope mismatch
+denials run first, and risk/reason confidence still must reach 0.75. The total deadline
 is 30 seconds, including semaphore waits and one transient retry. There are four global
 review slots. Cancellation, changed execution context, malformed responses, authentication
 and transport errors deny execution. Three denied attempts for the same tool and coarse
 target scope in a Run stop further model calls.
 
-Trusted authorization currently uses the current user message. Assistant plans, tool
-output, repository text and attachments do not authorize actions. Ambiguous follow-ups
-must remain uncertain or weakly authorized. Historical user context is a later improvement.
+Trusted authorization uses the current user message and an immutable snapshot of up to
+16 preceding original user messages, in chronological order, within a total 32 KiB text
+budget. Later instructions override earlier permissions. Only the visible first text
+block is included: assistant plans, tool output, model compaction summaries, injected
+sidecars, repository text and attachments do not authorize actions. History is a contiguous
+suffix of whole messages; omitted history is flagged and unresolved references remain
+uncertain. Prompt version 3 treats an ordinary new filename or harmless sample text
+as delegated implementation details when the user explicitly requests a test file and
+leaves these unspecified. Explicit names, content, revocations and restrictions still
+govern; sensitive data, recipients and destructive targets require exact authorization.
+Omitted file bodies alone do not prove an authorization gap. Reason catalog version 2
+distinguishes ordinary local user-file actions outside the workspace from remote writes.
 Whole-command sandbox escape retains the existing sandbox implementation and is improved
 with the sandbox separately; it is not an automatic-approval prerequisite.
 
@@ -56,7 +82,12 @@ the assessment. The table indexes run/time; JSON payload contains reported/effec
 classification, probabilities, confidences, sanitized action, digest, versions, model,
 provider request identity, duration and stable error code. Replay is idempotent and foreign
 keys cascade cleanup. Fresh and upgraded databases use migration `v1.2.2-auto-approval`.
-Runs detail shows the decision, risk, authorization, reason, confidence and audit details.
+Runs detail shows the decision, effective risk and authorization, with a short localized
+explanation when an action was not run. It appears after the basic run/tool information and before results, using the existing
+tool metadata card styles.
+Probabilities, confidence scores, raw actions, model identity and audit versions remain in
+the database for diagnosis and are not displayed in the product UI. Historical decisions
+are never recalculated or rewritten.
 
 ## Code and validation
 

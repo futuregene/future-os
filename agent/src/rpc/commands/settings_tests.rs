@@ -931,3 +931,23 @@ fn set_cwd_persists_successfully_on_disk_session() {
     assert_eq!(resp["success"], true);
     assert_eq!(resp["data"]["cwd"], "/tmp/persisted-cwd");
 }
+
+#[test]
+fn set_sandbox_policy_downgrades_automatic_review_without_future_account() {
+    let _home = TestHome::new();
+    let state = make_app_state();
+    let mut cmd = make_cmd("set_sandbox_policy");
+    cmd.sandbox_policy = Some(crate::sandbox::SandboxPolicy::from_mode("auto"));
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["configuredMode"], "auto");
+    assert_eq!(resp["data"]["reviewer"], "user");
+    assert_ne!(resp["data"]["effectiveMode"], "auto");
+    let expected = if resp["data"]["sandboxAvailable"] == true {
+        "sandbox"
+    } else {
+        "manual"
+    };
+    assert_eq!(resp["data"]["tier"], expected);
+    assert_eq!(resp["data"]["fallback"], expected);
+}

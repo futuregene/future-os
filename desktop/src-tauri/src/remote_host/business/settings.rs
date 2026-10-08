@@ -164,10 +164,16 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
         "set_approval_tier" => {
-            let tier = if cmd.tier == "sandbox" || cmd.tier == "auto" {
+            let requested_tier =
+                if cmd.tier == "auto" && crate::future_login::future_api_key().is_err() {
+                    "sandbox"
+                } else {
+                    &cmd.tier
+                };
+            let tier = if requested_tier == "sandbox" || requested_tier == "auto" {
                 match product_sandbox_available().await {
-                    Ok(true) => cmd.tier.clone(),
-                    Ok(false) if cmd.tier == "auto" => cmd.tier.clone(),
+                    Ok(true) => requested_tier.to_string(),
+                    Ok(false) if requested_tier == "auto" => requested_tier.to_string(),
                     Ok(false) => "manual".to_string(),
                     Err(error) => {
                         reply(sink, false, Value::Null, Some(&error.to_string())).await;
@@ -175,7 +181,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     }
                 }
             } else {
-                cmd.tier.clone()
+                requested_tier.to_string()
             };
             match crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
                 approval_tier: Some(tier),

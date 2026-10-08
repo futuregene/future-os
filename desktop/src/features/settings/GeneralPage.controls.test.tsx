@@ -49,6 +49,7 @@ function mount(overrides: Partial<React.ComponentProps<typeof GeneralPage>> = {}
   roots.push({ container, root });
   const props = {
     approvalTier: "off" as const,
+    futureSessionStatus: "authenticated",
     onChangeApprovalTier: vi.fn(),
     autoUpgradeSkills: false,
     onToggleAutoUpgradeSkills: vi.fn(),
@@ -117,6 +118,14 @@ describe("generalPage approval tier picker", () => {
     expect(onChangeApprovalTier).toHaveBeenLastCalledWith("manual");
     choose(tier, "auto");
     expect(onChangeApprovalTier).toHaveBeenLastCalledWith("auto");
+  });
+
+  it.each(["signed_out", "invalid", "checking"])("gates automatic review for %s without changing a pending preference", (futureSessionStatus) => {
+    const { container } = mount({ approvalTier: "auto", futureSessionStatus });
+    const tier = select(container, 1);
+    expect(tier.value).toBe(futureSessionStatus === "checking" ? "auto" : "sandbox");
+    expect([...tier.options].find(option => option.value === "auto")!.disabled).toBe(true);
+    expect([...tier.options].find(option => option.value === "sandbox")!.disabled).toBe(false);
   });
 
   it("enables the sandbox option when the sandbox is available", () => {

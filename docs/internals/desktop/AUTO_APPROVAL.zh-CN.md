@@ -6,14 +6,24 @@
 启用。复用技能推荐的 Future System One API、账号凭据和 `jev` 路由，包装三个 Choice。
 整条命令脱沙箱沿用现有沙箱设计，后续随沙箱改进，不作为本功能前置条件。
 
-首版默认：confidence ≥ 0.75、总预算 30 秒、瞬时失败重试一次、全进程最多四项评估，
+首版默认：参与放行决策的 confidence ≥ 0.75、总预算 30 秒、瞬时失败重试一次、全进程最多四项评估，
 medium + medium 允许，critical 始终拒绝。同一 Run 同工具与粗粒度目标范围累计三次拒绝后
-停止调用模型。可信上下文目前仅使用本次用户消息；含糊的续问应返回不确定或低授权，
-不从模型计划、工具输出和仓库文本补充授权。后续可扩展用户消息历史并独立评测。
+停止调用模型。可信上下文使用本次用户消息和最多 16 条先前原始用户消息的不可变快照，
+按时间顺序解释“同样的文件”“再试一次”等续问，后续指令覆盖先前授权。用户文本总预算
+32 KiB，仅保留完整消息组成的最近连续后缀，历史被省略时明确标记；缺少引用依据仍应返回
+不确定或低授权。仅取用户消息首个可见文本块，不把模型摘要、注入上下文、附件清单、
+模型计划、工具输出或仓库文本作为授权。Prompt 版本 3 将用户明确要求测试文件时未指定的
+普通新文件名和无害示例内容视为委托的实现细节；明确指定的内容、名称和限制仍须遵守，
+敏感数据、接收方和破坏性目标仍须精确授权。宿主省略文件正文不单独构成授权缺失。
+Reason catalog 版本 2 区分普通本地用户文件操作与远程写入。Policy 版本 2 保留矩阵和
+0.75 阈值，risk/reason_code 仍使用分类置信度，授权改为允许集合的概率之和：low 为
+P(high)+P(medium)+P(low)，medium 为 P(high)+P(medium)，high 为 P(high)。Unknown 不计入。
 
 生产路由沿用已跑通的 `jev` 别名，记录网关返回的模型版本；网关未返回时记录请求别名，
 不伪造服务端版本。三项完整概率分布必须有效且存在唯一最高值，网关仅返回 probabilities
 时本地提取选择及 confidence；提供 choice/confidence 时继续校验一致性，取更保守置信度。
+允许舍入概率造成的最大值并列，提供的 choice 仍须属于最大值；并列结果无法达到自动
+放行阈值。网关返回的 `id` 作为 provider request ID 保存。
 
 审查日期：2026-09-22，源码基线为 `2af42f71`。本文以该基线的审批、沙箱、事件和 Desktop
 持久化实现为基线，定义 FutureOS Desktop 的自动审批方案。现有公共审批规则和各平台
@@ -25,6 +35,12 @@ medium + medium 允许，critical 始终拒绝。同一 Run 同工具与粗粒�
 本文中的“审批模型”指 Jev System One 或提供同等 Choice、概率和置信度语义的实现。
 首版按 Jev 的能力设计，但通过内部 `ApprovalReviewer` 接口隔离供应商，不能把供应商
 响应格式直接扩散到工具、事件、数据库或 GUI。
+
+自动审批依赖已登录的 FutureOS 账号。未登录、登录失效或正在检查登录时，输入框和
+设置中的自动审批选项不可选。确认未登录或登录失效后，已保存的 auto 设置持久降级为
+sandbox；重新登录不会自行恢复 auto。临时网络验证失败保留原设置。
+Desktop 设置写入和发送请求时校验 Future 凭据；Agent 设置入口及历史/排队请求快照在
+凭据缺失时移除模型审批，保留沙盒和人工审批。沙盒不可用时沿用既有 manual 降级逻辑。
 
 ## 1. 目标与非目标
 
@@ -351,8 +367,8 @@ category can be selected reliably. Do not infer critical from uncertainty alone.
 
 | code | 主要场景 | 最低风险 |
 | --- | --- | --- |
-| `routine_bounded_action` | 偶尔进入 Ask 的普通、局部操作；正常 workspace 放行请求不送审 | `low` |
-| `bounded_external_side_effect` | workspace 外范围明确的普通写入、配置调整或非敏感数据传输 | `medium` |
+| `routine_bounded_action` | 普通局部读取或用户文件创建、复制、编辑，包括工作区外的本地目录；正常 workspace 放行请求不送审 | `low` |
+| `bounded_external_side_effect` | 超出普通本地用户文件操作的远程服务写入、配置调整或非敏感数据传输 | `medium` |
 | `authorization_scope_mismatch` | 行为、目标或范围超出可信指令；effective authorization 上限为 low | `high` |
 | `protected_secret_access` | 读取、修改或使用受保护凭据与密钥 | `high` |
 | `sensitive_data_transfer` | 将敏感资料或凭据传给另一个明确接收方 | `high` |
@@ -454,8 +470,8 @@ if reason == AuthorizationScopeMismatch {
 }
 ```
 
-其他 code 不额外修改 authorization。界面同时保存 `reported_*` 与
-`effective_*`，正常摘要展示 effective 值；高级详情可说明发生了目录校正。
+其他 code 不额外修改 authorization。审计记录同时保存 `reported_*` 与
+`effective_*`，界面展示 effective 值。
 
 多个原因同时成立时，优先使用有事实依据的 critical 原因；其次使用已确认的授权范围
 不匹配；其余选择最能解释实际影响的具体原因。例如传输密钥优先 sensitive_data_transfer，
@@ -483,8 +499,15 @@ insufficient_information，不为得到某种决定而猜选原因。
 首版建议门槛 `0.75`，最终值必须用真实审批样本校准：
 
 - 如果矩阵结果本来是拒绝，低置信度不能把它改成批准。
-- 如果矩阵结果是批准，`risk`、`authorization` 或 `reason_code` 任一相关 Choice 的
-  confidence 低于门槛，终态为 `review_uncertain`，按拒绝处理。
+- 如果矩阵结果是批准，policy_version=2 要求 risk/reason_code 的 confidence 均达到
+  门槛；授权使用 effective risk 对应允许集合的概率和：low=high+medium+low，
+  medium=high+medium，high=high，unknown 均不计入。概率和也必须 ≥0.75。
+  原始授权 confidence 衡量单个档位的确定性，继续保存但不参与允许集合概率的计算或缩放；
+  概率和存入 `confidence.authorization_support`。例如 high 49%、medium 19%、low 31%、
+  unknown 1%，low 的允许授权概率为 99%，medium 为 68%，high 为 49%；后两者不放行。
+  任一必需项低于门槛，终态为 `review_uncertain`，按拒绝处理。原因对应的风险下限先于
+  此检查，所以授权范围不匹配、敏感传输、破坏性操作不会绕过各自的授权要求。
+  历史 policy_version=1 使用三项统一门槛，不重算或改写历史决定。
 - 如果 provider 只给 probabilities，则使用所选 choice 的概率作为该问题 confidence；
   若两者都给，原样保存并按适配器定义生成统一 confidence。
 - 缺少 confidence 视为不满足自动放行门槛。
@@ -693,29 +716,16 @@ CREATE INDEX IF NOT EXISTS approval_assessments_run ON approval_assessments(run_
 自动审批不显示在聊天信息流，也不生成 composer 上方卡片。Runs 详情新增“审批评估”区，
 只在该 Run 存在 assessment 时出现。
 
-列表项默认显示：
+审批卡片位于任务基本信息之后、运行结果之前。卡片显示审批结果、有效风险和有效授权
+等级；未执行的操作附简短本地化原因。
+沿用工具信息卡片的底色、边框、圆角、字号和间距。
 
-- 结果：已通过 / 已拒绝 / 不确定 / 评估失败 / 已取消；
-- effective risk；
-- effective authorization；
-- reason code 的本地化短说明；
-- 对应工具和目标摘要；
-- 评估时间。
-
-展开后显示：
-
-- 精确 action：命令、路径、外部目标和沙箱边界；
-- reported 与 effective 值，以及是否被 reason code 校正；
-- 审批者 `模型`、模型版本、prompt/reason/policy 版本；
-- 三项 confidence 和可选 probabilities；
-- duration、attempt、error code、action digest 前 12 位；
-- “此评估没有执行工具；实际执行结果见对应工具调用”提示。
+概率、置信度、原始 action、模型信息、版本、digest 和 provider 错误码只保存在审计
+数据库中，产品界面不展示。实际命令、路径和执行结果继续由对应工具详情展示。
 
 交互约束：
 
-- 默认折叠命令和长路径；敏感值继续脱敏。
-- reason code 用中文解释，但提供复制稳定 code 的入口。
-- `review_error` 展示可操作的本地化错误，不直接展示 provider 原文。
+- 拒绝原因使用用户能理解的本地化说明，不展示稳定 code 或 provider 原文。
 - 自动拒绝后主模型的后续尝试分别显示，不能把多个 action 合并成一个误导性的结论。
 - 人工审批可以继续显示在既有位置；Runs 详情按实际 reviewer 标记“用户/模型/规则/系统”。
 - 本区只读，不提供“改成允许”“重放决定”或“以后都允许”。
@@ -862,7 +872,7 @@ rationale，也不直接决定执行。这样既适合 Jev 这类 choice-only �
    在 GUI 默认展示。用来校准目录和阈值。
 2. **Internal opt-in**：auto 只对内部用户开放，按矩阵允许 high + high；critical、授权不足
    和所有异常均不执行；观察误判、延迟和重复尝试。
-3. **Public opt-in**：设置中显式选择 auto，保持非默认；Runs 详情提供完整审计。
+3. **Public opt-in**：设置中显式选择 auto，保持非默认；Runs 详情提供简洁的审批结果，完整审计保存在数据库。
 4. **范围扩展**：只有评测支持时，才考虑新增 reason code、调整 medium 策略或支持其他
    reviewer provider。任何放宽都升级 policy version。
 

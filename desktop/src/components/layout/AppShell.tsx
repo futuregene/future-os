@@ -113,9 +113,6 @@ function ReadyAppShell({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
 
-  const { appSettings, changeSettings } = useAppSettings();
-  useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
-  useAgentDoneBell(appSettings.bellOnComplete);
   const { hasUpdate, cachedStatus, markSeen: markUpdateSeen } = useUpdateChecker();
   // Drives the onboarding gate below. Kept with the other top-level hooks so
   // the early returns further down stay after every hook call (rules of hooks).
@@ -127,6 +124,9 @@ function ReadyAppShell({
     refreshBalance: refreshFutureBalance,
     status: futureSessionStatus,
   } = useFutureAccount(initialAuth);
+  const { appSettings, changeSettings } = useAppSettings(futureSessionStatus);
+  useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
+  useAgentDoneBell(appSettings.bellOnComplete);
   const { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initPending } = useHasProviders(futureSessionStatus, initialProviders);
 
   const windowWidth = useWindowWidth();

@@ -514,6 +514,8 @@ pub(crate) fn handle_set_sandbox_policy(
         },
     };
     let configured_mode = policy.mode().to_string();
+    let account_fallback = policy.model_reviewer && crate::skill_reco::endpoint().is_none();
+    policy = crate::approval_review::account_sandbox_policy(policy, !account_fallback);
     let requested_tier = policy.tier.as_str().to_string();
     let fallback = requested_tier == "sandbox" && !probe.available;
     if fallback {
@@ -530,7 +532,7 @@ pub(crate) fn handle_set_sandbox_policy(
         "sandboxAvailable": probe.available,
         "sandboxCode": probe.code,
         "sandboxBackend": probe.backend,
-        "fallback": if fallback { Some("manual") } else { None },
+        "fallback": if fallback { Some("manual") } else if account_fallback { Some("sandbox") } else { None },
     });
     session.write().set_sandbox_policy(policy);
     let sess = session.read();

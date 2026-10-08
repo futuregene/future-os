@@ -172,6 +172,17 @@ pub async fn set_agent_sandbox_policy_tier(
     session_id: &str,
     tier: &str,
 ) -> Result<(), crate::AppError> {
+    // Reconcile historical sessions even when no webview is active, or logout
+    // happened after the frontend last checked the account.
+    let tier = if tier == "auto" && crate::future_login::future_api_key().is_err() {
+        store::update_app_settings(store::UpdateAppSettingsInput {
+            approval_tier: Some("sandbox".to_string()),
+            ..Default::default()
+        })?;
+        "sandbox"
+    } else {
+        tier
+    };
     let policy = crate::agent_proto::SandboxPolicy {
         tier: if tier == "auto" { "sandbox" } else { tier }.to_string(),
         reviewer: if tier == "auto" { "model" } else { "user" }.to_string(),
@@ -1343,6 +1354,7 @@ mod tests {
     #[tokio::test]
     async fn auto_is_orthogonal_to_tier_and_preserved_when_unavailable() {
         let _home = TestHome::new("auto_policy");
+        crate::auth_store::set_future_login("fixture-key", "https://future.example/api").unwrap();
         crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
             approval_tier: Some("auto".into()),
             ..Default::default()
@@ -1382,5 +1394,80 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("automatic approval"));
+    }
+
+    #[tokio::test]
+    async fn saved_auto_downgrades_after_logout_and_stays_sandbox_on_login() {
+        let _home = TestHome::new("auto_logout");
+        crate::auth_store::set_future_login("fixture-key", "https://future.example/api").unwrap();
+        store::update_app_settings(store::UpdateAppSettingsInput {
+            approval_tier: Some("auto".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        crate::auth_store::clear_future_key().unwrap();
+        let (mock, mut client) = mock_client().await;
+        mock.push(
+            "set_sandbox_policy",
+            Reply::Data(r#"{"sandboxAvailable":true,"reviewer":"user"}"#.into()),
+        );
+        set_agent_sandbox_policy(&mut client, "historical-session", "thread")
+            .await
+            .unwrap();
+        assert_eq!(store::get_app_settings().unwrap().approval_tier, "sandbox");
+        let request = mock.requests_of("set_sandbox_policy")[0]
+            .sandbox_policy
+            .clone()
+            .unwrap();
+        assert_eq!(request.tier, "sandbox");
+        assert_eq!(request.reviewer, "user");
+        // Stale UI/remote requests cannot persist automatic review while signed out.
+        assert_eq!(
+            store::update_app_settings(store::UpdateAppSettingsInput {
+                approval_tier: Some("auto".into()),
+                ..Default::default()
+            })
+            .unwrap()
+            .approval_tier,
+            "sandbox"
+        );
+        crate::auth_store::set_future_login("fixture-key", "https://future.example/api").unwrap();
+        mock.push(
+            "set_sandbox_policy",
+            Reply::Data(r#"{"sandboxAvailable":true,"reviewer":"user"}"#.into()),
+        );
+        set_agent_sandbox_policy(&mut client, "historical-session", "thread")
+            .await
+            .unwrap();
+        assert_eq!(
+            mock.requests_of("set_sandbox_policy")[1]
+                .sandbox_policy
+                .as_ref()
+                .unwrap()
+                .reviewer,
+            "user"
+        );
+    }
+
+    #[tokio::test]
+    async fn logged_out_auto_uses_manual_when_the_sandbox_is_unavailable() {
+        let _home = TestHome::new("auto_logout_without_sandbox");
+        let (mock, mut client) = mock_client().await;
+        mock.push(
+            "set_sandbox_policy",
+            Reply::Data(r#"{"sandboxAvailable":false,"reviewer":"user"}"#.into()),
+        );
+        mock.push("set_sandbox_policy", Reply::Data("{}".into()));
+        set_agent_sandbox_policy_tier(&mut client, "historical-session", "auto")
+            .await
+            .unwrap();
+        let policies = mock.requests_of("set_sandbox_policy");
+        assert_eq!(policies[0].sandbox_policy.as_ref().unwrap().tier, "sandbox");
+        assert_eq!(
+            policies[0].sandbox_policy.as_ref().unwrap().reviewer,
+            "user"
+        );
+        assert_eq!(policies[1].sandbox_policy.as_ref().unwrap().tier, "manual");
+        assert_eq!(store::get_app_settings().unwrap().approval_tier, "manual");
     }
 }

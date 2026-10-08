@@ -60,6 +60,7 @@ function render() {
   act(() => root.render(
     <Composer
       approvalTier="sandbox"
+      futureSessionStatus="authenticated"
       modelId="m1"
       modelOptions={MODELS}
       onChangeApprovalTier={vi.fn()}
@@ -130,5 +131,5 @@ describe("approval-tier description by platform", () => {
 it("describes automatic review when the sandbox is available", async () => {
   render();
   await openTierMenu();
-  expect(container.textContent).toContain("model reviews boundary requests");
+  expect(container.textContent).toContain("Reviews actions automatically");
 });

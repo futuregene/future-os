@@ -32,6 +32,9 @@ const h = vi.hoisted(() => ({
   },
 }));
 
+vi.mock("../../integrations/agent/useSandboxAvailability", () => ({
+  useSandboxAvailability: () => ({ available: true, definitive: true, resolved: true }),
+}));
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
 }));
@@ -73,7 +76,7 @@ let root: Root;
 
 function render(over: Partial<Parameters<typeof Composer>[0]> = {}) {
   act(() => root.render(
-    <Composer modelId="m1" modelOptions={MODELS} onSend={vi.fn(async () => {})} {...over} />,
+    <Composer futureSessionStatus="authenticated" modelId="m1" modelOptions={MODELS} onSend={vi.fn(async () => {})} {...over} />,
   ));
 }
 
@@ -149,21 +152,19 @@ async function click(element: HTMLElement | null | undefined) {
   });
 }
 
-it("shows the tier glyph for each approval setting", () => {
-  // platform-cfg: the sandbox tier is Windows/Linux-specific; the glyph family is
-  // question → check → off, and it must follow the setting it names.
-  const cases: [ApprovalTier, string][] = [
-    ["off", "Unrestricted"],
-    ["manual", "Manual"],
-    ["sandbox", "Sandboxed"],
-    ["auto", "Automatic review"],
+it("shows the tier glyph for each approval setting", async () => {
+  const cases: [ApprovalTier, string, string][] = [
+    ["off", "Unrestricted", "shield-off"],
+    ["manual", "Manual", "shield-question-mark"],
+    ["sandbox", "Sandboxed", "shield-keyhole"],
+    ["auto", "Automatic review", "shield-check"],
   ];
-  for (const [tier, label] of cases) {
+  for (const [tier, label, icon] of cases) {
     render({ approvalTier: tier, onChangeApprovalTier: vi.fn() });
+    await flush();
     const row = trigger("Approval mode");
     expect(row.textContent).toContain(label);
-    // Each tier has its own glyph, and only one is rendered in the trigger.
-    expect(row.querySelectorAll("svg").length).toBeGreaterThanOrEqual(1);
+    expect(row.querySelector(`.lucide-${icon}`)).not.toBeNull();
   }
 });
 
@@ -173,7 +174,10 @@ it("lists every approval tier, marks the current one and reports a change", asyn
 
   await click(trigger("Approval mode"));
   expect(menuItems().length).toBe(4);
-  expect(menuItems().find(row => row.textContent?.includes("Automatic review"))?.textContent).not.toContain("composer.approvalTierDesc.auto");
+  const automatic = menuItems().find(row => row.textContent?.includes("Automatic review"))!;
+  expect(automatic.textContent).not.toContain("composer.approvalTierDesc.auto");
+  expect(automatic.querySelector(".lucide-shield-check")).not.toBeNull();
+  expect(automatic.querySelector(".lucide-shield-keyhole")).toBeNull();
   // Pick by label rather than position: the row order is not part of the
   // contract, but each tier must be reachable and report its own value.
   const unrestricted = menuItems().find(row => row.textContent?.includes("Unrestricted"))!;
@@ -181,6 +185,27 @@ it("lists every approval tier, marks the current one and reports a change", asyn
   expect(unrestricted.querySelector("svg")).not.toBeNull();
   await click(unrestricted);
   expect(onChangeApprovalTier).toHaveBeenCalledWith("off");
+});
+
+it.each(["signed_out", "invalid", "checking"])("gates automatic review for %s without treating a pending check as logout", async (futureSessionStatus) => {
+  const onChangeApprovalTier = vi.fn();
+  render({ approvalTier: "auto", futureSessionStatus, onChangeApprovalTier });
+  expect(trigger("Approval mode").textContent).toContain(futureSessionStatus === "checking" ? "Automatic review" : "Sandboxed");
+  await click(trigger("Approval mode"));
+  const automatic = menuItems().find(row => row.textContent?.includes("Automatic review"))!;
+  const sandbox = menuItems().find(row => row.textContent?.includes("Sandboxed"))!;
+  expect(automatic.disabled).toBe(true);
+  expect(automatic.textContent).toContain(futureSessionStatus === "checking" ? "Checking sign-in" : "Sign in to FutureOS");
+  expect(sandbox.disabled).toBe(false);
+  await click(automatic);
+  expect(onChangeApprovalTier).not.toHaveBeenCalled();
+});
+
+it("retains automatic review during temporary account verification failures", async () => {
+  render({ approvalTier: "auto", futureSessionStatus: "unavailable", onChangeApprovalTier: vi.fn() });
+  expect(trigger("Approval mode").textContent).toContain("Automatic review");
+  await click(trigger("Approval mode"));
+  expect(menuItems().find(row => row.textContent?.includes("Automatic review"))!.disabled).toBe(false);
 });
 
 it("closes the other panels when one is opened", async () => {
