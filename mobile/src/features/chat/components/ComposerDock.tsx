@@ -142,14 +142,40 @@ function ComposerDockView({
     && !compacting && !remote.busy && !remote.draft && !!remote.selectedSessionId
     && remote.desktopOnline && remote.connectionPresentation.level === "connected"
     && !remote.streaming;
-  const slashActions = useMemo<SlashAction[]>(() => compactionActionEnabled
-    ? [{
-      id: "compact",
-      label: t("chat.compactContext"),
-      description: t("chat.compactContextDescription"),
-      searchText: "compact compaction compress context 压缩 上下文",
-    }]
-    : [], [compactionActionEnabled, t]);
+  // Whether any conversation can be referenced at all (the same filter the `#`
+  // menu's own grouping applies). The `/` menu offers the reference entry only
+  // when it leads somewhere — a row that opens an empty list is a dead end.
+  const canReference = useMemo(
+    () => (remote.sessions ?? []).some(
+      session => session.sessionId && session.sessionId !== remote.selectedSessionId,
+    ),
+    [remote.sessions, remote.selectedSessionId],
+  );
+  const slashActions = useMemo<SlashAction[]>(() => {
+    const actions: SlashAction[] = [];
+    if (canReference) {
+      // The phone has no `#` key to speak of (it sits on the keyboard's symbol
+      // page) while `/` has a button of its own, so the reference would be
+      // unreachable in practice. Leaving `#` in the draft hands over to the
+      // conversation menu — the same hand-off the desktop gets by typing it.
+      actions.push({
+        id: "reference",
+        label: t("chat.referenceConversation"),
+        description: t("chat.referenceConversationDescription"),
+        searchText: "reference session conversation 引用 会话 对话 #",
+        insert: "#",
+      });
+    }
+    if (compactionActionEnabled) {
+      actions.push({
+        id: "compact",
+        label: t("chat.compactContext"),
+        description: t("chat.compactContextDescription"),
+        searchText: "compact compaction compress context 压缩 上下文",
+      });
+    }
+    return actions;
+  }, [canReference, compactionActionEnabled, t]);
   const handleSlashAction = useCallback((action: SlashAction) => {
     if (action.id === "compact" && compactionActionEnabled) onCompactContext?.();
   }, [compactionActionEnabled, onCompactContext]);
