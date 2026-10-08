@@ -99,6 +99,20 @@ fn premerge_gate_seeds_a_real_fixture_and_reports_its_checks() {
         1,
         "re-seeding must not duplicate the fixture: {again:?}"
     );
+    // …and it stays idempotent across a second boundary. The events carry
+    // `now_epoch()`, so a re-seed one second later is a *different* event whose
+    // content-derived id is not deduped — this is what the assertion above
+    // cannot see when the two calls land in the same second (the flake that
+    // made this test fail on CI: two fixture todos, indexes 1 and 2).
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    seed_premerge_fixture(&mut store).unwrap();
+    let crossed = store.replay(&fixture_id).unwrap().unwrap();
+    assert_eq!(
+        crossed.todos.len(),
+        1,
+        "a re-seed after a second boundary must not duplicate the fixture: {crossed:?}"
+    );
+    assert_eq!(crossed.todos[0].id, "T1");
 
     // The gate runs the real smoke checks over that root.
     let report = run_premerge_gate_in(&cr.root).unwrap();
