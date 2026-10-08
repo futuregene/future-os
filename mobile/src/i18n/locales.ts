@@ -756,6 +756,7 @@ export const resources = {
         revisions: "Prompt versions",
         trigger: {
           manual: "Manual",
+          dependency: "Dependency",
           every: "Every {{minutes}} min",
           everyHours: "Every {{hours}} h",
           everyDays: "Every {{days}} d",
@@ -764,6 +765,7 @@ export const resources = {
         },
         triggerMode: {
           manual: "Manual",
+          dependency: "Dependency",
           once: "Once",
           interval: "Interval",
           daily: "Daily",
@@ -820,7 +822,8 @@ export const resources = {
           reflectionHint: "No suggestions are generated yet. The versions below come only from your own edits.",
           prompt: "Prompt",
           deps: "Dependency triggers",
-          depsNone: "No upstream tasks: this task runs on its own trigger alone.",
+          depsNone: "No upstream tasks yet: add one and this task runs when it finishes.",
+          depsAlongsideSchedule: "This task also has its own schedule; it runs when the upstreams below finish too.",
           depsUnsupported: "Update FutureOS Desktop to set dependencies here. The current ones are listed below.",
           depNoCandidates: "There is no other task to depend on yet — create the upstream task first.",
           depRemove: "Remove the dependency on {{name}}",
@@ -1546,6 +1549,7 @@ export const resources = {
         revisions: "提示词版本",
         trigger: {
           manual: "手动",
+          dependency: "依赖触发",
           every: "每 {{minutes}} 分钟",
           everyHours: "每 {{hours}} 小时",
           everyDays: "每 {{days}} 天",
@@ -1554,6 +1558,7 @@ export const resources = {
         },
         triggerMode: {
           manual: "手动",
+          dependency: "依赖触发",
           once: "一次性",
           interval: "间隔",
           daily: "每天",
@@ -1611,7 +1616,8 @@ export const resources = {
           reflectionHint: "目前还不会自动生成建议；下面的版本只来自你自己的修改。",
           prompt: "提示词",
           deps: "依赖触发",
-          depsNone: "没有上游任务：本任务只按自己的触发器运行。",
+          depsNone: "还没有上游任务：添加一个，本任务就会在它完成后运行。",
+          depsAlongsideSchedule: "本任务还有定时触发；下面的上游完成后它也会运行。",
           depsUnsupported: "请更新 FutureOS 桌面端，才能在这里设置依赖；当前依赖见下方列表。",
           depNoCandidates: "没有其它任务可以依赖；先新建一个上游任务。",
           depRemove: "移除对 {{name}} 的依赖",

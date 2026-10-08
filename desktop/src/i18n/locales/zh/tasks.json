@@ -30,6 +30,7 @@
   "confidence": "置信度 {{value}}%",
   "trigger": {
     "manual": "手动",
+    "dependency": "依赖触发",
     "every": "每 {{minutes}} 分钟",
     "daily": "每天",
     "monthly": "每月 {{day}} 日 {{time}}",
@@ -39,6 +40,7 @@
   },
   "triggerMode": {
     "manual": "手动（仅在被触发时运行）",
+    "dependency": "依赖触发（上游任务完成后运行）",
     "once": "指定日期运行一次",
     "interval": "每隔 N 分钟",
     "daily": "每天",
@@ -121,7 +123,8 @@
     "cwdPlaceholder": "选择文件夹，或直接输入路径",
     "browse": "浏览",
     "deps": "依赖触发",
-    "depsNone": "没有上游任务：本任务只按自己的触发器运行。",
+    "depsNone": "还没有上游任务：添加一个，本任务就会在它完成后运行。",
+    "depsAlongsideSchedule": "本任务还有定时触发；下面的上游完成后它也会运行。",
     "depAdd": "添加上游任务",
     "depAddPlaceholder": "选择一个上游任务",
     "depAddAction": "添加",

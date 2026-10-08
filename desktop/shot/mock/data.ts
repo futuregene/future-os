@@ -822,6 +822,8 @@ export interface MockTask {
   nextDueAt: number | null;
   queued: boolean;
   reflection: string;
+  /** Upstream dependencies this task waits on (0 when it has none). */
+  depCount: number;
   /** Prompt suggestions awaiting a decision (0 when there are none). */
   pendingProposals: number;
   latestRun: MockTaskRun | null;
@@ -853,6 +855,7 @@ export const tasks: MockTask[] = [
     nextDueAt: now + 2 * hour + 40 * minute,
     queued: false,
     reflection: "ask",
+    depCount: 1,
     pendingProposals: 0,
     latestRun: {
       id: "trn_report_2",
@@ -892,6 +895,7 @@ export const tasks: MockTask[] = [
     queued: true,
     reflection: "auto",
     // One suggestion is waiting: the row badges it and the detail lists it.
+    depCount: 0,
     pendingProposals: 1,
     latestRun: {
       id: "trn_lit_9",
@@ -929,6 +933,7 @@ export const tasks: MockTask[] = [
     nextDueAt: now + 24 * day,
     queued: false,
     reflection: "ask",
+    depCount: 0,
     pendingProposals: 0,
     latestRun: null,
   },
@@ -953,6 +958,7 @@ export const tasks: MockTask[] = [
     nextDueAt: null,
     queued: false,
     reflection: "ask",
+    depCount: 2,
     pendingProposals: 0,
     latestRun: {
       id: "trn_notify_1",

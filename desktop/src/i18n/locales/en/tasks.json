@@ -30,6 +30,7 @@
   "confidence": "confidence {{value}}%",
   "trigger": {
     "manual": "Manual",
+    "dependency": "Dependency",
     "every": "Every {{minutes}} min",
     "daily": "Daily",
     "monthly": "Monthly on day {{day}} at {{time}}",
@@ -39,6 +40,7 @@
   },
   "triggerMode": {
     "manual": "Manual (only when triggered)",
+    "dependency": "Dependency (runs when an upstream task finishes)",
     "once": "Once on a date",
     "interval": "Every N minutes",
     "daily": "Every day",
@@ -121,7 +123,8 @@
     "cwdPlaceholder": "Pick a folder, or type a path",
     "browse": "Browse",
     "deps": "Dependency triggers",
-    "depsNone": "No upstream tasks: this task runs on its own trigger alone.",
+    "depsNone": "No upstream tasks yet: add one and this task runs when it finishes.",
+    "depsAlongsideSchedule": "This task also has its own schedule; it runs when the upstreams below finish too.",
     "depAdd": "Add an upstream task",
     "depAddPlaceholder": "Pick an upstream task",
     "depAddAction": "Add",

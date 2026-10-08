@@ -49,6 +49,7 @@ function task(overrides: Partial<TaskView> = {}): TaskView {
     triggerKind: "schedule",
     trigger: { mode: "daily", time: "09:00" },
     depJoin: "all",
+    depCount: 0,
     nextDueAt: 1_000,
     queued: false,
     reflection: "ask",

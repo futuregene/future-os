@@ -19,7 +19,7 @@ function formatEpoch(ms: number | null, locale: string): string {
 const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 
 /** Trigger modes the form can edit (mirrors the kernel's schedule modes). */
-type TriggerMode = "manual" | "once" | "interval" | "daily" | "weekly" | "monthly";
+type TriggerMode = "manual" | "dependency" | "once" | "interval" | "daily" | "weekly" | "monthly";
 
 interface DraftTrigger {
   mode: TriggerMode;
@@ -86,8 +86,14 @@ const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as 
 type Draft = typeof emptyDraft;
 
 function triggerFromTask(task: TaskView): DraftTrigger {
-  if (task.triggerKind !== "schedule")
+  if (task.triggerKind !== "schedule") {
+    // A task that is started by its upstreams reads as "dependency", not as
+    // "manual": nobody runs it by hand, and the schedule fields are not the
+    // thing that fires it.
+    if (task.depCount > 0)
+      return { ...emptyTrigger, mode: "dependency" };
     return { ...emptyTrigger };
+  }
   const trigger = task.trigger as Record<string, unknown>;
   const mode = String(trigger.mode ?? "daily") as TriggerMode;
   return {
@@ -101,7 +107,9 @@ function triggerFromTask(task: TaskView): DraftTrigger {
 }
 
 function triggerPayload(draft: DraftTrigger): { kind: string; trigger: Record<string, unknown> } {
-  if (draft.mode === "manual")
+  // `dependency` is a manual task in the store: the edges are what starts it,
+  // and they live in their own table (see `saveDeps`).
+  if (draft.mode === "manual" || draft.mode === "dependency")
     return { kind: "manual", trigger: {} };
   switch (draft.mode) {
     case "once":
@@ -138,7 +146,7 @@ function summarizeTrigger(
   locale: string,
 ): string {
   if (task.triggerKind !== "schedule")
-    return t("trigger.manual");
+    return task.depCount > 0 ? t("trigger.dependency") : t("trigger.manual");
   const trigger = task.trigger as Record<string, unknown>;
   const time = String(trigger.time ?? "");
   switch (String(trigger.mode ?? "")) {
@@ -420,6 +428,9 @@ function TaskForm({
   const [pendingUpstream, setPendingUpstream] = useState("");
   const trigger = draft.trigger;
   const workspaceConversation = draft.conversationMode === "workspace";
+  // The dependency editor is part of the trigger choice, and stays visible for a
+  // task that already has upstreams (even next to a schedule of its own).
+  const depMode = trigger.mode === "dependency" || draft.deps.length > 0;
   const setTrigger = (patch: Partial<DraftTrigger>) => onChange({ trigger: { ...trigger, ...patch } });
   // A task may already point at a model the user has since disabled. It stays
   // selectable (dropping it would silently rewrite the task on the next save),
@@ -567,6 +578,7 @@ function TaskForm({
         <legend className="px-1 text-xs text-ink-soft">{t("form.trigger")}</legend>
         <Select value={trigger.mode} onChange={e => setTrigger({ mode: e.target.value as TriggerMode })}>
           <option value="manual">{t("triggerMode.manual")}</option>
+          <option value="dependency">{t("triggerMode.dependency")}</option>
           <option value="once">{t("triggerMode.once")}</option>
           <option value="interval">{t("triggerMode.interval")}</option>
           <option value="daily">{t("triggerMode.daily")}</option>
@@ -662,100 +674,107 @@ function TaskForm({
               </div>
             )
           : null}
-      </fieldset>
 
-      {/* A dependency is the other half of "when does this run": its own
-          trigger, or an upstream task finishing. It sits next to the trigger
-          for that reason, and holds the whole set — saving reconciles the
-          stored edges against it. */}
-      <fieldset className="space-y-3 rounded-md border border-line-soft p-3">
-        <legend className="px-1 text-xs text-ink-soft">{t("form.deps")}</legend>
-
-        {draft.deps.length === 0
-          ? <p className="text-xs text-ink-muted">{t("form.depsNone")}</p>
-          : (
-              <ul className="space-y-2">
-                {draft.deps.map(dep => (
-                  <li key={dep.upstreamTaskId} className="flex items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate text-xs text-ink" title={nameOf(dep)}>
-                      {nameOf(dep)}
-                    </span>
-                    <Select
-                      aria-label={t("form.depCondition", { name: nameOf(dep) })}
-                      className="w-28 shrink-0"
-                      value={dep.on}
-                      onChange={e => setDepOn(dep.upstreamTaskId, e.target.value)}
-                    >
-                      <option value="success">{t("on.success")}</option>
-                      <option value="failure">{t("on.failure")}</option>
-                      <option value="completed">{t("on.completed")}</option>
-                    </Select>
-                    <Button
-                      aria-label={t("form.depRemove", { name: nameOf(dep) })}
-                      className="shrink-0"
-                      size="xs"
-                      variant="ghost"
-                      onClick={() => onChange({
-                        deps: draft.deps.filter(item => item.upstreamTaskId !== dep.upstreamTaskId),
-                      })}
-                    >
-                      {t("form.depRemoveShort")}
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-        <div className="flex items-center gap-2">
-          <Select
-            aria-label={t("form.depAdd")}
-            className="min-w-0 flex-1"
-            value={pendingUpstream}
-            onChange={e => setPendingUpstream(e.target.value)}
-          >
-            <option value="">{t("form.depAddPlaceholder")}</option>
-            {addable.map(candidate => (
-              <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
-            ))}
-          </Select>
-          <Button
-            className="shrink-0"
-            disabled={!pendingUpstream}
-            size="md"
-            variant="secondary"
-            onClick={() => {
-              // A new edge waits for the upstream to finish successfully: the
-              // common case, and the one the CLI's bare `--depends-on` means.
-              const chosen = candidates.find(candidate => candidate.id === pendingUpstream);
-              onChange({
-                deps: [
-                  ...draft.deps,
-                  { upstreamTaskId: pendingUpstream, name: chosen?.name ?? "", on: "success" },
-                ],
-              });
-              setPendingUpstream("");
-            }}
-          >
-            {t("form.depAddAction")}
-          </Button>
-        </div>
-        {candidates.length === 0
-          ? <p className="text-xs text-ink-muted">{t("form.depNoCandidates")}</p>
-          : null}
-
-        {draft.deps.length > 1
+        {/* The dependency editor appears with the choice that needs it — and,
+            for a task that already has upstreams next to a schedule of its own
+            (set from the CLI), it stays visible: an edge nobody can see is an
+            edge nobody can remove. */}
+        {depMode
           ? (
-              <label className="block space-y-1.5">
-                <span className="text-xs text-ink-soft">{t("form.depJoin")}</span>
-                <Select
-                  aria-label={t("form.depJoin")}
-                  value={draft.depJoin}
-                  onChange={e => onChange({ depJoin: e.target.value })}
-                >
-                  <option value="all">{t("join.all")}</option>
-                  <option value="any">{t("join.any")}</option>
-                </Select>
-              </label>
+              <div className="space-y-3 border-t border-line-soft pt-3">
+                {trigger.mode !== "dependency"
+                  ? <p className="text-xs text-ink-muted">{t("form.depsAlongsideSchedule")}</p>
+                  : null}
+
+                {draft.deps.length === 0
+                  ? <p className="text-xs text-ink-muted">{t("form.depsNone")}</p>
+                  : (
+                      <ul className="space-y-2">
+                        {draft.deps.map(dep => (
+                          <li key={dep.upstreamTaskId} className="flex items-center gap-2">
+                            <span className="min-w-0 flex-1 truncate text-xs text-ink" title={nameOf(dep)}>
+                              {nameOf(dep)}
+                            </span>
+                            <Select
+                              aria-label={t("form.depCondition", { name: nameOf(dep) })}
+                              className="w-28 shrink-0"
+                              value={dep.on}
+                              onChange={e => setDepOn(dep.upstreamTaskId, e.target.value)}
+                            >
+                              <option value="success">{t("on.success")}</option>
+                              <option value="failure">{t("on.failure")}</option>
+                              <option value="completed">{t("on.completed")}</option>
+                            </Select>
+                            <Button
+                              aria-label={t("form.depRemove", { name: nameOf(dep) })}
+                              className="shrink-0"
+                              size="xs"
+                              variant="ghost"
+                              onClick={() => onChange({
+                                deps: draft.deps.filter(item => item.upstreamTaskId !== dep.upstreamTaskId),
+                              })}
+                            >
+                              {t("form.depRemoveShort")}
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+
+                <div className="flex items-center gap-2">
+                  <Select
+                    aria-label={t("form.depAdd")}
+                    className="min-w-0 flex-1"
+                    value={pendingUpstream}
+                    onChange={e => setPendingUpstream(e.target.value)}
+                  >
+                    <option value="">{t("form.depAddPlaceholder")}</option>
+                    {addable.map(candidate => (
+                      <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
+                    ))}
+                  </Select>
+                  <Button
+                    className="shrink-0"
+                    disabled={!pendingUpstream}
+                    size="md"
+                    variant="secondary"
+                    onClick={() => {
+                      // A new edge waits for the upstream to finish
+                      // successfully: the common case, and the one the CLI's
+                      // bare `--depends-on` means.
+                      const chosen = candidates.find(candidate => candidate.id === pendingUpstream);
+                      onChange({
+                        deps: [
+                          ...draft.deps,
+                          { upstreamTaskId: pendingUpstream, name: chosen?.name ?? "", on: "success" },
+                        ],
+                      });
+                      setPendingUpstream("");
+                    }}
+                  >
+                    {t("form.depAddAction")}
+                  </Button>
+                </div>
+                {candidates.length === 0
+                  ? <p className="text-xs text-ink-muted">{t("form.depNoCandidates")}</p>
+                  : null}
+
+                {draft.deps.length > 1
+                  ? (
+                      <label className="block space-y-1.5">
+                        <span className="text-xs text-ink-soft">{t("form.depJoin")}</span>
+                        <Select
+                          aria-label={t("form.depJoin")}
+                          value={draft.depJoin}
+                          onChange={e => onChange({ depJoin: e.target.value })}
+                        >
+                          <option value="all">{t("join.all")}</option>
+                          <option value="any">{t("join.any")}</option>
+                        </Select>
+                      </label>
+                    )
+                  : null}
+              </div>
             )
           : null}
       </fieldset>

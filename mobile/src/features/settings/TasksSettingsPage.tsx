@@ -12,7 +12,12 @@ import { useDesktopResource } from "./useDesktopResource";
 
 /** Local draft of the trigger, mirroring the desktop form. */
 interface DraftTrigger {
-  mode: "manual" | "once" | "interval" | "daily" | "weekly" | "monthly";
+  /**
+   * `dependency` is a manual task in the store: its edges are what start it
+   * (they live in their own table), and choosing it opens the editor below
+   * instead of a date/time field.
+   */
+  mode: "manual" | "dependency" | "once" | "interval" | "daily" | "weekly" | "monthly";
   date: string;
   time: string;
   everyMinutes: string;
@@ -60,8 +65,13 @@ interface Draft {
 }
 
 function triggerFrom(detail: RemoteTaskDetail): DraftTrigger {
-  if (detail.triggerKind !== "schedule")
+  if (detail.triggerKind !== "schedule") {
+    // A task its upstreams start reads as `dependency`, not as `manual`:
+    // nobody runs it by hand.
+    if ((detail.depCount ?? 0) > 0)
+      return { ...defaultTrigger, mode: "dependency" };
     return { ...defaultTrigger };
+  }
   const trigger = detail.trigger ?? {};
   const mode = String(trigger.mode ?? "daily") as DraftTrigger["mode"];
   return {
@@ -75,7 +85,7 @@ function triggerFrom(detail: RemoteTaskDetail): DraftTrigger {
 }
 
 function triggerPayload(draft: DraftTrigger): { triggerKind: string; trigger: Record<string, unknown> } {
-  if (draft.mode === "manual")
+  if (draft.mode === "manual" || draft.mode === "dependency")
     return { triggerKind: "manual", trigger: {} };
   const time = draft.time.trim() || "09:00";
   switch (draft.mode) {
@@ -247,7 +257,7 @@ function summarize(
   locale: string,
 ): string {
   if (task.triggerKind !== "schedule")
-    return t("tasks.trigger.manual");
+    return (task.depCount ?? 0) > 0 ? t("tasks.trigger.dependency") : t("tasks.trigger.manual");
   const trigger = task.trigger ?? {};
   const time = String(trigger.time ?? "");
   switch (String(trigger.mode ?? "")) {
@@ -745,7 +755,7 @@ function TaskForm({
 
       <SettingsSection title={t("tasks.form.trigger")}>
         <View style={settingsStyles.actions}>
-          {(["manual", "once", "interval", "daily", "weekly", "monthly"] as const).map(mode => (
+          {(["manual", "dependency", "once", "interval", "daily", "weekly", "monthly"] as const).map(mode => (
             <Choice
               disabled={busy}
               key={mode}
@@ -762,7 +772,7 @@ function TaskForm({
               </SettingsField>
             )
           : null}
-        {trigger.mode !== "manual" && trigger.mode !== "interval"
+        {trigger.mode !== "manual" && trigger.mode !== "dependency" && trigger.mode !== "interval"
           ? (
               <SettingsField label={t("tasks.form.time")}>
                 <TextInput accessibilityLabel={t("tasks.form.time")} style={settingsStyles.input} value={trigger.time} onChangeText={time => patchTrigger({ time })} />
@@ -797,12 +807,18 @@ function TaskForm({
         <Text style={settingsStyles.description}>{t("tasks.form.fullPermissionWarning")}</Text>
       </SettingsSection>
 
-      {/* A dependency is the other half of "when does this run": its own
-          trigger, or an upstream task finishing. */}
-      <SettingsSection title={t("tasks.form.deps")}>
-        {!canEditDeps
-          ? <Text style={settingsStyles.description}>{t("tasks.form.depsUnsupported")}</Text>
-          : (
+      {/* The dependency editor belongs to the trigger choice, and stays visible
+          for a task that already has upstreams (even next to a schedule of its
+          own): an edge nobody can see is an edge nobody can remove. */}
+      {trigger.mode === "dependency" || draft.deps.length > 0
+        ? (
+            <SettingsSection title={t("tasks.form.deps")}>
+              {trigger.mode !== "dependency"
+                ? <Text style={settingsStyles.description}>{t("tasks.form.depsAlongsideSchedule")}</Text>
+                : null}
+              {!canEditDeps
+                ? <Text style={settingsStyles.description}>{t("tasks.form.depsUnsupported")}</Text>
+                : (
               <>
                 {draft.deps.length === 0
                   ? <Text style={settingsStyles.description}>{t("tasks.form.depsNone")}</Text>
@@ -878,8 +894,10 @@ function TaskForm({
                     )
                   : null}
               </>
-            )}
-      </SettingsSection>
+                )}
+            </SettingsSection>
+          )
+        : null}
 
       {/* The dependency editor above owns this list when the desktop supports
           it; an older desktop gets the read-only view instead of nothing. */}
