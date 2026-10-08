@@ -168,41 +168,9 @@ pub fn restore_thread(thread_id: String) -> Result<store::ThreadRecord, crate::A
 pub async fn delete_thread(
     input: store::DeleteThreadInput,
 ) -> Result<store::ThreadRecord, crate::AppError> {
-    // Resolve the recursive target set before deleting anything: a conversation
-    // delete takes its descendants with it, so each of their shells must close
-    // and each of their active runs must stop first. Shells opened from a
-    // conversation are children of the app and must not outlive it — closing
-    // them here means a deleted thread can never leave an orphaned terminal
-    // pointable at a removed directory. Errors when the thread is already gone,
-    // which keeps the "no such thread" reply unchanged.
-    let targets = store::thread_delete_closure(&input.thread_id)?;
-    for target in &targets {
-        close_thread_terminals(&target.id);
-    }
-    for target in &targets {
-        stop_active_session_before_delete(thread_session_id(target)).await?;
-    }
-    let thread = store::delete_thread_tree(&input.thread_id, input.delete_files)?;
-    for target in &targets {
-        let session_id = thread_session_id(target);
-        if store::is_agent_session_tombstoned(session_id)? {
-            agent_bridge::drop_observer(session_id);
-        }
-    }
-    crate::agent_bridge::reconcile_delete_outbox().await;
-    Ok(thread)
-}
-
-/// The Agent session a GUI thread is bound to: its `agent_session_id`, else its
-/// own id for an unbound thread (same resolution the store uses as a session
-/// key when it tombstones a delete).
-fn thread_session_id(thread: &store::ThreadRecord) -> &str {
-    thread
-        .agent_session_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .unwrap_or(&thread.id)
+    // The same sequence the tasks host runs when a task deletes the conversation
+    // it just used: see `crate::conversations`.
+    crate::conversations::delete_conversation(&input.thread_id, input.delete_files).await
 }
 
 /// Batch-delete multiple threads. For each thread, the thread and its
@@ -242,7 +210,10 @@ pub async fn batch_delete_threads(
         }
         let deleted = async {
             for target in &targets {
-                stop_active_session_before_delete(thread_session_id(target)).await?;
+                crate::conversations::stop_active_session_before_delete(
+                    crate::conversations::thread_session_id(target),
+                )
+                .await?;
             }
             store::delete_thread_tree(thread_id, input.delete_files)
         }
@@ -258,26 +229,6 @@ pub async fn batch_delete_threads(
     crate::agent_bridge::reconcile_delete_outbox().await;
 
     Ok(result)
-}
-
-/// Stop and confirm any active Agent execution before its thread row or files
-/// are removed. Inactive sessions avoid an unnecessary Agent round trip.
-async fn stop_active_session_before_delete(session_id: &str) -> Result<(), crate::AppError> {
-    if !store::active_run_sessions()?
-        .iter()
-        .any(|active| active == session_id)
-    {
-        return Ok(());
-    }
-    agent_bridge::abort_session(session_id).await?;
-    if !agent_bridge::wait_for_agent_idle(session_id).await {
-        return Err(
-            "Future Agent did not confirm that the session stopped; deletion was cancelled."
-                .to_string()
-                .into(),
-        );
-    }
-    Ok(())
 }
 
 /// Close every terminal tab a conversation owns. Called from the deletion

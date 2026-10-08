@@ -56,6 +56,7 @@ interface Draft {
   modelId: string;
   thinkingLevel: string;
   sessionPolicy: string;
+  sessionRetention: string;
   conversationMode: string;
   enabled: boolean;
   trigger: DraftTrigger;
@@ -113,6 +114,7 @@ function draftFrom(detail: RemoteTaskDetail, deps: RemoteTaskDep[]): Draft {
     modelId: detail.modelId ?? "",
     thinkingLevel: detail.thinkingLevel ?? "",
     sessionPolicy: detail.sessionPolicy ?? "new",
+    sessionRetention: detail.sessionRetention ?? "keep",
     conversationMode: detail.conversationMode ?? "workspace",
     enabled: detail.enabled,
     trigger: triggerFrom(detail),
@@ -143,6 +145,7 @@ function newDraft(): Draft {
     modelId: "",
     thinkingLevel: "",
     sessionPolicy: "new",
+    sessionRetention: "keep",
     conversationMode: "chat",
     // A new task starts enabled, like the desktop's form does.
     enabled: true,
@@ -165,6 +168,9 @@ function draftPayload(draft: Draft): Record<string, unknown> {
     modelId: draft.modelId || null,
     thinkingLevel: draft.thinkingLevel || null,
     sessionPolicy: draft.sessionPolicy,
+    // Only a per-run conversation can be deleted; the server normalizes the
+    // contradiction too, this just keeps the payload honest.
+    sessionRetention: draft.sessionPolicy === "new" ? draft.sessionRetention : "keep",
     conversationMode: draft.conversationMode,
     enabled: draft.enabled,
     depJoin: draft.depJoin,
@@ -638,6 +644,24 @@ function TaskForm({
           : null}
       </SettingsSection>
 
+      {/* The way into the settings sits above the run history, not below it: a
+          task that has run many times would otherwise push it far out of reach,
+          and opening the page is supposed to show what happened anyway. The row
+          is one line, and the form it reveals opens right under it. */}
+      {kind === "create"
+        ? null
+        : (
+            <Pressable
+              accessibilityLabel={t("tasks.settings")}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: settingsOpen }}
+              onPress={() => setSettingsOpen(open => !open)}
+            >
+              <Text style={styles.disclosure}>
+                {`${settingsOpen ? "\u25be" : "\u25b8"} ${t("tasks.settings")}`}
+              </Text>
+            </Pressable>
+          )}
       {runs.length > 0
         ? (
             <SettingsSection title={t("tasks.runs")}>
@@ -652,6 +676,12 @@ function TaskForm({
                   <Text style={styles.runSummary}>
                     {run.errorMessage ?? run.resultSummary ?? t("tasks.runNoSummary")}
                   </Text>
+                  {/* The conversation is gone by design: say so, so the missing
+                      open link reads as intended and the reader knows the output
+                      is saved on the run. */}
+                  {run.sessionDeleted
+                    ? <Text style={settingsStyles.description}>{t("tasks.runSessionDeleted")}</Text>
+                    : null}
                   {/* The desktop links a run to the conversation it ran in; the
                       phone can open it too, in the chat this app already has.
                       A run that never reached an agent has no conversation, and
@@ -694,22 +724,6 @@ function TaskForm({
           )
         : null}
 
-      {/* Closed by default: opening a task shows what it did, and the form is
-          one tap away (see `settingsOpen`). */}
-      {kind === "create"
-        ? null
-        : (
-            <Pressable
-              accessibilityLabel={t("tasks.settings")}
-              accessibilityRole="button"
-              accessibilityState={{ expanded: settingsOpen }}
-              onPress={() => setSettingsOpen(open => !open)}
-            >
-              <Text style={styles.disclosure}>
-                {`${settingsOpen ? "▾" : "▸"} ${t("tasks.settings")}`}
-              </Text>
-            </Pressable>
-          )}
       {kind === "create" || settingsOpen
         ? (
             <>
@@ -827,6 +841,29 @@ function TaskForm({
                   ))}
                 </View>
               </SettingsField>
+
+        {/* Only a conversation opened per run can be thrown away after it: a
+            reused one is what the next run continues. */}
+        {draft.sessionPolicy === "new"
+          ? (
+              <SettingsField
+                label={t("tasks.form.sessionRetention")}
+                hint={draft.sessionRetention === "delete" ? t("tasks.form.sessionRetentionHint") : undefined}
+              >
+                <View style={settingsStyles.actions}>
+                  {(["keep", "delete"] as const).map(choice => (
+                    <Choice
+                      disabled={busy}
+                      key={choice}
+                      label={t(`tasks.form.sessionRetention${choice === "keep" ? "Keep" : "Delete"}`)}
+                      onPress={() => patch({ sessionRetention: choice })}
+                      selected={draft.sessionRetention === choice}
+                    />
+                  ))}
+                </View>
+              </SettingsField>
+            )
+          : null}
 
               <SettingsField label={t("tasks.form.enablement")}>
                 <View style={settingsStyles.actions}>

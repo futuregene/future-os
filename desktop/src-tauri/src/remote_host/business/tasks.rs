@@ -45,6 +45,9 @@ fn run_summary_view(run: future_tasks::TaskRun) -> Value {
         "promptVersion": run.prompt_version,
         "resultSummary": run.result_summary.as_deref().map(|s| truncate(s, RUN_SUMMARY_CHARS)),
         "errorMessage": run.error_message,
+        // The conversation was deleted after the run settled: the ids are gone
+        // with it, so the phone hides its "open" link and says why.
+        "sessionDeleted": run.session_deleted,
     })
 }
 
@@ -84,6 +87,7 @@ fn task_detail_view(store: &future_tasks::Store, task: future_tasks::Task) -> Va
         "modelId": task.model_id,
         "thinkingLevel": task.thinking_level,
         "sessionPolicy": format!("{:?}", task.session_policy).to_lowercase(),
+        "sessionRetention": format!("{:?}", task.session_retention).to_lowercase(),
         "conversationMode": format!("{:?}", task.conversation_mode).to_lowercase(),
         "triggerKind": format!("{:?}", task.trigger_kind).to_lowercase(),
         "trigger": task.trigger_json,
@@ -106,6 +110,20 @@ fn parse_session_policy(raw: Option<&str>) -> future_tasks::SessionPolicy {
     match raw {
         Some("existing") => future_tasks::SessionPolicy::Existing,
         _ => future_tasks::SessionPolicy::New,
+    }
+}
+
+/// `delete` only means something for a per-run conversation; the same
+/// normalization the desktop commands apply.
+fn parse_session_retention(
+    raw: Option<&str>,
+    policy: future_tasks::SessionPolicy,
+) -> future_tasks::SessionRetention {
+    match (raw, policy) {
+        (Some("delete"), future_tasks::SessionPolicy::New) => {
+            future_tasks::SessionRetention::Delete
+        }
+        _ => future_tasks::SessionRetention::Keep,
     }
 }
 
@@ -221,6 +239,23 @@ fn task_from_payload(
             .map(|raw| parse_session_policy(Some(raw)))
             .or_else(|| base.as_ref().map(|t| t.session_policy))
             .unwrap_or(future_tasks::SessionPolicy::New),
+        // Absent means "leave it": the phone's form sends it only when the
+        // choice applies (a per-run conversation), and an older phone does not
+        // send it at all.
+        session_retention: payload
+            .get("sessionRetention")
+            .and_then(Value::as_str)
+            .map(|raw| {
+                let policy = payload
+                    .get("sessionPolicy")
+                    .and_then(Value::as_str)
+                    .map(|p| parse_session_policy(Some(p)))
+                    .or_else(|| base.as_ref().map(|t| t.session_policy))
+                    .unwrap_or(future_tasks::SessionPolicy::New);
+                parse_session_retention(Some(raw), policy)
+            })
+            .or_else(|| base.as_ref().map(|t| t.session_retention))
+            .unwrap_or(future_tasks::SessionRetention::Keep),
         conversation_mode: payload
             .get("conversationMode")
             .and_then(Value::as_str)
@@ -593,6 +628,7 @@ mod tests {
             model_id: Some("future/gpt-5".into()),
             thinking_level: Some("high".into()),
             session_policy: policy,
+            session_retention: future_tasks::SessionRetention::Keep,
             conversation_mode: future_tasks::ConversationMode::Workspace,
             thread_id: None,
             trigger_kind: future_tasks::TriggerKind::Schedule,
@@ -627,6 +663,7 @@ mod tests {
             started_at: Some(1),
             finished_at: Some(2),
             error_message: None,
+            session_deleted: false,
         }
     }
 

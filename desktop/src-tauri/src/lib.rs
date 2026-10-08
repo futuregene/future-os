@@ -14,6 +14,7 @@ mod auth_store;
 mod build_info;
 mod commands;
 mod config_io;
+mod conversations;
 mod device_identity;
 mod error;
 mod future_login;

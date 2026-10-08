@@ -251,6 +251,7 @@ Usage:
   future task show <id|name> [--json] [--prompt]    Show one task
   future task add --name N --prompt P|--prompt-file F --cwd D
         [--model M] [--thinking L] [--session new|existing]
+        [--session-retention keep|delete]
         [--conversation workspace|chat] [--disabled] [--json]
         [--depends-on A[:success|failure|completed]]… [--join-any]
         (--manual | --at "YYYY-MM-DD HH:MM" | --every 30m
@@ -293,6 +294,17 @@ Session:
   --session new       Each run opens a new conversation (default).
   --session existing  Reuse one conversation, so each run continues from what
                       the previous ones did.
+  --session-retention keep    Keep the conversation (default).
+  --session-retention delete  Delete it once the run settles, whether it
+                      succeeded or failed. Only valid with `--session new`: a
+                      conversation that is deleted cannot be the one the next
+                      run continues.
+                      What the run *did* is not lost — its status, its result
+                      summary and its whole answer are recorded on the run, so
+                      `future task runs` and `future task output <run-id>`
+                      still answer, and a dependent task still receives the
+                      summary. Only the conversation (its reasoning, its tools,
+                      its transcript) goes.
   --conversation workspace  File the conversation under the working directory
                             (default).
   --conversation chat       Open it as a chat conversation instead (it runs in
@@ -308,8 +320,9 @@ Prompt versions:
 
 Reading a run:
   `future task runs` lists the ledger (statuses, versions, summaries).
-  `future task output <run-id>` prints the full answer behind a summary, and
-  `feedback` records your verdict on a run.
+  `future task output <run-id>` prints the full answer behind a summary (the
+  answer saved on the run; a run recorded before that was stored falls back to
+  the conversation), and `feedback` records your verdict on a run.
 
 Execution:
   Runs are executed by the desktop (or headless desktop) tick loop, not by

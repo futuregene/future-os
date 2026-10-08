@@ -308,6 +308,7 @@ fn claim(
                 started_at: Some(now),
                 finished_at: Some(now),
                 error_message: Some("dependency cycle detected".to_string()),
+                session_deleted: false,
             };
             store.insert_run(&run).map_err(|e| e.to_string())?;
             clear_pending(store, task)?;
@@ -364,6 +365,7 @@ fn claim(
         started_at: Some(now),
         finished_at: None,
         error_message: None,
+        session_deleted: false,
     };
     store.insert_run(&run).map_err(|e| e.to_string())?;
 
@@ -411,17 +413,27 @@ async fn execute(
     // `Store` owns a `rusqlite::Connection` (Send but not Sync), so it is
     // moved through the async call and handed back rather than borrowed.
     let (store, outcome) = run_inner(store, &task, &mut run, upstream_sources).await;
-    let (status, error) = match outcome {
+    let (status, error, output) = match outcome {
         Ok(summary) => {
             run.result_summary = Some(kernel::truncate(&summary, kernel::RESULT_SUMMARY_CHARS));
-            (RunStatus::Completed, None)
+            (RunStatus::Completed, None, Some(summary))
         }
-        Err(error) => (RunStatus::Failed, Some(error)),
+        Err(error) => (RunStatus::Failed, Some(error), None),
     };
     run.status = status;
     run.finished_at = Some(now_ms());
     run.error_message = error;
     store.update_run(&run).map_err(|e| e.to_string())?;
+    // Save the answer before anything can take it away: a task configured to
+    // delete its conversations keeps its *results*, only the conversation goes.
+    // The summary above is what lists and downstream runs read; this is the
+    // whole answer, so the run stays readable afterwards.
+    if let Some(text) = output {
+        let saved = kernel::truncate(&text, kernel::RUN_OUTPUT_CHARS);
+        store
+            .set_run_output(&run.id, &saved)
+            .map_err(|e| e.to_string())?;
+    }
 
     // Mark downstream dependency edges (same store transaction boundary as
     // the run row update — a crash here does not lose the upstream signal).
@@ -434,10 +446,49 @@ async fn execute(
         }
     }
 
+    // Then the conversation, when the task does not keep one per run. After the
+    // ledger write, never before: whatever happens to the delete, the run's
+    // status and answer are already durable.
+    if kernel::deletes_run_conversation(&task) {
+        if let Some(thread_id) = run.thread_id.clone() {
+            match delete_run_conversation(&thread_id).await {
+                Ok(()) => {
+                    store
+                        .mark_run_conversation_deleted(&run.id)
+                        .map_err(|e| e.to_string())?;
+                    run.session_deleted = true;
+                    run.thread_id = None;
+                    run.session_id = None;
+                }
+                // Leave the conversation and its ids in place: it is still
+                // there and still openable, which is a better outcome than a
+                // ledger that claims a delete that did not happen. The next run
+                // is unaffected (each run has its own conversation).
+                Err(error) => eprintln!(
+                    "FutureOS tasks: could not delete the conversation of run {}: {error}",
+                    run.id
+                ),
+            }
+        }
+    }
+
     // Notify the host (webview refresh; headless downgrades to a no-op).
     notify(run.thread_id.as_deref());
 
     Ok(())
+}
+
+/// Delete the conversation a finished run used (`session_retention = delete`).
+///
+/// Goes through the same path as a user deleting a conversation, so both mean
+/// exactly the same thing. Chat conversations take their temporary workspace
+/// with them (`delete_files`), like any other delete; a workspace conversation
+/// is never touched on disk — that directory is the user's, not the run's.
+async fn delete_run_conversation(thread_id: &str) -> Result<(), String> {
+    crate::conversations::delete_conversation(thread_id, true)
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 /// The inner run: session, pre-compact, prompt. Returns the final assistant
@@ -696,6 +747,7 @@ mod tests {
             pending_request_at: None,
             pending_origin: None,
             pending_actor: None,
+            session_retention: future_tasks::SessionRetention::Keep,
             created_at: 1,
             updated_at: 1,
             deleted_at: None,
@@ -730,6 +782,7 @@ mod tests {
             started_at: Some(1),
             finished_at: Some(2),
             error_message: None,
+            session_deleted: false,
         }
     }
 
@@ -1214,6 +1267,14 @@ mod tests {
             finished.result_summary.as_deref(),
             Some("the finished answer")
         );
+        // The answer is saved on the run itself, whole, not only as the
+        // truncated summary the lists carry.
+        assert_eq!(
+            store.run_output(&run.id).unwrap().as_deref(),
+            Some("the finished answer"),
+            "the run keeps its own answer"
+        );
+        assert!(!finished.session_deleted);
         assert!(finished.error_message.is_none());
 
         // The prompt carried the envelope, and the task's own text follows it.
@@ -1253,6 +1314,162 @@ mod tests {
             notified.lock().unwrap().as_slice(),
             &[Some(thread_id)],
             "the notifier receives the conversation id"
+        );
+    }
+
+    /// `session_retention = delete`: the run settles, its answer is saved on the
+    /// ledger row, and the conversation goes — so a task that runs often does
+    /// not leave one conversation per run behind without losing what each run
+    /// did.
+    #[tokio::test]
+    async fn a_run_whose_task_deletes_its_conversation_keeps_the_answer() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-delete-conversation");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut t = task("ephemeral");
+        t.prompt = "summarize yesterday".into();
+        t.session_retention = future_tasks::SessionRetention::Delete;
+        store.insert_task(&t).unwrap();
+        let (run, upstream) = claim(&store, &t, ClaimReason::Explicit).unwrap();
+        script_agent_setup(&mock, "sess_ephemeral");
+        // The agent is asked to drop the session once the thread is gone.
+        mock.push_data("delete_session", serde_json::json!({}));
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
+            vec![crate::agent_bridge::test_support::stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        let notified = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = notified.clone();
+        let notify: Notifier = std::sync::Arc::new(move |thread_id| {
+            seen.lock().unwrap().push(thread_id.map(str::to_string));
+        });
+
+        execute(&notify, store, t.clone(), run.clone(), upstream)
+            .await
+            .expect("execute");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Completed, "{finished:?}");
+        // The run reads as it always did: status, summary, and the whole answer.
+        assert_eq!(
+            finished.result_summary.as_deref(),
+            Some("the finished answer")
+        );
+        assert_eq!(
+            store.run_output(&run.id).unwrap().as_deref(),
+            Some("the finished answer"),
+            "the answer is what survives the conversation"
+        );
+        // …and it no longer claims a conversation it does not have.
+        assert!(finished.session_deleted, "{finished:?}");
+        assert!(finished.thread_id.is_none());
+        assert!(finished.session_id.is_none());
+        assert!(
+            crate::store::list_threads().unwrap().is_empty(),
+            "the conversation is gone from the sidebar"
+        );
+        assert_eq!(
+            mock.requests_of("delete_session").len(),
+            1,
+            "the Agent session behind it was dropped too"
+        );
+        // The host is told, with nothing to open: the panel shows the run and
+        // says where the output went.
+        assert_eq!(notified.lock().unwrap().as_slice(), &[None]);
+    }
+
+    /// A run that never reached an answer (the agent refused the session) has
+    /// no conversation to delete, and the ledger says exactly that: no
+    /// conversation, nothing deleted.
+    #[tokio::test]
+    async fn a_run_that_never_prompted_has_nothing_to_delete() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-delete-nothing");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut t = task("fails-before-prompting");
+        t.session_retention = future_tasks::SessionRetention::Delete;
+        store.insert_task(&t).unwrap();
+        let (run, upstream) = claim(&store, &t, ClaimReason::Explicit).unwrap();
+        mock.push(
+            "new_session",
+            crate::agent_bridge::test_support::Reply::Reject("no capacity".into()),
+        );
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        execute(&notify, store, t.clone(), run.clone(), upstream)
+            .await
+            .expect("execute records the failure instead of returning it");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Failed, "{finished:?}");
+        assert!(
+            finished.thread_id.is_none() && finished.session_id.is_none(),
+            "{finished:?}"
+        );
+        assert!(
+            !finished.session_deleted,
+            "there was no conversation to delete: {finished:?}"
+        );
+        assert_eq!(store.run_output(&run.id).unwrap(), None);
+    }
+
+    /// A task that reuses one conversation keeps it whatever the retention
+    /// column says: the combination is contradictory, and deleting the
+    /// conversation the next run continues would silently break the setting.
+    #[tokio::test]
+    async fn a_reused_conversation_is_never_deleted_after_a_run() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-delete-reused");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut t = task("reuses");
+        t.session_policy = SessionPolicy::Existing;
+        t.session_retention = future_tasks::SessionRetention::Delete;
+        store.insert_task(&t).unwrap();
+        let workspace = crate::agent_bridge::test_support::seed_workspace(_home.path(), "ws");
+        let thread =
+            crate::agent_bridge::test_support::seed_thread(&workspace.id, Some("sess_reused"));
+        bind_task_thread(&store, &t, &thread.id).unwrap();
+        let t = store.get_task(&t.id).unwrap().unwrap();
+
+        let (run, upstream) = claim(&store, &t, ClaimReason::Explicit).unwrap();
+        script_agent_setup(&mock, "sess_reused");
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
+            vec![crate::agent_bridge::test_support::stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        execute(&notify, store, t.clone(), run.clone(), upstream)
+            .await
+            .expect("execute");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Completed, "{finished:?}");
+        assert!(!finished.session_deleted, "{finished:?}");
+        assert_eq!(finished.thread_id.as_deref(), Some(thread.id.as_str()));
+        assert!(
+            crate::store::get_thread(&thread.id).unwrap().is_some(),
+            "the conversation the next run continues is still there"
         );
     }
 
@@ -1470,6 +1687,7 @@ mod tests {
                 started_at: Some(1),
                 finished_at: None,
                 error_message: None,
+                session_deleted: false,
             })
             .unwrap();
         assert!(store.has_running_run(&t.id).unwrap());

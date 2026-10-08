@@ -66,6 +66,25 @@ pub enum SessionPolicy {
     Existing,
 }
 
+/// What happens to the conversation a run used once the run has settled.
+///
+/// `Keep` is the default: the ledger links to the conversation, and the run's
+/// whole reasoning stays readable there. `Delete` throws it away after every
+/// run (success or failure), which keeps a task that runs often from leaving a
+/// conversation per run behind — the run's status and its answer are recorded
+/// on the ledger row itself (`result_summary` and the saved `result_text`), so
+/// nothing about *what happened* is lost with it.
+///
+/// Only meaningful with [`SessionPolicy::New`]: a conversation that is deleted
+/// cannot be the one the next run reuses, so [`crate::kernel::deletes_run_conversation`]
+/// treats the combination as `Keep`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SessionRetention {
+    Keep,
+    Delete,
+}
+
 /// What kind of conversation a task opens.
 ///
 /// `Chat` is the temporary-workspace conversation a user reaches from "new
@@ -135,6 +154,8 @@ pub struct Task {
     pub pending_request_at: Option<i64>,
     pub pending_origin: Option<RunOrigin>,
     pub pending_actor: Option<String>,
+    /// What happens to this task's conversations after a run settles.
+    pub session_retention: SessionRetention,
     pub created_at: i64,
     pub updated_at: i64,
     pub deleted_at: Option<i64>,
@@ -162,6 +183,11 @@ pub struct TaskRun {
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
     pub error_message: Option<String>,
+    /// The run's conversation was deleted after it settled (`session_retention
+    /// = delete`). The ids are cleared at the same time — a conversation nobody
+    /// can open should not look openable — so this is what says the run *had*
+    /// one and it is gone, rather than it never got one.
+    pub session_deleted: bool,
 }
 
 /// A dependency edge (downstream task → upstream task).

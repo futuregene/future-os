@@ -21,15 +21,15 @@ const TASK_COLUMNS: &str = "
     id, name, enabled, prompt, prompt_version, cwd, model_id, thinking_level,
     session_policy, conversation_mode, thread_id, trigger_kind, trigger_json, dep_join,
     next_due_at, pending_request_at, pending_origin, pending_actor,
-    created_at, updated_at, deleted_at";
+    session_retention, created_at, updated_at, deleted_at";
 
 const SQL_INSERT_TASK: &str = "
     INSERT INTO tasks (
         id, name, enabled, prompt, prompt_version, cwd, model_id, thinking_level,
         session_policy, conversation_mode, thread_id, trigger_kind, trigger_json, dep_join,
         next_due_at, pending_request_at, pending_origin, pending_actor,
-        created_at, updated_at, deleted_at
-    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)";
+        session_retention, created_at, updated_at, deleted_at
+    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)";
 
 const SQL_UPDATE_TASK: &str = "
     UPDATE tasks SET
@@ -37,7 +37,7 @@ const SQL_UPDATE_TASK: &str = "
         thinking_level=?8, session_policy=?9, conversation_mode=?10, thread_id=?11,
         trigger_kind=?12, trigger_json=?13, dep_join=?14, next_due_at=?15,
         pending_request_at=?16, pending_origin=?17, pending_actor=?18,
-        updated_at=?19, deleted_at=?20
+        session_retention=?19, updated_at=?20, deleted_at=?21
     WHERE id=?1";
 
 /// `(enabled = 1)` plus "due now or explicitly requested" — the tick's query.
@@ -78,23 +78,27 @@ const SQL_CLEAR_DEP_STATE: &str = "
     WHERE task_id = ?1 AND upstream_task_id = ?2";
 
 /// The `task_runs` column list (see `TASK_COLUMNS`).
+/// The run's small columns: `result_text` (the saved answer) is deliberately
+/// *not* here — listing 20 runs must not drag 20 answers across the wire. Read
+/// it with [`Store::run_output`], one run at a time.
 const RUN_COLUMNS: &str = "
     id, task_id, kind, origin, actor, due_at, status, thread_id, session_id,
     run_id, prompt_version, result_summary, feedback, feedback_note,
-    started_at, finished_at, error_message";
+    started_at, finished_at, error_message, session_deleted";
 
 const SQL_INSERT_RUN: &str = "
     INSERT INTO task_runs (
         id, task_id, kind, origin, actor, due_at, status, thread_id, session_id,
         run_id, prompt_version, result_summary, feedback, feedback_note,
-        started_at, finished_at, error_message
-    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)";
+        started_at, finished_at, error_message, session_deleted
+    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)";
 
 const SQL_UPDATE_RUN: &str = "
     UPDATE task_runs SET
         kind=?2, origin=?3, actor=?4, due_at=?5, status=?6, thread_id=?7, session_id=?8,
         run_id=?9, prompt_version=?10, result_summary=?11,
-        feedback=?12, feedback_note=?13, started_at=?14, finished_at=?15, error_message=?16
+        feedback=?12, feedback_note=?13, started_at=?14, finished_at=?15, error_message=?16,
+        session_deleted=?17
     WHERE id=?1";
 
 const SQL_RUNS_FOR_TASK: &str = "
@@ -169,6 +173,24 @@ const MIGRATIONS: &[Migration] = &[
     Drop("tasks", "reflection"),
     Exec("DELETE FROM task_runs WHERE kind = 'reflection'"),
     Exec("DELETE FROM task_prompt_revisions WHERE status = 'proposed'"),
+    // Per-task conversation retention, and the run-level answer it implies
+    // (a deleted conversation takes the run's readability with it unless the
+    // answer is saved on the row).
+    Add(
+        "tasks",
+        "session_retention",
+        "ALTER TABLE tasks ADD COLUMN session_retention TEXT NOT NULL DEFAULT 'keep'",
+    ),
+    Add(
+        "task_runs",
+        "result_text",
+        "ALTER TABLE task_runs ADD COLUMN result_text TEXT",
+    ),
+    Add(
+        "task_runs",
+        "session_deleted",
+        "ALTER TABLE task_runs ADD COLUMN session_deleted INTEGER NOT NULL DEFAULT 0",
+    ),
 ];
 
 /// The full schema. Single source of truth for a fresh database (see the
@@ -198,6 +220,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   pending_request_at INTEGER,
   pending_origin   TEXT,
   pending_actor    TEXT,
+  session_retention TEXT NOT NULL DEFAULT 'keep',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   deleted_at INTEGER
@@ -238,6 +261,11 @@ CREATE TABLE IF NOT EXISTS task_runs (
   started_at     INTEGER,
   finished_at    INTEGER,
   error_message  TEXT,
+  -- The answer this run gave, saved when the run settles. Kept out of the
+  -- shared column list (see RUN_COLUMNS) so listing runs stays cheap.
+  result_text    TEXT,
+  -- The run's conversation was deleted after it settled.
+  session_deleted INTEGER NOT NULL DEFAULT 0,
   UNIQUE(task_id, due_at)
 );
 
@@ -343,6 +371,7 @@ impl Store {
             task.pending_request_at,
             task.pending_origin.map(run_origin_str),
             task.pending_actor,
+            session_retention_str(task.session_retention),
             task.created_at,
             task.updated_at,
             task.deleted_at,
@@ -371,6 +400,7 @@ impl Store {
             task.pending_request_at,
             task.pending_origin.map(run_origin_str),
             task.pending_actor,
+            session_retention_str(task.session_retention),
             task.updated_at,
             task.deleted_at,
         ];
@@ -512,6 +542,7 @@ impl Store {
             run.started_at,
             run.finished_at,
             run.error_message,
+            run.session_deleted as i64,
         ];
         self.conn.execute(SQL_INSERT_RUN, values)?;
         Ok(())
@@ -535,8 +566,49 @@ impl Store {
             run.started_at,
             run.finished_at,
             run.error_message,
+            run.session_deleted as i64,
         ];
         self.conn.execute(SQL_UPDATE_RUN, values)?;
+        Ok(())
+    }
+
+    /// The answer a run gave, saved when it settled (head…tail, capped). `None`
+    /// for a run recorded before this was stored, and for one that never
+    /// reached an answer.
+    ///
+    /// Read one run at a time on purpose: the text is the biggest column in the
+    /// table and every list query would otherwise carry it.
+    pub fn run_output(&self, run_id: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT result_text FROM task_runs WHERE id = ?1")?;
+        let mut rows = stmt.query(params![run_id])?;
+        Ok(rows
+            .next()?
+            .map(|row| row.get::<_, Option<String>>(0))
+            .transpose()?
+            .flatten())
+    }
+
+    /// Save the answer a run gave. Separate from [`Store::update_run`] so the
+    /// text is written exactly once, at settle time, and no later row update
+    /// (status, feedback, a cleared conversation) can blank it.
+    pub fn set_run_output(&self, run_id: &str, text: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE task_runs SET result_text = ?2 WHERE id = ?1",
+            params![run_id, text],
+        )?;
+        Ok(())
+    }
+
+    /// Record that the run's conversation was deleted, and forget the ids: a
+    /// conversation nobody can open must not look openable in any client.
+    pub fn mark_run_conversation_deleted(&self, run_id: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE task_runs SET thread_id = NULL, session_id = NULL, session_deleted = 1
+             WHERE id = ?1",
+            params![run_id],
+        )?;
         Ok(())
     }
 
@@ -678,9 +750,11 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
             .get::<_, Option<String>>(16)?
             .and_then(|s| parse_run_origin(&s)),
         pending_actor: row.get(17)?,
-        created_at: row.get(18)?,
-        updated_at: row.get(19)?,
-        deleted_at: row.get(20)?,
+        session_retention: parse_session_retention(&row.get::<_, String>(18)?)
+            .unwrap_or(SessionRetention::Keep),
+        created_at: row.get(19)?,
+        updated_at: row.get(20)?,
+        deleted_at: row.get(21)?,
     })
 }
 
@@ -703,6 +777,7 @@ fn run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRun> {
         started_at: row.get(14)?,
         finished_at: row.get(15)?,
         error_message: row.get(16)?,
+        session_deleted: row.get::<_, i64>(17)? != 0,
     })
 }
 
@@ -776,6 +851,24 @@ fn parse_session_policy(s: &str) -> Option<SessionPolicy> {
     match s {
         "new" => Some(SessionPolicy::New),
         "existing" => Some(SessionPolicy::Existing),
+        _ => None,
+    }
+}
+
+fn session_retention_str(r: SessionRetention) -> &'static str {
+    match r {
+        // Whatever a caller stored, a task that reuses its conversation keeps
+        // it: there is nothing to delete that the next run does not need.
+        // `kernel::deletes_run_conversation` decides the effective behaviour;
+        // this keeps the column honest about what the user asked for.
+        SessionRetention::Keep => "keep",
+        SessionRetention::Delete => "delete",
+    }
+}
+fn parse_session_retention(s: &str) -> Option<SessionRetention> {
+    match s {
+        "keep" => Some(SessionRetention::Keep),
+        "delete" => Some(SessionRetention::Delete),
         _ => None,
     }
 }
@@ -867,6 +960,7 @@ mod tests {
             pending_request_at: None,
             pending_origin: None,
             pending_actor: None,
+            session_retention: SessionRetention::Keep,
             created_at: 1,
             updated_at: 1,
             deleted_at: None,
@@ -962,6 +1056,7 @@ mod tests {
             started_at: Some(1_000),
             finished_at: None,
             error_message: None,
+            session_deleted: false,
         };
         s.insert_run(&run).unwrap();
         assert!(s.has_running_run(&t.id).unwrap());
@@ -1034,6 +1129,33 @@ mod tests {
         // The task itself still reads, including its prompt version.
         let got = s.get_task(&t.id).unwrap().unwrap();
         assert_eq!(got.name, "legacy");
+        // …and a task written before conversation retention existed reads as
+        // "keep", the behaviour it was running with.
+        assert_eq!(got.session_retention, SessionRetention::Keep);
+    }
+
+    /// A run row written before the answer was saved on it: reading it must not
+    /// invent an answer, and the run must not claim its conversation was
+    /// deleted.
+    #[test]
+    fn a_run_written_before_the_answer_was_stored_reads_as_empty() {
+        let dir = TempDir::new().unwrap();
+        let s = Store::open(dir.path()).unwrap();
+        let t = task("old-run");
+        s.insert_task(&t).unwrap();
+        let raw = Connection::open(store_path(dir.path())).unwrap();
+        raw.execute(
+            "INSERT INTO task_runs (id, task_id, kind, origin, status, session_id, started_at)
+             VALUES ('trn_old', ?1, 'main', 'schedule', 'completed', 'sess_old', 1)",
+            params![t.id],
+        )
+        .unwrap();
+        drop(raw);
+
+        let run = s.get_run("trn_old").unwrap().unwrap();
+        assert!(!run.session_deleted, "nothing deleted it");
+        assert_eq!(run.session_id.as_deref(), Some("sess_old"));
+        assert_eq!(s.run_output("trn_old").unwrap(), None);
     }
 
     #[test]
@@ -1452,6 +1574,7 @@ mod tests {
             started_at: Some(started),
             finished_at: None,
             error_message: None,
+            session_deleted: false,
         }
     }
 
@@ -1492,6 +1615,57 @@ mod tests {
         s.update_run(&done).unwrap();
         assert_eq!(s.get_run(&newer.id).unwrap().unwrap(), done);
         assert!(!s.has_running_run(&t.id).unwrap());
+    }
+
+    /// A run's saved answer is written once and survives every later row write:
+    /// clearing the conversation, a feedback verdict, a status change.
+    #[test]
+    fn a_runs_saved_output_survives_later_row_updates() {
+        let (_dir, s) = store();
+        let t = task("output");
+        s.insert_task(&t).unwrap();
+        let mut run = run_row(&t.id, RunStatus::Running, 100);
+        run.thread_id = Some("thr_1".into());
+        run.session_id = Some("sess_1".into());
+        s.insert_run(&run).unwrap();
+        assert_eq!(
+            s.run_output(&run.id).unwrap(),
+            None,
+            "a run that has not settled has no saved answer"
+        );
+
+        s.set_run_output(&run.id, "the whole answer").unwrap();
+        assert_eq!(
+            s.run_output(&run.id).unwrap().as_deref(),
+            Some("the whole answer")
+        );
+        // The list queries never carry it.
+        assert_eq!(s.list_runs_for_task(&t.id, 10).unwrap().len(), 1);
+        assert_eq!(s.get_run(&run.id).unwrap().unwrap().result_summary, None);
+
+        // A full update of the row (what `execute` does at settle time, and what
+        // a feedback verdict does later) leaves the saved text alone.
+        run.status = RunStatus::Completed;
+        run.result_summary = Some("the summary".into());
+        run.feedback = Some("good".into());
+        s.update_run(&run).unwrap();
+        assert_eq!(
+            s.run_output(&run.id).unwrap().as_deref(),
+            Some("the whole answer")
+        );
+
+        // Deleting the conversation forgets the ids and says so, and the answer
+        // is still readable afterwards.
+        s.mark_run_conversation_deleted(&run.id).unwrap();
+        let settled = s.get_run(&run.id).unwrap().unwrap();
+        assert!(settled.session_deleted);
+        assert_eq!(settled.thread_id, None);
+        assert_eq!(settled.session_id, None);
+        assert_eq!(
+            s.run_output(&run.id).unwrap().as_deref(),
+            Some("the whole answer"),
+            "the answer outlives the conversation"
+        );
     }
 
     #[test]
@@ -1576,20 +1750,26 @@ mod tests {
     #[test]
     fn every_enum_value_round_trips_through_its_stored_spelling() {
         let (_dir, s) = store();
-        for (policy, join) in [
-            (SessionPolicy::New, DepJoin::All),
-            (SessionPolicy::Existing, DepJoin::Any),
-            (SessionPolicy::Existing, DepJoin::All),
+        for (policy, join, retention) in [
+            (SessionPolicy::New, DepJoin::All, SessionRetention::Keep),
+            (
+                SessionPolicy::Existing,
+                DepJoin::Any,
+                SessionRetention::Keep,
+            ),
+            (SessionPolicy::New, DepJoin::All, SessionRetention::Delete),
         ] {
-            let mut t = task(&format!("{policy:?}-{join:?}"));
+            let mut t = task(&format!("{policy:?}-{join:?}-{retention:?}"));
             t.session_policy = policy;
             t.dep_join = join;
+            t.session_retention = retention;
             t.trigger_kind = TriggerKind::Manual;
             t.pending_origin = Some(RunOrigin::Chain);
             s.insert_task(&t).unwrap();
             let got = s.get_task(&t.id).unwrap().unwrap();
             assert_eq!(got.session_policy, policy);
             assert_eq!(got.dep_join, join);
+            assert_eq!(got.session_retention, retention);
             assert_eq!(got.trigger_kind, TriggerKind::Manual);
             assert_eq!(got.pending_origin, Some(RunOrigin::Chain));
         }

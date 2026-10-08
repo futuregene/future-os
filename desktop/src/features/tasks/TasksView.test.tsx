@@ -54,6 +54,7 @@ function task(overrides: Partial<TaskView> = {}): TaskView {
     modelId: "future/gpt-5",
     thinkingLevel: "high",
     sessionPolicy: "new",
+    sessionRetention: "keep",
     conversationMode: "workspace",
     triggerKind: "schedule",
     trigger: { mode: "daily", time: "09:00" },
@@ -80,6 +81,7 @@ function run(overrides: Partial<TaskRunView> = {}): TaskRunView {
     promptVersion: 1,
     resultSummary: "all good",
     errorMessage: null,
+    sessionDeleted: false,
     ...overrides,
   };
 }
@@ -239,6 +241,13 @@ async function openDetail(container: HTMLElement) {
 function runCard(container: HTMLElement, text: string) {
   return [...container.querySelectorAll<HTMLLIElement>("li")]
     .find(item => (item.textContent ?? "").includes(text));
+}
+
+/** The control under a labelled field, or null when the field is not rendered. */
+function fieldOrNull(container: HTMLElement, label: string) {
+  const span = [...container.querySelectorAll("span")]
+    .find(node => (node.textContent ?? "").trim() === label);
+  return span?.parentElement?.querySelector<HTMLSelectElement | HTMLInputElement | HTMLTextAreaElement>("input, textarea, select") ?? null;
 }
 
 /** The control under the labelled field, e.g. the input after the "Name" span. */
@@ -1009,6 +1018,54 @@ describe("tasksView", () => {
         trigger: { mode: "weekly", time: "07:30" },
       },
     });
+  });
+
+  // Deleting the run's conversation is offered only where it means something:
+  // a conversation that is opened per run. A reused one is what the next run
+  // continues, so the choice is not there — and a draft that somehow carries it
+  // sends `keep` rather than storing a combination nothing honours.
+  it("offers the delete-after-run choice only for a per-run conversation", async () => {
+    const { container } = await renderView([]);
+    await click(buttonByText(container, "New task"));
+    await chooseModelAndThinking(container);
+
+    const retention = () => fieldOrNull(container, "Conversation after the run");
+    expect(retention(), "a new task opens a per-run conversation").not.toBeNull();
+
+    await setValue(field(container, "Conversation") as HTMLSelectElement, "existing");
+    expect(retention(), "reuse has no conversation to delete").toBeNull();
+
+    await setValue(field(container, "Conversation") as HTMLSelectElement, "new");
+    await setValue(retention()! as HTMLSelectElement, "delete");
+    // The consequence is stated where the choice is made.
+    expect(container.textContent).toContain("full output stay on the run");
+
+    await setValue(field(container, "Name") as HTMLInputElement, "ephemeral");
+    await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
+    mocks.invokeCommand.mockClear();
+    backend([task()]);
+    await click(buttonByText(container, "Save"));
+    const call = mocks.invokeCommand.mock.calls.find(([command]) => command === "create_task");
+    expect(call?.[1]).toMatchObject({
+      input: { sessionPolicy: "new", sessionRetention: "delete" },
+    });
+  });
+
+  // The run keeps its output; the conversation is the part that went away.
+  it("says when a run's conversation was deleted, and hides its open link", async () => {
+    const { container } = await renderView(
+      [task()],
+      vi.fn(),
+      MODELS,
+      [defaultRevision()],
+      [run({ threadId: null, sessionDeleted: true, resultSummary: "the saved answer" })],
+    );
+    await click(rows(container)[0]);
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("the saved answer");
+    expect(text).toContain("deleted as configured");
+    expect(buttonByText(container, "Open")).toBeUndefined();
   });
 
   it("edits the time of a daily trigger", async () => {
