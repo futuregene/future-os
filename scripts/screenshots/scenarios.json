@@ -669,7 +669,7 @@
             "wait": 1200
           },
           {
-            "tap": "任务"
+            "tap": "任务设置"
           },
           {
             "wait": 900
@@ -689,7 +689,7 @@
             "wait": 1200
           },
           {
-            "tap": "任务"
+            "tap": "任务设置"
           },
           {
             "wait": 900
@@ -701,10 +701,19 @@
             "wait": 900
           },
           {
-            "eval": "(() => { const t = document.body.innerText; ['提示词', '运行记录', '依赖', '提示词版本'].forEach(k => { if (!t.includes(k)) throw new Error('detail is missing ' + k); }); })()"
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行记录')) throw new Error('the run history is not on the opened page'); if (!t.includes('提示词版本')) throw new Error('the version list is not on the opened page'); if (document.querySelector('dl')) throw new Error('a definition list is rendered while folded'); ['工作目录', '本周新增或改动', '全部上游到齐'].forEach(k => { if (t.includes(k)) throw new Error('the definition is not folded: ' + k + ' is visible'); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (!toggle) throw new Error('the settings disclosure is missing'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the settings start expanded'); })()"
           },
           {
             "shot": "d-tasks-detail.png"
+          },
+          {
+            "eval": "(() => { const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); toggle.click(); return 'unfolded'; })()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!document.querySelector('dl')) throw new Error('the unfolded definition has no settings list'); ['工作目录', '本周新增或改动', '全部上游到齐'].forEach(k => { if (!t.includes(k)) throw new Error('the unfolded definition is missing ' + k); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (toggle.getAttribute('aria-expanded') !== 'true') throw new Error('the disclosure did not report itself open'); })()"
           },
           {
             "eval": "(() => { const scrollers = [...document.querySelectorAll('div,main,section')].filter(el => el.scrollHeight > el.clientHeight + 40 && /auto|scroll/.test(getComputedStyle(el).overflowY)); if (!scrollers.length) throw new Error('no scroll container'); const target = scrollers.sort((a, b) => b.scrollHeight - a.scrollHeight)[0]; target.scrollTop = target.scrollHeight; return target.scrollTop;})()"
@@ -727,7 +736,7 @@
             "wait": 1200
           },
           {
-            "tap": "任务"
+            "tap": "任务设置"
           },
           {
             "wait": 900
@@ -777,7 +786,7 @@
             "wait": 1200
           },
           {
-            "tap": "任务"
+            "tap": "任务设置"
           },
           {
             "wait": 900
@@ -839,7 +848,7 @@
             "wait": 1200
           },
           {
-            "tap": "任务"
+            "tap": "任务设置"
           },
           {
             "wait": 900
@@ -2361,7 +2370,7 @@
             "wait": 1600
           },
           {
-            "tap": "任务"
+            "tap": "任务设置"
           },
           {
             "wait": 1200
@@ -2392,7 +2401,7 @@
             "wait": 1600
           },
           {
-            "tap": "任务"
+            "tap": "任务设置"
           },
           {
             "wait": 1200
@@ -2402,6 +2411,12 @@
           },
           {
             "wait": 1200
+          },
+          {
+            "eval": "(() => { const fold = document.querySelector('[role=button][aria-label=\"设置\"]'); if (!fold) throw new Error('the settings fold is missing'); if (fold.getAttribute('aria-expanded') !== 'false') throw new Error('the form is not folded on open'); fold.click(); return 'unfolded'; })()"
+          },
+          {
+            "wait": 400
           },
           {
             "eval": "(() => { const t = document.body.innerText; if (!t.includes('提示词')) throw new Error('mobile detail is missing the prompt section'); })()"
@@ -2429,7 +2444,7 @@
             "wait": 1600
           },
           {
-            "tap": "任务"
+            "tap": "任务设置"
           },
           {
             "wait": 1200
@@ -2441,13 +2456,16 @@
             "wait": 1200
           },
           {
-            "eval": "(() => { const scrollers = [...document.querySelectorAll('div')].filter(el => el.scrollHeight > el.clientHeight + 40 && /auto|scroll/.test(getComputedStyle(el).overflowY)); if (!scrollers.length) throw new Error('no scroll container'); scrollers[scrollers.length - 1].scrollTop = scrollers[scrollers.length - 1].scrollHeight; })()"
-          },
-          {
             "wait": 800
           },
           {
-            "eval": "(() => { const t = document.body.innerText; ['运行记录', '提示词版本'].forEach(k => { if (!t.includes(k)) throw new Error('scrolled view is missing ' + k); }); if (!t.includes('写入 reports/weekly-2026-10-05.md')) throw new Error('the run summary is missing'); })()"
+            "wait": 600
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; ['运行记录', '提示词版本'].forEach(k => { if (!t.includes(k)) throw new Error('the opened page is missing ' + k); }); if (!t.includes('写入 reports/weekly-2026-10-05.md')) throw new Error('the run summary is missing'); if (document.querySelectorAll('input').length) throw new Error('the form is rendered while folded'); })()"
+          },
+          {
+            "wait": 600
           },
           {
             "shot": "m-settings-tasks-history.png"
@@ -2473,7 +2491,7 @@
             "wait": 1600
           },
           {
-            "tap": "任务"
+            "tap": "任务设置"
           },
           {
             "wait": 1200
@@ -2485,7 +2503,13 @@
             "wait": 1200
           },
           {
-            "eval": "(() => { const t = document.body.innerText; const missing = [\"任务信息\", \"名称\", \"提示词\", \"工作目录\", \"模型\", \"思考等级\", \"会话策略\", \"会话类型\", \"状态\", \"提示词优化建议\", \"删除\", \"返回\"].filter(k => !t.includes(k)); if (missing.length) throw new Error('MISSING:' + missing.join('/')); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
+            "eval": "(() => { const fold = document.querySelector('[role=button][aria-label=\"设置\"]'); if (!fold) throw new Error('the settings fold is missing'); if (fold.getAttribute('aria-expanded') !== 'false') throw new Error('the form is not folded on open'); fold.click(); return 'unfolded'; })()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; const missing = [\"任务信息\", \"名称\", \"提示词\", \"工作目录\", \"模型\", \"思考等级\", \"会话策略\", \"会话类型\", \"状态\", \"删除\", \"返回\"].filter(k => !t.includes(k)); if (missing.length) throw new Error('MISSING:' + missing.join('/')); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
           },
           {
             "shot": "m-settings-tasks-form.png"
@@ -2511,7 +2535,7 @@
             "wait": 1600
           },
           {
-            "tap": "任务"
+            "tap": "任务设置"
           },
           {
             "wait": 1200
@@ -2549,7 +2573,7 @@
             "wait": 1600
           },
           {
-            "tap": "任务"
+            "tap": "任务设置"
           },
           {
             "wait": 1200

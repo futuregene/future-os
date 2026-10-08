@@ -548,6 +548,10 @@ function TaskForm({
   const models = useDesktopResource(remote.listSettingsModels, 0, desktopOnline);
   const [draft, setDraft] = useState<Draft>(() => detail ? draftFrom(detail, deps) : newDraft());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // The form starts folded on an existing task: the page is opened to see what
+  // the task did, and every field is one tap away (a new task has no history to
+  // lead with, so it opens straight into the form).
+  const [settingsOpen, setSettingsOpen] = useState(kind === "create");
   // Editing edges needs a desktop that implements them; an older one keeps the
   // read-only list below the form.
   const canEditDeps = remote.capabilities?.has("task_deps_v1") ?? false;
@@ -634,301 +638,6 @@ function TaskForm({
           : null}
       </SettingsSection>
 
-      <SettingsSection title={t("tasks.form.details")}>
-        <SettingsField label={t("tasks.form.name")}>
-          <TextInput
-            accessibilityLabel={t("tasks.form.name")}
-            style={settingsStyles.input}
-            value={draft.name}
-            onChangeText={name => patch({ name })}
-          />
-        </SettingsField>
-
-        <SettingsField label={t("tasks.form.prompt")}>
-          <TextInput
-            accessibilityLabel={t("tasks.form.prompt")}
-            multiline
-            style={settingsStyles.input}
-            value={draft.prompt}
-            onChangeText={prompt => patch({ prompt })}
-          />
-        </SettingsField>
-
-        {/* The conversation type decides whether a directory is needed at all,
-            so it is asked before the directory row (and the row only exists for
-            a workspace conversation — a chat one brings its own). */}
-        <SettingsField label={t("tasks.form.conversation")} hint={t("tasks.form.conversationHint")}>
-          <View style={settingsStyles.actions}>
-            {(["chat", "workspace"] as const).map(mode => (
-              <Choice
-                disabled={busy}
-                key={mode}
-                label={t(`tasks.form.conversation${mode === "chat" ? "Chat" : "Workspace"}`)}
-                onPress={() => patch({ conversationMode: mode })}
-                selected={draft.conversationMode === mode}
-              />
-            ))}
-          </View>
-        </SettingsField>
-
-        {workspaceConversation
-          ? (
-              <SettingsField label={t("tasks.form.cwd")} hint={t("tasks.form.cwdHint")}>
-                <View style={settingsStyles.actions}>
-                  {remote.workspaces.slice(0, 6).map(workspace => (
-                    <Choice
-                      disabled={busy}
-                      key={workspace.id}
-                      label={workspace.name || workspace.path}
-                      onPress={() => patch({ cwd: workspace.path })}
-                      selected={draft.cwd === workspace.path}
-                    />
-                  ))}
-                </View>
-                <TextInput
-                  accessibilityLabel={t("tasks.form.cwdPath")}
-                  autoCapitalize="none"
-                  style={settingsStyles.input}
-                  value={draft.cwd}
-                  onChangeText={cwd => patch({ cwd })}
-                />
-              </SettingsField>
-            )
-          : null}
-
-        <SettingsField label={t("tasks.form.model")} hint={models.failed ? t("tasks.form.modelsFailed") : undefined}>
-          <View style={settingsStyles.actions}>
-            {pinnedModel
-              ? (
-                  <Choice
-                    disabled={busy}
-                    key={pinnedModel}
-                    label={pinnedModel}
-                    onPress={() => patch({ modelId: pinnedModel })}
-                    selected={draft.modelId === pinnedModel}
-                  />
-                )
-              : null}
-            {enabledModels.map(model => (
-              <Choice
-                disabled={busy}
-                key={modelKey(model)}
-                label={model.label || model.id}
-                onPress={() => patch({ modelId: modelKey(model) })}
-                selected={draft.modelId === modelKey(model)}
-              />
-            ))}
-          </View>
-        </SettingsField>
-
-        <SettingsField label={t("tasks.form.thinking")}>
-          <View style={settingsStyles.actions}>
-            {THINKING_LEVELS.map(level => (
-              <Choice
-                disabled={busy}
-                key={level}
-                label={t(`tasks.thinkingLabels.${level}`)}
-                onPress={() => patch({ thinkingLevel: level })}
-                selected={draft.thinkingLevel === level}
-              />
-            ))}
-          </View>
-        </SettingsField>
-
-        <SettingsField label={t("tasks.form.session")} hint={draft.sessionPolicy === "existing" ? t("tasks.form.sessionExistingHint") : undefined}>
-          <View style={settingsStyles.actions}>
-            {(["new", "existing"] as const).map(policy => (
-              <Choice
-                disabled={busy}
-                key={policy}
-                label={t(policy === "existing" ? "tasks.form.sessionExisting" : "tasks.form.sessionNew")}
-                onPress={() => patch({ sessionPolicy: policy })}
-                selected={draft.sessionPolicy === policy}
-              />
-            ))}
-          </View>
-        </SettingsField>
-
-        <SettingsField label={t("tasks.form.enablement")}>
-          <View style={settingsStyles.actions}>
-            {([true, false] as const).map(on => (
-              <Choice
-                disabled={busy}
-                key={String(on)}
-                label={t(on ? "tasks.form.enabled" : "tasks.form.disabled")}
-                onPress={() => patch({ enabled: on })}
-                selected={draft.enabled === on}
-              />
-            ))}
-          </View>
-        </SettingsField>
-      </SettingsSection>
-
-      <SettingsSection title={t("tasks.form.trigger")}>
-        <View style={settingsStyles.actions}>
-          {(["manual", "dependency", "once", "interval", "daily", "weekly", "monthly"] as const).map(mode => (
-            <Choice
-              disabled={busy}
-              key={mode}
-              label={t(`tasks.triggerMode.${mode}`)}
-              onPress={() => patchTrigger({ mode })}
-              selected={trigger.mode === mode}
-            />
-          ))}
-        </View>
-        {trigger.mode === "once"
-          ? (
-              <SettingsField label={t("tasks.form.date")}>
-                <TextInput accessibilityLabel={t("tasks.form.date")} placeholder="2026-12-24" style={settingsStyles.input} value={trigger.date} onChangeText={date => patchTrigger({ date })} />
-              </SettingsField>
-            )
-          : null}
-        {trigger.mode !== "manual" && trigger.mode !== "dependency" && trigger.mode !== "interval"
-          ? (
-              <SettingsField label={t("tasks.form.time")}>
-                <TextInput accessibilityLabel={t("tasks.form.time")} style={settingsStyles.input} value={trigger.time} onChangeText={time => patchTrigger({ time })} />
-              </SettingsField>
-            )
-          : null}
-        {trigger.mode === "interval"
-          ? (
-              <SettingsField label={t("tasks.form.everyMinutes")}>
-                <TextInput accessibilityLabel={t("tasks.form.everyMinutes")} keyboardType="number-pad" style={settingsStyles.input} value={trigger.everyMinutes} onChangeText={everyMinutes => patchTrigger({ everyMinutes })} />
-              </SettingsField>
-            )
-          : null}
-        {trigger.mode === "weekly"
-          ? (
-              <SettingsField label={t("tasks.form.days")} hint="mon,tue,wed">
-                <TextInput accessibilityLabel={t("tasks.form.days")} autoCapitalize="none" style={settingsStyles.input} value={trigger.days} onChangeText={days => patchTrigger({ days })} />
-              </SettingsField>
-            )
-          : null}
-        {trigger.mode === "monthly"
-          ? (
-              <SettingsField label={t("tasks.form.day")} hint={t("tasks.form.shortMonthHint")}>
-                <TextInput accessibilityLabel={t("tasks.form.day")} keyboardType="number-pad" style={settingsStyles.input} value={trigger.day} onChangeText={day => patchTrigger({ day })} />
-              </SettingsField>
-            )
-          : null}
-        {problem
-          ? <Text accessibilityRole="alert" style={settingsStyles.error}>{t(`tasks.form.problem.${problem}`)}</Text>
-          : null}
-        <Button label={t("tasks.form.save")} disabled={busy || problem !== null} onPress={save} />
-        <Text style={settingsStyles.description}>{t("tasks.form.fullPermissionWarning")}</Text>
-      </SettingsSection>
-
-      {/* The dependency editor belongs to the trigger choice, and stays visible
-          for a task that already has upstreams (even next to a schedule of its
-          own): an edge nobody can see is an edge nobody can remove. */}
-      {trigger.mode === "dependency" || draft.deps.length > 0
-        ? (
-            <SettingsSection title={t("tasks.form.deps")}>
-              {trigger.mode !== "dependency"
-                ? <Text style={settingsStyles.description}>{t("tasks.form.depsAlongsideSchedule")}</Text>
-                : null}
-              {!canEditDeps
-                ? <Text style={settingsStyles.description}>{t("tasks.form.depsUnsupported")}</Text>
-                : (
-              <>
-                {draft.deps.length === 0
-                  ? <Text style={settingsStyles.description}>{t("tasks.form.depsNone")}</Text>
-                  : draft.deps.map(dep => (
-                      <View key={dep.upstreamTaskId} style={styles.depCard}>
-                        <Text style={settingsStyles.label} numberOfLines={1}>{dep.name || dep.upstreamTaskId}</Text>
-                        <View style={settingsStyles.actions}>
-                          {(["success", "failure", "completed"] as const).map(on => (
-                            <Choice
-                              disabled={busy}
-                              key={on}
-                              label={t(`tasks.on.${on}`)}
-                              onPress={() => patch({
-                                deps: draft.deps.map(item => (
-                                  item.upstreamTaskId === dep.upstreamTaskId ? { ...item, on } : item
-                                )),
-                              })}
-                              selected={dep.on === on}
-                            />
-                          ))}
-                        </View>
-                        <Button
-                          compact
-                          disabled={busy}
-                          label={t("tasks.form.depRemove", { name: dep.name || dep.upstreamTaskId })}
-                          variant="secondary"
-                          onPress={() => patch({
-                            deps: draft.deps.filter(item => item.upstreamTaskId !== dep.upstreamTaskId),
-                          })}
-                        />
-                      </View>
-                    ))}
-
-                {addable.length === 0
-                  ? <Text style={settingsStyles.description}>{t("tasks.form.depNoCandidates")}</Text>
-                  : (
-                      <View style={settingsStyles.actions}>
-                        {addable.map(candidate => (
-                          <Choice
-                            disabled={busy}
-                            key={candidate.id}
-                            label={candidate.name}
-                            // A new edge waits for a successful finish: the
-                            // common case, and what the CLI's bare
-                            // `--depends-on NAME` means.
-                            onPress={() => patch({
-                              deps: [
-                                ...draft.deps,
-                                { upstreamTaskId: candidate.id, name: candidate.name, on: "success" },
-                              ],
-                            })}
-                            selected={false}
-                          />
-                        ))}
-                      </View>
-                    )}
-
-                {draft.deps.length > 1
-                  ? (
-                      <SettingsField label={t("tasks.form.depJoin")}>
-                        <View style={settingsStyles.actions}>
-                          {(["all", "any"] as const).map(join => (
-                            <Choice
-                              disabled={busy}
-                              key={join}
-                              label={t(`tasks.join.${join}`)}
-                              onPress={() => patch({ depJoin: join })}
-                              selected={draft.depJoin === join}
-                            />
-                          ))}
-                        </View>
-                      </SettingsField>
-                    )
-                  : null}
-              </>
-                )}
-            </SettingsSection>
-          )
-        : null}
-
-      {/* The dependency editor above owns this list when the desktop supports
-          it; an older desktop gets the read-only view instead of nothing. */}
-      {!canEditDeps && deps.length > 0
-        ? (
-            <SettingsSection title={t("tasks.deps")}>
-              {deps.map(dep => (
-                <View key={dep.upstreamTaskId} style={styles.depCard}>
-                  <Text style={settingsStyles.label} numberOfLines={1}>{dep.upstreamName}</Text>
-                  <Text style={settingsStyles.description}>
-                    {t(`tasks.on.${dep.on}`)}
-                    {" · "}
-                    {dep.satisfied ? t("tasks.depsReady") : t("tasks.depsWaiting")}
-                  </Text>
-                </View>
-              ))}
-            </SettingsSection>
-          )
-        : null}
-
       {runs.length > 0
         ? (
             <SettingsSection title={t("tasks.runs")}>
@@ -984,6 +693,323 @@ function TaskForm({
             </SettingsSection>
           )
         : null}
+
+      {/* Closed by default: opening a task shows what it did, and the form is
+          one tap away (see `settingsOpen`). */}
+      {kind === "create"
+        ? null
+        : (
+            <Pressable
+              accessibilityLabel={t("tasks.settings")}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: settingsOpen }}
+              onPress={() => setSettingsOpen(open => !open)}
+            >
+              <Text style={styles.disclosure}>
+                {`${settingsOpen ? "▾" : "▸"} ${t("tasks.settings")}`}
+              </Text>
+            </Pressable>
+          )}
+      {kind === "create" || settingsOpen
+        ? (
+            <>
+            <SettingsSection title={t("tasks.form.details")}>
+              <SettingsField label={t("tasks.form.name")}>
+                <TextInput
+                  accessibilityLabel={t("tasks.form.name")}
+                  style={settingsStyles.input}
+                  value={draft.name}
+                  onChangeText={name => patch({ name })}
+                />
+              </SettingsField>
+
+              <SettingsField label={t("tasks.form.prompt")}>
+                <TextInput
+                  accessibilityLabel={t("tasks.form.prompt")}
+                  multiline
+                  style={settingsStyles.input}
+                  value={draft.prompt}
+                  onChangeText={prompt => patch({ prompt })}
+                />
+              </SettingsField>
+
+              {/* The conversation type decides whether a directory is needed at all,
+                  so it is asked before the directory row (and the row only exists for
+                  a workspace conversation — a chat one brings its own). */}
+              <SettingsField label={t("tasks.form.conversation")} hint={t("tasks.form.conversationHint")}>
+                <View style={settingsStyles.actions}>
+                  {(["chat", "workspace"] as const).map(mode => (
+                    <Choice
+                      disabled={busy}
+                      key={mode}
+                      label={t(`tasks.form.conversation${mode === "chat" ? "Chat" : "Workspace"}`)}
+                      onPress={() => patch({ conversationMode: mode })}
+                      selected={draft.conversationMode === mode}
+                    />
+                  ))}
+                </View>
+              </SettingsField>
+
+              {workspaceConversation
+                ? (
+                    <SettingsField label={t("tasks.form.cwd")} hint={t("tasks.form.cwdHint")}>
+                      <View style={settingsStyles.actions}>
+                        {remote.workspaces.slice(0, 6).map(workspace => (
+                          <Choice
+                            disabled={busy}
+                            key={workspace.id}
+                            label={workspace.name || workspace.path}
+                            onPress={() => patch({ cwd: workspace.path })}
+                            selected={draft.cwd === workspace.path}
+                          />
+                        ))}
+                      </View>
+                      <TextInput
+                        accessibilityLabel={t("tasks.form.cwdPath")}
+                        autoCapitalize="none"
+                        style={settingsStyles.input}
+                        value={draft.cwd}
+                        onChangeText={cwd => patch({ cwd })}
+                      />
+                    </SettingsField>
+                  )
+                : null}
+
+              <SettingsField label={t("tasks.form.model")} hint={models.failed ? t("tasks.form.modelsFailed") : undefined}>
+                <View style={settingsStyles.actions}>
+                  {pinnedModel
+                    ? (
+                        <Choice
+                          disabled={busy}
+                          key={pinnedModel}
+                          label={pinnedModel}
+                          onPress={() => patch({ modelId: pinnedModel })}
+                          selected={draft.modelId === pinnedModel}
+                        />
+                      )
+                    : null}
+                  {enabledModels.map(model => (
+                    <Choice
+                      disabled={busy}
+                      key={modelKey(model)}
+                      label={model.label || model.id}
+                      onPress={() => patch({ modelId: modelKey(model) })}
+                      selected={draft.modelId === modelKey(model)}
+                    />
+                  ))}
+                </View>
+              </SettingsField>
+
+              <SettingsField label={t("tasks.form.thinking")}>
+                <View style={settingsStyles.actions}>
+                  {THINKING_LEVELS.map(level => (
+                    <Choice
+                      disabled={busy}
+                      key={level}
+                      label={t(`tasks.thinkingLabels.${level}`)}
+                      onPress={() => patch({ thinkingLevel: level })}
+                      selected={draft.thinkingLevel === level}
+                    />
+                  ))}
+                </View>
+              </SettingsField>
+
+              <SettingsField label={t("tasks.form.session")} hint={draft.sessionPolicy === "existing" ? t("tasks.form.sessionExistingHint") : undefined}>
+                <View style={settingsStyles.actions}>
+                  {(["new", "existing"] as const).map(policy => (
+                    <Choice
+                      disabled={busy}
+                      key={policy}
+                      label={t(policy === "existing" ? "tasks.form.sessionExisting" : "tasks.form.sessionNew")}
+                      onPress={() => patch({ sessionPolicy: policy })}
+                      selected={draft.sessionPolicy === policy}
+                    />
+                  ))}
+                </View>
+              </SettingsField>
+
+              <SettingsField label={t("tasks.form.enablement")}>
+                <View style={settingsStyles.actions}>
+                  {([true, false] as const).map(on => (
+                    <Choice
+                      disabled={busy}
+                      key={String(on)}
+                      label={t(on ? "tasks.form.enabled" : "tasks.form.disabled")}
+                      onPress={() => patch({ enabled: on })}
+                      selected={draft.enabled === on}
+                    />
+                  ))}
+                </View>
+              </SettingsField>
+            </SettingsSection>
+
+            <SettingsSection title={t("tasks.form.trigger")}>
+              <View style={settingsStyles.actions}>
+                {(["manual", "dependency", "once", "interval", "daily", "weekly", "monthly"] as const).map(mode => (
+                  <Choice
+                    disabled={busy}
+                    key={mode}
+                    label={t(`tasks.triggerMode.${mode}`)}
+                    onPress={() => patchTrigger({ mode })}
+                    selected={trigger.mode === mode}
+                  />
+                ))}
+              </View>
+              {trigger.mode === "once"
+                ? (
+                    <SettingsField label={t("tasks.form.date")}>
+                      <TextInput accessibilityLabel={t("tasks.form.date")} placeholder="2026-12-24" style={settingsStyles.input} value={trigger.date} onChangeText={date => patchTrigger({ date })} />
+                    </SettingsField>
+                  )
+                : null}
+              {trigger.mode !== "manual" && trigger.mode !== "dependency" && trigger.mode !== "interval"
+                ? (
+                    <SettingsField label={t("tasks.form.time")}>
+                      <TextInput accessibilityLabel={t("tasks.form.time")} style={settingsStyles.input} value={trigger.time} onChangeText={time => patchTrigger({ time })} />
+                    </SettingsField>
+                  )
+                : null}
+              {trigger.mode === "interval"
+                ? (
+                    <SettingsField label={t("tasks.form.everyMinutes")}>
+                      <TextInput accessibilityLabel={t("tasks.form.everyMinutes")} keyboardType="number-pad" style={settingsStyles.input} value={trigger.everyMinutes} onChangeText={everyMinutes => patchTrigger({ everyMinutes })} />
+                    </SettingsField>
+                  )
+                : null}
+              {trigger.mode === "weekly"
+                ? (
+                    <SettingsField label={t("tasks.form.days")} hint="mon,tue,wed">
+                      <TextInput accessibilityLabel={t("tasks.form.days")} autoCapitalize="none" style={settingsStyles.input} value={trigger.days} onChangeText={days => patchTrigger({ days })} />
+                    </SettingsField>
+                  )
+                : null}
+              {trigger.mode === "monthly"
+                ? (
+                    <SettingsField label={t("tasks.form.day")} hint={t("tasks.form.shortMonthHint")}>
+                      <TextInput accessibilityLabel={t("tasks.form.day")} keyboardType="number-pad" style={settingsStyles.input} value={trigger.day} onChangeText={day => patchTrigger({ day })} />
+                    </SettingsField>
+                  )
+                : null}
+              {problem
+                ? <Text accessibilityRole="alert" style={settingsStyles.error}>{t(`tasks.form.problem.${problem}`)}</Text>
+                : null}
+              <Button label={t("tasks.form.save")} disabled={busy || problem !== null} onPress={save} />
+              <Text style={settingsStyles.description}>{t("tasks.form.fullPermissionWarning")}</Text>
+            </SettingsSection>
+
+            {/* The dependency editor belongs to the trigger choice, and stays visible
+                for a task that already has upstreams (even next to a schedule of its
+                own): an edge nobody can see is an edge nobody can remove. */}
+            {trigger.mode === "dependency" || draft.deps.length > 0
+              ? (
+                  <SettingsSection title={t("tasks.form.deps")}>
+                    {trigger.mode !== "dependency"
+                      ? <Text style={settingsStyles.description}>{t("tasks.form.depsAlongsideSchedule")}</Text>
+                      : null}
+                    {!canEditDeps
+                      ? <Text style={settingsStyles.description}>{t("tasks.form.depsUnsupported")}</Text>
+                      : (
+                    <>
+                      {draft.deps.length === 0
+                        ? <Text style={settingsStyles.description}>{t("tasks.form.depsNone")}</Text>
+                        : draft.deps.map(dep => (
+                            <View key={dep.upstreamTaskId} style={styles.depCard}>
+                              <Text style={settingsStyles.label} numberOfLines={1}>{dep.name || dep.upstreamTaskId}</Text>
+                              <View style={settingsStyles.actions}>
+                                {(["success", "failure", "completed"] as const).map(on => (
+                                  <Choice
+                                    disabled={busy}
+                                    key={on}
+                                    label={t(`tasks.on.${on}`)}
+                                    onPress={() => patch({
+                                      deps: draft.deps.map(item => (
+                                        item.upstreamTaskId === dep.upstreamTaskId ? { ...item, on } : item
+                                      )),
+                                    })}
+                                    selected={dep.on === on}
+                                  />
+                                ))}
+                              </View>
+                              <Button
+                                compact
+                                disabled={busy}
+                                label={t("tasks.form.depRemove", { name: dep.name || dep.upstreamTaskId })}
+                                variant="secondary"
+                                onPress={() => patch({
+                                  deps: draft.deps.filter(item => item.upstreamTaskId !== dep.upstreamTaskId),
+                                })}
+                              />
+                            </View>
+                          ))}
+
+                      {addable.length === 0
+                        ? <Text style={settingsStyles.description}>{t("tasks.form.depNoCandidates")}</Text>
+                        : (
+                            <View style={settingsStyles.actions}>
+                              {addable.map(candidate => (
+                                <Choice
+                                  disabled={busy}
+                                  key={candidate.id}
+                                  label={candidate.name}
+                                  // A new edge waits for a successful finish: the
+                                  // common case, and what the CLI's bare
+                                  // `--depends-on NAME` means.
+                                  onPress={() => patch({
+                                    deps: [
+                                      ...draft.deps,
+                                      { upstreamTaskId: candidate.id, name: candidate.name, on: "success" },
+                                    ],
+                                  })}
+                                  selected={false}
+                                />
+                              ))}
+                            </View>
+                          )}
+
+                      {draft.deps.length > 1
+                        ? (
+                            <SettingsField label={t("tasks.form.depJoin")}>
+                              <View style={settingsStyles.actions}>
+                                {(["all", "any"] as const).map(join => (
+                                  <Choice
+                                    disabled={busy}
+                                    key={join}
+                                    label={t(`tasks.join.${join}`)}
+                                    onPress={() => patch({ depJoin: join })}
+                                    selected={draft.depJoin === join}
+                                  />
+                                ))}
+                              </View>
+                            </SettingsField>
+                          )
+                        : null}
+                    </>
+                      )}
+                  </SettingsSection>
+                )
+              : null}
+
+            {/* The dependency editor above owns this list when the desktop supports
+                it; an older desktop gets the read-only view instead of nothing. */}
+            {!canEditDeps && deps.length > 0
+              ? (
+                  <SettingsSection title={t("tasks.deps")}>
+                    {deps.map(dep => (
+                      <View key={dep.upstreamTaskId} style={styles.depCard}>
+                        <Text style={settingsStyles.label} numberOfLines={1}>{dep.upstreamName}</Text>
+                        <Text style={settingsStyles.description}>
+                          {t(`tasks.on.${dep.on}`)}
+                          {" · "}
+                          {dep.satisfied ? t("tasks.depsReady") : t("tasks.depsWaiting")}
+                        </Text>
+                      </View>
+                    ))}
+                  </SettingsSection>
+                )
+              : null}
+            </>
+          )
+        : null}
     </ScrollView>
   );
 }
@@ -1007,5 +1033,6 @@ const styles = StyleSheet.create({
   runHeading: { color: colors.ink, fontSize: 13, fontWeight: "600" },
   runSummary: { color: colors.inkSoft, fontSize: 13, lineHeight: 20 },
   runLink: { color: colors.accent, fontSize: 13, fontWeight: "600" },
+  disclosure: { color: colors.inkMuted, fontSize: 13, fontWeight: "600", paddingVertical: spacing.sm },
   depCard: { gap: spacing.xs, padding: spacing.md, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
 });

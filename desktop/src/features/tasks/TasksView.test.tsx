@@ -219,6 +219,22 @@ function rows(container: HTMLElement) {
   return [...container.querySelectorAll<HTMLButtonElement>("div.w-72 > button")];
 }
 
+/**
+ * The detail's 设置 disclosure. The page opens on what the task did, so a test
+ * that reads the definition (model, prompt, dependencies…) has to unfold it —
+ * which is also what pins the default (`opens on the run history`).
+ */
+function settingsToggle(container: HTMLElement) {
+  return [...container.querySelectorAll<HTMLButtonElement>("button[aria-expanded]")]
+    .find(button => (button.textContent ?? "").trim() === "Settings");
+}
+
+/** Open a task's detail and its folded definition. */
+async function openDetail(container: HTMLElement) {
+  await click(rows(container)[0]);
+  await click(settingsToggle(container));
+}
+
 /** The run card carrying `text` — one card per run, so what is inside it is grouped. */
 function runCard(container: HTMLElement, text: string) {
   return [...container.querySelectorAll<HTMLLIElement>("li")]
@@ -348,7 +364,7 @@ describe("tasksView", () => {
 
   it("opens a task's detail with runs, dependencies and prompt versions", async () => {
     const { container, onOpenThread } = await renderView();
-    await click(rows(container)[0]);
+    await openDetail(container);
 
     expect(container.textContent).toContain("summarize yesterday");
     // Dependencies show as waiting until the upstream run lands.
@@ -364,9 +380,35 @@ describe("tasksView", () => {
     expect(container.textContent).toContain("Reflection");
   });
 
+  // The detail is opened to see what the task did, so the run ledger leads and
+  // the definition (settings, prompt, dependencies) is one press away.
+  it("opens on the run history, with the definition folded", async () => {
+    const { container } = await renderView(
+      [task()],
+      vi.fn(),
+      MODELS,
+      [defaultRevision()],
+      [run({ resultSummary: "all good" })],
+    );
+    await click(rows(container)[0]);
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Runs");
+    expect(text).toContain("all good");
+    expect(text).toContain("Prompt versions");
+    // Folded, not just scrolled past: none of the definition is in the DOM.
+    expect(text).not.toContain("summarize yesterday");
+    expect(text).not.toContain("upstream");
+    expect(text).not.toContain("Default model");
+
+    await click(settingsToggle(container));
+    expect(container.textContent).toContain("summarize yesterday");
+    expect(settingsToggle(container)?.getAttribute("aria-expanded")).toBe("true");
+  });
+
   it("shows the model, thinking level and working directory of a task", async () => {
     const { container } = await renderView([task({ modelId: "future/gpt-5", thinkingLevel: "high" })]);
-    await click(rows(container)[0]);
+    await openDetail(container);
     const text = container.textContent ?? "";
     // A detail page that omits these cannot answer "what will this run on?".
     expect(text).toContain("Model");
@@ -551,7 +593,7 @@ describe("tasksView", () => {
 
   it("falls back to the defaults when a task pins neither model nor thinking level", async () => {
     const { container } = await renderView([task({ modelId: null, thinkingLevel: null })]);
-    await click(rows(container)[0]);
+    await openDetail(container);
     const text = container.textContent ?? "";
     expect(text).toContain("Default model");
     expect(text).toContain("Default");
@@ -559,7 +601,7 @@ describe("tasksView", () => {
 
   it("says a chat task runs in its own workspace rather than an empty directory row", async () => {
     const { container } = await renderView([task({ conversationMode: "chat", cwd: "" })]);
-    await click(rows(container)[0]);
+    await openDetail(container);
     expect(container.textContent).toContain("own temporary workspace");
   });
 
