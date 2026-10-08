@@ -11,8 +11,9 @@ pub const TASK_ID_PREFIX: &str = "tsk_";
 pub const RUN_ID_PREFIX: &str = "trn_";
 pub const REVISION_ID_PREFIX: &str = "rev_";
 
-/// Envelope schema version; bump when the `<task ...>` block changes shape.
-pub const TASK_ENVELOPE_SCHEMA_VERSION: &str = "task-v1";
+/// Run-envelope schema version; bump when the envelope's blocks change shape or
+/// meaning (loop's own envelope uses the same `<project>_<envelope>_v<n>` form).
+pub const TASK_ENVELOPE_SCHEMA_VERSION: &str = "future_tasks_run_envelope_v1";
 
 /// Trigger kind (0 or 1 own schedule; deps are orthogonal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,11 +50,11 @@ pub enum SessionPolicy {
 
 /// What kind of conversation a task opens.
 ///
-/// `Workspace` anchors the conversation to the task's working directory (the
-/// default, and what a task that touches files needs). `Chat` is the temporary
-/// -workspace conversation a user reaches from "new chat": the agent session
-/// still runs *in* the task's `cwd`, but the conversation is filed under Chat
-/// rather than under that directory in the sidebar.
+/// `Chat` is the temporary-workspace conversation a user reaches from "new
+/// chat": it needs no working directory of its own (the conversation runs in
+/// its own temporary workspace). `Workspace` anchors the conversation to the
+/// task's working directory — what a task that touches files needs, and the
+/// mode every task had before the setting existed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ConversationMode {
@@ -204,8 +205,10 @@ pub fn new_revision_id() -> String {
     format!("{}{}", REVISION_ID_PREFIX, uuid::Uuid::new_v4().simple())
 }
 
-/// The conversation mode a task has when it does not declare one: the
-/// behaviour every task had before the setting existed.
+/// The conversation mode a task has when it does not declare one. Stored rows
+/// written before the setting existed were all workspace conversations, so
+/// that — not the form's default for a *new* task — is what an absent field
+/// means.
 fn default_conversation_mode() -> ConversationMode {
     ConversationMode::Workspace
 }

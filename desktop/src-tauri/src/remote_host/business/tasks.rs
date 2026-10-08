@@ -415,6 +415,9 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         store
                             .update_task(&task)
                             .map_err(|e| crate::AppError::Message(e.to_string()))?;
+                        // The phone's tap starts the run now, exactly like the
+                        // desktop button (see `crate::tasks::wake`).
+                        crate::tasks::wake();
                         Ok(task)
                     });
                 match result {

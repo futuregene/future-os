@@ -354,10 +354,13 @@ export function ActivityRail({
                         )
                       : null}
                   </div>
+                  {/* Task sits with the other standing entries, above Phone
+                      control: it is something you set up and keep, while the
+                      phone entry is a link to another device. */}
+                  <NavButton icon={ListChecks} label={t("activityRail.tasks")} active={active === "tasks"} onClick={() => onChange("tasks")} />
                   {showRemote
                     ? <NavButton icon={Smartphone} indicator={remoteDot} label={t("activityRail.remote")} active={active === "remote"} onClick={() => onChange("remote")} />
                     : null}
-                  <NavButton icon={ListChecks} label={t("activityRail.tasks")} active={active === "tasks"} onClick={() => onChange("tasks")} />
                 </div>
                 {featureItems.length > 0
                   ? (
@@ -641,21 +644,6 @@ export function ActivityRail({
                   active={false}
                   onClick={onOpenModels}
                 />
-                {showRemote
-                  ? (
-                      <IconButton
-                        icon={(
-                          <span className="relative inline-flex">
-                            <Smartphone className="size-4" />
-                            {remoteDot}
-                          </span>
-                        )}
-                        label={t("activityRail.remote")}
-                        active={active === "remote"}
-                        onClick={() => onChange("remote")}
-                      />
-                    )
-                  : null}
                 {featureItems.map((item) => {
                   const Icon = item.icon;
                   return (
@@ -674,6 +662,21 @@ export function ActivityRail({
                   active={active === "tasks"}
                   onClick={() => onChange("tasks")}
                 />
+                {showRemote
+                  ? (
+                      <IconButton
+                        icon={(
+                          <span className="relative inline-flex">
+                            <Smartphone className="size-4" />
+                            {remoteDot}
+                          </span>
+                        )}
+                        label={t("activityRail.remote")}
+                        active={active === "remote"}
+                        onClick={() => onChange("remote")}
+                      />
+                    )
+                  : null}
                 <IconButton
                   icon={<Folder className="size-4" />}
                   label={t("activityRail.workspace")}

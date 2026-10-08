@@ -333,7 +333,9 @@ pub fn set_task_enabled(id: String, enabled: bool) -> Result<TaskView, crate::Ap
     Ok(task_view(&store, task))
 }
 
-/// Queue an explicit run. The tick loop consumes `pending_request_at`.
+/// Queue an explicit run. The tick loop consumes `pending_request_at`; the
+/// wake makes it look now instead of at the next cadence tick, so pressing the
+/// button starts the run rather than scheduling it up to 30s out.
 #[tauri::command]
 pub fn run_task_now(id: String) -> Result<TaskView, crate::AppError> {
     let store = open()?;
@@ -348,6 +350,7 @@ pub fn run_task_now(id: String) -> Result<TaskView, crate::AppError> {
     store
         .update_task(&task)
         .map_err(|e| crate::AppError::Message(e.to_string()))?;
+    crate::tasks::wake();
     Ok(task_view(&store, task))
 }
 

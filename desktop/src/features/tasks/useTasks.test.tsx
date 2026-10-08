@@ -7,9 +7,32 @@ import { useTasks } from "./useTasks";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-const mocks = vi.hoisted(() => ({ invokeCommand: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  invokeCommand: vi.fn(),
+  tauriEvents: {} as Record<string, Array<(payload: unknown) => void>>,
+}));
 
 vi.mock("../../integrations/tauri/invoke", () => ({ invokeCommand: mocks.invokeCommand }));
+// The host announces a task's progress with "threads-updated". The double
+// mirrors `lib/useTauriEvent` itself: one subscription per mount (in an effect,
+// with the latest handler behind a ref) — registering per render would fire one
+// reload per render and let a stale answer win.
+vi.mock("../../lib/useTauriEvent", async () => {
+  const { useEffect, useRef } = await import("react");
+  return {
+    useTauriEvent: (name: string, handler: (payload: unknown) => void) => {
+      const handlerRef = useRef(handler);
+      handlerRef.current = handler;
+      useEffect(() => {
+        const listener = (payload: unknown) => handlerRef.current(payload);
+        (mocks.tauriEvents[name] ??= []).push(listener);
+        return () => {
+          mocks.tauriEvents[name] = (mocks.tauriEvents[name] ?? []).filter(item => item !== listener);
+        };
+      }, [name]);
+    },
+  };
+});
 
 function task(overrides: Partial<TaskView> = {}): TaskView {
   return {
@@ -64,6 +87,7 @@ async function renderHook() {
 
 beforeEach(() => {
   mocks.invokeCommand.mockReset();
+  mocks.tauriEvents = {};
 });
 
 afterEach(() => {
@@ -154,6 +178,22 @@ describe("useTasks", () => {
       id: "tsk_1",
       revisionId: "rev_1",
     });
+    hook.unmount();
+  });
+
+  it("re-reads the list when the host announces a change", async () => {
+    mocks.invokeCommand.mockResolvedValue([]);
+    const hook = await renderHook();
+    mocks.invokeCommand.mockClear();
+
+    mocks.invokeCommand.mockResolvedValueOnce([task({ queued: true })]);
+    await act(async () => {
+      for (const handler of mocks.tauriEvents["threads-updated"] ?? [])
+        handler({});
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(mocks.invokeCommand).toHaveBeenCalledWith("list_tasks");
+    expect(hook.seen.tasks[0]?.queued).toBe(true);
     hook.unmount();
   });
 

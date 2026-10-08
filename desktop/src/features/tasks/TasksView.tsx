@@ -7,8 +7,8 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
-import { loadAgentModelOptions } from "../../integrations/agent/agentClient";
 import { formatDateTime } from "../../lib/date";
+import { useTauriEvent } from "../../lib/useTauriEvent";
 import { useTasks } from "./useTasks";
 
 /** Task times are epoch milliseconds; the date helpers take ISO strings. */
@@ -38,6 +38,34 @@ const emptyTrigger: DraftTrigger = {
   days: ["mon"],
   day: 1,
 };
+
+/**
+ * A new task's starting point.
+ *
+ * It deliberately leaves the model and the thinking level unset: both are
+ * per-run spending decisions that belong to the user, so the form makes them
+ * pick (and refuses a save until they have) instead of inheriting an app
+ * default nobody chose. The conversation mode is chat, which is what a task
+ * that only reads, writes text or calls tools needs — and, unlike a workspace
+ * conversation, it needs no working directory.
+ */
+const emptyDraft = {
+  name: "",
+  prompt: "",
+  cwd: "",
+  modelId: "",
+  thinkingLevel: "",
+  sessionPolicy: "new",
+  conversationMode: "chat",
+  reflection: "ask",
+  enabled: true,
+  trigger: { ...emptyTrigger },
+};
+
+/** Thinking levels the agent accepts, in the composer's order. */
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+type Draft = typeof emptyDraft;
 
 function triggerFromTask(task: TaskView): DraftTrigger {
   if (task.triggerKind !== "schedule")
@@ -127,36 +155,23 @@ function summarizeTrigger(
 /** Left-nav "Tasks" panel: list, edit, runs, revisions. */
 export function TasksView({
   leftPanelExpanded,
+  modelOptions,
   onToggleLeftPanel,
   onOpenThread,
 }: {
   leftPanelExpanded: boolean;
+  /** Models the user has enabled (Settings → Models), the same list the composer offers. */
+  modelOptions: AgentModelOption[];
   onToggleLeftPanel: () => void;
   onOpenThread: (threadId: string) => void;
 }) {
   const { t, i18n } = useTranslation("tasks");
   const locale = i18n.language;
   const store = useTasks();
-  const [models, setModels] = useState<AgentModelOption[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState({
-    name: "",
-    prompt: "",
-    cwd: "",
-    modelId: "",
-    thinkingLevel: "",
-    sessionPolicy: "new",
-    conversationMode: "workspace",
-    reflection: "ask",
-    enabled: true,
-    trigger: { ...emptyTrigger },
-  });
+  const [draft, setDraft] = useState<Draft>({ ...emptyDraft });
   const [saveError, setSaveError] = useState<string | null>(null);
-
-  useEffect(() => {
-    void loadAgentModelOptions().then(setModels).catch(() => setModels([]));
-  }, []);
 
   const selected = useMemo(
     () => store.tasks.find(task => task.id === selectedId) ?? null,
@@ -167,18 +182,7 @@ export function TasksView({
     setSelectedId(null);
     setEditing(true);
     setSaveError(null);
-    setDraft({
-      name: "",
-      prompt: "",
-      cwd: "",
-      modelId: "",
-      thinkingLevel: "",
-      sessionPolicy: "new",
-      conversationMode: "workspace",
-      reflection: "ask",
-      enabled: true,
-      trigger: { ...emptyTrigger },
-    });
+    setDraft({ ...emptyDraft });
   }, []);
 
   const startEdit = useCallback((task: TaskView) => {
@@ -215,8 +219,20 @@ export function TasksView({
       depJoin: selected?.depJoin ?? "all",
       enabled: draft.enabled,
     };
-    if (!input.name || !input.prompt || !input.cwd) {
-      setSaveError(t("form.required"));
+    // One message per missing decision: a task that names no model would run on
+    // whatever the app happens to default to, and the form does not offer that
+    // choice, so saving one is refused rather than silently reinterpreted.
+    const problem = !input.name || !input.prompt
+      ? t("form.required")
+      : draft.conversationMode === "workspace" && !input.cwd
+        ? t("form.cwdRequired")
+        : !input.modelId
+            ? t("form.modelRequired")
+            : !input.thinkingLevel
+                ? t("form.thinkingRequired")
+                : null;
+    if (problem) {
+      setSaveError(problem);
       return;
     }
     try {
@@ -297,7 +313,7 @@ export function TasksView({
                 <TaskForm
                   draft={draft}
                   error={saveError}
-                  models={models}
+                  models={modelOptions}
                   onCancel={() => setEditing(false)}
                   onChange={patch => setDraft(current => ({ ...current, ...patch }))}
                   onSave={() => void save()}
@@ -327,28 +343,24 @@ function TaskForm({
   onCancel,
   onSave,
 }: {
-  draft: {
-    name: string;
-    prompt: string;
-    cwd: string;
-    modelId: string;
-    thinkingLevel: string;
-    sessionPolicy: string;
-    conversationMode: string;
-    reflection: string;
-    enabled: boolean;
-    trigger: DraftTrigger;
-  };
+  draft: Draft;
   error: string | null;
+  /** Enabled models only — the same list the composer offers. */
   models: AgentModelOption[];
-  onChange: (patch: Partial<typeof draft>) => void;
+  onChange: (patch: Partial<Draft>) => void;
   onCancel: () => void;
   onSave: () => void;
 }) {
   const { t } = useTranslation("tasks");
   const [browseError, setBrowseError] = useState<string | null>(null);
   const trigger = draft.trigger;
+  const workspaceConversation = draft.conversationMode === "workspace";
   const setTrigger = (patch: Partial<DraftTrigger>) => onChange({ trigger: { ...trigger, ...patch } });
+  // A task may already point at a model the user has since disabled. It stays
+  // selectable (dropping it would silently rewrite the task on the next save),
+  // listed after the enabled ones so the difference is visible.
+  const enabledKeys = new Set(models.map(model => `${model.provider}/${model.id}`));
+  const pinned = draft.modelId && !enabledKeys.has(draft.modelId) ? draft.modelId : null;
 
   /**
    * Pick the working directory in the OS directory chooser. Cancelling leaves
@@ -387,43 +399,70 @@ function TaskForm({
         />
       </label>
 
+      {/* The directory belongs to the conversation's type, so it is asked for
+          where that choice is made: a workspace conversation *is* its folder,
+          while a chat conversation runs in the workspace it carries with it. */}
       <div className="block space-y-1.5">
-        <span className="text-xs text-ink-soft">{t("form.cwd")}</span>
-        <div className="flex items-center gap-2">
-          <TextInput
-            aria-label={t("form.cwd")}
-            placeholder={t("form.cwdPlaceholder")}
-            value={draft.cwd}
-            onChange={e => onChange({ cwd: e.target.value })}
-          />
-          <Button
-            leftIcon={<FolderOpen className="size-3.5" />}
-            size="md"
-            variant="secondary"
-            onClick={() => void chooseDirectory()}
-          >
-            {t("form.browse")}
-          </Button>
-        </div>
+        <span className="text-xs text-ink-soft">{t("form.conversationMode")}</span>
+        <Select value={draft.conversationMode} onChange={e => onChange({ conversationMode: e.target.value })}>
+          <option value="chat">{t("form.conversationChat")}</option>
+          <option value="workspace">{t("form.conversationWorkspace")}</option>
+        </Select>
+        <p className="text-xs text-ink-muted">{t("form.conversationModeHint")}</p>
       </div>
+
+      {workspaceConversation
+        ? (
+            <div className="block space-y-1.5">
+              <span className="text-xs text-ink-soft">{t("form.cwd")}</span>
+              {/* `min-w-0 flex-1` on the field and `shrink-0` on the button:
+                  the input's own width used to push the button past the panel
+                  edge, leaving "browse" half cut off. */}
+              <div className="flex items-center gap-2">
+                <TextInput
+                  aria-label={t("form.cwd")}
+                  className="min-w-0 flex-1"
+                  placeholder={t("form.cwdPlaceholder")}
+                  value={draft.cwd}
+                  onChange={e => onChange({ cwd: e.target.value })}
+                />
+                <Button
+                  className="shrink-0"
+                  leftIcon={<FolderOpen className="size-3.5" />}
+                  size="md"
+                  variant="secondary"
+                  onClick={() => void chooseDirectory()}
+                >
+                  {t("form.browse")}
+                </Button>
+              </div>
+            </div>
+          )
+        : null}
 
       <div className="grid grid-cols-2 gap-3">
         <label className="block space-y-1.5">
           <span className="text-xs text-ink-soft">{t("form.model")}</span>
           <Select value={draft.modelId} onChange={e => onChange({ modelId: e.target.value })}>
-            <option value="">{t("form.modelDefault")}</option>
+            {/* No "default" entry: the model is the user's decision, and an
+                empty value only ever means "not chosen yet". */}
+            <option value="" disabled>{t("form.modelPlaceholder")}</option>
+            {pinned ? <option value={pinned}>{pinned}</option> : null}
             {models.map(model => (
               <option key={`${model.provider}/${model.id}`} value={`${model.provider}/${model.id}`}>
                 {model.label || model.id}
               </option>
             ))}
           </Select>
+          {models.length === 0
+            ? <p className="text-xs text-ink-muted">{t("form.modelsEmpty")}</p>
+            : null}
         </label>
         <label className="block space-y-1.5">
           <span className="text-xs text-ink-soft">{t("form.thinking")}</span>
           <Select value={draft.thinkingLevel} onChange={e => onChange({ thinkingLevel: e.target.value })}>
-            <option value="">{t("form.thinkingDefault")}</option>
-            {["off", "minimal", "low", "medium", "high", "xhigh"].map(level => (
+            <option value="" disabled>{t("form.thinkingPlaceholder")}</option>
+            {THINKING_LEVELS.map(level => (
               <option key={level} value={level}>{t(`agent:composer.thinkingLevelLabels.${level}`)}</option>
             ))}
           </Select>
@@ -432,13 +471,6 @@ function TaskForm({
 
       <div className="grid grid-cols-2 gap-4">
         <label className="block space-y-1.5">
-          <span className="text-xs text-ink-soft">{t("form.conversationMode")}</span>
-          <Select value={draft.conversationMode} onChange={e => onChange({ conversationMode: e.target.value })}>
-            <option value="workspace">{t("form.conversationWorkspace")}</option>
-            <option value="chat">{t("form.conversationChat")}</option>
-          </Select>
-        </label>
-        <label className="block space-y-1.5">
           <span className="text-xs text-ink-soft">{t("form.reflection")}</span>
           <Select value={draft.reflection} onChange={e => onChange({ reflection: e.target.value })}>
             <option value="off">{t("form.reflectionOff")}</option>
@@ -446,10 +478,6 @@ function TaskForm({
             <option value="auto">{t("form.reflectionAuto")}</option>
           </Select>
         </label>
-      </div>
-      <p className="text-xs text-ink-muted">{t("form.conversationModeHint")}</p>
-
-      <div className="grid grid-cols-2 gap-4">
         <label className="block space-y-1.5">
           <span className="text-xs text-ink-soft">{t("form.session")}</span>
           <Select value={draft.sessionPolicy} onChange={e => onChange({ sessionPolicy: e.target.value })}>
@@ -612,6 +640,14 @@ function TaskDetail({
     void refresh();
   }, [refresh]);
 
+  // The runs and versions of a task change while it is on screen (a run
+  // finishing, a prompt version being applied). The host announces those with
+  // the same "threads-updated" event the sidebar listens to, so the detail
+  // re-reads its three lists rather than showing a ledger frozen at open time.
+  useTauriEvent("threads-updated", () => {
+    void refresh();
+  });
+
   return (
     <div className="space-y-6 px-6 py-5 pb-10">
       <div className="flex items-start gap-2.5">
@@ -655,7 +691,9 @@ function TaskDetail({
             // does this run on?".
             [t("colModel"), task.modelId ?? t("modelDefault")],
             [t("colThinking"), task.thinkingLevel ? t(`agent:composer.thinkingLevelLabels.${task.thinkingLevel}`) : t("thinkingDefault")],
-            [t("colCwd"), task.cwd],
+            // A chat task may name no directory at all: it runs in its own
+            // conversation's workspace, and an empty row would read as "missing".
+            [t("colCwd"), task.cwd.trim() || t("cwdChatWorkspace")],
             [t("colConversation"), t(task.conversationMode === "chat" ? "form.conversationChat" : "form.conversationWorkspace")],
             [t("form.session"), t(task.sessionPolicy === "existing" ? "form.sessionExisting" : "form.sessionNew")],
             [t("colReflection"), t(`form.reflection${task.reflection === "off" ? "Off" : task.reflection === "auto" ? "Auto" : "Ask"}`)],

@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use future_tasks::{
-    compose_envelope_header, compose_upstream_block, kernel, new_run_id, ConversationMode, RunKind,
-    RunOrigin, RunStatus, SessionPolicy, Store, Task, TaskRun, UpstreamSource,
+    compose_run_prompt, kernel, new_run_id, ConversationMode, RunKind, RunOrigin, RunStatus,
+    SessionPolicy, Store, Task, TaskRun, UpstreamSource,
 };
 
 /// Tick cadence. The store is re-read every tick, so CLI/remote edits land
@@ -39,6 +39,25 @@ fn now_ms() -> i64 {
 /// How a finished run announces itself. The GUI refreshes the sidebar; the
 /// headless server has no webview and the run ledger is the only signal.
 pub type Notifier = std::sync::Arc<dyn Fn(Option<&str>) + Send + Sync>;
+
+/// The tick loop's wake signal.
+///
+/// A request that arrives between ticks used to wait for the next one — up to
+/// `TICK_INTERVAL` of nothing happening after the user pressed "run now". The
+/// request is still *stored* first (the tick remains the only thing that
+/// claims runs), but the loop is woken so it looks immediately. `Notify` keeps
+/// one permit, so a wake that lands while a tick is already running is not
+/// lost.
+fn wake_signal() -> &'static tokio::sync::Notify {
+    static WAKE: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+    WAKE.get_or_init(tokio::sync::Notify::new)
+}
+
+/// Ask the tick loop to tick now. Called after an explicit run is stored
+/// (the desktop's button, the phone's, and a chained wakeup).
+pub fn wake() {
+    wake_signal().notify_one();
+}
 
 /// Start the tasks tick loop. Called once from `lib.rs` setup (GUI) and once
 /// from `headless/mod.rs` (server). The loop is deliberately independent of
@@ -76,7 +95,13 @@ async fn run_loop(notify: Notifier) {
     let mut interval = tokio::time::interval(TICK_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        interval.tick().await;
+        // Wait for the cadence *or* for someone to ask for a run right now.
+        // `Interval::tick` is cancel-safe, so losing this race does not skip a
+        // scheduled tick.
+        tokio::select! {
+            _ = interval.tick() => {}
+            _ = wake_signal().notified() => {}
+        }
         if let Err(error) = tick(&notify).await {
             eprintln!("FutureOS tasks tick failed: {error}");
         }
@@ -422,10 +447,8 @@ async fn run_inner(
         }
     }
 
-    // 3. Envelope + prompt.
-    let envelope = compose_envelope_header(task, run.kind, run.due_at, None);
-    let upstream = compose_upstream_block(&upstream_sources);
-    let prompt = format!("{envelope}{upstream}\n{}", task.prompt);
+    // 3. Envelope + upstream evidence + instruction + completion contract.
+    let prompt = compose_run_prompt(task, run.kind, run.due_at, None, &upstream_sources);
 
     let thread = match crate::store::get_thread(&thread_id) {
         Ok(Some(thread)) => thread,
@@ -477,16 +500,23 @@ async fn create_new_session(task: &Task) -> Result<(String, String), String> {
                 .to_string())
             .unwrap_or_default()
     );
-    // A task's `conversation_mode` decides where the conversation is filed, not
-    // where the agent works: both modes run in `task.cwd`, and the chat mode
-    // re-points the agent session at it after provisioning (a chat thread's own
-    // workspace is a temporary directory, which is not the task's cwd).
+    // A task's `conversation_mode` decides where the conversation is filed, and
+    // — since a chat task needs no working directory of its own — where the
+    // agent works. A chat conversation runs in the temporary workspace every
+    // chat conversation gets; a workspace conversation runs in `task.cwd`.
     let chat = task.conversation_mode == ConversationMode::Chat;
+    let cwd = task.cwd.trim();
+    // A workspace conversation *is* its directory (the sidebar files it under
+    // that path), so an empty one is refused here rather than silently filed
+    // under whatever the process happens to be sitting in.
+    if !chat && cwd.is_empty() {
+        return Err("a workspace conversation needs a working directory".to_string());
+    }
     let thread = crate::store::create_thread(crate::store::CreateThreadInput {
         mode: if chat { "chat" } else { "workspace" }.to_string(),
         title: Some(title),
         workspace_id: None,
-        workspace_path: if chat { None } else { Some(task.cwd.clone()) },
+        workspace_path: if chat { None } else { Some(cwd.to_string()) },
         workspace_name: None,
         agent_session_id: None,
     })
@@ -500,8 +530,12 @@ async fn create_new_session(task: &Task) -> Result<(String, String), String> {
     )
     .await
     .map_err(|e| e.to_string())?;
-    if chat {
-        set_session_cwd(&session_id, &task.cwd).await?;
+    if chat && !cwd.is_empty() {
+        // A chat task may still carry a directory (tasks created before chat
+        // stopped asking for one, or an explicit path the user typed), and it
+        // keeps working there. Without one, the conversation's own temporary
+        // workspace stands — which is what a chat conversation means.
+        set_session_cwd(&session_id, cwd).await?;
     }
     Ok((thread.id, session_id))
 }
@@ -1192,7 +1226,19 @@ mod tests {
         let prompts = mock.requests_of("prompt");
         let prompt = prompts.first().expect("one prompt");
         assert!(
-            prompt.message.contains("schema=\"task-v1\""),
+            prompt
+                .message
+                .contains(future_tasks::TASK_ENVELOPE_SCHEMA_VERSION),
+            "{}",
+            prompt.message
+        );
+        assert!(
+            prompt.message.contains("Instruction:\n"),
+            "{}",
+            prompt.message
+        );
+        assert!(
+            prompt.message.contains("Completion contract:"),
             "{}",
             prompt.message
         );
@@ -1213,6 +1259,104 @@ mod tests {
             notified.lock().unwrap().as_slice(),
             &[Some(thread_id)],
             "the notifier receives the conversation id"
+        );
+    }
+
+    /// A chat task needs no directory of its own: the conversation runs in the
+    /// temporary workspace every chat conversation gets, so no `set_cwd` is
+    /// sent (before this, the empty path was pushed at the agent and the run
+    /// failed on a working directory nobody had asked for).
+    #[tokio::test]
+    async fn a_chat_task_without_a_directory_keeps_the_conversations_workspace() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-chat-no-cwd");
+        let mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut t = task("chatty");
+        t.conversation_mode = ConversationMode::Chat;
+        t.cwd = String::new();
+        store.insert_task(&t).unwrap();
+        let (run, upstream) = claim(&store, &t, ClaimReason::Explicit).unwrap();
+        script_agent_setup(&mock, "sess_chat_1");
+        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
+            vec![crate::agent_bridge::test_support::stream_event(
+                "@attach",
+                0,
+                "agent_end",
+                r#"{"reason":"complete"}"#,
+            )],
+            None,
+        ));
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        execute(&notify, store, t.clone(), run.clone(), upstream)
+            .await
+            .expect("execute");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Completed, "{finished:?}");
+        // Every working directory this run named is the conversation's own
+        // temporary workspace — never an empty path (the bug: the empty
+        // `task.cwd` used to be pushed at the agent) and never the task's
+        // directory.
+        let touched: Vec<String> = mock
+            .requests_of("set_cwd")
+            .iter()
+            .map(|c| c.cwd.clone())
+            .collect();
+        for cwd in &touched {
+            assert!(
+                cwd.contains("workspaces/chat/") && !cwd.trim().is_empty(),
+                "not the conversation's workspace: {cwd}"
+            );
+        }
+        // The conversation is filed under Chat, and its envelope says so — with
+        // no empty `cwd=` in the settings line.
+        let thread = crate::store::get_thread(finished.thread_id.as_deref().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(thread.mode, "chat");
+        let prompt = mock
+            .requests_of("prompt")
+            .first()
+            .expect("one prompt")
+            .message
+            .clone();
+        assert!(prompt.contains("conversation=chat"), "{prompt}");
+        assert!(!prompt.contains("cwd="), "{prompt}");
+    }
+
+    /// A workspace conversation *is* its directory: an empty one is refused in
+    /// words rather than filed under whatever the process sits in.
+    #[tokio::test]
+    async fn a_workspace_task_without_a_directory_fails_in_words() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-workspace-no-cwd");
+        let _mock = crate::agent_bridge::test_support::mock_agent();
+        let dir = TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+
+        let mut t = task("homeless");
+        t.cwd = "   ".into();
+        store.insert_task(&t).unwrap();
+        let (run, upstream) = claim(&store, &t, ClaimReason::Explicit).unwrap();
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        execute(&notify, store, t.clone(), run.clone(), upstream)
+            .await
+            .expect("execute");
+
+        let store = Store::open(dir.path()).unwrap();
+        let finished = store.get_run(&run.id).unwrap().unwrap();
+        assert_eq!(finished.status, RunStatus::Failed, "{finished:?}");
+        assert!(
+            finished
+                .error_message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("needs a working directory"),
+            "{finished:?}"
         );
     }
 

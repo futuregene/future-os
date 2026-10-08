@@ -1,3 +1,4 @@
+import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { TaskRunView, TaskView } from "./useTasks";
 // @vitest-environment jsdom
 import { act } from "react";
@@ -10,17 +11,37 @@ import { TasksView } from "./TasksView";
 
 const mocks = vi.hoisted(() => ({
   invokeCommand: vi.fn(),
-  loadAgentModelOptions: vi.fn(),
   openDialog: vi.fn(),
+  tauriEvents: {} as Record<string, Array<(payload: unknown) => void>>,
 }));
 
 vi.mock("../../integrations/tauri/invoke", () => ({ invokeCommand: mocks.invokeCommand }));
+// The host announces task-list and run changes with "threads-updated". The
+// double mirrors `lib/useTauriEvent` itself: one subscription per mount (in an
+// effect, with the latest handler behind a ref) — registering per render would
+// fire one reload per render and let a stale answer win.
+vi.mock("../../lib/useTauriEvent", async () => {
+  const { useEffect, useRef } = await import("react");
+  return {
+    useTauriEvent: (name: string, handler: (payload: unknown) => void) => {
+      const handlerRef = useRef(handler);
+      handlerRef.current = handler;
+      useEffect(() => {
+        const listener = (payload: unknown) => handlerRef.current(payload);
+        (mocks.tauriEvents[name] ??= []).push(listener);
+        return () => {
+          mocks.tauriEvents[name] = (mocks.tauriEvents[name] ?? []).filter(item => item !== listener);
+        };
+      }, [name]);
+    },
+  };
+});
 // The working-directory picker opens the OS directory chooser; the fake stands
 // in for the native tree so the field's contract can be asserted.
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.openDialog }));
-vi.mock("../../integrations/agent/agentClient", () => ({
-  loadAgentModelOptions: mocks.loadAgentModelOptions,
-}));
+
+/** The enabled-model list the view is handed (Settings → Models decides it). */
+const MODELS: AgentModelOption[] = [{ id: "gpt-5", label: "GPT-5", provider: "future" }];
 
 function task(overrides: Partial<TaskView> = {}): TaskView {
   return {
@@ -30,8 +51,8 @@ function task(overrides: Partial<TaskView> = {}): TaskView {
     prompt: "summarize yesterday",
     promptVersion: 3,
     cwd: "/tmp/repo",
-    modelId: null,
-    thinkingLevel: null,
+    modelId: "future/gpt-5",
+    thinkingLevel: "high",
     sessionPolicy: "new",
     conversationMode: "workspace",
     triggerKind: "schedule",
@@ -68,12 +89,22 @@ const roots: { root: ReturnType<typeof createRoot>; container: HTMLElement }[] =
 beforeEach(() => {
   void i18n.changeLanguage("en");
   mocks.invokeCommand.mockReset();
-  mocks.loadAgentModelOptions.mockReset();
   mocks.openDialog.mockReset();
-  mocks.loadAgentModelOptions.mockResolvedValue([
-    { id: "gpt-5", label: "GPT-5", provider: "future" },
-  ]);
+  mocks.tauriEvents = {};
 });
+
+/**
+ * Fire a host event at every listener the mounted view registered, and let the
+ * reload it triggers land (the handlers start async reads they do not await).
+ */
+async function fireHostEvent(name: string) {
+  await act(async () => {
+    for (const handler of mocks.tauriEvents[name] ?? []) {
+      handler({});
+    }
+    await new Promise(resolve => setTimeout(resolve, 0));
+  });
+}
 
 afterEach(() => {
   for (const { root, container } of roots.splice(0)) {
@@ -86,13 +117,13 @@ afterEach(() => {
  * Route each command to a canned answer. `list_tasks` is served from a mutable
  * array so a mutation can be observed the way the real backend would report it.
  */
-function backend(tasks: TaskView[]) {
+function backend(tasks: TaskView[], runs: TaskRunView[] = [run()]) {
   mocks.invokeCommand.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
     switch (command) {
       case "list_tasks":
         return tasks;
       case "list_task_runs":
-        return args?.id === "tsk_1" ? [run()] : [];
+        return args?.id === "tsk_1" ? runs : [];
       case "list_task_deps":
         return args?.id === "tsk_1"
           ? [{ upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "success", satisfied: false }]
@@ -118,7 +149,11 @@ function backend(tasks: TaskView[]) {
   });
 }
 
-async function renderView(tasks: TaskView[] = [task()], onOpenThread = vi.fn()) {
+async function renderView(
+  tasks: TaskView[] = [task()],
+  onOpenThread = vi.fn(),
+  modelOptions: AgentModelOption[] = MODELS,
+) {
   backend(tasks);
   const container = document.createElement("div");
   document.body.append(container);
@@ -128,6 +163,7 @@ async function renderView(tasks: TaskView[] = [task()], onOpenThread = vi.fn()) 
     root.render(
       <TasksView
         leftPanelExpanded
+        modelOptions={modelOptions}
         onToggleLeftPanel={() => {}}
         onOpenThread={onOpenThread}
       />,
@@ -188,6 +224,15 @@ async function setValue(
   });
 }
 
+/**
+ * The model and the thinking level are the user's explicit decisions, so every
+ * save that is meant to succeed has to make them first.
+ */
+async function chooseModelAndThinking(container: HTMLElement, model = "future/gpt-5", thinking = "high") {
+  await setValue(field(container, "Model") as HTMLSelectElement, model);
+  await setValue(field(container, "Thinking level") as HTMLSelectElement, thinking);
+}
+
 describe("tasksView", () => {
   it("lists tasks with their trigger summary and state", async () => {
     const { container } = await renderView();
@@ -232,7 +277,7 @@ describe("tasksView", () => {
     const root = createRoot(container);
     roots.push({ container, root });
     await act(async () => {
-      root.render(<TasksView leftPanelExpanded onToggleLeftPanel={() => {}} onOpenThread={vi.fn()} />);
+      root.render(<TasksView leftPanelExpanded modelOptions={MODELS} onToggleLeftPanel={() => {}} onOpenThread={vi.fn()} />);
     });
     expect(container.textContent).toContain("store unreadable");
   });
@@ -268,11 +313,17 @@ describe("tasksView", () => {
   });
 
   it("falls back to the defaults when a task pins neither model nor thinking level", async () => {
-    const { container } = await renderView();
+    const { container } = await renderView([task({ modelId: null, thinkingLevel: null })]);
     await click(rows(container)[0]);
     const text = container.textContent ?? "";
     expect(text).toContain("Default model");
     expect(text).toContain("Default");
+  });
+
+  it("says a chat task runs in its own workspace rather than an empty directory row", async () => {
+    const { container } = await renderView([task({ conversationMode: "chat", cwd: "" })]);
+    await click(rows(container)[0]);
+    expect(container.textContent).toContain("own temporary workspace");
   });
 
   it("picks the working directory through the directory chooser", async () => {
@@ -298,6 +349,25 @@ describe("tasksView", () => {
     mocks.openDialog.mockRejectedValueOnce(new Error("no picker here"));
     await click(buttonByText(container, "Browse"));
     expect((container.textContent ?? "")).toContain("no picker here");
+  });
+
+  it("re-reads the list and the open detail when the host announces a change", async () => {
+    const { container } = await renderView([task({ queued: true })]);
+    await click(rows(container)[0]);
+    expect(container.textContent).toContain("queued");
+
+    // The run started (or finished) elsewhere: the status and the ledger have
+    // moved on, and the panel has to say so without being reopened.
+    backend(
+      [task({ queued: false, latestRun: run({ status: "completed", resultSummary: "landed" }) })],
+      [run({ status: "completed", resultSummary: "landed" })],
+    );
+    mocks.invokeCommand.mockClear();
+    await fireHostEvent("threads-updated");
+    expect(mocks.invokeCommand).toHaveBeenCalledWith("list_tasks");
+    expect(mocks.invokeCommand).toHaveBeenCalledWith("list_task_runs", { id: "tsk_1", limit: 20 });
+    expect(rows(container)[0]?.textContent ?? "").toContain("done");
+    expect(container.textContent).toContain("landed");
   });
 
   it("runs, toggles and deletes through the backend", async () => {
@@ -334,7 +404,7 @@ describe("tasksView", () => {
     });
   });
 
-  it("creates a task from the editor", async () => {
+  it("creates a chat task that needs no directory", async () => {
     const { container } = await renderView([]);
     await click(buttonByText(container, "New task"));
     mocks.invokeCommand.mockClear();
@@ -346,7 +416,9 @@ describe("tasksView", () => {
 
     await setValue(field(container, "Name") as HTMLInputElement, "my task");
     await setValue(field(container, "Prompt") as HTMLTextAreaElement, "do the thing");
-    await setValue(field(container, "Working directory") as HTMLInputElement, "/tmp");
+    // No working directory is asked for: a chat conversation carries its own.
+    expect(container.querySelector("input[aria-label='Working directory']")).toBeNull();
+    await chooseModelAndThinking(container);
     await click(buttonByText(container, "Save"));
 
     const created = mocks.invokeCommand.mock.calls.find(([command]) => command === "create_task");
@@ -354,12 +426,65 @@ describe("tasksView", () => {
       input: {
         name: "my task",
         prompt: "do the thing",
-        cwd: "/tmp",
+        cwd: "",
+        conversationMode: "chat",
         triggerKind: "manual",
         sessionPolicy: "new",
         reflection: "ask",
       },
     });
+    expect(created?.[1]).toMatchObject({ input: { modelId: "future/gpt-5", thinkingLevel: "high" } });
+  });
+
+  it("refuses a save without a model or a thinking level", async () => {
+    const { container } = await renderView([]);
+    await click(buttonByText(container, "New task"));
+    await setValue(field(container, "Name") as HTMLInputElement, "unconfigured");
+    await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
+    mocks.invokeCommand.mockClear();
+
+    await click(buttonByText(container, "Save"));
+    expect(container.textContent).toContain("Choose a model first");
+    expect(mocks.invokeCommand).not.toHaveBeenCalledWith("create_task", expect.anything());
+
+    // The pickers open on "not chosen yet" rather than an inherited default.
+    expect((field(container, "Model") as HTMLSelectElement).value).toBe("");
+    expect((field(container, "Thinking level") as HTMLSelectElement).value).toBe("");
+
+    await chooseModelAndThinking(container, "future/gpt-5", "medium");
+    await click(buttonByText(container, "Save"));
+    const created = mocks.invokeCommand.mock.calls.find(([command]) => command === "create_task");
+    expect(created?.[1]).toMatchObject({
+      input: { modelId: "future/gpt-5", thinkingLevel: "medium" },
+    });
+  });
+
+  it("asks for a directory only for a workspace conversation", async () => {
+    const { container } = await renderView([]);
+    await click(buttonByText(container, "New task"));
+    await setValue(field(container, "Name") as HTMLInputElement, "filed");
+    await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
+    await chooseModelAndThinking(container);
+    await setValue(field(container, "Conversation type") as HTMLSelectElement, "workspace");
+
+    mocks.invokeCommand.mockClear();
+    await click(buttonByText(container, "Save"));
+    expect(container.textContent).toContain("needs a working directory");
+    expect(mocks.invokeCommand).not.toHaveBeenCalledWith("create_task", expect.anything());
+
+    await setValue(field(container, "Working directory") as HTMLInputElement, "/tmp/filed");
+    await click(buttonByText(container, "Save"));
+    const created = mocks.invokeCommand.mock.calls.find(([command]) => command === "create_task");
+    expect(created?.[1]).toMatchObject({
+      input: { conversationMode: "workspace", cwd: "/tmp/filed" },
+    });
+  });
+
+  it("says so when no model is enabled", async () => {
+    const { container } = await renderView([], vi.fn(), []);
+    await click(buttonByText(container, "New task"));
+    expect(container.textContent).toContain("No models are enabled");
+    expect(container.querySelectorAll("select")).not.toHaveLength(0);
   });
 
   it("edits a task and reports a save failure", async () => {
@@ -378,6 +503,20 @@ describe("tasksView", () => {
     expect(container.textContent).toContain("name already taken");
   });
 
+  it("ignores a model the user has since disabled only as far as the list goes", async () => {
+    // The task points at a model that is no longer enabled. It stays selected
+    // and selectable, so editing another field cannot silently rewrite it.
+    const { container } = await renderView([task({ modelId: "future/old-model" })]);
+    await click(rows(container)[0]);
+    await click(buttonByText(container, "Edit"));
+    expect((field(container, "Model") as HTMLSelectElement).value).toBe("future/old-model");
+    mocks.invokeCommand.mockClear();
+    backend([task({ modelId: "future/old-model" })]);
+    await click(buttonByText(container, "Save"));
+    const call = mocks.invokeCommand.mock.calls.find(([command]) => command === "update_task");
+    expect(call?.[1]).toMatchObject({ input: { modelId: "future/old-model" } });
+  });
+
   it("only sends the fields that belong to the selected trigger", async () => {
     /** Fill the editor for one trigger shape and report what was submitted. */
     async function submit(
@@ -388,7 +527,7 @@ describe("tasksView", () => {
       await click(buttonByText(container, "New task"));
       await setValue(field(container, "Name") as HTMLInputElement, "scheduled");
       await setValue(field(container, "Prompt") as HTMLTextAreaElement, "prompt");
-      await setValue(field(container, "Working directory") as HTMLInputElement, "/tmp");
+      await chooseModelAndThinking(container);
       await setValue(triggerModeSelect(container), mode);
       await extra(container);
       mocks.invokeCommand.mockClear();
@@ -464,7 +603,7 @@ describe("tasksView", () => {
     backend([task()]);
     await setValue(field(container, "Name") as HTMLInputElement, "w");
     await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
-    await setValue(field(container, "Working directory") as HTMLInputElement, "/tmp");
+    await chooseModelAndThinking(container);
     await click(buttonByText(container, "Save"));
     const created = mocks.invokeCommand.mock.calls.find(([command]) => command === "create_task");
     expect((created?.[1] as { input: { trigger: { days: string[] } } }).input.trigger.days).toEqual(["tue"]);
@@ -527,13 +666,20 @@ describe("tasksView", () => {
     expect(call?.[1]).toMatchObject({ id: "tsk_1", input: { triggerKind: "manual", trigger: {} } });
   });
 
-  it("survives a model list that cannot be loaded", async () => {
-    mocks.loadAgentModelOptions.mockRejectedValue(new Error("agent offline"));
+  it("does not offer a default model or thinking level", async () => {
     const { container } = await renderView([]);
     await click(buttonByText(container, "New task"));
-    // The picker falls back to "default model" instead of breaking the form.
-    expect(field(container, "Model")).toBeDefined();
-    expect(container.querySelectorAll("select")).not.toHaveLength(0);
+    const model = field(container, "Model") as HTMLSelectElement;
+    const thinking = field(container, "Thinking level") as HTMLSelectElement;
+    // Neither picker offers "default": the run's model and thinking level are
+    // the user's call, so the only empty option is "not chosen yet".
+    expect([...model.options].filter(option => option.value === "")).toHaveLength(1);
+    expect(model.options[0]!.textContent).toBe("Choose a model");
+    expect(model.options[0]!.disabled).toBe(true);
+    expect([...thinking.options].filter(option => option.value === "")).toHaveLength(1);
+    expect(thinking.options[0]!.textContent).toBe("Choose a thinking level");
+    // Exactly the enabled models are offered.
+    expect([...model.options].slice(1).map(option => option.value)).toEqual(["future/gpt-5"]);
   });
 
   it("carries every editor field into the saved task", async () => {
@@ -541,9 +687,9 @@ describe("tasksView", () => {
     await click(buttonByText(container, "New task"));
     await setValue(field(container, "Name") as HTMLInputElement, "configured");
     await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
+    await chooseModelAndThinking(container);
+    await setValue(field(container, "Conversation type") as HTMLSelectElement, "workspace");
     await setValue(field(container, "Working directory") as HTMLInputElement, "/tmp");
-    await setValue(field(container, "Model") as HTMLSelectElement, "future/gpt-5");
-    await setValue(field(container, "Thinking level") as HTMLSelectElement, "high");
     await setValue(field(container, "Conversation") as HTMLSelectElement, "existing");
     await setValue(field(container, "Prompt suggestions") as HTMLSelectElement, "auto");
     await setValue(triggerModeSelect(container), "weekly");
@@ -630,19 +776,16 @@ describe("tasksView", () => {
     expect(container.textContent).toContain("No summary recorded");
   });
 
-  it("creates a chat conversation when the task asks for one", async () => {
+  it("opens a new task on a chat conversation, and switches to workspace on request", async () => {
     const { container } = await renderView([]);
     await click(buttonByText(container, "New task"));
-    await setValue(field(container, "Name") as HTMLInputElement, "chatty");
-    await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
-    await setValue(field(container, "Working directory") as HTMLInputElement, "/tmp");
-    await setValue(field(container, "Conversation type") as HTMLSelectElement, "chat");
-    expect(container.textContent).toContain("appears under Chat");
-    mocks.invokeCommand.mockClear();
-    backend([task()]);
-    await click(buttonByText(container, "Save"));
-    const call = mocks.invokeCommand.mock.calls.find(([command]) => command === "create_task");
-    expect(call?.[1]).toMatchObject({ input: { conversationMode: "chat" } });
+    // Chat is the default: it needs no directory, so none is asked for.
+    expect((field(container, "Conversation type") as HTMLSelectElement).value).toBe("chat");
+    expect(container.querySelector("input[aria-label='Working directory']")).toBeNull();
+    expect(container.textContent).toContain("brings its own temporary working directory");
+    // Switching to a workspace conversation is what asks for the directory.
+    await setValue(field(container, "Conversation type") as HTMLSelectElement, "workspace");
+    expect(container.querySelector("input[aria-label='Working directory']")).not.toBeNull();
   });
 
   it("opens a stored task on its own conversation type", async () => {
@@ -650,5 +793,6 @@ describe("tasksView", () => {
     await click(rows(container)[0]);
     await click(buttonByText(container, "Edit"));
     expect((field(container, "Conversation type") as HTMLSelectElement).value).toBe("chat");
+    expect(container.querySelector("input[aria-label='Working directory']")).toBeNull();
   });
 });
