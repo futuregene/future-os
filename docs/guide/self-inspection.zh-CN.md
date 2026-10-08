@@ -262,6 +262,16 @@ future run --session <id> "<message>"     # 在那个会话里起一次 run
 「读」的那一半是上面的 `future session transcript --session <id>` /
 `future session history search --session <id>`。
 
+有两件事只有发送方才能提供，因为目标会话收到的只是一条普通的 user turn：
+**来源** —— 这条消息来自另一个会话而不是用户，并给出发送方会话 id；
+**意图** —— 期望目标是据此行动，还是仅作知悉。缺了这两项，目标无法分辨
+「转发过来的通报」与「向它提出的请求」，可能去做没人让它做的工作。
+
+较长或含非 ASCII 的内容应写入文件后用 `@<file>` 传入，由 CLI 自己读取该文件。
+不要先把它读进 shell 变量：Windows PowerShell 5.1 下 `Get-Content` 会用 ANSI
+码页解码无 BOM 的 UTF-8 文件，最终落到另一个会话里的就是乱码（与 shell 工具
+「读已知文件用 read 工具、不要用 `Get-Content`」是同一条坑）。
+
 改设置会改变此后每一个会话的行为，所以技能把它当作用户的决定：说明旧值与新值，
 在用户同意后再改。
 

@@ -307,6 +307,19 @@ conversation, so it spends credits, and the command returns when that run ends
 read half is `future session transcript --session <id>` /
 `future session history search --session <id>` above.
 
+Two things only the sender can supply, because the target conversation receives
+a bare user turn: **provenance** — that the message came from another
+conversation rather than from the user, with the sending session's id — and
+**intent** — whether the target is expected to act on the content or merely to
+take note. Without them the target cannot tell a relayed report from a request
+addressed to it, and may start work nobody asked for.
+
+A long or non-ASCII payload should be written to a file and passed as
+`@<file>`; the CLI reads that file itself. Do not read it into a shell variable
+first: on Windows PowerShell 5.1 `Get-Content` decodes a BOM-less UTF-8 file
+with the ANSI code page, so what arrives in the other conversation is mojibake
+(the same wart as the `read`-tool-not-`Get-Content` rule for the shell).
+
 Changing a setting changes how every later session behaves, so the skill treats
 it as the user's decision: state the old value and the new one, and make the
 change when the user agrees.
