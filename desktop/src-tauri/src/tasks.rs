@@ -10,17 +10,13 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use future_tasks::{
-    compose_run_prompt, kernel, new_run_id, ConversationMode, Reflection, RunKind, RunOrigin,
-    RunStatus, SessionPolicy, Store, Task, TaskRun, UpstreamSource,
+    compose_run_prompt, kernel, new_run_id, ConversationMode, RunKind, RunOrigin, RunStatus,
+    SessionPolicy, Store, Task, TaskRun, UpstreamSource,
 };
 
 /// Tick cadence. The store is re-read every tick, so CLI/remote edits land
 /// without any cache invalidation.
 const TICK_INTERVAL: Duration = Duration::from_secs(30);
-/// Bound on one reflection pass. A suggestion is a side activity: if it does
-/// not finish, the run it reflected on is already recorded and the next one
-/// goes ahead without it.
-const REFLECTION_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// FutureOS home root (shared with the CLI and the remote bridge, so every
 /// writer resolves the same `tasks.db`).
@@ -37,13 +33,11 @@ fn now_ms() -> i64 {
 
 /// Put the prompt a revision carries in force, wherever the request came from.
 ///
-/// Both the webview command and the phone's remote bridge route through here:
-/// accepting a *suggestion* has to mean the same thing on both (the suggestion
-/// row is marked applied, the version that goes live says it came from
-/// reflection and keeps the suggestion's reason, the replaced version stays in
-/// the history). A second, thinner implementation on the remote side silently
-/// recorded a `rollback` row instead, leaving the suggestion pending — a button
-/// that looks like it worked and did not.
+/// The webview command and the phone's remote bridge both route through here,
+/// so "apply this version" means the same thing on both (the replaced version
+/// stays in the history and the new one is recorded as the active version). A
+/// second, thinner implementation on the remote side had drifted into recording
+/// a different row than the panel did.
 pub fn accept_revision(store: &Store, task_id: &str, revision_id: &str) -> Result<Task, String> {
     let mut task = store
         .get_task(task_id)
@@ -55,25 +49,15 @@ pub fn accept_revision(store: &Store, task_id: &str, revision_id: &str) -> Resul
         .find(|r| r.id == revision_id)
         .ok_or_else(|| "revision not found".to_string())?
         .clone();
-    let is_suggestion = revision.status == future_tasks::REVISION_STATUS_PROPOSED;
-    let source = if is_suggestion {
-        future_tasks::REVISION_SOURCE_REFLECTION
-    } else {
-        future_tasks::REVISION_SOURCE_ROLLBACK
-    };
-    let reason = if is_suggestion {
-        revision.reason.clone()
-    } else {
-        Some(format!(
-            "applied revision {} (v{})",
-            revision_id, revision.version
-        ))
-    };
+    let reason = Some(format!(
+        "applied revision {} (v{})",
+        revision_id, revision.version
+    ));
     let rows = kernel::prompt_change_revisions(
         &task,
         &history,
         &revision.prompt,
-        source,
+        future_tasks::REVISION_SOURCE_ROLLBACK,
         reason.as_deref(),
         now_ms(),
     );
@@ -85,25 +69,11 @@ pub fn accept_revision(store: &Store, task_id: &str, revision_id: &str) -> Resul
     for row in &rows {
         store.insert_revision(row).map_err(|e| e.to_string())?;
     }
-    if is_suggestion {
-        store
-            .set_revision_status(task_id, revision_id, future_tasks::REVISION_STATUS_APPLIED)
-            .map_err(|e| e.to_string())?;
-    }
     task.prompt = applied.prompt.clone();
     task.prompt_version = applied.version;
     task.updated_at = now_ms();
     store.update_task(&task).map_err(|e| e.to_string())?;
     Ok(task)
-}
-
-/// The UI locale a reflection's `reason` is written in (`en`/`zh`, the codes the
-/// app settings keep). Read once per pass; a failure to read the settings is not
-/// worth losing the reflection over, so it falls back to the default locale.
-fn ui_language() -> String {
-    crate::store::get_app_settings()
-        .map(|settings| settings.title_language)
-        .unwrap_or_else(|_| "en".to_string())
 }
 
 /// How a finished run announces itself. The GUI refreshes the sidebar; the
@@ -467,253 +437,7 @@ async fn execute(
     // Notify the host (webview refresh; headless downgrades to a no-op).
     notify(run.thread_id.as_deref());
 
-    // A suggestion pass over this run, when the task asks for one. It is a
-    // separate activity: the run is already recorded, so a reflection that
-    // fails, times out or is slow changes nothing about it.
-    if task.reflection != Reflection::Off && run.kind != RunKind::Reflection {
-        let notify = notify.clone();
-        let (task_id, run_id) = (task.id.clone(), run.id.clone());
-        tokio::spawn(async move {
-            if let Err(error) = reflect(&notify, &task_id, &run_id).await {
-                eprintln!("FutureOS tasks: reflection failed: {error}");
-            }
-        });
-    }
     Ok(())
-}
-
-/// Run one suggestion pass over a finished run and record what came back.
-///
-/// The pass is a normal agent turn in a conversation of its own (filed under Chat
-/// and archived: it is machinery the user reads only when they want the
-/// reasoning behind a suggestion). What it produces is bounded by
-/// [`kernel::decide_proposal`]: a recorded suggestion, an automatic prompt
-/// change when the cadence and evidence allow one, or nothing at all.
-async fn reflect(notify: &Notifier, task_id: &str, run_id: &str) -> Result<(), String> {
-    // The task and the run are re-read: either may have been edited or deleted
-    // while the run was in flight, and a suggestion is never worth reviving a
-    // deleted task for.
-    let (task, run) = {
-        let store = Store::open(&future_home()).map_err(|e| e.to_string())?;
-        let task = store
-            .get_task(task_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("task {task_id} disappeared before reflection"))?;
-        if task.deleted_at.is_some() || task.reflection == Reflection::Off {
-            return Ok(());
-        }
-        let run = store
-            .get_run(run_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("run {run_id} disappeared before reflection"))?;
-        (task, run)
-    };
-
-    // The pass gets its own ledger row from the start, so the panel can say
-    // "thinking about it" rather than showing nothing.
-    let mut reflection_run = TaskRun {
-        id: new_run_id(),
-        task_id: task.id.clone(),
-        kind: RunKind::Reflection,
-        origin: RunOrigin::Reflection,
-        actor: None,
-        due_at: None,
-        status: RunStatus::Running,
-        thread_id: None,
-        session_id: None,
-        run_id: None,
-        prompt_version: Some(task.prompt_version),
-        result_summary: None,
-        feedback: None,
-        feedback_note: None,
-        started_at: Some(now_ms()),
-        finished_at: None,
-        error_message: None,
-    };
-    {
-        let store = Store::open(&future_home()).map_err(|e| e.to_string())?;
-        store
-            .insert_run(&reflection_run)
-            .map_err(|e| e.to_string())?;
-    }
-
-    let outcome = tokio::time::timeout(REFLECTION_TIMEOUT, reflect_inner(&task, &run)).await;
-    let (status, summary, error) = match outcome {
-        Err(_) => (
-            RunStatus::Failed,
-            None,
-            Some(format!(
-                "reflection timed out after {}s",
-                REFLECTION_TIMEOUT.as_secs()
-            )),
-        ),
-        Ok(Err(error)) => (RunStatus::Failed, None, Some(error)),
-        Ok(Ok((thread_id, session_id, proposal))) => {
-            reflection_run.thread_id = Some(thread_id.clone());
-            reflection_run.session_id = Some(session_id.clone());
-            let summary = record_proposal(&task, &run, &proposal);
-            (RunStatus::Completed, Some(summary), None)
-        }
-    };
-    reflection_run.status = status;
-    reflection_run.finished_at = Some(now_ms());
-    reflection_run.result_summary = summary;
-    reflection_run.error_message = error;
-    {
-        let store = Store::open(&future_home()).map_err(|e| e.to_string())?;
-        store
-            .update_run(&reflection_run)
-            .map_err(|e| e.to_string())?;
-    }
-    notify(reflection_run.thread_id.as_deref());
-    Ok(())
-}
-
-/// The agent turn itself: a conversation of its own, the reflection prompt, and
-/// the reply parsed into a proposal.
-async fn reflect_inner(
-    task: &Task,
-    run: &TaskRun,
-) -> Result<(String, String, kernel::PromptProposal), String> {
-    let (thread_id, session_id) = create_reflection_session(task).await?;
-    let prompt = kernel::compose_reflection_prompt(task, run, &ui_language());
-    let thread = crate::store::get_thread(&thread_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "the reflection conversation could not be loaded".to_string())?;
-    let prepared = crate::agent_bridge::prepare_prompt_persisted_with_trigger(
-        &thread,
-        prompt,
-        task.model_id.clone(),
-        task.thinking_level.clone(),
-        Vec::new(),
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let handle = tokio::spawn(crate::agent_bridge::run_prepared_prompt_with_acceptance(
-        prepared, tx,
-    ));
-    let _ = rx.await;
-    handle
-        .await
-        .map_err(|e| format!("reflection task panicked: {e}"))
-        .and_then(|inner| inner.map_err(|e| e.to_string()))?;
-    let reply = read_final_assistant_text(&session_id).await?;
-    let proposal = kernel::parse_reflection(&reply)
-        .ok_or_else(|| "the reflection did not return a verdict".to_string())?;
-    Ok((thread_id, session_id, proposal))
-}
-
-/// Write what the pass decided — an applied change, a recorded suggestion, or
-/// nothing — and return the ledger line the reflection run carries.
-///
-/// The decision is made here, against the store's *current* task and history:
-/// the user may have edited the prompt while the pass was thinking, and every
-/// guardrail is about the task as it is now.
-fn record_proposal(task: &Task, run: &TaskRun, proposal: &kernel::PromptProposal) -> String {
-    let store = match Store::open(&future_home()) {
-        Ok(store) => store,
-        Err(error) => return format!("could not open the task store: {error}"),
-    };
-    let current = store
-        .get_task(&task.id)
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| task.clone());
-    let history = store.list_revisions(&current.id).unwrap_or_default();
-    match kernel::decide_proposal(&current, &history, run.status, proposal, now_ms()) {
-        kernel::ProposalAction::Skip(reason) => reason.to_string(),
-        kernel::ProposalAction::Propose => {
-            let row = kernel::proposal_revision(&current, proposal, &run.id, now_ms());
-            match store.insert_revision(&row) {
-                Ok(()) => format!(
-                    "suggested a new prompt (confidence {:.2}): {}",
-                    proposal.confidence, proposal.reason
-                ),
-                Err(error) => format!("could not record the suggestion: {error}"),
-            }
-        }
-        kernel::ProposalAction::Apply => {
-            let rows = kernel::prompt_change_revisions(
-                &current,
-                &history,
-                &proposal.prompt,
-                future_tasks::REVISION_SOURCE_REFLECTION,
-                Some(&proposal.reason),
-                now_ms(),
-            );
-            let mut applied = current.clone();
-            applied.prompt = proposal.prompt.clone();
-            if let Some(last) = rows.last() {
-                applied.prompt_version = last.version;
-            }
-            applied.updated_at = now_ms();
-            let mut written = Vec::new();
-            for row in &rows {
-                if let Err(error) = store.insert_revision(row) {
-                    return format!("could not record the applied prompt: {error}");
-                }
-                written.push(row.id.clone());
-            }
-            if let Err(error) = store.update_task(&applied) {
-                // The revisions are in but the task is not: say so rather than
-                // leave the ledger claiming a change that did not happen.
-                return format!("could not apply the new prompt: {error}");
-            }
-            let _ = written;
-            format!(
-                "applied a new prompt (confidence {:.2}): {}",
-                proposal.confidence, proposal.reason
-            )
-        }
-    }
-}
-
-/// The conversation a reflection pass runs in.
-///
-/// Chat mode (so it is filed with the other temporary conversations rather
-/// than becoming a workspace of its own) and archived immediately: the user
-/// asked for a task, not for a second conversation per run. The run ledger
-/// still links to it, so the reasoning behind a suggestion stays one click away.
-async fn create_reflection_session(task: &Task) -> Result<(String, String), String> {
-    let now = now_ms();
-    let title = format!(
-        "{} · suggestion · {}",
-        task.name,
-        chrono::DateTime::from_timestamp_millis(now)
-            .map(|d| d
-                .with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M")
-                .to_string())
-            .unwrap_or_default()
-    );
-    let thread = crate::store::create_thread(crate::store::CreateThreadInput {
-        mode: "chat".to_string(),
-        title: Some(title),
-        workspace_id: None,
-        workspace_path: None,
-        workspace_name: None,
-        agent_session_id: None,
-    })
-    .map_err(|e| e.to_string())?;
-    let session_id = crate::agent_bridge::provision_agent_session_with_policy(
-        &thread.id,
-        task.model_id.clone(),
-        task.thinking_level.clone(),
-        "all",
-        Some("off"),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    // A reflection reads the ledger's evidence; when the task names a directory
-    // it can also open what the run wrote, which is the point of reflecting on a
-    // run that touched files.
-    let cwd = task.cwd.trim();
-    if !cwd.is_empty() {
-        set_session_cwd(&session_id, cwd).await?;
-    }
-    crate::store::archive_thread(&thread.id).map_err(|e| e.to_string())?;
-    Ok((thread.id, session_id))
 }
 
 /// The inner run: session, pre-compact, prompt. Returns the final assistant
@@ -941,7 +665,7 @@ async fn read_final_assistant_text(session_id: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use future_tasks::{new_task_id, DepJoin, DepOn, Reflection, Task, TaskDep, TriggerKind};
+    use future_tasks::{new_task_id, DepJoin, DepOn, Task, TaskDep, TriggerKind};
     use tempfile::TempDir;
 
     /// A store rooted at a throwaway directory (the real `future_home()` is
@@ -972,7 +696,6 @@ mod tests {
             pending_request_at: None,
             pending_origin: None,
             pending_actor: None,
-            reflection: Reflection::Ask,
             created_at: 1,
             updated_at: 1,
             deleted_at: None,
@@ -1686,9 +1409,7 @@ mod tests {
         let thread =
             crate::agent_bridge::test_support::seed_thread(&workspace.id, Some("sess_reused"));
         bind_task_thread(&store, &t, &thread.id).unwrap();
-        let mut t = store.get_task(&t.id).unwrap().unwrap();
-        t.reflection = future_tasks::Reflection::Off;
-        store.update_task(&t).unwrap();
+        let t = store.get_task(&t.id).unwrap().unwrap();
         let (run, upstream) = claim(&store, &t, ClaimReason::Explicit).unwrap();
         script_agent_setup(&mock, "sess_reused");
         mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
@@ -1723,91 +1444,6 @@ mod tests {
         assert_eq!(mock.requests_of("prompt").len(), 1);
     }
 
-    /// Script one agent turn for the mock: the session it provisions, the
-    /// stream the prompt path attaches to, and the answer read back afterwards.
-    fn script_turn(
-        mock: &crate::agent_bridge::test_support::MockAgentGuard,
-        session: &str,
-        answer: &str,
-    ) {
-        mock.push_data("new_session", serde_json::json!({ "sessionId": session }));
-        mock.push_data("set_permission_level", serde_json::json!({}));
-        mock.push_data(
-            "set_sandbox_policy",
-            serde_json::json!({ "sandboxAvailable": true }),
-        );
-        // Several state replies, addressed to this turn's session: the prompt
-        // path probes more than once (session identity, then run state), and a
-        // reply for the *other* turn's session would fail the identity check.
-        for _ in 0..3 {
-            mock.push_state_for_session(
-                session,
-                crate::agent_bridge::test_support::Reply::TypedData(
-                    crate::agent_bridge::test_support::get_state_payload(session, false),
-                ),
-            );
-        }
-        mock.push_data(
-            "get_last_assistant_text",
-            serde_json::json!({ "text": answer }),
-        );
-        mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
-            vec![crate::agent_bridge::test_support::stream_event(
-                "@attach",
-                0,
-                "agent_end",
-                r#"{"reason":"complete"}"#,
-            )],
-            None,
-        ));
-    }
-
-    /// A task in the store the reflection pass reads (`future_home()`, not the
-    /// throwaway store the run-level tests hand to `execute`).
-    fn reflected_store(home: &crate::agent_bridge::test_support::TestHome) -> Store {
-        Store::open(&home.path().join(".future")).unwrap()
-    }
-
-    /// The future root `future_home()` resolves to inside a [`TestHome`].
-    fn test_future_root(home: &crate::agent_bridge::test_support::TestHome) -> std::path::PathBuf {
-        home.path().join(".future")
-    }
-
-    fn reflection_answer(prompt: &str, reason: &str, confidence: f64) -> String {
-        serde_json::json!({
-            "verdict": "improve",
-            "prompt": prompt,
-            "reason": reason,
-            "confidence": confidence,
-        })
-        .to_string()
-    }
-
-    /// Wait for the suggestion pass a finished run spawns to settle, and return
-    /// its ledger row. `execute` deliberately does not await the pass (a
-    /// suggestion must never hold a run up), so the test waits on the row the
-    /// same way the panel does.
-    async fn wait_for_reflection(home: &std::path::Path, task_id: &str) -> TaskRun {
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
-        loop {
-            {
-                let store = Store::open(home).unwrap();
-                if let Some(settled) = store
-                    .list_runs_for_task(task_id, 10)
-                    .unwrap()
-                    .into_iter()
-                    .find(|run| run.kind == RunKind::Reflection && run.status != RunStatus::Running)
-                {
-                    return settled;
-                }
-            }
-            if std::time::Instant::now() > deadline {
-                panic!("the suggestion pass never settled");
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }
-
     /// Overlap: a task with a live run is not claimed again.
     #[test]
     fn a_running_run_blocks_another_claim() {
@@ -1839,11 +1475,10 @@ mod tests {
         assert!(store.has_running_run(&t.id).unwrap());
     }
 
-    // ─── reflection (prompt suggestions) ──────────────────────────────────
+    // ─── the real-agent harnesses ─────────────────────────────────────────
 
     /// The whole path against a **real** agent and a real model: a queued task is
-    /// claimed by a tick, run, and reflected on, and the suggestion the pass
-    /// produces is read back from the ledger.
+    /// claimed by a tick and run.
     ///
     /// Ignored by default: it spends credit and needs an instance nobody else is
     /// using. Point `HOME` at a throwaway directory and start an agent for it
@@ -1856,9 +1491,8 @@ mod tests {
     /// ```
     ///
     /// Everything the mocks cannot prove lives here: that the envelope reaches a
-    /// real model in the shape the kernel composes, that the model answers the
-    /// suggestion's JSON contract at all, and that the guardrails then do
-    /// something sane with a real answer.
+    /// real model in the shape the kernel composes, and that what comes back is
+    /// recorded as the run's summary.
     #[tokio::test]
     #[ignore = "needs a real agent + model; see the doc comment"]
     async fn a_queued_run_against_a_real_agent_ends_with_a_usable_answer() {
@@ -1880,7 +1514,6 @@ mod tests {
         t.cwd = std::env::temp_dir().display().to_string();
         t.model_id = Some("future/deepseek-flash".into());
         t.thinking_level = Some("minimal".into());
-        t.reflection = future_tasks::Reflection::Ask;
         t.pending_request_at = Some(stamp);
         t.pending_origin = Some(RunOrigin::Cli);
         t.pending_actor = Some("smoke".into());
@@ -1889,7 +1522,7 @@ mod tests {
         let notify: Notifier = std::sync::Arc::new(|_| {});
         tick(&notify).await.expect("tick claims the queued task");
 
-        // The run, then the suggestion pass over it.
+        // The run itself.
         let settled = wait_for_run(&home, &t.id, RunKind::Manual).await;
         println!("RUN status={:?}", settled.status);
         println!("RUN summary={:?}", settled.result_summary);
@@ -1900,25 +1533,6 @@ mod tests {
             summary.to_lowercase().contains("landed"),
             "a real model answered the run: {summary:?}"
         );
-
-        let reflection = wait_for_reflection(&home, &t.id).await;
-        println!("REFLECTION status={:?}", reflection.status);
-        println!("REFLECTION summary={:?}", reflection.result_summary);
-        println!("REFLECTION error={:?}", reflection.error_message);
-        let store = Store::open(&home).unwrap();
-        for revision in store.list_revisions(&t.id).unwrap() {
-            println!(
-                "REVISION v{} status={} source={} confidence={:?} reason={:?}",
-                revision.version,
-                revision.status,
-                revision.source,
-                revision.confidence,
-                revision.reason
-            );
-        }
-        // The pass itself must have finished, whatever it decided; a real model
-        // answering `keep` to a one-line prompt is a perfectly good outcome.
-        assert_ne!(reflection.status, RunStatus::Running);
     }
 
     /// A one-shot host for hands-on testing: tick until nothing is pending or
@@ -1927,9 +1541,8 @@ mod tests {
     ///
     /// `futureos-headless` is the real host, but it insists on a platform login
     /// and starts the remote bridge; this is the same `tick`, without either. It
-    /// waits for suggestion passes too (the tick itself deliberately does not: a
-    /// suggestion must never hold a task's next slot back), and reconciles runs
-    /// left running by a host that exited mid-flight, as `run_loop` does.
+    /// reconciles runs left running by a host that exited mid-flight, as
+    /// `run_loop` does.
     #[tokio::test]
     #[ignore = "a manual harness: ticks a throwaway instance until it is idle"]
     async fn serve_pending_runs_until_idle() {
@@ -1989,347 +1602,5 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-    }
-
-    /// The whole suggestion path, end to end: a run finishes, the pass reads
-    /// the run's own evidence, and what it answers is recorded as a suggestion
-    /// rather than applied — the task's prompt is the user's until they say
-    /// otherwise (cadence `ask`).
-    #[tokio::test]
-    async fn a_finished_run_gets_a_suggestion_the_user_can_apply() {
-        let home = crate::agent_bridge::test_support::TestHome::new("tasks-reflect-ask");
-        let mock = crate::agent_bridge::test_support::mock_agent();
-        let store = reflected_store(&home);
-
-        let t = task("weekly");
-        store.insert_task(&t).unwrap();
-        let (run, _) = claim(&store, &t, ClaimReason::Explicit).unwrap();
-        // The main run, then the suggestion pass over it.
-        script_turn(&mock, "sess_main", "wrote reports/weekly.md");
-        script_turn(
-            &mock,
-            "sess_reflect",
-            &reflection_answer(
-                "Read notes/ and write reports/weekly-<due>.md.",
-                "the summary shape was underspecified",
-                0.8,
-            ),
-        );
-
-        let notify: Notifier = std::sync::Arc::new(|_| {});
-        execute(&notify, store, t.clone(), run.clone(), Vec::new())
-            .await
-            .expect("execute");
-        let reflection = wait_for_reflection(&test_future_root(&home), &t.id).await;
-
-        let store = reflected_store(&home);
-        // The suggestion is recorded, with the run it came from.
-        let revisions = store.list_revisions(&t.id).unwrap();
-        assert_eq!(revisions.len(), 1, "{revisions:?}");
-        let suggested = &revisions[0];
-        assert_eq!(suggested.status, future_tasks::REVISION_STATUS_PROPOSED);
-        assert_eq!(suggested.source, future_tasks::REVISION_SOURCE_REFLECTION);
-        assert_eq!(suggested.version, future_tasks::PROPOSAL_VERSION);
-        assert_eq!(
-            suggested.prompt,
-            "Read notes/ and write reports/weekly-<due>.md."
-        );
-        assert_eq!(suggested.confidence, Some(0.8));
-        assert_eq!(suggested.source_run_id.as_deref(), Some(run.id.as_str()));
-        assert_eq!(
-            suggested.reason.as_deref(),
-            Some("the summary shape was underspecified")
-        );
-
-        // The prompt itself is untouched until someone applies it.
-        let stored = store.get_task(&t.id).unwrap().unwrap();
-        assert_eq!(stored.prompt, "do the thing");
-        assert_eq!(stored.prompt_version, 1);
-
-        // The pass leaves its own row in the ledger, so the panel can say what
-        // was suggested without opening anything.
-        assert_eq!(reflection.status, RunStatus::Completed, "{reflection:?}");
-        assert_eq!(reflection.origin, RunOrigin::Reflection);
-        assert_eq!(reflection.prompt_version, Some(1));
-        assert!(
-            reflection
-                .result_summary
-                .as_deref()
-                .unwrap_or_default()
-                .contains("suggested a new prompt"),
-            "{reflection:?}"
-        );
-        assert!(reflection.thread_id.is_some(), "the reasoning is reachable");
-
-        // The pass asked about the run it was given, and ran in a conversation
-        // of its own (archived: the user asked for a task, not for a second
-        // conversation per run).
-        let prompts = mock.requests_of("prompt");
-        assert_eq!(prompts.len(), 2, "one run, one suggestion pass");
-        let reflection_prompt = &prompts[1].message;
-        assert!(
-            reflection_prompt.contains(future_tasks::REFLECTION_SCHEMA_VERSION),
-            "{reflection_prompt}"
-        );
-        assert!(
-            reflection_prompt.contains("do the thing"),
-            "{reflection_prompt}"
-        );
-        assert!(
-            reflection_prompt.contains("wrote reports/weekly.md"),
-            "{reflection_prompt}"
-        );
-        assert!(
-            reflection_prompt.contains("Reply with only this JSON object"),
-            "{reflection_prompt}"
-        );
-        assert!(
-            reflection_prompt.contains("Write \"reason\" in English"),
-            "the pass is told which language the panel reads: {reflection_prompt}"
-        );
-        let thread = crate::store::get_thread(reflection.thread_id.as_deref().unwrap())
-            .unwrap()
-            .unwrap();
-        assert_eq!(thread.status, "archived");
-        assert_eq!(thread.mode, "chat");
-    }
-
-    /// A suggestion's `reason` is read in the panel, so it is asked for in the
-    /// language the panel is in. The kernel cannot know that (it is pure and
-    /// host-agnostic), so the host passes the locale it already keeps — and a
-    /// settings read that fails falls back rather than losing the pass.
-    #[test]
-    fn the_reason_is_asked_for_in_the_ui_language() {
-        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-reflect-language");
-        assert_eq!(ui_language(), "en", "a fresh install is English");
-
-        crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
-            title_language: Some("zh".into()),
-            ..Default::default()
-        })
-        .expect("set the language");
-
-        let t = task("weekly");
-        let run = finished_run(&t.id, "trn_1", RunStatus::Completed);
-        let prompt = kernel::compose_reflection_prompt(&t, &run, &ui_language());
-        assert!(
-            prompt.contains("Write \"reason\" in Simplified Chinese"),
-            "{prompt}"
-        );
-        // Only the prose the user reads is translated: the instruction around it
-        // and the prompt under review are machinery.
-        assert!(
-            prompt.contains("Keep \"prompt\" in the language the prompt is already written in"),
-            "{prompt}"
-        );
-    }
-
-    /// `auto` acts on a suggestion the evidence supports — and still records
-    /// what it replaced, so the change is reviewable and reversible.
-    #[tokio::test]
-    async fn auto_applies_a_confident_suggestion_and_keeps_the_history() {
-        let home = crate::agent_bridge::test_support::TestHome::new("tasks-reflect-auto");
-        let mock = crate::agent_bridge::test_support::mock_agent();
-        let store = reflected_store(&home);
-
-        let mut t = task("self-improving");
-        t.prompt = "write the report".into();
-        t.reflection = future_tasks::Reflection::Auto;
-        store.insert_task(&t).unwrap();
-        let (run, _) = claim(&store, &t, ClaimReason::Explicit).unwrap();
-        script_turn(&mock, "sess_main", "wrote reports/weekly.md");
-        script_turn(
-            &mock,
-            "sess_reflect",
-            &reflection_answer(
-                "Write reports/weekly-<envelope due date>.md and say what changed.",
-                "the output path and the closing summary were not stated",
-                0.9,
-            ),
-        );
-
-        let notify: Notifier = std::sync::Arc::new(|_| {});
-        execute(&notify, store, t.clone(), run.clone(), Vec::new())
-            .await
-            .expect("execute");
-        let reflection = wait_for_reflection(&test_future_root(&home), &t.id).await;
-
-        let store = reflected_store(&home);
-        let stored = store.get_task(&t.id).unwrap().unwrap();
-        assert_eq!(
-            stored.prompt,
-            "Write reports/weekly-<envelope due date>.md and say what changed."
-        );
-        assert_eq!(stored.prompt_version, 2);
-        let revisions = store.list_revisions(&t.id).unwrap();
-        let by_version: Vec<(i64, &str, &str)> = revisions
-            .iter()
-            .map(|r| (r.version, r.status.as_str(), r.source.as_str()))
-            .collect();
-        assert_eq!(
-            by_version,
-            vec![
-                (1, future_tasks::REVISION_STATUS_SUPERSEDED, "superseded"),
-                (2, future_tasks::REVISION_STATUS_ACTIVE, "reflection"),
-            ],
-            "the version it replaced stays in the history"
-        );
-        assert!(
-            reflection
-                .result_summary
-                .as_deref()
-                .unwrap_or_default()
-                .contains("applied a new prompt"),
-            "{reflection:?}"
-        );
-    }
-
-    /// A pass that says the prompt is fine records nothing: a suggestion list
-    /// full of "no change" is noise.
-    #[tokio::test]
-    async fn a_keep_verdict_records_no_suggestion() {
-        let home = crate::agent_bridge::test_support::TestHome::new("tasks-reflect-keep");
-        let mock = crate::agent_bridge::test_support::mock_agent();
-        let store = reflected_store(&home);
-
-        let t = task("fine-as-is");
-        store.insert_task(&t).unwrap();
-        let (run, _) = claim(&store, &t, ClaimReason::Explicit).unwrap();
-        script_turn(&mock, "sess_main", "done");
-        script_turn(
-            &mock,
-            "sess_reflect",
-            r#"{"verdict":"keep","prompt":"do the thing","reason":"it worked","confidence":0.9}"#,
-        );
-
-        let notify: Notifier = std::sync::Arc::new(|_| {});
-        execute(&notify, store, t.clone(), run.clone(), Vec::new())
-            .await
-            .expect("execute");
-        let reflection = wait_for_reflection(&test_future_root(&home), &t.id).await;
-
-        let store = reflected_store(&home);
-        assert!(store.list_revisions(&t.id).unwrap().is_empty());
-        assert_eq!(
-            store.get_task(&t.id).unwrap().unwrap().prompt,
-            "do the thing"
-        );
-        assert_eq!(reflection.status, RunStatus::Completed);
-        assert_eq!(
-            reflection.result_summary.as_deref(),
-            Some("the prompt needs no change"),
-            "the ledger row says what the pass decided"
-        );
-    }
-    /// A reply the parser cannot read fails the pass, and only the pass: the
-    /// run it reflected on keeps its result and its prompt stays untouched.
-    #[tokio::test]
-    async fn a_reply_without_a_verdict_fails_only_the_reflection() {
-        let home = crate::agent_bridge::test_support::TestHome::new("tasks-reflect-garbage");
-        let mock = crate::agent_bridge::test_support::mock_agent();
-        let store = reflected_store(&home);
-
-        let t = task("unreadable");
-        store.insert_task(&t).unwrap();
-        let (run, _) = claim(&store, &t, ClaimReason::Explicit).unwrap();
-        script_turn(&mock, "sess_main", "the work landed");
-        script_turn(
-            &mock,
-            "sess_reflect",
-            "I think the prompt is fine, honestly.",
-        );
-
-        let notify: Notifier = std::sync::Arc::new(|_| {});
-        execute(&notify, store, t.clone(), run.clone(), Vec::new())
-            .await
-            .expect("execute");
-        let reflection = wait_for_reflection(&test_future_root(&home), &t.id).await;
-
-        let store = reflected_store(&home);
-        assert!(store.list_revisions(&t.id).unwrap().is_empty());
-        assert_eq!(
-            store.get_task(&t.id).unwrap().unwrap().prompt,
-            "do the thing"
-        );
-        let runs = store.list_runs_for_task(&t.id, 10).unwrap();
-        let main = runs.iter().find(|r| r.id == run.id).unwrap();
-        assert_eq!(main.status, RunStatus::Completed);
-        assert_eq!(main.result_summary.as_deref(), Some("the work landed"));
-        assert_eq!(reflection.status, RunStatus::Failed);
-        assert!(
-            reflection
-                .error_message
-                .as_deref()
-                .unwrap_or_default()
-                .contains("did not return a verdict"),
-            "{reflection:?}"
-        );
-    }
-
-    /// With reflection off (and for a deleted task) the pass never reaches the
-    /// agent: the setting is the user's, and a deleted task is not worth a turn.
-    #[tokio::test]
-    async fn a_pass_is_not_started_for_an_off_or_deleted_task() {
-        let home = crate::agent_bridge::test_support::TestHome::new("tasks-reflect-off");
-        let mock = crate::agent_bridge::test_support::mock_agent();
-        let store = reflected_store(&home);
-
-        let mut t = task("quiet");
-        t.reflection = future_tasks::Reflection::Off;
-        store.insert_task(&t).unwrap();
-        let (run, _) = claim(&store, &t, ClaimReason::Explicit).unwrap();
-
-        let notify: Notifier = std::sync::Arc::new(|_| {});
-        reflect(&notify, &t.id, &run.id).await.expect("reflect");
-        assert!(
-            mock.requests_of("prompt").is_empty(),
-            "an off task is not reflected on"
-        );
-        assert_eq!(store.list_runs_for_task(&t.id, 10).unwrap().len(), 1);
-
-        // Deleted: even a pass that was already scheduled stops here.
-        t.reflection = future_tasks::Reflection::Ask;
-        t.deleted_at = Some(now_ms());
-        store.update_task(&t).unwrap();
-        reflect(&notify, &t.id, &run.id).await.expect("reflect");
-        assert!(mock.requests_of("prompt").is_empty());
-    }
-
-    /// The suggestion's own ledger row is written before the agent is asked, so a
-    /// pass that cannot reach the agent is settled as failed rather than left
-    /// running (a running row would read as "in progress" forever).
-    #[tokio::test]
-    async fn a_pass_whose_agent_never_answers_is_settled() {
-        let home = crate::agent_bridge::test_support::TestHome::new("tasks-reflect-no-agent");
-        let mock = crate::agent_bridge::test_support::mock_agent();
-        let store = reflected_store(&home);
-
-        let t = task("unreachable");
-        store.insert_task(&t).unwrap();
-        let (run, _) = claim(&store, &t, ClaimReason::Explicit).unwrap();
-        script_turn(&mock, "sess_main", "the run landed");
-        // …and the pass's own session is refused.
-        mock.push(
-            "new_session",
-            crate::agent_bridge::test_support::Reply::Reject("no capacity".into()),
-        );
-
-        let notify: Notifier = std::sync::Arc::new(|_| {});
-        execute(&notify, store, t.clone(), run.clone(), Vec::new())
-            .await
-            .expect("execute");
-        let reflection = wait_for_reflection(&test_future_root(&home), &t.id).await;
-
-        let store = reflected_store(&home);
-        assert_eq!(reflection.status, RunStatus::Failed);
-        assert!(
-            reflection
-                .error_message
-                .as_deref()
-                .unwrap_or_default()
-                .contains("no capacity"),
-            "{reflection:?}"
-        );
-        assert!(store.list_revisions(&t.id).unwrap().is_empty());
     }
 }

@@ -24,10 +24,7 @@
   "revisions": "提示词版本",
   "revisionsNone": "还没有提示词版本记录。",
   "apply": "应用",
-  "applySuggestion": "采用建议",
-  "applied": "已采用",
-  "suggestion": "建议",
-  "suggestionCount": "{{count}} 条建议",
+  "revisionActive": "当前",
   "confidence": "置信度 {{value}}%",
   "trigger": {
     "manual": "手动",
@@ -99,10 +96,6 @@
     "sessionNew": "每次新建会话",
     "sessionExisting": "复用同一会话",
     "sessionExistingHint": "每次运行都接着同一条会话，可以沿用之前几轮的结果。不会自动压缩；上下文变长时请自行压缩。",
-    "reflection": "提示词优化建议",
-    "reflectionOff": "关闭",
-    "reflectionAsk": "提出建议（默认）",
-    "reflectionAuto": "自动应用",
     "trigger": "触发器",
     "date": "日期",
     "time": "时间",
@@ -142,11 +135,7 @@
   "colCwd": "工作目录",
   "cwdChatWorkspace": "对话会话自带的临时工作区",
   "colConversation": "会话类型",
-  "colReflection": "提示词优化建议",
   "modelDefault": "默认模型",
   "thinkingDefault": "默认",
-  "revisionsNoReason": "没有记录理由。",
-  "suggestionReason": "原因",
-  "suggestedPrompt": "改进后的提示词",
-  "suggestionUnlinked": "这条建议的来源运行记录不在当前列表中"
+  "revisionsNoReason": "没有记录理由。"
 }

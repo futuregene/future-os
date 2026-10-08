@@ -1,7 +1,7 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
-import type { TaskDepView, TaskInput, TaskRevisionView, TaskView } from "./useTasks";
+import type { TaskDepView, TaskInput, TaskView } from "./useTasks";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Check, ChevronLeft, FolderOpen, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, FolderOpen, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
@@ -70,7 +70,6 @@ const emptyDraft = {
   thinkingLevel: "",
   sessionPolicy: "new",
   conversationMode: "chat",
-  reflection: "ask",
   enabled: true,
   trigger: { ...emptyTrigger },
   // The dependencies the form wants, as a whole set: saving reconciles the
@@ -236,7 +235,6 @@ export function TasksView({
       thinkingLevel: task.thinkingLevel ?? "",
       sessionPolicy: task.sessionPolicy,
       conversationMode: task.conversationMode,
-      reflection: task.reflection,
       enabled: task.enabled,
       trigger: triggerFromTask(task),
       deps: deps.map(dep => ({
@@ -258,7 +256,6 @@ export function TasksView({
       thinkingLevel: draft.thinkingLevel || null,
       sessionPolicy: draft.sessionPolicy,
       conversationMode: draft.conversationMode,
-      reflection: draft.reflection,
       triggerKind: kind,
       trigger,
       depJoin: draft.depJoin,
@@ -354,13 +351,6 @@ export function TasksView({
                 <span className="flex items-center gap-2">
                   <span className={`size-1.5 shrink-0 rounded-full ${task.enabled ? "bg-accent" : "bg-line"}`} />
                   <span className="min-w-0 flex-1 truncate text-sm text-ink">{task.name}</span>
-                  {task.pendingProposals > 0
-                    ? (
-                        <span className="shrink-0 rounded-full bg-accent-soft px-1.5 py-0.5 text-[11px] font-semibold leading-none text-accent">
-                          {t("suggestionCount", { count: task.pendingProposals })}
-                        </span>
-                      )
-                    : null}
                   {status
                     ? <span className={`shrink-0 text-xs ${task.queued ? "text-accent" : "text-ink-muted"}`}>{status}</span>
                     : null}
@@ -554,14 +544,6 @@ function TaskForm({
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        <label className="block space-y-1.5">
-          <span className="text-xs text-ink-soft">{t("form.reflection")}</span>
-          <Select value={draft.reflection} onChange={e => onChange({ reflection: e.target.value })}>
-            <option value="off">{t("form.reflectionOff")}</option>
-            <option value="ask">{t("form.reflectionAsk")}</option>
-            <option value="auto">{t("form.reflectionAuto")}</option>
-          </Select>
-        </label>
         <label className="block space-y-1.5">
           <span className="text-xs text-ink-soft">{t("form.session")}</span>
           <Select value={draft.sessionPolicy} onChange={e => onChange({ sessionPolicy: e.target.value })}>
@@ -809,6 +791,9 @@ function TaskDetail({
 }) {
   const { t, i18n } = useTranslation("tasks");
   const locale = i18n.language;
+  // Closed by default: the page opens on what the task did, not on how it is
+  // configured (see the section's comment).
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [runs, setRuns] = useState<Awaited<ReturnType<typeof store.listRuns>>>([]);
   const [revisions, setRevisions] = useState<Awaited<ReturnType<typeof store.listRevisions>>>([]);
   const [deps, setDeps] = useState<Awaited<ReturnType<typeof store.listDeps>>>([]);
@@ -835,32 +820,6 @@ function TaskDetail({
   useTauriEvent("threads-updated", () => {
     void refresh();
   });
-
-  // Suggestions are grouped under the run they read. A run list is bounded, so
-  // a suggestion can outlive its run's place in it: those keep their own block
-  // (and their accept button) instead of being dropped.
-  const { suggestionsByRun, orphans, versions } = useMemo(() => {
-    const byRun = new Map<string, TaskRevisionView[]>();
-    const unlinked: TaskRevisionView[] = [];
-    const known = new Set(runs.map(run => run.id));
-    for (const revision of revisions) {
-      if (revision.status !== "proposed")
-        continue;
-      if (revision.sourceRunId && known.has(revision.sourceRunId)) {
-        const list = byRun.get(revision.sourceRunId) ?? [];
-        list.push(revision);
-        byRun.set(revision.sourceRunId, list);
-      }
-      else {
-        unlinked.push(revision);
-      }
-    }
-    return {
-      suggestionsByRun: byRun,
-      orphans: unlinked,
-      versions: revisions.filter(revision => revision.status !== "proposed"),
-    };
-  }, [revisions, runs]);
 
   return (
     <div className="space-y-6 px-6 py-5 pb-10">
@@ -895,65 +854,6 @@ function TaskDetail({
           <Trash2 className="size-3.5" />
         </Button>
       </div>
-
-      <section className="space-y-2">
-        <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("settings")}</h3>
-        <dl className="grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)] gap-x-4 gap-y-2.5 rounded-md border border-line-soft bg-surface-subtle px-3.5 py-3.5 text-xs">
-          {[
-            // What the run will actually be: the model and thinking level are
-            // per-task, so a detail page that omits them cannot answer "what
-            // does this run on?".
-            [t("colModel"), task.modelId ?? t("modelDefault")],
-            [t("colThinking"), task.thinkingLevel ? t(`agent:composer.thinkingLevelLabels.${task.thinkingLevel}`) : t("thinkingDefault")],
-            // A chat task may name no directory at all: it runs in its own
-            // conversation's workspace, and an empty row would read as "missing".
-            [t("colCwd"), task.cwd.trim() || (task.conversationMode === "chat" ? t("cwdChatWorkspace") : "—")],
-            [t("colConversation"), t(task.conversationMode === "chat" ? "form.conversationChat" : "form.conversationWorkspace")],
-            [t("form.session"), t(task.sessionPolicy === "existing" ? "form.sessionExisting" : "form.sessionNew")],
-            [t("colReflection"), t(`form.reflection${task.reflection === "off" ? "Off" : task.reflection === "auto" ? "Auto" : "Ask"}`)],
-          ].map(([label, value]) => (
-            <Fragment key={label}>
-              <dt className="text-ink-soft">{label}</dt>
-              <dd className="min-w-0 wrap-break-word text-ink">{value}</dd>
-            </Fragment>
-          ))}
-        </dl>
-      </section>
-
-      <section className="space-y-2">
-        <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("prompt")}</h3>
-        <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-line-soft bg-surface-subtle px-3.5 py-3.5 text-xs leading-relaxed text-ink">
-          {task.prompt}
-        </pre>
-        <p className="pl-3.5 text-xs text-ink-muted">
-          {t("promptVersion", { version: task.promptVersion })}
-        </p>
-      </section>
-
-      <section className="space-y-2">
-        <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("deps")}</h3>
-        {deps.length === 0
-          ? <p className="pl-3.5 text-xs text-ink-muted">{t("depsNone")}</p>
-          : (
-              <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
-                {deps.map(dep => (
-                  <li key={dep.upstreamTaskId} className="space-y-1 px-3.5 py-3">
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className="min-w-0 flex-1 truncate text-ink">{dep.upstreamName}</span>
-                      <span className={dep.satisfied ? "text-accent" : "text-ink-muted"}>
-                        {dep.satisfied ? t("depsReady") : t("depsWaiting")}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-ink-muted">
-                      {t(`on.${dep.on}`)}
-                      {" · "}
-                      {t(`join.${task.depJoin}`)}
-                    </p>
-                  </li>
-                ))}
-              </ul>
-            )}
-      </section>
 
       <section className="space-y-3">
         <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("runs")}</h3>
@@ -996,17 +896,6 @@ function TaskDetail({
                       <p className="text-xs leading-relaxed text-ink-soft">
                         {run.errorMessage ?? run.resultSummary ?? t("runNoSummary")}
                       </p>
-                      {/* A suggestion belongs under the result it read: the
-                          decision is "was this run's outcome caused by this
-                          prompt", which a list at the bottom of the page cannot
-                          pose. */}
-                      {suggestionsByRun.get(run.id)?.map(revision => (
-                        <SuggestionBlock
-                          key={revision.id}
-                          revision={revision}
-                          onApply={() => void store.applyRevision(task.id, revision.id).then(refresh)}
-                        />
-                      ))}
                     </div>
                   </li>
                 ))}
@@ -1016,119 +905,133 @@ function TaskDetail({
 
       <section className="space-y-3">
         <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("revisions")}</h3>
-        {versions.length === 0 && orphans.length === 0
+        {revisions.length === 0
           ? <p className="pl-3.5 text-xs text-ink-muted">{t("revisionsNone")}</p>
           : (
-              <div className="space-y-3">
-                {/* Suggestions whose run is not in the (bounded) run list keep
-                    the accept button here rather than disappearing. */}
-                {orphans.map(revision => (
-                  <div key={revision.id} className="space-y-1.5">
-                    <p className="pl-3.5 text-[11px] text-ink-muted">{t("suggestionUnlinked")}</p>
-                    <SuggestionBlock
-                      revision={revision}
-                      onApply={() => void store.applyRevision(task.id, revision.id).then(refresh)}
-                    />
-                  </div>
-                ))}
-                {versions.length > 0
-                  ? (
-                      <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
-                        {versions.map((revision) => {
-                          const applied = revision.status === "applied";
-                          return (
-                            // Version rows follow the same two-line shape as runs and
-                            // dependencies: a fixed column would drift as soon as one
-                            // locale's source label is wider than the other's.
-                            <li key={revision.id} className="space-y-1.5 px-3.5 py-3">
-                              <div className="flex items-center gap-2 text-xs">
-                                <span className="text-ink-muted">
-                                  v
-                                  {revision.version}
-                                </span>
-                                <span aria-hidden className="text-line">·</span>
-                                <span className="text-ink">{t(`source.${revision.source}`)}</span>
-                                {applied
-                                  ? <span className="text-ink-muted">{t("applied")}</span>
-                                  : null}
-                                <span className="min-w-0 flex-1" />
-                                <Button
-                                  leftIcon={<RotateCcw className="size-3" />}
-                                  size="xs"
-                                  variant="ghost"
-                                  onClick={() => void store.applyRevision(task.id, revision.id).then(refresh)}
-                                >
-                                  {t("apply")}
-                                </Button>
-                              </div>
-                              <p className="text-[11px] text-ink-muted">
-                                {revision.reason ?? t("revisionsNoReason")}
-                              </p>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )
-                  : null}
-              </div>
+              <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
+                {revisions.map((revision) => {
+                  const active = revision.version === task.promptVersion;
+                  return (
+                    // Version rows follow the same two-line shape as runs and
+                    // dependencies: a fixed column would drift as soon as one
+                    // locale's source label is wider than the other's.
+                    <li key={revision.id} className="space-y-1.5 px-3.5 py-3">
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="text-ink-muted">
+                          v
+                          {revision.version}
+                        </span>
+                        <span aria-hidden className="text-line">·</span>
+                        <span className="text-ink">{t(`source.${revision.source}`)}</span>
+                        {active
+                          ? <span className="text-ink-muted">{t("revisionActive")}</span>
+                          : null}
+                        <span className="min-w-0 flex-1" />
+                        {active
+                          ? null
+                          : (
+                              <Button
+                                leftIcon={<RotateCcw className="size-3" />}
+                                size="xs"
+                                variant="ghost"
+                                onClick={() => void store.applyRevision(task.id, revision.id).then(refresh)}
+                              >
+                                {t("apply")}
+                              </Button>
+                            )}
+                      </div>
+                      <p className="text-[11px] text-ink-muted">
+                        {revision.reason ?? t("revisionsNoReason")}
+                      </p>
+                    </li>
+                  );
+                })}
+              </ul>
             )}
       </section>
-    </div>
-  );
-}
 
-/**
- * One prompt suggestion, shown under the run it came from: what the model would
- * change it to, why, and the button that puts it in force.
- *
- * The whole prompt is shown, not a preview: a suggestion is a decision, and a
- * truncated prompt cannot be decided on. It is bounded in height so a long
- * prompt cannot push the rest of the ledger off the page.
- */
-function SuggestionBlock({
-  revision,
-  onApply,
-}: {
-  revision: TaskRevisionView;
-  onApply: () => void;
-}) {
-  const { t } = useTranslation("tasks");
-  return (
-    <div className="space-y-2 rounded-md border border-line-soft border-l-2 border-l-accent bg-surface-subtle px-3 py-3">
-      <div className="flex items-center gap-2 text-xs">
-        <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[11px] font-semibold leading-none text-accent">
-          {t("suggestion")}
-        </span>
-        <span className="text-ink-muted">{t("source.reflection")}</span>
-        {revision.confidence != null
+      {/* The definition is what the page is *not* opened for: you come here to
+          see what happened. It stays one click away instead of pushing the run
+          history off the first screen. */}
+      <section className="space-y-2">
+        <button
+          aria-expanded={settingsOpen}
+          className="flex w-full cursor-pointer items-center gap-1.5 pl-3.5 text-left text-xs font-medium text-ink-soft hover:text-ink"
+          onClick={() => setSettingsOpen(open => !open)}
+          type="button"
+        >
+          {settingsOpen
+            ? <ChevronDown className="size-3.5" />
+            : <ChevronRight className="size-3.5" />}
+          {t("settings")}
+        </button>
+        {settingsOpen
           ? (
-              <span className="text-ink-muted">
-                {t("confidence", { value: Math.round(revision.confidence * 100) })}
-              </span>
+              <div className="space-y-6 pt-1">
+                <section className="space-y-2">
+                  {/* The disclosure button above *is* this block's heading;
+                      repeating it here would read as a second, nested
+                      "Settings". */}
+                  <dl className="grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)] gap-x-4 gap-y-2.5 rounded-md border border-line-soft bg-surface-subtle px-3.5 py-3.5 text-xs">
+                    {[
+                      // What the run will actually be: the model and thinking level are
+                      // per-task, so a detail page that omits them cannot answer "what
+                      // does this run on?".
+                      [t("colModel"), task.modelId ?? t("modelDefault")],
+                      [t("colThinking"), task.thinkingLevel ? t(`agent:composer.thinkingLevelLabels.${task.thinkingLevel}`) : t("thinkingDefault")],
+                      // A chat task may name no directory at all: it runs in its own
+                      // conversation's workspace, and an empty row would read as "missing".
+                      [t("colCwd"), task.cwd.trim() || (task.conversationMode === "chat" ? t("cwdChatWorkspace") : "—")],
+                      [t("colConversation"), t(task.conversationMode === "chat" ? "form.conversationChat" : "form.conversationWorkspace")],
+                      [t("form.session"), t(task.sessionPolicy === "existing" ? "form.sessionExisting" : "form.sessionNew")],
+                    ].map(([label, value]) => (
+                      <Fragment key={label}>
+                        <dt className="text-ink-soft">{label}</dt>
+                        <dd className="min-w-0 wrap-break-word text-ink">{value}</dd>
+                      </Fragment>
+                    ))}
+                  </dl>
+                </section>
+
+                <section className="space-y-2">
+                  <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("prompt")}</h3>
+                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-line-soft bg-surface-subtle px-3.5 py-3.5 text-xs leading-relaxed text-ink">
+                    {task.prompt}
+                  </pre>
+                  <p className="pl-3.5 text-xs text-ink-muted">
+                    {t("promptVersion", { version: task.promptVersion })}
+                  </p>
+                </section>
+
+                <section className="space-y-2">
+                  <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("deps")}</h3>
+                  {deps.length === 0
+                    ? <p className="pl-3.5 text-xs text-ink-muted">{t("depsNone")}</p>
+                    : (
+                        <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
+                          {deps.map(dep => (
+                            <li key={dep.upstreamTaskId} className="space-y-1 px-3.5 py-3">
+                              <div className="flex items-center gap-2 text-xs">
+                                <span className="min-w-0 flex-1 truncate text-ink">{dep.upstreamName}</span>
+                                <span className={dep.satisfied ? "text-accent" : "text-ink-muted"}>
+                                  {dep.satisfied ? t("depsReady") : t("depsWaiting")}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-ink-muted">
+                                {t(`on.${dep.on}`)}
+                                {" · "}
+                                {t(`join.${task.depJoin}`)}
+                              </p>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                </section>
+
+              </div>
             )
           : null}
-        <span className="min-w-0 flex-1" />
-        <Button
-          leftIcon={<Check className="size-3" />}
-          size="xs"
-          variant="secondary"
-          onClick={onApply}
-        >
-          {t("applySuggestion")}
-        </Button>
-      </div>
-      <div className="space-y-1">
-        <p className="text-[11px] font-medium text-ink-soft">{t("suggestionReason")}</p>
-        <p className="text-xs leading-relaxed text-ink">
-          {revision.reason ?? t("revisionsNoReason")}
-        </p>
-      </div>
-      <div className="space-y-1">
-        <p className="text-[11px] font-medium text-ink-soft">{t("suggestedPrompt")}</p>
-        <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-line-soft bg-surface px-2.5 py-2 text-xs leading-relaxed text-ink">
-          {revision.prompt}
-        </pre>
-      </div>
+      </section>
     </div>
   );
 }

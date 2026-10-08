@@ -21,15 +21,15 @@ const TASK_COLUMNS: &str = "
     id, name, enabled, prompt, prompt_version, cwd, model_id, thinking_level,
     session_policy, conversation_mode, thread_id, trigger_kind, trigger_json, dep_join,
     next_due_at, pending_request_at, pending_origin, pending_actor,
-    reflection, created_at, updated_at, deleted_at";
+    created_at, updated_at, deleted_at";
 
 const SQL_INSERT_TASK: &str = "
     INSERT INTO tasks (
         id, name, enabled, prompt, prompt_version, cwd, model_id, thinking_level,
         session_policy, conversation_mode, thread_id, trigger_kind, trigger_json, dep_join,
         next_due_at, pending_request_at, pending_origin, pending_actor,
-        reflection, created_at, updated_at, deleted_at
-    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)";
+        created_at, updated_at, deleted_at
+    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)";
 
 const SQL_UPDATE_TASK: &str = "
     UPDATE tasks SET
@@ -37,7 +37,7 @@ const SQL_UPDATE_TASK: &str = "
         thinking_level=?8, session_policy=?9, conversation_mode=?10, thread_id=?11,
         trigger_kind=?12, trigger_json=?13, dep_join=?14, next_due_at=?15,
         pending_request_at=?16, pending_origin=?17, pending_actor=?18,
-        reflection=?19, updated_at=?20, deleted_at=?21
+        updated_at=?19, deleted_at=?20
     WHERE id=?1";
 
 /// `(enabled = 1)` plus "due now or explicitly requested" — the tick's query.
@@ -99,11 +99,12 @@ const SQL_UPDATE_RUN: &str = "
 
 const SQL_RUNS_FOR_TASK: &str = "
     SELECT %COLUMNS% FROM task_runs WHERE task_id = ?1 ORDER BY started_at DESC LIMIT ?2";
-/// Runs that are still in flight *for the task itself*. A reflection pass is a
-/// side activity over a finished run, so it must not hold the task's next
-/// scheduled slot back (a slow suggestion would silently skip a run).
+/// Runs that are still in flight *for the task itself*. (The removed suggestion
+/// pass was exempt from this: it was a side activity over a finished run and
+/// must not hold a scheduled slot back. Its rows are deleted by the migration,
+/// so nothing that is not the task's own work can be pending here.)
 const SQL_COUNT_RUNNING: &str =
-    "SELECT COUNT(*) FROM task_runs WHERE task_id = ?1 AND status = 'running' AND kind != 'reflection'";
+    "SELECT COUNT(*) FROM task_runs WHERE task_id = ?1 AND status = 'running'";
 const SQL_INTERRUPT_RUNNING: &str = "
     UPDATE task_runs SET status = 'failed', finished_at = ?1, error_message = 'interrupted'
     WHERE status = 'running'";
@@ -138,9 +139,12 @@ enum Migration {
     Add(&'static str, &'static str, &'static str),
     /// A column the code stopped reading.
     Drop(&'static str, &'static str),
+    /// One idempotent statement (a cleanup that leaves no state behind to
+    /// guard on, so re-running it on every open is harmless).
+    Exec(&'static str),
 }
 
-use Migration::{Add, Drop};
+use Migration::{Add, Drop, Exec};
 
 /// Applied in order on every open, each guarded by the column's own presence so
 /// the list is idempotent and a database settles on the schema in one pass.
@@ -155,6 +159,16 @@ const MIGRATIONS: &[Migration] = &[
     ),
     Drop("task_runs", "source_entry_id"),
     Drop("tasks", "last_run_at"),
+    // The prompt-suggestion pass is gone. Its column goes with it, and so do the
+    // rows it wrote: a leftover reflection pass still marked `running` would
+    // block the task forever (the tick asks "is a run in flight?" and would
+    // never hear back), and a pending suggestion is a record of something the
+    // user can no longer see or act on. Versions the pass produced are *not*
+    // touched: those became versions of the prompt, and the history is the
+    // user's.
+    Drop("tasks", "reflection"),
+    Exec("DELETE FROM task_runs WHERE kind = 'reflection'"),
+    Exec("DELETE FROM task_prompt_revisions WHERE status = 'proposed'"),
 ];
 
 /// The full schema. Single source of truth for a fresh database (see the
@@ -184,7 +198,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   pending_request_at INTEGER,
   pending_origin   TEXT,
   pending_actor    TEXT,
-  reflection       TEXT NOT NULL DEFAULT 'ask',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   deleted_at INTEGER
@@ -290,6 +303,9 @@ impl Store {
                             .execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column}"))?;
                     }
                 }
+                Migration::Exec(sql) => {
+                    self.conn.execute_batch(sql)?;
+                }
             }
         }
         let values = params![STORE_SCHEMA_VERSION.to_string()];
@@ -327,7 +343,6 @@ impl Store {
             task.pending_request_at,
             task.pending_origin.map(run_origin_str),
             task.pending_actor,
-            reflection_str(task.reflection),
             task.created_at,
             task.updated_at,
             task.deleted_at,
@@ -356,7 +371,6 @@ impl Store {
             task.pending_request_at,
             task.pending_origin.map(run_origin_str),
             task.pending_actor,
-            reflection_str(task.reflection),
             task.updated_at,
             task.deleted_at,
         ];
@@ -595,22 +609,6 @@ impl Store {
             .map_err(Into::into)
     }
 
-    /// Move one revision through its lifecycle (`proposed` → `applied`,
-    /// `proposed` → `superseded`). Rows are otherwise immutable: a version that
-    /// was in force is history and must not be rewritten.
-    pub fn set_revision_status(
-        &self,
-        task_id: &str,
-        revision_id: &str,
-        status: &str,
-    ) -> Result<()> {
-        self.conn.execute(
-            "UPDATE task_prompt_revisions SET status = ?3 WHERE task_id = ?1 AND id = ?2",
-            params![task_id, revision_id, status],
-        )?;
-        Ok(())
-    }
-
     pub fn next_revision_version(&self, task_id: &str) -> Result<i64> {
         let v: Option<i64> =
             self.conn
@@ -680,10 +678,9 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
             .get::<_, Option<String>>(16)?
             .and_then(|s| parse_run_origin(&s)),
         pending_actor: row.get(17)?,
-        reflection: parse_reflection(&row.get::<_, String>(18)?).unwrap_or(Reflection::Ask),
-        created_at: row.get(19)?,
-        updated_at: row.get(20)?,
-        deleted_at: row.get(21)?,
+        created_at: row.get(18)?,
+        updated_at: row.get(19)?,
+        deleted_at: row.get(20)?,
     })
 }
 
@@ -783,28 +780,11 @@ fn parse_session_policy(s: &str) -> Option<SessionPolicy> {
     }
 }
 
-fn reflection_str(r: Reflection) -> &'static str {
-    match r {
-        Reflection::Off => "off",
-        Reflection::Ask => "ask",
-        Reflection::Auto => "auto",
-    }
-}
-fn parse_reflection(s: &str) -> Option<Reflection> {
-    match s {
-        "off" => Some(Reflection::Off),
-        "ask" => Some(Reflection::Ask),
-        "auto" => Some(Reflection::Auto),
-        _ => None,
-    }
-}
-
 fn run_kind_str(k: RunKind) -> &'static str {
     match k {
         RunKind::Main => "main",
         RunKind::Manual => "manual",
         RunKind::Chain => "chain",
-        RunKind::Reflection => "reflection",
     }
 }
 fn parse_run_kind(s: &str) -> Option<RunKind> {
@@ -812,7 +792,10 @@ fn parse_run_kind(s: &str) -> Option<RunKind> {
         "main" => Some(RunKind::Main),
         "manual" => Some(RunKind::Manual),
         "chain" => Some(RunKind::Chain),
-        "reflection" => Some(RunKind::Reflection),
+        // `reflection` was the removed suggestion pass. A database from before
+        // the removal has had those rows deleted by the migration above, and a
+        // row that somehow survives reads as a plain main run rather than
+        // failing the whole task.
         _ => None,
     }
 }
@@ -823,7 +806,6 @@ fn run_origin_str(o: RunOrigin) -> &'static str {
         RunOrigin::Ui => "ui",
         RunOrigin::Cli => "cli",
         RunOrigin::Chain => "chain",
-        RunOrigin::Reflection => "reflection",
     }
 }
 fn parse_run_origin(s: &str) -> Option<RunOrigin> {
@@ -832,7 +814,6 @@ fn parse_run_origin(s: &str) -> Option<RunOrigin> {
         "ui" => Some(RunOrigin::Ui),
         "cli" => Some(RunOrigin::Cli),
         "chain" => Some(RunOrigin::Chain),
-        "reflection" => Some(RunOrigin::Reflection),
         _ => None,
     }
 }
@@ -886,7 +867,6 @@ mod tests {
             pending_request_at: None,
             pending_origin: None,
             pending_actor: None,
-            reflection: Reflection::Ask,
             created_at: 1,
             updated_at: 1,
             deleted_at: None,
@@ -902,7 +882,6 @@ mod tests {
         assert_eq!(got.name, "a");
         assert_eq!(got.trigger_kind, TriggerKind::Schedule);
         assert_eq!(got.dep_join, DepJoin::All);
-        assert_eq!(got.reflection, Reflection::Ask);
     }
 
     #[test]
@@ -993,71 +972,68 @@ mod tests {
         assert_eq!(got.error_message.as_deref(), Some("interrupted"));
     }
 
-    /// A reflection pass is a side activity over a finished run: while one is
-    /// in flight the task's own work must not be held back (a slow suggestion
-    /// would silently skip a scheduled slot).
+    /// The prompt-suggestion pass is gone, and its leftovers are cleaned on
+    /// open: the column it wrote is dropped, a pass still marked `running` is
+    /// deleted (it would otherwise hold the task back forever — the tick asks
+    /// "is a run in flight?" and would never hear back), and a pending
+    /// suggestion goes with it. A version the pass produced is *not* touched:
+    /// that became a version of the prompt.
     #[test]
-    fn a_running_reflection_does_not_hold_the_task_back() {
-        let (_dir, s) = store();
-        let t = task("suggesting");
+    fn a_database_from_before_the_suggestion_pass_is_cleaned_on_open() {
+        let dir = TempDir::new().unwrap();
+        let s = Store::open(dir.path()).unwrap();
+        let t = task("legacy");
         s.insert_task(&t).unwrap();
-        s.insert_run(&TaskRun {
-            id: new_run_id(),
-            task_id: t.id.clone(),
-            kind: RunKind::Reflection,
-            origin: RunOrigin::Reflection,
-            actor: None,
-            due_at: None,
-            status: RunStatus::Running,
-            thread_id: None,
-            session_id: None,
-            run_id: None,
-            prompt_version: Some(1),
-            result_summary: None,
-            feedback: None,
-            feedback_note: None,
-            started_at: Some(1),
-            finished_at: None,
-            error_message: None,
-        })
+        let raw = Connection::open(store_path(dir.path())).unwrap();
+        // A pass that was in flight when the old build was closed.
+        raw.execute(
+            "INSERT INTO task_runs (id, task_id, kind, origin, status, started_at)
+             VALUES ('trn_reflection', ?1, 'reflection', 'reflection', 'running', 1)",
+            params![t.id],
+        )
         .unwrap();
-        assert!(!s.has_running_run(&t.id).unwrap());
-    }
+        raw.execute(
+            "INSERT INTO task_prompt_revisions (id, task_id, version, prompt, source, status, created_at)
+             VALUES ('rev_pending', ?1, 0, 'a suggested prompt', 'reflection', 'proposed', 1)",
+            params![t.id],
+        )
+        .unwrap();
+        // …and one the user had already accepted, which is history now.
+        raw.execute(
+            "INSERT INTO task_prompt_revisions (id, task_id, version, prompt, source, status, created_at)
+             VALUES ('rev_accepted', ?1, 1, 'the prompt that ran', 'reflection', 'active', 1)",
+            params![t.id],
+        )
+        .unwrap();
+        drop(raw);
 
-    /// A suggestion moves through its own lifecycle, and nothing else rewrites
-    /// a row: a version that was in force is history.
-    #[test]
-    fn a_suggestion_can_be_marked_applied() {
-        let (_dir, s) = store();
-        let t = task("suggested");
-        s.insert_task(&t).unwrap();
-        let row = PromptRevision {
-            id: new_revision_id(),
-            task_id: t.id.clone(),
-            version: PROPOSAL_VERSION,
-            prompt: "a better prompt".into(),
-            source: REVISION_SOURCE_REFLECTION.into(),
-            status: REVISION_STATUS_PROPOSED.into(),
-            reason: Some("clearer".into()),
-            confidence: Some(0.8),
-            source_run_id: Some("trn_1".into()),
-            created_at: 5,
-        };
-        s.insert_revision(&row).unwrap();
-        assert_eq!(
-            s.list_revisions(&t.id).unwrap()[0].prompt,
-            "a better prompt"
+        // Re-opening runs the migration.
+        let s = Store::open(dir.path()).unwrap();
+        assert!(
+            s.list_runs_for_task(&t.id, 10).unwrap().is_empty(),
+            "the pass's ledger rows are gone"
         );
-        s.set_revision_status(&t.id, &row.id, REVISION_STATUS_APPLIED)
+        assert!(
+            !s.has_running_run(&t.id).unwrap(),
+            "a stale pass must not hold the task back"
+        );
+        let revisions = s.list_revisions(&t.id).unwrap();
+        assert_eq!(revisions.len(), 1, "{revisions:?}");
+        assert_eq!(revisions[0].id, "rev_accepted");
+        assert_eq!(revisions[0].status, REVISION_STATUS_ACTIVE);
+
+        let raw = Connection::open(store_path(dir.path())).unwrap();
+        let has_column: i64 = raw
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name = 'reflection'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
-        let stored = s.list_revisions(&t.id).unwrap();
-        assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0].status, REVISION_STATUS_APPLIED);
-        assert_eq!(stored[0].prompt, "a better prompt", "only the status moves");
-        assert_eq!(stored[0].confidence, Some(0.8));
-        // A suggestion is outside the version sequence, so the task's own next
-        // version is unaffected by it.
-        assert_eq!(s.next_revision_version(&t.id).unwrap(), 1);
+        assert_eq!(has_column, 0, "the column goes with the feature");
+        // The task itself still reads, including its prompt version.
+        let got = s.get_task(&t.id).unwrap().unwrap();
+        assert_eq!(got.name, "legacy");
     }
 
     #[test]
@@ -1114,10 +1090,9 @@ mod tests {
         assert_eq!(revs[1].status, REVISION_STATUS_ACTIVE);
 
         // A suggestion is not in the version sequence and keeps its own status.
-        s.insert_revision(&row(0, REVISION_STATUS_PROPOSED))
-            .unwrap();
+        s.insert_revision(&row(0, "proposed")).unwrap();
         let revs = s.list_revisions(&t.id).unwrap();
-        assert_eq!(revs[0].status, REVISION_STATUS_PROPOSED);
+        assert_eq!(revs[0].status, "proposed");
         assert_eq!(revs[2].status, REVISION_STATUS_ACTIVE);
     }
 
@@ -1316,7 +1291,6 @@ mod tests {
         t.pending_request_at = Some(42);
         t.pending_origin = Some(RunOrigin::Chain);
         t.pending_actor = Some("task:tsk_up".into());
-        t.reflection = Reflection::Auto;
         t.deleted_at = Some(9);
         s.insert_task(&t).unwrap();
 
@@ -1327,7 +1301,6 @@ mod tests {
         edited.enabled = true;
         edited.session_policy = SessionPolicy::New;
         edited.pending_origin = Some(RunOrigin::Ui);
-        edited.reflection = Reflection::Off;
         edited.deleted_at = None;
         s.update_task(&edited).unwrap();
         assert_eq!(s.get_task(&t.id).unwrap().unwrap(), edited);
@@ -1557,7 +1530,7 @@ mod tests {
         let raw = Connection::open(store_path(dir.path())).unwrap();
         raw.execute(
             "UPDATE tasks SET session_policy='bogus', trigger_kind='bogus', trigger_json='not json',
-                              dep_join='bogus', reflection='bogus', pending_origin='bogus'
+                              dep_join='bogus', pending_origin='bogus'
              WHERE id = ?1",
             params![t.id],
         )
@@ -1567,7 +1540,6 @@ mod tests {
         assert_eq!(got.trigger_kind, TriggerKind::Manual);
         assert_eq!(got.trigger_json, serde_json::Value::Null);
         assert_eq!(got.dep_join, DepJoin::All);
-        assert_eq!(got.reflection, Reflection::Ask);
         assert!(got.pending_origin.is_none());
 
         // A real upstream row: the schema enforces the foreign key.
@@ -1604,24 +1576,22 @@ mod tests {
     #[test]
     fn every_enum_value_round_trips_through_its_stored_spelling() {
         let (_dir, s) = store();
-        for (policy, join, reflection) in [
-            (SessionPolicy::New, DepJoin::All, Reflection::Off),
-            (SessionPolicy::Existing, DepJoin::Any, Reflection::Ask),
-            (SessionPolicy::Existing, DepJoin::All, Reflection::Auto),
+        for (policy, join) in [
+            (SessionPolicy::New, DepJoin::All),
+            (SessionPolicy::Existing, DepJoin::Any),
+            (SessionPolicy::Existing, DepJoin::All),
         ] {
-            let mut t = task(&format!("{policy:?}-{join:?}-{reflection:?}"));
+            let mut t = task(&format!("{policy:?}-{join:?}"));
             t.session_policy = policy;
             t.dep_join = join;
-            t.reflection = reflection;
             t.trigger_kind = TriggerKind::Manual;
-            t.pending_origin = Some(RunOrigin::Reflection);
+            t.pending_origin = Some(RunOrigin::Chain);
             s.insert_task(&t).unwrap();
             let got = s.get_task(&t.id).unwrap().unwrap();
             assert_eq!(got.session_policy, policy);
             assert_eq!(got.dep_join, join);
-            assert_eq!(got.reflection, reflection);
             assert_eq!(got.trigger_kind, TriggerKind::Manual);
-            assert_eq!(got.pending_origin, Some(RunOrigin::Reflection));
+            assert_eq!(got.pending_origin, Some(RunOrigin::Chain));
         }
 
         for on in [DepOn::Success, DepOn::Failure, DepOn::Completed] {
@@ -1639,18 +1609,12 @@ mod tests {
             assert_eq!(s.list_deps(&downstream.id).unwrap()[0].on, on);
         }
 
-        for kind in [
-            RunKind::Main,
-            RunKind::Manual,
-            RunKind::Chain,
-            RunKind::Reflection,
-        ] {
+        for kind in [RunKind::Main, RunKind::Manual, RunKind::Chain] {
             for origin in [
                 RunOrigin::Schedule,
                 RunOrigin::Ui,
                 RunOrigin::Cli,
                 RunOrigin::Chain,
-                RunOrigin::Reflection,
             ] {
                 for status in [
                     RunStatus::Running,

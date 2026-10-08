@@ -9,6 +9,8 @@ export interface RemoteTaskRun {
   origin: string;
   status: string;
   threadId?: string | null;
+  /** The conversation this run ran in (absent on an older desktop). */
+  sessionId?: string | null;
   startedAt?: number | null;
   finishedAt?: number | null;
   promptVersion?: number | null;
@@ -24,11 +26,8 @@ export interface RemoteTaskRow {
   trigger: Record<string, unknown>;
   nextDueAt?: number | null;
   queued?: boolean;
-  reflection: string;
   /** How many upstream dependencies this task waits on (absent on an older desktop). */
   depCount?: number;
-  /** Prompt suggestions awaiting a decision (absent on an older desktop). */
-  pendingProposals?: number;
   latestRun?: RemoteTaskRun | null;
 }
 
