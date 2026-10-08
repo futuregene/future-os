@@ -34,7 +34,6 @@ mod remote;
 mod remote_host;
 mod run_error;
 mod runtime;
-#[cfg(feature = "gui")]
 mod scheduler;
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
 mod shadow_review;
