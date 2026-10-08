@@ -329,6 +329,12 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
   const [openId, setOpenId] = useState<string | null>(null);
   /** Creating opens the same editor with no task behind it. */
   const [creating, setCreating] = useState(false);
+  /**
+   * A task is two pages: the task itself (what it is, what it did) and the form
+   * that changes it, one level down. A new task has no history to lead with, so
+   * it opens on the form instead.
+   */
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [detail, setDetail] = useState<RemoteTaskDetail | null>(null);
   const [runs, setRuns] = useState<RemoteTaskRun[]>([]);
   const [deps, setDeps] = useState<RemoteTaskDep[]>([]);
@@ -359,6 +365,7 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
 
   const open = useCallback((taskId: string) => {
     setCreating(false);
+    setSettingsOpen(false);
     setOpenId(taskId);
     setDetail(null);
     void loadDetail(taskId).catch(() => {
@@ -368,21 +375,27 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
 
   const close = useCallback(() => {
     setCreating(false);
+    setSettingsOpen(false);
     setOpenId(null);
     setDetail(null);
   }, []);
 
-  // One step back inside this page: the editor/detail first, the list second.
-  // Registered with the settings stack, which is what the system back gesture
-  // and the header arrow call — otherwise a swipe with a task open left the
-  // whole Tasks page (and the list's scroll position) behind.
+  // One step back inside this page: the form first, the task second, the list
+  // third. Registered with the settings stack, which is what the system back
+  // gesture and the header arrow call — otherwise a swipe out of a task left
+  // the whole Tasks page (and the list's scroll position) behind.
   const goBackOneLevel = useCallback(() => {
+    // The form sits above the task: back from it is the task, not the list.
+    if (settingsOpen) {
+      setSettingsOpen(false);
+      return true;
+    }
     if (creating || openId) {
       close();
       return true;
     }
     return false;
-  }, [close, creating, openId]);
+  }, [close, creating, openId, settingsOpen]);
   useEffect(() => {
     if (!onBackLevel) return;
     onBackLevel({ goBack: goBackOneLevel });
@@ -401,8 +414,14 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
     });
   }, [loadDetail]);
 
-  const mutate = async (operation: () => Promise<unknown>) => {
-    if (writing.current) return;
+  /**
+   * Run one write and report whether it landed. The editor uses the answer to
+   * know whether it may leave its page: a refused save keeps the draft on
+   * screen, where Save is the retry (a second press while one is in flight is
+   * dropped, and cannot look like a success either).
+   */
+  const mutate = async (operation: () => Promise<unknown>): Promise<boolean> => {
+    if (writing.current) return false;
     writing.current = true;
     setBusy(true);
     setFailed(false);
@@ -410,9 +429,11 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
       await operation();
       await tasks.reload();
       if (openId) await loadDetail(openId);
+      return true;
     }
     catch {
       if (active.current) setFailed(true);
+      return false;
     }
     finally {
       writing.current = false;
@@ -466,8 +487,10 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
         revisions={revisions}
         runs={runs}
         settings={settings}
-        onBack={close}
+        settingsOpen={settingsOpen}
         onOpenConversation={onOpenConversation}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onCloseSettings={() => setSettingsOpen(false)}
         onDelete={() => remove(detail)}
         onMutate={mutate}
         onRetry={() => retryTask(detail.id)}
@@ -517,6 +540,11 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
 /**
  * The task editor, for both a new task and an existing one.
  *
+ * An existing task is two pages: the task itself (its actions, then what it
+ * did) and the form that changes it, one level down and reached from the
+ * Settings button. A new task has no history to lead with, so it opens on the
+ * form.
+ *
  * `create` has no `detail` to read from, so the draft starts blank; `edit`
  * starts from the stored task and keys the component by prompt version, so a
  * save (or a reload) remounts it with fresh values instead of an effect writing
@@ -524,7 +552,8 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
  */
 function TaskForm({
   kind, detail, settings, candidates = [], busy, deps = [], desktopOnline, failed, revisions = [], runs = [],
-  onBack, onCancel, onCreate, onDelete, onMutate, onOpenConversation, onRetry, onSaveDraft,
+  settingsOpen = false,
+  onCancel, onCloseSettings, onCreate, onDelete, onMutate, onOpenConversation, onOpenSettings, onRetry, onSaveDraft,
 }: {
   kind: "create" | "edit";
   detail?: RemoteTaskDetail;
@@ -538,13 +567,18 @@ function TaskForm({
   failed: boolean;
   revisions?: RemoteTaskRevision[];
   runs?: RemoteTaskRun[];
-  onBack?(): void;
+  /** Whether the form is on top (edit mode; a new task opens straight on it). */
+  settingsOpen?: boolean;
   onCancel?(): void;
+  /** Leave the form for the task, once a save has landed (edit mode). */
+  onCloseSettings?(): void;
   onCreate?(draft: Draft): void;
   onDelete?(): void;
-  onMutate?(operation: () => Promise<unknown>): Promise<void>;
+  onMutate?(operation: () => Promise<unknown>): Promise<boolean>;
   /** Open a run's conversation in the chat (absent while creating a task). */
   onOpenConversation?(sessionId: string): void;
+  /** Reveal the form, one level down from the task (edit mode). */
+  onOpenSettings?(): void;
   onRetry?(): void;
   /** Write the draft's dependency edges (edit mode; create goes through `onCreate`). */
   onSaveDraft?(draft: Draft): Promise<void>;
@@ -554,10 +588,10 @@ function TaskForm({
   const models = useDesktopResource(remote.listSettingsModels, 0, desktopOnline);
   const [draft, setDraft] = useState<Draft>(() => detail ? draftFrom(detail, deps) : newDraft());
   const [confirmDelete, setConfirmDelete] = useState(false);
-  // The form starts folded on an existing task: the page is opened to see what
-  // the task did, and every field is one tap away (a new task has no history to
-  // lead with, so it opens straight into the form).
-  const [settingsOpen, setSettingsOpen] = useState(kind === "create");
+  // Which of the editor's two pages is on screen: an existing task opens on
+  // what it did, with the form one level down behind the Settings button.
+  const taskPage = kind === "edit" && !settingsOpen;
+  const formPage = kind === "create" || settingsOpen;
   // Editing edges needs a desktop that implements them; an older one keeps the
   // read-only list below the form.
   const canEditDeps = remote.capabilities?.has("task_deps_v1") ?? false;
@@ -583,20 +617,23 @@ function TaskForm({
   const problem = draftProblem(draft);
   const trigger = draft.trigger;
 
-  const save = () => {
+  const save = async () => {
     // Create goes through `onCreate` (the parent owns the request); edit goes
     // through `onMutate`, which also handles the in-flight guard and reload.
     // Requiring both would make either mode silently do nothing. The dependency
     // edges are written inside the same operation, so a refused edge fails the
     // save the user pressed rather than the next unrelated one.
     if (problem) return;
-    if (kind === "create")
+    if (kind === "create") {
       onCreate?.(draft);
-    else if (onMutate)
-      void onMutate(async () => {
-        await remote.updateTask(detail!.id, draftPayload(draft));
-        await onSaveDraft?.(draft);
-      });
+      return;
+    }
+    const saved = await onMutate?.(async () => {
+      await remote.updateTask(detail!.id, draftPayload(draft));
+      await onSaveDraft?.(draft);
+    });
+    // A save that did not land keeps the form open: the draft is its own retry.
+    if (saved) onCloseSettings?.();
   };
 
   return (
@@ -611,58 +648,40 @@ function TaskForm({
           : <Text accessibilityRole="alert" style={settingsStyles.error}>{t("desktopSettings.loadFailed")}</Text>
         : null}
 
-      <SettingsSection title={kind === "create" ? t("tasks.newTitle") : detail!.name}>
-        {/* One compact row, not a stack of full-width buttons: the phone's
-            vertical space belongs to the form, and the desktop puts these on
-            one line too. Delete stays two-step (armed, then confirmed). */}
-        <View style={settingsStyles.actions}>
-          {kind === "edit"
-            ? (
-                <>
-                  <Button compact label={t("tasks.runNow")} disabled={busy} onPress={() => void onMutate?.(() => remote.runTask(detail!.id))} />
-                  <Button compact label={detail!.enabled ? t("tasks.disable") : t("tasks.enable")} disabled={busy} variant="secondary" onPress={() => void onMutate?.(() => remote.setTaskEnabled(detail!.id, !detail!.enabled))} />
-                </>
-              )
-            : null}
-          {kind === "edit"
-            ? (
-                confirmDelete
+      {/* The task itself: its actions, then what it did. The form that changes
+          it is one level down, so a long run and version history never buries
+          the fields the way a fold at the bottom of this page did. */}
+      {taskPage
+        ? (
+            <SettingsSection title={detail!.name}>
+              {/* One compact row, not a stack of full-width buttons: the
+                  phone's vertical space belongs to the form, and the desktop
+                  puts these on one line too. Delete stays two-step (armed,
+                  then confirmed). */}
+              <View style={settingsStyles.actions}>
+                <Button compact label={t("tasks.runNow")} disabled={busy} onPress={() => void onMutate?.(() => remote.runTask(detail!.id))} />
+                <Button compact label={detail!.enabled ? t("tasks.disable") : t("tasks.enable")} disabled={busy} variant="secondary" onPress={() => void onMutate?.(() => remote.setTaskEnabled(detail!.id, !detail!.enabled))} />
+                {confirmDelete
                   ? (
                       <>
                         <Button compact label={t("tasks.deleteConfirmAction")} variant="danger" disabled={busy} onPress={() => onDelete?.()} />
                         <Button compact label={t("chat.cancel")} variant="secondary" disabled={busy} onPress={() => setConfirmDelete(false)} />
                       </>
                     )
-                  : <Button compact label={t("tasks.delete")} variant="secondary" disabled={busy} onPress={() => setConfirmDelete(true)} />
-              )
-            : null}
-          <Button compact label={kind === "create" ? t("tasks.form.cancel") : t("common.back")} variant="secondary" onPress={kind === "create" ? onCancel! : onBack!} />
-        </View>
-        {/* The confirmation is a sentence, so it gets its own line under the row. */}
-        {kind === "edit" && confirmDelete
-          ? <Text style={settingsStyles.description}>{t("tasks.deleteConfirm", { name: detail!.name })}</Text>
-          : null}
-      </SettingsSection>
-
-      {/* The way into the settings sits above the run history, not below it: a
-          task that has run many times would otherwise push it far out of reach,
-          and opening the page is supposed to show what happened anyway. The row
-          is one line, and the form it reveals opens right under it. */}
-      {kind === "create"
-        ? null
-        : (
-            <Pressable
-              accessibilityLabel={t("tasks.settings")}
-              accessibilityRole="button"
-              accessibilityState={{ expanded: settingsOpen }}
-              onPress={() => setSettingsOpen(open => !open)}
-            >
-              <Text style={styles.disclosure}>
-                {`${settingsOpen ? "\u25be" : "\u25b8"} ${t("tasks.settings")}`}
-              </Text>
-            </Pressable>
-          )}
-      {runs.length > 0
+                  : <Button compact label={t("tasks.delete")} variant="secondary" disabled={busy} onPress={() => setConfirmDelete(true)} />}
+                {/* The way into the form. Leaving it is the same level back as
+                    everywhere else (the header arrow, the system back
+                    gesture), so it needs no button of its own. */}
+                <Button compact label={t("tasks.settings")} variant="secondary" disabled={busy} onPress={() => onOpenSettings?.()} />
+              </View>
+              {/* The confirmation is a sentence, so it gets its own line under the row. */}
+              {confirmDelete
+                ? <Text style={settingsStyles.description}>{t("tasks.deleteConfirm", { name: detail!.name })}</Text>
+                : null}
+            </SettingsSection>
+          )
+        : null}
+      {taskPage && runs.length > 0
         ? (
             <SettingsSection title={t("tasks.runs")}>
               {runs.map(run => (
@@ -703,7 +722,7 @@ function TaskForm({
           )
         : null}
 
-      {revisions.length > 0
+      {taskPage && revisions.length > 0
         ? (
             <SettingsSection title={t("tasks.revisions")}>
               {revisions.map((revision) => {
@@ -724,9 +743,23 @@ function TaskForm({
           )
         : null}
 
-      {kind === "create" || settingsOpen
+      {formPage
         ? (
             <>
+            {/* The heading says which page this is: a new task, or the form
+                that changes an existing one (whose name is its first field). */}
+            <SettingsSection title={kind === "create" ? t("tasks.newTitle") : t("tasks.settings")}>
+              {/* A new task is cancelled from here; an existing one leaves the
+                  form with the level back (header arrow / system gesture), or
+                  by saving. */}
+              {kind === "create"
+                ? (
+                    <View style={settingsStyles.actions}>
+                      <Button compact label={t("tasks.form.cancel")} variant="secondary" onPress={onCancel!} />
+                    </View>
+                  )
+                : null}
+            </SettingsSection>
             <SettingsSection title={t("tasks.form.details")}>
               <SettingsField label={t("tasks.form.name")}>
                 <TextInput
@@ -930,7 +963,7 @@ function TaskForm({
               {problem
                 ? <Text accessibilityRole="alert" style={settingsStyles.error}>{t(`tasks.form.problem.${problem}`)}</Text>
                 : null}
-              <Button label={t("tasks.form.save")} disabled={busy || problem !== null} onPress={save} />
+              <Button label={t("tasks.form.save")} disabled={busy || problem !== null} onPress={() => void save()} />
               <Text style={settingsStyles.description}>{t("tasks.form.fullPermissionWarning")}</Text>
             </SettingsSection>
 
@@ -1070,6 +1103,5 @@ const styles = StyleSheet.create({
   runHeading: { color: colors.ink, fontSize: 13, fontWeight: "600" },
   runSummary: { color: colors.inkSoft, fontSize: 13, lineHeight: 20 },
   runLink: { color: colors.accent, fontSize: 13, fontWeight: "600" },
-  disclosure: { color: colors.inkMuted, fontSize: 13, fontWeight: "600", paddingVertical: spacing.sm },
   depCard: { gap: spacing.xs, padding: spacing.md, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
 });
