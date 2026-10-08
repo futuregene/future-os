@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { ScrollView, Text, TextInput } from "react-native";
 import { Button } from "../../../components/Button";
 import type { DesktopSettings } from "../../../remote/types";
@@ -64,7 +64,6 @@ function taskRow(overrides: Partial<RemoteTaskRow> = {}): RemoteTaskRow {
     trigger: { mode: "daily", time: "09:00" },
     nextDueAt: 1_700_000_000_000,
     queued: false,
-    reflection: "ask",
     latestRun: null,
     ...overrides,
   };
@@ -118,27 +117,6 @@ const rowFor = (name: string) => pressables()
   .find(node => node.findAllByType(Text).some(text => text.props.children === name))!;
 const firstTask = () => rowFor("daily report");
 
-/** Every string a subtree shows (the shape `texts()` uses, scoped to one node). */
-const shownIn = (node: ReactTestInstance) =>
-  node.findAllByType(Text).map(text => text.props.children).flat().filter(child => typeof child === "string") as string[];
-
-/**
- * The innermost element whose subtree shows every one of `values` — a way to ask
- * "which card is this in?" without depending on style or index. Depth-first
- * order puts descendants last, so the last match is the tightest scope.
- */
-function subtreeWith(...values: string[]) {
-  const nodes = tree.root.findAll(node => values.every(value => shownIn(node).includes(value)));
-  const tightest = nodes[nodes.length - 1];
-  if (!tightest)
-    throw new Error(`nothing shows ${values.join(" + ")}`);
-  return tightest;
-}
-
-/** The pressable carrying `label` (the suggestion toggle is a plain pressable). */
-const pressableWith = (label: string) => pressables()
-  .find(node => node.findAllByType(Text).some(text => text.props.children === label))!;
-
 /** Let the resource's promise settle before asserting on the rendered rows. */
 async function flush() { await act(async () => { await Promise.resolve(); }); }
 
@@ -147,9 +125,9 @@ async function flush() { await act(async () => { await Promise.resolve(); }); }
  * a revision bump, never on an unrelated re-render, so a changed backend is
  * expressed by a fresh mount (exactly what reopening the page does).
  */
-async function remount() {
+async function remount(extra: Record<string, unknown> = {}) {
   await act(async () => { tree.unmount(); });
-  await act(async () => { tree = create(createElement(TasksSettingsPage, { desktopOnline: true, settings })); });
+  await act(async () => { tree = create(createElement(TasksSettingsPage, { desktopOnline: true, settings, ...extra })); });
   await flush();
 }
 
@@ -627,20 +605,18 @@ test("a task without a model cannot be saved until one is chosen", async () => {
   expect(button("tasks.form.save").props.disabled).toBe(false);
 });
 
-test("switches the conversation policy, the conversation type and the suggestion level", async () => {
+test("switches the conversation policy and the conversation type", async () => {
   await act(async () => firstTask().props.onPress());
   await act(async () => chip("tasks.form.sessionExisting").props.onPress());
   // Reusing a conversation costs a compaction before every run, so the cost is
   // stated where the choice is made.
   expect(texts()).toContain("tasks.form.sessionExistingHint");
   await act(async () => chip("tasks.form.conversationChat").props.onPress());
-  await act(async () => chip("tasks.form.reflectionAuto").props.onPress());
   await act(async () => button("tasks.form.save").props.onPress());
 
   expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({
     sessionPolicy: "existing",
     conversationMode: "chat",
-    reflection: "auto",
   }));
 });
 
@@ -771,13 +747,11 @@ test("copes with a task that declares none of its policies", async () => {
     ...taskDetail(),
     sessionPolicy: undefined,
     conversationMode: undefined,
-    reflection: undefined,
   } as unknown as RemoteTaskDetail;
   await remount();
   await act(async () => firstTask().props.onPress());
   expect(chip("tasks.form.sessionNew").props.accessibilityState.selected).toBe(true);
   expect(chip("tasks.form.conversationWorkspace").props.accessibilityState.selected).toBe(true);
-  expect(chip("tasks.form.reflectionAsk").props.accessibilityState.selected).toBe(true);
 });
 
 // A task with no due time is a manual one: the row must not render a date.
@@ -825,109 +799,24 @@ test("falls back to a version's prompt, and keys a model without a provider", as
   expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({ modelId: "bare-model" }));
 });
 
-// A suggestion is not a version, it shows the confidence the pass reported,
-// and accepting it is the one action the phone can take on it.
-test("shows a prompt suggestion and applies it", async () => {
-  rows = [taskRow({ pendingProposals: 1 })];
-  revisions = [
-    { id: "rev_suggestion", version: 0, source: "reflection", status: "proposed", reason: "the output path was not stated", confidence: 0.82, createdAt: 2, promptPreview: "a better prompt" },
-  ];
-  await remount();
-  // The list row carries the count, so a suggestion is visible without opening
-  // the task.
-  expect(texts().some(text => String(text).includes("tasks.suggestionCount"))).toBe(true);
-
-  await act(async () => firstTask().props.onPress());
-  const shown = texts().map(String);
-  expect(shown.some(text => text.includes("tasks.suggestion"))).toBe(true);
-  expect(shown.some(text => text.includes("tasks.confidence"))).toBe(true);
-  expect(shown).toContain("the output path was not stated");
-  expect(shown.some(text => text.startsWith("v0"))).toBe(false);
-
-  await act(async () => button("tasks.applySuggestion").props.onPress());
-  expect(mockRemote.applyTaskRevision).toHaveBeenCalledWith("tsk_1", "rev_suggestion");
-});
-
-test("marks an accepted suggestion as applied", async () => {
-  revisions = [
-    { id: "rev_suggestion", version: 0, source: "reflection", status: "applied", reason: "clearer", confidence: 0.9, createdAt: 2, promptPreview: "a better prompt" },
-  ];
-  await remount();
-  await act(async () => firstTask().props.onPress());
-  const shown = texts().map(String);
-  expect(shown.some(text => text.includes("tasks.applied"))).toBe(true);
-  expect(button("tasks.applySuggestion")).toBeUndefined();
-});
-
-// A suggestion is a claim about one run ("this prompt is why that happened"), so
-// it is read inside that run's card — with the change it proposes, which is what
-// the user decides on.
-test("groups a suggestion with the run it read, and shows the prompt it proposes", async () => {
+// A run's conversation is where its reasoning lives, so the phone opens it the
+// same way the desktop panel does — in the chat this app already has.
+test("opens a run's conversation", async () => {
+  const opened: string[] = [];
   runs = [
-    { id: "trn_2", kind: "main", origin: "schedule", status: "completed", threadId: null, startedAt: 3, finishedAt: 4, promptVersion: 3, resultSummary: "the newer run", errorMessage: null },
-    { id: "trn_1", kind: "main", origin: "schedule", status: "completed", threadId: "thr_1", startedAt: 1, finishedAt: 2, promptVersion: 2, resultSummary: "all good", errorMessage: null },
+    { id: "trn_2", kind: "main", origin: "schedule", status: "completed", threadId: "thr_2", sessionId: "sess_2", startedAt: 3, finishedAt: 4, resultSummary: "the newer run", errorMessage: null },
+    // A run that never reached an agent has no conversation to open.
+    { id: "trn_1", kind: "main", origin: "schedule", status: "failed", threadId: null, startedAt: 1, finishedAt: 2, resultSummary: null, errorMessage: "no agent" },
   ];
-  revisions = [
-    {
-      id: "rev_suggestion",
-      version: 0,
-      source: "reflection",
-      status: "proposed",
-      reason: "the output path was not stated",
-      confidence: 0.82,
-      createdAt: 5,
-      sourceRunId: "trn_2",
-      prompt: "summarize yesterday, then write reports/weekly.md",
-      promptPreview: "summarize yesterday, then write…",
-    },
-  ];
-  await remount();
+  await remount({ onOpenConversation: (sessionId: string) => opened.push(sessionId) });
   await act(async () => firstTask().props.onPress());
 
-  // The suggestion sits in the card of the run it read, not in the other one.
-  const card = subtreeWith("tasks.status.completed", "the newer run");
-  const cardTexts = shownIn(card);
-  expect(cardTexts.some(text => text.startsWith("tasks.suggestion"))).toBe(true);
-  expect(cardTexts).toContain("the output path was not stated");
-  expect(shownIn(subtreeWith("tasks.status.completed", "all good"))).not.toContain("the output path was not stated");
-
-  // The whole prompt, behind the toggle: a scroller inside this page's
-  // ScrollView cannot be reached on Android, so it is expanded instead.
-  expect(texts()).not.toContain("summarize yesterday, then write reports/weekly.md");
-  await act(async () => pressableWith("tasks.suggestedPromptShow").props.onPress());
-  expect(texts()).toContain("summarize yesterday, then write reports/weekly.md");
-  await act(async () => pressableWith("tasks.suggestedPromptHide").props.onPress());
-  expect(texts()).not.toContain("summarize yesterday, then write reports/weekly.md");
-
-  await act(async () => button("tasks.applySuggestion").props.onPress());
-  expect(mockRemote.applyTaskRevision).toHaveBeenCalledWith("tsk_1", "rev_suggestion");
+  const links = pressables().filter(node => node.findAllByType(Text).some(text => text.props.children === "tasks.openConversation"));
+  expect(links).toHaveLength(1);
+  await act(async () => links[0]!.props.onPress());
+  expect(opened).toEqual(["sess_2"]);
 });
 
-// The run list is bounded, so a suggestion can outlive its run's place in it.
-// It keeps its own block and its accept button instead of disappearing.
-test("keeps a suggestion whose run is not in the list", async () => {
-  revisions = [
-    {
-      id: "rev_suggestion",
-      version: 0,
-      source: "reflection",
-      status: "proposed",
-      reason: "the output path was not stated",
-      confidence: 0.82,
-      createdAt: 2,
-      sourceRunId: "trn_gone",
-      prompt: "a better prompt",
-      promptPreview: "a better prompt",
-    },
-  ];
-  await remount();
-  await act(async () => firstTask().props.onPress());
-  expect(texts()).toContain("tasks.suggestionUnlinked");
-  expect(texts()).toContain("the output path was not stated");
-  expect(button("tasks.applySuggestion")).toBeDefined();
-});
-
-// Both halves of the dependency state, and a run that recorded no summary.
 test("reports a satisfied dependency and a run with no summary", async () => {
   deps = [{ upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "success", satisfied: true }];
   runs = [{ id: "trn_2", kind: "main", origin: "schedule", status: "failed", threadId: null, startedAt: 1, finishedAt: 2, resultSummary: null, errorMessage: null }];

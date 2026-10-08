@@ -15,24 +15,19 @@ pub const REVISION_ID_PREFIX: &str = "rev_";
 /// meaning (loop's own envelope uses the same `<project>_<envelope>_v<n>` form).
 pub const TASK_ENVELOPE_SCHEMA_VERSION: &str = "future_tasks_run_envelope_v1";
 
-/// Reflection schema version: the header of the prompt a suggestion pass runs.
-pub const REFLECTION_SCHEMA_VERSION: &str = "future_tasks_reflection_v1";
-
-/// The version a *suggestion* carries. A suggestion is not a version of the
-/// prompt yet — it has never run — so it lives outside the version sequence
-/// (a task's versions start at 1 and only move when a prompt is in force).
-pub const PROPOSAL_VERSION: i64 = 0;
-
 /// Prompt-version lifecycle, as stored in `task_prompt_revisions.status`.
-/// `proposed` is a suggestion awaiting a decision, `applied` is a suggestion
-/// that was accepted, `active` is the prompt in force, and `superseded` is a
-/// version that a later one replaced.
+/// `active` is the prompt in force and `superseded` is a version that a later
+/// one replaced. (`proposed`/`applied` belonged to the removed prompt-suggestion
+/// pass; a database that still carries such rows is cleaned on open — see
+/// `store::MIGRATIONS`.)
 pub const REVISION_STATUS_ACTIVE: &str = "active";
 pub const REVISION_STATUS_SUPERSEDED: &str = "superseded";
-pub const REVISION_STATUS_PROPOSED: &str = "proposed";
-pub const REVISION_STATUS_APPLIED: &str = "applied";
 
 /// Where a prompt revision came from.
+///
+/// `reflection` is **legacy read-only**: no build writes it any more, but a
+/// version accepted before the suggestion pass was removed is still a version
+/// of the prompt, so the clients keep a label for it.
 pub const REVISION_SOURCE_REFLECTION: &str = "reflection";
 pub const REVISION_SOURCE_USER: &str = "user";
 pub const REVISION_SOURCE_SUPERSEDED: &str = "superseded";
@@ -85,15 +80,6 @@ pub enum ConversationMode {
     Workspace,
 }
 
-/// Reflection cadence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Reflection {
-    Off,
-    Ask,
-    Auto,
-}
-
 /// Run kind (who asked for it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -101,7 +87,6 @@ pub enum RunKind {
     Main,
     Manual,
     Chain,
-    Reflection,
 }
 
 /// Run origin (where the request came from).
@@ -112,7 +97,6 @@ pub enum RunOrigin {
     Ui,
     Cli,
     Chain,
-    Reflection,
 }
 
 /// Run status.
@@ -151,7 +135,6 @@ pub struct Task {
     pub pending_request_at: Option<i64>,
     pub pending_origin: Option<RunOrigin>,
     pub pending_actor: Option<String>,
-    pub reflection: Reflection,
     pub created_at: i64,
     pub updated_at: i64,
     pub deleted_at: Option<i64>,

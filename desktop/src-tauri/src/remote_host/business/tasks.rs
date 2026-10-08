@@ -37,6 +37,9 @@ fn run_summary_view(run: future_tasks::TaskRun) -> Value {
         "origin": format!("{:?}", run.origin).to_lowercase(),
         "status": format!("{:?}", run.status).to_lowercase(),
         "threadId": run.thread_id,
+        // The phone opens a run's conversation by session id (its chat is
+        // session-based), so the run has to name one.
+        "sessionId": run.session_id,
         "startedAt": run.started_at,
         "finishedAt": run.finished_at,
         "promptVersion": run.prompt_version,
@@ -57,10 +60,6 @@ fn task_list_view(store: &future_tasks::Store, task: future_tasks::Task) -> Valu
         "depCount": dep_count(store, &task.id),
         "nextDueAt": task.next_due_at,
         "queued": task.pending_request_at.is_some(),
-        "reflection": format!("{:?}", task.reflection).to_lowercase(),
-        // A suggestion is the one thing on this page the user has to act on, so
-        // the list counts them without the detail round-trip.
-        "pendingProposals": pending_proposals(store, &task.id),
         "latestRun": latest.map(run_summary_view),
     })
 }
@@ -70,18 +69,6 @@ fn task_list_view(store: &future_tasks::Store, task: future_tasks::Task) -> Valu
 /// task the same way the desktop does.
 fn dep_count(store: &future_tasks::Store, task_id: &str) -> usize {
     store.list_deps(task_id).map(|deps| deps.len()).unwrap_or(0)
-}
-
-/// Prompt suggestions awaiting a decision.
-fn pending_proposals(store: &future_tasks::Store, task_id: &str) -> usize {
-    store
-        .list_revisions(task_id)
-        .map(|rows| {
-            rows.iter()
-                .filter(|row| row.status == future_tasks::REVISION_STATUS_PROPOSED)
-                .count()
-        })
-        .unwrap_or(0)
 }
 
 /// The detail record (the only place the prompt crosses the wire).
@@ -104,8 +91,6 @@ fn task_detail_view(store: &future_tasks::Store, task: future_tasks::Task) -> Va
         "depCount": dep_count(store, &task.id),
         "nextDueAt": task.next_due_at,
         "queued": task.pending_request_at.is_some(),
-        "reflection": format!("{:?}", task.reflection).to_lowercase(),
-        "pendingProposals": pending_proposals(store, &task.id),
         "latestRun": latest.map(run_summary_view),
     })
 }
@@ -121,14 +106,6 @@ fn parse_session_policy(raw: Option<&str>) -> future_tasks::SessionPolicy {
     match raw {
         Some("existing") => future_tasks::SessionPolicy::Existing,
         _ => future_tasks::SessionPolicy::New,
-    }
-}
-
-fn parse_reflection(raw: Option<&str>) -> future_tasks::Reflection {
-    match raw {
-        Some("off") => future_tasks::Reflection::Off,
-        Some("auto") => future_tasks::Reflection::Auto,
-        _ => future_tasks::Reflection::Ask,
     }
 }
 
@@ -263,12 +240,6 @@ fn task_from_payload(
         pending_request_at: base.as_ref().and_then(|t| t.pending_request_at),
         pending_origin: base.as_ref().and_then(|t| t.pending_origin),
         pending_actor: base.as_ref().and_then(|t| t.pending_actor.clone()),
-        reflection: payload
-            .get("reflection")
-            .and_then(Value::as_str)
-            .map(|raw| parse_reflection(Some(raw)))
-            .or_else(|| base.as_ref().map(|t| t.reflection))
-            .unwrap_or(future_tasks::Reflection::Ask),
         created_at: base.as_ref().map(|t| t.created_at).unwrap_or(now),
         updated_at: now,
         deleted_at: None,
@@ -560,11 +531,9 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                                 "reason": r.reason,
                                 "confidence": r.confidence,
                                 "createdAt": r.created_at,
-                                "sourceRunId": r.source_run_id,
-                                // The whole prompt, not just a preview: a
-                                // suggestion is something the user accepts or
-                                // rejects, and 160 characters cannot be judged.
-                                // `promptPreview` stays for older clients.
+                                // The whole prompt and a preview: the phone
+                                // renders the preview, and applying a version
+                                // is the desktop's own write either way.
                                 "prompt": r.prompt,
                                 "promptPreview": truncate(&r.prompt, 160),
                             })
@@ -633,7 +602,6 @@ mod tests {
             pending_request_at: None,
             pending_origin: None,
             pending_actor: None,
-            reflection: future_tasks::Reflection::Ask,
             created_at: now,
             updated_at: now,
             deleted_at: None,
@@ -691,10 +659,6 @@ mod tests {
 
         // Nothing is waiting, so the phone is not told otherwise.
         assert_eq!(items[0]["queued"], false);
-        assert_eq!(
-            items[0]["pendingProposals"], 0,
-            "a suggestion is counted for the phone's row badge"
-        );
 
         // A pending request is surfaced: the phone pressed "run now" while the
         // desktop was busy, and the row has to say so rather than look ignored.
@@ -729,26 +693,26 @@ mod tests {
         assert_eq!(data["conversationMode"], "workspace");
     }
 
-    /// What a suggestion carries over the wire: the whole prompt (a suggestion
-    /// is a decision, and 160 characters cannot be decided on) and the run it
-    /// read, so the phone can put it under that run's result.
+    /// A version crosses the wire with its whole prompt and a preview: the
+    /// phone shows the preview in the list, and applying it is the desktop's
+    /// own write.
     #[tokio::test]
-    async fn a_suggestion_crosses_the_wire_with_its_prompt_and_run() {
-        let _home = home("business-tasks-suggestion-wire");
+    async fn a_version_crosses_the_wire_and_applies_like_the_desktop() {
+        let _home = home("business-tasks-revision-wire");
         let store = open_store().expect("store");
-        let saved = task("suggests", future_tasks::SessionPolicy::New);
+        let saved = task("versions", future_tasks::SessionPolicy::New);
         store.insert_task(&saved).unwrap();
         store
             .insert_revision(&future_tasks::PromptRevision {
-                id: "rev_suggestion".into(),
+                id: "rev_older".into(),
                 task_id: saved.id.clone(),
-                version: future_tasks::PROPOSAL_VERSION,
+                version: 2,
                 prompt: "summarise the week, then write reports/weekly.md".into(),
-                source: future_tasks::REVISION_SOURCE_REFLECTION.into(),
-                status: future_tasks::REVISION_STATUS_PROPOSED.into(),
-                reason: Some("the output path was not stated".into()),
-                confidence: Some(0.82),
-                source_run_id: Some("trn_7".into()),
+                source: future_tasks::REVISION_SOURCE_USER.into(),
+                status: future_tasks::REVISION_STATUS_SUPERSEDED.into(),
+                reason: Some("the output path was stated".into()),
+                confidence: None,
+                source_run_id: None,
                 created_at: 5,
             })
             .unwrap();
@@ -757,44 +721,17 @@ mod tests {
         let mut cmd = command("list_task_revisions");
         cmd.task_id = saved.id.clone();
         super::execute(&cmd, &sink).await;
-        let suggestion = &sink.ok_data()["revisions"][0];
+        let revision = &sink.ok_data()["revisions"][0];
         assert_eq!(
-            suggestion["prompt"],
+            revision["prompt"],
             "summarise the week, then write reports/weekly.md"
         );
-        assert_eq!(suggestion["sourceRunId"], "trn_7");
-        // The preview stays for a phone paired with an older desktop.
-        assert!(suggestion["promptPreview"].as_str().is_some());
-    }
-
-    /// Accepting a suggestion from the phone has to mean what it means on the
-    /// desktop. It used to record an unrelated `rollback` row and leave the
-    /// suggestion pending: a button that looked like it worked and did not.
-    #[tokio::test]
-    async fn the_phone_accepts_a_suggestion_the_way_the_desktop_does() {
-        let _home = home("business-tasks-suggestion-apply");
-        let store = open_store().expect("store");
-        let saved = task("accepts", future_tasks::SessionPolicy::New);
-        store.insert_task(&saved).unwrap();
-        store
-            .insert_revision(&future_tasks::PromptRevision {
-                id: "rev_suggestion".into(),
-                task_id: saved.id.clone(),
-                version: future_tasks::PROPOSAL_VERSION,
-                prompt: "summarise the week, then write reports/weekly.md".into(),
-                source: future_tasks::REVISION_SOURCE_REFLECTION.into(),
-                status: future_tasks::REVISION_STATUS_PROPOSED.into(),
-                reason: Some("the output path was not stated".into()),
-                confidence: Some(0.82),
-                source_run_id: Some("trn_7".into()),
-                created_at: 5,
-            })
-            .unwrap();
+        assert!(revision["promptPreview"].as_str().is_some());
 
         let sink = RecordingSink::default();
         let mut cmd = command("apply_task_revision");
         cmd.task_id = saved.id.clone();
-        cmd.revision_id = "rev_suggestion".into();
+        cmd.revision_id = "rev_older".into();
         super::execute(&cmd, &sink).await;
         assert_eq!(sink.ok_data()["promptVersion"], 4);
         assert_eq!(
@@ -803,22 +740,12 @@ mod tests {
         );
 
         let history = store.list_revisions(&saved.id).unwrap();
-        let suggestion = history
-            .iter()
-            .find(|r| r.id == "rev_suggestion")
-            .expect("the suggestion row");
-        assert_eq!(suggestion.status, future_tasks::REVISION_STATUS_APPLIED);
-        assert_eq!(suggestion.version, future_tasks::PROPOSAL_VERSION);
         let live = history
             .iter()
             .find(|r| r.version == 4)
             .expect("the live version");
-        assert_eq!(live.source, future_tasks::REVISION_SOURCE_REFLECTION);
-        assert_eq!(
-            live.reason.as_deref(),
-            Some("the output path was not stated"),
-            "the version keeps the reason the user read"
-        );
+        assert_eq!(live.source, future_tasks::REVISION_SOURCE_ROLLBACK);
+        assert_eq!(live.status, future_tasks::REVISION_STATUS_ACTIVE);
         assert!(
             history
                 .iter()

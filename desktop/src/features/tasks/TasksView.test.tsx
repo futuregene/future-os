@@ -61,8 +61,6 @@ function task(overrides: Partial<TaskView> = {}): TaskView {
     depCount: 0,
     nextDueAt: 1_700_000_000_000,
     queued: false,
-    reflection: "ask",
-    pendingProposals: 0,
     latestRun: null,
     ...overrides,
   };
@@ -227,17 +225,6 @@ function runCard(container: HTMLElement, text: string) {
     .find(item => (item.textContent ?? "").includes(text));
 }
 
-/** A button inside one element (the same label exists on several cards). */
-function within(scope: HTMLElement, text: string) {
-  return [...scope.querySelectorAll<HTMLButtonElement>("button")]
-    .find(button => (button.textContent ?? "").trim() === text);
-}
-
-/** How often `needle` occurs in `haystack` (duplication is a rendering bug). */
-function countOf(haystack: string, needle: string) {
-  return haystack.split(needle).length - 1;
-}
-
 /** The control under the labelled field, e.g. the input after the "Name" span. */
 function field(container: HTMLElement, label: string) {
   const span = [...container.querySelectorAll("span")]
@@ -371,7 +358,8 @@ describe("tasksView", () => {
     expect(container.textContent).toContain("all good");
     await click(buttonByText(container, "Open"));
     expect(onOpenThread).toHaveBeenCalledWith("thr_1");
-    // Applied prompt versions are listed with their source.
+    // Prompt versions are listed with their source; a version an older build
+    // accepted from its suggestion pass still reads as such.
     expect(container.textContent).toContain("v2");
     expect(container.textContent).toContain("Reflection");
   });
@@ -653,135 +641,6 @@ describe("tasksView", () => {
     });
   });
 
-  // A suggestion is the one thing on this page the user has to act on, so it is
-  // labelled as a suggestion (not a version), it shows the confidence the pass
-  // reported, and the row offers a button that says what it does.
-  it("shows a prompt suggestion with its confidence and how to accept it", async () => {
-    const { container } = await renderView(
-      [task({ pendingProposals: 1 })],
-      vi.fn(),
-      MODELS,
-      [
-        revision({
-          id: "rev_suggestion",
-          version: 0,
-          status: "proposed",
-          source: "reflection",
-          reason: "the output path was not stated",
-          confidence: 0.82,
-        }),
-        revision({ id: "rev_1", version: 1, status: "active", source: "user", confidence: null }),
-      ],
-    );
-
-    // The list row carries a count, so a suggestion is visible without opening
-    // the task.
-    expect(rows(container)[0]?.textContent ?? "").toContain("1 suggestion");
-
-    await click(rows(container)[0]);
-    const text = container.textContent ?? "";
-    expect(text).toContain("Suggestion");
-    expect(text).toContain("confidence 82%");
-    expect(text).toContain("the output path was not stated");
-    expect(text).not.toContain("v0");
-
-    mocks.invokeCommand.mockClear();
-    await click(buttonByText(container, "Use suggestion"));
-    expect(mocks.invokeCommand).toHaveBeenCalledWith("apply_task_revision", {
-      id: "tsk_1",
-      revisionId: "rev_suggestion",
-    });
-  });
-
-  it("marks an accepted suggestion as applied", async () => {
-    const { container } = await renderView(
-      [task()],
-      vi.fn(),
-      MODELS,
-      [revision({ id: "rev_suggestion", version: 0, status: "applied", confidence: 0.9 })],
-    );
-    await click(rows(container)[0]);
-    const text = container.textContent ?? "";
-    // It is no longer a version, and it is no longer pending: both facts are on
-    // the row, so the history says what happened to it.
-    expect(text).toContain("Applied");
-    expect(buttonByText(container, "Use suggestion")).toBeUndefined();
-  });
-
-  // A suggestion is a claim about one run ("this prompt is why that happened"),
-  // so it is read directly under that run's result — with the change it proposes
-  // in full, which is what the user is deciding on.
-  it("shows a suggestion under the run it read, with the prompt it proposes", async () => {
-    const { container } = await renderView(
-      [task({ pendingProposals: 1 })],
-      vi.fn(),
-      MODELS,
-      [
-        revision({
-          id: "rev_suggestion",
-          version: 0,
-          status: "proposed",
-          prompt: "summarize yesterday, then write reports/weekly.md",
-          reason: "the output path was not stated",
-          confidence: 0.82,
-          sourceRunId: "trn_2",
-        }),
-        revision({ id: "rev_1", version: 1, status: "active", source: "user", confidence: null }),
-      ],
-      [
-        run({ id: "trn_2", resultSummary: "the newer run", startedAt: 1_700_000_120_000 }),
-        run({ id: "trn_1", resultSummary: "the older run", startedAt: 1_700_000_000_000 }),
-      ],
-    );
-    await click(rows(container)[0]);
-
-    const card = runCard(container, "the newer run");
-    expect(card, "the second run's card").toBeDefined();
-    const text = card?.textContent ?? "";
-    expect(text).toContain("the newer run");
-    expect(text).toContain("Suggestion");
-    expect(text).toContain("the output path was not stated");
-    // The whole prompt, not the backend's 160-character preview.
-    expect(text).toContain("summarize yesterday, then write reports/weekly.md");
-    expect(text).not.toContain("v0");
-
-    // The other run carries no suggestion, and the block is not repeated in the
-    // version history below.
-    expect(runCard(container, "the older run")?.textContent ?? "").not.toContain("Suggestion");
-    expect(countOf(container.textContent ?? "", "the output path was not stated")).toBe(1);
-
-    mocks.invokeCommand.mockClear();
-    await click(within(card!, "Use suggestion"));
-    expect(mocks.invokeCommand).toHaveBeenCalledWith("apply_task_revision", {
-      id: "tsk_1",
-      revisionId: "rev_suggestion",
-    });
-  });
-
-  // A suggestion can outlive its run's place in the (bounded) run list. It must
-  // stay acceptable rather than vanish.
-  it("keeps a suggestion whose run is not in the run list", async () => {
-    const { container } = await renderView(
-      [task({ pendingProposals: 1 })],
-      vi.fn(),
-      MODELS,
-      [
-        revision({
-          id: "rev_suggestion",
-          version: 0,
-          status: "proposed",
-          reason: "the output path was not stated",
-          sourceRunId: "trn_gone",
-        }),
-      ],
-    );
-    await click(rows(container)[0]);
-    const text = container.textContent ?? "";
-    expect(text).toContain("This suggestion's run is not in the list below");
-    expect(text).toContain("the output path was not stated");
-    expect(buttonByText(container, "Use suggestion")).toBeDefined();
-  });
-
   // Runs are the page's history: consecutive ones used to share a box split by a
   // hairline, so a run that ended in a paragraph ran into the next header.
   it("gives each run its own card", async () => {
@@ -824,8 +683,7 @@ describe("tasksView", () => {
         conversationMode: "chat",
         triggerKind: "manual",
         sessionPolicy: "new",
-        reflection: "ask",
-      },
+          },
     });
     expect(created?.[1]).toMatchObject({ input: { modelId: "future/gpt-5", thinkingLevel: "high" } });
   });
@@ -1088,7 +946,6 @@ describe("tasksView", () => {
     await setValue(field(container, "Conversation type") as HTMLSelectElement, "workspace");
     await setValue(field(container, "Working directory") as HTMLInputElement, "/tmp");
     await setValue(field(container, "Conversation") as HTMLSelectElement, "existing");
-    await setValue(field(container, "Prompt suggestions") as HTMLSelectElement, "auto");
     await setValue(triggerModeSelect(container), "weekly");
     await setValue(field(container, "Time") as HTMLInputElement, "07:30");
     const enabled = [...container.querySelectorAll<HTMLInputElement>("input[type=checkbox]")]
@@ -1106,7 +963,6 @@ describe("tasksView", () => {
         modelId: "future/gpt-5",
         thinkingLevel: "high",
         sessionPolicy: "existing",
-        reflection: "auto",
         enabled: false,
         trigger: { mode: "weekly", time: "07:30" },
       },

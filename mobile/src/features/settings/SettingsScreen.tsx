@@ -15,6 +15,7 @@ import { ProviderKeyPage } from "./ProviderKeyPage";
 import { ProvidersSettingsPage } from "./ProvidersSettingsPage";
 import { SkillsSettingsPage } from "./SkillsSettingsPage";
 import { TasksSettingsPage } from "./TasksSettingsPage";
+import type { SettingsPageBack } from "./pageBack";
 import { ResourceStatus, SettingsLink, SettingsSection, SettingsSwitch, settingsStyles } from "./SettingsPrimitives";
 import { useDesktopResource } from "./useDesktopResource";
 
@@ -33,15 +34,26 @@ type SettingsRoute =
 /** Levels that show the paired-desktop scope banner. */
 const SCOPED_LEVELS = new Set(["home", "preferences", "models", "skills", "tasks", "providers"]);
 
-export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, ref }: {
-  onClose(): void; onCheckUpdate(): void; checkingUpdate: boolean; ref?: Ref<SettingsScreenHandle>;
+export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, onOpenConversation, ref }: {
+  onClose(): void; onCheckUpdate(): void; checkingUpdate: boolean;
+  /** Open a session in the chat (the caller closes settings first). */
+  onOpenConversation?(sessionId: string): void;
+  ref?: Ref<SettingsScreenHandle>;
 }) {
   const { t } = useTranslation();
   const remote = useRemoteControls();
   const [routes, setRoutes] = useState<SettingsRoute[]>([{ name: "home" }]);
   const page = routes[routes.length - 1]!;
   const push = useCallback((route: SettingsRoute) => setRoutes(current => [...current, route]), []);
+  // The visible page may have a level of its own to leave first. Held in a ref
+  // (read at call time) rather than state: registering is not a render input,
+  // and a stale render's closure is exactly what this must not capture.
+  const pageBackRef = useRef<SettingsPageBack | null>(null);
+  const registerPageBack = useCallback((handle: SettingsPageBack | null) => {
+    pageBackRef.current = handle;
+  }, []);
   const goBack = useCallback(() => {
+    if (pageBackRef.current?.goBack()) return;
     if (routes.length === 1) onClose();
     else setRoutes(current => current.slice(0, -1));
   }, [routes.length, onClose]);
@@ -116,7 +128,14 @@ export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, ref }: 
       case "skills":
         return remote.desktopOnline && skillsSupported ? <SkillsSettingsPage /> : null;
       case "tasks":
-        return remote.desktopOnline && tasksSupported ? <TasksSettingsPage desktopOnline={remote.desktopOnline} settings={resource.data} /> : null;
+        return remote.desktopOnline && tasksSupported
+          ? <TasksSettingsPage
+              desktopOnline={remote.desktopOnline}
+              settings={resource.data}
+              onBackLevel={registerPageBack}
+              onOpenConversation={onOpenConversation}
+            />
+          : null;
       case "language":
         return <ScrollView contentContainerStyle={settingsStyles.content}>
           <SettingsSection title={t("desktopSettings.thisPhone")}><View style={settingsStyles.card}><LanguageSettings /></View></SettingsSection>

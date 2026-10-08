@@ -392,7 +392,6 @@ fn task_json(t: &Task, dep_count: usize) -> serde_json::Value {
         "queued": t.pending_request_at.is_some(),
         "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
         "conversationMode": format!("{:?}", t.conversation_mode).to_lowercase(),
-        "reflection": format!("{:?}", t.reflection).to_lowercase(),
     })
 }
 
@@ -433,7 +432,6 @@ fn list(args: &[String], out: &Output) -> Result<()> {
                     "queued": t.pending_request_at.is_some(),
                     "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
                     "conversationMode": format!("{:?}", t.conversation_mode).to_lowercase(),
-                    "reflection": format!("{:?}", t.reflection).to_lowercase(),
                 })
             })
             .collect();
@@ -507,7 +505,6 @@ fn show(args: &[String], out: &Output) -> Result<()> {
             "depCount": dep_count,
             "nextDueAt": t.next_due_at,
             "queued": t.pending_request_at.is_some(),
-            "reflection": format!("{:?}", t.reflection).to_lowercase(),
             "latestRun": latest.map(|r| json!({
                 "id": r.id,
                 "kind": format!("{:?}", r.kind).to_lowercase(),
@@ -542,10 +539,6 @@ fn show(args: &[String], out: &Output) -> Result<()> {
         "  opens:    {}",
         format!("{:?}", t.conversation_mode).to_lowercase()
     ));
-    out.log(&format!(
-        "  reflect:  {}",
-        format!("{:?}", t.reflection).to_lowercase()
-    ));
     if let Some(r) = latest {
         out.log(&format!(
             "  last run: {} [{:?}] {}",
@@ -568,7 +561,6 @@ fn add(args: &[String], out: &Output) -> Result<()> {
     let mut cwd: Option<String> = None;
     let mut model: Option<String> = None;
     let mut thinking: Option<String> = None;
-    let mut reflection = "ask".to_string();
     let mut session_policy = "new".to_string();
     let mut conversation_mode = "workspace".to_string();
     let mut trigger_json = serde_json::json!({});
@@ -628,13 +620,6 @@ fn add(args: &[String], out: &Output) -> Result<()> {
                         .cloned()
                         .ok_or_else(|| "--thinking requires a value".to_string())?,
                 );
-            }
-            "--reflection" => {
-                i += 1;
-                reflection = args
-                    .get(i)
-                    .cloned()
-                    .ok_or_else(|| "--reflection requires a value".to_string())?;
             }
             "--session" => {
                 i += 1;
@@ -728,12 +713,6 @@ fn add(args: &[String], out: &Output) -> Result<()> {
     };
     let cwd = cwd.ok_or_else(|| "--cwd is required".to_string())?;
 
-    let reflection = match reflection.as_str() {
-        "off" => future_tasks::Reflection::Off,
-        "ask" => future_tasks::Reflection::Ask,
-        "auto" => future_tasks::Reflection::Auto,
-        _ => return Err("--reflection must be off|ask|auto".to_string()),
-    };
     let session_policy = match session_policy.as_str() {
         "new" => future_tasks::SessionPolicy::New,
         "existing" => future_tasks::SessionPolicy::Existing,
@@ -768,7 +747,6 @@ fn add(args: &[String], out: &Output) -> Result<()> {
             pending_request_at: None,
             pending_origin: None,
             pending_actor: None,
-            reflection,
             created_at: now,
             updated_at: now,
             deleted_at: None,
@@ -795,7 +773,6 @@ fn add(args: &[String], out: &Output) -> Result<()> {
         pending_request_at: None,
         pending_origin: None,
         pending_actor: None,
-        reflection,
         created_at: now,
         updated_at: now,
         deleted_at: None,
@@ -899,19 +876,6 @@ fn edit(args: &[String], out: &Output) -> Result<()> {
             }
             "--thinking" => {
                 task.thinking_level = Some(value(i)?);
-                i += 1;
-            }
-            "--reflection" => {
-                task.reflection = match value(i)?.as_str() {
-                    "off" => future_tasks::Reflection::Off,
-                    "ask" => future_tasks::Reflection::Ask,
-                    "auto" => future_tasks::Reflection::Auto,
-                    other => {
-                        return Err(format!(
-                            "unknown --reflection {other:?}: expected off|ask|auto"
-                        ));
-                    }
-                };
                 i += 1;
             }
             "--session" => {
@@ -1206,15 +1170,10 @@ fn prompt_log(args: &[String], out: &Output) -> Result<()> {
             .map(|r| {
                 json!({
                     "id": r.id,
-                    // A suggestion is not a version yet: it carries
-                    // `PROPOSAL_VERSION` (0) until it is applied.
                     "version": r.version,
                     "source": r.source,
                     "status": r.status,
-                    "proposed": r.status == future_tasks::REVISION_STATUS_PROPOSED,
                     "reason": r.reason,
-                    "confidence": r.confidence,
-                    "sourceRunId": r.source_run_id,
                     "active": r.version == task.prompt_version,
                     "createdAt": r.created_at,
                 })
@@ -1223,60 +1182,25 @@ fn prompt_log(args: &[String], out: &Output) -> Result<()> {
         out.log(&serde_json::to_string_pretty(&items).map_err(|e| e.to_string())?);
         return Ok(());
     }
-    let (suggestions, versions): (Vec<_>, Vec<_>) = revisions
-        .iter()
-        .partition(|r| r.status == future_tasks::REVISION_STATUS_PROPOSED);
     out.log(&format!("{} — active v{}", task.name, task.prompt_version));
-    if !suggestions.is_empty() {
-        // A suggestion has no version and no effect until it is applied, so it
-        // is listed on its own with the exact command that accepts it — a
-        // proposal nobody can act on is the same as no proposal.
-        out.log("Suggestions (not applied):");
-        for r in &suggestions {
-            let confidence = r
-                .confidence
-                .map(|c| format!("confidence {c:.2}"))
-                .unwrap_or_else(|| "confidence ?".to_string());
-            out.log(&format!(
-                "  {:<16} {:<14} {:<16} {}",
-                r.id,
-                confidence,
-                format_ms(Some(r.created_at)),
-                r.reason.as_deref().unwrap_or("-")
-            ));
-            out.log(&format!(
-                "    apply with: future task prompt apply {} {}",
-                task.id, r.id
-            ));
-        }
-    }
-    if versions.is_empty() {
+    if revisions.is_empty() {
         out.log(&format!(
             "  only its original prompt (v{}) has been in force.",
             task.prompt_version
         ));
         return Ok(());
     }
-    let mut ordered: Vec<&future_tasks::PromptRevision> = versions;
+    let mut ordered: Vec<&future_tasks::PromptRevision> = revisions.iter().collect();
     ordered.sort_by_key(|r| r.version);
     for r in ordered {
         let mark = if r.version == task.prompt_version {
             "active"
-        } else if r.status == future_tasks::REVISION_STATUS_APPLIED {
-            "applied"
         } else {
             ""
         };
-        // An accepted suggestion keeps its own identity: it is not a version,
-        // so it is not printed as one ("v0" would invite someone to apply it
-        // again, or to wonder which version the task came from).
-        let label = if r.version == future_tasks::PROPOSAL_VERSION {
-            "suggestion".to_string()
-        } else {
-            format!("v{}", r.version)
-        };
         out.log(&format!(
-            "  {label:<11} {mark:<8} {:<11} {:<16} {}",
+            "  {:<11} {mark:<8} {:<11} {:<16} {}",
+            format!("v{}", r.version),
             r.source,
             format_ms(Some(r.created_at)),
             r.reason.as_deref().unwrap_or("-")
@@ -1303,28 +1227,15 @@ fn prompt_apply(args: &[String], out: &Output) -> Result<()> {
         .find(|r| &r.id == *revision_id)
         .ok_or_else(|| format!("revision not found: {revision_id}"))?;
     let history = store.list_revisions(&task.id).map_err(|e| e.to_string())?;
-    // Applying a suggestion *is* accepting it: the version that goes live is
-    // recorded as coming from reflection (with the suggestion's own reason),
-    // and the suggestion itself is marked applied rather than left pending.
-    let is_suggestion = revision.status == future_tasks::REVISION_STATUS_PROPOSED;
-    let source = if is_suggestion {
-        future_tasks::REVISION_SOURCE_REFLECTION
-    } else {
-        future_tasks::REVISION_SOURCE_ROLLBACK
-    };
-    let reason = if is_suggestion {
-        revision.reason.clone()
-    } else {
-        Some(format!(
-            "applied revision {} (v{})",
-            revision_id, revision.version
-        ))
-    };
+    let reason = Some(format!(
+        "applied revision {} (v{})",
+        revision_id, revision.version
+    ));
     let rows = future_tasks::prompt_change_revisions(
         &task,
         &history,
         &revision.prompt,
-        source,
+        future_tasks::REVISION_SOURCE_ROLLBACK,
         reason.as_deref(),
         now_ms(),
     );
@@ -1337,15 +1248,6 @@ fn prompt_apply(args: &[String], out: &Output) -> Result<()> {
     };
     for row in &rows {
         store.insert_revision(row).map_err(|e| e.to_string())?;
-    }
-    if is_suggestion {
-        store
-            .set_revision_status(
-                &task.id,
-                &revision.id,
-                future_tasks::REVISION_STATUS_APPLIED,
-            )
-            .map_err(|e| e.to_string())?;
     }
     let previous = task.prompt_version;
     task.prompt = applied.prompt.clone();
@@ -1787,8 +1689,6 @@ mod tests {
                 "existing",
                 "--conversation",
                 "chat",
-                "--reflection",
-                "off",
                 "--daily",
                 "--time",
                 "07:30",
@@ -1807,7 +1707,6 @@ mod tests {
         assert_eq!(t.thinking_level.as_deref(), Some("high"));
         assert_eq!(t.session_policy, future_tasks::SessionPolicy::Existing);
         assert_eq!(t.conversation_mode, future_tasks::ConversationMode::Chat);
-        assert_eq!(t.reflection, future_tasks::Reflection::Off);
         assert_eq!(t.dep_join, future_tasks::DepJoin::Any);
         assert_eq!(t.trigger_json["mode"], "daily");
         assert_eq!(t.trigger_json["time"], "07:30");
@@ -1957,7 +1856,6 @@ mod tests {
         .unwrap();
         let (out, _captured) = Output::memory();
         for (values, expect) in [
-            (vec!["t", "--reflection", "sometimes"], "off|ask|auto"),
             (vec!["t", "--session", "maybe"], "new|existing"),
             (vec!["t", "--conversation", "either"], "workspace|chat"),
             (vec!["t", "--bogus"], "unknown flag"),
@@ -2713,7 +2611,6 @@ mod tests {
             pending_request_at: None,
             pending_origin: None,
             pending_actor: None,
-            reflection: future_tasks::Reflection::Ask,
             created_at: 1,
             updated_at: 1,
             deleted_at: None,
@@ -2799,7 +2696,6 @@ mod tests {
         assert_eq!(parsed[0]["name"], "j");
         assert_eq!(parsed[0]["trigger"], "every 120m");
         assert_eq!(parsed[0]["sessionPolicy"], "new");
-        assert_eq!(parsed[0]["reflection"], "ask");
     }
 
     #[tokio::test]
@@ -2927,8 +2823,6 @@ mod tests {
                 "existing",
                 "--conversation",
                 "chat",
-                "--reflection",
-                "auto",
                 "--monthly",
                 "--day",
                 "31",
@@ -2953,7 +2847,6 @@ mod tests {
             stored.conversation_mode,
             future_tasks::ConversationMode::Chat
         );
-        assert_eq!(stored.reflection, future_tasks::Reflection::Auto);
         assert!(!stored.enabled);
         assert_eq!(stored.trigger_json["day"], 31);
     }
@@ -2976,7 +2869,6 @@ mod tests {
             "--cwd",
             "--model",
             "--thinking",
-            "--reflection",
             "--session",
             "--at",
             "--every",
@@ -3037,7 +2929,6 @@ mod tests {
             values
         };
 
-        assert!(add(&with(&["--reflection", "sometimes"]), &out).is_err());
         assert!(add(&with(&["--session", "sometimes"]), &out).is_err());
         assert!(add(&with(&["--conversation", "sometimes"]), &out).is_err());
         assert!(
@@ -3054,7 +2945,6 @@ mod tests {
             add(&with(&["--monthly", "--time", "10:00"]), &out).is_err(),
             "--monthly needs --day"
         );
-        assert!(add(&with(&["--reflection", "off"]), &out).is_ok());
         assert!(add(&with(&["--every", "1d"]), &out).is_ok());
 
         // A prompt file that cannot be read is an error, and is only consulted
@@ -3482,77 +3372,17 @@ mod tests {
         assert_eq!(parse_duration_minutes("30x"), None);
     }
 
-    /// A suggestion is not a version, and it is useless until the user can
-    /// accept it: `prompt log` lists it separately with the command that does.
+    /// `prompt log` and `prompt apply` are the version history: applying an
+    /// older version puts it in force and keeps the one it replaced.
     #[tokio::test]
-    async fn prompt_log_lists_a_suggestion_with_the_command_that_applies_it() {
+    async fn prompt_apply_puts_a_stored_version_in_force_and_keeps_the_history() {
         let _guard = crate::test_env::lock_env().await;
         let _home = Home::new();
         let (setup, _c) = Output::memory();
         add(
             &args(&[
                 "--name",
-                "suggested",
-                "--prompt",
-                "the current prompt",
-                "--cwd",
-                "/tmp",
-            ]),
-            &setup,
-        )
-        .unwrap();
-        // A suggestion as the reflection pass writes it: outside the version
-        // sequence, with the confidence and the run it came from.
-        let store = open_store().unwrap();
-        let task = find_task(&store, "suggested").unwrap();
-        let row = future_tasks::PromptRevision {
-            id: "rev_suggestion".to_string(),
-            task_id: task.id.clone(),
-            version: future_tasks::PROPOSAL_VERSION,
-            prompt: "a better prompt".to_string(),
-            source: future_tasks::REVISION_SOURCE_REFLECTION.to_string(),
-            status: future_tasks::REVISION_STATUS_PROPOSED.to_string(),
-            reason: Some("the output path was not stated".to_string()),
-            confidence: Some(0.82),
-            source_run_id: Some("trn_1".to_string()),
-            created_at: now_ms(),
-        };
-        store.insert_revision(&row).unwrap();
-
-        let (out, captured) = Output::memory();
-        prompt_log(&args(&["suggested"]), &out).unwrap();
-        let shown = text(captured.out);
-        assert!(shown.contains("Suggestions (not applied)"), "{shown}");
-        assert!(shown.contains("confidence 0.82"), "{shown}");
-        assert!(shown.contains("the output path was not stated"), "{shown}");
-        assert!(
-            shown.contains("future task prompt apply tsk_") && shown.contains("rev_suggestion"),
-            "the suggestion names the command that applies it: {shown}"
-        );
-        assert!(
-            !shown.contains("v0"),
-            "a suggestion has no version: {shown}"
-        );
-
-        let (out, captured) = Output::memory();
-        prompt_log(&args(&["suggested", "--json"]), &out).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
-        assert_eq!(parsed[0]["proposed"], true);
-        assert_eq!(parsed[0]["confidence"], 0.82);
-        assert_eq!(parsed[0]["sourceRunId"], "trn_1");
-    }
-
-    /// Accepting a suggestion is what puts it in force — and the history says
-    /// where it came from, with the suggestion itself marked as applied.
-    #[tokio::test]
-    async fn applying_a_suggestion_makes_it_the_prompt_and_marks_it_applied() {
-        let _guard = crate::test_env::lock_env().await;
-        let _home = Home::new();
-        let (setup, _c) = Output::memory();
-        add(
-            &args(&[
-                "--name",
-                "accepts",
+                "versioned",
                 "--prompt",
                 "the current prompt",
                 "--cwd",
@@ -3562,55 +3392,73 @@ mod tests {
         )
         .unwrap();
         let store = open_store().unwrap();
-        let task = find_task(&store, "accepts").unwrap();
+        let task = find_task(&store, "versioned").unwrap();
         store
             .insert_revision(&future_tasks::PromptRevision {
-                id: "rev_suggestion".to_string(),
+                id: "rev_older".to_string(),
                 task_id: task.id.clone(),
-                version: future_tasks::PROPOSAL_VERSION,
-                prompt: "a better prompt".to_string(),
-                source: future_tasks::REVISION_SOURCE_REFLECTION.to_string(),
-                status: future_tasks::REVISION_STATUS_PROPOSED.to_string(),
-                reason: Some("clearer".to_string()),
-                confidence: Some(0.9),
-                source_run_id: Some("trn_1".to_string()),
+                // Out of sequence on purpose: what `prompt apply` writes is the
+                // *next* version, so the fixture only has to avoid the numbers
+                // that write will use (v1 for the replaced one, v2 for the new
+                // one).
+                version: 3,
+                prompt: "an earlier prompt".to_string(),
+                source: future_tasks::REVISION_SOURCE_USER.to_string(),
+                status: future_tasks::REVISION_STATUS_SUPERSEDED.to_string(),
+                reason: Some("shorter".to_string()),
+                confidence: None,
+                source_run_id: None,
                 created_at: now_ms(),
             })
             .unwrap();
 
+        // The log reads as a version list, oldest first, with the active one
+        // marked (the task was created at v1; the v2 row is history).
         let (out, captured) = Output::memory();
-        prompt_apply(&args(&["accepts", "rev_suggestion"]), &out).unwrap();
+        prompt_log(&args(&["versioned"]), &out).unwrap();
+        let shown = text(captured.out);
+        assert!(shown.contains("active v1"), "{shown}");
+        assert!(shown.contains("v3"), "{shown}");
+
+        let (out, captured) = Output::memory();
+        prompt_log(&args(&["versioned", "--json"]), &out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert_eq!(parsed[0]["version"], 3);
+        assert_eq!(parsed[0]["source"], "user");
+        assert_eq!(parsed[0]["active"], false);
+
+        let (out, captured) = Output::memory();
+        prompt_apply(&args(&["versioned", "rev_older"]), &out).unwrap();
         let shown = text(captured.out.clone());
         assert!(shown.contains("now runs v2 (was v1)"), "{shown}");
 
         let store = open_store().unwrap();
-        let stored = find_task(&store, "accepts").unwrap();
-        assert_eq!(stored.prompt, "a better prompt");
+        let stored = find_task(&store, "versioned").unwrap();
+        assert_eq!(stored.prompt, "an earlier prompt");
         let revisions = store.list_revisions(&stored.id).unwrap();
-        let suggestion = revisions.iter().find(|r| r.id == "rev_suggestion").unwrap();
-        assert_eq!(suggestion.status, future_tasks::REVISION_STATUS_APPLIED);
         let live = revisions
             .iter()
             .find(|r| r.version == stored.prompt_version)
             .unwrap();
         assert_eq!(live.status, future_tasks::REVISION_STATUS_ACTIVE);
-        assert_eq!(live.source, future_tasks::REVISION_SOURCE_REFLECTION);
-        assert_eq!(live.reason.as_deref(), Some("clearer"));
+        assert_eq!(live.source, future_tasks::REVISION_SOURCE_ROLLBACK);
         // The version it replaced is kept, so the loop is reversible.
         assert!(revisions.iter().any(|r| r.prompt == "the current prompt"
             && r.status == future_tasks::REVISION_STATUS_SUPERSEDED));
 
-        // …and the log reads as history, not as a version numbered zero.
+        // Applying what is already in force is a no-op, not another version.
         let (out, captured) = Output::memory();
-        prompt_log(&args(&["accepts"]), &out).unwrap();
+        prompt_apply(&args(&["versioned", "rev_older"]), &out).unwrap();
         let shown = text(captured.out);
-        assert!(shown.contains("active v2"), "{shown}");
-        assert!(shown.contains("suggestion"), "{shown}");
-        assert!(
-            !shown.contains("v0"),
-            "a suggestion is not a version: {shown}"
+        assert!(shown.contains("already runs that version"), "{shown}");
+        assert_eq!(
+            open_store()
+                .unwrap()
+                .list_revisions(&stored.id)
+                .unwrap()
+                .len(),
+            revisions.len()
         );
-        assert!(!shown.contains("Suggestions (not applied)"), "{shown}");
     }
 
     /// `output` prints a run's full answer, and says which run the text belongs
