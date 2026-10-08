@@ -208,8 +208,15 @@ fn find_task_for_history(store: &Store, id_or_name: &str) -> Result<Task> {
         .ok_or_else(|| format!("task not found: {id_or_name}"))
 }
 
-fn format_trigger(task: &Task) -> String {
+/// How a task is triggered, for the list and the detail header.
+///
+/// A task with dependencies and no schedule of its own reads as `dependency`:
+/// that is what makes it run, and calling it `manual` would describe it as
+/// something the user has to start by hand. A task with *both* keeps its
+/// schedule here, and its edges show up in `future task upstream` / `deps`.
+fn format_trigger(task: &Task, dep_count: usize) -> String {
     match task.trigger_kind {
+        future_tasks::TriggerKind::Manual if dep_count > 0 => "dependency".to_string(),
         future_tasks::TriggerKind::Manual => "manual".to_string(),
         future_tasks::TriggerKind::Schedule => {
             let j = &task.trigger_json;
@@ -374,12 +381,13 @@ fn dep_rows(store: &Store, task_id: &str) -> Result<Vec<serde_json::Value>> {
 
 /// The resolved identity for a `<id|name>` argument, so the commands can print
 /// something a caller can use in the next invocation.
-fn task_json(t: &Task) -> serde_json::Value {
+fn task_json(t: &Task, dep_count: usize) -> serde_json::Value {
     json!({
         "id": t.id,
         "name": t.name,
         "enabled": t.enabled,
-        "trigger": format_trigger(t),
+        "trigger": format_trigger(t, dep_count),
+        "depCount": dep_count,
         "nextDueAt": t.next_due_at,
         "queued": t.pending_request_at.is_some(),
         "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
@@ -408,6 +416,9 @@ fn list(args: &[String], out: &Output) -> Result<()> {
     let tasks = store
         .list_tasks(include_deleted)
         .map_err(|e| e.to_string())?;
+    // One query for every edge, so the trigger column can tell a dependency task
+    // from one that only ever runs on request.
+    let dep_counts = dep_counts(&store)?;
     if json_flag {
         let items: Vec<_> = tasks
             .iter()
@@ -416,7 +427,8 @@ fn list(args: &[String], out: &Output) -> Result<()> {
                     "id": t.id,
                     "name": t.name,
                     "enabled": t.enabled,
-                    "trigger": format_trigger(t),
+                    "trigger": format_trigger(t, dep_count_of(&dep_counts, &t.id)),
+                    "depCount": dep_count_of(&dep_counts, &t.id),
                     "nextDueAt": t.next_due_at,
                     "queued": t.pending_request_at.is_some(),
                     "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
@@ -442,13 +454,26 @@ fn list(args: &[String], out: &Output) -> Result<()> {
         out.log(&format!(
             "{:<24} {:<20} {:<4} {:<24} {}",
             t.name,
-            format_trigger(t),
+            format_trigger(t, dep_count_of(&dep_counts, &t.id)),
             state,
             next,
             t.id
         ));
     }
     Ok(())
+}
+
+/// Upstream edge count per task id, from one query.
+fn dep_counts(store: &Store) -> Result<std::collections::HashMap<String, usize>> {
+    let mut counts = std::collections::HashMap::new();
+    for dep in store.list_all_deps().map_err(|e| e.to_string())? {
+        *counts.entry(dep.task_id).or_insert(0) += 1;
+    }
+    Ok(counts)
+}
+
+fn dep_count_of(counts: &std::collections::HashMap<String, usize>, task_id: &str) -> usize {
+    counts.get(task_id).copied().unwrap_or(0)
 }
 
 fn show(args: &[String], out: &Output) -> Result<()> {
@@ -460,6 +485,7 @@ fn show(args: &[String], out: &Output) -> Result<()> {
         .ok_or_else(|| "usage: future task show <id|name> [--json] [--prompt]".to_string())?;
     let store = open_store()?;
     let t = find_task(&store, id)?;
+    let dep_count = dep_count_of(&dep_counts(&store)?, &t.id);
     let latest = store
         .latest_run_for_task(&t.id)
         .map_err(|e| e.to_string())?;
@@ -478,6 +504,7 @@ fn show(args: &[String], out: &Output) -> Result<()> {
             "triggerKind": format!("{:?}", t.trigger_kind).to_lowercase(),
             "trigger": t.trigger_json,
             "depJoin": format!("{:?}", t.dep_join).to_lowercase(),
+            "depCount": dep_count,
             "nextDueAt": t.next_due_at,
             "queued": t.pending_request_at.is_some(),
             "reflection": format!("{:?}", t.reflection).to_lowercase(),
@@ -494,7 +521,7 @@ fn show(args: &[String], out: &Output) -> Result<()> {
     }
     out.log(&format!("{}  ({})", t.name, t.id));
     out.log(&format!("  enabled:  {}", t.enabled));
-    out.log(&format!("  trigger:  {}", format_trigger(&t)));
+    out.log(&format!("  trigger:  {}", format_trigger(&t, dep_count)));
     if t.trigger_kind == future_tasks::TriggerKind::Schedule {
         out.log(&format!("  next due: {}", format_ms(t.next_due_at)));
     }
@@ -1012,11 +1039,18 @@ fn edit(args: &[String], out: &Output) -> Result<()> {
         write_deps(&store, &task.id, &specs)?;
     }
 
+    let dep_count = store
+        .list_deps(&task.id)
+        .map(|deps| deps.len())
+        .unwrap_or(0);
     if json_flag {
-        out.log(&serde_json::to_string_pretty(&task_json(&task)).map_err(|e| e.to_string())?);
+        out.log(
+            &serde_json::to_string_pretty(&task_json(&task, dep_count))
+                .map_err(|e| e.to_string())?,
+        );
     } else {
         out.log(&format!("Updated task {} ({})", task.name, task.id));
-        out.log(&format!("  trigger:  {}", format_trigger(&task)));
+        out.log(&format!("  trigger:  {}", format_trigger(&task, dep_count)));
         if task.prompt_version > 1 {
             out.log(&format!("  prompt:   v{}", task.prompt_version));
         }
@@ -2658,9 +2692,9 @@ mod tests {
         assert_eq!(t.prompt_version, 2);
     }
 
-    #[test]
-    fn task_json_carries_the_identity_a_caller_needs_next() {
-        let t = Task {
+    /// A bare task of the given trigger kind, for the output-shape tests.
+    fn task_with_trigger(kind: future_tasks::TriggerKind) -> Task {
+        Task {
             id: "tsk_1".into(),
             name: "n".into(),
             enabled: true,
@@ -2672,23 +2706,52 @@ mod tests {
             session_policy: future_tasks::SessionPolicy::New,
             conversation_mode: future_tasks::ConversationMode::Workspace,
             thread_id: None,
-            trigger_kind: future_tasks::TriggerKind::Manual,
+            trigger_kind: kind,
             trigger_json: serde_json::json!({}),
             dep_join: future_tasks::DepJoin::All,
             next_due_at: None,
-            pending_request_at: Some(5),
+            pending_request_at: None,
             pending_origin: None,
             pending_actor: None,
             reflection: future_tasks::Reflection::Ask,
             created_at: 1,
             updated_at: 1,
             deleted_at: None,
-        };
-        let json = task_json(&t);
+        }
+    }
+
+    #[test]
+    fn task_json_carries_the_identity_a_caller_needs_next() {
+        let t = task_with_trigger(future_tasks::TriggerKind::Manual);
+        let mut t = t;
+        t.pending_request_at = Some(5);
+        let json = task_json(&t, 0);
         assert_eq!(json["id"], "tsk_1");
         assert_eq!(json["queued"], true);
         assert_eq!(json["trigger"], "manual");
+        assert_eq!(json["depCount"], 0);
         assert_eq!(json["sessionPolicy"], "new");
+    }
+
+    /// The trigger reads as what actually starts the task: dependencies make it
+    /// `dependency`, not `manual` (nobody starts it by hand), while a task with
+    /// its own schedule keeps that schedule.
+    #[test]
+    fn the_trigger_label_distinguishes_dependencies_from_by_hand_runs() {
+        let mut manual = task_with_trigger(future_tasks::TriggerKind::Manual);
+        manual.trigger_json = serde_json::json!({});
+        assert_eq!(format_trigger(&manual, 0), "manual");
+        assert_eq!(format_trigger(&manual, 2), "dependency");
+
+        let mut scheduled = manual.clone();
+        scheduled.trigger_kind = future_tasks::TriggerKind::Schedule;
+        scheduled.trigger_json = serde_json::json!({"mode": "daily", "time": "09:00"});
+        assert_eq!(format_trigger(&scheduled, 0), "daily 09:00");
+        assert_eq!(
+            format_trigger(&scheduled, 2),
+            "daily 09:00",
+            "a task that also has upstreams still runs on its own schedule"
+        );
     }
 
     // ─── store location ───────────────────────────────────────────────────

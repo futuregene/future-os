@@ -48,6 +48,10 @@ pub struct TaskView {
     pub trigger_kind: String,
     pub trigger: serde_json::Value,
     pub dep_join: String,
+    /// How many upstream dependencies this task waits on. A task with its own
+    /// schedule *and* dependencies is a real state (they are orthogonal), so the
+    /// form and the list need the count to say which kind of trigger is in play.
+    pub dep_count: usize,
     pub next_due_at: Option<i64>,
     /// An explicit request is waiting for the tick (the task was busy).
     pub queued: bool,
@@ -108,6 +112,12 @@ fn task_view(store: &Store, task: Task) -> TaskView {
                 .count()
         })
         .unwrap_or(0);
+    // Counted here for the same reason: an edge lives in its own table, and a
+    // count that can disagree with it is worse than no count.
+    let dep_count = store
+        .list_deps(&task.id)
+        .map(|deps| deps.len())
+        .unwrap_or(0);
     TaskView {
         id: task.id,
         name: task.name,
@@ -122,6 +132,7 @@ fn task_view(store: &Store, task: Task) -> TaskView {
         trigger_kind: format!("{:?}", task.trigger_kind).to_lowercase(),
         trigger: task.trigger_json,
         dep_join: format!("{:?}", task.dep_join).to_lowercase(),
+        dep_count,
         next_due_at: task.next_due_at,
         queued: task.pending_request_at.is_some(),
         reflection: format!("{:?}", task.reflection).to_lowercase(),

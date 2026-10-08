@@ -32,6 +32,8 @@ export interface TaskView {
   triggerKind: string;
   trigger: Record<string, unknown>;
   depJoin: string;
+  /** How many upstream dependencies this task waits on. */
+  depCount: number;
   nextDueAt: number | null;
   /** An explicit request is waiting for the tick (the task was busy). */
   queued: boolean;

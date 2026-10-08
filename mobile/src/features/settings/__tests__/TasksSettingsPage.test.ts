@@ -865,7 +865,8 @@ test("reports a delete the desktop refused, and stays on the task", async () => 
 test("edits a task's dependencies and its join policy", async () => {
   mockRemote.capabilities = new Set(["tasks_v1", "task_deps_v1"]);
   rows = [
-    taskRow(),
+    // A task its upstreams start: no schedule of its own.
+    taskRow({ triggerKind: "manual", trigger: {}, nextDueAt: null, depCount: 2 }),
     taskRow({ id: "tsk_keep", name: "keep", triggerKind: "manual", trigger: {} }),
     taskRow({ id: "tsk_change", name: "change", triggerKind: "manual", trigger: {} }),
     taskRow({ id: "tsk_three", name: "upstream three", triggerKind: "manual", trigger: {} }),
@@ -935,7 +936,10 @@ test("creates a task with an upstream it waits for", async () => {
   await act(async () => input("tasks.form.prompt").props.onChangeText("p"));
   await act(async () => chip("DeepSeek V4 Pro").props.onPress());
   await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
-  // The candidate list offers the other task; adding it makes it an upstream.
+  // The dependency editor appears with the trigger choice…
+  expect(chip("upstream two")).toBeUndefined();
+  await act(async () => chip("tasks.triggerMode.dependency").props.onPress());
+  // …and the candidate list offers the other task; adding it makes it an upstream.
   await act(async () => chip("upstream two").props.onPress());
   await act(async () => button("tasks.form.save").props.onPress());
 

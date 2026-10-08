@@ -54,6 +54,7 @@ fn task_list_view(store: &future_tasks::Store, task: future_tasks::Task) -> Valu
         "enabled": task.enabled,
         "triggerKind": format!("{:?}", task.trigger_kind).to_lowercase(),
         "trigger": task.trigger_json,
+        "depCount": dep_count(store, &task.id),
         "nextDueAt": task.next_due_at,
         "queued": task.pending_request_at.is_some(),
         "reflection": format!("{:?}", task.reflection).to_lowercase(),
@@ -62,6 +63,13 @@ fn task_list_view(store: &future_tasks::Store, task: future_tasks::Task) -> Valu
         "pendingProposals": pending_proposals(store, &task.id),
         "latestRun": latest.map(run_summary_view),
     })
+}
+
+/// Upstream dependencies of a task: the phone's form needs the count to say
+/// whether the trigger is "dependency" or a schedule, and its list to label a
+/// task the same way the desktop does.
+fn dep_count(store: &future_tasks::Store, task_id: &str) -> usize {
+    store.list_deps(task_id).map(|deps| deps.len()).unwrap_or(0)
 }
 
 /// Prompt suggestions awaiting a decision.
@@ -93,6 +101,7 @@ fn task_detail_view(store: &future_tasks::Store, task: future_tasks::Task) -> Va
         "triggerKind": format!("{:?}", task.trigger_kind).to_lowercase(),
         "trigger": task.trigger_json,
         "depJoin": format!("{:?}", task.dep_join).to_lowercase(),
+        "depCount": dep_count(store, &task.id),
         "nextDueAt": task.next_due_at,
         "queued": task.pending_request_at.is_some(),
         "reflection": format!("{:?}", task.reflection).to_lowercase(),
