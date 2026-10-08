@@ -186,6 +186,7 @@ mod tests {
         let sandbox = ResolvedSandbox::resolve(
             &SandboxPolicy {
                 tier: SandboxTier::Manual,
+                model_reviewer: false,
             },
             workspace,
         );

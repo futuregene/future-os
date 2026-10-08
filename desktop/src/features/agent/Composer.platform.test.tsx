@@ -126,3 +126,9 @@ describe("approval-tier description by platform", () => {
     expect(container.textContent).not.toContain("Restricts out-of-scope writes");
   });
 });
+
+it("describes automatic review when the sandbox is available", async () => {
+  render();
+  await openTierMenu();
+  expect(container.textContent).toContain("model reviews boundary requests");
+});

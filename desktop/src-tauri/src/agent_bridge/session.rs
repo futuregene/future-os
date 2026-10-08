@@ -173,7 +173,8 @@ pub async fn set_agent_sandbox_policy_tier(
     tier: &str,
 ) -> Result<(), crate::AppError> {
     let policy = crate::agent_proto::SandboxPolicy {
-        tier: tier.to_string(),
+        tier: if tier == "auto" { "sandbox" } else { tier }.to_string(),
+        reviewer: if tier == "auto" { "model" } else { "user" }.to_string(),
     };
     let response = client
         .execute_command(set_sandbox_policy_command(policy, session_id.to_string()))
@@ -185,6 +186,14 @@ pub async fn set_agent_sandbox_policy_tier(
     let sandbox_available = future_rpc::decode::response_data(&response)
         .get("sandboxAvailable")
         .and_then(serde_json::Value::as_bool);
+    if tier == "auto" {
+        let data = future_rpc::decode::response_data(&response);
+        if sandbox_available != Some(false)
+            && data.get("reviewer").and_then(serde_json::Value::as_str) != Some("model")
+        {
+            return Err("The Agent does not support automatic approval. Update the Agent before using this mode.".into());
+        }
+    }
     if tier == "sandbox" && sandbox_available == Some(false) {
         eprintln!("FutureOS: sandbox unavailable [SB001]; using manual approval");
         store::update_app_settings(store::UpdateAppSettingsInput {
@@ -193,6 +202,7 @@ pub async fn set_agent_sandbox_policy_tier(
         })?;
         let manual = crate::agent_proto::SandboxPolicy {
             tier: "manual".to_string(),
+            reviewer: String::new(),
         };
         client
             .execute_command(set_sandbox_policy_command(manual, session_id.to_string()))
@@ -1329,5 +1339,48 @@ mod tests {
             group_session_entries(entries.as_array().expect("entries")),
             vec![vec![0, 1, 2, 3], vec![4, 5]]
         );
+    }
+    #[tokio::test]
+    async fn auto_is_orthogonal_to_tier_and_preserved_when_unavailable() {
+        let _home = TestHome::new("auto_policy");
+        crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+            approval_tier: Some("auto".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let (mock, mut client) = mock_client().await;
+        mock.push(
+            "set_sandbox_policy",
+            Reply::Data(r#"{"sandboxAvailable":true,"reviewer":"model"}"#.into()),
+        );
+        set_agent_sandbox_policy_tier(&mut client, "s", "auto")
+            .await
+            .unwrap();
+        let policy = mock.requests_of("set_sandbox_policy")[0]
+            .sandbox_policy
+            .clone()
+            .unwrap();
+        assert_eq!(policy.tier, "sandbox");
+        assert_eq!(policy.reviewer, "model");
+        mock.push(
+            "set_sandbox_policy",
+            Reply::Data(r#"{"sandboxAvailable":false,"reviewer":"user"}"#.into()),
+        );
+        set_agent_sandbox_policy_tier(&mut client, "s", "auto")
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::store::get_app_settings().unwrap().approval_tier,
+            "auto"
+        );
+        mock.push(
+            "set_sandbox_policy",
+            Reply::Data(r#"{"sandboxAvailable":true}"#.into()),
+        );
+        assert!(set_agent_sandbox_policy_tier(&mut client, "s", "auto")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("automatic approval"));
     }
 }

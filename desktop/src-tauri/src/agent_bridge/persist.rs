@@ -19,6 +19,7 @@ pub(super) fn requires_gui_projection(event_type: &str) -> bool {
             | "tool_result"
             | "approval_request"
             | "approval_decision"
+            | "approval_assessment"
             | "artifact_created"
             | "artifact.created"
     )
@@ -71,6 +72,7 @@ pub(super) fn persist_run_event(
         event_type,
         "approval_request"
             | "approval_decision"
+            | "approval_assessment"
             | "tool_end"
             | "tool_result"
             | "artifact_created"
@@ -87,6 +89,11 @@ fn persist_agent_tool_projection(run_id: &str, event_type: &str, payload: &str, 
     };
 
     match event_type {
+        "approval_assessment" => {
+            if let Err(error) = store::record_approval_assessment(run_id, &value) {
+                eprintln!("FutureOS assessment projection failed: {error}");
+            }
+        }
         "approval_request" => persist_approval_request(run_id, &value),
         "approval_decision" => persist_approval_decision(run_id, &value),
         "tool_end" | "tool_result" => persist_tool_end(run_id, &value, sequence),
@@ -647,6 +654,7 @@ mod tests {
             "tool_result",
             "approval_request",
             "approval_decision",
+            "approval_assessment",
             "artifact_created",
             "artifact.created",
         ] {
@@ -1400,6 +1408,32 @@ mod tests {
         assert!(
             artifacts(&fixture).is_empty(),
             "locked-out writes record nothing"
+        );
+    }
+    #[test]
+    fn live_and_replayed_assessments_never_create_pending_requests() {
+        let f = fixture("auto_projection");
+        let value = serde_json::json!({"assessment_id":"a","approval_request_id":"a","tool_call_id":"tool","reviewer":"model","status":"review_uncertain","effective":{"risk":"medium"},"action":{}});
+        for sequence in [1, 2] {
+            persist_run_event(
+                Some(&f.run.id),
+                "approval_assessment",
+                &value.to_string(),
+                sequence,
+            );
+        }
+        assert_eq!(
+            crate::store::list_approval_assessments(&f.run.id)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(crate::store::list_pending_approval_requests()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            crate::store::get_run(&f.run.id).unwrap().unwrap().status,
+            f.run.status
         );
     }
 }

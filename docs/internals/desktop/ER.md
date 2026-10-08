@@ -505,6 +505,18 @@ Notes:
     bash failures); `outside_workspace_read` is a deprecated old enum variant
     no longer produced by the current implementation.
 
+#### Automatic review audit
+
+`approval_assessments` stores immutable model-review results: `id`,
+`approval_request_id` (cascade FK), `run_id` (cascade FK), `tool_call_id`,
+`status`, `payload` (versioned JSON) and `created_at`. Index: `(run_id, created_at)`.
+The payload contains reported/effective classification, probability/confidence,
+sanitized action and digest, reviewer attribution, versions, duration and error code.
+Automatic requests are written directly as terminal approved/rejected/cancelled,
+with reviewer `model`, decision source `auto_review` and scope `once`; neither pending
+queue nor Run waiting status is used. Migration: `v1.2.2-auto-approval`.
+See [automatic approval](AUTO_APPROVAL.md).
+
 ### 4.9 Review Changeset
 
 A Review Changeset is a change set available for user review.

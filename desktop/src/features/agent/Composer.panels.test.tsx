@@ -156,6 +156,7 @@ it("shows the tier glyph for each approval setting", () => {
     ["off", "Unrestricted"],
     ["manual", "Manual"],
     ["sandbox", "Sandboxed"],
+    ["auto", "Automatic review"],
   ];
   for (const [tier, label] of cases) {
     render({ approvalTier: tier, onChangeApprovalTier: vi.fn() });
@@ -171,7 +172,8 @@ it("lists every approval tier, marks the current one and reports a change", asyn
   render({ approvalTier: "manual", onChangeApprovalTier });
 
   await click(trigger("Approval mode"));
-  expect(menuItems().length).toBe(3);
+  expect(menuItems().length).toBe(4);
+  expect(menuItems().find(row => row.textContent?.includes("Automatic review"))?.textContent).not.toContain("composer.approvalTierDesc.auto");
   // Pick by label rather than position: the row order is not part of the
   // contract, but each tier must be reachable and report its own value.
   const unrestricted = menuItems().find(row => row.textContent?.includes("Unrestricted"))!;

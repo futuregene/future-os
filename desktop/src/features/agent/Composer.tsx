@@ -25,7 +25,7 @@ import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "./comp
 import { MentionEditor } from "./MentionEditor";
 
 /** Approval-tier order for the composer dropdown (availability is host-gated). */
-const APPROVAL_TIERS: ApprovalTier[] = ["manual", "sandbox", "off"];
+const APPROVAL_TIERS: ApprovalTier[] = ["manual", "sandbox", "auto", "off"];
 const MAX_COPIED_FILES_PER_PASTE = 10;
 const MAX_COPIED_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_COPIED_FILES_TOTAL_BYTES = 20 * 1024 * 1024;
@@ -36,7 +36,7 @@ const MAX_COPIED_FILES_TOTAL_BYTES = 20 * 1024 * 1024;
  * you) → check (sandboxed) → off (unrestricted).
  */
 function tierIcon(tier: ApprovalTier, className: string) {
-  if (tier === "sandbox")
+  if (tier === "sandbox" || tier === "auto")
     return <ShieldCheck className={className} />;
   if (tier === "off")
     return <ShieldOff className={className} />;
@@ -931,7 +931,7 @@ function ComposerImpl({
                   {APPROVAL_TIERS.map(tier => (
                     <SelectMenuItem
                       className="py-1.5"
-                      disabled={tier === "sandbox" && !sandboxAvailability.available}
+                      disabled={(tier === "sandbox" || tier === "auto") && !sandboxAvailability.available}
                       key={tier}
                       selected={(approvalTier ?? "off") === tier}
                       onSelect={() => {
@@ -943,17 +943,17 @@ function ComposerImpl({
                       <span className="min-w-0 flex-1 space-y-0.5">
                         <span className="block truncate font-medium leading-tight text-ink">{t(`composer.approvalTier.${tier}`)}</span>
                         <span className="block text-xs leading-tight text-ink-muted">
-                          {tier === "sandbox" && !sandboxAvailability.resolved
+                          {(tier === "sandbox" || tier === "auto") && !sandboxAvailability.resolved
                             ? t("composer.approvalTierDesc.sandboxChecking")
-                            : tier === "sandbox" && !sandboxAvailability.available
-                              ? t("composer.approvalTierDesc.sandboxUnavailable")
-                              : tier === "off"
-                                ? <Trans t={t} i18nKey="composer.approvalTierDesc.off" components={{ em: <span className="font-semibold" /> }} />
-                                : t(tier === "sandbox" && isWindows
-                                    ? "composer.approvalTierDesc.sandboxWindows"
-                                    : tier === "sandbox" && isLinux
-                                      ? "composer.approvalTierDesc.sandboxLinux"
-                                      : `composer.approvalTierDesc.${tier}`)}
+                            : (tier === "sandbox" || tier === "auto") && !sandboxAvailability.available
+                                ? t("composer.approvalTierDesc.sandboxUnavailable")
+                                : tier === "off"
+                                  ? <Trans t={t} i18nKey="composer.approvalTierDesc.off" components={{ em: <span className="font-semibold" /> }} />
+                                  : t(tier === "sandbox" && isWindows
+                                      ? "composer.approvalTierDesc.sandboxWindows"
+                                      : tier === "sandbox" && isLinux
+                                        ? "composer.approvalTierDesc.sandboxLinux"
+                                        : `composer.approvalTierDesc.${tier}`)}
                         </span>
                       </span>
                     </SelectMenuItem>

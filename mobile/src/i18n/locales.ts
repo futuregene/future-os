@@ -688,6 +688,7 @@ export const resources = {
         title: "Approval mode",
         manual: "Manual",
         sandbox: "Sandboxed",
+        auto: "Automatic review",
         off: "Unrestricted",
       },
       common: {
@@ -1467,6 +1468,7 @@ export const resources = {
         title: "审批模式",
         manual: "手动审批",
         sandbox: "沙箱保护",
+        auto: "自动审批",
         off: "完全放开",
       },
       common: {

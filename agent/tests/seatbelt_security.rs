@@ -9,6 +9,7 @@ fn sandbox(workspace: &Path) -> ResolvedSandbox {
     ResolvedSandbox::resolve(
         &SandboxPolicy {
             tier: SandboxTier::Sandbox,
+            model_reviewer: false,
         },
         workspace.to_str().unwrap(),
     )

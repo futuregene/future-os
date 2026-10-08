@@ -245,7 +245,7 @@ fn lower_messages(request: &ModelRequest, replay_reasoning: bool) -> Vec<Value> 
         messages.push(json!({"role": "system", "content": request.system_prompt}));
     }
     for message in &request.messages {
-        let blocks = message.model_content();
+        let blocks = super::reviewed_content(message);
         let mut tool_results = Vec::new();
         let mut content = Vec::new();
         let mut reasoning = String::new();

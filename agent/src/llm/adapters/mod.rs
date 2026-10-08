@@ -240,3 +240,88 @@ mod tests {
         assert_eq!(data_url("DATA:image/png;base64,AAAA"), None);
     }
 }
+
+/// Host annotations travel to the model separately from persisted tool output.
+fn reviewed_content(message: &crate::types::AgentMessage) -> Vec<crate::types::ContentBlock> {
+    let mut blocks = message.model_content();
+    if let Some(annotations) = message
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("context_annotations"))
+    {
+        for block in &mut blocks {
+            if let crate::types::ContentBlock::ToolResult { content, .. } = block {
+                *content = format!("<tool_output>\n{content}\n</tool_output>\n<host_context_annotations>{annotations}</host_context_annotations>");
+            }
+        }
+    }
+    blocks
+}
+
+#[cfg(test)]
+mod review_annotation_tests {
+    use super::*;
+    use crate::llm::schema::{AnthropicMessagesConfig, OpenAiResponsesConfig, ProtocolConfig};
+    use crate::types::{AgentMessage, ContentBlock};
+    #[test]
+    fn all_protocols_receive_feedback_without_rewriting_the_tool_output() {
+        let mut message = AgentMessage {
+            role: "tool".into(),
+            content: vec![],
+            name: "shell".into(),
+            tool_args: String::new(),
+            metadata: None,
+        };
+        message.content = vec![ContentBlock::ToolResult {
+            tool_call_id: "tool".into(),
+            content: "raw stdout".into(),
+            is_error: false,
+        }];
+        message.metadata = Some(
+            serde_json::json!({"context_annotations":[{"type":"auto_approval_result","decision":"approved"}]}).as_object().unwrap().clone(),
+        );
+        let request = ModelRequest {
+            model: "m".into(),
+            system_prompt: String::new(),
+            tools: vec![],
+            messages: vec![message.clone()],
+        };
+        for protocol in [
+            ApiProtocol::OpenAiChatCompletions,
+            ApiProtocol::OpenAiResponses,
+            ApiProtocol::AnthropicMessages,
+        ] {
+            let mut target = ResolvedModelTarget::openai_chat_compatible(
+                "m",
+                "https://fixture/v1",
+                "key",
+                None,
+                None,
+            );
+            target.protocol = match protocol {
+                ApiProtocol::OpenAiChatCompletions => target.protocol,
+                ApiProtocol::OpenAiResponses => {
+                    ProtocolConfig::OpenAiResponses(OpenAiResponsesConfig::default())
+                }
+                ApiProtocol::AnthropicMessages => {
+                    ProtocolConfig::AnthropicMessages(AnthropicMessagesConfig::default())
+                }
+            };
+            let body = AdapterRegistry::default()
+                .get(protocol)
+                .unwrap()
+                .build_body(&target, &request)
+                .unwrap()
+                .to_string();
+            assert!(body.contains("host_context_annotations"), "{protocol:?}");
+            assert!(body.contains("raw stdout"));
+        }
+        assert_eq!(
+            serde_json::to_value(&message.content).unwrap(),
+            serde_json::to_value(&request.messages[0].content).unwrap()
+        );
+        assert!(!serde_json::to_string(&message.content)
+            .unwrap()
+            .contains("host_context_annotations"));
+    }
+}

@@ -15,7 +15,8 @@
       "sandbox": "Commands run in the macOS sandbox and ask for approval when needed.",
       "sandboxWindows": "Commands run with Windows write protection and ask for approval when needed.",
       "sandboxLinux": "Commands run in the Linux sandbox and ask for approval when needed.",
-      "off": "No prompts, no sandbox — everything runs."
+      "off": "No prompts, no sandbox — everything runs.",
+      "auto": "Keep the sandbox and let the model review boundary requests. Uncertain or failed reviews deny execution; inspect results in Runs."
     },
     "fallbackNotice": "Sandbox protection is unavailable (diagnostic: {{code}}). Switched to Manual mode: approved or allowlisted commands run without an OS sandbox.",
     "linuxUnavailable": {
@@ -35,7 +36,9 @@
         "probeTransportError": "FutureOS could not contact the Agent to check the Linux sandbox. Try again later or restart FutureOS. ({{code}})",
         "unknown": "The Linux sandbox is unavailable. Run future doctor for details, fix the issue, then restart FutureOS. ({{code}})"
       }
-    }
+    },
+    "auto": "Automatic review",
+    "autoUnavailable": "The sandbox is unavailable on this host. Requests use manual review; the automatic setting is retained."
   },
   "autoUpgradeSkills": {
     "title": "Auto-upgrade skills",

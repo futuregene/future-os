@@ -1287,6 +1287,7 @@ mod tests {
         let sandbox = crate::sandbox::ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Manual,
+                model_reviewer: false,
             },
             &workspace.to_string_lossy(),
         );

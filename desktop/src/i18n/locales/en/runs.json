@@ -68,5 +68,57 @@
     "abortRequested": "Aborted by user",
     "timeout": "Timeout",
     "unknown": "Unknown error"
+  },
+  "autoApproval": {
+    "title": "Automatic reviews",
+    "loadError": "Unable to load automatic reviews",
+    "riskLabel": "Risk",
+    "authorizationLabel": "Authorization",
+    "errorLabel": "Review error",
+    "noClassification": "No valid classification; execution was denied",
+    "confidenceLabel": "Confidence",
+    "modelLabel": "Reviewer",
+    "auditLabel": "Audit identity and versions",
+    "status": {
+      "approved": "Approved",
+      "rejected": "Rejected",
+      "review_error": "Review failed",
+      "review_uncertain": "Uncertain",
+      "cancelled": "Cancelled",
+      "stale_request": "Context changed"
+    },
+    "risk": {
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "critical": "Critical",
+      "unknown": "Unknown"
+    },
+    "authorization": {
+      "unknown": "Unknown",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High"
+    },
+    "choice": {
+      "risk": "Risk",
+      "authorization": "Authorization",
+      "reason_code": "Reason"
+    },
+    "reason": {
+      "routine_bounded_action": "Routine bounded action",
+      "bounded_external_side_effect": "Bounded external side effect",
+      "authorization_scope_mismatch": "Outside authorized scope",
+      "protected_secret_access": "Protected credential or key access",
+      "sensitive_data_transfer": "Sensitive data transfer",
+      "broad_destructive_action": "Broad destructive action",
+      "security_or_privilege_change": "Security or privilege change",
+      "production_or_shared_impact": "Production or shared impact",
+      "catastrophic_system_destruction": "Catastrophic system destruction",
+      "irreversible_critical_data_loss": "Irreversible critical data loss",
+      "loss_of_security_control": "Loss of security controls",
+      "insufficient_information": "Insufficient information"
+    },
+    "reviewError": "Review did not complete; execution was denied."
   }
 }

@@ -78,9 +78,13 @@ export function GeneralPage({
                   ? "approvalTier.sandboxUnavailable"
                   : "approvalTier.sandboxChecking")}
             </option>
+            <option disabled={!sandboxAvailability.available} value="auto">{t("approvalTier.auto")}</option>
             <option value="off">{t("approvalTier.off")}</option>
           </Select>
         </SettingsRow>
+        {approvalTier === "auto" && sandboxAvailability.resolved && !sandboxAvailability.available
+          ? <SettingsRow title={t("approvalTier.auto")} description={t("approvalTier.autoUnavailable")} />
+          : null}
         {isLinux && sandboxAvailability.resolved && !sandboxAvailability.available
           ? (
               <SettingsRow

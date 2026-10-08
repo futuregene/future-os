@@ -194,7 +194,7 @@ No running desktop app is required. A running one picks the change up the next
 time it reads the settings.
 
 Settable keys (camelCase, as the desktop API spells them):
-  approvalTier            off|manual|sandbox  Approval tier for file access and shell
+  approvalTier            off|manual|sandbox|auto  Approval tier for file access and shell
   hiddenModels            list               Model ids hidden from the model picker
   autoUpgradeSkills       true|false         Upgrade installed skills on app open
   autoConnectRemote       true|false         Auto-connect the paired remote device

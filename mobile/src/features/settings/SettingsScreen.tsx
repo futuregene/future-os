@@ -143,7 +143,7 @@ export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, ref }: 
           </SettingsSection>
           <SettingsSection title={t("approvalTier.title")}>
             <View accessibilityRole="radiogroup" style={settingsStyles.actions}>
-              {(["manual", "sandbox", "off"] as const).filter(tier => tier !== "sandbox" || remote.sandboxAvailable).map(tier =>
+              {(["manual", "sandbox", "auto", "off"] as const).filter(tier => (tier !== "sandbox" && tier !== "auto" || remote.sandboxAvailable) && (tier !== "auto" || remote.capabilities?.has("auto_approval_v1"))).map(tier =>
                 <Pressable key={tier} accessibilityRole="radio" accessibilityLabel={t(`approvalTier.${tier}`)}
                   accessibilityState={{ checked: remote.approvalTier === tier, disabled: !remote.desktopOnline || saving }}
                   disabled={!remote.desktopOnline || saving} onPress={() => void selectApproval(tier)}

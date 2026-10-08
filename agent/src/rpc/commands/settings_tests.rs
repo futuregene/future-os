@@ -904,6 +904,7 @@ fn set_sandbox_policy_applies_tier() {
     let mut cmd = make_cmd("set_sandbox_policy");
     cmd.sandbox_policy = Some(crate::sandbox::SandboxPolicy {
         tier: crate::sandbox::SandboxTier::Off,
+        model_reviewer: false,
     });
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);

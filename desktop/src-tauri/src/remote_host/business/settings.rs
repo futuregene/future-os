@@ -164,9 +164,10 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
         "set_approval_tier" => {
-            let tier = if cmd.tier == "sandbox" {
+            let tier = if cmd.tier == "sandbox" || cmd.tier == "auto" {
                 match product_sandbox_available().await {
                     Ok(true) => cmd.tier.clone(),
+                    Ok(false) if cmd.tier == "auto" => cmd.tier.clone(),
                     Ok(false) => "manual".to_string(),
                     Err(error) => {
                         reply(sink, false, Value::Null, Some(&error.to_string())).await;

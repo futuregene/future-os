@@ -1862,6 +1862,7 @@ mod tests {
         let sandbox = Arc::new(ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Manual,
+                model_reviewer: false,
             },
             &workspace.to_string_lossy(),
         ));
@@ -1906,6 +1907,7 @@ mod tests {
         let sandbox = Arc::new(ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Manual,
+                model_reviewer: false,
             },
             &workspace.to_string_lossy(),
         ));
@@ -2048,6 +2050,7 @@ mod tests {
         let sandbox = ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Sandbox,
+                model_reviewer: false,
             },
             workspace,
         );
@@ -2340,6 +2343,7 @@ mod tests {
         let mut sandbox = crate::sandbox::ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Sandbox,
+                model_reviewer: false,
             },
             workspace.to_string_lossy().as_ref(),
         );
@@ -2448,6 +2452,7 @@ mod tests {
         let mut sandbox = crate::sandbox::ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Sandbox,
+                model_reviewer: false,
             },
             workspace.to_string_lossy().as_ref(),
         );
@@ -3410,6 +3415,7 @@ mod tests {
         let sandbox = crate::sandbox::ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Sandbox,
+                model_reviewer: false,
             },
             ws.to_string_lossy().as_ref(),
         );
@@ -3440,6 +3446,7 @@ mod tests {
         let sandbox = crate::sandbox::ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Sandbox,
+                model_reviewer: false,
             },
             ws.to_string_lossy().as_ref(),
         );
@@ -3470,6 +3477,7 @@ mod tests {
         let mut sandbox = ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Sandbox,
+                model_reviewer: false,
             },
             ws.to_string_lossy().as_ref(),
         );
@@ -3559,6 +3567,7 @@ mod tests {
         let mut sandbox = ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Sandbox,
+                model_reviewer: false,
             },
             ws.to_string_lossy().as_ref(),
         );
@@ -3642,6 +3651,7 @@ mod tests {
         let sandbox = crate::sandbox::ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Sandbox,
+                model_reviewer: false,
             },
             ws.to_string_lossy().as_ref(),
         );
@@ -3693,6 +3703,7 @@ mod tests {
         let sandbox = crate::sandbox::ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Manual,
+                model_reviewer: false,
             },
             ws.to_string_lossy().as_ref(),
         );
@@ -3729,6 +3740,7 @@ mod tests {
         let sandbox = crate::sandbox::ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Sandbox,
+                model_reviewer: false,
             },
             ws.to_string_lossy().as_ref(),
         );
@@ -3862,6 +3874,7 @@ mod tests {
         let sandbox = crate::sandbox::ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Sandbox,
+                model_reviewer: false,
             },
             ws.to_string_lossy().as_ref(),
         );
@@ -3896,6 +3909,7 @@ mod tests {
         let sandbox = crate::sandbox::ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Sandbox,
+                model_reviewer: false,
             },
             ws.to_string_lossy().as_ref(),
         );
@@ -3921,4 +3935,15 @@ mod tests {
         assert!(!output.contains("not approved"), "{output}");
         let _ = std::fs::remove_dir_all(&ws);
     }
+}
+
+// Tool identity follows async task polling, including escalation callbacks.
+tokio::task_local! { static CURRENT_TOOL_CALL_ID: String; }
+pub(crate) fn current_tool_call_id() -> String {
+    CURRENT_TOOL_CALL_ID
+        .try_with(Clone::clone)
+        .unwrap_or_default()
+}
+pub(crate) async fn with_tool_call_id<F: std::future::Future>(id: String, future: F) -> F::Output {
+    CURRENT_TOOL_CALL_ID.scope(id, future).await
 }

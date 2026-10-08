@@ -469,7 +469,8 @@ impl RunClient {
         use future_rpc::proto::SandboxPolicy;
         let cmd = RpcCommand {
             sandbox_policy: Some(SandboxPolicy {
-                tier: tier.to_string(),
+                reviewer: if tier == "auto" { "model" } else { "user" }.to_string(),
+                tier: if tier == "auto" { "sandbox" } else { tier }.to_string(),
             }),
             ..Default::default()
         };

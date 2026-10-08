@@ -13,6 +13,8 @@ use crate::sandbox::{paths, EscalationDecision, EscalationRequest, ResolvedSandb
 #[derive(Clone, Default)]
 pub struct ApprovalGate {
     pending: Arc<Mutex<HashMap<String, PendingApproval>>>,
+    pub(crate) generation: Arc<std::sync::atomic::AtomicU64>,
+    review: Option<crate::approval_review::ReviewContext>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +49,27 @@ enum AskOutcome {
 }
 
 impl ApprovalGate {
+    pub(crate) fn with_model_reviewer(
+        &self,
+        context: crate::approval_review::ReviewContext,
+    ) -> Self {
+        Self {
+            review: Some(context),
+            ..self.clone()
+        }
+    }
+    fn rejection_actor(&self) -> &str {
+        if self.review.is_some() {
+            "the automatic reviewer"
+        } else {
+            "the user"
+        }
+    }
+    pub(crate) fn invalidate(&self) {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn request(
         &self,
@@ -124,7 +147,8 @@ impl ApprovalGate {
                 }),
                 AskOutcome::Rejected(note) => Some(crate::types::ToolCallResult {
                     result: format!(
-                        "Tool call `shell` was rejected by the user{}.",
+                        "Tool call `shell` was rejected by {}{}.",
+                        self.rejection_actor(),
                         if note.is_empty() {
                             String::new()
                         } else {
@@ -185,8 +209,9 @@ impl ApprovalGate {
                     }),
                     AskOutcome::Rejected(note) => Some(crate::types::ToolCallResult {
                         result: format!(
-                            "Tool call `{}` was rejected by the user{}.",
+                            "Tool call `{}` was rejected by {}{}.",
                             tool_name,
+                            self.rejection_actor(),
                             if note.is_empty() {
                                 String::new()
                             } else {
@@ -266,7 +291,8 @@ impl ApprovalGate {
             }),
             AskOutcome::Rejected(note) => Some(crate::types::ToolCallResult {
                 result: format!(
-                    "Tool call `shell` was rejected by the user{}.",
+                    "Tool call `shell` was rejected by {}{}.",
+                    self.rejection_actor(),
                     if note.is_empty() {
                         String::new()
                     } else {
@@ -336,7 +362,7 @@ impl ApprovalGate {
         match self.ask_user(
             broadcaster,
             session_id,
-            "",
+            &crate::tools::current_tool_call_id(),
             "shell",
             &shape,
             requested_action,
@@ -361,6 +387,55 @@ impl ApprovalGate {
         shape: &ApprovalShape,
         requested_action: serde_json::Value,
     ) -> AskOutcome {
+        if let Some(context) = &self.review {
+            let cwd = shape
+                .sandbox_boundary
+                .get("cwd")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let (action, digest, scope) = crate::approval_review::action(
+                tool_name,
+                tool_id,
+                &requested_action,
+                &shape.action,
+                &shape.sandbox_boundary,
+                cwd,
+            );
+            let event = context.review(action, digest, scope, tool_id);
+            let approved = event["status"] == "approved";
+            let status = event["status"]
+                .as_str()
+                .unwrap_or("review_error")
+                .to_string();
+            let request_id = event["approval_request_id"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            broadcaster.broadcast(SseEvent::new("approval_assessment", event));
+            // Journal persistence is synchronous. No action may use an approval
+            // whose audit failed, or whose context changed while recording it.
+            if let Some(invalid) = context.invalidated() {
+                context.block_execution(
+                    tool_id,
+                    &invalid.status,
+                    invalid.error_code.as_deref().unwrap_or("context_changed"),
+                );
+                return AskOutcome::Cancelled("automatic review context ended".into());
+            }
+            if broadcaster.persistence_error().is_some() {
+                context.block_execution(tool_id, "review_error", "audit_unavailable");
+                return AskOutcome::Rejected("automatic review audit unavailable".into());
+            }
+            return if approved {
+                AskOutcome::Approved(request_id)
+            } else if status == "cancelled" {
+                AskOutcome::Cancelled("automatic review cancelled".into())
+            } else {
+                AskOutcome::Rejected(format!(
+                    "automatic review: {status}; choose a safer action or ask the user for help"
+                ))
+            };
+        }
         let request_id = format!("approval_{}", crate::utils::generate_entry_id());
         let (tx, rx) = mpsc::channel::<ApprovalDecision>();
         let payload = serde_json::json!({
@@ -1077,6 +1152,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
         let sandbox = ResolvedSandbox::resolve(
             &SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Manual,
+                model_reviewer: false,
             },
             &ws,
         );
@@ -1185,6 +1261,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
         ResolvedSandbox::resolve(
             &SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Manual,
+                model_reviewer: false,
             },
             ws,
         )
@@ -2099,6 +2176,7 @@ gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
         let mut sandbox = ResolvedSandbox::resolve(
             &SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Sandbox,
+                model_reviewer: false,
             },
             &ws,
         );

@@ -1084,6 +1084,7 @@ mod gui {
                 list_tool_calls_bulk,
                 list_tool_outputs,
                 list_approval_requests,
+                list_approval_assessments,
                 list_pending_approval_requests,
                 decide_approval_request,
                 save_approval_rule,

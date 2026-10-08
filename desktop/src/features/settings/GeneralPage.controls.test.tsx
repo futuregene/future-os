@@ -111,10 +111,12 @@ describe("generalPage approval tier picker", () => {
     const tier = select(container, 1);
 
     expect(tier.value).toBe("off");
-    expect([...tier.options].map(option => option.value)).toEqual(["manual", "sandbox", "off"]);
+    expect([...tier.options].map(option => option.value)).toEqual(["manual", "sandbox", "auto", "off"]);
 
     choose(tier, "manual");
     expect(onChangeApprovalTier).toHaveBeenLastCalledWith("manual");
+    choose(tier, "auto");
+    expect(onChangeApprovalTier).toHaveBeenLastCalledWith("auto");
   });
 
   it("enables the sandbox option when the sandbox is available", () => {

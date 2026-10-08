@@ -26,6 +26,7 @@ import { formatDuration, formatTime } from "../../lib/date";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { isRecord } from "../../lib/objects";
 import { useAsyncResource } from "../../lib/useAsyncResource";
+import { ApprovalAssessments } from "./ApprovalAssessments";
 import {
   formatRunStatus,
   runTone,
@@ -138,6 +139,8 @@ export function RunInspectPanel({
         : (
             <BackButton onBack={onBack} />
           )}
+
+      <ApprovalAssessments run={run} toolCallId={compact ? primaryTool?.id : undefined} />
 
       {compact
         ? (

@@ -513,14 +513,19 @@ pub(crate) fn handle_set_sandbox_policy(
             capabilities: None,
         },
     };
+    let configured_mode = policy.mode().to_string();
     let requested_tier = policy.tier.as_str().to_string();
     let fallback = requested_tier == "sandbox" && !probe.available;
     if fallback {
         policy.tier = crate::sandbox::SandboxTier::Manual;
+        policy.model_reviewer = false;
     }
     let tier = policy.tier.as_str().to_string();
     let summary = serde_json::json!({
         "tier": tier,
+        "configuredMode": configured_mode,
+        "effectiveMode": policy.mode(),
+        "reviewer": if policy.model_reviewer { "model" } else { "user" },
         "requestedTier": requested_tier,
         "sandboxAvailable": probe.available,
         "sandboxCode": probe.code,
