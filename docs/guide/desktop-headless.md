@@ -96,6 +96,27 @@ does not prove the phone is currently online: open the app and connect to the ho
 Ordinary network outages do not deliberately replace valid pairings; the existing
 Remote connection logic handles recovery.
 
+### What the server maintains on its own
+
+Headless serves the same backend as the window, so the phone sees the same
+sessions, settings, skills, models and tasks. Two steps the window's interface
+drives are performed by this entry point itself, because a server has no window
+to render them:
+
+- **Model catalogue refresh.** The Future catalogue is fetched at startup and
+then every 24 hours, on the same schedule policy as the window's job. The Agent
+announces the change itself, so a phone that is connected picks up new models
+through the same invalidation stream the windowed desktop uses.
+- **Built-in skills.** The bundled `future init` runs once after the first
+successful login (and on later launches — it is idempotent), installing the
+platform's built-in skills exactly as the window's post-login onboarding step
+does. Its output is printed with a `[skills]` prefix; a failure is reported and
+does not stop the server.
+
+The window's other two scheduled jobs have no server equivalent: the app-update
+check needs the desktop updater plugin, and the balance refresh feeds a window
+event the phone does not read.
+
 ## 3. Startup options
 
 | Option | Behavior |
@@ -199,6 +220,7 @@ hosting, use the same user and directories as the initial interactive setup.
 | `libwebkit2gtk-4.1.so.0` missing | This is the GUI binary; build and run `futureos-headless` instead |
 | `--headless` option removed or unknown | Use `futureos-headless` without that flag; `--no-qr` and `--re-pair` belong to the standalone entrypoint |
 | Agent not found | Place a matching `future` CLI or start the Agent independently; an unreachable explicitly configured Agent endpoint is not automatically taken over |
+| Built-in skills were not installed | Check the `[skills]` lines on stderr: `future init` needs the CLI beside `futureos-headless` or on PATH, and a network route to the skill catalogue. The phone can still install skills itself |
 | Interactive terminal required | Complete initial login/pairing in a real terminal, without pipes, redirection or non-interactive service startup |
 | Platform authorization denied or expired | Restart and sign in as instructed; the login code is not the app pairing code |
 | Pairing invitation expired | Restart to request an invitation; completed pairings do not require this |
