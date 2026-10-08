@@ -968,12 +968,14 @@ impl ServerSession {
     }
 
     pub fn set_system_prompt(&mut self, prompt: &str) {
+        self.approval_gate.invalidate();
         let mut loop_ = self.agent_loop.try_write().unwrap();
         loop_.system_prompt = prompt.to_string();
         loop_.config.system_prompt = prompt.to_string();
     }
 
     pub fn set_tools(&mut self, tool_names: &[String]) {
+        self.approval_gate.invalidate();
         let all_tools = crate::tools::all_tools();
         let selected: Vec<_> = all_tools
             .into_iter()
@@ -983,14 +985,17 @@ impl ServerSession {
     }
 
     pub fn disable_tools(&mut self) {
+        self.approval_gate.invalidate();
         self.agent_loop.try_write().unwrap().tools = vec![];
     }
 
     pub fn disable_builtin_tools(&mut self) {
+        self.approval_gate.invalidate();
         self.agent_loop.try_write().unwrap().tools = vec![];
     }
 
     pub fn append_system_prompt(&mut self, append: &str) {
+        self.approval_gate.invalidate();
         let current = self.agent_loop.try_read().unwrap().system_prompt.clone();
         let new_prompt = if current.is_empty() {
             append.to_string()
@@ -1430,14 +1435,17 @@ impl ServerSession {
     }
 
     pub fn set_cwd(&mut self, cwd: &str) {
+        self.approval_gate.invalidate();
         self.cwd = cwd.to_string();
     }
 
     pub fn set_permission_level(&mut self, level: &str) {
+        self.approval_gate.invalidate();
         self.permission_level = level.to_string();
     }
 
     pub fn set_sandbox_policy(&mut self, policy: crate::sandbox::SandboxPolicy) {
+        self.approval_gate.invalidate();
         self.sandbox_policy = Some(policy);
     }
 
@@ -1445,6 +1453,7 @@ impl ServerSession {
     /// tandem with writing the rule file). Takes effect for the live run's
     /// subsequent tool calls; the file carries it to future runs.
     pub fn add_session_rule(&self, raw_pattern: &str, access: &str) {
+        self.approval_gate.invalidate();
         crate::sandbox::rules::push_session_allow(
             &self.session_rules,
             std::path::Path::new(&self.cwd),
@@ -3814,6 +3823,7 @@ mod tests {
         assert!(session.sandbox_policy.is_none());
         session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
             tier: crate::sandbox::SandboxTier::Off,
+            model_reviewer: false,
         });
         assert_eq!(
             session.sandbox_policy.as_ref().map(|policy| policy.tier),
@@ -3822,6 +3832,7 @@ mod tests {
         // A later policy replaces the previous one instead of being ignored.
         session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
             tier: crate::sandbox::SandboxTier::Sandbox,
+            model_reviewer: false,
         });
         assert_eq!(
             session.sandbox_policy.as_ref().map(|policy| policy.tier),

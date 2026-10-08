@@ -2,6 +2,7 @@
 mod record_macro;
 
 mod app_settings;
+mod approval_assessments;
 mod approvals;
 mod artifacts;
 mod cleanup;
@@ -24,6 +25,9 @@ use db::*;
 pub use app_settings::{
     get_app_settings, get_or_create_device_id, update_app_settings, AppSettings,
     UpdateAppSettingsInput,
+};
+pub use approval_assessments::{
+    list_approval_assessments, record_approval_assessment, ApprovalAssessmentRecord,
 };
 pub use approvals::{
     decide_approval_request, ensure_approval_request, list_approval_requests,

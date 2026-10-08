@@ -144,7 +144,7 @@ impl From<std::io::Error> for Error {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueKind {
     Bool,
-    /// `off` | `manual` | `sandbox`.
+    /// `off` | `manual` | `sandbox` | `auto`.
     Tier,
     /// `en` | `zh`.
     Language,
@@ -157,7 +157,7 @@ impl ValueKind {
     pub fn accepted(self) -> &'static str {
         match self {
             ValueKind::Bool => "true|false",
-            ValueKind::Tier => "off|manual|sandbox",
+            ValueKind::Tier => "off|manual|sandbox|auto",
             ValueKind::Language => "en|zh",
             ValueKind::Models => "JSON array or comma-separated model ids",
         }
@@ -167,9 +167,9 @@ impl ValueKind {
         match self {
             ValueKind::Bool => parse_bool(raw).map(|value| serde_json::json!(value)),
             ValueKind::Tier => {
-                if !matches!(raw, "off" | "manual" | "sandbox") {
+                if !matches!(raw, "off" | "manual" | "sandbox" | "auto") {
                     return Err(format!(
-                        "approvalTier must be one of off, manual, sandbox, got {raw:?}"
+                        "approvalTier must be one of off, manual, sandbox, auto, got {raw:?}"
                     ));
                 }
                 Ok(serde_json::json!(raw))
@@ -364,7 +364,7 @@ pub fn write_value(conn: &Connection, key: &str, value: &str, now: i64) -> Resul
 /// default `"off"`.
 pub fn normalize_tier(value: &str) -> String {
     match value {
-        "off" | "sandbox" | "manual" => value.to_string(),
+        "off" | "sandbox" | "manual" | "auto" => value.to_string(),
         _ => "off".to_string(),
     }
 }
@@ -615,7 +615,7 @@ mod tests {
 
     #[test]
     fn tier_normalization_keeps_the_known_values_and_defaults_the_rest() {
-        for tier in ["off", "sandbox", "manual"] {
+        for tier in ["off", "sandbox", "manual", "auto"] {
             assert_eq!(normalize_tier(tier), tier);
         }
         assert_eq!(normalize_tier("anything-else"), "off");

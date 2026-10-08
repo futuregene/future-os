@@ -469,7 +469,7 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
 
 fn lower_message(message: &crate::types::AgentMessage, input: &mut Vec<Value>) -> Result<()> {
     let mut pending_content = Vec::new();
-    for block in message.model_content() {
+    for block in super::reviewed_content(message) {
         match block {
             ContentBlock::Text { text } => pending_content.push(json!({
                 "type": if message.role == "assistant" { "output_text" } else { "input_text" },

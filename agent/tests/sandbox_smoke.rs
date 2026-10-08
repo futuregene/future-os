@@ -40,6 +40,7 @@ fn default_sandbox(ws: &std::path::Path) -> ResolvedSandbox {
     ResolvedSandbox::resolve(
         &SandboxPolicy {
             tier: future_agent::sandbox::SandboxTier::Sandbox,
+            model_reviewer: false,
         },
         ws.to_string_lossy().as_ref(),
     )

@@ -296,6 +296,8 @@ message SandboxPolicy {
   reserved 6;        // v2a: bool enabled (superseded by tier)
   // "off" (unrestricted) | "manual" (approval required) | "sandbox" (macOS Seatbelt, macOS only).
   string tier = 7;
+  // Empty/user = human; model requires sandbox. Older agents safely keep human approval.
+  string reviewer = 8;
 }
 
 // ── AuthUpdate ───────────────────────────────────────────────────────────────
@@ -709,6 +711,7 @@ message EventPayload {
     UsageEvent usage = 12;
     ErrorEvent error = 13;
     UserMessageEvent user_message = 14;
+    ApprovalAssessmentEvent approval_assessment = 15;
   }
 }
 
@@ -1336,4 +1339,32 @@ message ProjectedRunEvent {
   // Typed event payload; see StreamEvent.payload. Kept in sync with `data`
   // so projection snapshots and live frames decode through one path.
   EventPayload payload = 20;
+}
+
+// Terminal automatic-review audit. Never a human pending approval.
+message ApprovalClassification {
+  optional string risk = 1;
+  optional string authorization = 2;
+  optional string reason_code = 3;
+}
+message ApprovalAssessmentEvent {
+  string assessment_id = 1;
+  string approval_request_id = 2;
+  string tool_call_id = 3;
+  string reviewer = 4;
+  string status = 5;
+  ApprovalClassification reported = 6;
+  ApprovalClassification effective = 7;
+  map<string, double> confidence = 8;
+  string probabilities_json = 9;
+  optional string model = 10;
+  optional string provider_request_id = 11;
+  optional string error_code = 12;
+  string action_json = 13;
+  string action_digest = 14;
+  int32 attempt = 15;
+  int32 prompt_version = 16;
+  int32 reason_catalog_version = 17;
+  int32 policy_version = 18;
+  int64 duration_ms = 19;
 }

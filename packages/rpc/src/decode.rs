@@ -952,6 +952,16 @@ fn typed_event_json_inner(kind: &proto::event_payload::Kind) -> Option<serde_jso
             target_path: data.target_path.clone(),
         })
         .ok(),
+        K::ApprovalAssessment(data) => {
+            let reported = data.reported.as_ref().map(|v| serde_json::json!({"risk":v.risk,"authorization":v.authorization,"reason_code":v.reason_code}));
+            let effective = data
+                .effective
+                .as_ref()
+                .map(|v| serde_json::json!({"risk":v.risk,"authorization":v.authorization}));
+            Some(
+                serde_json::json!({"assessment_id":data.assessment_id,"approval_request_id":data.approval_request_id,"tool_call_id":data.tool_call_id,"reviewer":data.reviewer,"status":data.status,"reported":reported,"effective":effective,"confidence":data.confidence,"probabilities":serde_json::from_str::<Value>(&data.probabilities_json).ok(),"model":data.model,"provider_request_id":data.provider_request_id,"error_code":data.error_code,"action":serde_json::from_str::<Value>(&data.action_json).ok(),"action_digest":data.action_digest,"attempt":data.attempt,"prompt_version":data.prompt_version,"reason_catalog_version":data.reason_catalog_version,"policy_version":data.policy_version,"duration_ms":data.duration_ms}),
+            )
+        }
         K::ApprovalRequest(info) => Some(approval_card_from_proto(info)),
         K::ApprovalDecision(data) => serde_json::to_value(ev::ApprovalDecisionData {
             approval_request_id: data.approval_request_id.clone(),

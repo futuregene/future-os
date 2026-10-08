@@ -195,7 +195,8 @@
     "approvalTier": {
       "manual": "手动审批",
       "sandbox": "沙箱保护",
-      "off": "完全放开"
+      "off": "完全放开",
+      "auto": "自动审批"
     },
     "approvalTierDesc": {
       "manual": "每步操作前询问",
@@ -204,7 +205,10 @@
       "sandboxLinux": "在沙箱中运行，必要时询问",
       "sandboxChecking": "正在检测系统沙箱…",
       "sandboxUnavailable": "系统沙箱当前不可用，请在设置中查看原因",
-      "off": "不经过审批，执行<em>任何</em>命令"
+      "off": "不经过审批，执行<em>任何</em>命令",
+      "auto": "自动判断是否放行",
+      "autoSignInRequired": "登录 FutureOS 后可用",
+      "autoChecking": "正在检查登录状态…"
     },
     "attachImageUnsupportedHint": "当前模型不支持图片，可能无法正确理解图片内容",
     "attachDialogFilterNoImage": "支持的文件（PDF、文本）",

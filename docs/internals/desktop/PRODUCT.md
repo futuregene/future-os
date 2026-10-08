@@ -227,7 +227,14 @@ differences, and acceptance: [macOS](SANDBOX/MACOS.md),
   this conversation/workspace temporary rules → rule files
   (`${WS}/.future/approval_rule.json`, `~/.future/approval_rule.json`) →
   fallback (reads open, writes limited to workspace/temp).
-- **Three approval tiers** (input-box dropdown / settings page switch, global):
+- **Four approval modes** (input-box dropdown / settings page switch, global):
+  - **Automatic review** (opt-in, requires a working OS sandbox): preserve sandbox
+    enforcement and let Jev classify only rule-level Ask requests. FutureOS makes
+    the final decision using risk, authorization, reason and confidence. Errors,
+    uncertainty, cancelled or stale requests deny execution. Results appear in
+    Runs details; automatic reviews never enter the interactive pending queue.
+    An unavailable sandbox uses manual review while retaining the automatic setting.
+    See [Automatic approval](AUTO_APPROVAL.md).
   - **Manual approval** (opt-in, all platforms): read/write/edit prompt per
     rules; shell read-only commands (`ls/cat/grep/git status` etc.) run without
     asking, other commands show a confirmation card; no OS sandbox enabled.
@@ -759,9 +766,9 @@ message area. Mixed-result ordering and divider rules in 4.8.
 Besides the model and thinking-level pickers, the input area offers an
 **approval mode** quick-switch dropdown; it is the same global selection as the
 settings "General" page's approval mode. macOS shows "Manual approval / Sandbox
-protection / Fully open"; Windows shows "Manual approval / Write protection /
-Fully open" after the host probe passes; Linux shows "Manual approval / Sandbox
-protection / Fully open" after the Bubblewrap host probe passes.
+protection / Automatic review / Fully open"; Windows shows "Manual approval / Write protection /
+Automatic review / Fully open" after the host probe passes; Linux shows "Manual approval / Sandbox
+protection / Automatic review / Fully open" after the Bubblewrap host probe passes.
 
 Each message has a **copy button** below it that copies its plain-text content.
 The user-message copy button appears on hover; the assistant's copy button and
@@ -835,9 +842,9 @@ below New Chat jumps straight to the models page) has three pages:
 
 - **General**: UI language switch (中文 / English, default Chinese, saved
   locally); **approval mode** by platform (macOS: Manual approval / Sandbox
-  protection / Fully open; Windows with host probe passed: Manual approval /
-  Write protection / Fully open; Linux with Bubblewrap host probe passed:
-  Manual approval / Sandbox protection / Fully open — on failure show the
+  protection / Automatic review / Fully open; Windows with host probe passed: Manual approval /
+  Write protection / Automatic review / Fully open; Linux with Bubblewrap host probe passed:
+  Manual approval / Sandbox protection / Automatic review / Fully open — on failure show the
   stable diagnostic code and apt/dnf install hints and keep Manual approval;
   default Fully open `off`, falling back to Manual approval only when sandbox
   is clearly unavailable); **Generate a title after the first answer**

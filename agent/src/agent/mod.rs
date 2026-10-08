@@ -93,6 +93,8 @@ pub struct Loop {
     /// Enabled explicitly on the run snapshot when shell access is permitted.
     pub parallel_tools: bool,
     pub(crate) interrupt_flag: Arc<AtomicBool>,
+    pub(crate) tool_review_annotations:
+        Arc<Mutex<std::collections::HashMap<String, serde_json::Value>>>,
     pub context_manager: Option<crate::compaction::ContextManager>,
     pub active_checkpoint: Arc<Mutex<Option<crate::compaction::ContextCheckpoint>>>,
     pub cumulative_input_tokens: Arc<std::sync::atomic::AtomicI64>,
@@ -141,6 +143,7 @@ impl Loop {
             session_id: String::new(),
             parallel_tools: false,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
+            tool_review_annotations: Arc::new(Mutex::new(std::collections::HashMap::new())),
             context_manager: None,
             active_checkpoint: Arc::new(Mutex::new(None)),
             cumulative_input_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
@@ -325,7 +328,7 @@ impl Loop {
                 serde_json::Value::String(s) => s.clone(),
                 other => serde_json::to_string(other).unwrap_or_default(),
             };
-            let tool_msg = self.new_tool_result(
+            let mut tool_msg = self.new_tool_result(
                 &tc.id,
                 &tc.function.name,
                 &tool_args_str,
@@ -333,6 +336,15 @@ impl Loop {
                 err_str.as_deref(),
                 is_error,
             );
+            if let Some(annotation) = self.tool_review_annotations.lock().remove(&tc.id) {
+                tool_msg
+                    .metadata
+                    .get_or_insert_with(serde_json::Map::new)
+                    .insert(
+                        "context_annotations".into(),
+                        serde_json::json!([annotation]),
+                    );
+            }
             messages.push(tool_msg);
             if let Some(ref cb) = on_tool_result {
                 cb(messages.last_mut().unwrap());
@@ -374,22 +386,7 @@ impl Loop {
         let tool_name = tc.function.name.clone();
         let tool_id = tc.id.clone();
 
-        // Stage 1: BeforeToolCall hook
-        if let Some(ref hook) = config.before_tool_call {
-            if let Some(result_val) = hook(&tool_name, &tool_id, &tc.function.arguments) {
-                if result_val.is_error {
-                    return (
-                        result_val.result.clone(),
-                        Some(result_val.result),
-                        tool_name,
-                    );
-                } else {
-                    return (result_val.result.clone(), None, tool_name);
-                }
-            }
-        }
-
-        // Stage 2: PrepareToolCall hook
+        // Normalize and prepare before approval so it sees executable arguments.
         let raw_args = tc.function.arguments.clone();
         let normalized_args = match &raw_args {
             serde_json::Value::String(s) => {
@@ -403,6 +400,21 @@ impl Loop {
             normalized_args
         };
 
+        // Approval and other pre-execution gates receive the prepared action.
+        if let Some(ref hook) = config.before_tool_call {
+            if let Some(result_val) = hook(&tool_name, &tool_id, &effective_args) {
+                if result_val.is_error {
+                    return (
+                        result_val.result.clone(),
+                        Some(result_val.result),
+                        tool_name,
+                    );
+                } else {
+                    return (result_val.result.clone(), None, tool_name);
+                }
+            }
+        }
+
         // Execute the tool
         let start = Instant::now();
         let mut result: Result<String> = Err(anyhow!(
@@ -412,7 +424,11 @@ impl Loop {
         ));
         for tool in tools {
             if tool.def.function.name == tool_name {
-                result = (tool.handler)(effective_args.clone()).await;
+                result = crate::tools::with_tool_call_id(
+                    tool_id.clone(),
+                    (tool.handler)(effective_args.clone()),
+                )
+                .await;
                 break;
             }
         }
@@ -878,6 +894,34 @@ mod tests {
         };
         let (_, err, _) = Loop::execute_one_tool_impl_static(&tc, &[], &config).await;
         assert!(err.is_some());
+    }
+
+    #[tokio::test]
+    async fn approval_hook_receives_prepared_arguments_and_blocks_the_handler() {
+        let config = crate::types::AgentConfig {
+            prepare_tool_call: Some(Arc::new(|_, args| {
+                let mut args = args.clone();
+                args["command"] = serde_json::json!("prepared");
+                args
+            })),
+            before_tool_call: Some(Arc::new(|_, _, args| {
+                assert_eq!(args["command"], "prepared");
+                Some(crate::types::ToolCallResult {
+                    result: "blocked".into(),
+                    is_error: true,
+                })
+            })),
+            ..Default::default()
+        };
+        let call = cov_tool_call(
+            "tool",
+            "shell",
+            serde_json::json!(r#"{"command":"original"}"#),
+        );
+        let (result, error, _) =
+            Loop::execute_one_tool_impl_static(&call, &[cov_tool("shell", true)], &config).await;
+        assert_eq!(result, "blocked");
+        assert!(error.is_some());
     }
 
     #[tokio::test]

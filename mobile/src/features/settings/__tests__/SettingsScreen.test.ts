@@ -608,3 +608,15 @@ test("task management is unavailable while the desktop is offline", async () => 
   await act(async () => tree.update(createElement(SettingsScreen, props)));
   expect(link("desktopSettings.tasks").props.disabled).toBe(true);
 });
+
+test("automatic review is offered only by capable desktops with a working sandbox", async () => {
+  await openPreferences();
+  expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.auto" })).toHaveLength(0);
+  mockRemote.capabilities.add("auto_approval_v1");
+  await act(async () => { tree.update(createElement(SettingsScreen, props)); });
+  await act(async () => radio("approvalTier.auto").props.onPress());
+  expect(mockRemote.setApprovalTier).toHaveBeenCalledWith("auto");
+  mockRemote.sandboxAvailable = false;
+  await act(async () => { tree.update(createElement(SettingsScreen, props)); });
+  expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.auto" })).toHaveLength(0);
+});

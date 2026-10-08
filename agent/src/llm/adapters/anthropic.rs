@@ -400,7 +400,7 @@ fn lower_messages(request: &ModelRequest) -> Result<Vec<Value>> {
         let mut user = Vec::new();
         let mut user_tool_results = Vec::new();
         let mut assistant = Vec::new();
-        for block in message.model_content() {
+        for block in super::reviewed_content(message) {
             match block {
                 ContentBlock::Text { text } => {
                     let wire = json!({"type": "text", "text": text});

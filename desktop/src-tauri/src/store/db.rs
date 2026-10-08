@@ -187,6 +187,7 @@ pub(super) fn connect() -> Result<PooledConnection, crate::AppError> {
 
 pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     conn.execute_batch(SCHEMA)?;
+    apply_approval_assessments_migration(conn)?;
     // This is a required identity invariant: one Agent session may back only
     // one Desktop thread. Repair legacy duplicate bindings before installing
     // the unique index, otherwise an upgraded database could not start.
@@ -1345,5 +1346,75 @@ mod tests {
             })
             .unwrap();
         assert_eq!(markers, 0, "a failed migration must not record itself");
+    }
+}
+
+/// Required, transactional migration shared with fresh-install schema tests.
+fn apply_approval_assessments_migration(conn: &Connection) -> Result<(), crate::AppError> {
+    const VERSION: &str = "v1.2.2-auto-approval";
+    if conn
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE version = ?1",
+            [VERSION],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some()
+    {
+        return Ok(());
+    }
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| {
+        conn.execute_batch(include_str!("approval_assessments.sql"))?;
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+            params![VERSION, now_millis()],
+        )?;
+        Ok::<(), crate::AppError>(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod approval_assessments_migration_tests {
+    use super::*;
+    #[test]
+    fn fresh_and_upgrade_are_idempotent() {
+        for upgraded in [false, true] {
+            let conn = Connection::open_in_memory().unwrap();
+            apply_schema(&conn).unwrap();
+            if upgraded {
+                conn.execute_batch("DROP TABLE approval_assessments; DELETE FROM schema_migrations WHERE version='v1.2.2-auto-approval';").unwrap();
+            }
+            apply_schema(&conn).unwrap();
+            apply_schema(&conn).unwrap();
+            let count: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM schema_migrations WHERE version='v1.2.2-auto-approval'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1);
+            conn.prepare("SELECT id,approval_request_id,run_id,tool_call_id,status,payload,created_at FROM approval_assessments").unwrap();
+        }
+    }
+    #[test]
+    fn failure_rolls_back_without_migration_marker() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations(version TEXT PRIMARY KEY,applied_at INTEGER); CREATE TABLE approval_assessments(id TEXT);").unwrap();
+        assert!(apply_approval_assessments_migration(&conn).is_err());
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM schema_migrations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        assert!(conn.is_autocommit());
     }
 }

@@ -305,6 +305,7 @@ export function NewConversation({
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={onThinkingLevelChange}
               approvalTier={approvalTier}
+              futureSessionStatus={futureSessionStatus}
               onChangeApprovalTier={onChangeApprovalTier}
               onSend={handleSend}
               disabled={catalogLoading}

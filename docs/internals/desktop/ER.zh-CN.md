@@ -349,6 +349,16 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
   - **三张预留配置表 `sandbox_config` / `approval_policy_config` / `approval_rules` 已删除**（2026-07-05）——规则迁到文件后它们成为死结构；对应 `store/approval_config.rs` 模块与三个 record 类型一并移除。旧库里遗留的空表无害（无代码引用），新库不再创建。Phase 2 曾短暂用 `approval_rules` 存规则并经 gRPC 下发，v2 已拆除该链路。
   - `kind` 扩展 `sandbox_escalation`（bash 越界失败的升级审批）；`outside_workspace_read` 是已废弃的旧枚举，不再由当前实现产生。
 
+#### 自动审批审计
+
+`approval_assessments` 保存不可变模型评估：`id`、`approval_request_id`（级联外键）、
+`run_id`（级联外键）、`tool_call_id`、`status`、`payload`（版本化 JSON）、`created_at`。
+索引为 `(run_id, created_at)`。payload 保存 reported/effective 分类、概率与置信度、
+脱敏动作及 digest、模型归属、版本、耗时和错误码。自动请求直接写终态
+approved/rejected/cancelled，reviewer=model、decision_source=auto_review、scope=once，
+不进入 pending 队列、不改变 Run 为 waiting。迁移版本为 `v1.2.2-auto-approval`。
+详见[自动审批](AUTO_APPROVAL.zh-CN.md)。
+
 ### 4.9 Review Changeset
 
 Review Changeset 表示一组可供用户 review 的变更集合。

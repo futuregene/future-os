@@ -138,3 +138,26 @@ mod tests {
         assert_eq!(event, decoded);
     }
 }
+
+#[cfg(test)]
+mod automatic_approval_wire_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn typed_assessment_round_trips_without_json_fallback() {
+        let value = json!({"assessment_id":"a","approval_request_id":"a","tool_call_id":"t","reviewer":"model","status":"approved","reported":{"risk":"low","authorization":"high","reason_code":"routine_bounded_action"},"effective":{"risk":"low","authorization":"high"},"confidence":{"risk":0.95,"authorization":0.96,"reason_code":0.99},"probabilities":{"risk":{"low":0.95}},"model":"jev","provider_request_id":"provider","error_code":null,"action":{"command":"pwd"},"action_digest":"sha256:fixture","attempt":1,"prompt_version":1,"reason_catalog_version":1,"policy_version":1,"duration_ms":50});
+        let payload = encode::event_payload("approval_assessment", &value.to_string())
+            .expect("typed payload");
+        let event = proto::StreamEvent {
+            r#type: "approval_assessment".into(),
+            payload: Some(payload),
+            ..Default::default()
+        };
+        let decoded = decode::event_data(&event);
+        assert_eq!(decoded["action"], value["action"]);
+        assert_eq!(decoded["confidence"], value["confidence"]);
+        assert_eq!(decoded["reported"], value["reported"]);
+        assert_eq!(decoded["status"], "approved");
+        assert_eq!(decoded["action_digest"], value["action_digest"]);
+    }
+}
