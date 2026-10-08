@@ -30,6 +30,7 @@ vi.mock("./Composer", () => ({
       data-composer=""
       data-disabled={String(props.disabled)}
       data-draft-key={String(props.draftKey)}
+      data-session-mentions={String((props.sessionMentions as unknown[] | undefined)?.length ?? 0)}
       data-workspace-id={props.workspaceId == null ? "" : String(props.workspaceId)}
     >
       <button data-accept="" onClick={() => (props.onDragStateChange as (s: string) => void)("accept")} type="button" />
@@ -172,6 +173,17 @@ function menuItem(label: string) {
 }
 
 describe("newConversation mode and workspace selection", () => {
+  // The first message can reference another conversation as well as any later
+  // one, so this screen has to hand the composer the same `#` menu the thread
+  // view does. Without it, `#` silently did nothing on the new-chat screen.
+  it("hands the # menu's conversations to the composer", () => {
+    render({ sessionMentions: [{ sessionId: "s1", title: "Fix CI", workspace: null }] });
+    expect(composer().dataset.sessionMentions).toBe("1");
+    // Omitted (no threads yet) is not an error: the menu simply has nothing to offer.
+    render({ sessionMentions: undefined });
+    expect(composer().dataset.sessionMentions).toBe("0");
+  });
+
   it("starts in workspace mode when a workspace exists, and chat mode when none does", () => {
     render();
     expect(headerSubtitle()).toBe("Alpha");

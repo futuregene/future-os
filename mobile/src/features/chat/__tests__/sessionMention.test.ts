@@ -59,3 +59,19 @@ it("skips a conversation with no session id, which the reference could not carry
   const groups = sessionMentionGroups([session("", "Nameless"), session("s1", "Real")], []);
   expect(ids(groups)).toEqual(["s1"]);
 });
+
+// The desktop stores every chat conversation in a temporary workspace of its
+// own, named "<title> Workspace" — so the grouping has to go by `mode`, or each
+// chat becomes a workspace group of its own in this menu too.
+it("aggregates chats that are stored under a temporary workspace", () => {
+  const groups = sessionMentionGroups(
+    [
+      session("c1", "Fix the flaky test", { mode: "chat", workspaceId: "ws_temp" }),
+      session("c2", "Another chat", { mode: "chat", workspaceId: "ws_temp" }),
+      session("s1", "Real work", { mode: "workspace", workspaceId: "a" }),
+    ],
+    [workspace("a", "Dopamine"), workspace("ws_temp", "Fix the flaky test Workspace")],
+  );
+  expect(groups.map(group => group.workspace?.name ?? null)).toEqual([null, "Dopamine"]);
+  expect(ids(groups)).toEqual(["c1", "c2", "s1"]);
+});

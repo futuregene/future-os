@@ -49,6 +49,44 @@ describe("sessionMentionOptions", () => {
       .toEqual({ id: "vip", name: "vip" });
   });
 
+  // The regression behind the `#` menu's wall of workspaces: every chat
+  // conversation owns a temporary workspace row named "<title> Workspace", so
+  // filing by workspace id gave each chat a group of its own. A chat is a chat
+  // by `mode` (the rail's rule), whatever row it is stored under.
+  it("keeps a chat out of the workspace it is stored under", () => {
+    const workspaces = [workspace("ws_temp", { name: "Fix the flaky test Workspace", kind: "temporary" })];
+    const threads = [
+      thread({ id: "chat-1", title: "Fix the flaky test", mode: "chat", workspaceId: "ws_temp" }),
+      thread({ id: "chat-2", title: "Another chat", mode: "chat", workspaceId: "ws_temp" }),
+      thread({ id: "ws-1", title: "Real work", mode: "workspace", workspaceId: "ws_temp" }),
+    ];
+    const options = sessionMentionOptions(threads, workspaces);
+    expect(options.map(option => [option.sessionId, option.workspace?.name ?? null])).toEqual([
+      ["chat-1", null],
+      ["chat-2", null],
+      ["ws-1", "Fix the flaky test Workspace"],
+    ]);
+    // Two chats in one temporary workspace are ONE group, not one each.
+    expect(groupSessionMentions(options).map(group => group.sessions.length)).toEqual([2, 1]);
+  });
+
+  it("keeps a workspace the store no longer lists as its own trailing group", () => {
+    // A deleted workspace's conversations must not be relabelled as chats (they
+    // are not), and two of them must not interleave into duplicate groups.
+    const threads = [
+      thread({ id: "g1", title: "ghost one", mode: "workspace", workspaceId: "ghost-a" }),
+      thread({ id: "g2", title: "ghost two", mode: "workspace", workspaceId: "ghost-b" }),
+      thread({ id: "g3", title: "ghost one again", mode: "workspace", workspaceId: "ghost-a" }),
+    ];
+    const options = sessionMentionOptions(threads, [workspace("listed")]);
+    expect(options.map(option => option.workspace?.id)).toEqual(["ghost-a", "ghost-a", "ghost-b"]);
+    const groups = groupSessionMentions(options);
+    expect(groups.map(group => group.sessions.map(session => session.sessionId)))
+      .toEqual([["g1", "g3"], ["g2"]]);
+    // No name to show: the menu falls back to a generic heading, not a blank one.
+    expect(groups[0]?.workspace).toEqual({ id: "ghost-a", name: "" });
+  });
+
   it("keeps the caller's order inside a workspace", () => {
     const threads = [
       thread({ id: "b", workspaceId: "w", mode: "workspace" }),
@@ -74,11 +112,11 @@ describe("sessionMentionOptions", () => {
       .toEqual(["live"]);
   });
 
-  it("reports an unlisted workspace's thread without inventing a name", () => {
-    // The store can still hold a thread whose workspace was removed; the group
-    // heading falls back to the localized label rather than a blank name.
+  it("files a workspace conversation with no workspace id at all as a chat", () => {
+    // Degenerate row (no scope to file under): a group keyed on "" would merge
+    // unrelated conversations, so it reads as a chat instead.
     const options = sessionMentionOptions(
-      [thread({ id: "orphan", mode: "workspace", workspaceId: "ghost" })],
+      [thread({ id: "orphan", mode: "workspace", workspaceId: "" })],
       [],
     );
     expect(options[0]?.workspace).toBeNull();
