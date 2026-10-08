@@ -748,6 +748,9 @@
             "eval": "(() => { const t = document.body.innerText; if (!t.includes('触发器')) throw new Error('editor is missing the trigger section'); if (!t.includes('完全权限')) throw new Error('the full-permission warning is not shown'); })()"
           },
           {
+            "eval": "(() => { const browse = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '浏览'); if (!browse) throw new Error('the working-directory row has no browse button'); const box = browse.getBoundingClientRect(); const panel = browse.closest('section').getBoundingClientRect(); if (box.right > panel.right + 1) throw new Error('the browse button runs past the panel edge: button ' + Math.round(box.right) + ' vs panel ' + Math.round(panel.right)); if (box.width < 56) throw new Error('the browse button is squeezed to ' + Math.round(box.width) + 'px'); const field = document.querySelector(\"input[aria-label='工作目录']\"); if (!field) throw new Error('a workspace conversation has no directory field'); const fieldBox = field.getBoundingClientRect(); if (fieldBox.right > box.left + 1) throw new Error('the field overlaps the button'); })()"
+          },
+          {
             "shot": "d-tasks-editor.png"
           },
           {
@@ -764,6 +767,32 @@
           },
           {
             "shot": "d-tasks-editor-actions.png"
+          }
+        ]
+      },
+      "tasks-new": {
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "新建任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { if (document.querySelector(\"input[aria-label='工作目录']\")) throw new Error('a chat task must not ask for a directory'); const pickers = [...document.querySelectorAll('select')]; const values = pickers.map(s => s.value); if (!values.includes('chat')) throw new Error('the conversation picker does not open on chat: ' + values.join(',')); if (values.filter(v => v === '').length < 2) throw new Error('the model and thinking pickers are not both unset: ' + values.join(',')); const model = pickers.find(s => [...s.options].some(o => o.textContent === '请选择模型')); if (!model) throw new Error('no model picker'); if ([...model.options].some(o => o.textContent.includes('默认'))) throw new Error('a default model option is still offered'); })()"
+          },
+          {
+            "shot": "d-tasks-new.png"
           }
         ]
       }

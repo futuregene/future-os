@@ -693,7 +693,7 @@ function TaskDetail({
             [t("colThinking"), task.thinkingLevel ? t(`agent:composer.thinkingLevelLabels.${task.thinkingLevel}`) : t("thinkingDefault")],
             // A chat task may name no directory at all: it runs in its own
             // conversation's workspace, and an empty row would read as "missing".
-            [t("colCwd"), task.cwd.trim() || t("cwdChatWorkspace")],
+            [t("colCwd"), task.cwd.trim() || (task.conversationMode === "chat" ? t("cwdChatWorkspace") : "—")],
             [t("colConversation"), t(task.conversationMode === "chat" ? "form.conversationChat" : "form.conversationWorkspace")],
             [t("form.session"), t(task.sessionPolicy === "existing" ? "form.sessionExisting" : "form.sessionNew")],
             [t("colReflection"), t(`form.reflection${task.reflection === "off" ? "Off" : task.reflection === "auto" ? "Auto" : "Ask"}`)],
