@@ -538,7 +538,14 @@ async fn run_inner(
     //    `session_policy=existing` is continuity, and a compaction both costs a
     //    pass over the whole history and drops the context the next run was
     //    meant to inherit.
-    let prompt = compose_run_prompt(task, run.kind, run.due_at, None, &upstream_sources);
+    let prompt = compose_run_prompt(
+        task,
+        run.kind,
+        run.due_at,
+        None,
+        run.started_at.unwrap_or_else(now_ms),
+        &upstream_sources,
+    );
 
     let thread = match crate::store::get_thread(&thread_id) {
         Ok(Some(thread)) => thread,
