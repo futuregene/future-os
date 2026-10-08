@@ -683,7 +683,7 @@ describe("tasksView", () => {
         conversationMode: "chat",
         triggerKind: "manual",
         sessionPolicy: "new",
-          },
+      },
     });
     expect(created?.[1]).toMatchObject({ input: { modelId: "future/gpt-5", thinkingLevel: "high" } });
   });
