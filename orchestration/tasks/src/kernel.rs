@@ -616,6 +616,19 @@ pub enum ProposalAction {
     Skip(&'static str),
 }
 
+/// The language a reflection's prose must be written in.
+///
+/// The kernel is host-agnostic and pure, so the host passes the code it already
+/// keeps for the UI language. An unrecognised code falls back to English rather
+/// than failing the pass: a suggestion in the wrong language is still
+/// reviewable, a suggestion that never happened is not.
+pub fn reflection_language_name(code: &str) -> &'static str {
+    match code.trim().to_ascii_lowercase().as_str() {
+        "zh" | "zh-cn" | "zh-hans" => "Simplified Chinese",
+        _ => "English",
+    }
+}
+
 /// Compose the prompt for one reflection pass (a *suggestion*, not a run of the
 /// task): the prompt that ran, what the run reported, and the demand for a
 /// decision in a fixed JSON shape.
@@ -623,7 +636,15 @@ pub enum ProposalAction {
 /// The pass sees only this run's window — the prompt, the run's outcome and the
 /// user's verdict on it — never the task's history. A suggestion made from a
 /// long history is a rewrite nobody can review against what happened.
-pub fn compose_reflection_prompt(task: &Task, run: &crate::types::TaskRun) -> String {
+///
+/// `language` is the UI locale code (see [`reflection_language_name`]); the
+/// prompt itself stays English — it is machinery, not user-facing text — while
+/// the `reason` it asks for, which the user reads, is written in that language.
+pub fn compose_reflection_prompt(
+    task: &Task,
+    run: &crate::types::TaskRun,
+    language: &str,
+) -> String {
     let mut out = format!("── {} ──\n", crate::types::REFLECTION_SCHEMA_VERSION);
     out.push_str(&format!(
         "task: {} | id: {} | prompt-version: {}\n",
@@ -672,20 +693,26 @@ pub fn compose_reflection_prompt(task: &Task, run: &crate::types::TaskRun) -> St
         out.push('\n');
     }
 
-    out.push_str(REFLECTION_INSTRUCTION);
+    out.push_str(&reflection_instruction(reflection_language_name(language)));
     out
 }
 
 /// The reflection pass's instruction, banner included (so `compose_reflection_prompt`
-/// and any test asserting on the ask share one wording).
-pub const REFLECTION_INSTRUCTION: &str = "\nInstruction:\n\
+/// and any test asserting on the ask share one wording). `language` is the
+/// display name the `reason` must be written in.
+pub fn reflection_instruction(language: &str) -> String {
+    format!(
+        "\nInstruction:\n\
 Decide whether that prompt is worth changing, and if it is, return the whole revised prompt.\n\
 - Keep the user's intent, every requirement and the output contract. Do not weaken them.\n\
 - The prompt must stay self-contained: it runs unattended, in a fresh conversation, with nobody to answer questions.\n\
 - Change only what this run's evidence supports: a failure the prompt caused, a requirement it is missing, an ambiguity that made the result unpredictable.\n\
 - If nothing is worth changing, say so. A prompt that churns after every run cannot be judged.\n\
+- Write \"reason\" in {language}: the user reads it in the app. Keep \"prompt\" in the language the prompt is already written in.\n\
 \nReply with only this JSON object, and nothing around it:\n\
-{\"verdict\":\"keep\"|\"improve\",\"prompt\":\"<the whole prompt — unchanged when the verdict is keep>\",\"reason\":\"<one or two sentences>\",\"confidence\":0.0-1.0}\n";
+{{\"verdict\":\"keep\"|\"improve\",\"prompt\":\"<the whole prompt — unchanged when the verdict is keep>\",\"reason\":\"<one or two sentences>\",\"confidence\":0.0-1.0}}\n"
+    )
+}
 
 /// Parse a reflection reply into a proposal.
 ///
@@ -1626,7 +1653,7 @@ mod tests {
         run.feedback = Some("bad".into());
         run.feedback_note = Some("the file went to the wrong folder".into());
 
-        let prompt = compose_reflection_prompt(&t, &run);
+        let prompt = compose_reflection_prompt(&t, &run, "en");
         assert!(
             prompt.starts_with(&format!(
                 "── {} ──\n",
@@ -1637,6 +1664,10 @@ mod tests {
         assert!(
             prompt.contains("task: weekly | id: tsk_test | prompt-version: 3"),
             "{prompt}"
+        );
+        assert!(
+            prompt.contains("Write \"reason\" in English"),
+            "the reason language is stated: {prompt}"
         );
         assert!(
             prompt.contains("run: trn_1 | kind=main | status=failed"),
@@ -1664,13 +1695,36 @@ mod tests {
     }
 
     #[test]
+    fn the_reflection_asks_for_the_reason_in_the_ui_language() {
+        let t = task(serde_json::json!({}), TriggerKind::Manual);
+        let run = finished_run(&t.id, RunStatus::Completed);
+
+        let zh = compose_reflection_prompt(&t, &run, "zh");
+        assert!(
+            zh.contains("Write \"reason\" in Simplified Chinese"),
+            "{zh}"
+        );
+        // The prompt itself is left alone: it is not user-facing text, and
+        // rewriting it to match the UI would change what the task does.
+        assert!(
+            zh.contains("Keep \"prompt\" in the language the prompt is already written in"),
+            "{zh}"
+        );
+
+        // Unknown codes fall back rather than failing the pass.
+        assert_eq!(reflection_language_name("en-GB"), "English");
+        assert_eq!(reflection_language_name("zh-CN"), "Simplified Chinese");
+        assert_eq!(reflection_language_name("fr"), "English");
+    }
+
+    #[test]
     fn the_reflection_prompt_says_so_when_there_is_nothing_to_report() {
         let t = task(serde_json::json!({}), TriggerKind::Manual);
         let mut run = finished_run(&t.id, RunStatus::Running);
         run.result_summary = None;
         run.finished_at = None;
         run.feedback = None;
-        let prompt = compose_reflection_prompt(&t, &run);
+        let prompt = compose_reflection_prompt(&t, &run, "en");
         assert!(prompt.contains("[no summary recorded]"), "{prompt}");
         assert!(
             !prompt.contains("finished="),

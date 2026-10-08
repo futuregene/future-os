@@ -18,6 +18,7 @@
   "depsReady": "ready",
   "depsWaiting": "waiting",
   "runs": "Runs",
+  "runPromptVersion": "v{{version}}",
   "runsNone": "No runs yet.",
   "openConversation": "Open",
   "revisions": "Prompt versions",
@@ -144,5 +145,8 @@
   "colReflection": "Prompt suggestions",
   "modelDefault": "Default model",
   "thinkingDefault": "Default",
-  "revisionsNoReason": "No reason recorded."
+  "revisionsNoReason": "No reason recorded.",
+  "suggestionReason": "Reason",
+  "suggestedPrompt": "Suggested prompt",
+  "suggestionUnlinked": "This suggestion's run is not in the list below"
 }

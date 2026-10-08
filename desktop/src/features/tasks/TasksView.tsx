@@ -1,7 +1,7 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
-import type { TaskDepView, TaskInput, TaskView } from "./useTasks";
+import type { TaskDepView, TaskInput, TaskRevisionView, TaskView } from "./useTasks";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, FolderOpen, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { Check, ChevronLeft, FolderOpen, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
@@ -836,6 +836,32 @@ function TaskDetail({
     void refresh();
   });
 
+  // Suggestions are grouped under the run they read. A run list is bounded, so
+  // a suggestion can outlive its run's place in it: those keep their own block
+  // (and their accept button) instead of being dropped.
+  const { suggestionsByRun, orphans, versions } = useMemo(() => {
+    const byRun = new Map<string, TaskRevisionView[]>();
+    const unlinked: TaskRevisionView[] = [];
+    const known = new Set(runs.map(run => run.id));
+    for (const revision of revisions) {
+      if (revision.status !== "proposed")
+        continue;
+      if (revision.sourceRunId && known.has(revision.sourceRunId)) {
+        const list = byRun.get(revision.sourceRunId) ?? [];
+        list.push(revision);
+        byRun.set(revision.sourceRunId, list);
+      }
+      else {
+        unlinked.push(revision);
+      }
+    }
+    return {
+      suggestionsByRun: byRun,
+      orphans: unlinked,
+      versions: revisions.filter(revision => revision.status !== "proposed"),
+    };
+  }, [revisions, runs]);
+
   return (
     <div className="space-y-6 px-6 py-5 pb-10">
       <div className="flex items-start gap-2.5">
@@ -934,16 +960,26 @@ function TaskDetail({
         {runs.length === 0
           ? <p className="pl-3.5 text-xs text-ink-muted">{t("runsNone")}</p>
           : (
-              <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
+              // One card per run, with space between the cards: consecutive runs
+              // used to share a single box separated by hairlines, and a run that
+              // ends in a paragraph of summary ran into the next one's header.
+              <ul className="space-y-3">
                 {runs.map(run => (
-                  // Two lines per run rather than fixed columns: a CJK status and
-                  // an English one are different widths, and columns padded to the
-                  // wider script leave the other one visibly misaligned.
-                  <li key={run.id} className="space-y-1.5 px-3.5 py-3">
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className="text-ink-muted">{t(`kind.${run.kind}`)}</span>
+                  <li key={run.id} className="overflow-hidden rounded-md border border-line-soft">
+                    <div className="flex items-center gap-2 border-b border-line-soft bg-surface-subtle px-3.5 py-2.5 text-xs">
+                      <span className="font-medium text-ink">{t(`status.${run.status}`)}</span>
                       <span aria-hidden className="text-line">·</span>
-                      <span className="text-ink">{t(`status.${run.status}`)}</span>
+                      <span className="text-ink-muted">{t(`kind.${run.kind}`)}</span>
+                      {run.promptVersion != null
+                        ? (
+                            <>
+                              <span aria-hidden className="text-line">·</span>
+                              <span className="text-ink-muted">
+                                {t("runPromptVersion", { version: run.promptVersion })}
+                              </span>
+                            </>
+                          )
+                        : null}
                       <span aria-hidden className="text-line">·</span>
                       <span className="min-w-0 flex-1 truncate text-ink-muted">
                         {run.startedAt ? formatEpoch(run.startedAt, locale) : ""}
@@ -956,9 +992,22 @@ function TaskDetail({
                           )
                         : null}
                     </div>
-                    <p className="text-xs leading-relaxed text-ink-soft">
-                      {run.errorMessage ?? run.resultSummary ?? t("runNoSummary")}
-                    </p>
+                    <div className="space-y-3 px-3.5 py-3">
+                      <p className="text-xs leading-relaxed text-ink-soft">
+                        {run.errorMessage ?? run.resultSummary ?? t("runNoSummary")}
+                      </p>
+                      {/* A suggestion belongs under the result it read: the
+                          decision is "was this run's outcome caused by this
+                          prompt", which a list at the bottom of the page cannot
+                          pose. */}
+                      {suggestionsByRun.get(run.id)?.map(revision => (
+                        <SuggestionBlock
+                          key={revision.id}
+                          revision={revision}
+                          onApply={() => void store.applyRevision(task.id, revision.id).then(refresh)}
+                        />
+                      ))}
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -967,78 +1016,119 @@ function TaskDetail({
 
       <section className="space-y-3">
         <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("revisions")}</h3>
-        {revisions.length === 0
+        {versions.length === 0 && orphans.length === 0
           ? <p className="pl-3.5 text-xs text-ink-muted">{t("revisionsNone")}</p>
           : (
-              <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
-                {revisions.map((revision) => {
-                  // A suggestion is not a version yet: it has no version
-                  // number, it is marked as such, and applying it is what puts
-                  // it in force (the row then reads "applied").
-                  const proposed = revision.status === "proposed";
-                  const applied = revision.status === "applied";
-                  return (
-                    // Version rows follow the same two-line shape as runs and
-                    // dependencies: a fixed column would drift as soon as one
-                    // locale's source label is wider than the other's.
-                    <li key={revision.id} className="space-y-1.5 px-3.5 py-3">
-                      <div className="flex items-center gap-2 text-xs">
-                        {proposed
-                          ? (
-                              <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[11px] font-semibold leading-none text-accent">
-                                {t("suggestion")}
-                              </span>
-                            )
-                          : (
-                              <span className="text-ink-muted">
-                                v
-                                {revision.version}
-                              </span>
-                            )}
-                        <span aria-hidden className="text-line">·</span>
-                        <span className="text-ink">{t(`source.${revision.source}`)}</span>
-                        {revision.confidence != null
-                          ? (
-                              <span className="text-ink-muted">
-                                {t("confidence", { value: Math.round(revision.confidence * 100) })}
-                              </span>
-                            )
-                          : null}
-                        {applied
-                          ? <span className="text-ink-muted">{t("applied")}</span>
-                          : null}
-                        <span className="min-w-0 flex-1" />
-                        {proposed
-                          ? (
-                              <Button
-                                leftIcon={<RotateCcw className="size-3" />}
-                                size="xs"
-                                variant="secondary"
-                                onClick={() => void store.applyRevision(task.id, revision.id).then(refresh)}
-                              >
-                                {t("applySuggestion")}
-                              </Button>
-                            )
-                          : (
-                              <Button
-                                leftIcon={<RotateCcw className="size-3" />}
-                                size="xs"
-                                variant="ghost"
-                                onClick={() => void store.applyRevision(task.id, revision.id).then(refresh)}
-                              >
-                                {t("apply")}
-                              </Button>
-                            )}
-                      </div>
-                      <p className="text-[11px] text-ink-muted">
-                        {revision.reason ?? t("revisionsNoReason")}
-                      </p>
-                    </li>
-                  );
-                })}
-              </ul>
+              <div className="space-y-3">
+                {/* Suggestions whose run is not in the (bounded) run list keep
+                    the accept button here rather than disappearing. */}
+                {orphans.map(revision => (
+                  <div key={revision.id} className="space-y-1.5">
+                    <p className="pl-3.5 text-[11px] text-ink-muted">{t("suggestionUnlinked")}</p>
+                    <SuggestionBlock
+                      revision={revision}
+                      onApply={() => void store.applyRevision(task.id, revision.id).then(refresh)}
+                    />
+                  </div>
+                ))}
+                {versions.length > 0
+                  ? (
+                      <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
+                        {versions.map((revision) => {
+                          const applied = revision.status === "applied";
+                          return (
+                            // Version rows follow the same two-line shape as runs and
+                            // dependencies: a fixed column would drift as soon as one
+                            // locale's source label is wider than the other's.
+                            <li key={revision.id} className="space-y-1.5 px-3.5 py-3">
+                              <div className="flex items-center gap-2 text-xs">
+                                <span className="text-ink-muted">
+                                  v
+                                  {revision.version}
+                                </span>
+                                <span aria-hidden className="text-line">·</span>
+                                <span className="text-ink">{t(`source.${revision.source}`)}</span>
+                                {applied
+                                  ? <span className="text-ink-muted">{t("applied")}</span>
+                                  : null}
+                                <span className="min-w-0 flex-1" />
+                                <Button
+                                  leftIcon={<RotateCcw className="size-3" />}
+                                  size="xs"
+                                  variant="ghost"
+                                  onClick={() => void store.applyRevision(task.id, revision.id).then(refresh)}
+                                >
+                                  {t("apply")}
+                                </Button>
+                              </div>
+                              <p className="text-[11px] text-ink-muted">
+                                {revision.reason ?? t("revisionsNoReason")}
+                              </p>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )
+                  : null}
+              </div>
             )}
       </section>
+    </div>
+  );
+}
+
+/**
+ * One prompt suggestion, shown under the run it came from: what the model would
+ * change it to, why, and the button that puts it in force.
+ *
+ * The whole prompt is shown, not a preview: a suggestion is a decision, and a
+ * truncated prompt cannot be decided on. It is bounded in height so a long
+ * prompt cannot push the rest of the ledger off the page.
+ */
+function SuggestionBlock({
+  revision,
+  onApply,
+}: {
+  revision: TaskRevisionView;
+  onApply: () => void;
+}) {
+  const { t } = useTranslation("tasks");
+  return (
+    <div className="space-y-2 rounded-md border border-line-soft border-l-2 border-l-accent bg-surface-subtle px-3 py-3">
+      <div className="flex items-center gap-2 text-xs">
+        <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[11px] font-semibold leading-none text-accent">
+          {t("suggestion")}
+        </span>
+        <span className="text-ink-muted">{t("source.reflection")}</span>
+        {revision.confidence != null
+          ? (
+              <span className="text-ink-muted">
+                {t("confidence", { value: Math.round(revision.confidence * 100) })}
+              </span>
+            )
+          : null}
+        <span className="min-w-0 flex-1" />
+        <Button
+          leftIcon={<Check className="size-3" />}
+          size="xs"
+          variant="secondary"
+          onClick={onApply}
+        >
+          {t("applySuggestion")}
+        </Button>
+      </div>
+      <div className="space-y-1">
+        <p className="text-[11px] font-medium text-ink-soft">{t("suggestionReason")}</p>
+        <p className="text-xs leading-relaxed text-ink">
+          {revision.reason ?? t("revisionsNoReason")}
+        </p>
+      </div>
+      <div className="space-y-1">
+        <p className="text-[11px] font-medium text-ink-soft">{t("suggestedPrompt")}</p>
+        <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-line-soft bg-surface px-2.5 py-2 text-xs leading-relaxed text-ink">
+          {revision.prompt}
+        </pre>
+      </div>
     </div>
   );
 }

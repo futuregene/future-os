@@ -537,6 +537,16 @@ function TaskForm({
     : null;
   const workspaceConversation = draft.conversationMode === "workspace";
   const patch = (values: Partial<Draft>) => setDraft(current => ({ ...current, ...values }));
+  // Suggestions are grouped under the run they read. The run list is bounded,
+  // so a suggestion can outlive its run's place in it: what cannot be grouped
+  // keeps its own block (and its accept button) below.
+  const knownRunIds = new Set(runs.map(run => run.id));
+  const versions = revisions.filter(revision => revision.status !== "proposed");
+  const orphans = revisions.filter(
+    revision =>
+      revision.status === "proposed"
+      && !(revision.sourceRunId && knownRunIds.has(revision.sourceRunId)),
+  );
   const patchTrigger = (values: Partial<DraftTrigger>) =>
     setDraft(current => ({ ...current, trigger: { ...current.trigger, ...values } }));
   // The other tasks a dependency can point at. The desktop refuses a cycle, so
@@ -923,46 +933,102 @@ function TaskForm({
             <SettingsSection title={t("tasks.runs")}>
               {runs.map(run => (
                 <View key={run.id} style={styles.runCard}>
-                  <Text style={settingsStyles.description}>
-                    {t(`tasks.kind.${run.kind}`)}
-                    {" · "}
+                  <Text style={styles.runHeading}>
                     {t(`tasks.status.${run.status}`)}
+                    {" · "}
+                    {t(`tasks.kind.${run.kind}`)}
+                    {run.promptVersion != null ? ` · ${t("tasks.runPromptVersion", { version: run.promptVersion })}` : ""}
                   </Text>
                   <Text style={styles.runSummary}>
                     {run.errorMessage ?? run.resultSummary ?? t("tasks.runNoSummary")}
                   </Text>
+                  {/* A suggestion belongs under the run it read: it claims this
+                      prompt is why that happened. */}
+                  {revisions
+                    .filter(revision => revision.status === "proposed" && revision.sourceRunId === run.id)
+                    .map(revision => (
+                      <SuggestionBlock
+                        key={revision.id}
+                        busy={busy}
+                        revision={revision}
+                        onApply={() => void onMutate?.(() => remote.applyTaskRevision(detail!.id, revision.id))}
+                      />
+                    ))}
                 </View>
               ))}
             </SettingsSection>
           )
         : null}
 
-      {revisions.length > 0
+      {versions.length > 0 || orphans.length > 0
         ? (
             <SettingsSection title={t("tasks.revisions")}>
-              {revisions.map((revision) => {
-                // A suggestion is not a version yet: it has no version number,
-                // and applying it is what puts it in force (the row then reads
-                // "applied").
-                const proposed = revision.status === "proposed";
-                const confidence = revision.confidence != null
-                  ? ` · ${t("tasks.confidence", { value: Math.round(revision.confidence * 100) })}`
-                  : "";
-                const heading = proposed
-                  ? `${t("tasks.suggestion")} · ${t(`tasks.source.${revision.source}`)}${confidence}`
-                  : `v${revision.version} · ${t(`tasks.source.${revision.source}`)}${revision.status === "applied" ? ` · ${t("tasks.applied")}` : ""}`;
-                return (
-                  <View key={revision.id} style={settingsStyles.card}>
-                    <Text style={settingsStyles.label}>{heading}</Text>
-                    <Text style={settingsStyles.description}>{revision.reason ?? revision.promptPreview}</Text>
-                    <Button label={proposed ? t("tasks.applySuggestion") : t("tasks.apply")} disabled={busy} onPress={() => void onMutate?.(() => remote.applyTaskRevision(detail!.id, revision.id))} />
-                  </View>
-                );
-              })}
+              {/* A suggestion whose run is not in the bounded run list keeps its
+                  own block (and its accept button) rather than disappearing. */}
+              {orphans.map(revision => (
+                <View key={revision.id} style={styles.stack}>
+                  <Text style={settingsStyles.description}>{t("tasks.suggestionUnlinked")}</Text>
+                  <SuggestionBlock
+                    busy={busy}
+                    revision={revision}
+                    onApply={() => void onMutate?.(() => remote.applyTaskRevision(detail!.id, revision.id))}
+                  />
+                </View>
+              ))}
+              {versions.map((revision) => (
+                // A version row: a suggestion is not one (it has no version
+                // number) until it is accepted.
+                <View key={revision.id} style={settingsStyles.card}>
+                  <Text style={settingsStyles.label}>
+                    {`v${revision.version} · ${t(`tasks.source.${revision.source}`)}${revision.status === "applied" ? ` · ${t("tasks.applied")}` : ""}`}
+                  </Text>
+                  <Text style={settingsStyles.description}>{revision.reason ?? revision.promptPreview}</Text>
+                  <Button label={t("tasks.apply")} disabled={busy} onPress={() => void onMutate?.(() => remote.applyTaskRevision(detail!.id, revision.id))} />
+                </View>
+              ))}
             </SettingsSection>
           )
         : null}
     </ScrollView>
+  );
+}
+
+/**
+ * A prompt suggestion: what the model would change the prompt to, why, and the
+ * button that puts it in force.
+ *
+ * The prompt is collapsed by default and expanded on demand: a nested vertical
+ * scroller inside this page's ScrollView does not receive the gesture on
+ * Android, so a fixed-height box would hide the end of a long prompt with no
+ * way to reach it.
+ */
+function SuggestionBlock({ revision, busy, onApply }: {
+  revision: RemoteTaskRevision;
+  busy: boolean;
+  onApply(): void;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const confidence = revision.confidence != null
+    ? ` · ${t("tasks.confidence", { value: Math.round(revision.confidence * 100) })}`
+    : "";
+  return (
+    <View style={styles.suggestion}>
+      <Text style={styles.suggestionHeading}>
+        {`${t("tasks.suggestion")} · ${t(`tasks.source.${revision.source}`)}${confidence}`}
+      </Text>
+      <Text style={styles.suggestionReasonLabel}>{t("tasks.suggestionReason")}</Text>
+      <Text style={settingsStyles.description}>{revision.reason ?? t("tasks.revisionsNoReason")}</Text>
+      <Pressable accessibilityRole="button" accessibilityState={{ expanded: open }} onPress={() => setOpen(current => !current)}>
+        <Text style={styles.suggestionToggle}>
+          {open ? t("tasks.suggestedPromptHide") : t("tasks.suggestedPromptShow")}
+        </Text>
+      </Pressable>
+      {open
+        ? <Text style={styles.suggestionPrompt}>{revision.prompt ?? revision.promptPreview}</Text>
+        : null}
+      <Button label={t("tasks.applySuggestion")} disabled={busy} onPress={onApply} />
+    </View>
   );
 }
 
@@ -983,6 +1049,12 @@ const styles = StyleSheet.create({
   cardHeader: { flexDirection: "row", alignItems: "center", gap: spacing.md },
   cardTitle: { flex: 1, minWidth: 0, color: colors.inkStrong, fontSize: 15, fontWeight: "600" },
   runCard: { gap: spacing.sm, padding: spacing.lg, borderWidth: 1, borderColor: colors.line, borderRadius: radius.lg, backgroundColor: colors.surface },
+  runHeading: { color: colors.ink, fontSize: 13, fontWeight: "600" },
   runSummary: { color: colors.inkSoft, fontSize: 13, lineHeight: 20 },
+  suggestion: { gap: spacing.sm, padding: spacing.md, borderWidth: 1, borderColor: colors.line, borderLeftWidth: 3, borderLeftColor: colors.accent, borderRadius: radius.md, backgroundColor: colors.surfaceSubtle },
+  suggestionHeading: { color: colors.ink, fontSize: 13, fontWeight: "600" },
+  suggestionReasonLabel: { color: colors.inkMuted, fontSize: 12, fontWeight: "600" },
+  suggestionToggle: { color: colors.accent, fontSize: 13, fontWeight: "600" },
+  suggestionPrompt: { color: colors.ink, fontSize: 13, lineHeight: 20, padding: spacing.sm, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
   depCard: { gap: spacing.xs, padding: spacing.md, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
 });

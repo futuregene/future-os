@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { ScrollView, Text, TextInput } from "react-native";
 import { Button } from "../../../components/Button";
 import type { DesktopSettings } from "../../../remote/types";
@@ -117,6 +117,27 @@ const pressables = () => tree.root.findAll(node => typeof node.props.onPress ===
 const rowFor = (name: string) => pressables()
   .find(node => node.findAllByType(Text).some(text => text.props.children === name))!;
 const firstTask = () => rowFor("daily report");
+
+/** Every string a subtree shows (the shape `texts()` uses, scoped to one node). */
+const shownIn = (node: ReactTestInstance) =>
+  node.findAllByType(Text).map(text => text.props.children).flat().filter(child => typeof child === "string") as string[];
+
+/**
+ * The innermost element whose subtree shows every one of `values` — a way to ask
+ * "which card is this in?" without depending on style or index. Depth-first
+ * order puts descendants last, so the last match is the tightest scope.
+ */
+function subtreeWith(...values: string[]) {
+  const nodes = tree.root.findAll(node => values.every(value => shownIn(node).includes(value)));
+  const tightest = nodes[nodes.length - 1];
+  if (!tightest)
+    throw new Error(`nothing shows ${values.join(" + ")}`);
+  return tightest;
+}
+
+/** The pressable carrying `label` (the suggestion toggle is a plain pressable). */
+const pressableWith = (label: string) => pressables()
+  .find(node => node.findAllByType(Text).some(text => text.props.children === label))!;
 
 /** Let the resource's promise settle before asserting on the rendered rows. */
 async function flush() { await act(async () => { await Promise.resolve(); }); }
@@ -836,6 +857,74 @@ test("marks an accepted suggestion as applied", async () => {
   const shown = texts().map(String);
   expect(shown.some(text => text.includes("tasks.applied"))).toBe(true);
   expect(button("tasks.applySuggestion")).toBeUndefined();
+});
+
+// A suggestion is a claim about one run ("this prompt is why that happened"), so
+// it is read inside that run's card — with the change it proposes, which is what
+// the user decides on.
+test("groups a suggestion with the run it read, and shows the prompt it proposes", async () => {
+  runs = [
+    { id: "trn_2", kind: "main", origin: "schedule", status: "completed", threadId: null, startedAt: 3, finishedAt: 4, promptVersion: 3, resultSummary: "the newer run", errorMessage: null },
+    { id: "trn_1", kind: "main", origin: "schedule", status: "completed", threadId: "thr_1", startedAt: 1, finishedAt: 2, promptVersion: 2, resultSummary: "all good", errorMessage: null },
+  ];
+  revisions = [
+    {
+      id: "rev_suggestion",
+      version: 0,
+      source: "reflection",
+      status: "proposed",
+      reason: "the output path was not stated",
+      confidence: 0.82,
+      createdAt: 5,
+      sourceRunId: "trn_2",
+      prompt: "summarize yesterday, then write reports/weekly.md",
+      promptPreview: "summarize yesterday, then write…",
+    },
+  ];
+  await remount();
+  await act(async () => firstTask().props.onPress());
+
+  // The suggestion sits in the card of the run it read, not in the other one.
+  const card = subtreeWith("tasks.status.completed", "the newer run");
+  const cardTexts = shownIn(card);
+  expect(cardTexts.some(text => text.startsWith("tasks.suggestion"))).toBe(true);
+  expect(cardTexts).toContain("the output path was not stated");
+  expect(shownIn(subtreeWith("tasks.status.completed", "all good"))).not.toContain("the output path was not stated");
+
+  // The whole prompt, behind the toggle: a scroller inside this page's
+  // ScrollView cannot be reached on Android, so it is expanded instead.
+  expect(texts()).not.toContain("summarize yesterday, then write reports/weekly.md");
+  await act(async () => pressableWith("tasks.suggestedPromptShow").props.onPress());
+  expect(texts()).toContain("summarize yesterday, then write reports/weekly.md");
+  await act(async () => pressableWith("tasks.suggestedPromptHide").props.onPress());
+  expect(texts()).not.toContain("summarize yesterday, then write reports/weekly.md");
+
+  await act(async () => button("tasks.applySuggestion").props.onPress());
+  expect(mockRemote.applyTaskRevision).toHaveBeenCalledWith("tsk_1", "rev_suggestion");
+});
+
+// The run list is bounded, so a suggestion can outlive its run's place in it.
+// It keeps its own block and its accept button instead of disappearing.
+test("keeps a suggestion whose run is not in the list", async () => {
+  revisions = [
+    {
+      id: "rev_suggestion",
+      version: 0,
+      source: "reflection",
+      status: "proposed",
+      reason: "the output path was not stated",
+      confidence: 0.82,
+      createdAt: 2,
+      sourceRunId: "trn_gone",
+      prompt: "a better prompt",
+      promptPreview: "a better prompt",
+    },
+  ];
+  await remount();
+  await act(async () => firstTask().props.onPress());
+  expect(texts()).toContain("tasks.suggestionUnlinked");
+  expect(texts()).toContain("the output path was not stated");
+  expect(button("tasks.applySuggestion")).toBeDefined();
 });
 
 // Both halves of the dependency state, and a run that recorded no summary.

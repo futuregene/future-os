@@ -560,6 +560,12 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                                 "reason": r.reason,
                                 "confidence": r.confidence,
                                 "createdAt": r.created_at,
+                                "sourceRunId": r.source_run_id,
+                                // The whole prompt, not just a preview: a
+                                // suggestion is something the user accepts or
+                                // rejects, and 160 characters cannot be judged.
+                                // `promptPreview` stays for older clients.
+                                "prompt": r.prompt,
                                 "promptPreview": truncate(&r.prompt, 160),
                             })
                         })
@@ -572,46 +578,12 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
         },
         "apply_task_revision" => match open_store() {
             Ok(store) => {
-                let result = store
-                    .list_revisions(&cmd.task_id)
-                    .map_err(|e| crate::AppError::Message(e.to_string()))
-                    .and_then(|revisions| {
-                        revisions
-                            .into_iter()
-                            .find(|r| r.id == cmd.revision_id)
-                            .ok_or_else(|| crate::AppError::Message("revision not found".into()))
-                    })
-                    .and_then(|revision| {
-                        let mut task = store
-                            .get_task(&cmd.task_id)
-                            .map_err(|e| crate::AppError::Message(e.to_string()))?
-                            .ok_or_else(|| crate::AppError::Message("task not found".into()))?;
-                        task.prompt = revision.prompt;
-                        task.prompt_version += 1;
-                        task.updated_at = now_ms();
-                        let applied = future_tasks::PromptRevision {
-                            id: future_tasks::new_revision_id(),
-                            task_id: task.id.clone(),
-                            version: task.prompt_version,
-                            prompt: task.prompt.clone(),
-                            source: "rollback".to_string(),
-                            status: "active".to_string(),
-                            reason: Some(format!("applied revision {}", revision.id)),
-                            confidence: None,
-                            source_run_id: None,
-                            created_at: now_ms(),
-                        };
-                        store
-                            .insert_revision(&applied)
-                            .map_err(|e| crate::AppError::Message(e.to_string()))?;
-                        store
-                            .update_task(&task)
-                            .map_err(|e| crate::AppError::Message(e.to_string()))?;
-                        Ok(task)
-                    });
-                match result {
+                // The same implementation the webview command uses, so
+                // accepting a suggestion from the phone marks it applied and
+                // records the version the same way.
+                match crate::tasks::accept_revision(&store, &cmd.task_id, &cmd.revision_id) {
                     Ok(task) => reply(sink, true, task_detail_view(&store, task), None).await,
-                    Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+                    Err(error) => reply(sink, false, Value::Null, Some(&error)).await,
                 }
             }
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
@@ -755,6 +727,104 @@ mod tests {
         assert_eq!(data["thinkingLevel"], "high");
         assert_eq!(data["sessionPolicy"], "existing");
         assert_eq!(data["conversationMode"], "workspace");
+    }
+
+    /// What a suggestion carries over the wire: the whole prompt (a suggestion
+    /// is a decision, and 160 characters cannot be decided on) and the run it
+    /// read, so the phone can put it under that run's result.
+    #[tokio::test]
+    async fn a_suggestion_crosses_the_wire_with_its_prompt_and_run() {
+        let _home = home("business-tasks-suggestion-wire");
+        let store = open_store().expect("store");
+        let saved = task("suggests", future_tasks::SessionPolicy::New);
+        store.insert_task(&saved).unwrap();
+        store
+            .insert_revision(&future_tasks::PromptRevision {
+                id: "rev_suggestion".into(),
+                task_id: saved.id.clone(),
+                version: future_tasks::PROPOSAL_VERSION,
+                prompt: "summarise the week, then write reports/weekly.md".into(),
+                source: future_tasks::REVISION_SOURCE_REFLECTION.into(),
+                status: future_tasks::REVISION_STATUS_PROPOSED.into(),
+                reason: Some("the output path was not stated".into()),
+                confidence: Some(0.82),
+                source_run_id: Some("trn_7".into()),
+                created_at: 5,
+            })
+            .unwrap();
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("list_task_revisions");
+        cmd.task_id = saved.id.clone();
+        super::execute(&cmd, &sink).await;
+        let suggestion = &sink.ok_data()["revisions"][0];
+        assert_eq!(
+            suggestion["prompt"],
+            "summarise the week, then write reports/weekly.md"
+        );
+        assert_eq!(suggestion["sourceRunId"], "trn_7");
+        // The preview stays for a phone paired with an older desktop.
+        assert!(suggestion["promptPreview"].as_str().is_some());
+    }
+
+    /// Accepting a suggestion from the phone has to mean what it means on the
+    /// desktop. It used to record an unrelated `rollback` row and leave the
+    /// suggestion pending: a button that looked like it worked and did not.
+    #[tokio::test]
+    async fn the_phone_accepts_a_suggestion_the_way_the_desktop_does() {
+        let _home = home("business-tasks-suggestion-apply");
+        let store = open_store().expect("store");
+        let saved = task("accepts", future_tasks::SessionPolicy::New);
+        store.insert_task(&saved).unwrap();
+        store
+            .insert_revision(&future_tasks::PromptRevision {
+                id: "rev_suggestion".into(),
+                task_id: saved.id.clone(),
+                version: future_tasks::PROPOSAL_VERSION,
+                prompt: "summarise the week, then write reports/weekly.md".into(),
+                source: future_tasks::REVISION_SOURCE_REFLECTION.into(),
+                status: future_tasks::REVISION_STATUS_PROPOSED.into(),
+                reason: Some("the output path was not stated".into()),
+                confidence: Some(0.82),
+                source_run_id: Some("trn_7".into()),
+                created_at: 5,
+            })
+            .unwrap();
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("apply_task_revision");
+        cmd.task_id = saved.id.clone();
+        cmd.revision_id = "rev_suggestion".into();
+        super::execute(&cmd, &sink).await;
+        assert_eq!(sink.ok_data()["promptVersion"], 4);
+        assert_eq!(
+            sink.ok_data()["prompt"],
+            "summarise the week, then write reports/weekly.md"
+        );
+
+        let history = store.list_revisions(&saved.id).unwrap();
+        let suggestion = history
+            .iter()
+            .find(|r| r.id == "rev_suggestion")
+            .expect("the suggestion row");
+        assert_eq!(suggestion.status, future_tasks::REVISION_STATUS_APPLIED);
+        assert_eq!(suggestion.version, future_tasks::PROPOSAL_VERSION);
+        let live = history
+            .iter()
+            .find(|r| r.version == 4)
+            .expect("the live version");
+        assert_eq!(live.source, future_tasks::REVISION_SOURCE_REFLECTION);
+        assert_eq!(
+            live.reason.as_deref(),
+            Some("the output path was not stated"),
+            "the version keeps the reason the user read"
+        );
+        assert!(
+            history
+                .iter()
+                .any(|r| r.source == future_tasks::REVISION_SOURCE_SUPERSEDED),
+            "the replaced version stays in the history: {history:?}"
+        );
     }
 
     /// A phone may ask for the runs of a task that no longer exists; the ledger

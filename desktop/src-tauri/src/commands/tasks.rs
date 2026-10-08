@@ -485,6 +485,10 @@ pub fn list_task_revisions(id: String) -> Result<Vec<RevisionView>, crate::AppEr
             status: r.status,
             reason: r.reason,
             confidence: r.confidence,
+            // The run a suggestion came from: the detail view groups a
+            // suggestion under that run's result instead of parking every
+            // suggestion at the bottom of the page.
+            source_run_id: r.source_run_id,
             created_at: r.created_at,
         })
         .collect())
@@ -500,6 +504,8 @@ pub struct RevisionView {
     pub status: String,
     pub reason: Option<String>,
     pub confidence: Option<f64>,
+    /// The run this revision came from (a suggestion names the run it read).
+    pub source_run_id: Option<String>,
     pub created_at: i64,
 }
 
@@ -507,64 +513,10 @@ pub struct RevisionView {
 #[tauri::command]
 pub fn apply_task_revision(id: String, revision_id: String) -> Result<TaskView, crate::AppError> {
     let store = open()?;
-    let mut task = store
-        .get_task(&id)
-        .map_err(|e| crate::AppError::Message(e.to_string()))?
-        .ok_or_else(|| crate::AppError::Message("task not found".to_string()))?;
-    let history = store
-        .list_revisions(&id)
-        .map_err(|e| crate::AppError::Message(e.to_string()))?;
-    let revision = history
-        .iter()
-        .find(|r| r.id == revision_id)
-        .ok_or_else(|| crate::AppError::Message("revision not found".to_string()))?
-        .clone();
-    // A suggestion is accepted by applying it: the version that goes live is
-    // recorded as coming from reflection (carrying the suggestion's own reason),
-    // and the suggestion itself is marked applied instead of staying pending.
-    let is_suggestion = revision.status == future_tasks::REVISION_STATUS_PROPOSED;
-    let source = if is_suggestion {
-        future_tasks::REVISION_SOURCE_REFLECTION
-    } else {
-        future_tasks::REVISION_SOURCE_ROLLBACK
-    };
-    let reason = if is_suggestion {
-        revision.reason.clone()
-    } else {
-        Some(format!(
-            "applied revision {} (v{})",
-            revision_id, revision.version
-        ))
-    };
-    let rows = future_tasks::prompt_change_revisions(
-        &task,
-        &history,
-        &revision.prompt,
-        source,
-        reason.as_deref(),
-        now_ms(),
-    );
-    let Some(applied) = rows.last() else {
-        // Already active: report the task unchanged rather than bumping a
-        // version for a no-op.
-        return Ok(task_view(&store, task));
-    };
-    for row in &rows {
-        store
-            .insert_revision(row)
-            .map_err(|e| crate::AppError::Message(e.to_string()))?;
-    }
-    if is_suggestion {
-        store
-            .set_revision_status(&id, &revision_id, future_tasks::REVISION_STATUS_APPLIED)
-            .map_err(|e| crate::AppError::Message(e.to_string()))?;
-    }
-    task.prompt = applied.prompt.clone();
-    task.prompt_version = applied.version;
-    task.updated_at = now_ms();
-    store
-        .update_task(&task)
-        .map_err(|e| crate::AppError::Message(e.to_string()))?;
+    // Shared with the phone's remote bridge, so accepting a suggestion means
+    // the same thing on both surfaces (crate::tasks::accept_revision).
+    let task = crate::tasks::accept_revision(&store, &id, &revision_id)
+        .map_err(crate::AppError::Message)?;
     Ok(task_view(&store, task))
 }
 
@@ -772,6 +724,10 @@ mod tests {
             .find(|r| r.id == "rev_suggestion")
             .expect("the suggestion row");
         assert_eq!(suggestion.status, future_tasks::REVISION_STATUS_APPLIED);
+        // The run it read crosses the wire too: the panel groups a suggestion
+        // under that run's result instead of listing every suggestion at the
+        // bottom of the page.
+        assert_eq!(suggestion.source_run_id.as_deref(), Some("trn_1"));
         let live = revisions
             .iter()
             .find(|r| r.version == applied.prompt_version)

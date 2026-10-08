@@ -58,5 +58,9 @@ export interface RemoteTaskRevision {
   reason?: string | null;
   confidence?: number | null;
   createdAt: number;
+  /** The run a suggestion read; the detail groups it under that run. */
+  sourceRunId?: string | null;
+  /** The whole prompt (absent on an older desktop: fall back to the preview). */
+  prompt?: string | null;
   promptPreview: string;
 }
