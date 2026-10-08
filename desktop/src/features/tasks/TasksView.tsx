@@ -19,7 +19,7 @@ function formatEpoch(ms: number | null, locale: string): string {
 const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 
 /** Trigger modes the form can edit (mirrors the kernel's schedule modes). */
-type TriggerMode = "manual" | "dependency" | "once" | "interval" | "daily" | "weekly" | "monthly";
+type TriggerMode = "manual" | "dependency" | "once" | "interval" | "daily" | "weekly" | "monthly" | "yearly";
 
 interface DraftTrigger {
   mode: TriggerMode;
@@ -28,6 +28,7 @@ interface DraftTrigger {
   everyMinutes: number;
   days: string[];
   day: number;
+  month: number;
 }
 
 const emptyTrigger: DraftTrigger = {
@@ -37,6 +38,7 @@ const emptyTrigger: DraftTrigger = {
   everyMinutes: 60,
   days: ["mon"],
   day: 1,
+  month: 12,
 };
 
 /**
@@ -103,6 +105,7 @@ function triggerFromTask(task: TaskView): DraftTrigger {
     everyMinutes: Number(trigger.every_minutes ?? 60),
     days: Array.isArray(trigger.days) ? (trigger.days as string[]) : ["mon"],
     day: Number(trigger.day ?? 1),
+    month: Number(trigger.month ?? 12),
   };
 }
 
@@ -120,6 +123,11 @@ function triggerPayload(draft: DraftTrigger): { kind: string; trigger: Record<st
       return { kind: "schedule", trigger: { mode: "weekly", days: draft.days, time: draft.time } };
     case "monthly":
       return { kind: "schedule", trigger: { mode: "monthly", day: draft.day, time: draft.time } };
+    case "yearly":
+      return {
+        kind: "schedule",
+        trigger: { mode: "yearly", month: draft.month, day: draft.day, time: draft.time },
+      };
     default:
       return { kind: "schedule", trigger: { mode: "daily", time: draft.time } };
   }
@@ -170,6 +178,12 @@ function summarizeTrigger(
     }
     case "monthly":
       return t("trigger.monthly", {
+        day: Number(trigger.day ?? 1),
+        time,
+      });
+    case "yearly":
+      return t("trigger.yearly", {
+        month: Number(trigger.month ?? 1),
         day: Number(trigger.day ?? 1),
         time,
       });
@@ -588,6 +602,7 @@ function TaskForm({
           <option value="daily">{t("triggerMode.daily")}</option>
           <option value="weekly">{t("triggerMode.weekly")}</option>
           <option value="monthly">{t("triggerMode.monthly")}</option>
+          <option value="yearly">{t("triggerMode.yearly")}</option>
         </Select>
 
         {trigger.mode === "once"
@@ -778,6 +793,41 @@ function TaskForm({
                       </label>
                     )
                   : null}
+              </div>
+            )
+          : null}
+        {trigger.mode === "yearly"
+          ? (
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block space-y-1.5">
+                    <span className="text-xs text-ink-soft">{t("form.month")}</span>
+                    <TextInput
+                      type="number"
+                      max={12}
+                      min={1}
+                      value={trigger.month}
+                      onChange={e => setTrigger({ month: Number(e.target.value) || 1 })}
+                    />
+                  </label>
+                  <label className="block space-y-1.5">
+                    <span className="text-xs text-ink-soft">{t("form.dayOfMonth")}</span>
+                    <TextInput
+                      type="number"
+                      max={31}
+                      min={1}
+                      value={trigger.day}
+                      onChange={e => setTrigger({ day: Number(e.target.value) || 1 })}
+                    />
+                  </label>
+                </div>
+                <label className="block space-y-1.5">
+                  <span className="text-xs text-ink-soft">{t("form.time")}</span>
+                  <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
+                </label>
+                {/* A clamped day is user-visible by design, the same rule the
+                    monthly mode states. */}
+                <p className="text-[11px] text-ink-muted">{t("form.shortMonthHint")}</p>
               </div>
             )
           : null}

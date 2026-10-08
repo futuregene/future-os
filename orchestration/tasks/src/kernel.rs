@@ -73,11 +73,32 @@ fn floor_char_boundary(s: &str, idx: usize) -> usize {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "mode", rename_all = "lowercase")]
 pub enum ScheduleMode {
-    Once { date: String, time: String },
-    Interval { every_minutes: i64, anchor: i64 },
-    Daily { time: String },
-    Weekly { days: Vec<String>, time: String },
-    Monthly { day: i64, time: String },
+    Once {
+        date: String,
+        time: String,
+    },
+    Interval {
+        every_minutes: i64,
+        anchor: i64,
+    },
+    Daily {
+        time: String,
+    },
+    Weekly {
+        days: Vec<String>,
+        time: String,
+    },
+    Monthly {
+        day: i64,
+        time: String,
+    },
+    /// Once a year on `month`/`day`. A day that does not exist in that month
+    /// clamps to the month's last day, the rule monthly mode already uses.
+    Yearly {
+        month: u32,
+        day: i64,
+        time: String,
+    },
 }
 
 /// Parse `trigger_json` into a schedule mode (only for `trigger_kind=schedule`).
@@ -147,6 +168,16 @@ fn next_due_for_mode(mode: &ScheduleMode, after_ms: i64) -> Option<i64> {
                 .min()
                 .map(|d| d.timestamp_millis())
         }
+        ScheduleMode::Yearly { month, day, time } => {
+            let t = parse_time(time)?;
+            // Three years of candidates: the one this year (if still ahead), the
+            // next, and one more so a clamped leap day cannot fall through.
+            (0..=2)
+                .filter_map(|delta| yearly_candidate(after_ms, *month, *day, t, delta))
+                .filter(|cand| cand.timestamp_millis() > after_ms)
+                .min()
+                .map(|d| d.timestamp_millis())
+        }
     }
 }
 
@@ -180,6 +211,30 @@ fn monthly_candidate(
     let (y, m) = add_months(after.year(), after.month(), delta);
     let dom = day.min(days_in_month(y, m) as i64) as u32;
     let date = NaiveDate::from_ymd_opt(y, m, dom)?;
+    Local.from_local_datetime(&date.and_time(time)).earliest()
+}
+
+/// The `delta`-th `month`/`day` at `time`, relative to the year `after_ms` is in.
+///
+/// The month is checked before [`days_in_month`], which indexes the *next*
+/// month and would panic on a 0 or 13 that a hand-edited `trigger_json` can
+/// carry. A day below 1 is rejected here and a day past the month's end clamps,
+/// matching monthly mode.
+fn yearly_candidate(
+    after_ms: i64,
+    month: u32,
+    day: i64,
+    time: chrono::NaiveTime,
+    delta: i64,
+) -> Option<chrono::DateTime<chrono::Local>> {
+    use chrono::{DateTime, Local, TimeZone};
+    if !(1..=12).contains(&month) || day < 1 {
+        return None;
+    }
+    let after = DateTime::from_timestamp_millis(after_ms)?.with_timezone(&Local);
+    let year = after.year() + delta as i32;
+    let dom = day.min(days_in_month(year, month) as i64) as u32;
+    let date = NaiveDate::from_ymd_opt(year, month, dom)?;
     Local.from_local_datetime(&date.and_time(time)).earliest()
 }
 
@@ -585,14 +640,22 @@ pub const COMPLETION_CONTRACT: &str = "\n\nCompletion contract:\n\
 /// The pieces are public on their own (the header and the fan-in block have
 /// their own tests and reasons), but a host should compose through this so the
 /// order and the separators exist in exactly one place.
+///
+/// `started_at_ms` anchors every run that has no scheduled occurrence. Only
+/// `RunKind::Main` has a `due_at`; a manual, chain, test or reflection run has
+/// none, and a task prompt derives its target date from the envelope — so
+/// without the fallback those runs would have to guess from the wall clock,
+/// which is exactly what the prompts tell the agent not to do. For those kinds
+/// the run's own start *is* the occurrence.
 pub fn compose_run_prompt(
     task: &Task,
     kind: crate::types::RunKind,
     due_ms: Option<i64>,
     occurrence: Option<i64>,
+    started_at_ms: i64,
     upstream: &[UpstreamSource],
 ) -> String {
-    let mut out = compose_envelope_header(task, kind, due_ms, occurrence);
+    let mut out = compose_envelope_header(task, kind, due_ms.or(Some(started_at_ms)), occurrence);
     let upstream = compose_upstream_block(upstream);
     if !upstream.is_empty() {
         out.push_str(&upstream);
@@ -738,6 +801,126 @@ mod tests {
         assert_eq!(
             next_due(&t, ms_of(2026, 2, 28, 9, 0)),
             Some(ms_of(2026, 3, 31, 9, 0))
+        );
+    }
+
+    /// Yearly fires once a year on its month/day, and rolls to next year once
+    /// the slot has passed.
+    #[test]
+    fn yearly_fires_once_a_year() {
+        let t = task(
+            serde_json::json!({"mode":"yearly","month":12,"day":31,"time":"22:00"}),
+            TriggerKind::Schedule,
+        );
+        // From mid-year → this year's slot.
+        assert_eq!(
+            next_due(&t, ms_of(2026, 6, 1, 0, 0)),
+            Some(ms_of(2026, 12, 31, 22, 0))
+        );
+        // Just before it → still this year's.
+        assert_eq!(
+            next_due(&t, ms_of(2026, 12, 31, 21, 59)),
+            Some(ms_of(2026, 12, 31, 22, 0))
+        );
+        // Exactly on the slot → next year's, so the run does not repeat.
+        assert_eq!(
+            next_due(&t, ms_of(2026, 12, 31, 22, 0)),
+            Some(ms_of(2027, 12, 31, 22, 0))
+        );
+    }
+
+    /// A yearly day the month cannot hold clamps to the month's last day — the
+    /// rule monthly mode already uses — so 29 February runs on the 28th in a
+    /// common year and back on the 29th in a leap year.
+    #[test]
+    fn yearly_clamps_a_leap_day() {
+        let t = task(
+            serde_json::json!({"mode":"yearly","month":2,"day":29,"time":"09:00"}),
+            TriggerKind::Schedule,
+        );
+        // 2026 is not a leap year.
+        assert_eq!(
+            next_due(&t, ms_of(2026, 1, 1, 0, 0)),
+            Some(ms_of(2026, 2, 28, 9, 0))
+        );
+        // 2028 is.
+        assert_eq!(
+            next_due(&t, ms_of(2027, 6, 1, 0, 0)),
+            Some(ms_of(2028, 2, 29, 9, 0))
+        );
+    }
+
+    /// The earliest upcoming occurrence wins, whether that is this year or next.
+    #[test]
+    fn yearly_picks_the_earliest_upcoming_occurrence() {
+        let t = task(
+            serde_json::json!({"mode":"yearly","month":3,"day":31,"time":"08:00"}),
+            TriggerKind::Schedule,
+        );
+        assert_eq!(
+            next_due(&t, ms_of(2026, 3, 1, 0, 0)),
+            Some(ms_of(2026, 3, 31, 8, 0))
+        );
+        assert_eq!(
+            next_due(&t, ms_of(2026, 4, 1, 0, 0)),
+            Some(ms_of(2027, 3, 31, 8, 0))
+        );
+    }
+
+    /// Impossible yearly fields are refused rather than panicking the tick. The
+    /// month is what matters: `days_in_month` indexes the month *after* it, so a
+    /// 0 or 13 would reach `from_ymd_opt(..).unwrap()` and take the tick down.
+    #[test]
+    fn yearly_refuses_impossible_fields() {
+        for (trigger, why) in [
+            (
+                serde_json::json!({"mode":"yearly","month":0,"day":1,"time":"09:00"}),
+                "month 0",
+            ),
+            (
+                serde_json::json!({"mode":"yearly","month":13,"day":1,"time":"09:00"}),
+                "month 13",
+            ),
+            (
+                serde_json::json!({"mode":"yearly","month":6,"day":0,"time":"09:00"}),
+                "day 0",
+            ),
+            (
+                serde_json::json!({"mode":"yearly","month":6,"day":-3,"time":"09:00"}),
+                "negative day",
+            ),
+            (
+                serde_json::json!({"mode":"yearly","month":6,"day":1,"time":"nope"}),
+                "unparseable time",
+            ),
+            (
+                serde_json::json!({"mode":"yearly","month":6,"day":1,"time":""}),
+                "empty time",
+            ),
+        ] {
+            let t = task(trigger, TriggerKind::Schedule);
+            assert_eq!(next_due(&t, ms_of(2026, 6, 1, 0, 0)), None, "{why}");
+        }
+    }
+
+    /// The mode tag is what `trigger_json` carries, so it has to round-trip.
+    #[test]
+    fn yearly_parses_from_its_stored_trigger() {
+        let parsed = parse_schedule(&serde_json::json!({
+            "mode": "yearly", "month": 12, "day": 31, "time": "22:00"
+        }));
+        assert_eq!(
+            parsed,
+            Some(ScheduleMode::Yearly {
+                month: 12,
+                day: 31,
+                time: "22:00".to_string(),
+            })
+        );
+        // A missing field is not a yearly trigger.
+        assert_eq!(
+            parse_schedule(&serde_json::json!({"mode":"yearly","day":31,"time":"22:00"})),
+            None
         );
     }
 
@@ -1162,7 +1345,7 @@ mod tests {
         let mut t = task(serde_json::json!({}), TriggerKind::Manual);
         t.prompt = "summarise the week".into();
 
-        let plain = compose_run_prompt(&t, crate::types::RunKind::Manual, None, None, &[]);
+        let plain = compose_run_prompt(&t, crate::types::RunKind::Manual, None, None, 0, &[]);
         assert!(
             plain.contains("Instruction:\nsummarise the week"),
             "{plain}"
@@ -1191,6 +1374,7 @@ mod tests {
             crate::types::RunKind::Chain,
             None,
             None,
+            0,
             &[UpstreamSource {
                 task_id: "tsk_a".into(),
                 task_name: "upstream".into(),
@@ -1209,6 +1393,73 @@ mod tests {
             with_upstream.contains("status=completed"),
             "{with_upstream}"
         );
+    }
+
+    #[test]
+    fn every_run_kind_gets_a_date_anchor_in_the_envelope() {
+        let t = task(serde_json::json!({}), TriggerKind::Manual);
+        // A scheduled occurrence is the anchor when there is one.
+        let scheduled = compose_run_prompt(
+            &t,
+            crate::types::RunKind::Main,
+            Some(1_760_000_000_000),
+            None,
+            1_760_000_100_000,
+            &[],
+        );
+        assert!(scheduled.contains("due=20"), "{scheduled}");
+
+        // A manual run has no scheduled occurrence: its own start time anchors
+        // it, so a prompt that derives its target date from the envelope never
+        // has to fall back to guessing from the wall clock.
+        for kind in [crate::types::RunKind::Manual, crate::types::RunKind::Chain] {
+            let run = compose_run_prompt(&t, kind, None, None, 1_760_000_000_000, &[]);
+            assert!(
+                run.contains("due=20"),
+                "{kind:?} run has no date anchor: {run}"
+            );
+        }
+
+        // The occurrence still wins when both are present (a late catch-up run
+        // reports the slot it belongs to, not when it happened to fire).
+        let late = compose_run_prompt(
+            &t,
+            crate::types::RunKind::Main,
+            Some(1_760_000_000_000),
+            None,
+            1_760_090_000_000,
+            &[],
+        );
+        assert_eq!(
+            due_field(&late),
+            due_field(&scheduled),
+            "a late run reports its slot, not its firing time"
+        );
+        assert_ne!(
+            due_field(&late),
+            due_field(&compose_run_prompt(
+                &t,
+                crate::types::RunKind::Manual,
+                None,
+                None,
+                1_760_090_000_000,
+                &[],
+            )),
+            "the fallback really uses the start time"
+        );
+    }
+
+    /// The `due=` value from an envelope header's `run:` line.
+    fn due_field(prompt: &str) -> String {
+        prompt
+            .lines()
+            .find_map(|line| line.strip_prefix("run: "))
+            .and_then(|line| {
+                line.split('|')
+                    .find_map(|part| part.trim().strip_prefix("due="))
+            })
+            .unwrap_or_default()
+            .to_string()
     }
 
     // ─── prompt versions ──────────────────────────────────────────────────

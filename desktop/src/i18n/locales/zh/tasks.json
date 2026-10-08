@@ -34,7 +34,8 @@
     "monthly": "每月 {{day}} 日 {{time}}",
     "once": "一次性",
     "everyHours": "每 {{hours}} 小时",
-    "everyDays": "每 {{days}} 天"
+    "everyDays": "每 {{days}} 天",
+    "yearly": "每年 {{month}} 月 {{day}} 日 {{time}}"
   },
   "triggerMode": {
     "manual": "手动（仅在被触发时运行）",
@@ -43,7 +44,8 @@
     "interval": "每隔 N 分钟",
     "daily": "每天",
     "weekly": "每周",
-    "monthly": "每月"
+    "monthly": "每月",
+    "yearly": "每年"
   },
   "status": {
     "running": "运行中",
@@ -130,7 +132,9 @@
     "depCondition": "{{name}} 的触发条件",
     "depRemove": "移除对 {{name}} 的依赖",
     "depRemoveShort": "移除",
-    "depJoin": "多个上游的到达条件"
+    "depJoin": "多个上游的到达条件",
+    "month": "月份",
+    "dayOfMonth": "几号"
   },
   "runNoSummary": "本次没有记录摘要。",
   "runSessionDeleted": "这次运行的会话已按设置删除；输出保存在运行记录里（仍可用 future task output 查看）。",

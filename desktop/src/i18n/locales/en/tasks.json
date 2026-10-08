@@ -34,7 +34,8 @@
     "monthly": "Monthly on day {{day}} at {{time}}",
     "once": "Once",
     "everyHours": "Every {{hours}} h",
-    "everyDays": "Every {{days}} d"
+    "everyDays": "Every {{days}} d",
+    "yearly": "Yearly on {{month}}/{{day}} at {{time}}"
   },
   "triggerMode": {
     "manual": "Manual (only when triggered)",
@@ -43,7 +44,8 @@
     "interval": "Every N minutes",
     "daily": "Every day",
     "weekly": "Every week",
-    "monthly": "Every month"
+    "monthly": "Every month",
+    "yearly": "Once a year"
   },
   "status": {
     "running": "running",
@@ -130,7 +132,9 @@
     "depCondition": "When {{name}} finishes",
     "depRemove": "Remove the dependency on {{name}}",
     "depRemoveShort": "Remove",
-    "depJoin": "With several upstreams, run"
+    "depJoin": "With several upstreams, run",
+    "month": "Month",
+    "dayOfMonth": "Day"
   },
   "runNoSummary": "No summary recorded.",
   "runSessionDeleted": "This run's conversation was deleted as configured; the output is saved on the run (still readable with future task output).",

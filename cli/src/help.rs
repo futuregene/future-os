@@ -257,7 +257,8 @@ Usage:
         (--manual | --at "YYYY-MM-DD HH:MM" | --every 30m
          | --daily [--time 09:00]
          | --weekly --days mon,wed,fri [--time 10:00]
-         | --monthly --day 31 [--time 09:00])
+         | --monthly --day 31 [--time 09:00]
+         | --yearly --month 12 --day 31 [--time 22:00])
   future task edit <id|name> [any add flag] [--enable|--disable]
         [--join-all|--join-any] [--depends-on …] [--json]
   future task enable|disable <id|name>
@@ -281,6 +282,9 @@ Triggers:
   --weekly    Every selected weekday at --time (default 09:00).
   --monthly   Every month on --day (1-31) at --time (default 09:00).
               Months without that day run on the last day of the month.
+  --yearly    Once a year on --month (1-12) and --day (1-31) at --time
+              (default 09:00). A day the month cannot hold runs on the last
+              day of that month, so 2/29 runs on the 28th in a common year.
 
 Dependencies:
   --depends-on A            Run when A finishes successfully.
