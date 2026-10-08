@@ -222,15 +222,15 @@ export function TasksView({
     // One message per missing decision: a task that names no model would run on
     // whatever the app happens to default to, and the form does not offer that
     // choice, so saving one is refused rather than silently reinterpreted.
-    const problem = !input.name || !input.prompt
-      ? t("form.required")
-      : draft.conversationMode === "workspace" && !input.cwd
-        ? t("form.cwdRequired")
-        : !input.modelId
-            ? t("form.modelRequired")
-            : !input.thinkingLevel
-                ? t("form.thinkingRequired")
-                : null;
+    let problem: string | null = null;
+    if (!input.name || !input.prompt)
+      problem = t("form.required");
+    else if (draft.conversationMode === "workspace" && !input.cwd)
+      problem = t("form.cwdRequired");
+    else if (!input.modelId)
+      problem = t("form.modelRequired");
+    else if (!input.thinkingLevel)
+      problem = t("form.thinkingRequired");
     if (problem) {
       setSaveError(problem);
       return;
