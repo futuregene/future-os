@@ -381,7 +381,8 @@ test("summarises every trigger shape on the list row", async () => {
     taskRow({ id: "t2", name: "interval", trigger: { mode: "interval", every_minutes: 30 } }),
     taskRow({ id: "t3", name: "weekly", trigger: { mode: "weekly", days: ["mon", "fri"], time: "10:00" } }),
     taskRow({ id: "t4", name: "monthly", trigger: { mode: "monthly", day: 15, time: "08:00" } }),
-    taskRow({ id: "t5", name: "unknown", trigger: { mode: "nonsense" } }),
+    taskRow({ id: "t5", name: "yearly", trigger: { mode: "yearly", month: 12, day: 31, time: "22:00" } }),
+    taskRow({ id: "t6", name: "unknown", trigger: { mode: "nonsense" } }),
   ];
   await remount();
   const text = texts().join(" ");
@@ -392,6 +393,28 @@ test("summarises every trigger shape on the list row", async () => {
   expect(text).toContain("tasks.weekday.mon");
   expect(text).toContain("tasks.trigger.monthly");
   expect(text).toContain("tasks.trigger.daily");
+  // A yearly trigger names its month: the default arm would render "Daily",
+  // stating the wrong schedule with nothing to show it was guessed.
+  expect(text).toContain("tasks.trigger.yearly");
+});
+
+// Round-tripping matters most here: opening a yearly task and saving it without
+// noticing must not move the run to another date.
+test("edits a yearly trigger's month, day and time", async () => {
+  detail = taskDetail({ trigger: { mode: "yearly", month: 12, day: 31, time: "22:00" } });
+  rows = [{ ...rows[0]!, trigger: detail.trigger }];
+  await remount();
+  await openTask();
+  expect(chip("tasks.triggerMode.yearly").props.accessibilityState.selected).toBe(true);
+  expect(input("tasks.form.month").props.value).toBe("12");
+  expect(input("tasks.form.dayOfMonth").props.value).toBe("31");
+
+  await act(async () => input("tasks.form.dayOfMonth").props.onChangeText("24"));
+  await act(async () => button("tasks.form.save").props.onPress());
+  expect(mockRemote.updateTask).toHaveBeenLastCalledWith("tsk_1", expect.objectContaining({
+    triggerKind: "schedule",
+    trigger: { mode: "yearly", month: 12, day: 24, time: "22:00" },
+  }));
 });
 
 // Intervals read in the largest unit that divides them exactly, and a one-off

@@ -298,6 +298,12 @@ fn format_trigger(task: &Task, dep_count: usize) -> String {
                     j.get("day").and_then(|v| v.as_i64()).unwrap_or(0),
                     j.get("time").and_then(|v| v.as_str()).unwrap_or("?")
                 ),
+                Some("yearly") => format!(
+                    "yearly {}/{} {}",
+                    j.get("month").and_then(|v| v.as_u64()).unwrap_or(0),
+                    j.get("day").and_then(|v| v.as_i64()).unwrap_or(0),
+                    j.get("time").and_then(|v| v.as_str()).unwrap_or("?")
+                ),
                 _ => "schedule".to_string(),
             }
         }
@@ -752,7 +758,21 @@ fn add(args: &[String], out: &Output) -> Result<()> {
                 trigger_json = serde_json::json!({"mode":"monthly","day":day,"time":time});
                 trigger_kind = future_tasks::TriggerKind::Schedule;
             }
-            "--time" | "--days" | "--day" => {
+            "--yearly" => {
+                let month = flag_value(args, "--month")
+                    .and_then(|m| m.parse::<u32>().ok())
+                    .filter(|m| (1..=12).contains(m))
+                    .ok_or_else(|| "--yearly requires --month N (1-12)".to_string())?;
+                let day = flag_value(args, "--day")
+                    .and_then(|d| d.parse::<i64>().ok())
+                    .filter(|d| (1..=31).contains(d))
+                    .ok_or_else(|| "--yearly requires --day N (1-31)".to_string())?;
+                let time = flag_value(args, "--time").unwrap_or_else(|| "09:00".to_string());
+                trigger_json =
+                    serde_json::json!({"mode":"yearly","month":month,"day":day,"time":time});
+                trigger_kind = future_tasks::TriggerKind::Schedule;
+            }
+            "--time" | "--days" | "--day" | "--month" => {
                 // consumed by their parent flag above
                 i += 1;
             }
@@ -1036,12 +1056,26 @@ fn edit(args: &[String], out: &Output) -> Result<()> {
                 trigger_json = Some(serde_json::json!({"mode":"monthly","day":day,"time":time}));
                 trigger_kind = Some(future_tasks::TriggerKind::Schedule);
             }
+            "--yearly" => {
+                let month = flag_value(args, "--month")
+                    .and_then(|m| m.parse::<u32>().ok())
+                    .filter(|m| (1..=12).contains(m))
+                    .ok_or_else(|| "--yearly requires --month N (1-12)".to_string())?;
+                let day = flag_value(args, "--day")
+                    .and_then(|d| d.parse::<i64>().ok())
+                    .filter(|d| (1..=31).contains(d))
+                    .ok_or_else(|| "--yearly requires --day N (1-31)".to_string())?;
+                let time = flag_value(args, "--time").unwrap_or_else(|| "09:00".to_string());
+                trigger_json =
+                    Some(serde_json::json!({"mode":"yearly","month":month,"day":day,"time":time}));
+                trigger_kind = Some(future_tasks::TriggerKind::Schedule);
+            }
             "--join-any" => join = Some(future_tasks::DepJoin::Any),
             "--join-all" => join = Some(future_tasks::DepJoin::All),
             "--enable" => enable = Some(true),
             "--disable" => enable = Some(false),
             "--json" => {}
-            "--time" | "--days" | "--day" => i += 1,
+            "--time" | "--days" | "--day" | "--month" => i += 1,
             "--depends-on" => i += 1,
             other => return Err(format!("unknown flag: {other}")),
         }
@@ -2636,6 +2670,14 @@ mod tests {
                 "day",
                 "15",
             ),
+            (
+                vec![
+                    "t", "--yearly", "--month", "12", "--day", "31", "--time", "22:00",
+                ],
+                "yearly",
+                "month",
+                "12",
+            ),
         ] {
             let (out, _captured) = Output::memory();
             edit(&args(&values), &out).unwrap();
@@ -3039,7 +3081,34 @@ mod tests {
             add(&with(&["--monthly", "--time", "10:00"]), &out).is_err(),
             "--monthly needs --day"
         );
+        assert!(
+            add(&with(&["--yearly", "--day", "31"]), &out).is_err(),
+            "--yearly needs --month"
+        );
+        assert!(
+            add(&with(&["--yearly", "--month", "12"]), &out).is_err(),
+            "--yearly needs --day"
+        );
+        // Out-of-range fields are refused at the edge rather than stored as a
+        // trigger that can never fire.
+        assert!(
+            add(&with(&["--yearly", "--month", "13", "--day", "1"]), &out).is_err(),
+            "month must be 1-12"
+        );
+        assert!(
+            add(&with(&["--yearly", "--month", "0", "--day", "1"]), &out).is_err(),
+            "month 0 is not a month"
+        );
+        assert!(
+            add(&with(&["--yearly", "--month", "6", "--day", "32"]), &out).is_err(),
+            "day must be 1-31"
+        );
         assert!(add(&with(&["--every", "1d"]), &out).is_ok());
+        assert!(add(
+            &with(&["--yearly", "--month", "12", "--day", "31", "--time", "22:00"]),
+            &out
+        )
+        .is_ok());
 
         // A prompt file that cannot be read is an error, and is only consulted
         // when no inline prompt was given.

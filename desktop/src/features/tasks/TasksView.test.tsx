@@ -919,7 +919,8 @@ describe("tasksView", () => {
       task({ id: "t3", name: "interval one", trigger: { mode: "interval", every_minutes: 30 } }),
       task({ id: "t4", name: "weekly one", trigger: { mode: "weekly", days: ["mon", "fri"], time: "10:00" } }),
       task({ id: "t5", name: "monthly one", trigger: { mode: "monthly", day: 15, time: "08:00" } }),
-      task({ id: "t6", name: "unknown one", trigger: { mode: "nonsense" } }),
+      task({ id: "t6", name: "yearly one", trigger: { mode: "yearly", month: 12, day: 31, time: "22:00" } }),
+      task({ id: "t7", name: "unknown one", trigger: { mode: "nonsense" } }),
     ];
     const { container } = await renderView(tasks);
     const text = rows(container).map(row => row.textContent ?? "").join("\n");
@@ -931,6 +932,32 @@ describe("tasksView", () => {
     expect(text).toContain("Mon, Fri 10:00");
     expect(text).toContain("15");
     expect(text).toContain("Daily");
+    // A yearly trigger has to name its month: rendering it as "Daily" (the
+    // default arm) would state the wrong schedule with no sign anything is off.
+    expect(text).toContain("12/31");
+  });
+
+  // A yearly task's editor has to round-trip its month/day, or opening and
+  // saving it silently moves the run to the wrong date.
+  it("edits a yearly trigger's month, day and time", async () => {
+    const { container } = await renderView([
+      task({ trigger: { mode: "yearly", month: 12, day: 31, time: "22:00" } }),
+    ]);
+    await click(rows(container)[0]);
+    await click(buttonByText(container, "Edit"));
+    expect((triggerModeSelect(container) as HTMLSelectElement).value).toBe("yearly");
+    expect((field(container, "Month") as HTMLInputElement).value).toBe("12");
+    // The yearly day field uses the neutral label: "Day of month" would
+    // contradict a trigger whose month is chosen separately.
+    expect((field(container, "Day") as HTMLInputElement).value).toBe("31");
+
+    await setValue(field(container, "Day") as HTMLInputElement, "24");
+    backend([]);
+    await click(buttonByText(container, "Save"));
+    const call = mocks.invokeCommand.mock.calls.find(([command]) => command === "update_task");
+    expect(call?.[1]).toMatchObject({
+      input: { triggerKind: "schedule", trigger: { mode: "yearly", month: 12, day: 24, time: "22:00" } },
+    });
   });
 
   it("switches the session policy and says what reusing a conversation means", async () => {
