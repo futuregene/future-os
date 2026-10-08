@@ -23,7 +23,7 @@
 |---|---|
 | 内核确定性、agent 只做判断（floors/signals/bounds） | claim/`next_due`/join/`truncate` 纯函数（已实现）；反省只提议（待接线） |
 | "先提交、后尽力刷新"（`sync_compat`） | 通知失败不回滚已提交的运行（`notify` 不参与结果判定） |
-| turn envelope：schema 头 + 上游预算 + 头尾截断 + 索引永不丢 | 任务信封 `<task ... schema="task-v1">` + 上游摘要预算/索引保留（已实现）；全文指针命令待补 |
+| turn envelope：schema 头 + 上游预算 + 头尾截断 + 索引永不丢 | 任务信封 `future_tasks_run_envelope_v1`（schema 头 + 身份/run/trigger/settings 块 + 上游摘要预算/索引保留 + Instruction + 完成契约）；全文指针命令待补 |
 | 独立 task class 防 frontier 误认领 | `task_runs.kind`（`main`/`manual`/`chain`/`reflection`）分开 |
 | 独立状态根（`<cwd>/.future/loop/`） | 独立状态根 `<home>/.future/tasks/`（独立 SQLite，不进 app.db） |
 
@@ -48,10 +48,11 @@ CREATE TABLE tasks (
   enabled          INTEGER NOT NULL DEFAULT 1,
   prompt           TEXT NOT NULL,
   prompt_version   INTEGER NOT NULL DEFAULT 1,
-  cwd              TEXT NOT NULL,
-  model_id         TEXT,                      -- provider/model，空=默认
-  thinking_level   TEXT,                      -- off|minimal|low|medium|high|xhigh
+  cwd              TEXT NOT NULL,             -- 工作目录；conversation_mode=chat 且未指定时为空串（用会话自带的临时工作区）
+  model_id         TEXT,                      -- provider/model；表单要求必选，CLI 可留空=用应用默认
+  thinking_level   TEXT,                      -- off|minimal|low|medium|high|xhigh；表单要求必选
   session_policy   TEXT NOT NULL DEFAULT 'new',  -- new | existing
+  conversation_mode TEXT NOT NULL DEFAULT 'workspace',  -- workspace | chat（新任务的表单默认 chat）
   thread_id        TEXT,                      -- session_policy=existing 时的宿主会话绑定（懒建）
   trigger_kind     TEXT NOT NULL,             -- manual | schedule
   trigger_json     TEXT NOT NULL,
@@ -153,7 +154,7 @@ CREATE TABLE task_prompt_revisions (
 ## 5. 执行链路（tick → claim → 执行）
 
 ```
-tick（30s，墙上时钟）
+tick（30s，墙上时钟；`Run now` 写入 pending_request_at 后会把循环立刻唤醒一次）
  └─ 捞出 enabled=1 且 (pending_request_at IS NOT NULL OR (schedule 且 next_due_at<=now))
       └─ claim 四步（朴素，非"事务性"）：
            1. 读 due
@@ -163,7 +164,7 @@ tick（30s，墙上时钟）
       └─ execute：
            1. session_policy 分支：new→新建会话 / existing→打开 tasks.thread_id（懒建）
            2. existing 模式：等会话空闲 → compact → 等终态（超时 2 分钟）
-           3. 合成信封（schema="task-v1" + 上游摘要预算 1200 + 索引保留 + 全文指针）
+           3. 合成信封（`future_tasks_run_envelope_v1`：身份/run/trigger/settings 块 + 上游摘要预算 1200 + 索引保留 + 全文指针 → `Instruction:` → 完成契约）
            4. provision + run_prompt（permission="all"，sandbox tier="off"）
            5. 收尾：task_runs ← status/finished_at/result_summary
                     + 标记上游边（命中 on）
@@ -175,12 +176,39 @@ tick（30s，墙上时钟）
 
 **重叠**：任务在跑时新触发记 `skipped`（不排队）。
 
+### 5.1 运行信封（`future_tasks_run_envelope_v1`）
+
+每次运行的首条 prompt = 信封 + 任务自己的 prompt + 完成契约，格式与 loop 的 turn envelope 同构（纯文本块，非 XML 标签）：
+
+```
+── future_tasks_run_envelope_v1 ──
+task: 每周进展周报 | id: tsk_... | prompt-version: 3
+run: kind=main | due=2026-10-07T09:00:00+08:00
+trigger: {"mode":"weekly","days":["mon","fri"],"time":"10:00"}
+run settings: cwd=/Users/... | conversation=workspace | session=new (fresh conversation per run) | model=... | thinking=high
+
+Upstream results: (summaries only …)          ← 仅有上游依赖时
+- upstream tsk_a "upstream" [run trn_b status=completed finished=...]: …
+Full output of one source: future task output <run-id> …
+
+Instruction:
+<任务 prompt 原文>
+
+Completion contract:
+- 本次运行无人应答（unattended），要自行选择并记录，不要以提问结尾。
+- 结尾写一份简短报告（它就是本次 run 的 result_summary）：做了什么、产物与路径、与之前运行的新增、仍不确定的事。
+```
+
+要点：**身份与运行上下文的唯一可信来源**（"什么时候跑的""跑在哪个模型/目录"）；chat 任务没有目录时**不打印空 `cwd=`**；`session=existing` 附带“同一会话、本次运行前已压缩”语义；上游块保留索引与预算规则（见 §1 表格）。
+
 ## 6. 会话策略
 
 | `session_policy` | 语义 |
 |---|---|
 | `new`（默认） | 每次触发新开会话，标题 `任务名 · 2026-10-07 09:00` |
 | `existing` | 复用同一条会话（首次懒建 `tasks.thread_id`），每次运行前**自动压缩**（明确前置阶段，超时 2 分钟；失败即本次 run 失败） |
+
+会话类型（`conversation_mode`）决定归档位置与工作目录：`workspace` 会话归档在工作目录下（必须有 `cwd`，服务端空值直接报错）；`chat` 会话出现在「对话」里、用会话自带的临时工作区，**不需要目录**（表单默认 chat，两个客户端一致；CLI 仍可给 `--cwd`，给了就沿用）。
 
 压缩语义：手动 RPC `compact` 异步 worker（`operationId` + `compaction_unchanged`/`compaction_failed`）；与 run 互斥（run 在跑时 `session_busy`）。
 
@@ -265,8 +293,12 @@ future task prompt log|apply|revert <id|name> [revision-id]
 
 ## 11. UI
 
-- **desktop（已实现）**：左侧导航「任务」（`ActivityRail` 展开/收起两种形态都有）；面板含列表、编辑器（prompt/cwd/模型/思考等级/会话策略/反省档位/5 种触发 + 短月提示）、运行台账、提示词版本与应用。
+- **desktop（已实现）**：左侧导航「任务」（`ActivityRail` 展开/收起两种形态都有；位置在「技能」之后、「手机遥控」之前，与需要长期维护的条目同类）；面板含列表、编辑器（prompt/cwd/模型/思考等级/会话策略/反省档位/5 种触发 + 短月提示）、运行台账、提示词版本与应用。任务页是自己的两栏视图（列表 + 详情），所以**不显示右侧上下文面板**（那描述的是当前会话，不是任务）。
 - **mobile（已实现）**：Settings 栈内「任务」页，由 `tasks_v1` 能力门控；列表不带 prompt 正文（wire 预算），详情单独取；含运行记录、依赖状态、版本应用。
+
+两个客户端共用同一套表单规则：新任务默认**对话会话**（因此不要求目录；切到工作区会话才要），模型与思考等级**必须显式选择**（没有“默认”选项，未选时保存被拒并说明缺哪项），模型列表只给用户在「模型」页启用的那批（任务已绑定但被停用的模型仍保留可选，避免编辑其它字段时静默改写）。
+
+**即时性**：`Run now`（桌面按钮、手机点击）写 `pending_request_at` 后调用 `tasks::wake()` 唤醒 tick 循环，运行在毫秒级开始，而不是等下一个 30s 节拍（tick 仍是唯一的 claim 者）；运行开始/结束时 host 既有 `threads-updated` 事件，任务面板据此重读列表与已打开的详情（否则会一直停在“已排队”）。
 
 
 ## 12. 明确不做
