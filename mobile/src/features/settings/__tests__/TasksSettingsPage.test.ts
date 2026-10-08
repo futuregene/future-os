@@ -4,6 +4,7 @@ import { ScrollView, Text, TextInput } from "react-native";
 import { Button } from "../../../components/Button";
 import type { DesktopSettings } from "../../../remote/types";
 import { SettingsSection } from "../SettingsPrimitives";
+import type { SettingsPageBack } from "../pageBack";
 import { TasksSettingsPage } from "../TasksSettingsPage";
 import type { RemoteTaskDep, RemoteTaskDetail, RemoteTaskRevision, RemoteTaskRow, RemoteTaskRun } from "../../../remote/taskTypes";
 
@@ -117,9 +118,9 @@ const rowFor = (name: string) => pressables()
   .find(node => node.findAllByType(Text).some(text => text.props.children === name))!;
 const firstTask = () => rowFor("daily report");
 /**
- * The fold that hides the form on an existing task. The page opens on the run
- * history, so a test that edits a field has to unfold it first — which is also
- * what pins the default (`the detail opens on the run history`).
+ * The button that opens the form, one level down from the task. Located by the
+ * label it carries rather than by index, so a control added to the row cannot
+ * silently retarget what "open the settings" means.
  */
 const settingsToggle = () => pressables()
   .find(node => node.findAllByType(Text).some(text => typeof text.props.children === "string" && text.props.children.includes("tasks.settings")))!;
@@ -194,22 +195,28 @@ test("says so when the desktop has no tasks, and when the list cannot be read", 
   expect(texts()).not.toContain("desktopSettings.loadFailed");
 });
 
-test("opens a task with its prompt, runs, dependencies and prompt versions", async () => {
-  await openTask();
+test("opens a task on its runs and prompt versions, with the form a level down", async () => {
+  await act(async () => firstTask().props.onPress());
 
   expect(mockRemote.getTask).toHaveBeenCalledWith("tsk_1");
+  // The task's own page: what it did, and the way into its settings.
   expect(sections()).toContain("daily report");
-  expect(input("tasks.form.prompt").props.value).toBe("summarize yesterday");
-  // Dependencies report which upstream has landed.
-  expect(texts().some(text => String(text).includes("tasks.depsWaiting"))).toBe(true);
-  // The run ledger shows the result summary.
   expect(texts().some(text => String(text).includes("all good"))).toBe(true);
   // Prompt versions can be applied.
   expect(button("tasks.apply")).toBeDefined();
+  expect(button("tasks.settings")).toBeDefined();
+
+  // The form is its own page, carrying the prompt and the upstreams.
+  await act(async () => settingsToggle().props.onPress());
+  expect(input("tasks.form.prompt").props.value).toBe("summarize yesterday");
+  // Dependencies report which upstream has landed.
+  expect(texts().some(text => String(text).includes("tasks.depsWaiting"))).toBe(true);
+  // …and the history it covers is gone, not merely scrolled past.
+  expect(sections()).not.toContain("tasks.runs");
 });
 
 test("runs, enables and edits through the desktop", async () => {
-  await openTask();
+  await act(async () => firstTask().props.onPress());
 
   await act(async () => button("tasks.runNow").props.onPress());
   expect(mockRemote.runTask).toHaveBeenCalledWith("tsk_1");
@@ -221,6 +228,7 @@ test("runs, enables and edits through the desktop", async () => {
   expect(mockRemote.applyTaskRevision).toHaveBeenCalledWith("tsk_1", "rev_2");
 
   // Saving the prompt sends the whole record back, prompt included.
+  await act(async () => settingsToggle().props.onPress());
   await act(async () => input("tasks.form.prompt").props.onChangeText("a new prompt"));
   await act(async () => button("tasks.form.save").props.onPress());
   expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({ prompt: "a new prompt", name: "daily report", cwd: "/tmp/repo" }));
@@ -232,10 +240,14 @@ test("edits every trigger shape and sends only its own fields", async () => {
   const save = async () => {
     mockRemote.updateTask.mockClear();
     await act(async () => button("tasks.form.save").props.onPress());
-    return mockRemote.updateTask.mock.calls[0]![1] as {
+    const payload = mockRemote.updateTask.mock.calls[0]![1] as {
       triggerKind: string;
       trigger: Record<string, unknown>;
     };
+    // A landed save leaves the form for the task, so the next shape is edited
+    // by opening it again — the draft is still the task's own.
+    await act(async () => settingsToggle().props.onPress());
+    return payload;
   };
 
   await act(async () => chip("tasks.triggerMode.once").props.onPress());
@@ -278,16 +290,50 @@ test("reports a failed save instead of pretending it landed", async () => {
   // The banner says the save could not be confirmed; the page stays usable and
   // its retry re-reads the task.
   expect(texts()).toContain("desktopSettings.loadFailed");
+  // A save that did not land keeps the form (and the draft) on screen.
+  expect(sections()).toContain("tasks.form.details");
   expect(tree.root.findAllByType(ScrollView).length).toBeGreaterThan(0);
   mockRemote.getTask.mockResolvedValueOnce({ ...detail });
   await act(async () => button("common.retry").props.onPress());
   expect(mockRemote.getTask).toHaveBeenCalledTimes(2);
 });
 
-test("returns to the list from a task", async () => {
-  await openTask();
-  await act(async () => button("common.back").props.onPress());
+// Back is one level at a time: the form leaves for the task, and the task for
+// the list. The page registers the first step with the settings stack, which is
+// what the header arrow and the system back gesture call.
+test("the level back leaves the form first, then the task", async () => {
+  let goBackLevel: () => boolean = () => false;
+  await remount({
+    onBackLevel: (handle: SettingsPageBack | null) => {
+      goBackLevel = handle ? () => handle.goBack() : () => false;
+    },
+  });
+  await act(async () => firstTask().props.onPress());
+  await act(async () => settingsToggle().props.onPress());
+  expect(sections()).toContain("tasks.settings");
+
+  // Back from the form is the task it changes…
+  await act(async () => { expect(goBackLevel()).toBe(true); });
+  expect(sections()).toContain("daily report");
+  expect(sections()).toContain("tasks.runs");
+
+  // …and back from the task is the list.
+  await act(async () => { expect(goBackLevel()).toBe(true); });
   expect(sections()).toContain("tasks.title");
+});
+
+// Saving is the other way out of the form, and it lands on the task it just
+// changed — the same level the header arrow would have returned to.
+test("a landed save returns to the task", async () => {
+  await openTask();
+  expect(sections()).toContain("tasks.form.details");
+
+  await act(async () => input("tasks.form.prompt").props.onChangeText("a new prompt"));
+  await act(async () => button("tasks.form.save").props.onPress());
+
+  expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({ prompt: "a new prompt" }));
+  expect(sections()).toContain("daily report");
+  expect(sections()).not.toContain("tasks.form.details");
 });
 
 // Pressing "run now" while the desktop is busy leaves the request queued for
@@ -605,8 +651,12 @@ test("offers only the enabled models, and keeps a disabled one selectable", asyn
   await act(async () => input("tasks.form.name").props.onChangeText("kept"));
   await act(async () => button("tasks.form.save").props.onPress());
   expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({ modelId: "openai/gpt-5" }));
+  // A save that landed returns to the task it just changed.
+  expect(sections()).toContain("daily report");
 
-  // A model the user has hidden is not offered as a new choice.
+  // Re-open the form: a model the user has hidden is not offered as a new
+  // choice, even though the task keeps the one it already points at.
+  await act(async () => settingsToggle().props.onPress());
   expect(chip("DeepSeek V4 Pro")).toBeTruthy();
   expect(tree.root.findAll(node => node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function")
     .filter(node => node.findAllByType(Text).some(text => text.props.children === "openai/gpt-5"))).toHaveLength(1);
@@ -683,7 +733,7 @@ test("reports a model list that cannot be read, and still lets the task keep its
 // ─── deleting a task ───────────────────────────────────────────────────────
 
 test("deletes a task after asking, and returns to the list", async () => {
-  await openTask();
+  await act(async () => firstTask().props.onPress());
   // The first press only asks; nothing is deleted yet.
   await act(async () => button("tasks.delete").props.onPress());
   expect(mockRemote.deleteTask).not.toHaveBeenCalled();
@@ -695,7 +745,7 @@ test("deletes a task after asking, and returns to the list", async () => {
 });
 
 test("backs out of a delete", async () => {
-  await openTask();
+  await act(async () => firstTask().props.onPress());
   await act(async () => button("tasks.delete").props.onPress());
   await act(async () => button("chat.cancel").props.onPress());
   expect(mockRemote.deleteTask).not.toHaveBeenCalled();
@@ -725,11 +775,14 @@ test("falls back on a blanked trigger field instead of sending nonsense", async 
   await act(async () => button("tasks.form.save").props.onPress());
   expect(mockRemote.updateTask).toHaveBeenLastCalledWith("tsk_1", expect.objectContaining({ trigger: { mode: "daily", time: "09:00" } }));
 
+  // The save landed, so the form closed; open it again for the next shape.
+  await act(async () => settingsToggle().props.onPress());
   await act(async () => chip("tasks.triggerMode.interval").props.onPress());
   await act(async () => input("tasks.form.everyMinutes").props.onChangeText(""));
   await act(async () => button("tasks.form.save").props.onPress());
   expect(mockRemote.updateTask).toHaveBeenLastCalledWith("tsk_1", expect.objectContaining({ trigger: { mode: "interval", every_minutes: 1 } }));
 
+  await act(async () => settingsToggle().props.onPress());
   await act(async () => chip("tasks.triggerMode.monthly").props.onPress());
   await act(async () => input("tasks.form.day").props.onChangeText(""));
   await act(async () => button("tasks.form.save").props.onPress());
@@ -814,8 +867,12 @@ test("falls back to a version's prompt, and keys a model without a provider", as
   revisions = [{ id: "rev_1", version: 1, source: "user", status: "superseded", reason: null, confidence: null, createdAt: 1, promptPreview: "the original prompt" }];
   models = [{ id: "bare-model" }];
   await remount();
-  await openTask();
+  // The version is history, so it is on the task's own page…
+  await act(async () => firstTask().props.onPress());
   expect(texts()).toContain("the original prompt");
+
+  // …and the model it would be saved with is picked in the form.
+  await act(async () => settingsToggle().props.onPress());
   await act(async () => chip("bare-model").props.onPress());
   await act(async () => button("tasks.form.save").props.onPress());
   expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({ modelId: "bare-model" }));
@@ -823,10 +880,11 @@ test("falls back to a version's prompt, and keys a model without a provider", as
 
 // A run's conversation is where its reasoning lives, so the phone opens it the
 // same way the desktop panel does — in the chat this app already has.
-// The page is opened to see what the task did, so the history leads and the
-// form is folded behind one press (a new task has no history, so it still opens
-// straight into the form — see the create tests).
-test("the detail opens on the run history, with the form folded", async () => {
+// The page is opened to see what the task did, so the history leads and the form
+// that changes it is a level of its own behind the Settings button (a new task
+// has no history, so it still opens straight into the form — see the create
+// tests).
+test("the detail opens on the run history, with the form its own page", async () => {
   runs = [{ id: "trn_2", kind: "main", origin: "schedule", status: "completed", threadId: null, startedAt: 3, finishedAt: 4, resultSummary: "the newer run", errorMessage: null }];
   await remount();
   await act(async () => firstTask().props.onPress());
@@ -843,27 +901,25 @@ test("the detail opens on the run history, with the form folded", async () => {
   expect(texts()).toContain("tasks.form.name");
 });
 
-// The way into the settings sits above the history: with many runs behind it,
-// a fold at the bottom would be a long scroll away (and the page opens on what
-// the task did anyway).
-test("the settings fold is above the run history", async () => {
+// The way into the form is on the page that opens, not buried under the run
+// history: with many runs behind it, a fold at the bottom would be a long
+// scroll away (and the page opens on what the task did anyway).
+test("the Settings button is above the run history", async () => {
   runs = [{ id: "trn_2", kind: "main", origin: "schedule", status: "completed", threadId: null, startedAt: 3, finishedAt: 4, resultSummary: "the newer run", errorMessage: null }];
   await remount();
   await act(async () => firstTask().props.onPress());
 
-  // Render order, straight from the tree: the fold's label is a Text inside a
-  // Pressable, the section heading is a Text of its own.
+  // Render order, straight from the tree: the Settings button's label is a Text
+  // inside a Pressable, the section heading is a Text of its own.
   const labels = tree.root.findAllByType(Text)
     .map(node => node.props.children)
     .flat()
     .filter(child => typeof child === "string");
-  const fold = labels.findIndex(text => (text as string).includes("tasks.settings"));
+  const toggle = labels.findIndex(text => (text as string).includes("tasks.settings"));
   const heading = labels.indexOf("tasks.runs");
-  expect(fold).toBeGreaterThanOrEqual(0);
+  expect(toggle).toBeGreaterThanOrEqual(0);
   expect(heading).toBeGreaterThanOrEqual(0);
-  // The fold is above the history, so a task with many runs never buries it.
-  expect(`${fold} < ${heading}`).toBeTruthy();
-  expect(fold).toBeLessThan(heading);
+  expect(toggle).toBeLessThan(heading);
 });
 
 // Deleting the run's conversation is offered only where it means something: a
@@ -921,16 +977,17 @@ test("reports a satisfied dependency and a run with no summary", async () => {
   deps = [{ upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "success", satisfied: true }];
   runs = [{ id: "trn_2", kind: "main", origin: "schedule", status: "failed", threadId: null, startedAt: 1, finishedAt: 2, resultSummary: null, errorMessage: null }];
   await remount();
-  // The run's own summary is on the page that opens; the dependency rows are in
-  // the folded form, so this reads both halves of the detail.
-  await openTask();
-  const shown = texts().map(String);
-  expect(shown).toContain("tasks.depsReady");
-  expect(shown).toContain("tasks.runNoSummary");
+  // The run's own summary is on the page that opens, the dependency rows one
+  // level down: this reads both halves of the detail.
+  await act(async () => firstTask().props.onPress());
+  expect(texts().map(String)).toContain("tasks.runNoSummary");
+
+  await act(async () => settingsToggle().props.onPress());
+  expect(texts().map(String)).toContain("tasks.depsReady");
 });
 
 test("reports a delete the desktop refused, and stays on the task", async () => {
-  await openTask();
+  await act(async () => firstTask().props.onPress());
   mockRemote.deleteTask.mockRejectedValueOnce(new Error("desktop refused"));
   await act(async () => button("tasks.delete").props.onPress());
   await act(async () => button("tasks.deleteConfirmAction").props.onPress());
