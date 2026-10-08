@@ -640,14 +640,22 @@ pub const COMPLETION_CONTRACT: &str = "\n\nCompletion contract:\n\
 /// The pieces are public on their own (the header and the fan-in block have
 /// their own tests and reasons), but a host should compose through this so the
 /// order and the separators exist in exactly one place.
+///
+/// `started_at_ms` anchors every run that has no scheduled occurrence. Only
+/// `RunKind::Main` has a `due_at`; a manual, chain, test or reflection run has
+/// none, and a task prompt derives its target date from the envelope — so
+/// without the fallback those runs would have to guess from the wall clock,
+/// which is exactly what the prompts tell the agent not to do. For those kinds
+/// the run's own start *is* the occurrence.
 pub fn compose_run_prompt(
     task: &Task,
     kind: crate::types::RunKind,
     due_ms: Option<i64>,
     occurrence: Option<i64>,
+    started_at_ms: i64,
     upstream: &[UpstreamSource],
 ) -> String {
-    let mut out = compose_envelope_header(task, kind, due_ms, occurrence);
+    let mut out = compose_envelope_header(task, kind, due_ms.or(Some(started_at_ms)), occurrence);
     let upstream = compose_upstream_block(upstream);
     if !upstream.is_empty() {
         out.push_str(&upstream);
@@ -1337,7 +1345,7 @@ mod tests {
         let mut t = task(serde_json::json!({}), TriggerKind::Manual);
         t.prompt = "summarise the week".into();
 
-        let plain = compose_run_prompt(&t, crate::types::RunKind::Manual, None, None, &[]);
+        let plain = compose_run_prompt(&t, crate::types::RunKind::Manual, None, None, 0, &[]);
         assert!(
             plain.contains("Instruction:\nsummarise the week"),
             "{plain}"
@@ -1366,6 +1374,7 @@ mod tests {
             crate::types::RunKind::Chain,
             None,
             None,
+            0,
             &[UpstreamSource {
                 task_id: "tsk_a".into(),
                 task_name: "upstream".into(),
@@ -1384,6 +1393,73 @@ mod tests {
             with_upstream.contains("status=completed"),
             "{with_upstream}"
         );
+    }
+
+    #[test]
+    fn every_run_kind_gets_a_date_anchor_in_the_envelope() {
+        let t = task(serde_json::json!({}), TriggerKind::Manual);
+        // A scheduled occurrence is the anchor when there is one.
+        let scheduled = compose_run_prompt(
+            &t,
+            crate::types::RunKind::Main,
+            Some(1_760_000_000_000),
+            None,
+            1_760_000_100_000,
+            &[],
+        );
+        assert!(scheduled.contains("due=20"), "{scheduled}");
+
+        // A manual run has no scheduled occurrence: its own start time anchors
+        // it, so a prompt that derives its target date from the envelope never
+        // has to fall back to guessing from the wall clock.
+        for kind in [crate::types::RunKind::Manual, crate::types::RunKind::Chain] {
+            let run = compose_run_prompt(&t, kind, None, None, 1_760_000_000_000, &[]);
+            assert!(
+                run.contains("due=20"),
+                "{kind:?} run has no date anchor: {run}"
+            );
+        }
+
+        // The occurrence still wins when both are present (a late catch-up run
+        // reports the slot it belongs to, not when it happened to fire).
+        let late = compose_run_prompt(
+            &t,
+            crate::types::RunKind::Main,
+            Some(1_760_000_000_000),
+            None,
+            1_760_090_000_000,
+            &[],
+        );
+        assert_eq!(
+            due_field(&late),
+            due_field(&scheduled),
+            "a late run reports its slot, not its firing time"
+        );
+        assert_ne!(
+            due_field(&late),
+            due_field(&compose_run_prompt(
+                &t,
+                crate::types::RunKind::Manual,
+                None,
+                None,
+                1_760_090_000_000,
+                &[],
+            )),
+            "the fallback really uses the start time"
+        );
+    }
+
+    /// The `due=` value from an envelope header's `run:` line.
+    fn due_field(prompt: &str) -> String {
+        prompt
+            .lines()
+            .find_map(|line| line.strip_prefix("run: "))
+            .and_then(|line| {
+                line.split('|')
+                    .find_map(|part| part.trim().strip_prefix("due="))
+            })
+            .unwrap_or_default()
+            .to_string()
     }
 
     // ─── prompt versions ──────────────────────────────────────────────────
