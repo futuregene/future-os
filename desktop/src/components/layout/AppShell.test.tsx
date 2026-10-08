@@ -754,7 +754,7 @@ describe("app shell layout", () => {
     view.unmount();
   });
 
-  it("hides the right panel for the skill and remote sections", () => {
+  it("hides the right panel for the skill, remote and tasks sections", () => {
     const view = mount(<AppShell />);
     act(() => railButton(view.container, "rail:skill").click());
     expect(view.container.querySelector("[data-child=\"skills-view\"]")).not.toBeNull();
@@ -762,6 +762,12 @@ describe("app shell layout", () => {
 
     act(() => railButton(view.container, "rail:remote").click());
     expect(view.container.querySelector("[data-child=\"remote-view\"]")).not.toBeNull();
+    expect(view.container.querySelector("[data-child=\"context-panel\"]")).toBeNull();
+
+    // Tasks are their own list + detail view: the context panel beside them
+    // would describe a conversation the view is not showing.
+    act(() => railButton(view.container, "rail:tasks").click());
+    expect(view.container.querySelector("[data-child=\"tasks-view\"]")).not.toBeNull();
     expect(view.container.querySelector("[data-child=\"context-panel\"]")).toBeNull();
     view.unmount();
   });

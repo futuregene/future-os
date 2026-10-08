@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invokeCommand } from "../../integrations/tauri/invoke";
+import { useTauriEvent } from "../../lib/useTauriEvent";
 
 /** Task rows as the Tauri backend serializes them. */
 export interface TaskRunView {
@@ -95,6 +96,14 @@ export function useTasks() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // A run changes the task's state (queued → running → finished) and can also
+  // produce a conversation; the host already announces both with
+  // "threads-updated". Without this the panel kept saying "queued" at a task
+  // that had been running for minutes, until the user left and came back.
+  useTauriEvent("threads-updated", () => {
+    void reload();
+  });
 
   const createTask = useCallback(async (input: TaskInput) => {
     const created = await invokeCommand<TaskView>("create_task", { input });

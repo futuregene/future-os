@@ -400,8 +400,13 @@ pub fn compose_upstream_block(sources: &[UpstreamSource]) -> String {
             })
             .unwrap_or_default();
         lines.push(format!(
-            "- upstream {} \"{}\" [run {} status={:?} finished={}]: {}",
-            src.task_id, src.task_name, src.run_id, src.status, finished, snippet
+            "- upstream {} \"{}\" [run {} status={} finished={}]: {}",
+            src.task_id,
+            src.task_name,
+            src.run_id,
+            run_status_label(src.status),
+            finished,
+            snippet
         ));
     }
     let mut out = String::new();
@@ -419,34 +424,152 @@ pub fn compose_upstream_block(sources: &[UpstreamSource]) -> String {
     out
 }
 
-/// Compose the task envelope header (schema + identity + trigger context).
+/// `RunKind` as the envelope spells it (lowercase, like every other label).
+fn run_kind_label(kind: crate::types::RunKind) -> &'static str {
+    use crate::types::RunKind;
+    match kind {
+        RunKind::Main => "main",
+        RunKind::Manual => "manual",
+        RunKind::Chain => "chain",
+        RunKind::Reflection => "reflection",
+    }
+}
+
+fn run_status_label(status: crate::types::RunStatus) -> &'static str {
+    use crate::types::RunStatus;
+    match status {
+        RunStatus::Running => "running",
+        RunStatus::Completed => "completed",
+        RunStatus::Failed => "failed",
+        RunStatus::Skipped => "skipped",
+    }
+}
+
+/// Epoch ms as a local RFC 3339 stamp; empty when unrepresentable.
+fn local_time(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|d| d.with_timezone(&chrono::Local).to_rfc3339())
+        .unwrap_or_default()
+}
+
+/// How this run's trigger reads in the envelope: `manual`, or the normalized
+/// schedule as JSON (the same keys `trigger_json` stores, so a reader can go
+/// from the envelope back to `future task show`).
+fn trigger_label(task: &Task) -> String {
+    match task.trigger_kind {
+        crate::types::TriggerKind::Manual => "manual".to_string(),
+        crate::types::TriggerKind::Schedule => task.trigger_json.to_string(),
+    }
+}
+
+/// What the run actually is: where it works, what kind of conversation it
+/// opens, whether it continues one, and the model it spends on.
+///
+/// A `chat` task may carry no working directory at all (its conversation runs
+/// in the conversation's own temporary workspace), so the path is omitted
+/// rather than printed empty.
+fn run_settings_line(task: &Task) -> String {
+    let mut parts = Vec::new();
+    if !task.cwd.trim().is_empty() {
+        parts.push(format!("cwd={}", task.cwd.trim()));
+    }
+    parts.push(format!(
+        "conversation={}",
+        match task.conversation_mode {
+            crate::types::ConversationMode::Chat => "chat",
+            crate::types::ConversationMode::Workspace => "workspace",
+        }
+    ));
+    parts.push(
+        match task.session_policy {
+            // The policy decides what the agent can assume about its context,
+            // so it is stated with its consequence, not just its name.
+            crate::types::SessionPolicy::New => "session=new (fresh conversation per run)",
+            crate::types::SessionPolicy::Existing => {
+                "session=existing (one conversation kept across runs, compacted before this one)"
+            }
+        }
+        .to_string(),
+    );
+    parts.push(format!(
+        "model={}",
+        task.model_id.as_deref().unwrap_or("(app default)")
+    ));
+    parts.push(format!(
+        "thinking={}",
+        task.thinking_level.as_deref().unwrap_or("(app default)")
+    ));
+    parts.join(" | ")
+}
+
+/// Compose the run envelope header: schema banner + identity + this run's
+/// context, loop-style (`── schema ──` then `key: value` lines) rather than the
+/// single self-closing `<task … />` tag the first version emitted.
+///
+/// It is context, not instruction: the task's own prompt follows it, under the
+/// [`INSTRUCTION_BANNER`], and every run closes with [`COMPLETION_CONTRACT`]
+/// (see [`compose_run_prompt`]).
 pub fn compose_envelope_header(
     task: &Task,
     kind: crate::types::RunKind,
     due_ms: Option<i64>,
     occurrence: Option<i64>,
 ) -> String {
-    let due = due_ms
-        .and_then(|ms| {
-            chrono::DateTime::from_timestamp_millis(ms)
-                .map(|d| d.with_timezone(&chrono::Local).to_rfc3339())
-        })
-        .unwrap_or_default();
-    let mut out = format!(
-        "<task schema=\"{}\" name=\"{}\" id=\"{}\" kind=\"{:?}\" prompt-version=\"{}\"",
-        crate::types::TASK_ENVELOPE_SCHEMA_VERSION,
-        task.name,
-        task.id,
-        kind,
-        task.prompt_version
-    );
-    if !due.is_empty() {
-        out.push_str(&format!(" due=\"{}\"", due));
+    let mut out = format!("── {} ──\n", crate::types::TASK_ENVELOPE_SCHEMA_VERSION);
+    out.push_str(&format!(
+        "task: {} | id: {} | prompt-version: {}\n",
+        task.name, task.id, task.prompt_version
+    ));
+    let mut run = format!("run: kind={}", run_kind_label(kind));
+    if let Some(due) = due_ms.map(local_time).filter(|due| !due.is_empty()) {
+        run.push_str(&format!(" | due={due}"));
     }
     if let Some(n) = occurrence {
-        out.push_str(&format!(" occurrence=\"{}\"", n));
+        run.push_str(&format!(" | occurrence={n}"));
     }
-    out.push_str(" />\n\n");
+    out.push_str(&run);
+    out.push('\n');
+    out.push_str(&format!("trigger: {}\n", trigger_label(task)));
+    out.push_str(&format!("run settings: {}\n", run_settings_line(task)));
+    out.push('\n');
+    out
+}
+
+/// Banner between the context blocks and the task's own prompt.
+pub const INSTRUCTION_BANNER: &str = "Instruction:\n";
+
+/// The footer every run ends with.
+///
+/// A task run is unattended and its final message *is* the run's result (the
+/// ledger stores it as `result_summary`), so the envelope says both outright:
+/// nobody can answer a question mid-run, and the closing message should carry
+/// what a reader of the ledger needs.
+pub const COMPLETION_CONTRACT: &str = "\n\nCompletion contract:\n\
+- This run is unattended: nobody answers mid-run. Make a reasonable choice, record it, and carry on — do not end by asking a question.\n\
+- Close with a short report: it becomes this run's summary. State what you did, the artifacts and paths, what is new versus earlier runs, and what is still uncertain.\n";
+
+/// The whole prompt for one run: envelope + upstream evidence + the task's
+/// prompt + the completion contract.
+///
+/// The pieces are public on their own (the header and the fan-in block have
+/// their own tests and reasons), but a host should compose through this so the
+/// order and the separators exist in exactly one place.
+pub fn compose_run_prompt(
+    task: &Task,
+    kind: crate::types::RunKind,
+    due_ms: Option<i64>,
+    occurrence: Option<i64>,
+    upstream: &[UpstreamSource],
+) -> String {
+    let mut out = compose_envelope_header(task, kind, due_ms, occurrence);
+    let upstream = compose_upstream_block(upstream);
+    if !upstream.is_empty() {
+        out.push_str(&upstream);
+        out.push('\n');
+    }
+    out.push_str(INSTRUCTION_BANNER);
+    out.push_str(&task.prompt);
+    out.push_str(COMPLETION_CONTRACT);
     out
 }
 
@@ -909,6 +1032,7 @@ mod tests {
         }]);
         assert!(block.contains("upstream tsk_a \"bare\""), "{block}");
         assert!(block.contains("[no summary]"), "{block}");
+        assert!(block.contains("status=failed"), "{block}");
         assert!(block.contains("finished=]"), "{block}");
     }
 
@@ -923,19 +1047,40 @@ mod tests {
         t.name = "daily report".into();
         t.id = "tsk_1".into();
         t.prompt_version = 4;
+        t.cwd = "/tmp/repo".into();
+        t.model_id = Some("future/deepseek-flash".into());
+        t.thinking_level = Some("high".into());
 
         let bare = compose_envelope_header(&t, crate::types::RunKind::Main, None, None);
-        assert!(bare.contains("schema=\"task-v1\""), "{bare}");
-        assert!(bare.contains("name=\"daily report\""), "{bare}");
-        assert!(bare.contains("id=\"tsk_1\""), "{bare}");
-        assert!(bare.contains("kind=\"Main\""), "{bare}");
-        assert!(bare.contains("prompt-version=\"4\""), "{bare}");
+        assert!(
+            bare.starts_with(&format!("── {} ──\n", crate::TASK_ENVELOPE_SCHEMA_VERSION)),
+            "{bare}"
+        );
+        assert!(
+            bare.contains("task: daily report | id: tsk_1 | prompt-version: 4"),
+            "{bare}"
+        );
+        assert!(bare.contains("run: kind=main"), "{bare}");
+        assert!(
+            bare.contains("trigger: {\"mode\":\"daily\",\"time\":\"09:00\"}"),
+            "{bare}"
+        );
+        assert!(
+            bare.contains(
+                "run settings: cwd=/tmp/repo | conversation=workspace | session=new (fresh conversation per run) | model=future/deepseek-flash | thinking=high"
+            ),
+            "{bare}"
+        );
         assert!(
             !bare.contains("due="),
             "a run with no due time omits it: {bare}"
         );
         assert!(!bare.contains("occurrence="), "{bare}");
-        assert!(bare.ends_with(" />\n\n"), "{bare}");
+        assert!(bare.ends_with("\n\n"), "blocks are separated: {bare}");
+        // The header is context only: the instruction and the closing contract
+        // are added by `compose_run_prompt`.
+        assert!(!bare.contains(INSTRUCTION_BANNER), "{bare}");
+        assert!(!bare.contains("Completion contract"), "{bare}");
 
         let full = compose_envelope_header(
             &t,
@@ -943,12 +1088,96 @@ mod tests {
             Some(1_760_000_000_000),
             Some(7),
         );
-        assert!(full.contains("due=\"2025-10-09T"), "{full}");
-        assert!(full.contains("occurrence=\"7\""), "{full}");
+        assert!(full.contains("run: kind=chain | due=2025-10-09T"), "{full}");
+        assert!(full.contains(" | occurrence=7"), "{full}");
+
+        // A manual task says so rather than printing an empty trigger object.
+        let manual = compose_envelope_header(
+            &task(serde_json::json!({}), TriggerKind::Manual),
+            crate::types::RunKind::Manual,
+            None,
+            None,
+        );
+        assert!(manual.contains("trigger: manual"), "{manual}");
 
         // An unrepresentable epoch lands in the same "omit" branch as None.
         let absurd = compose_envelope_header(&t, crate::types::RunKind::Main, Some(i64::MAX), None);
         assert!(!absurd.contains("due="), "{absurd}");
+    }
+
+    #[test]
+    fn a_chat_task_without_a_directory_carries_no_cwd_and_states_its_reuse() {
+        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
+        t.cwd = String::new();
+        t.conversation_mode = crate::types::ConversationMode::Chat;
+        t.session_policy = SessionPolicy::Existing;
+        t.model_id = None;
+        t.thinking_level = None;
+        let header = compose_envelope_header(&t, crate::types::RunKind::Manual, None, None);
+        assert!(
+            !header.contains("cwd="),
+            "no empty path is printed: {header}"
+        );
+        assert!(header.contains("conversation=chat"), "{header}");
+        assert!(header.contains("session=existing"), "{header}");
+        assert!(
+            header.contains("model=(app default) | thinking=(app default)"),
+            "a task without a model says what it falls back to: {header}"
+        );
+    }
+
+    #[test]
+    fn the_run_prompt_wraps_the_task_prompt_in_instruction_and_contract() {
+        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
+        t.prompt = "summarise the week".into();
+
+        let plain = compose_run_prompt(&t, crate::types::RunKind::Manual, None, None, &[]);
+        assert!(
+            plain.contains("Instruction:\nsummarise the week"),
+            "{plain}"
+        );
+        assert!(plain.contains("Completion contract:"), "{plain}");
+        assert!(
+            plain.contains("nobody answers mid-run"),
+            "the run is unattended: {plain}"
+        );
+        assert!(
+            plain.contains("it becomes this run's summary"),
+            "the closing message is the ledger's summary: {plain}"
+        );
+        // The contract closes the prompt: the instruction is above it, never
+        // buried under a footer the agent might read first.
+        assert!(plain.ends_with('\n'), "{plain}");
+        assert!(
+            plain.find("summarise the week").unwrap() < plain.find("Completion contract").unwrap(),
+            "{plain}"
+        );
+        assert!(!plain.contains("Upstream results"), "{plain}");
+
+        // A fan-in run keeps the upstream block between context and instruction.
+        let with_upstream = compose_run_prompt(
+            &t,
+            crate::types::RunKind::Chain,
+            None,
+            None,
+            &[UpstreamSource {
+                task_id: "tsk_a".into(),
+                task_name: "upstream".into(),
+                run_id: "trn_a".into(),
+                status: RunStatus::Completed,
+                finished_at: None,
+                result_summary: Some("wrote reports/a.md".into()),
+            }],
+        );
+        let upstream_at = with_upstream.find("Upstream results").expect("upstream");
+        assert!(
+            upstream_at < with_upstream.find("Instruction:").unwrap(),
+            "{with_upstream}"
+        );
+        assert!(
+            with_upstream.contains("status=completed"),
+            "{with_upstream}"
+        );
     }
 
     // ─── prompt versions ──────────────────────────────────────────────────

@@ -391,6 +391,10 @@ function ReadyAppShell({
     = centerMode === "new-chat"
       || section === "skill"
       || section === "remote"
+      // Tasks are their own two-pane view (list + detail); the context panel
+      // beside them would describe whichever conversation happened to be active
+      // before, which is not what the tasks view is about.
+      || section === "tasks"
       || !rightPanelAvailable;
 
   // The terminal belongs to a conversation: it is offered only while a real
@@ -714,7 +718,12 @@ function ReadyAppShell({
                   )
                 : section === "tasks"
                   ? (
-                      <TasksView leftPanelExpanded={showLeftPanel} onToggleLeftPanel={handleToggleLeftPanel} onOpenThread={handleOpenTaskThread} />
+                      <TasksView
+                        leftPanelExpanded={showLeftPanel}
+                        modelOptions={visibleModelOptions}
+                        onOpenThread={handleOpenTaskThread}
+                        onToggleLeftPanel={handleToggleLeftPanel}
+                      />
                     )
                   : section === "remote"
                     ? (
