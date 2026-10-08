@@ -698,6 +698,7 @@ export function MentionEditor({
               selectedIndex={selectedSession}
               emptyLabel={t("composer.noSessionMatches")}
               chatsLabel={t("composer.sessionsSection")}
+              workspaceLabel={t("composer.workspaceSection")}
               onSelect={insertSession}
             />
           )
@@ -904,6 +905,7 @@ function SessionMenu({
   items,
   onSelect,
   selectedIndex,
+  workspaceLabel,
 }: {
   chatsLabel: string;
   emptyLabel: string;
@@ -911,6 +913,8 @@ function SessionMenu({
   items: SessionMentionOption[];
   onSelect: (session: SessionMentionOption) => void;
   selectedIndex: number;
+  /** Heading for a workspace group the store has no name for (deleted row). */
+  workspaceLabel: string;
 }) {
   // Keep the keyboard-highlighted row visible while the list scrolls.
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -935,7 +939,9 @@ function SessionMenu({
             {headings
               ? (
                   <div className="truncate px-2 pb-1 pt-2 text-xs font-medium text-ink-muted">
-                    {group.workspace?.name || chatsLabel}
+                    {group.workspace
+                      ? (group.workspace.name || workspaceLabel)
+                      : chatsLabel}
                   </div>
                 )
               : null}

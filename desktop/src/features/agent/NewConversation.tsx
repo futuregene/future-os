@@ -3,6 +3,7 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ComposerDragState, ComposerSendPayload } from "./Composer";
+import type { SessionMentionOption } from "./sessionMention";
 import type { WorkspaceCreateRequest, WorkspaceFormMode } from "./useWorkspaceForm";
 import {
   Check,
@@ -69,6 +70,12 @@ interface NewConversationProps {
   workspaces: StoredWorkspace[];
   /** First-turn skill recommendation toggle (appSettings.skillRecommend). */
   skillRecommend: boolean;
+  /**
+   * Conversations offered by the composer's `#` menu (see
+   * `sessionMentionOptions`). The first message can reference another
+   * conversation just like any later one, so this screen needs it too.
+   */
+  sessionMentions?: SessionMentionOption[];
   /** Future session status; recommendation requires an authenticated session. */
   futureSessionStatus: string;
   /** Future balance in credits; recommendation requires a positive balance. */
@@ -95,6 +102,7 @@ export function NewConversation({
   onDismissSkillGuide,
   workspaces,
   skillRecommend,
+  sessionMentions,
   futureSessionStatus,
   futureBalance,
 }: NewConversationProps) {
@@ -290,6 +298,7 @@ export function NewConversation({
               className="w-full rounded-b-none bg-surface"
               onDragStateChange={setDragState}
               modelId={modelId}
+              sessionMentions={sessionMentions}
               modelOptions={modelOptions}
               modelsEmptyReason={modelsEmptyReason}
               onModelChange={onModelChange}
