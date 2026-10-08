@@ -1697,6 +1697,11 @@ mod tests {
         Store::open(&home.path().join(".future")).unwrap()
     }
 
+    /// The future root `future_home()` resolves to inside a [`TestHome`].
+    fn test_future_root(home: &crate::agent_bridge::test_support::TestHome) -> std::path::PathBuf {
+        home.path().join(".future")
+    }
+
     fn reflection_answer(prompt: &str, reason: &str, confidence: f64) -> String {
         serde_json::json!({
             "verdict": "improve",
@@ -1711,14 +1716,11 @@ mod tests {
     /// its ledger row. `execute` deliberately does not await the pass (a
     /// suggestion must never hold a run up), so the test waits on the row the
     /// same way the panel does.
-    async fn wait_for_reflection(
-        home: &crate::agent_bridge::test_support::TestHome,
-        task_id: &str,
-    ) -> TaskRun {
+    async fn wait_for_reflection(home: &std::path::Path, task_id: &str) -> TaskRun {
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {
             {
-                let store = reflected_store(home);
+                let store = Store::open(home).unwrap();
                 if let Some(settled) = store
                     .list_runs_for_task(task_id, 10)
                     .unwrap()
@@ -1768,6 +1770,156 @@ mod tests {
 
     // ─── reflection (prompt suggestions) ──────────────────────────────────
 
+    /// The whole path against a **real** agent and a real model: a queued task is
+    /// claimed by a tick, run, and reflected on, and the suggestion the pass
+    /// produces is read back from the ledger.
+    ///
+    /// Ignored by default: it spends credit and needs an instance nobody else is
+    /// using. Point `HOME` at a throwaway directory and start an agent for it
+    /// (the test refuses to run against a home outside the temp directory):
+    ///
+    /// ```text
+    /// HOME=<throwaway> FUTURE_AGENT_GRPC_ADDR=127.0.0.1:<port> \
+    ///   cargo test --lib tasks::tests::a_queued_run_against_a_real_agent \
+    ///   -- --ignored --nocapture --test-threads=1
+    /// ```
+    ///
+    /// Everything the mocks cannot prove lives here: that the envelope reaches a
+    /// real model in the shape the kernel composes, that the model answers the
+    /// suggestion's JSON contract at all, and that the guardrails then do
+    /// something sane with a real answer.
+    #[tokio::test]
+    #[ignore = "needs a real agent + model; see the doc comment"]
+    async fn a_queued_run_against_a_real_agent_ends_with_a_usable_answer() {
+        let home = crate::future_home_root();
+        let spelled = home.display().to_string();
+        assert!(
+            home.starts_with(std::env::temp_dir())
+                || spelled.starts_with("/tmp/")
+                || spelled.starts_with("/private/tmp/"),
+            "refusing to spend credit against a home that is not a throwaway: {spelled}"
+        );
+        // The host does this at startup; a bare `Store` on a fresh home has no
+        // schema, and "no such table: workspaces" is what a run reports then.
+        crate::store::initialize_app_store().expect("app store");
+        let store = Store::open(&home).unwrap();
+        let stamp = now_ms();
+        let mut t = task(&format!("real-{stamp}"));
+        t.prompt = "Write the single word: landed. Nothing else.".into();
+        t.cwd = std::env::temp_dir().display().to_string();
+        t.model_id = Some("future/deepseek-flash".into());
+        t.thinking_level = Some("minimal".into());
+        t.reflection = future_tasks::Reflection::Ask;
+        t.pending_request_at = Some(stamp);
+        t.pending_origin = Some(RunOrigin::Cli);
+        t.pending_actor = Some("smoke".into());
+        store.insert_task(&t).unwrap();
+
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        tick(&notify).await.expect("tick claims the queued task");
+
+        // The run, then the suggestion pass over it.
+        let settled = wait_for_run(&home, &t.id, RunKind::Manual).await;
+        println!("RUN status={:?}", settled.status);
+        println!("RUN summary={:?}", settled.result_summary);
+        println!("RUN error={:?}", settled.error_message);
+        assert_eq!(settled.status, RunStatus::Completed, "{settled:?}");
+        let summary = settled.result_summary.clone().unwrap_or_default();
+        assert!(
+            summary.to_lowercase().contains("landed"),
+            "a real model answered the run: {summary:?}"
+        );
+
+        let reflection = wait_for_reflection(&home, &t.id).await;
+        println!("REFLECTION status={:?}", reflection.status);
+        println!("REFLECTION summary={:?}", reflection.result_summary);
+        println!("REFLECTION error={:?}", reflection.error_message);
+        let store = Store::open(&home).unwrap();
+        for revision in store.list_revisions(&t.id).unwrap() {
+            println!(
+                "REVISION v{} status={} source={} confidence={:?} reason={:?}",
+                revision.version,
+                revision.status,
+                revision.source,
+                revision.confidence,
+                revision.reason
+            );
+        }
+        // The pass itself must have finished, whatever it decided; a real model
+        // answering `keep` to a one-line prompt is a perfectly good outcome.
+        assert_ne!(reflection.status, RunStatus::Running);
+    }
+
+    /// A one-shot host for hands-on testing: tick until nothing is pending or
+    /// running, so a run queued from the CLI (`future task run --wait`) actually
+    /// gets executed. Ignored by default like the smoke test above.
+    ///
+    /// `futureos-headless` is the real host, but it insists on a platform login
+    /// and starts the remote bridge; this is the same `tick`, without either. It
+    /// waits for suggestion passes too (the tick itself deliberately does not: a
+    /// suggestion must never hold a task's next slot back), and reconciles runs
+    /// left running by a host that exited mid-flight, as `run_loop` does.
+    #[tokio::test]
+    #[ignore = "a manual harness: ticks a throwaway instance until it is idle"]
+    async fn serve_pending_runs_until_idle() {
+        let home = crate::future_home_root();
+        crate::store::initialize_app_store().expect("app store");
+        let notify: Notifier = std::sync::Arc::new(|_| {});
+        let _ = Store::open(&home).unwrap().mark_interrupted_runs(now_ms());
+        let deadline = std::time::Instant::now() + Duration::from_secs(900);
+        loop {
+            tick(&notify).await.expect("tick");
+            let busy = {
+                let store = Store::open(&home).unwrap();
+                store.list_tasks(false).unwrap().into_iter().any(|task| {
+                    let runs = store.list_runs_for_task(&task.id, 5).unwrap_or_default();
+                    task.pending_request_at.is_some()
+                        || task.next_due_at.is_some_and(|due| due <= now_ms())
+                        || runs.iter().any(|run| run.status == RunStatus::Running)
+                })
+            };
+            if !busy {
+                let store = Store::open(&home).unwrap();
+                for task in store.list_tasks(false).unwrap() {
+                    for run in store.list_runs_for_task(&task.id, 3).unwrap() {
+                        println!(
+                            "{} · {:?} · {:?} · {:?}",
+                            task.name, run.kind, run.status, run.result_summary
+                        );
+                    }
+                }
+                println!("idle");
+                return;
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("still busy after 15 minutes");
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    /// Wait for one of a task's runs to reach a terminal state.
+    async fn wait_for_run(home: &std::path::Path, task_id: &str, kind: RunKind) -> TaskRun {
+        let deadline = std::time::Instant::now() + Duration::from_secs(600);
+        loop {
+            {
+                let store = Store::open(home).unwrap();
+                if let Some(settled) = store
+                    .list_runs_for_task(task_id, 10)
+                    .unwrap()
+                    .into_iter()
+                    .find(|run| run.kind == kind && run.status != RunStatus::Running)
+                {
+                    return settled;
+                }
+            }
+            if std::time::Instant::now() > deadline {
+                panic!("the {kind:?} run never settled");
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
     /// The whole suggestion path, end to end: a run finishes, the pass reads
     /// the run's own evidence, and what it answers is recorded as a suggestion
     /// rather than applied — the task's prompt is the user's until they say
@@ -1797,7 +1949,7 @@ mod tests {
         execute(&notify, store, t.clone(), run.clone(), Vec::new())
             .await
             .expect("execute");
-        let reflection = wait_for_reflection(&home, &t.id).await;
+        let reflection = wait_for_reflection(&test_future_root(&home), &t.id).await;
 
         let store = reflected_store(&home);
         // The suggestion is recorded, with the run it came from.
@@ -1895,7 +2047,7 @@ mod tests {
         execute(&notify, store, t.clone(), run.clone(), Vec::new())
             .await
             .expect("execute");
-        let reflection = wait_for_reflection(&home, &t.id).await;
+        let reflection = wait_for_reflection(&test_future_root(&home), &t.id).await;
 
         let store = reflected_store(&home);
         let stored = store.get_task(&t.id).unwrap().unwrap();
@@ -1949,7 +2101,7 @@ mod tests {
         execute(&notify, store, t.clone(), run.clone(), Vec::new())
             .await
             .expect("execute");
-        let reflection = wait_for_reflection(&home, &t.id).await;
+        let reflection = wait_for_reflection(&test_future_root(&home), &t.id).await;
 
         let store = reflected_store(&home);
         assert!(store.list_revisions(&t.id).unwrap().is_empty());
@@ -1986,7 +2138,7 @@ mod tests {
         execute(&notify, store, t.clone(), run.clone(), Vec::new())
             .await
             .expect("execute");
-        let reflection = wait_for_reflection(&home, &t.id).await;
+        let reflection = wait_for_reflection(&test_future_root(&home), &t.id).await;
 
         let store = reflected_store(&home);
         assert!(store.list_revisions(&t.id).unwrap().is_empty());
@@ -2061,7 +2213,7 @@ mod tests {
         execute(&notify, store, t.clone(), run.clone(), Vec::new())
             .await
             .expect("execute");
-        let reflection = wait_for_reflection(&home, &t.id).await;
+        let reflection = wait_for_reflection(&test_future_root(&home), &t.id).await;
 
         let store = reflected_store(&home);
         assert_eq!(reflection.status, RunStatus::Failed);

@@ -693,11 +693,14 @@ describe("tasksView", () => {
     expect(text).toContain("Daily");
   });
 
-  it("switches the session policy and explains the compaction cost", async () => {
+  it("switches the session policy and says what reusing a conversation means", async () => {
     const { container } = await renderView([]);
     await click(buttonByText(container, "New task"));
     await setValue(field(container, "Conversation") as HTMLSelectElement, "existing");
-    expect(container.textContent).toContain("compacted before every run");
+    // Each run continues the same conversation, and nothing is compacted for
+    // the user — the point of reusing it is the accumulated context.
+    expect(container.textContent).toContain("continues that same conversation");
+    expect(container.textContent).toContain("Nothing is compacted");
   });
 
   it("cancels the editor without saving", async () => {

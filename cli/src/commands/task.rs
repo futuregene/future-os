@@ -104,7 +104,9 @@ async fn output(args: &[String], out: &Output) -> Result<()> {
 
     out.log(&format!(
         "{} · run {} · {} · prompt v{} · session {}",
-        task.as_ref().map(|t| t.name.as_str()).unwrap_or("(task gone)"),
+        task.as_ref()
+            .map(|t| t.name.as_str())
+            .unwrap_or("(task gone)"),
         run.id,
         format!("{:?}", run.status).to_lowercase(),
         run.prompt_version
@@ -180,6 +182,29 @@ fn find_task(store: &Store, id_or_name: &str) -> Result<Task> {
     store
         .find_task_by_name(id_or_name)
         .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("task not found: {id_or_name}"))
+}
+
+/// Like [`find_task`], but a removed task still answers: its run ledger and
+/// prompt history stay in the database (`remove` is a soft delete), and reading
+/// that history is exactly what `runs`/`prompt log` are for. A live task always
+/// wins, so a name reused after a removal reads as the new task.
+fn find_task_for_history(store: &Store, id_or_name: &str) -> Result<Task> {
+    if let Some(live) = store
+        .find_task_by_name(id_or_name)
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(live);
+    }
+    if let Some(by_id) = store.get_task(id_or_name).map_err(|e| e.to_string())? {
+        return Ok(by_id);
+    }
+    store
+        .list_tasks(true)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|task| task.name == id_or_name)
+        .max_by_key(|task| task.updated_at)
         .ok_or_else(|| format!("task not found: {id_or_name}"))
 }
 
@@ -1138,7 +1163,8 @@ fn prompt_log(args: &[String], out: &Output) -> Result<()> {
         .find(|a| !a.starts_with('-'))
         .ok_or_else(|| "usage: future task prompt log <id|name> [--json]".to_string())?;
     let store = open_store()?;
-    let task = find_task(&store, reference)?;
+    // Suggestions and versions outlive the task's removal, like its runs do.
+    let task = find_task_for_history(&store, reference)?;
     let revisions = store.list_revisions(&task.id).map_err(|e| e.to_string())?;
     if json_flag {
         let items: Vec<_> = revisions
@@ -1198,18 +1224,25 @@ fn prompt_log(args: &[String], out: &Output) -> Result<()> {
         return Ok(());
     }
     let mut ordered: Vec<&future_tasks::PromptRevision> = versions;
-    ordered.sort_by_key(|r| -r.version);
+    ordered.sort_by_key(|r| r.version);
     for r in ordered {
         let mark = if r.version == task.prompt_version {
             "active"
         } else if r.status == future_tasks::REVISION_STATUS_APPLIED {
             "applied"
         } else {
-            "      "
+            ""
+        };
+        // An accepted suggestion keeps its own identity: it is not a version,
+        // so it is not printed as one ("v0" would invite someone to apply it
+        // again, or to wonder which version the task came from).
+        let label = if r.version == future_tasks::PROPOSAL_VERSION {
+            "suggestion".to_string()
+        } else {
+            format!("v{}", r.version)
         };
         out.log(&format!(
-            "  v{:<4} {mark:<7} {:<11} {:<16} {}",
-            r.version,
+            "  {label:<11} {mark:<8} {:<11} {:<16} {}",
             r.source,
             format_ms(Some(r.created_at)),
             r.reason.as_deref().unwrap_or("-")
@@ -1273,7 +1306,11 @@ fn prompt_apply(args: &[String], out: &Output) -> Result<()> {
     }
     if is_suggestion {
         store
-            .set_revision_status(&task.id, &revision.id, future_tasks::REVISION_STATUS_APPLIED)
+            .set_revision_status(
+                &task.id,
+                &revision.id,
+                future_tasks::REVISION_STATUS_APPLIED,
+            )
             .map_err(|e| e.to_string())?;
     }
     let previous = task.prompt_version;
@@ -1416,7 +1453,8 @@ fn runs(args: &[String], out: &Output) -> Result<()> {
         .find(|a| !a.starts_with('-'))
         .ok_or_else(|| "usage: future task runs <id|name> [--limit N] [--json]".to_string())?;
     let store = open_store()?;
-    let t = find_task(&store, id)?;
+    // A removed task still answers here: its ledger is the record of what it did.
+    let t = find_task_for_history(&store, id)?;
     let runs = store
         .list_runs_for_task(&t.id, limit)
         .map_err(|e| e.to_string())?;
@@ -2216,6 +2254,7 @@ mod tests {
         );
         assert!(shown.contains("superseded"), "{shown}");
         assert!(shown.contains("user"), "{shown}");
+        assert!(!shown.contains("v0"), "versions start at 1: {shown}");
 
         let (out, captured) = Output::memory();
         prompt_log(&args(&["t", "--json"]), &out).unwrap();
@@ -3304,6 +3343,72 @@ mod tests {
         );
     }
 
+    /// A removed task keeps its history: `remove` is a soft delete, and the run
+    /// ledger and prompt versions are what someone auditing it needs.
+    #[tokio::test]
+    async fn history_stays_readable_after_a_task_is_removed() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&[
+                "--name",
+                "removed",
+                "--prompt",
+                "the prompt",
+                "--cwd",
+                "/tmp",
+            ]),
+            &setup,
+        )
+        .unwrap();
+        let store = open_store().unwrap();
+        let task = find_task(&store, "removed").unwrap();
+        store
+            .insert_run(&future_tasks::TaskRun {
+                id: "trn_kept".to_string(),
+                task_id: task.id.clone(),
+                kind: future_tasks::RunKind::Manual,
+                origin: future_tasks::RunOrigin::Cli,
+                actor: None,
+                due_at: None,
+                status: future_tasks::RunStatus::Completed,
+                thread_id: None,
+                session_id: None,
+                run_id: None,
+                prompt_version: Some(1),
+                result_summary: Some("it ran".to_string()),
+                feedback: None,
+                feedback_note: None,
+                started_at: Some(1),
+                finished_at: Some(2),
+                error_message: None,
+            })
+            .unwrap();
+        let (out, _c) = Output::memory();
+        remove(&args(&["removed", "--yes"]), &out).unwrap();
+
+        // By id and by name: the task is gone from `list`, but its history is
+        // reachable in both spellings.
+        for reference in [task.id.as_str(), "removed"] {
+            let (out, captured) = Output::memory();
+            runs(&args(&[reference]), &out).unwrap();
+            let shown = text(captured.out.clone());
+            assert!(
+                shown.contains("trn_kept") && shown.contains("completed"),
+                "{reference}: {shown}"
+            );
+
+            let (out, captured) = Output::memory();
+            prompt_log(&args(&[reference]), &out).unwrap();
+            let shown = text(captured.out.clone());
+            assert!(shown.contains("active v1"), "{reference}: {shown}");
+        }
+        let (out, captured) = Output::memory();
+        list(&[], &out).unwrap();
+        assert!(!text(captured.out).contains("removed"));
+    }
+
     #[test]
     fn duration_parsing_accepts_minutes_hours_and_days() {
         assert_eq!(parse_duration_minutes("30m"), Some(30));
@@ -3361,7 +3466,10 @@ mod tests {
             shown.contains("future task prompt apply tsk_") && shown.contains("rev_suggestion"),
             "the suggestion names the command that applies it: {shown}"
         );
-        assert!(!shown.contains("v0"), "a suggestion has no version: {shown}");
+        assert!(
+            !shown.contains("v0"),
+            "a suggestion has no version: {shown}"
+        );
 
         let (out, captured) = Output::memory();
         prompt_log(&args(&["suggested", "--json"]), &out).unwrap();
@@ -3416,10 +3524,7 @@ mod tests {
         let stored = find_task(&store, "accepts").unwrap();
         assert_eq!(stored.prompt, "a better prompt");
         let revisions = store.list_revisions(&stored.id).unwrap();
-        let suggestion = revisions
-            .iter()
-            .find(|r| r.id == "rev_suggestion")
-            .unwrap();
+        let suggestion = revisions.iter().find(|r| r.id == "rev_suggestion").unwrap();
         assert_eq!(suggestion.status, future_tasks::REVISION_STATUS_APPLIED);
         let live = revisions
             .iter()
@@ -3429,15 +3534,25 @@ mod tests {
         assert_eq!(live.source, future_tasks::REVISION_SOURCE_REFLECTION);
         assert_eq!(live.reason.as_deref(), Some("clearer"));
         // The version it replaced is kept, so the loop is reversible.
-        assert!(revisions
-            .iter()
-            .any(|r| r.prompt == "the current prompt"
-                && r.status == future_tasks::REVISION_STATUS_SUPERSEDED));
+        assert!(revisions.iter().any(|r| r.prompt == "the current prompt"
+            && r.status == future_tasks::REVISION_STATUS_SUPERSEDED));
+
+        // …and the log reads as history, not as a version numbered zero.
+        let (out, captured) = Output::memory();
+        prompt_log(&args(&["accepts"]), &out).unwrap();
+        let shown = text(captured.out);
+        assert!(shown.contains("active v2"), "{shown}");
+        assert!(shown.contains("suggestion"), "{shown}");
+        assert!(
+            !shown.contains("v0"),
+            "a suggestion is not a version: {shown}"
+        );
+        assert!(!shown.contains("Suggestions (not applied)"), "{shown}");
     }
 
-    /// `future task output` reads the run's conversation through the agent, and
-    /// says which run the text belongs to — a reused conversation holds every
-    /// run's answer, so an unlabelled text would be attributed to the wrong one.
+    /// `output` prints a run's full answer, and says which run the text belongs
+    /// to — a reused conversation holds every run's answer, so an unlabelled
+    /// text would be attributed to the wrong one.
     #[tokio::test]
     async fn output_prints_a_runs_full_answer_with_its_identity() {
         let _guard = crate::test_env::lock_env().await;
@@ -3482,7 +3597,10 @@ mod tests {
         let (out, captured) = Output::memory();
         output(&args(&["trn_read"]), &out).await.unwrap();
         let shown = text(captured.out);
-        assert!(shown.contains("reads · run trn_read · completed"), "{shown}");
+        assert!(
+            shown.contains("reads · run trn_read · completed"),
+            "{shown}"
+        );
         assert!(shown.contains("session sess_1"), "{shown}");
         assert!(shown.contains("the whole answer"), "{shown}");
         assert_eq!(

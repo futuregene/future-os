@@ -653,12 +653,20 @@ pub fn compose_reflection_prompt(task: &Task, run: &crate::types::TaskRun) -> St
         _ => out.push_str("[no summary recorded]"),
     }
     out.push('\n');
-    if let Some(error) = run.error_message.as_deref().filter(|e| !e.trim().is_empty()) {
+    if let Some(error) = run
+        .error_message
+        .as_deref()
+        .filter(|e| !e.trim().is_empty())
+    {
         out.push_str(&format!("The run failed: {}\n", error.trim()));
     }
     if let Some(verdict) = run.feedback.as_deref() {
         out.push_str(&format!("The user judged this run: {verdict}"));
-        if let Some(note) = run.feedback_note.as_deref().filter(|n| !n.trim().is_empty()) {
+        if let Some(note) = run
+            .feedback_note
+            .as_deref()
+            .filter(|n| !n.trim().is_empty())
+        {
             out.push_str(&format!(" — {}", note.trim()));
         }
         out.push('\n');
@@ -1564,7 +1572,11 @@ mod tests {
         suggested.status = crate::types::REVISION_STATUS_PROPOSED.to_string();
         suggested.source = crate::types::REVISION_SOURCE_REFLECTION.to_string();
         let rows = prompt_change_revisions(&t, &[suggested], "third", "user", None, 5);
-        assert_eq!(rows.len(), 2, "history keeps the replaced version: {rows:?}");
+        assert_eq!(
+            rows.len(),
+            2,
+            "history keeps the replaced version: {rows:?}"
+        );
         assert_eq!(rows[0].version, 2);
         assert_eq!(rows[0].prompt, "second");
         assert_eq!(rows[0].status, crate::types::REVISION_STATUS_SUPERSEDED);
@@ -1616,20 +1628,38 @@ mod tests {
 
         let prompt = compose_reflection_prompt(&t, &run);
         assert!(
-            prompt.starts_with(&format!("── {} ──\n", crate::types::REFLECTION_SCHEMA_VERSION)),
+            prompt.starts_with(&format!(
+                "── {} ──\n",
+                crate::types::REFLECTION_SCHEMA_VERSION
+            )),
             "{prompt}"
         );
-        assert!(prompt.contains("task: weekly | id: tsk_test | prompt-version: 3"), "{prompt}");
-        assert!(prompt.contains("run: trn_1 | kind=main | status=failed"), "{prompt}");
+        assert!(
+            prompt.contains("task: weekly | id: tsk_test | prompt-version: 3"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("run: trn_1 | kind=main | status=failed"),
+            "{prompt}"
+        );
         assert!(prompt.contains("run settings: cwd=/tmp"), "{prompt}");
-        assert!(prompt.contains("The prompt that produced this run:\nWrite the report."), "{prompt}");
+        assert!(
+            prompt.contains("The prompt that produced this run:\nWrite the report."),
+            "{prompt}"
+        );
         assert!(prompt.contains("wrote reports/weekly.md"), "{prompt}");
-        assert!(prompt.contains("The run failed: no report was written"), "{prompt}");
+        assert!(
+            prompt.contains("The run failed: no report was written"),
+            "{prompt}"
+        );
         assert!(
             prompt.contains("The user judged this run: bad — the file went to the wrong folder"),
             "{prompt}"
         );
-        assert!(prompt.contains("Reply with only this JSON object"), "{prompt}");
+        assert!(
+            prompt.contains("Reply with only this JSON object"),
+            "{prompt}"
+        );
         assert!(prompt.contains("\"verdict\""), "{prompt}");
     }
 
@@ -1642,7 +1672,10 @@ mod tests {
         run.feedback = None;
         let prompt = compose_reflection_prompt(&t, &run);
         assert!(prompt.contains("[no summary recorded]"), "{prompt}");
-        assert!(!prompt.contains("finished="), "no finish time is invented: {prompt}");
+        assert!(
+            !prompt.contains("finished="),
+            "no finish time is invented: {prompt}"
+        );
         assert!(!prompt.contains("The run failed"), "{prompt}");
         assert!(!prompt.contains("The user judged"), "{prompt}");
     }
@@ -1686,10 +1719,9 @@ mod tests {
         assert_eq!(keep.confidence, 0.0, "a non-numeric confidence is 0");
 
         // Clamped, and a missing confidence counts as none stated.
-        let high = parse_reflection(
-            r#"{"verdict":"improve","prompt":"P","reason":"r","confidence":4.2}"#,
-        )
-        .expect("clamped");
+        let high =
+            parse_reflection(r#"{"verdict":"improve","prompt":"P","reason":"r","confidence":4.2}"#)
+                .expect("clamped");
         assert_eq!(high.confidence, 1.0);
         let missing = parse_reflection(r#"{"verdict":"improve","prompt":"P"}"#).expect("missing");
         assert_eq!(missing.confidence, 0.0);
@@ -1700,7 +1732,10 @@ mod tests {
     fn a_reply_without_a_verdict_is_not_a_proposal() {
         assert_eq!(parse_reflection("I could not judge this run."), None);
         assert_eq!(parse_reflection(r#"{"prompt":"P","reason":"r"}"#), None);
-        assert_eq!(parse_reflection(r#"{"verdict":"improve","prompt":"{"#), None);
+        assert_eq!(
+            parse_reflection(r#"{"verdict":"improve","prompt":"{"#),
+            None
+        );
     }
 
     #[test]
@@ -1790,12 +1825,24 @@ mod tests {
         offered.created_at = 1_000;
         let day = REFLECTION_DUPLICATE_WINDOW_MS;
         assert_eq!(
-            decide_proposal(&t, &[offered.clone()], RunStatus::Completed, &candidate, 1_000 + day - 1),
+            decide_proposal(
+                &t,
+                &[offered.clone()],
+                RunStatus::Completed,
+                &candidate,
+                1_000 + day - 1
+            ),
             ProposalAction::Skip("the same suggestion was already offered today")
         );
         // A day later it is worth offering again (the run may be different now).
         assert_eq!(
-            decide_proposal(&t, &[offered], RunStatus::Completed, &candidate, 1_000 + day),
+            decide_proposal(
+                &t,
+                &[offered],
+                RunStatus::Completed,
+                &candidate,
+                1_000 + day
+            ),
             ProposalAction::Propose
         );
     }
@@ -1808,12 +1855,24 @@ mod tests {
         t.prompt = "second".into();
         let history = vec![revision(1, "first"), revision(2, "second")];
         assert_eq!(
-            decide_proposal(&t, &history, RunStatus::Completed, &improve("first", 0.9), 1),
+            decide_proposal(
+                &t,
+                &history,
+                RunStatus::Completed,
+                &improve("first", 0.9),
+                1
+            ),
             ProposalAction::Skip("that is the version the current prompt replaced")
         );
         // A brand-new third wording is a suggestion, not a loop.
         assert_eq!(
-            decide_proposal(&t, &history, RunStatus::Completed, &improve("third", 0.9), 1),
+            decide_proposal(
+                &t,
+                &history,
+                RunStatus::Completed,
+                &improve("third", 0.9),
+                1
+            ),
             ProposalAction::Propose
         );
     }

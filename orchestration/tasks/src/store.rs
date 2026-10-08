@@ -574,6 +574,17 @@ impl Store {
             rev.created_at,
         ];
         self.conn.execute(SQL_INSERT_REVISION, values)?;
+        // At most one version is in force. A new active version replaces whatever
+        // was active before, so the older row is demoted in the same write — two
+        // rows claiming to be active is a query waiting to pick the wrong one
+        // (and `proposed`/`applied` rows keep their own status either way).
+        if rev.status == REVISION_STATUS_ACTIVE {
+            self.conn.execute(
+                "UPDATE task_prompt_revisions SET status = ?3
+                 WHERE task_id = ?1 AND version < ?2 AND status = 'active'",
+                params![rev.task_id, rev.version, REVISION_STATUS_SUPERSEDED],
+            )?;
+        }
         Ok(())
     }
 
@@ -1033,16 +1044,16 @@ mod tests {
             created_at: 5,
         };
         s.insert_revision(&row).unwrap();
-        assert_eq!(s.list_revisions(&t.id).unwrap()[0].prompt, "a better prompt");
+        assert_eq!(
+            s.list_revisions(&t.id).unwrap()[0].prompt,
+            "a better prompt"
+        );
         s.set_revision_status(&t.id, &row.id, REVISION_STATUS_APPLIED)
             .unwrap();
         let stored = s.list_revisions(&t.id).unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].status, REVISION_STATUS_APPLIED);
-        assert_eq!(
-            stored[0].prompt, "a better prompt",
-            "only the status moves"
-        );
+        assert_eq!(stored[0].prompt, "a better prompt", "only the status moves");
         assert_eq!(stored[0].confidence, Some(0.8));
         // A suggestion is outside the version sequence, so the task's own next
         // version is unaffected by it.
@@ -1050,7 +1061,8 @@ mod tests {
     }
 
     #[test]
-    fn revisions_are_ordered() {        let (_dir, s) = store();
+    fn revisions_are_ordered() {
+        let (_dir, s) = store();
         let t = task("rev");
         s.insert_task(&t).unwrap();
         for v in 1..=3 {
@@ -1072,6 +1084,41 @@ mod tests {
         assert_eq!(revs.len(), 3);
         assert_eq!(revs[2].version, 3);
         assert_eq!(s.next_revision_version(&t.id).unwrap(), 4);
+    }
+
+    /// Only one version is ever in force: writing a new active row demotes the
+    /// older one, so a query for `status='active'` cannot return two answers
+    /// (which is what applying a suggestion over an applied one used to leave
+    /// behind).
+    #[test]
+    fn a_new_active_version_demotes_the_previous_one() {
+        let (_dir, s) = store();
+        let t = task("promote");
+        s.insert_task(&t).unwrap();
+        let row = |version: i64, status: &str| PromptRevision {
+            id: new_revision_id(),
+            task_id: t.id.clone(),
+            version,
+            prompt: format!("p{version}"),
+            source: "user".into(),
+            status: status.into(),
+            reason: None,
+            confidence: None,
+            source_run_id: None,
+            created_at: version,
+        };
+        s.insert_revision(&row(1, REVISION_STATUS_ACTIVE)).unwrap();
+        s.insert_revision(&row(2, REVISION_STATUS_ACTIVE)).unwrap();
+        let revs = s.list_revisions(&t.id).unwrap();
+        assert_eq!(revs[0].status, REVISION_STATUS_SUPERSEDED);
+        assert_eq!(revs[1].status, REVISION_STATUS_ACTIVE);
+
+        // A suggestion is not in the version sequence and keeps its own status.
+        s.insert_revision(&row(0, REVISION_STATUS_PROPOSED))
+            .unwrap();
+        let revs = s.list_revisions(&t.id).unwrap();
+        assert_eq!(revs[0].status, REVISION_STATUS_PROPOSED);
+        assert_eq!(revs[2].status, REVISION_STATUS_ACTIVE);
     }
 
     // ─── paths and opening ────────────────────────────────────────────────

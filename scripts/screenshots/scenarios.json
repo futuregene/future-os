@@ -770,6 +770,35 @@
           }
         ]
       },
+      "tasks-suggestion": {
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const rows = [...document.querySelectorAll('div.w-72 > button')]; const badged = rows.filter(row => /\\d+ 条建议/.test(row.textContent || '')); if (badged.length !== 1) throw new Error('expected exactly one badged task row, got ' + badged.length); if (!badged[0].textContent.includes('文献监控')) throw new Error('the wrong row is badged: ' + badged[0].textContent); })()"
+          },
+          {
+            "tapText": "文献监控"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('建议')) throw new Error('the suggestion is not labelled'); if (!t.includes('置信度 68%')) throw new Error('the confidence is not shown'); if (!t.includes('采用建议')) throw new Error('the accept button is missing'); if (/v0/.test(t)) throw new Error('a suggestion is being shown as version 0'); })()"
+          },
+          {
+            "shot": "d-tasks-suggestion.png"
+          }
+        ]
+      },
       "tasks-new": {
         "url": "http://localhost:5299/shot/?lang=zh",
         "steps": [
