@@ -35,6 +35,77 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Put the prompt a revision carries in force, wherever the request came from.
+///
+/// Both the webview command and the phone's remote bridge route through here:
+/// accepting a *suggestion* has to mean the same thing on both (the suggestion
+/// row is marked applied, the version that goes live says it came from
+/// reflection and keeps the suggestion's reason, the replaced version stays in
+/// the history). A second, thinner implementation on the remote side silently
+/// recorded a `rollback` row instead, leaving the suggestion pending — a button
+/// that looks like it worked and did not.
+pub fn accept_revision(store: &Store, task_id: &str, revision_id: &str) -> Result<Task, String> {
+    let mut task = store
+        .get_task(task_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "task not found".to_string())?;
+    let history = store.list_revisions(task_id).map_err(|e| e.to_string())?;
+    let revision = history
+        .iter()
+        .find(|r| r.id == revision_id)
+        .ok_or_else(|| "revision not found".to_string())?
+        .clone();
+    let is_suggestion = revision.status == future_tasks::REVISION_STATUS_PROPOSED;
+    let source = if is_suggestion {
+        future_tasks::REVISION_SOURCE_REFLECTION
+    } else {
+        future_tasks::REVISION_SOURCE_ROLLBACK
+    };
+    let reason = if is_suggestion {
+        revision.reason.clone()
+    } else {
+        Some(format!(
+            "applied revision {} (v{})",
+            revision_id, revision.version
+        ))
+    };
+    let rows = kernel::prompt_change_revisions(
+        &task,
+        &history,
+        &revision.prompt,
+        source,
+        reason.as_deref(),
+        now_ms(),
+    );
+    let Some(applied) = rows.last() else {
+        // Already in force: report the task unchanged rather than bumping a
+        // version for a no-op.
+        return Ok(task);
+    };
+    for row in &rows {
+        store.insert_revision(row).map_err(|e| e.to_string())?;
+    }
+    if is_suggestion {
+        store
+            .set_revision_status(task_id, revision_id, future_tasks::REVISION_STATUS_APPLIED)
+            .map_err(|e| e.to_string())?;
+    }
+    task.prompt = applied.prompt.clone();
+    task.prompt_version = applied.version;
+    task.updated_at = now_ms();
+    store.update_task(&task).map_err(|e| e.to_string())?;
+    Ok(task)
+}
+
+/// The UI locale a reflection's `reason` is written in (`en`/`zh`, the codes the
+/// app settings keep). Read once per pass; a failure to read the settings is not
+/// worth losing the reflection over, so it falls back to the default locale.
+fn ui_language() -> String {
+    crate::store::get_app_settings()
+        .map(|settings| settings.title_language)
+        .unwrap_or_else(|_| "en".to_string())
+}
+
 /// How a finished run announces itself. The GUI refreshes the sidebar; the
 /// headless server has no webview and the run ledger is the only signal.
 pub type Notifier = std::sync::Arc<dyn Fn(Option<&str>) + Send + Sync>;
@@ -505,7 +576,7 @@ async fn reflect_inner(
     run: &TaskRun,
 ) -> Result<(String, String, kernel::PromptProposal), String> {
     let (thread_id, session_id) = create_reflection_session(task).await?;
-    let prompt = kernel::compose_reflection_prompt(task, run);
+    let prompt = kernel::compose_reflection_prompt(task, run, &ui_language());
     let thread = crate::store::get_thread(&thread_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "the reflection conversation could not be loaded".to_string())?;
@@ -2012,11 +2083,45 @@ mod tests {
             reflection_prompt.contains("Reply with only this JSON object"),
             "{reflection_prompt}"
         );
+        assert!(
+            reflection_prompt.contains("Write \"reason\" in English"),
+            "the pass is told which language the panel reads: {reflection_prompt}"
+        );
         let thread = crate::store::get_thread(reflection.thread_id.as_deref().unwrap())
             .unwrap()
             .unwrap();
         assert_eq!(thread.status, "archived");
         assert_eq!(thread.mode, "chat");
+    }
+
+    /// A suggestion's `reason` is read in the panel, so it is asked for in the
+    /// language the panel is in. The kernel cannot know that (it is pure and
+    /// host-agnostic), so the host passes the locale it already keeps — and a
+    /// settings read that fails falls back rather than losing the pass.
+    #[test]
+    fn the_reason_is_asked_for_in_the_ui_language() {
+        let _home = crate::agent_bridge::test_support::TestHome::new("tasks-reflect-language");
+        assert_eq!(ui_language(), "en", "a fresh install is English");
+
+        crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+            title_language: Some("zh".into()),
+            ..Default::default()
+        })
+        .expect("set the language");
+
+        let t = task("weekly");
+        let run = finished_run(&t.id, "trn_1", RunStatus::Completed);
+        let prompt = kernel::compose_reflection_prompt(&t, &run, &ui_language());
+        assert!(
+            prompt.contains("Write \"reason\" in Simplified Chinese"),
+            "{prompt}"
+        );
+        // Only the prose the user reads is translated: the instruction around it
+        // and the prompt under review are machinery.
+        assert!(
+            prompt.contains("Keep \"prompt\" in the language the prompt is already written in"),
+            "{prompt}"
+        );
     }
 
     /// `auto` acts on a suggestion the evidence supports — and still records

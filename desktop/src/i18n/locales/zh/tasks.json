@@ -18,6 +18,7 @@
   "depsReady": "已到达",
   "depsWaiting": "未到达",
   "runs": "运行记录",
+  "runPromptVersion": "v{{version}}",
   "runsNone": "还没有运行记录。",
   "openConversation": "打开会话",
   "revisions": "提示词版本",
@@ -144,5 +145,8 @@
   "colReflection": "提示词优化建议",
   "modelDefault": "默认模型",
   "thinkingDefault": "默认",
-  "revisionsNoReason": "没有记录理由。"
+  "revisionsNoReason": "没有记录理由。",
+  "suggestionReason": "原因",
+  "suggestedPrompt": "改进后的提示词",
+  "suggestionUnlinked": "这条建议的来源运行记录不在当前列表中"
 }

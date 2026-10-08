@@ -79,6 +79,8 @@ export interface TaskRevisionView {
   status: string;
   reason: string | null;
   confidence: number | null;
+  /** The run a suggestion read; the detail groups it under that run. */
+  sourceRunId: string | null;
   createdAt: number;
 }
 

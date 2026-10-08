@@ -220,10 +220,11 @@ Completion contract:
 
 - **输入（只看本次 run 窗口）**：本次 prompt、`result_summary`、run 状态与错误、以及用户对该 run 的 `feedback` 判定与备注。不喂历史，避免“基于长历史的大重写”无人能审。
 - **输出**：末段 JSON `{verdict: keep|improve, prompt, reason, confidence}`；解析容忍代码围栏与前后解释（取**最后一个**完整对象，字符串里的花括号不影响）。
+- **`reason` 用界面语言**：`reason` 是面板上给人读的散文，所以指令要求它用 UI 语言写（`Write "reason" in Simplified Chinese|English`）。locale 由 host 从 `title_language`（与标题生成同一个设置，前端在语言切换时镜像写入）取出后传进 `compose_reflection_prompt(task, run, language)`——内核是纯函数、不读设置；无法识别的 code 退回英文（建议语言不对仍可审，丢掉建议不可）。指令本身与 `prompt` 字段不动：前者是机制，后者是待审的那份 prompt 原文。
 - **`ask`（默认）**：写入 `task_prompt_revisions`，`status=proposed`、`source=reflection`、`version=PROPOSAL_VERSION(0)`（建议不是版本，不进版本序列）、带 `confidence` 与 `source_run_id`。UI/CLI 列出并可一键采纳。
 - **`auto`**：过护栏才直接生效，否则降级为建议——run 必须 `completed`、置信度 ≥0.7、24h 内没有已生效的建议（`REFLECTION_AUTO_INTERVAL_MS`）。
 - **防震荡（两种档位都适用）**：建议文本与当前 prompt 相同 / 与“被当前版本替代的那一版”相同 / 24h 内重复过同内容建议 → 不记录。护栏全是 `kernel.rs` 里的纯函数（`decide_proposal`），参数是代码常量。
-- **采纳**：`prompt apply` / 面板的「采用建议」走 `prompt_change_revisions`（被替换那版记 `superseded`，新生效那版 `source=reflection`），并把建议行标为 `applied`。
+- **采纳**：`prompt apply` / 面板与手机的「采用建议」都走 `tasks::accept_revision`（被替换那版记 `superseded`，新生效那版 `source=reflection` 并带着用户读到的那个 `reason`），并把建议行标为 `applied`。三个入口共用一份实现：手机那条远程命令曾自己走一套更薄的写入（记成 `rollback`、建议仍留 `proposed`），表现为“按钮点了像是生效了其实没有”。
 - **失败隔离**：反省失败（agent 不可达、回复不可解析、超时）只记在自己那条 `kind=reflection` 台账上；被反省的 run 不受影响。反省进行中不阻塞任务自己的下一次 claim（`has_running_run` 只看非 reflection 的运行）。
 
 `future task feedback` 的判定现在**有读取者**了：反省 prompt 会带上「用户对这次运行的判定」。
@@ -314,7 +315,12 @@ HOME=/tmp/try FUTURE_AGENT_GRPC_ADDR=127.0.0.1:5099 \
 
 **即时性**：`Run now`（桌面按钮、手机点击）写 `pending_request_at` 后调用 `tasks::wake()` 唤醒 tick 循环，运行在毫秒级开始，而不是等下一个 30s 节拍（tick 仍是唯一的 claim 者）；运行开始/结束时 host 既有 `threads-updated` 事件，任务面板据此重读列表与已打开的详情（否则会一直停在“已排队”）。
 
-**建议的可见性**：待定建议在**任务列表行**上是强调色计数标签（`pendingProposals`，桌面与手机同一字段），在详情里是一条带「建议」标记 + 置信度 + 「采用建议」按钮的记录（不是 `v0`；已采纳的标「已采用」）。采纳后：新生效那版 `source=reflection`、被替换那版记 `superseded`、建议行标 `applied`；`store.insert_revision` 会把同一个任务里更早的 `active` 行降为 `superseded`，任何时刻只有一个版本在生效。
+**建议的可见性**：待定建议在**任务列表行**上是强调色计数标签（`pendingProposals`，桌面与手机同一字段）。详情里它**贴在它评论的那次运行结果下面**（按 `sourceRunId` 归组，桌面与手机同一规则）：一条带「建议」标记 + 置信度 + **原因**（用户界面语言）+ **改进后的完整 prompt** + 「采用建议」按钮的块。理由：建议的主张是“这次的结果是这个 prompt 造成的”，把它和别处的版本列表并列就无法对照判断；而且建议是要做决定的东西，截断到 160 字符（wire 上的 `promptPreview`）没法决定。
+
+- **运行记录的分隔**：桌面每条运行一张独立卡片（头部是状态 · 类型 · `v版本` · 时间 + 「打开会话」，卡片之间有间距）——以前所有运行共用一个框、用细线分隔，一条带大段总结的运行会顶到下一次运行的表头上。手机本来就是每条一张卡片，这次补上了同样的头部行。
+- **版本区**（`提示词版本`）只列**真正的版本**（含已生效/已取代，带「应用」按钮）。运行列表是有上限的（20），所以某条建议的来源运行可能已不在列表里：这类建议不会被丢掉，而是连同「该建议的来源运行记录不在列表中」的说明和它的「采用建议」按钮留在版本区。
+- 采纳后：新生效那版 `source=reflection`、被替换那版记 `superseded`、建议行标 `applied`；`store.insert_revision` 会把同一个任务里更早的 `active` 行降为 `superseded`，任何时刻只有一个版本在生效。
+- **手机上的长 prompt**：展开/收起（默认收起）而不是固定高度的内嵌滚动区——外层已经是 `ScrollView`，嵌套的纵向滚动在 Android 上拿不到手势（`.future/memory/mobile-nested-scroll.md`）。
 
 
 ## 12. 明确不做
