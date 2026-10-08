@@ -748,6 +748,9 @@
             "eval": "(() => { const t = document.body.innerText; if (!t.includes('触发器')) throw new Error('editor is missing the trigger section'); if (!t.includes('完全权限')) throw new Error('the full-permission warning is not shown'); })()"
           },
           {
+            "eval": "(() => { const browse = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '浏览'); if (!browse) throw new Error('the working-directory row has no browse button'); const box = browse.getBoundingClientRect(); const panel = browse.closest('section').getBoundingClientRect(); if (box.right > panel.right + 1) throw new Error('the browse button runs past the panel edge: button ' + Math.round(box.right) + ' vs panel ' + Math.round(panel.right)); if (box.width < 56) throw new Error('the browse button is squeezed to ' + Math.round(box.width) + 'px'); const field = document.querySelector(\"input[aria-label='工作目录']\"); if (!field) throw new Error('a workspace conversation has no directory field'); const fieldBox = field.getBoundingClientRect(); if (fieldBox.right > box.left + 1) throw new Error('the field overlaps the button'); })()"
+          },
+          {
             "shot": "d-tasks-editor.png"
           },
           {
@@ -764,6 +767,138 @@
           },
           {
             "shot": "d-tasks-editor-actions.png"
+          }
+        ]
+      },
+      "tasks-suggestion": {
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const rows = [...document.querySelectorAll('div.w-72 > button')]; const badged = rows.filter(row => /\\d+ 条建议/.test(row.textContent || '')); if (badged.length !== 1) throw new Error('expected exactly one badged task row, got ' + badged.length); if (!badged[0].textContent.includes('文献监控')) throw new Error('the wrong row is badged: ' + badged[0].textContent); })()"
+          },
+          {
+            "tapText": "文献监控"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('建议')) throw new Error('the suggestion is not labelled'); if (!t.includes('置信度 68%')) throw new Error('the confidence is not shown'); if (!t.includes('采用建议')) throw new Error('the accept button is missing'); if (/v0/.test(t)) throw new Error('a suggestion is being shown as version 0'); })()"
+          },
+          {
+            "eval": "(() => { const run = [...document.querySelectorAll('li')].find(li => (li.textContent || '').includes('上游检索服务返回 503')); if (!run) throw new Error('the run card is missing'); const text = run.textContent || ''; if (!text.includes('建议')) throw new Error('the suggestion is not inside the run card it read: ' + text.slice(0, 200)); if (!text.includes('上一版没有说明检索不到新论文时该怎么办')) throw new Error('the reason is not shown with the run'); if (!text.includes('（建议版本）检索最近 7 天')) throw new Error('the suggested prompt is not shown with the run'); if (!run.querySelector('button')) throw new Error('the accept button is not inside the run card'); if (!text.includes('v2')) throw new Error('the run card does not say which prompt version ran'); })()"
+          },
+          {
+            "eval": "(() => { const cards = [...document.querySelectorAll('li')].filter(li => li.className.includes('rounded-md') && li.className.includes('border-line-soft')); if (cards.length < 2) throw new Error('expected one card per run, got ' + cards.length); const older = cards.find(li => (li.textContent || '').includes('新增 3 篇')); if (!older) throw new Error('the older run has no card of its own'); if ((older.textContent || '').includes('建议')) throw new Error('a suggestion leaked into the run it did not read'); const newer = cards.find(li => (li.textContent || '').includes('上游检索服务返回 503')); if (!newer) throw new Error('the newer run has no card of its own'); if (newer === older) throw new Error('both runs share one card'); })()"
+          },
+          {
+            "eval": "(() => { const li = [...document.querySelectorAll('li')].find(el => (el.textContent || '').includes('上游检索服务返回 503')); if (!li) throw new Error('the run card is missing'); let node = li.parentElement; while (node && node.scrollHeight <= node.clientHeight + 10) node = node.parentElement; if (!node) throw new Error('the detail panel does not scroll'); const top = li.getBoundingClientRect().top - node.getBoundingClientRect().top + node.scrollTop; node.scrollTop = Math.max(0, top - 32); return 'scrolled to ' + Math.round(node.scrollTop); })()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "shot": "d-tasks-suggestion.png"
+          }
+        ]
+      },
+      "tasks-deps": {
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "编辑"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const trigger = document.querySelector('fieldset'); const mode = [...trigger.querySelectorAll('select')].find(s => [...s.options].some(o => o.value === 'dependency')); if (!mode) throw new Error('dependency is not a trigger choice'); if (mode.value !== 'weekly') throw new Error('a scheduled task does not open on its schedule: ' + mode.value); const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor'); if (!fs.innerText.includes('本任务还有定时触发')) throw new Error('a scheduled task with upstreams does not explain itself: ' + fs.innerText.slice(0, 200)); const stored = fs.querySelector('select[aria-label=\"文献监控 的触发条件\"]'); if (!stored) throw new Error('the stored edge has no condition picker'); if (stored.value !== 'completed') throw new Error('the stored condition is not shown: ' + stored.value); const offered = [...fs.querySelector('select[aria-label=\"添加上游任务\"]').options].map(o => o.textContent); if (!offered.includes('月末归档')) throw new Error('the other tasks are not offered: ' + offered.join(',')); if (offered.includes('每周进展周报')) throw new Error('a task offers itself as its own upstream'); })()"
+          },
+          {
+            "eval": "(() => { const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor'); fs.scrollIntoView({ block: 'center' }); return 'scrolled'; })()"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "shot": "d-tasks-deps.png"
+          },
+          {
+            "eval": "(() => { const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor');const picker = fs.querySelector('select[aria-label=\"添加上游任务\"]');const option = [...picker.options].find(o => o.textContent === '月末归档');if (!option) throw new Error('月末归档 is not offered');const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;setter.call(picker, option.value);picker.dispatchEvent(new Event('change', { bubbles: true })); return 'picked'; })()"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "eval": "(() => { const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor'); const button = [...fs.querySelectorAll('button')].find(b => b.textContent.trim() === '添加'); if (!button) throw new Error('no add button'); if (button.disabled) throw new Error('the add button is disabled after picking an upstream'); button.click(); return 'added'; })()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => { const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor'); const rows = [...fs.querySelectorAll('li')].map(li => li.innerText.replace(/\\n/g, ' ')); if (rows.length !== 2) throw new Error('expected two dependency rows, got ' + rows.length + ': ' + rows.join(' | ')); if (!rows.some(r => r.includes('月末归档'))) throw new Error('the added upstream is not listed: ' + rows.join(' | ')); if (!fs.querySelector('select[aria-label=\"多个上游的到达条件\"]')) throw new Error('two upstreams do not offer the join policy'); })()"
+          },
+          {
+            "eval": "(() => { const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor'); fs.scrollIntoView({ block: 'center' }); return 'scrolled'; })()"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "shot": "d-tasks-deps-two.png"
+          }
+        ]
+      },
+      "tasks-new": {
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "新建任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { if (document.querySelector(\"input[aria-label='工作目录']\")) throw new Error('a chat task must not ask for a directory'); const pickers = [...document.querySelectorAll('select')]; const values = pickers.map(s => s.value); if (!values.includes('chat')) throw new Error('the conversation picker does not open on chat: ' + values.join(',')); if (values.filter(v => v === '').length < 2) throw new Error('the model and thinking pickers are not both unset: ' + values.join(',')); const model = pickers.find(s => [...s.options].some(o => o.textContent === '请选择模型')); if (!model) throw new Error('no model picker'); if ([...model.options].some(o => o.textContent.includes('默认'))) throw new Error('a default model option is still offered'); })()"
+          },
+          {
+            "eval": "(() => { if (document.querySelector('select[aria-label=\"添加上游任务\"]')) throw new Error('a new task shows the dependency editor before its trigger asks for it'); const mode = [...document.querySelectorAll('select')].map(s => s.value); if (!mode.includes('manual')) throw new Error('a new task does not open on the manual trigger: ' + mode.join(',')); })()"
+          },
+          {
+            "shot": "d-tasks-new.png"
           }
         ]
       }

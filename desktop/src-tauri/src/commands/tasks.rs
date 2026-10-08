@@ -48,10 +48,16 @@ pub struct TaskView {
     pub trigger_kind: String,
     pub trigger: serde_json::Value,
     pub dep_join: String,
+    /// How many upstream dependencies this task waits on. A task with its own
+    /// schedule *and* dependencies is a real state (they are orthogonal), so the
+    /// form and the list need the count to say which kind of trigger is in play.
+    pub dep_count: usize,
     pub next_due_at: Option<i64>,
     /// An explicit request is waiting for the tick (the task was busy).
     pub queued: bool,
     pub reflection: String,
+    /// Prompt suggestions awaiting a decision (0 when there are none).
+    pub pending_proposals: usize,
     pub latest_run: Option<RunView>,
 }
 
@@ -95,6 +101,23 @@ fn task_view(store: &Store, task: Task) -> TaskView {
         .ok()
         .flatten()
         .map(run_view);
+    // Counted here rather than stored: a suggestion is a row in the revision
+    // history, and a count that can disagree with the history is worse than no
+    // count (the badge would outlive the suggestion it announces).
+    let pending_proposals = store
+        .list_revisions(&task.id)
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| row.status == future_tasks::REVISION_STATUS_PROPOSED)
+                .count()
+        })
+        .unwrap_or(0);
+    // Counted here for the same reason: an edge lives in its own table, and a
+    // count that can disagree with it is worse than no count.
+    let dep_count = store
+        .list_deps(&task.id)
+        .map(|deps| deps.len())
+        .unwrap_or(0);
     TaskView {
         id: task.id,
         name: task.name,
@@ -109,9 +132,11 @@ fn task_view(store: &Store, task: Task) -> TaskView {
         trigger_kind: format!("{:?}", task.trigger_kind).to_lowercase(),
         trigger: task.trigger_json,
         dep_join: format!("{:?}", task.dep_join).to_lowercase(),
+        dep_count,
         next_due_at: task.next_due_at,
         queued: task.pending_request_at.is_some(),
         reflection: format!("{:?}", task.reflection).to_lowercase(),
+        pending_proposals,
         latest_run,
     }
 }
@@ -333,7 +358,9 @@ pub fn set_task_enabled(id: String, enabled: bool) -> Result<TaskView, crate::Ap
     Ok(task_view(&store, task))
 }
 
-/// Queue an explicit run. The tick loop consumes `pending_request_at`.
+/// Queue an explicit run. The tick loop consumes `pending_request_at`; the
+/// wake makes it look now instead of at the next cadence tick, so pressing the
+/// button starts the run rather than scheduling it up to 30s out.
 #[tauri::command]
 pub fn run_task_now(id: String) -> Result<TaskView, crate::AppError> {
     let store = open()?;
@@ -348,6 +375,7 @@ pub fn run_task_now(id: String) -> Result<TaskView, crate::AppError> {
     store
         .update_task(&task)
         .map_err(|e| crate::AppError::Message(e.to_string()))?;
+    crate::tasks::wake();
     Ok(task_view(&store, task))
 }
 
@@ -457,6 +485,10 @@ pub fn list_task_revisions(id: String) -> Result<Vec<RevisionView>, crate::AppEr
             status: r.status,
             reason: r.reason,
             confidence: r.confidence,
+            // The run a suggestion came from: the detail view groups a
+            // suggestion under that run's result instead of parking every
+            // suggestion at the bottom of the page.
+            source_run_id: r.source_run_id,
             created_at: r.created_at,
         })
         .collect())
@@ -472,6 +504,8 @@ pub struct RevisionView {
     pub status: String,
     pub reason: Option<String>,
     pub confidence: Option<f64>,
+    /// The run this revision came from (a suggestion names the run it read).
+    pub source_run_id: Option<String>,
     pub created_at: i64,
 }
 
@@ -479,45 +513,10 @@ pub struct RevisionView {
 #[tauri::command]
 pub fn apply_task_revision(id: String, revision_id: String) -> Result<TaskView, crate::AppError> {
     let store = open()?;
-    let mut task = store
-        .get_task(&id)
-        .map_err(|e| crate::AppError::Message(e.to_string()))?
-        .ok_or_else(|| crate::AppError::Message("task not found".to_string()))?;
-    let history = store
-        .list_revisions(&id)
-        .map_err(|e| crate::AppError::Message(e.to_string()))?;
-    let revision = history
-        .iter()
-        .find(|r| r.id == revision_id)
-        .ok_or_else(|| crate::AppError::Message("revision not found".to_string()))?
-        .clone();
-    let rows = future_tasks::prompt_change_revisions(
-        &task,
-        &history,
-        &revision.prompt,
-        "rollback",
-        Some(&format!(
-            "applied revision {} (v{})",
-            revision_id, revision.version
-        )),
-        now_ms(),
-    );
-    let Some(applied) = rows.last() else {
-        // Already active: report the task unchanged rather than bumping a
-        // version for a no-op.
-        return Ok(task_view(&store, task));
-    };
-    for row in &rows {
-        store
-            .insert_revision(row)
-            .map_err(|e| crate::AppError::Message(e.to_string()))?;
-    }
-    task.prompt = applied.prompt.clone();
-    task.prompt_version = applied.version;
-    task.updated_at = now_ms();
-    store
-        .update_task(&task)
-        .map_err(|e| crate::AppError::Message(e.to_string()))?;
+    // Shared with the phone's remote bridge, so accepting a suggestion means
+    // the same thing on both surfaces (crate::tasks::accept_revision).
+    let task = crate::tasks::accept_revision(&store, &id, &revision_id)
+        .map_err(crate::AppError::Message)?;
     Ok(task_view(&store, task))
 }
 
@@ -682,6 +681,74 @@ mod tests {
             list_task_revisions(created.id).expect("revisions").len(),
             after.len()
         );
+    }
+
+    /// A suggestion is counted for the list, and accepting it is what makes it
+    /// a version: the row that carried it is marked applied, the version that
+    /// goes live says where it came from, and the count drops to zero.
+    #[test]
+    fn a_suggestion_is_counted_and_accepting_it_marks_it_applied() {
+        let _home = init("cmd_tasks_suggestion");
+        let created = create_task(input("suggests")).expect("create");
+        assert_eq!(created.pending_proposals, 0, "nothing suggested yet");
+
+        let store = open().expect("store");
+        store
+            .insert_revision(&future_tasks::PromptRevision {
+                id: "rev_suggestion".into(),
+                task_id: created.id.clone(),
+                version: future_tasks::PROPOSAL_VERSION,
+                prompt: "a better prompt".into(),
+                source: future_tasks::REVISION_SOURCE_REFLECTION.into(),
+                status: future_tasks::REVISION_STATUS_PROPOSED.into(),
+                reason: Some("the output path was not stated".into()),
+                confidence: Some(0.82),
+                source_run_id: Some("trn_1".into()),
+                created_at: now_ms(),
+            })
+            .unwrap();
+
+        // The list carries the count so the panel can badge the row without the
+        // detail round-trip.
+        let listed = list_tasks().expect("list");
+        assert_eq!(listed[0].pending_proposals, 1);
+
+        let applied =
+            apply_task_revision(created.id.clone(), "rev_suggestion".into()).expect("apply");
+        assert_eq!(applied.prompt_version, 2);
+        assert_eq!(applied.pending_proposals, 0, "it is decided now");
+
+        let revisions = list_task_revisions(created.id.clone()).expect("revisions");
+        let suggestion = revisions
+            .iter()
+            .find(|r| r.id == "rev_suggestion")
+            .expect("the suggestion row");
+        assert_eq!(suggestion.status, future_tasks::REVISION_STATUS_APPLIED);
+        // The run it read crosses the wire too: the panel groups a suggestion
+        // under that run's result instead of listing every suggestion at the
+        // bottom of the page.
+        assert_eq!(suggestion.source_run_id.as_deref(), Some("trn_1"));
+        let live = revisions
+            .iter()
+            .find(|r| r.version == applied.prompt_version)
+            .expect("the live version");
+        assert_eq!(live.source, future_tasks::REVISION_SOURCE_REFLECTION);
+        assert_eq!(
+            live.reason.as_deref(),
+            Some("the output path was not stated")
+        );
+        assert!(
+            revisions
+                .iter()
+                .any(|r| r.status == future_tasks::REVISION_STATUS_SUPERSEDED),
+            "the replaced version stays in the history"
+        );
+        // The accepted suggestion keeps its own identity (a version-less row)
+        // rather than being renumbered into the version sequence: it is the
+        // record of what was suggested, and the version it produced is its own
+        // row.
+        assert_eq!(suggestion.version, future_tasks::PROPOSAL_VERSION);
+        assert_ne!(live.version, future_tasks::PROPOSAL_VERSION);
     }
 
     #[test]

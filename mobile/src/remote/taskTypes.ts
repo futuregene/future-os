@@ -25,6 +25,10 @@ export interface RemoteTaskRow {
   nextDueAt?: number | null;
   queued?: boolean;
   reflection: string;
+  /** How many upstream dependencies this task waits on (absent on an older desktop). */
+  depCount?: number;
+  /** Prompt suggestions awaiting a decision (absent on an older desktop). */
+  pendingProposals?: number;
   latestRun?: RemoteTaskRun | null;
 }
 
@@ -54,5 +58,9 @@ export interface RemoteTaskRevision {
   reason?: string | null;
   confidence?: number | null;
   createdAt: number;
+  /** The run a suggestion read; the detail groups it under that run. */
+  sourceRunId?: string | null;
+  /** The whole prompt (absent on an older desktop: fall back to the preview). */
+  prompt?: string | null;
   promptPreview: string;
 }

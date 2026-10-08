@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invokeCommand } from "../../integrations/tauri/invoke";
+import { useTauriEvent } from "../../lib/useTauriEvent";
 
 /** Task rows as the Tauri backend serializes them. */
 export interface TaskRunView {
@@ -31,10 +32,14 @@ export interface TaskView {
   triggerKind: string;
   trigger: Record<string, unknown>;
   depJoin: string;
+  /** How many upstream dependencies this task waits on. */
+  depCount: number;
   nextDueAt: number | null;
   /** An explicit request is waiting for the tick (the task was busy). */
   queued: boolean;
   reflection: string;
+  /** Prompt suggestions awaiting a decision (0 when there are none). */
+  pendingProposals: number;
   latestRun: TaskRunView | null;
 }
 
@@ -60,6 +65,12 @@ export interface TaskDepView {
   satisfied: boolean;
 }
 
+/** One dependency edge as the form holds it (upstream + condition). */
+export interface TaskDepInput {
+  upstreamTaskId: string;
+  on: string;
+}
+
 export interface TaskRevisionView {
   id: string;
   version: number;
@@ -68,6 +79,8 @@ export interface TaskRevisionView {
   status: string;
   reason: string | null;
   confidence: number | null;
+  /** The run a suggestion read; the detail groups it under that run. */
+  sourceRunId: string | null;
   createdAt: number;
 }
 
@@ -95,6 +108,14 @@ export function useTasks() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // A run changes the task's state (queued → running → finished) and can also
+  // produce a conversation; the host already announces both with
+  // "threads-updated". Without this the panel kept saying "queued" at a task
+  // that had been running for minutes, until the user left and came back.
+  useTauriEvent("threads-updated", () => {
+    void reload();
+  });
 
   const createTask = useCallback(async (input: TaskInput) => {
     const created = await invokeCommand<TaskView>("create_task", { input });
@@ -145,6 +166,34 @@ export function useTasks() {
     [],
   );
 
+  /**
+   * Make a task's dependency edges say exactly this, and nothing else.
+   *
+   * A form holds the whole set the user wants, so the write is a reconciliation
+   * rather than add/remove calls poured out of the UI: an edge that is kept as
+   * it was is not written again (rewriting it would be a no-op that still
+   * touches the row), a changed condition is one call, and an edge the user
+   * dropped is removed. The comparison runs against the store's current edges,
+   * not the ones the form was opened with — a CLI or phone write in between must
+   * not be silently reverted.
+   */
+  const saveDeps = useCallback(async (id: string, wanted: TaskDepInput[]) => {
+    const current = await invokeCommand<TaskDepView[]>("list_task_deps", { id });
+    const byUpstream = new Map(wanted.map(dep => [dep.upstreamTaskId, dep.on]));
+    for (const dep of current) {
+      const on = byUpstream.get(dep.upstreamTaskId);
+      if (on === undefined)
+        await invokeCommand<void>("remove_task_dep", { id, upstreamTaskId: dep.upstreamTaskId });
+      else if (on !== dep.on)
+        await invokeCommand<void>("set_task_dep", { id, upstreamTaskId: dep.upstreamTaskId, on });
+      byUpstream.delete(dep.upstreamTaskId);
+    }
+    // What is left in the map is new: it was not among the stored edges.
+    for (const [upstreamTaskId, on] of byUpstream)
+      await invokeCommand<void>("set_task_dep", { id, upstreamTaskId, on });
+    await reload();
+  }, [reload]);
+
   const listRevisions = useCallback(
     (id: string) => invokeCommand<TaskRevisionView[]>("list_task_revisions", { id }),
     [],
@@ -167,6 +216,7 @@ export function useTasks() {
     runNow,
     listRuns,
     listDeps,
+    saveDeps,
     setDep,
     removeDep,
     listRevisions,

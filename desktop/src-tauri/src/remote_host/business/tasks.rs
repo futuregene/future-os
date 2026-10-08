@@ -54,11 +54,34 @@ fn task_list_view(store: &future_tasks::Store, task: future_tasks::Task) -> Valu
         "enabled": task.enabled,
         "triggerKind": format!("{:?}", task.trigger_kind).to_lowercase(),
         "trigger": task.trigger_json,
+        "depCount": dep_count(store, &task.id),
         "nextDueAt": task.next_due_at,
         "queued": task.pending_request_at.is_some(),
         "reflection": format!("{:?}", task.reflection).to_lowercase(),
+        // A suggestion is the one thing on this page the user has to act on, so
+        // the list counts them without the detail round-trip.
+        "pendingProposals": pending_proposals(store, &task.id),
         "latestRun": latest.map(run_summary_view),
     })
+}
+
+/// Upstream dependencies of a task: the phone's form needs the count to say
+/// whether the trigger is "dependency" or a schedule, and its list to label a
+/// task the same way the desktop does.
+fn dep_count(store: &future_tasks::Store, task_id: &str) -> usize {
+    store.list_deps(task_id).map(|deps| deps.len()).unwrap_or(0)
+}
+
+/// Prompt suggestions awaiting a decision.
+fn pending_proposals(store: &future_tasks::Store, task_id: &str) -> usize {
+    store
+        .list_revisions(task_id)
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| row.status == future_tasks::REVISION_STATUS_PROPOSED)
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 /// The detail record (the only place the prompt crosses the wire).
@@ -78,9 +101,11 @@ fn task_detail_view(store: &future_tasks::Store, task: future_tasks::Task) -> Va
         "triggerKind": format!("{:?}", task.trigger_kind).to_lowercase(),
         "trigger": task.trigger_json,
         "depJoin": format!("{:?}", task.dep_join).to_lowercase(),
+        "depCount": dep_count(store, &task.id),
         "nextDueAt": task.next_due_at,
         "queued": task.pending_request_at.is_some(),
         "reflection": format!("{:?}", task.reflection).to_lowercase(),
+        "pendingProposals": pending_proposals(store, &task.id),
         "latestRun": latest.map(run_summary_view),
     })
 }
@@ -118,6 +143,17 @@ fn parse_dep_join(raw: Option<&str>) -> future_tasks::DepJoin {
     match raw {
         Some("any") => future_tasks::DepJoin::Any,
         _ => future_tasks::DepJoin::All,
+    }
+}
+
+/// The condition a dependency edge fires on. A bare `set_task_dep` (no `on`)
+/// means the successful finish, the same default the CLI's `--depends-on NAME`
+/// and the desktop's add-row take.
+fn parse_dep_on(raw: &str) -> future_tasks::DepOn {
+    match raw {
+        "failure" => future_tasks::DepOn::Failure,
+        "completed" => future_tasks::DepOn::Completed,
+        _ => future_tasks::DepOn::Success,
     }
 }
 
@@ -399,6 +435,46 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             }
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
+        "set_task_dep" | "remove_task_dep" => match open_store() {
+            Ok(store) => {
+                let result = if cmd.cmd_type == "remove_task_dep" {
+                    store
+                        .remove_dep(&cmd.task_id, &cmd.upstream_task_id)
+                        .map_err(|e| crate::AppError::Message(e.to_string()))
+                } else {
+                    let dep = future_tasks::TaskDep {
+                        task_id: cmd.task_id.clone(),
+                        upstream_task_id: cmd.upstream_task_id.clone(),
+                        on: parse_dep_on(&cmd.on),
+                    };
+                    // The same cycle refusal the desktop panel and the CLI go
+                    // through: a phone write is a write like any other, and an
+                    // edge that closes a loop would never fire again.
+                    let with_edge = (|| -> Result<Vec<future_tasks::TaskDep>, crate::AppError> {
+                        let mut all = store
+                            .list_all_deps()
+                            .map_err(|e| crate::AppError::Message(e.to_string()))?;
+                        all.retain(|d| {
+                            !(d.task_id == dep.task_id
+                                && d.upstream_task_id == dep.upstream_task_id)
+                        });
+                        all.push(dep.clone());
+                        Ok(all)
+                    })();
+                    match with_edge {
+                        Err(error) => Err(error),
+                        Ok(all) if future_tasks::would_cycle(&dep.task_id, &all) => Err(
+                            crate::AppError::Message("dependency cycle detected".to_string()),
+                        ),
+                        Ok(_) => store
+                            .add_dep(&dep)
+                            .map_err(|e| crate::AppError::Message(e.to_string())),
+                    }
+                };
+                reply_unit(sink, result).await
+            }
+            Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+        },
         "run_task" => match open_store() {
             Ok(store) => {
                 let result = store
@@ -415,6 +491,9 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         store
                             .update_task(&task)
                             .map_err(|e| crate::AppError::Message(e.to_string()))?;
+                        // The phone's tap starts the run now, exactly like the
+                        // desktop button (see `crate::tasks::wake`).
+                        crate::tasks::wake();
                         Ok(task)
                     });
                 match result {
@@ -481,6 +560,12 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                                 "reason": r.reason,
                                 "confidence": r.confidence,
                                 "createdAt": r.created_at,
+                                "sourceRunId": r.source_run_id,
+                                // The whole prompt, not just a preview: a
+                                // suggestion is something the user accepts or
+                                // rejects, and 160 characters cannot be judged.
+                                // `promptPreview` stays for older clients.
+                                "prompt": r.prompt,
                                 "promptPreview": truncate(&r.prompt, 160),
                             })
                         })
@@ -493,46 +578,12 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
         },
         "apply_task_revision" => match open_store() {
             Ok(store) => {
-                let result = store
-                    .list_revisions(&cmd.task_id)
-                    .map_err(|e| crate::AppError::Message(e.to_string()))
-                    .and_then(|revisions| {
-                        revisions
-                            .into_iter()
-                            .find(|r| r.id == cmd.revision_id)
-                            .ok_or_else(|| crate::AppError::Message("revision not found".into()))
-                    })
-                    .and_then(|revision| {
-                        let mut task = store
-                            .get_task(&cmd.task_id)
-                            .map_err(|e| crate::AppError::Message(e.to_string()))?
-                            .ok_or_else(|| crate::AppError::Message("task not found".into()))?;
-                        task.prompt = revision.prompt;
-                        task.prompt_version += 1;
-                        task.updated_at = now_ms();
-                        let applied = future_tasks::PromptRevision {
-                            id: future_tasks::new_revision_id(),
-                            task_id: task.id.clone(),
-                            version: task.prompt_version,
-                            prompt: task.prompt.clone(),
-                            source: "rollback".to_string(),
-                            status: "active".to_string(),
-                            reason: Some(format!("applied revision {}", revision.id)),
-                            confidence: None,
-                            source_run_id: None,
-                            created_at: now_ms(),
-                        };
-                        store
-                            .insert_revision(&applied)
-                            .map_err(|e| crate::AppError::Message(e.to_string()))?;
-                        store
-                            .update_task(&task)
-                            .map_err(|e| crate::AppError::Message(e.to_string()))?;
-                        Ok(task)
-                    });
-                match result {
+                // The same implementation the webview command uses, so
+                // accepting a suggestion from the phone marks it applied and
+                // records the version the same way.
+                match crate::tasks::accept_revision(&store, &cmd.task_id, &cmd.revision_id) {
                     Ok(task) => reply(sink, true, task_detail_view(&store, task), None).await,
-                    Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+                    Err(error) => reply(sink, false, Value::Null, Some(&error)).await,
                 }
             }
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
@@ -640,6 +691,10 @@ mod tests {
 
         // Nothing is waiting, so the phone is not told otherwise.
         assert_eq!(items[0]["queued"], false);
+        assert_eq!(
+            items[0]["pendingProposals"], 0,
+            "a suggestion is counted for the phone's row badge"
+        );
 
         // A pending request is surfaced: the phone pressed "run now" while the
         // desktop was busy, and the row has to say so rather than look ignored.
@@ -672,6 +727,104 @@ mod tests {
         assert_eq!(data["thinkingLevel"], "high");
         assert_eq!(data["sessionPolicy"], "existing");
         assert_eq!(data["conversationMode"], "workspace");
+    }
+
+    /// What a suggestion carries over the wire: the whole prompt (a suggestion
+    /// is a decision, and 160 characters cannot be decided on) and the run it
+    /// read, so the phone can put it under that run's result.
+    #[tokio::test]
+    async fn a_suggestion_crosses_the_wire_with_its_prompt_and_run() {
+        let _home = home("business-tasks-suggestion-wire");
+        let store = open_store().expect("store");
+        let saved = task("suggests", future_tasks::SessionPolicy::New);
+        store.insert_task(&saved).unwrap();
+        store
+            .insert_revision(&future_tasks::PromptRevision {
+                id: "rev_suggestion".into(),
+                task_id: saved.id.clone(),
+                version: future_tasks::PROPOSAL_VERSION,
+                prompt: "summarise the week, then write reports/weekly.md".into(),
+                source: future_tasks::REVISION_SOURCE_REFLECTION.into(),
+                status: future_tasks::REVISION_STATUS_PROPOSED.into(),
+                reason: Some("the output path was not stated".into()),
+                confidence: Some(0.82),
+                source_run_id: Some("trn_7".into()),
+                created_at: 5,
+            })
+            .unwrap();
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("list_task_revisions");
+        cmd.task_id = saved.id.clone();
+        super::execute(&cmd, &sink).await;
+        let suggestion = &sink.ok_data()["revisions"][0];
+        assert_eq!(
+            suggestion["prompt"],
+            "summarise the week, then write reports/weekly.md"
+        );
+        assert_eq!(suggestion["sourceRunId"], "trn_7");
+        // The preview stays for a phone paired with an older desktop.
+        assert!(suggestion["promptPreview"].as_str().is_some());
+    }
+
+    /// Accepting a suggestion from the phone has to mean what it means on the
+    /// desktop. It used to record an unrelated `rollback` row and leave the
+    /// suggestion pending: a button that looked like it worked and did not.
+    #[tokio::test]
+    async fn the_phone_accepts_a_suggestion_the_way_the_desktop_does() {
+        let _home = home("business-tasks-suggestion-apply");
+        let store = open_store().expect("store");
+        let saved = task("accepts", future_tasks::SessionPolicy::New);
+        store.insert_task(&saved).unwrap();
+        store
+            .insert_revision(&future_tasks::PromptRevision {
+                id: "rev_suggestion".into(),
+                task_id: saved.id.clone(),
+                version: future_tasks::PROPOSAL_VERSION,
+                prompt: "summarise the week, then write reports/weekly.md".into(),
+                source: future_tasks::REVISION_SOURCE_REFLECTION.into(),
+                status: future_tasks::REVISION_STATUS_PROPOSED.into(),
+                reason: Some("the output path was not stated".into()),
+                confidence: Some(0.82),
+                source_run_id: Some("trn_7".into()),
+                created_at: 5,
+            })
+            .unwrap();
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("apply_task_revision");
+        cmd.task_id = saved.id.clone();
+        cmd.revision_id = "rev_suggestion".into();
+        super::execute(&cmd, &sink).await;
+        assert_eq!(sink.ok_data()["promptVersion"], 4);
+        assert_eq!(
+            sink.ok_data()["prompt"],
+            "summarise the week, then write reports/weekly.md"
+        );
+
+        let history = store.list_revisions(&saved.id).unwrap();
+        let suggestion = history
+            .iter()
+            .find(|r| r.id == "rev_suggestion")
+            .expect("the suggestion row");
+        assert_eq!(suggestion.status, future_tasks::REVISION_STATUS_APPLIED);
+        assert_eq!(suggestion.version, future_tasks::PROPOSAL_VERSION);
+        let live = history
+            .iter()
+            .find(|r| r.version == 4)
+            .expect("the live version");
+        assert_eq!(live.source, future_tasks::REVISION_SOURCE_REFLECTION);
+        assert_eq!(
+            live.reason.as_deref(),
+            Some("the output path was not stated"),
+            "the version keeps the reason the user read"
+        );
+        assert!(
+            history
+                .iter()
+                .any(|r| r.source == future_tasks::REVISION_SOURCE_SUPERSEDED),
+            "the replaced version stays in the history: {history:?}"
+        );
     }
 
     /// A phone may ask for the runs of a task that no longer exists; the ledger
@@ -874,5 +1027,80 @@ mod tests {
             .unwrap()
             .deleted_at
             .is_some());
+    }
+
+    /// The phone can wire a dependency the same way the panel and the CLI do:
+    /// set an edge with its condition, and take it away again.
+    #[tokio::test]
+    async fn the_phone_sets_and_removes_a_dependency_edge() {
+        let _home = home("business-tasks-set-dep");
+        let store = open_store().expect("store");
+        let upstream = task("upstream", future_tasks::SessionPolicy::New);
+        let downstream = task("downstream", future_tasks::SessionPolicy::New);
+        store.insert_task(&upstream).unwrap();
+        store.insert_task(&downstream).unwrap();
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("set_task_dep");
+        cmd.task_id = downstream.id.clone();
+        cmd.upstream_task_id = upstream.id.clone();
+        cmd.on = "failure".into();
+        super::execute(&cmd, &sink).await;
+        sink.ok_data();
+
+        let deps = store.list_deps(&downstream.id).unwrap();
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0].upstream_task_id, upstream.id);
+        assert_eq!(deps[0].on, future_tasks::DepOn::Failure);
+
+        // A bare set (no condition) means the successful finish, the same
+        // default the CLI's `--depends-on NAME` takes.
+        let sink = RecordingSink::default();
+        let mut again = command("set_task_dep");
+        again.task_id = downstream.id.clone();
+        again.upstream_task_id = upstream.id.clone();
+        super::execute(&again, &sink).await;
+        sink.ok_data();
+        let deps = store.list_deps(&downstream.id).unwrap();
+        assert_eq!(deps.len(), 1, "the same edge, not a second one");
+        assert_eq!(deps[0].on, future_tasks::DepOn::Success);
+
+        let sink = RecordingSink::default();
+        let mut remove = command("remove_task_dep");
+        remove.task_id = downstream.id.clone();
+        remove.upstream_task_id = upstream.id.clone();
+        super::execute(&remove, &sink).await;
+        sink.ok_data();
+        assert!(store.list_deps(&downstream.id).unwrap().is_empty());
+    }
+
+    /// A phone write is a write like any other: an edge that closes a loop is
+    /// refused here too, with the same wording the panel shows.
+    #[tokio::test]
+    async fn the_phone_refuses_a_dependency_cycle() {
+        let _home = home("business-tasks-dep-cycle");
+        let store = open_store().expect("store");
+        let a = task("a", future_tasks::SessionPolicy::New);
+        let b = task("b", future_tasks::SessionPolicy::New);
+        store.insert_task(&a).unwrap();
+        store.insert_task(&b).unwrap();
+        store
+            .add_dep(&future_tasks::TaskDep {
+                task_id: b.id.clone(),
+                upstream_task_id: a.id.clone(),
+                on: future_tasks::DepOn::Success,
+            })
+            .unwrap();
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("set_task_dep");
+        cmd.task_id = a.id.clone();
+        cmd.upstream_task_id = b.id.clone();
+        super::execute(&cmd, &sink).await;
+        assert!(sink.error_text().contains("dependency cycle"));
+        assert!(
+            store.list_deps(&a.id).unwrap().is_empty(),
+            "a refused edge is not stored"
+        );
     }
 }

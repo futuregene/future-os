@@ -14,7 +14,7 @@ use serde_json::json;
 type Result<T> = std::result::Result<T, String>;
 
 /// `future task <command> [args]`.
-pub fn task(command: Option<&str>, rest: &[String], out: &Output) -> Result<()> {
+pub async fn task(command: Option<&str>, rest: &[String], out: &Output) -> Result<()> {
     match command {
         None | Some("--help" | "-h") => {
             out.log(help::TASK_HELP);
@@ -29,13 +29,111 @@ pub fn task(command: Option<&str>, rest: &[String], out: &Output) -> Result<()> 
         Some("remove") => remove(rest, out),
         Some("run") => run(rest, out),
         Some("runs") => runs(rest, out),
+        Some("output") => output(rest, out).await,
         Some("feedback") => feedback(rest, out),
         Some("upstream" | "deps") => upstream(rest, out),
         Some("prompt") => prompt(rest, out),
         Some(other) => Err(format!(
-            "Unknown argument: {other}\nUsage: future task [list|show|add|edit|enable|disable|remove|run|runs|feedback|upstream|prompt] …\nRun `future task --help` for details."
+            "Unknown argument: {other}\nUsage: future task [list|show|add|edit|enable|disable|remove|run|runs|output|feedback|upstream|prompt] …\nRun `future task --help` for details."
         )),
     }
+}
+
+/// `future task output <run-id>` — the full answer a run gave.
+///
+/// A run's ledger entry carries a truncated summary (the head and tail, 2000
+/// chars); this prints the conversation's actual last answer, which is what an
+/// agent reading an upstream result needs when the summary is not enough. The
+/// header names the run being read, because a task that reuses one conversation
+/// writes every run's answer into it — the *last* one is not necessarily the
+/// run that was asked for, and a reader who cannot tell would attribute the
+/// wrong answer to the wrong run.
+async fn output(args: &[String], out: &Output) -> Result<()> {
+    let json_flag = args.iter().any(|a| a == "--json");
+    let tail = flag_value(args, "--tail").and_then(|value| value.parse::<usize>().ok());
+    let run_id = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .ok_or_else(|| "usage: future task output <run-id> [--tail N] [--json]".to_string())?;
+    let store = open_store()?;
+    let run = store
+        .get_run(run_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("run not found: {run_id}"))?;
+    let task = store.get_task(&run.task_id).map_err(|e| e.to_string())?;
+    let session_id = run.session_id.clone().ok_or_else(|| {
+        format!(
+            "run {run_id} has no conversation (it {}).",
+            run.error_message
+                .as_deref()
+                .unwrap_or("failed before prompting")
+        )
+    })?;
+    let newer = store
+        .list_runs_for_task(&run.task_id, 200)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|other| {
+            other.session_id.as_deref() == Some(session_id.as_str())
+                && other.started_at.unwrap_or(0) > run.started_at.unwrap_or(0)
+        })
+        .max_by_key(|other| other.started_at.unwrap_or(0));
+    let text = crate::rpc::RunClient::new(&crate::rpc::grpc_addr())
+        .last_assistant_text(&session_id)
+        .await
+        .map_err(|error| format!("could not read the run's conversation: {error}"))?;
+
+    if json_flag {
+        out.log(
+            &serde_json::to_string_pretty(&json!({
+                "runId": run.id,
+                "taskId": run.task_id,
+                "task": task.as_ref().map(|t| t.name.clone()),
+                "status": format!("{:?}", run.status).to_lowercase(),
+                "promptVersion": run.prompt_version,
+                "sessionId": session_id,
+                "finishedAt": run.finished_at,
+                "summary": run.result_summary,
+                "text": text,
+                "newerRunOnSameConversation": newer.as_ref().map(|other| other.id.clone()),
+            }))
+            .map_err(|e| e.to_string())?,
+        );
+        return Ok(());
+    }
+
+    out.log(&format!(
+        "{} · run {} · {} · prompt v{} · session {}",
+        task.as_ref()
+            .map(|t| t.name.as_str())
+            .unwrap_or("(task gone)"),
+        run.id,
+        format!("{:?}", run.status).to_lowercase(),
+        run.prompt_version
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "?".to_string()),
+        session_id
+    ));
+    if let Some(other) = newer {
+        out.log(&format!(
+            "note: this conversation was used again by run {}; the text below is its latest answer.",
+            other.id
+        ));
+    }
+    out.log("");
+    let body = tail.map_or_else(
+        || text.clone(),
+        |lines| {
+            let all: Vec<&str> = text.lines().collect();
+            all[all.len().saturating_sub(lines)..].join("\n")
+        },
+    );
+    if body.trim().is_empty() {
+        out.log("(the run's conversation has no assistant answer yet)");
+    } else {
+        out.log(&body);
+    }
+    Ok(())
 }
 
 /// `future task prompt <log|apply|revert> …`.
@@ -87,8 +185,38 @@ fn find_task(store: &Store, id_or_name: &str) -> Result<Task> {
         .ok_or_else(|| format!("task not found: {id_or_name}"))
 }
 
-fn format_trigger(task: &Task) -> String {
+/// Like [`find_task`], but a removed task still answers: its run ledger and
+/// prompt history stay in the database (`remove` is a soft delete), and reading
+/// that history is exactly what `runs`/`prompt log` are for. A live task always
+/// wins, so a name reused after a removal reads as the new task.
+fn find_task_for_history(store: &Store, id_or_name: &str) -> Result<Task> {
+    if let Some(live) = store
+        .find_task_by_name(id_or_name)
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(live);
+    }
+    if let Some(by_id) = store.get_task(id_or_name).map_err(|e| e.to_string())? {
+        return Ok(by_id);
+    }
+    store
+        .list_tasks(true)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|task| task.name == id_or_name)
+        .max_by_key(|task| task.updated_at)
+        .ok_or_else(|| format!("task not found: {id_or_name}"))
+}
+
+/// How a task is triggered, for the list and the detail header.
+///
+/// A task with dependencies and no schedule of its own reads as `dependency`:
+/// that is what makes it run, and calling it `manual` would describe it as
+/// something the user has to start by hand. A task with *both* keeps its
+/// schedule here, and its edges show up in `future task upstream` / `deps`.
+fn format_trigger(task: &Task, dep_count: usize) -> String {
     match task.trigger_kind {
+        future_tasks::TriggerKind::Manual if dep_count > 0 => "dependency".to_string(),
         future_tasks::TriggerKind::Manual => "manual".to_string(),
         future_tasks::TriggerKind::Schedule => {
             let j = &task.trigger_json;
@@ -253,12 +381,13 @@ fn dep_rows(store: &Store, task_id: &str) -> Result<Vec<serde_json::Value>> {
 
 /// The resolved identity for a `<id|name>` argument, so the commands can print
 /// something a caller can use in the next invocation.
-fn task_json(t: &Task) -> serde_json::Value {
+fn task_json(t: &Task, dep_count: usize) -> serde_json::Value {
     json!({
         "id": t.id,
         "name": t.name,
         "enabled": t.enabled,
-        "trigger": format_trigger(t),
+        "trigger": format_trigger(t, dep_count),
+        "depCount": dep_count,
         "nextDueAt": t.next_due_at,
         "queued": t.pending_request_at.is_some(),
         "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
@@ -287,6 +416,9 @@ fn list(args: &[String], out: &Output) -> Result<()> {
     let tasks = store
         .list_tasks(include_deleted)
         .map_err(|e| e.to_string())?;
+    // One query for every edge, so the trigger column can tell a dependency task
+    // from one that only ever runs on request.
+    let dep_counts = dep_counts(&store)?;
     if json_flag {
         let items: Vec<_> = tasks
             .iter()
@@ -295,7 +427,8 @@ fn list(args: &[String], out: &Output) -> Result<()> {
                     "id": t.id,
                     "name": t.name,
                     "enabled": t.enabled,
-                    "trigger": format_trigger(t),
+                    "trigger": format_trigger(t, dep_count_of(&dep_counts, &t.id)),
+                    "depCount": dep_count_of(&dep_counts, &t.id),
                     "nextDueAt": t.next_due_at,
                     "queued": t.pending_request_at.is_some(),
                     "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
@@ -321,13 +454,26 @@ fn list(args: &[String], out: &Output) -> Result<()> {
         out.log(&format!(
             "{:<24} {:<20} {:<4} {:<24} {}",
             t.name,
-            format_trigger(t),
+            format_trigger(t, dep_count_of(&dep_counts, &t.id)),
             state,
             next,
             t.id
         ));
     }
     Ok(())
+}
+
+/// Upstream edge count per task id, from one query.
+fn dep_counts(store: &Store) -> Result<std::collections::HashMap<String, usize>> {
+    let mut counts = std::collections::HashMap::new();
+    for dep in store.list_all_deps().map_err(|e| e.to_string())? {
+        *counts.entry(dep.task_id).or_insert(0) += 1;
+    }
+    Ok(counts)
+}
+
+fn dep_count_of(counts: &std::collections::HashMap<String, usize>, task_id: &str) -> usize {
+    counts.get(task_id).copied().unwrap_or(0)
 }
 
 fn show(args: &[String], out: &Output) -> Result<()> {
@@ -339,6 +485,7 @@ fn show(args: &[String], out: &Output) -> Result<()> {
         .ok_or_else(|| "usage: future task show <id|name> [--json] [--prompt]".to_string())?;
     let store = open_store()?;
     let t = find_task(&store, id)?;
+    let dep_count = dep_count_of(&dep_counts(&store)?, &t.id);
     let latest = store
         .latest_run_for_task(&t.id)
         .map_err(|e| e.to_string())?;
@@ -357,6 +504,7 @@ fn show(args: &[String], out: &Output) -> Result<()> {
             "triggerKind": format!("{:?}", t.trigger_kind).to_lowercase(),
             "trigger": t.trigger_json,
             "depJoin": format!("{:?}", t.dep_join).to_lowercase(),
+            "depCount": dep_count,
             "nextDueAt": t.next_due_at,
             "queued": t.pending_request_at.is_some(),
             "reflection": format!("{:?}", t.reflection).to_lowercase(),
@@ -373,7 +521,7 @@ fn show(args: &[String], out: &Output) -> Result<()> {
     }
     out.log(&format!("{}  ({})", t.name, t.id));
     out.log(&format!("  enabled:  {}", t.enabled));
-    out.log(&format!("  trigger:  {}", format_trigger(&t)));
+    out.log(&format!("  trigger:  {}", format_trigger(&t, dep_count)));
     if t.trigger_kind == future_tasks::TriggerKind::Schedule {
         out.log(&format!("  next due: {}", format_ms(t.next_due_at)));
     }
@@ -891,11 +1039,18 @@ fn edit(args: &[String], out: &Output) -> Result<()> {
         write_deps(&store, &task.id, &specs)?;
     }
 
+    let dep_count = store
+        .list_deps(&task.id)
+        .map(|deps| deps.len())
+        .unwrap_or(0);
     if json_flag {
-        out.log(&serde_json::to_string_pretty(&task_json(&task)).map_err(|e| e.to_string())?);
+        out.log(
+            &serde_json::to_string_pretty(&task_json(&task, dep_count))
+                .map_err(|e| e.to_string())?,
+        );
     } else {
         out.log(&format!("Updated task {} ({})", task.name, task.id));
-        out.log(&format!("  trigger:  {}", format_trigger(&task)));
+        out.log(&format!("  trigger:  {}", format_trigger(&task, dep_count)));
         if task.prompt_version > 1 {
             out.log(&format!("  prompt:   v{}", task.prompt_version));
         }
@@ -1042,7 +1197,8 @@ fn prompt_log(args: &[String], out: &Output) -> Result<()> {
         .find(|a| !a.starts_with('-'))
         .ok_or_else(|| "usage: future task prompt log <id|name> [--json]".to_string())?;
     let store = open_store()?;
-    let task = find_task(&store, reference)?;
+    // Suggestions and versions outlive the task's removal, like its runs do.
+    let task = find_task_for_history(&store, reference)?;
     let revisions = store.list_revisions(&task.id).map_err(|e| e.to_string())?;
     if json_flag {
         let items: Vec<_> = revisions
@@ -1050,9 +1206,15 @@ fn prompt_log(args: &[String], out: &Output) -> Result<()> {
             .map(|r| {
                 json!({
                     "id": r.id,
+                    // A suggestion is not a version yet: it carries
+                    // `PROPOSAL_VERSION` (0) until it is applied.
                     "version": r.version,
                     "source": r.source,
+                    "status": r.status,
+                    "proposed": r.status == future_tasks::REVISION_STATUS_PROPOSED,
                     "reason": r.reason,
+                    "confidence": r.confidence,
+                    "sourceRunId": r.source_run_id,
                     "active": r.version == task.prompt_version,
                     "createdAt": r.created_at,
                 })
@@ -1061,25 +1223,60 @@ fn prompt_log(args: &[String], out: &Output) -> Result<()> {
         out.log(&serde_json::to_string_pretty(&items).map_err(|e| e.to_string())?);
         return Ok(());
     }
-    if revisions.is_empty() {
+    let (suggestions, versions): (Vec<_>, Vec<_>) = revisions
+        .iter()
+        .partition(|r| r.status == future_tasks::REVISION_STATUS_PROPOSED);
+    out.log(&format!("{} — active v{}", task.name, task.prompt_version));
+    if !suggestions.is_empty() {
+        // A suggestion has no version and no effect until it is applied, so it
+        // is listed on its own with the exact command that accepts it — a
+        // proposal nobody can act on is the same as no proposal.
+        out.log("Suggestions (not applied):");
+        for r in &suggestions {
+            let confidence = r
+                .confidence
+                .map(|c| format!("confidence {c:.2}"))
+                .unwrap_or_else(|| "confidence ?".to_string());
+            out.log(&format!(
+                "  {:<16} {:<14} {:<16} {}",
+                r.id,
+                confidence,
+                format_ms(Some(r.created_at)),
+                r.reason.as_deref().unwrap_or("-")
+            ));
+            out.log(&format!(
+                "    apply with: future task prompt apply {} {}",
+                task.id, r.id
+            ));
+        }
+    }
+    if versions.is_empty() {
         out.log(&format!(
-            "{} has only its original prompt (v{}).",
-            task.name, task.prompt_version
+            "  only its original prompt (v{}) has been in force.",
+            task.prompt_version
         ));
         return Ok(());
     }
-    out.log(&format!("{} — active v{}", task.name, task.prompt_version));
-    let mut ordered = revisions;
-    ordered.sort_by_key(|r| -r.version);
+    let mut ordered: Vec<&future_tasks::PromptRevision> = versions;
+    ordered.sort_by_key(|r| r.version);
     for r in ordered {
         let mark = if r.version == task.prompt_version {
             "active"
+        } else if r.status == future_tasks::REVISION_STATUS_APPLIED {
+            "applied"
         } else {
-            "      "
+            ""
+        };
+        // An accepted suggestion keeps its own identity: it is not a version,
+        // so it is not printed as one ("v0" would invite someone to apply it
+        // again, or to wonder which version the task came from).
+        let label = if r.version == future_tasks::PROPOSAL_VERSION {
+            "suggestion".to_string()
+        } else {
+            format!("v{}", r.version)
         };
         out.log(&format!(
-            "  v{:<4} {mark} {:<10} {:<16} {}",
-            r.version,
+            "  {label:<11} {mark:<8} {:<11} {:<16} {}",
             r.source,
             format_ms(Some(r.created_at)),
             r.reason.as_deref().unwrap_or("-")
@@ -1106,15 +1303,29 @@ fn prompt_apply(args: &[String], out: &Output) -> Result<()> {
         .find(|r| &r.id == *revision_id)
         .ok_or_else(|| format!("revision not found: {revision_id}"))?;
     let history = store.list_revisions(&task.id).map_err(|e| e.to_string())?;
+    // Applying a suggestion *is* accepting it: the version that goes live is
+    // recorded as coming from reflection (with the suggestion's own reason),
+    // and the suggestion itself is marked applied rather than left pending.
+    let is_suggestion = revision.status == future_tasks::REVISION_STATUS_PROPOSED;
+    let source = if is_suggestion {
+        future_tasks::REVISION_SOURCE_REFLECTION
+    } else {
+        future_tasks::REVISION_SOURCE_ROLLBACK
+    };
+    let reason = if is_suggestion {
+        revision.reason.clone()
+    } else {
+        Some(format!(
+            "applied revision {} (v{})",
+            revision_id, revision.version
+        ))
+    };
     let rows = future_tasks::prompt_change_revisions(
         &task,
         &history,
         &revision.prompt,
-        "rollback",
-        Some(&format!(
-            "applied revision {} (v{})",
-            revision_id, revision.version
-        )),
+        source,
+        reason.as_deref(),
         now_ms(),
     );
     let Some(applied) = rows.last() else {
@@ -1126,6 +1337,15 @@ fn prompt_apply(args: &[String], out: &Output) -> Result<()> {
     };
     for row in &rows {
         store.insert_revision(row).map_err(|e| e.to_string())?;
+    }
+    if is_suggestion {
+        store
+            .set_revision_status(
+                &task.id,
+                &revision.id,
+                future_tasks::REVISION_STATUS_APPLIED,
+            )
+            .map_err(|e| e.to_string())?;
     }
     let previous = task.prompt_version;
     task.prompt = applied.prompt.clone();
@@ -1267,7 +1487,8 @@ fn runs(args: &[String], out: &Output) -> Result<()> {
         .find(|a| !a.starts_with('-'))
         .ok_or_else(|| "usage: future task runs <id|name> [--limit N] [--json]".to_string())?;
     let store = open_store()?;
-    let t = find_task(&store, id)?;
+    // A removed task still answers here: its ledger is the record of what it did.
+    let t = find_task_for_history(&store, id)?;
     let runs = store
         .list_runs_for_task(&t.id, limit)
         .map_err(|e| e.to_string())?;
@@ -1505,6 +1726,10 @@ mod tests {
             (vec!["upstream", "t"], true),
             (vec!["deps", "t"], true),
             (vec!["upstream"], false),
+            (vec!["output"], false),
+            // A run id that does not exist is still a usage-level failure, not a
+            // panic: `output` reads the ledger before it touches the agent.
+            (vec!["output", "trn_missing"], false),
             (vec!["feedback"], false),
             (vec!["prompt"], false),
             (vec!["prompt", "log", "t"], true),
@@ -1519,11 +1744,11 @@ mod tests {
             let (out, _captured) = Output::memory();
             let sub = values.first().copied().unwrap_or("list");
             let rest: Vec<String> = values.iter().skip(1).map(|v| (*v).to_string()).collect();
-            let result = task(Some(sub), &rest, &out);
-            assert_eq!(result.is_ok(), expect_ok, "{values:?}: {result:?}");
+            let result = task(Some(sub), &rest, &out).await;
+            assert_eq!(result.is_ok(), expect_ok, "{values:?}");
         }
         let (out, captured) = Output::memory();
-        task(None, &[], &out).unwrap();
+        task(None, &[], &out).await.unwrap();
         assert!(text(captured.out).contains("future task — manage FutureOS tasks"));
     }
 
@@ -2063,6 +2288,7 @@ mod tests {
         );
         assert!(shown.contains("superseded"), "{shown}");
         assert!(shown.contains("user"), "{shown}");
+        assert!(!shown.contains("v0"), "versions start at 1: {shown}");
 
         let (out, captured) = Output::memory();
         prompt_log(&args(&["t", "--json"]), &out).unwrap();
@@ -2252,7 +2478,7 @@ mod tests {
     fn the_help_text_and_the_dispatcher_list_the_same_commands() {
         // Every subcommand `task()` can route, including the aliases.
         let dispatched: std::collections::BTreeSet<&str> = [
-            "list", "show", "add", "edit", "enable", "disable", "remove", "run", "runs",
+            "list", "show", "add", "edit", "enable", "disable", "remove", "run", "runs", "output",
             "feedback", "upstream", "deps", "prompt",
         ]
         .into_iter()
@@ -2466,9 +2692,9 @@ mod tests {
         assert_eq!(t.prompt_version, 2);
     }
 
-    #[test]
-    fn task_json_carries_the_identity_a_caller_needs_next() {
-        let t = Task {
+    /// A bare task of the given trigger kind, for the output-shape tests.
+    fn task_with_trigger(kind: future_tasks::TriggerKind) -> Task {
+        Task {
             id: "tsk_1".into(),
             name: "n".into(),
             enabled: true,
@@ -2480,23 +2706,52 @@ mod tests {
             session_policy: future_tasks::SessionPolicy::New,
             conversation_mode: future_tasks::ConversationMode::Workspace,
             thread_id: None,
-            trigger_kind: future_tasks::TriggerKind::Manual,
+            trigger_kind: kind,
             trigger_json: serde_json::json!({}),
             dep_join: future_tasks::DepJoin::All,
             next_due_at: None,
-            pending_request_at: Some(5),
+            pending_request_at: None,
             pending_origin: None,
             pending_actor: None,
             reflection: future_tasks::Reflection::Ask,
             created_at: 1,
             updated_at: 1,
             deleted_at: None,
-        };
-        let json = task_json(&t);
+        }
+    }
+
+    #[test]
+    fn task_json_carries_the_identity_a_caller_needs_next() {
+        let t = task_with_trigger(future_tasks::TriggerKind::Manual);
+        let mut t = t;
+        t.pending_request_at = Some(5);
+        let json = task_json(&t, 0);
         assert_eq!(json["id"], "tsk_1");
         assert_eq!(json["queued"], true);
         assert_eq!(json["trigger"], "manual");
+        assert_eq!(json["depCount"], 0);
         assert_eq!(json["sessionPolicy"], "new");
+    }
+
+    /// The trigger reads as what actually starts the task: dependencies make it
+    /// `dependency`, not `manual` (nobody starts it by hand), while a task with
+    /// its own schedule keeps that schedule.
+    #[test]
+    fn the_trigger_label_distinguishes_dependencies_from_by_hand_runs() {
+        let mut manual = task_with_trigger(future_tasks::TriggerKind::Manual);
+        manual.trigger_json = serde_json::json!({});
+        assert_eq!(format_trigger(&manual, 0), "manual");
+        assert_eq!(format_trigger(&manual, 2), "dependency");
+
+        let mut scheduled = manual.clone();
+        scheduled.trigger_kind = future_tasks::TriggerKind::Schedule;
+        scheduled.trigger_json = serde_json::json!({"mode": "daily", "time": "09:00"});
+        assert_eq!(format_trigger(&scheduled, 0), "daily 09:00");
+        assert_eq!(
+            format_trigger(&scheduled, 2),
+            "daily 09:00",
+            "a task that also has upstreams still runs on its own schedule"
+        );
     }
 
     // ─── store location ───────────────────────────────────────────────────
@@ -3151,6 +3406,72 @@ mod tests {
         );
     }
 
+    /// A removed task keeps its history: `remove` is a soft delete, and the run
+    /// ledger and prompt versions are what someone auditing it needs.
+    #[tokio::test]
+    async fn history_stays_readable_after_a_task_is_removed() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&[
+                "--name",
+                "removed",
+                "--prompt",
+                "the prompt",
+                "--cwd",
+                "/tmp",
+            ]),
+            &setup,
+        )
+        .unwrap();
+        let store = open_store().unwrap();
+        let task = find_task(&store, "removed").unwrap();
+        store
+            .insert_run(&future_tasks::TaskRun {
+                id: "trn_kept".to_string(),
+                task_id: task.id.clone(),
+                kind: future_tasks::RunKind::Manual,
+                origin: future_tasks::RunOrigin::Cli,
+                actor: None,
+                due_at: None,
+                status: future_tasks::RunStatus::Completed,
+                thread_id: None,
+                session_id: None,
+                run_id: None,
+                prompt_version: Some(1),
+                result_summary: Some("it ran".to_string()),
+                feedback: None,
+                feedback_note: None,
+                started_at: Some(1),
+                finished_at: Some(2),
+                error_message: None,
+            })
+            .unwrap();
+        let (out, _c) = Output::memory();
+        remove(&args(&["removed", "--yes"]), &out).unwrap();
+
+        // By id and by name: the task is gone from `list`, but its history is
+        // reachable in both spellings.
+        for reference in [task.id.as_str(), "removed"] {
+            let (out, captured) = Output::memory();
+            runs(&args(&[reference]), &out).unwrap();
+            let shown = text(captured.out.clone());
+            assert!(
+                shown.contains("trn_kept") && shown.contains("completed"),
+                "{reference}: {shown}"
+            );
+
+            let (out, captured) = Output::memory();
+            prompt_log(&args(&[reference]), &out).unwrap();
+            let shown = text(captured.out.clone());
+            assert!(shown.contains("active v1"), "{reference}: {shown}");
+        }
+        let (out, captured) = Output::memory();
+        list(&[], &out).unwrap();
+        assert!(!text(captured.out).contains("removed"));
+    }
+
     #[test]
     fn duration_parsing_accepts_minutes_hours_and_days() {
         assert_eq!(parse_duration_minutes("30m"), Some(30));
@@ -3159,5 +3480,220 @@ mod tests {
         assert_eq!(parse_duration_minutes("30"), None);
         assert_eq!(parse_duration_minutes("m"), None);
         assert_eq!(parse_duration_minutes("30x"), None);
+    }
+
+    /// A suggestion is not a version, and it is useless until the user can
+    /// accept it: `prompt log` lists it separately with the command that does.
+    #[tokio::test]
+    async fn prompt_log_lists_a_suggestion_with_the_command_that_applies_it() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&[
+                "--name",
+                "suggested",
+                "--prompt",
+                "the current prompt",
+                "--cwd",
+                "/tmp",
+            ]),
+            &setup,
+        )
+        .unwrap();
+        // A suggestion as the reflection pass writes it: outside the version
+        // sequence, with the confidence and the run it came from.
+        let store = open_store().unwrap();
+        let task = find_task(&store, "suggested").unwrap();
+        let row = future_tasks::PromptRevision {
+            id: "rev_suggestion".to_string(),
+            task_id: task.id.clone(),
+            version: future_tasks::PROPOSAL_VERSION,
+            prompt: "a better prompt".to_string(),
+            source: future_tasks::REVISION_SOURCE_REFLECTION.to_string(),
+            status: future_tasks::REVISION_STATUS_PROPOSED.to_string(),
+            reason: Some("the output path was not stated".to_string()),
+            confidence: Some(0.82),
+            source_run_id: Some("trn_1".to_string()),
+            created_at: now_ms(),
+        };
+        store.insert_revision(&row).unwrap();
+
+        let (out, captured) = Output::memory();
+        prompt_log(&args(&["suggested"]), &out).unwrap();
+        let shown = text(captured.out);
+        assert!(shown.contains("Suggestions (not applied)"), "{shown}");
+        assert!(shown.contains("confidence 0.82"), "{shown}");
+        assert!(shown.contains("the output path was not stated"), "{shown}");
+        assert!(
+            shown.contains("future task prompt apply tsk_") && shown.contains("rev_suggestion"),
+            "the suggestion names the command that applies it: {shown}"
+        );
+        assert!(
+            !shown.contains("v0"),
+            "a suggestion has no version: {shown}"
+        );
+
+        let (out, captured) = Output::memory();
+        prompt_log(&args(&["suggested", "--json"]), &out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert_eq!(parsed[0]["proposed"], true);
+        assert_eq!(parsed[0]["confidence"], 0.82);
+        assert_eq!(parsed[0]["sourceRunId"], "trn_1");
+    }
+
+    /// Accepting a suggestion is what puts it in force — and the history says
+    /// where it came from, with the suggestion itself marked as applied.
+    #[tokio::test]
+    async fn applying_a_suggestion_makes_it_the_prompt_and_marks_it_applied() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&[
+                "--name",
+                "accepts",
+                "--prompt",
+                "the current prompt",
+                "--cwd",
+                "/tmp",
+            ]),
+            &setup,
+        )
+        .unwrap();
+        let store = open_store().unwrap();
+        let task = find_task(&store, "accepts").unwrap();
+        store
+            .insert_revision(&future_tasks::PromptRevision {
+                id: "rev_suggestion".to_string(),
+                task_id: task.id.clone(),
+                version: future_tasks::PROPOSAL_VERSION,
+                prompt: "a better prompt".to_string(),
+                source: future_tasks::REVISION_SOURCE_REFLECTION.to_string(),
+                status: future_tasks::REVISION_STATUS_PROPOSED.to_string(),
+                reason: Some("clearer".to_string()),
+                confidence: Some(0.9),
+                source_run_id: Some("trn_1".to_string()),
+                created_at: now_ms(),
+            })
+            .unwrap();
+
+        let (out, captured) = Output::memory();
+        prompt_apply(&args(&["accepts", "rev_suggestion"]), &out).unwrap();
+        let shown = text(captured.out.clone());
+        assert!(shown.contains("now runs v2 (was v1)"), "{shown}");
+
+        let store = open_store().unwrap();
+        let stored = find_task(&store, "accepts").unwrap();
+        assert_eq!(stored.prompt, "a better prompt");
+        let revisions = store.list_revisions(&stored.id).unwrap();
+        let suggestion = revisions.iter().find(|r| r.id == "rev_suggestion").unwrap();
+        assert_eq!(suggestion.status, future_tasks::REVISION_STATUS_APPLIED);
+        let live = revisions
+            .iter()
+            .find(|r| r.version == stored.prompt_version)
+            .unwrap();
+        assert_eq!(live.status, future_tasks::REVISION_STATUS_ACTIVE);
+        assert_eq!(live.source, future_tasks::REVISION_SOURCE_REFLECTION);
+        assert_eq!(live.reason.as_deref(), Some("clearer"));
+        // The version it replaced is kept, so the loop is reversible.
+        assert!(revisions.iter().any(|r| r.prompt == "the current prompt"
+            && r.status == future_tasks::REVISION_STATUS_SUPERSEDED));
+
+        // …and the log reads as history, not as a version numbered zero.
+        let (out, captured) = Output::memory();
+        prompt_log(&args(&["accepts"]), &out).unwrap();
+        let shown = text(captured.out);
+        assert!(shown.contains("active v2"), "{shown}");
+        assert!(shown.contains("suggestion"), "{shown}");
+        assert!(
+            !shown.contains("v0"),
+            "a suggestion is not a version: {shown}"
+        );
+        assert!(!shown.contains("Suggestions (not applied)"), "{shown}");
+    }
+
+    /// `output` prints a run's full answer, and says which run the text belongs
+    /// to — a reused conversation holds every run's answer, so an unlabelled
+    /// text would be attributed to the wrong one.
+    #[tokio::test]
+    async fn output_prints_a_runs_full_answer_with_its_identity() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let agent = crate::test_server::MockAgent::respond(
+            "get_last_assistant_text",
+            &serde_json::json!({ "text": "the whole answer\nsecond line" }).to_string(),
+        );
+        let addr = crate::test_server::spawn_mock(agent.clone()).await;
+        let _env = EnvGuard::set(&[("FUTURE_AGENT_GRPC_ADDR", std::ffi::OsString::from(addr))]);
+
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&["--name", "reads", "--prompt", "p", "--cwd", "/tmp"]),
+            &setup,
+        )
+        .unwrap();
+        let store = open_store().unwrap();
+        let task = find_task(&store, "reads").unwrap();
+        store
+            .insert_run(&future_tasks::TaskRun {
+                id: "trn_read".to_string(),
+                task_id: task.id.clone(),
+                kind: future_tasks::RunKind::Manual,
+                origin: future_tasks::RunOrigin::Cli,
+                actor: None,
+                due_at: None,
+                status: future_tasks::RunStatus::Completed,
+                thread_id: Some("thr_1".to_string()),
+                session_id: Some("sess_1".to_string()),
+                run_id: None,
+                prompt_version: Some(1),
+                result_summary: Some("truncated…".to_string()),
+                feedback: None,
+                feedback_note: None,
+                started_at: Some(1_000),
+                finished_at: Some(2_000),
+                error_message: None,
+            })
+            .unwrap();
+
+        let (out, captured) = Output::memory();
+        output(&args(&["trn_read"]), &out).await.unwrap();
+        let shown = text(captured.out);
+        assert!(
+            shown.contains("reads · run trn_read · completed"),
+            "{shown}"
+        );
+        assert!(shown.contains("session sess_1"), "{shown}");
+        assert!(shown.contains("the whole answer"), "{shown}");
+        assert_eq!(
+            agent.seen_of("get_last_assistant_text")[0].session_id,
+            "sess_1",
+            "the run's own conversation is read"
+        );
+
+        // `--tail` is for reading the end of a long answer.
+        let (out, captured) = Output::memory();
+        output(&args(&["trn_read", "--tail", "1"]), &out)
+            .await
+            .unwrap();
+        let shown = text(captured.out);
+        assert!(shown.trim_end().ends_with("second line"), "{shown}");
+        assert!(!shown.contains("the whole answer"), "{shown}");
+
+        // A run with no conversation (it failed before prompting) is a message,
+        // not a panic, and the CLI does not call the agent for it.
+        let store = open_store().unwrap();
+        let mut orphan = store.get_run("trn_read").unwrap().unwrap();
+        orphan.id = "trn_orphan".to_string();
+        orphan.session_id = None;
+        orphan.error_message = Some("agent unreachable".to_string());
+        store.insert_run(&orphan).unwrap();
+        let (out, _c) = Output::memory();
+        let error = output(&args(&["trn_orphan"]), &out).await.unwrap_err();
+        assert!(error.contains("has no conversation"), "{error}");
+        assert!(error.contains("agent unreachable"), "{error}");
+        assert_eq!(agent.seen_of("get_last_assistant_text").len(), 2);
+        let _ = home;
     }
 }

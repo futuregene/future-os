@@ -5,7 +5,7 @@ export interface SessionMentionOption {
   /** Agent session id — the payload a reference carries. */
   sessionId: string;
   title: string;
-  /** Workspace the conversation is filed under; null for a chat (no workspace). */
+  /** Workspace the conversation is filed under; null for a chat. */
   workspace: { id: string; name: string } | null;
 }
 
@@ -16,13 +16,19 @@ export interface SessionMentionGroup {
 }
 
 /**
- * The conversations the `#` menu offers, in menu order: chats (no workspace)
- * first, then one group per workspace, pinned workspaces leading — the same
- * order the rail and the mobile share sheet use, so the menu does not disagree
- * with the list the user just came from.
+ * The conversations the `#` menu offers, in menu order: chats first, then one
+ * group per workspace, pinned workspaces leading — the rail's own scopes, so the
+ * menu does not disagree with the list the user just came from.
  *
- * A thread without an agent session id is skipped: that id is the whole point
- * of the reference, and a conversation that was never prompted has none.
+ * A conversation is a **chat** by its `mode`, never by its workspace. Every chat
+ * conversation owns a temporary workspace row (`get_or_create_chat_workspace_in`,
+ * named "<title> Workspace"), so filing by `workspaceId` gave each chat a group
+ * of its own — a wall of workspaces that were really conversations. Only a
+ * workspace-mode conversation is filed under its workspace, exactly as the rail
+ * scopes threads (`mode === "chat" ? "chat" : workspaceId`).
+ *
+ * A thread without an agent session id is skipped: that id is the whole point of
+ * the reference, and a conversation that was never prompted has none.
  * `currentSessionId` is dropped — offering the conversation you are already in
  * would insert a reference to yourself.
  */
@@ -37,29 +43,54 @@ export function sessionMentionOptions(
   ];
   const rank = new Map(ordered.map((workspace, index) => [workspace.id, index]));
   const byId = new Map(workspaces.map(workspace => [workspace.id, workspace]));
-  const options = threads
-    .filter(thread => Boolean(thread.agentSessionId)
-      && thread.agentSessionId !== currentSessionId
-      && thread.status !== "deleted")
-    .map((thread): SessionMentionOption => {
-      const workspace = thread.workspaceId ? byId.get(thread.workspaceId) : undefined;
-      return {
-        sessionId: thread.agentSessionId as string,
-        title: thread.title,
-        workspace: workspace ? { id: workspace.id, name: workspace.name } : null,
-      };
-    });
+  // A workspace the store no longer lists (deleted) keeps its conversations in a
+  // group of its own rather than filing them as chats. They come after every
+  // known workspace, in the order they were first seen, so each group's
+  // conversations stay adjacent.
+  const unlisted: string[] = [];
+  const candidates = threads.filter(thread => Boolean(thread.agentSessionId)
+    && thread.agentSessionId !== currentSessionId
+    && thread.status !== "deleted");
+  for (const thread of candidates) {
+    const scope = threadScope(thread);
+    if (scope && !byId.has(scope) && !unlisted.includes(scope))
+      unlisted.push(scope);
+  }
+  const options = candidates.map((thread): SessionMentionOption => {
+    const scope = threadScope(thread);
+    if (!scope)
+      return { sessionId: thread.agentSessionId as string, title: thread.title, workspace: null };
+    const workspace = byId.get(scope);
+    return {
+      sessionId: thread.agentSessionId as string,
+      title: thread.title,
+      workspace: workspace
+        ? { id: workspace.id, name: workspace.name }
+        : { id: scope, name: "" },
+    };
+  });
   // A chat (no workspace) leads; the rest follow their workspace's rank. Ties —
-  // two conversations in the same workspace — keep the caller's order, which
-  // the rail already sorted (pinned first, then most recent).
+  // two conversations in the same workspace — keep the caller's order, which the
+  // rail already sorted (pinned first, then most recent).
   return options
     .map((option, index) => ({ option, index }))
     .sort((left, right) => {
-      const rankOf = (option: SessionMentionOption) =>
-        option.workspace ? (rank.get(option.workspace.id) ?? ordered.length) : -1;
+      const rankOf = (option: SessionMentionOption) => {
+        if (!option.workspace)
+          return -1;
+        const listed = rank.get(option.workspace.id);
+        return listed ?? ordered.length + unlisted.indexOf(option.workspace.id);
+      };
       return rankOf(left.option) - rankOf(right.option) || left.index - right.index;
     })
     .map(entry => entry.option);
+}
+
+/** The scope a conversation belongs to, or null for a chat (the rail's rule). */
+function threadScope(thread: StoredThread): string | null {
+  if (thread.mode === "chat")
+    return null;
+  return thread.workspaceId || null;
 }
 
 /**

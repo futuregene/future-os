@@ -1,14 +1,14 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
-import type { TaskInput, TaskView } from "./useTasks";
+import type { TaskDepView, TaskInput, TaskRevisionView, TaskView } from "./useTasks";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ChevronLeft, FolderOpen, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { Check, ChevronLeft, FolderOpen, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
-import { loadAgentModelOptions } from "../../integrations/agent/agentClient";
 import { formatDateTime } from "../../lib/date";
+import { useTauriEvent } from "../../lib/useTauriEvent";
 import { useTasks } from "./useTasks";
 
 /** Task times are epoch milliseconds; the date helpers take ISO strings. */
@@ -19,7 +19,7 @@ function formatEpoch(ms: number | null, locale: string): string {
 const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 
 /** Trigger modes the form can edit (mirrors the kernel's schedule modes). */
-type TriggerMode = "manual" | "once" | "interval" | "daily" | "weekly" | "monthly";
+type TriggerMode = "manual" | "dependency" | "once" | "interval" | "daily" | "weekly" | "monthly";
 
 interface DraftTrigger {
   mode: TriggerMode;
@@ -39,9 +39,61 @@ const emptyTrigger: DraftTrigger = {
   day: 1,
 };
 
+/**
+ * One dependency edge as the editor holds it: the upstream, the label to show
+ * for it, and the condition it fires on. The label is carried because an edge's
+ * upstream is not necessarily in the candidate list the editor was handed (a
+ * task filtered out of it, or simply not loaded yet) — and a row that shows a
+ * bare `tsk_…` id tells the user nothing.
+ */
+interface DraftDep {
+  upstreamTaskId: string;
+  name: string;
+  on: string;
+}
+
+/**
+ * A new task's starting point.
+ *
+ * It deliberately leaves the model and the thinking level unset: both are
+ * per-run spending decisions that belong to the user, so the form makes them
+ * pick (and refuses a save until they have) instead of inheriting an app
+ * default nobody chose. The conversation mode is chat, which is what a task
+ * that only reads, writes text or calls tools needs — and, unlike a workspace
+ * conversation, it needs no working directory.
+ */
+const emptyDraft = {
+  name: "",
+  prompt: "",
+  cwd: "",
+  modelId: "",
+  thinkingLevel: "",
+  sessionPolicy: "new",
+  conversationMode: "chat",
+  reflection: "ask",
+  enabled: true,
+  trigger: { ...emptyTrigger },
+  // The dependencies the form wants, as a whole set: saving reconciles the
+  // stored edges against it (see `useTasks.saveDeps`). A new task starts with
+  // none — it runs on its own trigger until the user says otherwise.
+  deps: [] as DraftDep[],
+  depJoin: "all",
+};
+
+/** Thinking levels the agent accepts, in the composer's order. */
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+type Draft = typeof emptyDraft;
+
 function triggerFromTask(task: TaskView): DraftTrigger {
-  if (task.triggerKind !== "schedule")
+  if (task.triggerKind !== "schedule") {
+    // A task that is started by its upstreams reads as "dependency", not as
+    // "manual": nobody runs it by hand, and the schedule fields are not the
+    // thing that fires it.
+    if (task.depCount > 0)
+      return { ...emptyTrigger, mode: "dependency" };
     return { ...emptyTrigger };
+  }
   const trigger = task.trigger as Record<string, unknown>;
   const mode = String(trigger.mode ?? "daily") as TriggerMode;
   return {
@@ -55,7 +107,9 @@ function triggerFromTask(task: TaskView): DraftTrigger {
 }
 
 function triggerPayload(draft: DraftTrigger): { kind: string; trigger: Record<string, unknown> } {
-  if (draft.mode === "manual")
+  // `dependency` is a manual task in the store: the edges are what starts it,
+  // and they live in their own table (see `saveDeps`).
+  if (draft.mode === "manual" || draft.mode === "dependency")
     return { kind: "manual", trigger: {} };
   switch (draft.mode) {
     case "once":
@@ -92,7 +146,7 @@ function summarizeTrigger(
   locale: string,
 ): string {
   if (task.triggerKind !== "schedule")
-    return t("trigger.manual");
+    return task.depCount > 0 ? t("trigger.dependency") : t("trigger.manual");
   const trigger = task.trigger as Record<string, unknown>;
   const time = String(trigger.time ?? "");
   switch (String(trigger.mode ?? "")) {
@@ -127,39 +181,34 @@ function summarizeTrigger(
 /** Left-nav "Tasks" panel: list, edit, runs, revisions. */
 export function TasksView({
   leftPanelExpanded,
+  modelOptions,
   onToggleLeftPanel,
   onOpenThread,
 }: {
   leftPanelExpanded: boolean;
+  /** Models the user has enabled (Settings → Models), the same list the composer offers. */
+  modelOptions: AgentModelOption[];
   onToggleLeftPanel: () => void;
   onOpenThread: (threadId: string) => void;
 }) {
   const { t, i18n } = useTranslation("tasks");
   const locale = i18n.language;
   const store = useTasks();
-  const [models, setModels] = useState<AgentModelOption[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState({
-    name: "",
-    prompt: "",
-    cwd: "",
-    modelId: "",
-    thinkingLevel: "",
-    sessionPolicy: "new",
-    conversationMode: "workspace",
-    reflection: "ask",
-    enabled: true,
-    trigger: { ...emptyTrigger },
-  });
+  const [draft, setDraft] = useState<Draft>({ ...emptyDraft });
   const [saveError, setSaveError] = useState<string | null>(null);
-
-  useEffect(() => {
-    void loadAgentModelOptions().then(setModels).catch(() => setModels([]));
-  }, []);
 
   const selected = useMemo(
     () => store.tasks.find(task => task.id === selectedId) ?? null,
+    [store.tasks, selectedId],
+  );
+  // The tasks a dependency can point at: every other live task. A cycle (this
+  // task depending on something that already waits on it) is refused by the
+  // backend, which sees the whole graph; the editor would have to fetch every
+  // task's edges to know better than that.
+  const depCandidates = useMemo(
+    () => store.tasks.filter(task => task.id !== selectedId).map(task => ({ id: task.id, name: task.name })),
     [store.tasks, selectedId],
   );
 
@@ -167,21 +216,15 @@ export function TasksView({
     setSelectedId(null);
     setEditing(true);
     setSaveError(null);
-    setDraft({
-      name: "",
-      prompt: "",
-      cwd: "",
-      modelId: "",
-      thinkingLevel: "",
-      sessionPolicy: "new",
-      conversationMode: "workspace",
-      reflection: "ask",
-      enabled: true,
-      trigger: { ...emptyTrigger },
-    });
+    setDraft({ ...emptyDraft });
   }, []);
 
-  const startEdit = useCallback((task: TaskView) => {
+  /**
+   * Open the editor on a stored task. `deps` comes from the detail view, which
+   * has already read them: the editor works on the whole dependency set, so it
+   * needs what is there before the user changes anything.
+   */
+  const startEdit = useCallback((task: TaskView, deps: TaskDepView[]) => {
     setSelectedId(task.id);
     setEditing(true);
     setSaveError(null);
@@ -196,6 +239,12 @@ export function TasksView({
       reflection: task.reflection,
       enabled: task.enabled,
       trigger: triggerFromTask(task),
+      deps: deps.map(dep => ({
+        upstreamTaskId: dep.upstreamTaskId,
+        name: dep.upstreamName,
+        on: dep.on,
+      })),
+      depJoin: task.depJoin,
     });
   }, []);
 
@@ -212,24 +261,51 @@ export function TasksView({
       reflection: draft.reflection,
       triggerKind: kind,
       trigger,
-      depJoin: selected?.depJoin ?? "all",
+      depJoin: draft.depJoin,
       enabled: draft.enabled,
     };
-    if (!input.name || !input.prompt || !input.cwd) {
-      setSaveError(t("form.required"));
+    // One message per missing decision: a task that names no model would run on
+    // whatever the app happens to default to, and the form does not offer that
+    // choice, so saving one is refused rather than silently reinterpreted.
+    let problem: string | null = null;
+    if (!input.name || !input.prompt)
+      problem = t("form.required");
+    else if (draft.conversationMode === "workspace" && !input.cwd)
+      problem = t("form.cwdRequired");
+    else if (!input.modelId)
+      problem = t("form.modelRequired");
+    else if (!input.thinkingLevel)
+      problem = t("form.thinkingRequired");
+    if (problem) {
+      setSaveError(problem);
       return;
     }
     try {
-      if (selectedId)
-        await store.updateTask(selectedId, input);
+      let taskId = selectedId;
+      if (taskId)
+        await store.updateTask(taskId, input);
       else
-        await store.createTask(input);
+        taskId = (await store.createTask(input)).id;
+      try {
+        await store.saveDeps(
+          taskId,
+          draft.deps.map(dep => ({ upstreamTaskId: dep.upstreamTaskId, on: dep.on })),
+        );
+      }
+      catch (caught) {
+        // The task itself is stored; only its edges failed (a cycle, say). Say
+        // so and stay in the editor, switched onto update — a retry must not
+        // create a second task.
+        setSelectedId(taskId);
+        setSaveError(caught instanceof Error ? caught.message : String(caught));
+        return;
+      }
       setEditing(false);
     }
     catch (caught) {
       setSaveError(caught instanceof Error ? caught.message : String(caught));
     }
-  }, [draft, selected, selectedId, store, t]);
+  }, [draft, selectedId, store, t]);
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
@@ -278,6 +354,13 @@ export function TasksView({
                 <span className="flex items-center gap-2">
                   <span className={`size-1.5 shrink-0 rounded-full ${task.enabled ? "bg-accent" : "bg-line"}`} />
                   <span className="min-w-0 flex-1 truncate text-sm text-ink">{task.name}</span>
+                  {task.pendingProposals > 0
+                    ? (
+                        <span className="shrink-0 rounded-full bg-accent-soft px-1.5 py-0.5 text-[11px] font-semibold leading-none text-accent">
+                          {t("suggestionCount", { count: task.pendingProposals })}
+                        </span>
+                      )
+                    : null}
                   {status
                     ? <span className={`shrink-0 text-xs ${task.queued ? "text-accent" : "text-ink-muted"}`}>{status}</span>
                     : null}
@@ -295,9 +378,10 @@ export function TasksView({
           {editing
             ? (
                 <TaskForm
+                  candidates={depCandidates}
                   draft={draft}
                   error={saveError}
-                  models={models}
+                  models={modelOptions}
                   onCancel={() => setEditing(false)}
                   onChange={patch => setDraft(current => ({ ...current, ...patch }))}
                   onSave={() => void save()}
@@ -308,7 +392,7 @@ export function TasksView({
                   <TaskDetail
                     store={store}
                     task={selected}
-                    onEdit={() => startEdit(selected)}
+                    onEdit={deps => startEdit(selected, deps)}
                     onOpenThread={onOpenThread}
                   />
                 )
@@ -322,33 +406,45 @@ export function TasksView({
 function TaskForm({
   draft,
   error,
+  candidates,
   models,
   onChange,
   onCancel,
   onSave,
 }: {
-  draft: {
-    name: string;
-    prompt: string;
-    cwd: string;
-    modelId: string;
-    thinkingLevel: string;
-    sessionPolicy: string;
-    conversationMode: string;
-    reflection: string;
-    enabled: boolean;
-    trigger: DraftTrigger;
-  };
+  draft: Draft;
   error: string | null;
+  /** Other live tasks: the upstreams a dependency can point at. */
+  candidates: Array<{ id: string; name: string }>;
+  /** Enabled models only — the same list the composer offers. */
   models: AgentModelOption[];
-  onChange: (patch: Partial<typeof draft>) => void;
+  onChange: (patch: Partial<Draft>) => void;
   onCancel: () => void;
   onSave: () => void;
 }) {
   const { t } = useTranslation("tasks");
   const [browseError, setBrowseError] = useState<string | null>(null);
+  // The upstream the user has picked but not added yet.
+  const [pendingUpstream, setPendingUpstream] = useState("");
   const trigger = draft.trigger;
+  const workspaceConversation = draft.conversationMode === "workspace";
+  // The dependency editor is part of the trigger choice, and stays visible for a
+  // task that already has upstreams (even next to a schedule of its own).
+  const depMode = trigger.mode === "dependency" || draft.deps.length > 0;
   const setTrigger = (patch: Partial<DraftTrigger>) => onChange({ trigger: { ...trigger, ...patch } });
+  // A task may already point at a model the user has since disabled. It stays
+  // selectable (dropping it would silently rewrite the task on the next save),
+  // listed after the enabled ones so the difference is visible.
+  const enabledKeys = new Set(models.map(model => `${model.provider}/${model.id}`));
+  const pinned = draft.modelId && !enabledKeys.has(draft.modelId) ? draft.modelId : null;
+  const nameOf = (dep: DraftDep) => dep.name || dep.upstreamTaskId;
+  const addable = candidates.filter(
+    candidate => !draft.deps.some(dep => dep.upstreamTaskId === candidate.id),
+  );
+  const setDepOn = (upstreamTaskId: string, on: string) =>
+    onChange({
+      deps: draft.deps.map(dep => (dep.upstreamTaskId === upstreamTaskId ? { ...dep, on } : dep)),
+    });
 
   /**
    * Pick the working directory in the OS directory chooser. Cancelling leaves
@@ -387,43 +483,70 @@ function TaskForm({
         />
       </label>
 
+      {/* The directory belongs to the conversation's type, so it is asked for
+          where that choice is made: a workspace conversation *is* its folder,
+          while a chat conversation runs in the workspace it carries with it. */}
       <div className="block space-y-1.5">
-        <span className="text-xs text-ink-soft">{t("form.cwd")}</span>
-        <div className="flex items-center gap-2">
-          <TextInput
-            aria-label={t("form.cwd")}
-            placeholder={t("form.cwdPlaceholder")}
-            value={draft.cwd}
-            onChange={e => onChange({ cwd: e.target.value })}
-          />
-          <Button
-            leftIcon={<FolderOpen className="size-3.5" />}
-            size="md"
-            variant="secondary"
-            onClick={() => void chooseDirectory()}
-          >
-            {t("form.browse")}
-          </Button>
-        </div>
+        <span className="text-xs text-ink-soft">{t("form.conversationMode")}</span>
+        <Select value={draft.conversationMode} onChange={e => onChange({ conversationMode: e.target.value })}>
+          <option value="chat">{t("form.conversationChat")}</option>
+          <option value="workspace">{t("form.conversationWorkspace")}</option>
+        </Select>
+        <p className="text-xs text-ink-muted">{t("form.conversationModeHint")}</p>
       </div>
+
+      {workspaceConversation
+        ? (
+            <div className="block space-y-1.5">
+              <span className="text-xs text-ink-soft">{t("form.cwd")}</span>
+              {/* `min-w-0 flex-1` on the field and `shrink-0` on the button:
+                  the input's own width used to push the button past the panel
+                  edge, leaving "browse" half cut off. */}
+              <div className="flex items-center gap-2">
+                <TextInput
+                  aria-label={t("form.cwd")}
+                  className="min-w-0 flex-1"
+                  placeholder={t("form.cwdPlaceholder")}
+                  value={draft.cwd}
+                  onChange={e => onChange({ cwd: e.target.value })}
+                />
+                <Button
+                  className="shrink-0"
+                  leftIcon={<FolderOpen className="size-3.5" />}
+                  size="md"
+                  variant="secondary"
+                  onClick={() => void chooseDirectory()}
+                >
+                  {t("form.browse")}
+                </Button>
+              </div>
+            </div>
+          )
+        : null}
 
       <div className="grid grid-cols-2 gap-3">
         <label className="block space-y-1.5">
           <span className="text-xs text-ink-soft">{t("form.model")}</span>
           <Select value={draft.modelId} onChange={e => onChange({ modelId: e.target.value })}>
-            <option value="">{t("form.modelDefault")}</option>
+            {/* No "default" entry: the model is the user's decision, and an
+                empty value only ever means "not chosen yet". */}
+            <option value="" disabled>{t("form.modelPlaceholder")}</option>
+            {pinned ? <option value={pinned}>{pinned}</option> : null}
             {models.map(model => (
               <option key={`${model.provider}/${model.id}`} value={`${model.provider}/${model.id}`}>
                 {model.label || model.id}
               </option>
             ))}
           </Select>
+          {models.length === 0
+            ? <p className="text-xs text-ink-muted">{t("form.modelsEmpty")}</p>
+            : null}
         </label>
         <label className="block space-y-1.5">
           <span className="text-xs text-ink-soft">{t("form.thinking")}</span>
           <Select value={draft.thinkingLevel} onChange={e => onChange({ thinkingLevel: e.target.value })}>
-            <option value="">{t("form.thinkingDefault")}</option>
-            {["off", "minimal", "low", "medium", "high", "xhigh"].map(level => (
+            <option value="" disabled>{t("form.thinkingPlaceholder")}</option>
+            {THINKING_LEVELS.map(level => (
               <option key={level} value={level}>{t(`agent:composer.thinkingLevelLabels.${level}`)}</option>
             ))}
           </Select>
@@ -432,13 +555,6 @@ function TaskForm({
 
       <div className="grid grid-cols-2 gap-4">
         <label className="block space-y-1.5">
-          <span className="text-xs text-ink-soft">{t("form.conversationMode")}</span>
-          <Select value={draft.conversationMode} onChange={e => onChange({ conversationMode: e.target.value })}>
-            <option value="workspace">{t("form.conversationWorkspace")}</option>
-            <option value="chat">{t("form.conversationChat")}</option>
-          </Select>
-        </label>
-        <label className="block space-y-1.5">
           <span className="text-xs text-ink-soft">{t("form.reflection")}</span>
           <Select value={draft.reflection} onChange={e => onChange({ reflection: e.target.value })}>
             <option value="off">{t("form.reflectionOff")}</option>
@@ -446,10 +562,6 @@ function TaskForm({
             <option value="auto">{t("form.reflectionAuto")}</option>
           </Select>
         </label>
-      </div>
-      <p className="text-xs text-ink-muted">{t("form.conversationModeHint")}</p>
-
-      <div className="grid grid-cols-2 gap-4">
         <label className="block space-y-1.5">
           <span className="text-xs text-ink-soft">{t("form.session")}</span>
           <Select value={draft.sessionPolicy} onChange={e => onChange({ sessionPolicy: e.target.value })}>
@@ -466,6 +578,7 @@ function TaskForm({
         <legend className="px-1 text-xs text-ink-soft">{t("form.trigger")}</legend>
         <Select value={trigger.mode} onChange={e => setTrigger({ mode: e.target.value as TriggerMode })}>
           <option value="manual">{t("triggerMode.manual")}</option>
+          <option value="dependency">{t("triggerMode.dependency")}</option>
           <option value="once">{t("triggerMode.once")}</option>
           <option value="interval">{t("triggerMode.interval")}</option>
           <option value="daily">{t("triggerMode.daily")}</option>
@@ -561,6 +674,109 @@ function TaskForm({
               </div>
             )
           : null}
+
+        {/* The dependency editor appears with the choice that needs it — and,
+            for a task that already has upstreams next to a schedule of its own
+            (set from the CLI), it stays visible: an edge nobody can see is an
+            edge nobody can remove. */}
+        {depMode
+          ? (
+              <div className="space-y-3 border-t border-line-soft pt-3">
+                {trigger.mode !== "dependency"
+                  ? <p className="text-xs text-ink-muted">{t("form.depsAlongsideSchedule")}</p>
+                  : null}
+
+                {draft.deps.length === 0
+                  ? <p className="text-xs text-ink-muted">{t("form.depsNone")}</p>
+                  : (
+                      <ul className="space-y-2">
+                        {draft.deps.map(dep => (
+                          <li key={dep.upstreamTaskId} className="flex items-center gap-2">
+                            <span className="min-w-0 flex-1 truncate text-xs text-ink" title={nameOf(dep)}>
+                              {nameOf(dep)}
+                            </span>
+                            <Select
+                              aria-label={t("form.depCondition", { name: nameOf(dep) })}
+                              className="w-28 shrink-0"
+                              value={dep.on}
+                              onChange={e => setDepOn(dep.upstreamTaskId, e.target.value)}
+                            >
+                              <option value="success">{t("on.success")}</option>
+                              <option value="failure">{t("on.failure")}</option>
+                              <option value="completed">{t("on.completed")}</option>
+                            </Select>
+                            <Button
+                              aria-label={t("form.depRemove", { name: nameOf(dep) })}
+                              className="shrink-0"
+                              size="xs"
+                              variant="ghost"
+                              onClick={() => onChange({
+                                deps: draft.deps.filter(item => item.upstreamTaskId !== dep.upstreamTaskId),
+                              })}
+                            >
+                              {t("form.depRemoveShort")}
+                            </Button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+
+                <div className="flex items-center gap-2">
+                  <Select
+                    aria-label={t("form.depAdd")}
+                    className="min-w-0 flex-1"
+                    value={pendingUpstream}
+                    onChange={e => setPendingUpstream(e.target.value)}
+                  >
+                    <option value="">{t("form.depAddPlaceholder")}</option>
+                    {addable.map(candidate => (
+                      <option key={candidate.id} value={candidate.id}>{candidate.name}</option>
+                    ))}
+                  </Select>
+                  <Button
+                    className="shrink-0"
+                    disabled={!pendingUpstream}
+                    size="md"
+                    variant="secondary"
+                    onClick={() => {
+                      // A new edge waits for the upstream to finish
+                      // successfully: the common case, and the one the CLI's
+                      // bare `--depends-on` means.
+                      const chosen = candidates.find(candidate => candidate.id === pendingUpstream);
+                      onChange({
+                        deps: [
+                          ...draft.deps,
+                          { upstreamTaskId: pendingUpstream, name: chosen?.name ?? "", on: "success" },
+                        ],
+                      });
+                      setPendingUpstream("");
+                    }}
+                  >
+                    {t("form.depAddAction")}
+                  </Button>
+                </div>
+                {candidates.length === 0
+                  ? <p className="text-xs text-ink-muted">{t("form.depNoCandidates")}</p>
+                  : null}
+
+                {draft.deps.length > 1
+                  ? (
+                      <label className="block space-y-1.5">
+                        <span className="text-xs text-ink-soft">{t("form.depJoin")}</span>
+                        <Select
+                          aria-label={t("form.depJoin")}
+                          value={draft.depJoin}
+                          onChange={e => onChange({ depJoin: e.target.value })}
+                        >
+                          <option value="all">{t("join.all")}</option>
+                          <option value="any">{t("join.any")}</option>
+                        </Select>
+                      </label>
+                    )
+                  : null}
+              </div>
+            )
+          : null}
       </fieldset>
 
       <label className="flex items-center gap-2 text-xs text-ink">
@@ -588,7 +804,7 @@ function TaskDetail({
 }: {
   task: TaskView;
   store: ReturnType<typeof useTasks>;
-  onEdit: () => void;
+  onEdit: (deps: TaskDepView[]) => void;
   onOpenThread: (threadId: string) => void;
 }) {
   const { t, i18n } = useTranslation("tasks");
@@ -612,6 +828,40 @@ function TaskDetail({
     void refresh();
   }, [refresh]);
 
+  // The runs and versions of a task change while it is on screen (a run
+  // finishing, a prompt version being applied). The host announces those with
+  // the same "threads-updated" event the sidebar listens to, so the detail
+  // re-reads its three lists rather than showing a ledger frozen at open time.
+  useTauriEvent("threads-updated", () => {
+    void refresh();
+  });
+
+  // Suggestions are grouped under the run they read. A run list is bounded, so
+  // a suggestion can outlive its run's place in it: those keep their own block
+  // (and their accept button) instead of being dropped.
+  const { suggestionsByRun, orphans, versions } = useMemo(() => {
+    const byRun = new Map<string, TaskRevisionView[]>();
+    const unlinked: TaskRevisionView[] = [];
+    const known = new Set(runs.map(run => run.id));
+    for (const revision of revisions) {
+      if (revision.status !== "proposed")
+        continue;
+      if (revision.sourceRunId && known.has(revision.sourceRunId)) {
+        const list = byRun.get(revision.sourceRunId) ?? [];
+        list.push(revision);
+        byRun.set(revision.sourceRunId, list);
+      }
+      else {
+        unlinked.push(revision);
+      }
+    }
+    return {
+      suggestionsByRun: byRun,
+      orphans: unlinked,
+      versions: revisions.filter(revision => revision.status !== "proposed"),
+    };
+  }, [revisions, runs]);
+
   return (
     <div className="space-y-6 px-6 py-5 pb-10">
       <div className="flex items-start gap-2.5">
@@ -625,7 +875,7 @@ function TaskDetail({
         <Button leftIcon={<Play className="size-3.5" />} size="sm" variant="secondary" onClick={() => void store.runNow(task.id).then(refresh)}>
           {t("runNow")}
         </Button>
-        <Button size="sm" variant="secondary" onClick={onEdit}>{t("edit")}</Button>
+        <Button size="sm" variant="secondary" onClick={() => onEdit(deps)}>{t("edit")}</Button>
         <Button
           size="sm"
           variant={task.enabled ? "ghost" : "secondary"}
@@ -655,7 +905,9 @@ function TaskDetail({
             // does this run on?".
             [t("colModel"), task.modelId ?? t("modelDefault")],
             [t("colThinking"), task.thinkingLevel ? t(`agent:composer.thinkingLevelLabels.${task.thinkingLevel}`) : t("thinkingDefault")],
-            [t("colCwd"), task.cwd],
+            // A chat task may name no directory at all: it runs in its own
+            // conversation's workspace, and an empty row would read as "missing".
+            [t("colCwd"), task.cwd.trim() || (task.conversationMode === "chat" ? t("cwdChatWorkspace") : "—")],
             [t("colConversation"), t(task.conversationMode === "chat" ? "form.conversationChat" : "form.conversationWorkspace")],
             [t("form.session"), t(task.sessionPolicy === "existing" ? "form.sessionExisting" : "form.sessionNew")],
             [t("colReflection"), t(`form.reflection${task.reflection === "off" ? "Off" : task.reflection === "auto" ? "Auto" : "Ask"}`)],
@@ -708,16 +960,26 @@ function TaskDetail({
         {runs.length === 0
           ? <p className="pl-3.5 text-xs text-ink-muted">{t("runsNone")}</p>
           : (
-              <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
+              // One card per run, with space between the cards: consecutive runs
+              // used to share a single box separated by hairlines, and a run that
+              // ends in a paragraph of summary ran into the next one's header.
+              <ul className="space-y-3">
                 {runs.map(run => (
-                  // Two lines per run rather than fixed columns: a CJK status and
-                  // an English one are different widths, and columns padded to the
-                  // wider script leave the other one visibly misaligned.
-                  <li key={run.id} className="space-y-1.5 px-3.5 py-3">
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className="text-ink-muted">{t(`kind.${run.kind}`)}</span>
+                  <li key={run.id} className="overflow-hidden rounded-md border border-line-soft">
+                    <div className="flex items-center gap-2 border-b border-line-soft bg-surface-subtle px-3.5 py-2.5 text-xs">
+                      <span className="font-medium text-ink">{t(`status.${run.status}`)}</span>
                       <span aria-hidden className="text-line">·</span>
-                      <span className="text-ink">{t(`status.${run.status}`)}</span>
+                      <span className="text-ink-muted">{t(`kind.${run.kind}`)}</span>
+                      {run.promptVersion != null
+                        ? (
+                            <>
+                              <span aria-hidden className="text-line">·</span>
+                              <span className="text-ink-muted">
+                                {t("runPromptVersion", { version: run.promptVersion })}
+                              </span>
+                            </>
+                          )
+                        : null}
                       <span aria-hidden className="text-line">·</span>
                       <span className="min-w-0 flex-1 truncate text-ink-muted">
                         {run.startedAt ? formatEpoch(run.startedAt, locale) : ""}
@@ -730,9 +992,22 @@ function TaskDetail({
                           )
                         : null}
                     </div>
-                    <p className="text-xs leading-relaxed text-ink-soft">
-                      {run.errorMessage ?? run.resultSummary ?? t("runNoSummary")}
-                    </p>
+                    <div className="space-y-3 px-3.5 py-3">
+                      <p className="text-xs leading-relaxed text-ink-soft">
+                        {run.errorMessage ?? run.resultSummary ?? t("runNoSummary")}
+                      </p>
+                      {/* A suggestion belongs under the result it read: the
+                          decision is "was this run's outcome caused by this
+                          prompt", which a list at the bottom of the page cannot
+                          pose. */}
+                      {suggestionsByRun.get(run.id)?.map(revision => (
+                        <SuggestionBlock
+                          key={revision.id}
+                          revision={revision}
+                          onApply={() => void store.applyRevision(task.id, revision.id).then(refresh)}
+                        />
+                      ))}
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -741,40 +1016,119 @@ function TaskDetail({
 
       <section className="space-y-3">
         <h3 className="pl-3.5 text-xs font-medium text-ink-soft">{t("revisions")}</h3>
-        {revisions.length === 0
+        {versions.length === 0 && orphans.length === 0
           ? <p className="pl-3.5 text-xs text-ink-muted">{t("revisionsNone")}</p>
           : (
-              <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
-                {revisions.map(revision => (
-                  // Version rows follow the same two-line shape as runs and
-                  // dependencies: a fixed column would drift as soon as one
-                  // locale's source label is wider than the other's.
-                  <li key={revision.id} className="space-y-1.5 px-3.5 py-3">
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className="text-ink-muted">
-                        v
-                        {revision.version}
-                      </span>
-                      <span aria-hidden className="text-line">·</span>
-                      <span className="text-ink">{t(`source.${revision.source}`)}</span>
-                      <span className="min-w-0 flex-1" />
-                      <Button
-                        leftIcon={<RotateCcw className="size-3" />}
-                        size="xs"
-                        variant="ghost"
-                        onClick={() => void store.applyRevision(task.id, revision.id).then(refresh)}
-                      >
-                        {t("apply")}
-                      </Button>
-                    </div>
-                    <p className="text-[11px] text-ink-muted">
-                      {revision.reason ?? t("revisionsNoReason")}
-                    </p>
-                  </li>
+              <div className="space-y-3">
+                {/* Suggestions whose run is not in the (bounded) run list keep
+                    the accept button here rather than disappearing. */}
+                {orphans.map(revision => (
+                  <div key={revision.id} className="space-y-1.5">
+                    <p className="pl-3.5 text-[11px] text-ink-muted">{t("suggestionUnlinked")}</p>
+                    <SuggestionBlock
+                      revision={revision}
+                      onApply={() => void store.applyRevision(task.id, revision.id).then(refresh)}
+                    />
+                  </div>
                 ))}
-              </ul>
+                {versions.length > 0
+                  ? (
+                      <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
+                        {versions.map((revision) => {
+                          const applied = revision.status === "applied";
+                          return (
+                            // Version rows follow the same two-line shape as runs and
+                            // dependencies: a fixed column would drift as soon as one
+                            // locale's source label is wider than the other's.
+                            <li key={revision.id} className="space-y-1.5 px-3.5 py-3">
+                              <div className="flex items-center gap-2 text-xs">
+                                <span className="text-ink-muted">
+                                  v
+                                  {revision.version}
+                                </span>
+                                <span aria-hidden className="text-line">·</span>
+                                <span className="text-ink">{t(`source.${revision.source}`)}</span>
+                                {applied
+                                  ? <span className="text-ink-muted">{t("applied")}</span>
+                                  : null}
+                                <span className="min-w-0 flex-1" />
+                                <Button
+                                  leftIcon={<RotateCcw className="size-3" />}
+                                  size="xs"
+                                  variant="ghost"
+                                  onClick={() => void store.applyRevision(task.id, revision.id).then(refresh)}
+                                >
+                                  {t("apply")}
+                                </Button>
+                              </div>
+                              <p className="text-[11px] text-ink-muted">
+                                {revision.reason ?? t("revisionsNoReason")}
+                              </p>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )
+                  : null}
+              </div>
             )}
       </section>
+    </div>
+  );
+}
+
+/**
+ * One prompt suggestion, shown under the run it came from: what the model would
+ * change it to, why, and the button that puts it in force.
+ *
+ * The whole prompt is shown, not a preview: a suggestion is a decision, and a
+ * truncated prompt cannot be decided on. It is bounded in height so a long
+ * prompt cannot push the rest of the ledger off the page.
+ */
+function SuggestionBlock({
+  revision,
+  onApply,
+}: {
+  revision: TaskRevisionView;
+  onApply: () => void;
+}) {
+  const { t } = useTranslation("tasks");
+  return (
+    <div className="space-y-2 rounded-md border border-line-soft border-l-2 border-l-accent bg-surface-subtle px-3 py-3">
+      <div className="flex items-center gap-2 text-xs">
+        <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[11px] font-semibold leading-none text-accent">
+          {t("suggestion")}
+        </span>
+        <span className="text-ink-muted">{t("source.reflection")}</span>
+        {revision.confidence != null
+          ? (
+              <span className="text-ink-muted">
+                {t("confidence", { value: Math.round(revision.confidence * 100) })}
+              </span>
+            )
+          : null}
+        <span className="min-w-0 flex-1" />
+        <Button
+          leftIcon={<Check className="size-3" />}
+          size="xs"
+          variant="secondary"
+          onClick={onApply}
+        >
+          {t("applySuggestion")}
+        </Button>
+      </div>
+      <div className="space-y-1">
+        <p className="text-[11px] font-medium text-ink-soft">{t("suggestionReason")}</p>
+        <p className="text-xs leading-relaxed text-ink">
+          {revision.reason ?? t("revisionsNoReason")}
+        </p>
+      </div>
+      <div className="space-y-1">
+        <p className="text-[11px] font-medium text-ink-soft">{t("suggestedPrompt")}</p>
+        <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded border border-line-soft bg-surface px-2.5 py-2 text-xs leading-relaxed text-ink">
+          {revision.prompt}
+        </pre>
+      </div>
     </div>
   );
 }

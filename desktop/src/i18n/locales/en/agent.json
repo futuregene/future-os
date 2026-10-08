@@ -181,6 +181,7 @@
     "skillsSection": "Skills",
     "noSessionMatches": "No matching conversations.",
     "sessionsSection": "Chats",
+    "workspaceSection": "Workspace",
     "compactContext": "Compact",
     "compactContextDescription": "Compact this conversation's context",
     "compacting": "Compacting context…",
