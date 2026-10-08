@@ -57,8 +57,23 @@ fn task_list_view(store: &future_tasks::Store, task: future_tasks::Task) -> Valu
         "nextDueAt": task.next_due_at,
         "queued": task.pending_request_at.is_some(),
         "reflection": format!("{:?}", task.reflection).to_lowercase(),
+        // A suggestion is the one thing on this page the user has to act on, so
+        // the list counts them without the detail round-trip.
+        "pendingProposals": pending_proposals(store, &task.id),
         "latestRun": latest.map(run_summary_view),
     })
+}
+
+/// Prompt suggestions awaiting a decision.
+fn pending_proposals(store: &future_tasks::Store, task_id: &str) -> usize {
+    store
+        .list_revisions(task_id)
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| row.status == future_tasks::REVISION_STATUS_PROPOSED)
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 /// The detail record (the only place the prompt crosses the wire).
@@ -81,6 +96,7 @@ fn task_detail_view(store: &future_tasks::Store, task: future_tasks::Task) -> Va
         "nextDueAt": task.next_due_at,
         "queued": task.pending_request_at.is_some(),
         "reflection": format!("{:?}", task.reflection).to_lowercase(),
+        "pendingProposals": pending_proposals(store, &task.id),
         "latestRun": latest.map(run_summary_view),
     })
 }
@@ -643,6 +659,10 @@ mod tests {
 
         // Nothing is waiting, so the phone is not told otherwise.
         assert_eq!(items[0]["queued"], false);
+        assert_eq!(
+            items[0]["pendingProposals"], 0,
+            "a suggestion is counted for the phone's row badge"
+        );
 
         // A pending request is surfaced: the phone pressed "run now" while the
         // desktop was busy, and the row has to say so rather than look ignored.

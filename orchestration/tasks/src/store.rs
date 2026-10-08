@@ -99,8 +99,11 @@ const SQL_UPDATE_RUN: &str = "
 
 const SQL_RUNS_FOR_TASK: &str = "
     SELECT %COLUMNS% FROM task_runs WHERE task_id = ?1 ORDER BY started_at DESC LIMIT ?2";
+/// Runs that are still in flight *for the task itself*. A reflection pass is a
+/// side activity over a finished run, so it must not hold the task's next
+/// scheduled slot back (a slow suggestion would silently skip a run).
 const SQL_COUNT_RUNNING: &str =
-    "SELECT COUNT(*) FROM task_runs WHERE task_id = ?1 AND status = 'running'";
+    "SELECT COUNT(*) FROM task_runs WHERE task_id = ?1 AND status = 'running' AND kind != 'reflection'";
 const SQL_INTERRUPT_RUNNING: &str = "
     UPDATE task_runs SET status = 'failed', finished_at = ?1, error_message = 'interrupted'
     WHERE status = 'running'";
@@ -571,6 +574,17 @@ impl Store {
             rev.created_at,
         ];
         self.conn.execute(SQL_INSERT_REVISION, values)?;
+        // At most one version is in force. A new active version replaces whatever
+        // was active before, so the older row is demoted in the same write — two
+        // rows claiming to be active is a query waiting to pick the wrong one
+        // (and `proposed`/`applied` rows keep their own status either way).
+        if rev.status == REVISION_STATUS_ACTIVE {
+            self.conn.execute(
+                "UPDATE task_prompt_revisions SET status = ?3
+                 WHERE task_id = ?1 AND version < ?2 AND status = 'active'",
+                params![rev.task_id, rev.version, REVISION_STATUS_SUPERSEDED],
+            )?;
+        }
         Ok(())
     }
 
@@ -579,6 +593,22 @@ impl Store {
         let rows = stmt.query_map(params![task_id], revision_from_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
+    }
+
+    /// Move one revision through its lifecycle (`proposed` → `applied`,
+    /// `proposed` → `superseded`). Rows are otherwise immutable: a version that
+    /// was in force is history and must not be rewritten.
+    pub fn set_revision_status(
+        &self,
+        task_id: &str,
+        revision_id: &str,
+        status: &str,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE task_prompt_revisions SET status = ?3 WHERE task_id = ?1 AND id = ?2",
+            params![task_id, revision_id, status],
+        )?;
+        Ok(())
     }
 
     pub fn next_revision_version(&self, task_id: &str) -> Result<i64> {
@@ -963,6 +993,73 @@ mod tests {
         assert_eq!(got.error_message.as_deref(), Some("interrupted"));
     }
 
+    /// A reflection pass is a side activity over a finished run: while one is
+    /// in flight the task's own work must not be held back (a slow suggestion
+    /// would silently skip a scheduled slot).
+    #[test]
+    fn a_running_reflection_does_not_hold_the_task_back() {
+        let (_dir, s) = store();
+        let t = task("suggesting");
+        s.insert_task(&t).unwrap();
+        s.insert_run(&TaskRun {
+            id: new_run_id(),
+            task_id: t.id.clone(),
+            kind: RunKind::Reflection,
+            origin: RunOrigin::Reflection,
+            actor: None,
+            due_at: None,
+            status: RunStatus::Running,
+            thread_id: None,
+            session_id: None,
+            run_id: None,
+            prompt_version: Some(1),
+            result_summary: None,
+            feedback: None,
+            feedback_note: None,
+            started_at: Some(1),
+            finished_at: None,
+            error_message: None,
+        })
+        .unwrap();
+        assert!(!s.has_running_run(&t.id).unwrap());
+    }
+
+    /// A suggestion moves through its own lifecycle, and nothing else rewrites
+    /// a row: a version that was in force is history.
+    #[test]
+    fn a_suggestion_can_be_marked_applied() {
+        let (_dir, s) = store();
+        let t = task("suggested");
+        s.insert_task(&t).unwrap();
+        let row = PromptRevision {
+            id: new_revision_id(),
+            task_id: t.id.clone(),
+            version: PROPOSAL_VERSION,
+            prompt: "a better prompt".into(),
+            source: REVISION_SOURCE_REFLECTION.into(),
+            status: REVISION_STATUS_PROPOSED.into(),
+            reason: Some("clearer".into()),
+            confidence: Some(0.8),
+            source_run_id: Some("trn_1".into()),
+            created_at: 5,
+        };
+        s.insert_revision(&row).unwrap();
+        assert_eq!(
+            s.list_revisions(&t.id).unwrap()[0].prompt,
+            "a better prompt"
+        );
+        s.set_revision_status(&t.id, &row.id, REVISION_STATUS_APPLIED)
+            .unwrap();
+        let stored = s.list_revisions(&t.id).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].status, REVISION_STATUS_APPLIED);
+        assert_eq!(stored[0].prompt, "a better prompt", "only the status moves");
+        assert_eq!(stored[0].confidence, Some(0.8));
+        // A suggestion is outside the version sequence, so the task's own next
+        // version is unaffected by it.
+        assert_eq!(s.next_revision_version(&t.id).unwrap(), 1);
+    }
+
     #[test]
     fn revisions_are_ordered() {
         let (_dir, s) = store();
@@ -987,6 +1084,41 @@ mod tests {
         assert_eq!(revs.len(), 3);
         assert_eq!(revs[2].version, 3);
         assert_eq!(s.next_revision_version(&t.id).unwrap(), 4);
+    }
+
+    /// Only one version is ever in force: writing a new active row demotes the
+    /// older one, so a query for `status='active'` cannot return two answers
+    /// (which is what applying a suggestion over an applied one used to leave
+    /// behind).
+    #[test]
+    fn a_new_active_version_demotes_the_previous_one() {
+        let (_dir, s) = store();
+        let t = task("promote");
+        s.insert_task(&t).unwrap();
+        let row = |version: i64, status: &str| PromptRevision {
+            id: new_revision_id(),
+            task_id: t.id.clone(),
+            version,
+            prompt: format!("p{version}"),
+            source: "user".into(),
+            status: status.into(),
+            reason: None,
+            confidence: None,
+            source_run_id: None,
+            created_at: version,
+        };
+        s.insert_revision(&row(1, REVISION_STATUS_ACTIVE)).unwrap();
+        s.insert_revision(&row(2, REVISION_STATUS_ACTIVE)).unwrap();
+        let revs = s.list_revisions(&t.id).unwrap();
+        assert_eq!(revs[0].status, REVISION_STATUS_SUPERSEDED);
+        assert_eq!(revs[1].status, REVISION_STATUS_ACTIVE);
+
+        // A suggestion is not in the version sequence and keeps its own status.
+        s.insert_revision(&row(0, REVISION_STATUS_PROPOSED))
+            .unwrap();
+        let revs = s.list_revisions(&t.id).unwrap();
+        assert_eq!(revs[0].status, REVISION_STATUS_PROPOSED);
+        assert_eq!(revs[2].status, REVISION_STATUS_ACTIVE);
     }
 
     // ─── paths and opening ────────────────────────────────────────────────

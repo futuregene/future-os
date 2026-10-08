@@ -822,6 +822,8 @@ export interface MockTask {
   nextDueAt: number | null;
   queued: boolean;
   reflection: string;
+  /** Prompt suggestions awaiting a decision (0 when there are none). */
+  pendingProposals: number;
   latestRun: MockTaskRun | null;
 }
 
@@ -851,6 +853,7 @@ export const tasks: MockTask[] = [
     nextDueAt: now + 2 * hour + 40 * minute,
     queued: false,
     reflection: "ask",
+    pendingProposals: 0,
     latestRun: {
       id: "trn_report_2",
       kind: "main",
@@ -888,6 +891,8 @@ export const tasks: MockTask[] = [
     nextDueAt: now + 6 * hour,
     queued: true,
     reflection: "auto",
+    // One suggestion is waiting: the row badges it and the detail lists it.
+    pendingProposals: 1,
     latestRun: {
       id: "trn_lit_9",
       kind: "main",
@@ -924,6 +929,7 @@ export const tasks: MockTask[] = [
     nextDueAt: now + 24 * day,
     queued: false,
     reflection: "ask",
+    pendingProposals: 0,
     latestRun: null,
   },
   {
@@ -947,6 +953,7 @@ export const tasks: MockTask[] = [
     nextDueAt: null,
     queued: false,
     reflection: "ask",
+    pendingProposals: 0,
     latestRun: {
       id: "trn_notify_1",
       kind: "chain",
@@ -1039,6 +1046,18 @@ export const taskRevisions: Record<string, Array<{ id: string; version: number; 
     },
   ],
   tsk_lit_watch: [
+    {
+      // A suggestion from the reflection pass: not applied yet, so it carries no
+      // version, and it names the run it came from.
+      id: "rev_l_suggestion",
+      version: 0,
+      prompt: "（建议版本）检索最近 7 天与「多巴胺 风险决策」相关的新论文；综述单列一节；写入 reports/lit-watch.md 并覆盖上一版；摘要开头给出最值得读的一篇的 DOI。",
+      source: "reflection",
+      status: "proposed",
+      reason: "上一版没有说明检索不到新论文时该怎么办，一次空结果可能让下一次运行无所适从。",
+      confidence: 0.68,
+      createdAt: now - 3 * hour,
+    },
     {
       id: "rev_l2",
       version: 2,

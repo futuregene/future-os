@@ -296,7 +296,14 @@ pub fn prompt_change_revisions(
         return Vec::new();
     }
     let mut rows = Vec::new();
-    if !history.iter().any(|r| r.version == task.prompt_version) {
+    // A *suggestion* is not a version of the prompt, so it does not count as
+    // "this version is already recorded": ignoring them here is what keeps the
+    // version being replaced in the history even when a suggestion happens to
+    // sit at the same version number.
+    let recorded = history.iter().any(|r| {
+        r.version == task.prompt_version && r.status != crate::types::REVISION_STATUS_PROPOSED
+    });
+    if !recorded {
         rows.push(crate::types::PromptRevision {
             id: crate::types::new_revision_id(),
             task_id: task.id.clone(),
@@ -304,8 +311,8 @@ pub fn prompt_change_revisions(
             prompt: task.prompt.clone(),
             // Who wrote it is not recorded anywhere, so the row says what is
             // certain instead of guessing: this version was replaced.
-            source: "superseded".to_string(),
-            status: "superseded".to_string(),
+            source: crate::types::REVISION_SOURCE_SUPERSEDED.to_string(),
+            status: crate::types::REVISION_STATUS_SUPERSEDED.to_string(),
             reason: None,
             confidence: None,
             source_run_id: None,
@@ -318,7 +325,7 @@ pub fn prompt_change_revisions(
         version: task.prompt_version + 1,
         prompt: new_prompt.to_string(),
         source: source.to_string(),
-        status: "active".to_string(),
+        status: crate::types::REVISION_STATUS_ACTIVE.to_string(),
         reason: reason.map(str::to_string),
         confidence: None,
         source_run_id: None,
@@ -571,6 +578,292 @@ pub fn compose_run_prompt(
     out.push_str(&task.prompt);
     out.push_str(COMPLETION_CONTRACT);
     out
+}
+
+// ─── reflection (prompt suggestions) ──────────────────────────────────────
+
+/// Lowest confidence `auto` will act on without asking.
+pub const REFLECTION_AUTO_MIN_CONFIDENCE: f64 = 0.7;
+/// At most one automatic prompt change per day: a prompt that changes after
+/// every run cannot be judged, because nothing stays still long enough.
+pub const REFLECTION_AUTO_INTERVAL_MS: i64 = 24 * 60 * 60 * 1_000;
+/// The same suggestion is not offered twice within a day.
+pub const REFLECTION_DUPLICATE_WINDOW_MS: i64 = 24 * 60 * 60 * 1_000;
+
+/// What a reflection pass concluded about a prompt.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PromptProposal {
+    /// The prompt needs no change (`verdict: keep`).
+    pub keep: bool,
+    /// The whole revised prompt, as returned (empty when `keep`).
+    pub prompt: String,
+    /// One or two sentences of justification, shown to the user.
+    pub reason: String,
+    /// The model's own confidence in the change, 0…1. A reply that omits it
+    /// counts as 0: nothing acts automatically on evidence it did not state.
+    pub confidence: f64,
+}
+
+/// What to do with a suggestion. `Skip` carries why in a fixed phrase, so the
+/// reflection run's own ledger row can say what the pass decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProposalAction {
+    /// Every guardrail held and the cadence is `auto`: it becomes the prompt.
+    Apply,
+    /// Record it for the user to read and apply.
+    Propose,
+    /// Record nothing.
+    Skip(&'static str),
+}
+
+/// Compose the prompt for one reflection pass (a *suggestion*, not a run of the
+/// task): the prompt that ran, what the run reported, and the demand for a
+/// decision in a fixed JSON shape.
+///
+/// The pass sees only this run's window — the prompt, the run's outcome and the
+/// user's verdict on it — never the task's history. A suggestion made from a
+/// long history is a rewrite nobody can review against what happened.
+pub fn compose_reflection_prompt(task: &Task, run: &crate::types::TaskRun) -> String {
+    let mut out = format!("── {} ──\n", crate::types::REFLECTION_SCHEMA_VERSION);
+    out.push_str(&format!(
+        "task: {} | id: {} | prompt-version: {}\n",
+        task.name, task.id, task.prompt_version
+    ));
+    let mut line = format!(
+        "run: {} | kind={} | status={}",
+        run.id,
+        run_kind_label(run.kind),
+        run_status_label(run.status)
+    );
+    if let Some(finished) = run.finished_at {
+        let stamp = local_time(finished);
+        if !stamp.is_empty() {
+            line.push_str(&format!(" | finished={stamp}"));
+        }
+    }
+    out.push_str(&line);
+    out.push('\n');
+    out.push_str(&format!("run settings: {}\n\n", run_settings_line(task)));
+
+    out.push_str("The prompt that produced this run:\n");
+    out.push_str(&task.prompt);
+    out.push_str("\n\nWhat the run reported:\n");
+    match run.result_summary.as_deref() {
+        Some(summary) if !summary.trim().is_empty() => out.push_str(summary.trim()),
+        _ => out.push_str("[no summary recorded]"),
+    }
+    out.push('\n');
+    if let Some(error) = run
+        .error_message
+        .as_deref()
+        .filter(|e| !e.trim().is_empty())
+    {
+        out.push_str(&format!("The run failed: {}\n", error.trim()));
+    }
+    if let Some(verdict) = run.feedback.as_deref() {
+        out.push_str(&format!("The user judged this run: {verdict}"));
+        if let Some(note) = run
+            .feedback_note
+            .as_deref()
+            .filter(|n| !n.trim().is_empty())
+        {
+            out.push_str(&format!(" — {}", note.trim()));
+        }
+        out.push('\n');
+    }
+
+    out.push_str(REFLECTION_INSTRUCTION);
+    out
+}
+
+/// The reflection pass's instruction, banner included (so `compose_reflection_prompt`
+/// and any test asserting on the ask share one wording).
+pub const REFLECTION_INSTRUCTION: &str = "\nInstruction:\n\
+Decide whether that prompt is worth changing, and if it is, return the whole revised prompt.\n\
+- Keep the user's intent, every requirement and the output contract. Do not weaken them.\n\
+- The prompt must stay self-contained: it runs unattended, in a fresh conversation, with nobody to answer questions.\n\
+- Change only what this run's evidence supports: a failure the prompt caused, a requirement it is missing, an ambiguity that made the result unpredictable.\n\
+- If nothing is worth changing, say so. A prompt that churns after every run cannot be judged.\n\
+\nReply with only this JSON object, and nothing around it:\n\
+{\"verdict\":\"keep\"|\"improve\",\"prompt\":\"<the whole prompt — unchanged when the verdict is keep>\",\"reason\":\"<one or two sentences>\",\"confidence\":0.0-1.0}\n";
+
+/// Parse a reflection reply into a proposal.
+///
+/// Tolerant by design: a model may wrap the object in a code fence or explain
+/// itself first. The **last** complete JSON object wins (an explanation that
+/// quotes an example object cannot be mistaken for the answer), the `verdict`
+/// key decides keep-vs-improve, and `confidence` is clamped to 0…1.
+///
+/// Returns `None` when no complete object with a verdict is present: a reply
+/// that never decided is not a proposal, and inventing one would put text the
+/// model did not choose in front of the user.
+pub fn parse_reflection(text: &str) -> Option<PromptProposal> {
+    for candidate in balanced_json_objects(text).into_iter().rev() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate) else {
+            continue;
+        };
+        let Some(verdict) = value.get("verdict").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let verdict = verdict.trim().to_ascii_lowercase();
+        let keep = matches!(
+            verdict.as_str(),
+            "keep" | "keep_prompt" | "no_change" | "unchanged" | "none"
+        );
+        return Some(PromptProposal {
+            keep,
+            prompt: value
+                .get("prompt")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            reason: value
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            confidence: value
+                .get("confidence")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0)
+                .clamp(0.0, 1.0),
+        });
+    }
+    None
+}
+
+/// Every complete top-level `{…}` span in `text`, in order, ignoring braces
+/// inside JSON strings (the prompt text a model returns is full of them).
+fn balanced_json_objects(text: &str) -> Vec<&str> {
+    let mut spans = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, byte) in text.bytes().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' if depth > 0 => in_string = true,
+            b'{' => {
+                if depth == 0 {
+                    start = Some(index);
+                }
+                depth += 1;
+            }
+            b'}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(begin) = start.take() {
+                        spans.push(&text[begin..=index]);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    spans
+}
+
+/// Decide what a suggestion may become, under the task's cadence and the
+/// guardrails. Pure: the caller passes the history and the clock.
+///
+/// `ask` always records a suggestion for the user. `auto` applies one when the
+/// evidence is good enough to act without them — the run completed, the model is
+/// confident, and no suggestion has been applied in the last day — and falls
+/// back to recording it otherwise. Both cadences refuse a prompt that changes
+/// nothing, a repeat of today's suggestion, and a push back to the version the
+/// current prompt replaced (oscillation).
+pub fn decide_proposal(
+    task: &Task,
+    history: &[crate::types::PromptRevision],
+    run_status: crate::types::RunStatus,
+    proposal: &PromptProposal,
+    now_ms: i64,
+) -> ProposalAction {
+    use crate::types::{Reflection, RunStatus};
+    if task.reflection == Reflection::Off {
+        return ProposalAction::Skip("reflection is off");
+    }
+    if proposal.keep {
+        return ProposalAction::Skip("the prompt needs no change");
+    }
+    let suggested = proposal.prompt.trim();
+    if suggested.is_empty() || suggested == task.prompt.trim() {
+        return ProposalAction::Skip("the suggestion keeps the current prompt");
+    }
+    let same_suggestion_today = history.iter().any(|r| {
+        r.status == crate::types::REVISION_STATUS_PROPOSED
+            && r.prompt.trim() == suggested
+            && now_ms.saturating_sub(r.created_at) < REFLECTION_DUPLICATE_WINDOW_MS
+    });
+    if same_suggestion_today {
+        return ProposalAction::Skip("the same suggestion was already offered today");
+    }
+    // Oscillation: the newest recorded version that is *not* the one in force is
+    // the prompt this one replaced, so suggesting it back is a loop rather than
+    // an improvement.
+    let replaced = history
+        .iter()
+        .filter(|r| {
+            r.status != crate::types::REVISION_STATUS_PROPOSED && r.version != task.prompt_version
+        })
+        .max_by_key(|r| r.version);
+    if replaced.is_some_and(|previous| previous.prompt.trim() == suggested) {
+        return ProposalAction::Skip("that is the version the current prompt replaced");
+    }
+    if task.reflection == Reflection::Ask {
+        return ProposalAction::Propose;
+    }
+    // `auto`: act only on a run that finished, at a confidence the model stated,
+    // and at most once a day.
+    if run_status != RunStatus::Completed {
+        return ProposalAction::Propose;
+    }
+    if proposal.confidence < REFLECTION_AUTO_MIN_CONFIDENCE {
+        return ProposalAction::Propose;
+    }
+    let applied_recently = history.iter().any(|r| {
+        (r.status == crate::types::REVISION_STATUS_APPLIED
+            || (r.status == crate::types::REVISION_STATUS_ACTIVE
+                && r.source == crate::types::REVISION_SOURCE_REFLECTION))
+            && now_ms.saturating_sub(r.created_at) < REFLECTION_AUTO_INTERVAL_MS
+    });
+    if applied_recently {
+        return ProposalAction::Propose;
+    }
+    ProposalAction::Apply
+}
+
+/// The revision row that records a suggestion awaiting a decision.
+pub fn proposal_revision(
+    task: &Task,
+    proposal: &PromptProposal,
+    run_id: &str,
+    at_ms: i64,
+) -> crate::types::PromptRevision {
+    crate::types::PromptRevision {
+        id: crate::types::new_revision_id(),
+        task_id: task.id.clone(),
+        version: crate::types::PROPOSAL_VERSION,
+        prompt: proposal.prompt.clone(),
+        source: crate::types::REVISION_SOURCE_REFLECTION.to_string(),
+        status: crate::types::REVISION_STATUS_PROPOSED.to_string(),
+        reason: Some(proposal.reason.clone()),
+        confidence: Some(proposal.confidence),
+        source_run_id: Some(run_id.to_string()),
+        created_at: at_ms,
+    }
 }
 
 #[cfg(test)]
@@ -1266,5 +1559,396 @@ mod tests {
         assert_eq!(rows[0].version, 3, "the version being replaced");
         assert_eq!(rows[0].prompt, "third");
         assert_eq!(rows[1].version, 4);
+    }
+
+    /// A pending suggestion is not a version of the prompt: it must not make the
+    /// writer think the current version is already recorded.
+    #[test]
+    fn a_suggestion_does_not_hide_the_version_it_sits_on() {
+        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
+        t.prompt_version = 2;
+        t.prompt = "second".into();
+        let mut suggested = revision(2, "a suggestion about v2");
+        suggested.status = crate::types::REVISION_STATUS_PROPOSED.to_string();
+        suggested.source = crate::types::REVISION_SOURCE_REFLECTION.to_string();
+        let rows = prompt_change_revisions(&t, &[suggested], "third", "user", None, 5);
+        assert_eq!(
+            rows.len(),
+            2,
+            "history keeps the replaced version: {rows:?}"
+        );
+        assert_eq!(rows[0].version, 2);
+        assert_eq!(rows[0].prompt, "second");
+        assert_eq!(rows[0].status, crate::types::REVISION_STATUS_SUPERSEDED);
+    }
+
+    // ─── reflection ───────────────────────────────────────────────────────
+
+    fn finished_run(task_id: &str, status: RunStatus) -> crate::types::TaskRun {
+        crate::types::TaskRun {
+            id: "trn_1".into(),
+            task_id: task_id.into(),
+            kind: crate::types::RunKind::Main,
+            origin: crate::types::RunOrigin::Schedule,
+            actor: None,
+            due_at: Some(1_700_000_000_000),
+            status,
+            thread_id: Some("thr_1".into()),
+            session_id: Some("sess_1".into()),
+            run_id: None,
+            prompt_version: Some(3),
+            result_summary: Some("wrote reports/weekly.md".into()),
+            feedback: None,
+            feedback_note: None,
+            started_at: Some(1),
+            finished_at: Some(1_700_000_060_000),
+            error_message: None,
+        }
+    }
+
+    fn improve(prompt: &str, confidence: f64) -> PromptProposal {
+        PromptProposal {
+            keep: false,
+            prompt: prompt.into(),
+            reason: "the summary shape was underspecified".into(),
+            confidence,
+        }
+    }
+
+    #[test]
+    fn the_reflection_prompt_carries_the_run_and_demands_a_verdict() {
+        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
+        t.name = "weekly".into();
+        t.prompt_version = 3;
+        t.prompt = "Write the report.".into();
+        let mut run = finished_run(&t.id, RunStatus::Failed);
+        run.error_message = Some("no report was written".into());
+        run.feedback = Some("bad".into());
+        run.feedback_note = Some("the file went to the wrong folder".into());
+
+        let prompt = compose_reflection_prompt(&t, &run);
+        assert!(
+            prompt.starts_with(&format!(
+                "── {} ──\n",
+                crate::types::REFLECTION_SCHEMA_VERSION
+            )),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("task: weekly | id: tsk_test | prompt-version: 3"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("run: trn_1 | kind=main | status=failed"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("run settings: cwd=/tmp"), "{prompt}");
+        assert!(
+            prompt.contains("The prompt that produced this run:\nWrite the report."),
+            "{prompt}"
+        );
+        assert!(prompt.contains("wrote reports/weekly.md"), "{prompt}");
+        assert!(
+            prompt.contains("The run failed: no report was written"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("The user judged this run: bad — the file went to the wrong folder"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("Reply with only this JSON object"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("\"verdict\""), "{prompt}");
+    }
+
+    #[test]
+    fn the_reflection_prompt_says_so_when_there_is_nothing_to_report() {
+        let t = task(serde_json::json!({}), TriggerKind::Manual);
+        let mut run = finished_run(&t.id, RunStatus::Running);
+        run.result_summary = None;
+        run.finished_at = None;
+        run.feedback = None;
+        let prompt = compose_reflection_prompt(&t, &run);
+        assert!(prompt.contains("[no summary recorded]"), "{prompt}");
+        assert!(
+            !prompt.contains("finished="),
+            "no finish time is invented: {prompt}"
+        );
+        assert!(!prompt.contains("The run failed"), "{prompt}");
+        assert!(!prompt.contains("The user judged"), "{prompt}");
+    }
+
+    #[test]
+    fn a_reflection_reply_is_read_from_a_bare_object_a_fence_or_prose() {
+        let bare = r#"{"verdict":"improve","prompt":"Better prompt.","reason":"clearer","confidence":0.8}"#;
+        let proposal = parse_reflection(bare).expect("bare object");
+        assert!(!proposal.keep);
+        assert_eq!(proposal.prompt, "Better prompt.");
+        assert_eq!(proposal.reason, "clearer");
+        assert!((proposal.confidence - 0.8).abs() < f64::EPSILON);
+
+        let fenced = format!("Here is my answer:\n```json\n{bare}\n```\nThat is all.");
+        assert_eq!(parse_reflection(&fenced).expect("fenced"), proposal);
+
+        // Braces inside the prompt text must not cut the object short.
+        let nested = r#"{"verdict":"improve","prompt":"Write {a} then {b}. Say \"hi\".","reason":"json-safe","confidence":1}"#;
+        let nested = parse_reflection(nested).expect("nested braces");
+        assert_eq!(nested.prompt, "Write {a} then {b}. Say \"hi\".");
+    }
+
+    #[test]
+    fn the_last_complete_object_is_the_answer() {
+        // An explanation that quotes the requested shape first: the object the
+        // model actually filled in is the one at the end.
+        let reply = r#"The shape is {"verdict":"keep","prompt":"..."} and mine is:
+{"verdict":"improve","prompt":"Real answer.","reason":"because","confidence":0.5}"#;
+        let proposal = parse_reflection(reply).expect("answer");
+        assert_eq!(proposal.prompt, "Real answer.");
+        assert!((proposal.confidence - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_keep_verdict_and_odd_confidences_are_normalised() {
+        let keep = parse_reflection(
+            r#"{"verdict":"keep","prompt":"unchanged","reason":"fine as is","confidence":"0.9"}"#,
+        )
+        .expect("keep");
+        assert!(keep.keep);
+        assert_eq!(keep.confidence, 0.0, "a non-numeric confidence is 0");
+
+        // Clamped, and a missing confidence counts as none stated.
+        let high =
+            parse_reflection(r#"{"verdict":"improve","prompt":"P","reason":"r","confidence":4.2}"#)
+                .expect("clamped");
+        assert_eq!(high.confidence, 1.0);
+        let missing = parse_reflection(r#"{"verdict":"improve","prompt":"P"}"#).expect("missing");
+        assert_eq!(missing.confidence, 0.0);
+        assert_eq!(missing.reason, "");
+    }
+
+    #[test]
+    fn a_reply_without_a_verdict_is_not_a_proposal() {
+        assert_eq!(parse_reflection("I could not judge this run."), None);
+        assert_eq!(parse_reflection(r#"{"prompt":"P","reason":"r"}"#), None);
+        assert_eq!(
+            parse_reflection(r#"{"verdict":"improve","prompt":"{"#),
+            None
+        );
+    }
+
+    #[test]
+    fn ask_records_a_suggestion_and_auto_applies_a_strong_one() {
+        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
+        t.prompt = "the current prompt".into();
+        let history = vec![revision(1, "the current prompt")];
+
+        t.reflection = crate::types::Reflection::Ask;
+        assert_eq!(
+            decide_proposal(
+                &t,
+                &history,
+                RunStatus::Completed,
+                &improve("a better prompt", 0.99),
+                1_000
+            ),
+            ProposalAction::Propose,
+            "ask never changes the prompt on its own"
+        );
+
+        t.reflection = crate::types::Reflection::Auto;
+        assert_eq!(
+            decide_proposal(
+                &t,
+                &history,
+                RunStatus::Completed,
+                &improve("a better prompt", 0.99),
+                1_000
+            ),
+            ProposalAction::Apply
+        );
+    }
+
+    #[test]
+    fn nothing_is_recorded_for_a_kept_unchanged_or_disabled_prompt() {
+        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
+        t.prompt = "the current prompt".into();
+        let history = vec![revision(1, "the current prompt")];
+        let keep = PromptProposal {
+            keep: true,
+            prompt: "the current prompt".into(),
+            reason: "fine".into(),
+            confidence: 1.0,
+        };
+        assert_eq!(
+            decide_proposal(&t, &history, RunStatus::Completed, &keep, 1),
+            ProposalAction::Skip("the prompt needs no change")
+        );
+        // An `improve` verdict that returns the same text is the same answer.
+        assert_eq!(
+            decide_proposal(
+                &t,
+                &history,
+                RunStatus::Completed,
+                &improve("the current prompt", 1.0),
+                1
+            ),
+            ProposalAction::Skip("the suggestion keeps the current prompt")
+        );
+        assert_eq!(
+            decide_proposal(&t, &history, RunStatus::Completed, &improve("  ", 1.0), 1),
+            ProposalAction::Skip("the suggestion keeps the current prompt")
+        );
+        t.reflection = crate::types::Reflection::Off;
+        assert_eq!(
+            decide_proposal(
+                &t,
+                &history,
+                RunStatus::Completed,
+                &improve("a better prompt", 1.0),
+                1
+            ),
+            ProposalAction::Skip("reflection is off")
+        );
+    }
+
+    #[test]
+    fn the_same_suggestion_is_not_offered_twice_in_a_day() {
+        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
+        t.reflection = crate::types::Reflection::Ask;
+        t.prompt = "the current prompt".into();
+        let candidate = improve("a better prompt", 0.9);
+
+        let mut offered = revision(0, "a better prompt");
+        offered.status = crate::types::REVISION_STATUS_PROPOSED.to_string();
+        offered.created_at = 1_000;
+        let day = REFLECTION_DUPLICATE_WINDOW_MS;
+        assert_eq!(
+            decide_proposal(
+                &t,
+                &[offered.clone()],
+                RunStatus::Completed,
+                &candidate,
+                1_000 + day - 1
+            ),
+            ProposalAction::Skip("the same suggestion was already offered today")
+        );
+        // A day later it is worth offering again (the run may be different now).
+        assert_eq!(
+            decide_proposal(
+                &t,
+                &[offered],
+                RunStatus::Completed,
+                &candidate,
+                1_000 + day
+            ),
+            ProposalAction::Propose
+        );
+    }
+
+    #[test]
+    fn a_suggestion_back_to_the_replaced_version_is_refused() {
+        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
+        t.reflection = crate::types::Reflection::Ask;
+        t.prompt_version = 2;
+        t.prompt = "second".into();
+        let history = vec![revision(1, "first"), revision(2, "second")];
+        assert_eq!(
+            decide_proposal(
+                &t,
+                &history,
+                RunStatus::Completed,
+                &improve("first", 0.9),
+                1
+            ),
+            ProposalAction::Skip("that is the version the current prompt replaced")
+        );
+        // A brand-new third wording is a suggestion, not a loop.
+        assert_eq!(
+            decide_proposal(
+                &t,
+                &history,
+                RunStatus::Completed,
+                &improve("third", 0.9),
+                1
+            ),
+            ProposalAction::Propose
+        );
+    }
+
+    #[test]
+    fn auto_still_only_proposes_when_the_evidence_is_thin() {
+        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
+        t.reflection = crate::types::Reflection::Auto;
+        t.prompt = "the current prompt".into();
+        let history = vec![revision(1, "the current prompt")];
+
+        assert_eq!(
+            decide_proposal(
+                &t,
+                &history,
+                RunStatus::Failed,
+                &improve("a better prompt", 0.99),
+                1
+            ),
+            ProposalAction::Propose,
+            "a failed run's suggestion is offered, not applied"
+        );
+        assert_eq!(
+            decide_proposal(
+                &t,
+                &history,
+                RunStatus::Completed,
+                &improve("a better prompt", REFLECTION_AUTO_MIN_CONFIDENCE - 0.01),
+                1
+            ),
+            ProposalAction::Propose,
+            "below the confidence floor"
+        );
+
+        // One automatic change a day: yesterday's still counts, two days back does not.
+        let mut applied = revision(2, "an earlier suggestion");
+        applied.source = crate::types::REVISION_SOURCE_REFLECTION.to_string();
+        applied.status = crate::types::REVISION_STATUS_APPLIED.to_string();
+        applied.created_at = 1_000;
+        assert_eq!(
+            decide_proposal(
+                &t,
+                &[applied.clone()],
+                RunStatus::Completed,
+                &improve("a better prompt", 0.99),
+                1_000 + REFLECTION_AUTO_INTERVAL_MS - 1
+            ),
+            ProposalAction::Propose,
+            "a change was already applied today"
+        );
+        assert_eq!(
+            decide_proposal(
+                &t,
+                &[applied],
+                RunStatus::Completed,
+                &improve("a better prompt", 0.99),
+                1_000 + REFLECTION_AUTO_INTERVAL_MS
+            ),
+            ProposalAction::Apply
+        );
+    }
+
+    #[test]
+    fn a_suggestion_row_is_outside_the_version_sequence() {
+        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
+        t.prompt = "the current prompt".into();
+        t.prompt_version = 4;
+        let row = proposal_revision(&t, &improve("a better prompt", 0.6), "trn_9", 42);
+        assert_eq!(row.task_id, t.id);
+        assert_eq!(row.version, crate::types::PROPOSAL_VERSION);
+        assert_eq!(row.version, 0, "a suggestion is not a version yet");
+        assert_eq!(row.status, crate::types::REVISION_STATUS_PROPOSED);
+        assert_eq!(row.source, crate::types::REVISION_SOURCE_REFLECTION);
+        assert_eq!(row.source_run_id.as_deref(), Some("trn_9"));
+        assert_eq!(row.confidence, Some(0.6));
+        assert_eq!(row.created_at, 42);
+        assert!(row.reason.as_deref().is_some_and(|r| !r.is_empty()));
     }
 }

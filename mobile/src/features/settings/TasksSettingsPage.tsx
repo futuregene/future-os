@@ -392,6 +392,9 @@ export function TasksSettingsPage({ desktopOnline, settings }: {
                   <Pressable accessibilityRole="button" key={task.id} onPress={() => open(task.id)} style={styles.taskCard}>
                   <View style={styles.cardHeader}>
                     <Text style={styles.cardTitle} numberOfLines={1}>{task.name}</Text>
+                    {task.pendingProposals
+                      ? <Text style={styles.suggestionBadge}>{t("tasks.suggestionCount", { count: task.pendingProposals })}</Text>
+                      : null}
                     <Text style={settingsStyles.description}>
                       {task.queued
                         ? t("tasks.status.queued")
@@ -757,13 +760,25 @@ function TaskForm({
       {revisions.length > 0
         ? (
             <SettingsSection title={t("tasks.revisions")}>
-              {revisions.map(revision => (
-                <View key={revision.id} style={settingsStyles.card}>
-                  <Text style={settingsStyles.label}>{`v${revision.version} · ${t(`tasks.source.${revision.source}`)}`}</Text>
-                  <Text style={settingsStyles.description}>{revision.reason ?? revision.promptPreview}</Text>
-                  <Button label={t("tasks.apply")} disabled={busy} onPress={() => void onMutate?.(() => remote.applyTaskRevision(detail!.id, revision.id))} />
-                </View>
-              ))}
+              {revisions.map((revision) => {
+                // A suggestion is not a version yet: it has no version number,
+                // and applying it is what puts it in force (the row then reads
+                // "applied").
+                const proposed = revision.status === "proposed";
+                const confidence = revision.confidence != null
+                  ? ` · ${t("tasks.confidence", { value: Math.round(revision.confidence * 100) })}`
+                  : "";
+                const heading = proposed
+                  ? `${t("tasks.suggestion")} · ${t(`tasks.source.${revision.source}`)}${confidence}`
+                  : `v${revision.version} · ${t(`tasks.source.${revision.source}`)}${revision.status === "applied" ? ` · ${t("tasks.applied")}` : ""}`;
+                return (
+                  <View key={revision.id} style={settingsStyles.card}>
+                    <Text style={settingsStyles.label}>{heading}</Text>
+                    <Text style={settingsStyles.description}>{revision.reason ?? revision.promptPreview}</Text>
+                    <Button label={proposed ? t("tasks.applySuggestion") : t("tasks.apply")} disabled={busy} onPress={() => void onMutate?.(() => remote.applyTaskRevision(detail!.id, revision.id))} />
+                  </View>
+                );
+              })}
             </SettingsSection>
           )
         : null}
@@ -782,6 +797,7 @@ function modelKey(model: RemoteModel): string {
 const styles = StyleSheet.create({
   choice: { minHeight: layout.touchTarget, justifyContent: "center", paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
   choiceSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  suggestionBadge: { color: colors.accent, fontSize: 12, fontWeight: "600" },
   stack: { gap: spacing.md },
   taskCard: { gap: spacing.sm, padding: spacing.lg, borderWidth: 1, borderColor: colors.line, borderRadius: radius.lg, backgroundColor: colors.surface },
   cardHeader: { flexDirection: "row", alignItems: "center", gap: spacing.md },

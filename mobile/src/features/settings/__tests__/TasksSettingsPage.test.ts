@@ -798,6 +798,40 @@ test("falls back to a version's prompt, and keys a model without a provider", as
   expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({ modelId: "bare-model" }));
 });
 
+// A suggestion is not a version, it shows the confidence the pass reported,
+// and accepting it is the one action the phone can take on it.
+test("shows a prompt suggestion and applies it", async () => {
+  rows = [taskRow({ pendingProposals: 1 })];
+  revisions = [
+    { id: "rev_suggestion", version: 0, source: "reflection", status: "proposed", reason: "the output path was not stated", confidence: 0.82, createdAt: 2, promptPreview: "a better prompt" },
+  ];
+  await remount();
+  // The list row carries the count, so a suggestion is visible without opening
+  // the task.
+  expect(texts().some(text => String(text).includes("tasks.suggestionCount"))).toBe(true);
+
+  await act(async () => firstTask().props.onPress());
+  const shown = texts().map(String);
+  expect(shown.some(text => text.includes("tasks.suggestion"))).toBe(true);
+  expect(shown.some(text => text.includes("tasks.confidence"))).toBe(true);
+  expect(shown).toContain("the output path was not stated");
+  expect(shown.some(text => text.startsWith("v0"))).toBe(false);
+
+  await act(async () => button("tasks.applySuggestion").props.onPress());
+  expect(mockRemote.applyTaskRevision).toHaveBeenCalledWith("tsk_1", "rev_suggestion");
+});
+
+test("marks an accepted suggestion as applied", async () => {
+  revisions = [
+    { id: "rev_suggestion", version: 0, source: "reflection", status: "applied", reason: "clearer", confidence: 0.9, createdAt: 2, promptPreview: "a better prompt" },
+  ];
+  await remount();
+  await act(async () => firstTask().props.onPress());
+  const shown = texts().map(String);
+  expect(shown.some(text => text.includes("tasks.applied"))).toBe(true);
+  expect(button("tasks.applySuggestion")).toBeUndefined();
+});
+
 // Both halves of the dependency state, and a run that recorded no summary.
 test("reports a satisfied dependency and a run with no summary", async () => {
   deps = [{ upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "success", satisfied: true }];

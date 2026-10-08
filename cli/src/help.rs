@@ -264,10 +264,11 @@ Usage:
   future task remove <id|name> [--yes]              Soft-delete; runs are kept
   future task run <id|name> [--wait] [--timeout 15m] [--json]
   future task runs <id|name> [--limit N] [--json]
+  future task output <run-id> [--tail N] [--json]   A run's full answer
   future task feedback <run-id> good|bad [--note "…"]
   future task upstream|deps <id|name> [--json]     Dependency edges + progress
-  future task prompt log <id|name> [--json]         Prompt versions, newest first
-  future task prompt apply <id|name> <revision-id>  Make a version active again
+  future task prompt log <id|name> [--json]         Prompt versions + suggestions
+  future task prompt apply <id|name> <revision-id>  Apply a version or suggestion
   future task prompt revert <id|name>               Back to the previous version
 
 Triggers:
@@ -291,27 +292,39 @@ Dependencies:
 
 Session:
   --session new       Each run opens a new conversation (default).
-  --session existing  Reuse one conversation; context is compacted before
-                      each run (pre-compact failure fails the run).
+  --session existing  Reuse one conversation, so each run continues from what
+                      the previous ones did.
   --conversation workspace  File the conversation under the working directory
                             (default).
-  --conversation chat       Open it as a chat conversation instead.
+  --conversation chat       Open it as a chat conversation instead (it runs in
+                            the conversation's own temporary workspace, so
+                            --cwd is optional).
 
-Prompt versions:
+Prompt versions and suggestions:
   Editing a prompt (here or in the desktop) records a new version and keeps the
   one it replaced, so `prompt revert` can walk all the way back to the task's
   first prompt. Version source reads as: user (manual edit), reflection (a
-  proposed revision), rollback (a version re-applied), superseded (an outgoing
-  version kept for the history).
+  suggested or accepted revision), rollback (a version re-applied), superseded
+  (an outgoing version kept for the history).
 
-Reflection (prompt optimization suggestions):
+Reflection (prompt suggestions):
   --reflection off   Never reflect.
-  --reflection ask   Propose a revised prompt after each run (default).
-  --reflection auto  Apply proposals automatically when confidence is high.
-  NOTE: the proposal pass itself is not wired up yet — the setting is stored
-  and shown, and prompt versions are recorded for edits and applied revisions,
-  but nothing generates a proposal on its own. Treat `feedback` below as the
-  record a proposal would later be written from.
+  --reflection ask   Suggest a revised prompt after each run (default). The
+                     suggestion is listed by `prompt log` and applied with
+                     `prompt apply`; the prompt itself is not touched.
+  --reflection auto  Apply a suggestion automatically when the run completed
+                     and the model's confidence is at least 0.7, at most once
+                     a day.
+  A suggestion is not a version: it carries no version number until applied.
+  Both cadences refuse a suggestion that changes nothing, repeats the same
+  wording within a day, or walks back to the version the current prompt
+  replaced. The pass runs after the run it reflects on, in a conversation of
+  its own (archived, and linked from the run's ledger row).
+
+Reading a run:
+  `future task runs` lists the ledger (statuses, versions, summaries).
+  `future task output <run-id>` prints the full answer behind a summary, and
+  `feedback` records a verdict on a run — which the next suggestion pass reads.
 
 Execution:
   Runs are executed by the desktop (or headless desktop) tick loop, not by
