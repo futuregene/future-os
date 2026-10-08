@@ -25,6 +25,8 @@ export interface RemoteTaskRow {
   nextDueAt?: number | null;
   queued?: boolean;
   reflection: string;
+  /** Prompt suggestions awaiting a decision (absent on an older desktop). */
+  pendingProposals?: number;
   latestRun?: RemoteTaskRun | null;
 }
 

@@ -52,6 +52,7 @@ function task(overrides: Partial<TaskView> = {}): TaskView {
     nextDueAt: 1_000,
     queued: false,
     reflection: "ask",
+    pendingProposals: 0,
     latestRun: null,
     ...overrides,
   };

@@ -14,7 +14,7 @@ use serde_json::json;
 type Result<T> = std::result::Result<T, String>;
 
 /// `future task <command> [args]`.
-pub fn task(command: Option<&str>, rest: &[String], out: &Output) -> Result<()> {
+pub async fn task(command: Option<&str>, rest: &[String], out: &Output) -> Result<()> {
     match command {
         None | Some("--help" | "-h") => {
             out.log(help::TASK_HELP);
@@ -29,13 +29,109 @@ pub fn task(command: Option<&str>, rest: &[String], out: &Output) -> Result<()> 
         Some("remove") => remove(rest, out),
         Some("run") => run(rest, out),
         Some("runs") => runs(rest, out),
+        Some("output") => output(rest, out).await,
         Some("feedback") => feedback(rest, out),
         Some("upstream" | "deps") => upstream(rest, out),
         Some("prompt") => prompt(rest, out),
         Some(other) => Err(format!(
-            "Unknown argument: {other}\nUsage: future task [list|show|add|edit|enable|disable|remove|run|runs|feedback|upstream|prompt] …\nRun `future task --help` for details."
+            "Unknown argument: {other}\nUsage: future task [list|show|add|edit|enable|disable|remove|run|runs|output|feedback|upstream|prompt] …\nRun `future task --help` for details."
         )),
     }
+}
+
+/// `future task output <run-id>` — the full answer a run gave.
+///
+/// A run's ledger entry carries a truncated summary (the head and tail, 2000
+/// chars); this prints the conversation's actual last answer, which is what an
+/// agent reading an upstream result needs when the summary is not enough. The
+/// header names the run being read, because a task that reuses one conversation
+/// writes every run's answer into it — the *last* one is not necessarily the
+/// run that was asked for, and a reader who cannot tell would attribute the
+/// wrong answer to the wrong run.
+async fn output(args: &[String], out: &Output) -> Result<()> {
+    let json_flag = args.iter().any(|a| a == "--json");
+    let tail = flag_value(args, "--tail").and_then(|value| value.parse::<usize>().ok());
+    let run_id = args
+        .iter()
+        .find(|a| !a.starts_with('-'))
+        .ok_or_else(|| "usage: future task output <run-id> [--tail N] [--json]".to_string())?;
+    let store = open_store()?;
+    let run = store
+        .get_run(run_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("run not found: {run_id}"))?;
+    let task = store.get_task(&run.task_id).map_err(|e| e.to_string())?;
+    let session_id = run.session_id.clone().ok_or_else(|| {
+        format!(
+            "run {run_id} has no conversation (it {}).",
+            run.error_message
+                .as_deref()
+                .unwrap_or("failed before prompting")
+        )
+    })?;
+    let newer = store
+        .list_runs_for_task(&run.task_id, 200)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|other| {
+            other.session_id.as_deref() == Some(session_id.as_str())
+                && other.started_at.unwrap_or(0) > run.started_at.unwrap_or(0)
+        })
+        .max_by_key(|other| other.started_at.unwrap_or(0));
+    let text = crate::rpc::RunClient::new(&crate::rpc::grpc_addr())
+        .last_assistant_text(&session_id)
+        .await
+        .map_err(|error| format!("could not read the run's conversation: {error}"))?;
+
+    if json_flag {
+        out.log(
+            &serde_json::to_string_pretty(&json!({
+                "runId": run.id,
+                "taskId": run.task_id,
+                "task": task.as_ref().map(|t| t.name.clone()),
+                "status": format!("{:?}", run.status).to_lowercase(),
+                "promptVersion": run.prompt_version,
+                "sessionId": session_id,
+                "finishedAt": run.finished_at,
+                "summary": run.result_summary,
+                "text": text,
+                "newerRunOnSameConversation": newer.as_ref().map(|other| other.id.clone()),
+            }))
+            .map_err(|e| e.to_string())?,
+        );
+        return Ok(());
+    }
+
+    out.log(&format!(
+        "{} · run {} · {} · prompt v{} · session {}",
+        task.as_ref().map(|t| t.name.as_str()).unwrap_or("(task gone)"),
+        run.id,
+        format!("{:?}", run.status).to_lowercase(),
+        run.prompt_version
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "?".to_string()),
+        session_id
+    ));
+    if let Some(other) = newer {
+        out.log(&format!(
+            "note: this conversation was used again by run {}; the text below is its latest answer.",
+            other.id
+        ));
+    }
+    out.log("");
+    let body = tail.map_or_else(
+        || text.clone(),
+        |lines| {
+            let all: Vec<&str> = text.lines().collect();
+            all[all.len().saturating_sub(lines)..].join("\n")
+        },
+    );
+    if body.trim().is_empty() {
+        out.log("(the run's conversation has no assistant answer yet)");
+    } else {
+        out.log(&body);
+    }
+    Ok(())
 }
 
 /// `future task prompt <log|apply|revert> …`.
@@ -1050,9 +1146,15 @@ fn prompt_log(args: &[String], out: &Output) -> Result<()> {
             .map(|r| {
                 json!({
                     "id": r.id,
+                    // A suggestion is not a version yet: it carries
+                    // `PROPOSAL_VERSION` (0) until it is applied.
                     "version": r.version,
                     "source": r.source,
+                    "status": r.status,
+                    "proposed": r.status == future_tasks::REVISION_STATUS_PROPOSED,
                     "reason": r.reason,
+                    "confidence": r.confidence,
+                    "sourceRunId": r.source_run_id,
                     "active": r.version == task.prompt_version,
                     "createdAt": r.created_at,
                 })
@@ -1061,24 +1163,52 @@ fn prompt_log(args: &[String], out: &Output) -> Result<()> {
         out.log(&serde_json::to_string_pretty(&items).map_err(|e| e.to_string())?);
         return Ok(());
     }
-    if revisions.is_empty() {
+    let (suggestions, versions): (Vec<_>, Vec<_>) = revisions
+        .iter()
+        .partition(|r| r.status == future_tasks::REVISION_STATUS_PROPOSED);
+    out.log(&format!("{} — active v{}", task.name, task.prompt_version));
+    if !suggestions.is_empty() {
+        // A suggestion has no version and no effect until it is applied, so it
+        // is listed on its own with the exact command that accepts it — a
+        // proposal nobody can act on is the same as no proposal.
+        out.log("Suggestions (not applied):");
+        for r in &suggestions {
+            let confidence = r
+                .confidence
+                .map(|c| format!("confidence {c:.2}"))
+                .unwrap_or_else(|| "confidence ?".to_string());
+            out.log(&format!(
+                "  {:<16} {:<14} {:<16} {}",
+                r.id,
+                confidence,
+                format_ms(Some(r.created_at)),
+                r.reason.as_deref().unwrap_or("-")
+            ));
+            out.log(&format!(
+                "    apply with: future task prompt apply {} {}",
+                task.id, r.id
+            ));
+        }
+    }
+    if versions.is_empty() {
         out.log(&format!(
-            "{} has only its original prompt (v{}).",
-            task.name, task.prompt_version
+            "  only its original prompt (v{}) has been in force.",
+            task.prompt_version
         ));
         return Ok(());
     }
-    out.log(&format!("{} — active v{}", task.name, task.prompt_version));
-    let mut ordered = revisions;
+    let mut ordered: Vec<&future_tasks::PromptRevision> = versions;
     ordered.sort_by_key(|r| -r.version);
     for r in ordered {
         let mark = if r.version == task.prompt_version {
             "active"
+        } else if r.status == future_tasks::REVISION_STATUS_APPLIED {
+            "applied"
         } else {
             "      "
         };
         out.log(&format!(
-            "  v{:<4} {mark} {:<10} {:<16} {}",
+            "  v{:<4} {mark:<7} {:<11} {:<16} {}",
             r.version,
             r.source,
             format_ms(Some(r.created_at)),
@@ -1106,15 +1236,29 @@ fn prompt_apply(args: &[String], out: &Output) -> Result<()> {
         .find(|r| &r.id == *revision_id)
         .ok_or_else(|| format!("revision not found: {revision_id}"))?;
     let history = store.list_revisions(&task.id).map_err(|e| e.to_string())?;
+    // Applying a suggestion *is* accepting it: the version that goes live is
+    // recorded as coming from reflection (with the suggestion's own reason),
+    // and the suggestion itself is marked applied rather than left pending.
+    let is_suggestion = revision.status == future_tasks::REVISION_STATUS_PROPOSED;
+    let source = if is_suggestion {
+        future_tasks::REVISION_SOURCE_REFLECTION
+    } else {
+        future_tasks::REVISION_SOURCE_ROLLBACK
+    };
+    let reason = if is_suggestion {
+        revision.reason.clone()
+    } else {
+        Some(format!(
+            "applied revision {} (v{})",
+            revision_id, revision.version
+        ))
+    };
     let rows = future_tasks::prompt_change_revisions(
         &task,
         &history,
         &revision.prompt,
-        "rollback",
-        Some(&format!(
-            "applied revision {} (v{})",
-            revision_id, revision.version
-        )),
+        source,
+        reason.as_deref(),
         now_ms(),
     );
     let Some(applied) = rows.last() else {
@@ -1126,6 +1270,11 @@ fn prompt_apply(args: &[String], out: &Output) -> Result<()> {
     };
     for row in &rows {
         store.insert_revision(row).map_err(|e| e.to_string())?;
+    }
+    if is_suggestion {
+        store
+            .set_revision_status(&task.id, &revision.id, future_tasks::REVISION_STATUS_APPLIED)
+            .map_err(|e| e.to_string())?;
     }
     let previous = task.prompt_version;
     task.prompt = applied.prompt.clone();
@@ -1505,6 +1654,10 @@ mod tests {
             (vec!["upstream", "t"], true),
             (vec!["deps", "t"], true),
             (vec!["upstream"], false),
+            (vec!["output"], false),
+            // A run id that does not exist is still a usage-level failure, not a
+            // panic: `output` reads the ledger before it touches the agent.
+            (vec!["output", "trn_missing"], false),
             (vec!["feedback"], false),
             (vec!["prompt"], false),
             (vec!["prompt", "log", "t"], true),
@@ -1519,11 +1672,11 @@ mod tests {
             let (out, _captured) = Output::memory();
             let sub = values.first().copied().unwrap_or("list");
             let rest: Vec<String> = values.iter().skip(1).map(|v| (*v).to_string()).collect();
-            let result = task(Some(sub), &rest, &out);
-            assert_eq!(result.is_ok(), expect_ok, "{values:?}: {result:?}");
+            let result = task(Some(sub), &rest, &out).await;
+            assert_eq!(result.is_ok(), expect_ok, "{values:?}");
         }
         let (out, captured) = Output::memory();
-        task(None, &[], &out).unwrap();
+        task(None, &[], &out).await.unwrap();
         assert!(text(captured.out).contains("future task — manage FutureOS tasks"));
     }
 
@@ -2252,7 +2405,7 @@ mod tests {
     fn the_help_text_and_the_dispatcher_list_the_same_commands() {
         // Every subcommand `task()` can route, including the aliases.
         let dispatched: std::collections::BTreeSet<&str> = [
-            "list", "show", "add", "edit", "enable", "disable", "remove", "run", "runs",
+            "list", "show", "add", "edit", "enable", "disable", "remove", "run", "runs", "output",
             "feedback", "upstream", "deps", "prompt",
         ]
         .into_iter()
@@ -3159,5 +3312,207 @@ mod tests {
         assert_eq!(parse_duration_minutes("30"), None);
         assert_eq!(parse_duration_minutes("m"), None);
         assert_eq!(parse_duration_minutes("30x"), None);
+    }
+
+    /// A suggestion is not a version, and it is useless until the user can
+    /// accept it: `prompt log` lists it separately with the command that does.
+    #[tokio::test]
+    async fn prompt_log_lists_a_suggestion_with_the_command_that_applies_it() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&[
+                "--name",
+                "suggested",
+                "--prompt",
+                "the current prompt",
+                "--cwd",
+                "/tmp",
+            ]),
+            &setup,
+        )
+        .unwrap();
+        // A suggestion as the reflection pass writes it: outside the version
+        // sequence, with the confidence and the run it came from.
+        let store = open_store().unwrap();
+        let task = find_task(&store, "suggested").unwrap();
+        let row = future_tasks::PromptRevision {
+            id: "rev_suggestion".to_string(),
+            task_id: task.id.clone(),
+            version: future_tasks::PROPOSAL_VERSION,
+            prompt: "a better prompt".to_string(),
+            source: future_tasks::REVISION_SOURCE_REFLECTION.to_string(),
+            status: future_tasks::REVISION_STATUS_PROPOSED.to_string(),
+            reason: Some("the output path was not stated".to_string()),
+            confidence: Some(0.82),
+            source_run_id: Some("trn_1".to_string()),
+            created_at: now_ms(),
+        };
+        store.insert_revision(&row).unwrap();
+
+        let (out, captured) = Output::memory();
+        prompt_log(&args(&["suggested"]), &out).unwrap();
+        let shown = text(captured.out);
+        assert!(shown.contains("Suggestions (not applied)"), "{shown}");
+        assert!(shown.contains("confidence 0.82"), "{shown}");
+        assert!(shown.contains("the output path was not stated"), "{shown}");
+        assert!(
+            shown.contains("future task prompt apply tsk_") && shown.contains("rev_suggestion"),
+            "the suggestion names the command that applies it: {shown}"
+        );
+        assert!(!shown.contains("v0"), "a suggestion has no version: {shown}");
+
+        let (out, captured) = Output::memory();
+        prompt_log(&args(&["suggested", "--json"]), &out).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text(captured.out)).unwrap();
+        assert_eq!(parsed[0]["proposed"], true);
+        assert_eq!(parsed[0]["confidence"], 0.82);
+        assert_eq!(parsed[0]["sourceRunId"], "trn_1");
+    }
+
+    /// Accepting a suggestion is what puts it in force — and the history says
+    /// where it came from, with the suggestion itself marked as applied.
+    #[tokio::test]
+    async fn applying_a_suggestion_makes_it_the_prompt_and_marks_it_applied() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&[
+                "--name",
+                "accepts",
+                "--prompt",
+                "the current prompt",
+                "--cwd",
+                "/tmp",
+            ]),
+            &setup,
+        )
+        .unwrap();
+        let store = open_store().unwrap();
+        let task = find_task(&store, "accepts").unwrap();
+        store
+            .insert_revision(&future_tasks::PromptRevision {
+                id: "rev_suggestion".to_string(),
+                task_id: task.id.clone(),
+                version: future_tasks::PROPOSAL_VERSION,
+                prompt: "a better prompt".to_string(),
+                source: future_tasks::REVISION_SOURCE_REFLECTION.to_string(),
+                status: future_tasks::REVISION_STATUS_PROPOSED.to_string(),
+                reason: Some("clearer".to_string()),
+                confidence: Some(0.9),
+                source_run_id: Some("trn_1".to_string()),
+                created_at: now_ms(),
+            })
+            .unwrap();
+
+        let (out, captured) = Output::memory();
+        prompt_apply(&args(&["accepts", "rev_suggestion"]), &out).unwrap();
+        let shown = text(captured.out.clone());
+        assert!(shown.contains("now runs v2 (was v1)"), "{shown}");
+
+        let store = open_store().unwrap();
+        let stored = find_task(&store, "accepts").unwrap();
+        assert_eq!(stored.prompt, "a better prompt");
+        let revisions = store.list_revisions(&stored.id).unwrap();
+        let suggestion = revisions
+            .iter()
+            .find(|r| r.id == "rev_suggestion")
+            .unwrap();
+        assert_eq!(suggestion.status, future_tasks::REVISION_STATUS_APPLIED);
+        let live = revisions
+            .iter()
+            .find(|r| r.version == stored.prompt_version)
+            .unwrap();
+        assert_eq!(live.status, future_tasks::REVISION_STATUS_ACTIVE);
+        assert_eq!(live.source, future_tasks::REVISION_SOURCE_REFLECTION);
+        assert_eq!(live.reason.as_deref(), Some("clearer"));
+        // The version it replaced is kept, so the loop is reversible.
+        assert!(revisions
+            .iter()
+            .any(|r| r.prompt == "the current prompt"
+                && r.status == future_tasks::REVISION_STATUS_SUPERSEDED));
+    }
+
+    /// `future task output` reads the run's conversation through the agent, and
+    /// says which run the text belongs to — a reused conversation holds every
+    /// run's answer, so an unlabelled text would be attributed to the wrong one.
+    #[tokio::test]
+    async fn output_prints_a_runs_full_answer_with_its_identity() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let agent = crate::test_server::MockAgent::respond(
+            "get_last_assistant_text",
+            &serde_json::json!({ "text": "the whole answer\nsecond line" }).to_string(),
+        );
+        let addr = crate::test_server::spawn_mock(agent.clone()).await;
+        let _env = EnvGuard::set(&[("FUTURE_AGENT_GRPC_ADDR", std::ffi::OsString::from(addr))]);
+
+        let (setup, _c) = Output::memory();
+        add(
+            &args(&["--name", "reads", "--prompt", "p", "--cwd", "/tmp"]),
+            &setup,
+        )
+        .unwrap();
+        let store = open_store().unwrap();
+        let task = find_task(&store, "reads").unwrap();
+        store
+            .insert_run(&future_tasks::TaskRun {
+                id: "trn_read".to_string(),
+                task_id: task.id.clone(),
+                kind: future_tasks::RunKind::Manual,
+                origin: future_tasks::RunOrigin::Cli,
+                actor: None,
+                due_at: None,
+                status: future_tasks::RunStatus::Completed,
+                thread_id: Some("thr_1".to_string()),
+                session_id: Some("sess_1".to_string()),
+                run_id: None,
+                prompt_version: Some(1),
+                result_summary: Some("truncated…".to_string()),
+                feedback: None,
+                feedback_note: None,
+                started_at: Some(1_000),
+                finished_at: Some(2_000),
+                error_message: None,
+            })
+            .unwrap();
+
+        let (out, captured) = Output::memory();
+        output(&args(&["trn_read"]), &out).await.unwrap();
+        let shown = text(captured.out);
+        assert!(shown.contains("reads · run trn_read · completed"), "{shown}");
+        assert!(shown.contains("session sess_1"), "{shown}");
+        assert!(shown.contains("the whole answer"), "{shown}");
+        assert_eq!(
+            agent.seen_of("get_last_assistant_text")[0].session_id,
+            "sess_1",
+            "the run's own conversation is read"
+        );
+
+        // `--tail` is for reading the end of a long answer.
+        let (out, captured) = Output::memory();
+        output(&args(&["trn_read", "--tail", "1"]), &out)
+            .await
+            .unwrap();
+        let shown = text(captured.out);
+        assert!(shown.trim_end().ends_with("second line"), "{shown}");
+        assert!(!shown.contains("the whole answer"), "{shown}");
+
+        // A run with no conversation (it failed before prompting) is a message,
+        // not a panic, and the CLI does not call the agent for it.
+        let store = open_store().unwrap();
+        let mut orphan = store.get_run("trn_read").unwrap().unwrap();
+        orphan.id = "trn_orphan".to_string();
+        orphan.session_id = None;
+        orphan.error_message = Some("agent unreachable".to_string());
+        store.insert_run(&orphan).unwrap();
+        let (out, _c) = Output::memory();
+        let error = output(&args(&["trn_orphan"]), &out).await.unwrap_err();
+        assert!(error.contains("has no conversation"), "{error}");
+        assert!(error.contains("agent unreachable"), "{error}");
+        assert_eq!(agent.seen_of("get_last_assistant_text").len(), 2);
+        let _ = home;
     }
 }

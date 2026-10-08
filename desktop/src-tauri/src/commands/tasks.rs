@@ -52,6 +52,8 @@ pub struct TaskView {
     /// An explicit request is waiting for the tick (the task was busy).
     pub queued: bool,
     pub reflection: String,
+    /// Prompt suggestions awaiting a decision (0 when there are none).
+    pub pending_proposals: usize,
     pub latest_run: Option<RunView>,
 }
 
@@ -95,6 +97,17 @@ fn task_view(store: &Store, task: Task) -> TaskView {
         .ok()
         .flatten()
         .map(run_view);
+    // Counted here rather than stored: a suggestion is a row in the revision
+    // history, and a count that can disagree with the history is worse than no
+    // count (the badge would outlive the suggestion it announces).
+    let pending_proposals = store
+        .list_revisions(&task.id)
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| row.status == future_tasks::REVISION_STATUS_PROPOSED)
+                .count()
+        })
+        .unwrap_or(0);
     TaskView {
         id: task.id,
         name: task.name,
@@ -112,6 +125,7 @@ fn task_view(store: &Store, task: Task) -> TaskView {
         next_due_at: task.next_due_at,
         queued: task.pending_request_at.is_some(),
         reflection: format!("{:?}", task.reflection).to_lowercase(),
+        pending_proposals,
         latest_run,
     }
 }
@@ -494,15 +508,29 @@ pub fn apply_task_revision(id: String, revision_id: String) -> Result<TaskView, 
         .find(|r| r.id == revision_id)
         .ok_or_else(|| crate::AppError::Message("revision not found".to_string()))?
         .clone();
+    // A suggestion is accepted by applying it: the version that goes live is
+    // recorded as coming from reflection (carrying the suggestion's own reason),
+    // and the suggestion itself is marked applied instead of staying pending.
+    let is_suggestion = revision.status == future_tasks::REVISION_STATUS_PROPOSED;
+    let source = if is_suggestion {
+        future_tasks::REVISION_SOURCE_REFLECTION
+    } else {
+        future_tasks::REVISION_SOURCE_ROLLBACK
+    };
+    let reason = if is_suggestion {
+        revision.reason.clone()
+    } else {
+        Some(format!(
+            "applied revision {} (v{})",
+            revision_id, revision.version
+        ))
+    };
     let rows = future_tasks::prompt_change_revisions(
         &task,
         &history,
         &revision.prompt,
-        "rollback",
-        Some(&format!(
-            "applied revision {} (v{})",
-            revision_id, revision.version
-        )),
+        source,
+        reason.as_deref(),
         now_ms(),
     );
     let Some(applied) = rows.last() else {
@@ -513,6 +541,11 @@ pub fn apply_task_revision(id: String, revision_id: String) -> Result<TaskView, 
     for row in &rows {
         store
             .insert_revision(row)
+            .map_err(|e| crate::AppError::Message(e.to_string()))?;
+    }
+    if is_suggestion {
+        store
+            .set_revision_status(&id, &revision_id, future_tasks::REVISION_STATUS_APPLIED)
             .map_err(|e| crate::AppError::Message(e.to_string()))?;
     }
     task.prompt = applied.prompt.clone();
@@ -685,6 +718,70 @@ mod tests {
             list_task_revisions(created.id).expect("revisions").len(),
             after.len()
         );
+    }
+
+    /// A suggestion is counted for the list, and accepting it is what makes it
+    /// a version: the row that carried it is marked applied, the version that
+    /// goes live says where it came from, and the count drops to zero.
+    #[test]
+    fn a_suggestion_is_counted_and_accepting_it_marks_it_applied() {
+        let _home = init("cmd_tasks_suggestion");
+        let created = create_task(input("suggests")).expect("create");
+        assert_eq!(created.pending_proposals, 0, "nothing suggested yet");
+
+        let store = open().expect("store");
+        store
+            .insert_revision(&future_tasks::PromptRevision {
+                id: "rev_suggestion".into(),
+                task_id: created.id.clone(),
+                version: future_tasks::PROPOSAL_VERSION,
+                prompt: "a better prompt".into(),
+                source: future_tasks::REVISION_SOURCE_REFLECTION.into(),
+                status: future_tasks::REVISION_STATUS_PROPOSED.into(),
+                reason: Some("the output path was not stated".into()),
+                confidence: Some(0.82),
+                source_run_id: Some("trn_1".into()),
+                created_at: now_ms(),
+            })
+            .unwrap();
+
+        // The list carries the count so the panel can badge the row without the
+        // detail round-trip.
+        let listed = list_tasks().expect("list");
+        assert_eq!(listed[0].pending_proposals, 1);
+
+        let applied =
+            apply_task_revision(created.id.clone(), "rev_suggestion".into()).expect("apply");
+        assert_eq!(applied.prompt_version, 2);
+        assert_eq!(applied.pending_proposals, 0, "it is decided now");
+
+        let revisions = list_task_revisions(created.id.clone()).expect("revisions");
+        let suggestion = revisions
+            .iter()
+            .find(|r| r.id == "rev_suggestion")
+            .expect("the suggestion row");
+        assert_eq!(suggestion.status, future_tasks::REVISION_STATUS_APPLIED);
+        let live = revisions
+            .iter()
+            .find(|r| r.version == applied.prompt_version)
+            .expect("the live version");
+        assert_eq!(live.source, future_tasks::REVISION_SOURCE_REFLECTION);
+        assert_eq!(
+            live.reason.as_deref(),
+            Some("the output path was not stated")
+        );
+        assert!(
+            revisions
+                .iter()
+                .any(|r| r.status == future_tasks::REVISION_STATUS_SUPERSEDED),
+            "the replaced version stays in the history"
+        );
+        // The accepted suggestion keeps its own identity (a version-less row)
+        // rather than being renumbered into the version sequence: it is the
+        // record of what was suggested, and the version it produced is its own
+        // row.
+        assert_eq!(suggestion.version, future_tasks::PROPOSAL_VERSION);
+        assert_ne!(live.version, future_tasks::PROPOSAL_VERSION);
     }
 
     #[test]

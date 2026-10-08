@@ -36,6 +36,8 @@ export interface TaskView {
   /** An explicit request is waiting for the tick (the task was busy). */
   queued: boolean;
   reflection: string;
+  /** Prompt suggestions awaiting a decision (0 when there are none). */
+  pendingProposals: number;
   latestRun: TaskRunView | null;
 }
 

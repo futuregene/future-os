@@ -294,6 +294,13 @@ export function TasksView({
                 <span className="flex items-center gap-2">
                   <span className={`size-1.5 shrink-0 rounded-full ${task.enabled ? "bg-accent" : "bg-line"}`} />
                   <span className="min-w-0 flex-1 truncate text-sm text-ink">{task.name}</span>
+                  {task.pendingProposals > 0
+                    ? (
+                        <span className="shrink-0 rounded-full bg-accent-soft px-1.5 py-0.5 text-[11px] font-semibold leading-none text-accent">
+                          {t("suggestionCount", { count: task.pendingProposals })}
+                        </span>
+                      )
+                    : null}
                   {status
                     ? <span className={`shrink-0 text-xs ${task.queued ? "text-accent" : "text-ink-muted"}`}>{status}</span>
                     : null}
@@ -783,33 +790,71 @@ function TaskDetail({
           ? <p className="pl-3.5 text-xs text-ink-muted">{t("revisionsNone")}</p>
           : (
               <ul className="divide-y divide-line-soft overflow-hidden rounded-md border border-line-soft">
-                {revisions.map(revision => (
-                  // Version rows follow the same two-line shape as runs and
-                  // dependencies: a fixed column would drift as soon as one
-                  // locale's source label is wider than the other's.
-                  <li key={revision.id} className="space-y-1.5 px-3.5 py-3">
-                    <div className="flex items-center gap-2 text-xs">
-                      <span className="text-ink-muted">
-                        v
-                        {revision.version}
-                      </span>
-                      <span aria-hidden className="text-line">·</span>
-                      <span className="text-ink">{t(`source.${revision.source}`)}</span>
-                      <span className="min-w-0 flex-1" />
-                      <Button
-                        leftIcon={<RotateCcw className="size-3" />}
-                        size="xs"
-                        variant="ghost"
-                        onClick={() => void store.applyRevision(task.id, revision.id).then(refresh)}
-                      >
-                        {t("apply")}
-                      </Button>
-                    </div>
-                    <p className="text-[11px] text-ink-muted">
-                      {revision.reason ?? t("revisionsNoReason")}
-                    </p>
-                  </li>
-                ))}
+                {revisions.map((revision) => {
+                  // A suggestion is not a version yet: it has no version
+                  // number, it is marked as such, and applying it is what puts
+                  // it in force (the row then reads "applied").
+                  const proposed = revision.status === "proposed";
+                  const applied = revision.status === "applied";
+                  return (
+                    // Version rows follow the same two-line shape as runs and
+                    // dependencies: a fixed column would drift as soon as one
+                    // locale's source label is wider than the other's.
+                    <li key={revision.id} className="space-y-1.5 px-3.5 py-3">
+                      <div className="flex items-center gap-2 text-xs">
+                        {proposed
+                          ? (
+                              <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[11px] font-semibold leading-none text-accent">
+                                {t("suggestion")}
+                              </span>
+                            )
+                          : (
+                              <span className="text-ink-muted">
+                                v
+                                {revision.version}
+                              </span>
+                            )}
+                        <span aria-hidden className="text-line">·</span>
+                        <span className="text-ink">{t(`source.${revision.source}`)}</span>
+                        {revision.confidence != null
+                          ? (
+                              <span className="text-ink-muted">
+                                {t("confidence", { value: Math.round(revision.confidence * 100) })}
+                              </span>
+                            )
+                          : null}
+                        {applied
+                          ? <span className="text-ink-muted">{t("applied")}</span>
+                          : null}
+                        <span className="min-w-0 flex-1" />
+                        {proposed
+                          ? (
+                              <Button
+                                leftIcon={<RotateCcw className="size-3" />}
+                                size="xs"
+                                variant="secondary"
+                                onClick={() => void store.applyRevision(task.id, revision.id).then(refresh)}
+                              >
+                                {t("applySuggestion")}
+                              </Button>
+                            )
+                          : (
+                              <Button
+                                leftIcon={<RotateCcw className="size-3" />}
+                                size="xs"
+                                variant="ghost"
+                                onClick={() => void store.applyRevision(task.id, revision.id).then(refresh)}
+                              >
+                                {t("apply")}
+                              </Button>
+                            )}
+                      </div>
+                      <p className="text-[11px] text-ink-muted">
+                        {revision.reason ?? t("revisionsNoReason")}
+                      </p>
+                    </li>
+                  );
+                })}
               </ul>
             )}
       </section>

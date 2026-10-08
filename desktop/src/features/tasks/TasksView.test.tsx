@@ -61,6 +61,7 @@ function task(overrides: Partial<TaskView> = {}): TaskView {
     nextDueAt: 1_700_000_000_000,
     queued: false,
     reflection: "ask",
+    pendingProposals: 0,
     latestRun: null,
     ...overrides,
   };
@@ -117,7 +118,7 @@ afterEach(() => {
  * Route each command to a canned answer. `list_tasks` is served from a mutable
  * array so a mutation can be observed the way the real backend would report it.
  */
-function backend(tasks: TaskView[], runs: TaskRunView[] = [run()]) {
+function backend(tasks: TaskView[], runs: TaskRunView[] = [run()], revisions: unknown[] = [defaultRevision()]) {
   mocks.invokeCommand.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
     switch (command) {
       case "list_tasks":
@@ -129,32 +130,39 @@ function backend(tasks: TaskView[], runs: TaskRunView[] = [run()]) {
           ? [{ upstreamTaskId: "tsk_up", upstreamName: "upstream", on: "success", satisfied: false }]
           : [];
       case "list_task_revisions":
-        return args?.id === "tsk_1"
-          ? [
-              {
-                id: "rev_2",
-                version: 2,
-                prompt: "newer prompt",
-                source: "reflection",
-                status: "active",
-                reason: "shorter",
-                confidence: 0.8,
-                createdAt: 2,
-              },
-            ]
-          : [];
+        return args?.id === "tsk_1" ? revisions : [];
       default:
         return undefined;
     }
   });
 }
 
+/** A stored prompt version with its source. */
+function revision(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "rev_2",
+    version: 2,
+    prompt: "newer prompt",
+    source: "reflection",
+    status: "active",
+    reason: "shorter",
+    confidence: 0.8,
+    createdAt: 2,
+    ...overrides,
+  };
+}
+
+function defaultRevision() {
+  return revision();
+}
+
 async function renderView(
   tasks: TaskView[] = [task()],
   onOpenThread = vi.fn(),
   modelOptions: AgentModelOption[] = MODELS,
+  revisions: unknown[] = [defaultRevision()],
 ) {
-  backend(tasks);
+  backend(tasks, [run()], revisions);
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -402,6 +410,61 @@ describe("tasksView", () => {
       id: "tsk_1",
       revisionId: "rev_2",
     });
+  });
+
+  // A suggestion is the one thing on this page the user has to act on, so it is
+  // labelled as a suggestion (not a version), it shows the confidence the pass
+  // reported, and the row offers a button that says what it does.
+  it("shows a prompt suggestion with its confidence and how to accept it", async () => {
+    const { container } = await renderView(
+      [task({ pendingProposals: 1 })],
+      vi.fn(),
+      MODELS,
+      [
+        revision({
+          id: "rev_suggestion",
+          version: 0,
+          status: "proposed",
+          source: "reflection",
+          reason: "the output path was not stated",
+          confidence: 0.82,
+        }),
+        revision({ id: "rev_1", version: 1, status: "active", source: "user", confidence: null }),
+      ],
+    );
+
+    // The list row carries a count, so a suggestion is visible without opening
+    // the task.
+    expect(rows(container)[0]?.textContent ?? "").toContain("1 suggestion");
+
+    await click(rows(container)[0]);
+    const text = container.textContent ?? "";
+    expect(text).toContain("Suggestion");
+    expect(text).toContain("confidence 82%");
+    expect(text).toContain("the output path was not stated");
+    expect(text).not.toContain("v0");
+
+    mocks.invokeCommand.mockClear();
+    await click(buttonByText(container, "Use suggestion"));
+    expect(mocks.invokeCommand).toHaveBeenCalledWith("apply_task_revision", {
+      id: "tsk_1",
+      revisionId: "rev_suggestion",
+    });
+  });
+
+  it("marks an accepted suggestion as applied", async () => {
+    const { container } = await renderView(
+      [task()],
+      vi.fn(),
+      MODELS,
+      [revision({ id: "rev_suggestion", version: 0, status: "applied", confidence: 0.9 })],
+    );
+    await click(rows(container)[0]);
+    const text = container.textContent ?? "";
+    // It is no longer a version, and it is no longer pending: both facts are on
+    // the row, so the history says what happened to it.
+    expect(text).toContain("Applied");
+    expect(buttonByText(container, "Use suggestion")).toBeUndefined();
   });
 
   it("creates a chat task that needs no directory", async () => {
