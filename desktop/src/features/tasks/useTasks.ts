@@ -37,9 +37,6 @@ export interface TaskView {
   nextDueAt: number | null;
   /** An explicit request is waiting for the tick (the task was busy). */
   queued: boolean;
-  reflection: string;
-  /** Prompt suggestions awaiting a decision (0 when there are none). */
-  pendingProposals: number;
   latestRun: TaskRunView | null;
 }
 
@@ -51,7 +48,6 @@ export interface TaskInput {
   thinkingLevel?: string | null;
   sessionPolicy?: string;
   conversationMode?: string;
-  reflection?: string;
   triggerKind?: string;
   trigger?: Record<string, unknown>;
   depJoin?: string;
@@ -79,8 +75,6 @@ export interface TaskRevisionView {
   status: string;
   reason: string | null;
   confidence: number | null;
-  /** The run a suggestion read; the detail groups it under that run. */
-  sourceRunId: string | null;
   createdAt: number;
 }
 

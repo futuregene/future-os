@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { ScrollView, SectionList, StyleSheet, Switch, Text, TextInput } from "react-native";
 import { Button } from "../../../components/Button";
-import { SettingsScreen } from "../SettingsScreen";
+import { SettingsScreen, type SettingsScreenHandle } from "../SettingsScreen";
 import { SettingsLink, SettingsSwitch, settingsStyles } from "../SettingsPrimitives";
 import type { DesktopSettings, InstalledSkill, ProvidersView } from "../../../remote/types";
 
@@ -34,14 +34,19 @@ const mockRemote = {
 };
 jest.mock("../../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
 jest.mock("../../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
-jest.mock("../TasksSettingsPage", () => ({ TasksSettingsPage: (props: { desktopOnline: boolean; settings: unknown }) => { tasksPageProps = props; return null; } }));
+jest.mock("../TasksSettingsPage", () => ({ TasksSettingsPage: (props: { desktopOnline: boolean; settings: unknown }) => { tasksPageProps = props as never; return null; } }));
 jest.mock("lucide-react-native", () => ({ ArrowLeft: "ArrowLeft", Monitor: "Monitor", ChevronDown: "ChevronDown", ChevronRight: "ChevronRight" }));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string, options?: { name?: string }) => options?.name ? `${key}: ${options.name}` : key, i18n: { get language() { return mockLanguage; } } }) }));
 
 let tree: ReactTestRenderer;
 let providers: ProvidersView;
-let tasksPageProps: { desktopOnline: boolean; settings: unknown } | null = null;
+let tasksPageProps: {
+  desktopOnline: boolean;
+  settings: unknown;
+  onBackLevel?(handle: { goBack(): boolean } | null): void;
+  onOpenConversation?(sessionId: string): void;
+} | null = null;
 const props = { onClose: jest.fn(), onCheckUpdate: jest.fn(), checkingUpdate: false };
 const link = (label: string) => tree.root.findAllByType(SettingsLink).find(node => node.props.label === label)!;
 const button = (label: string) => tree.root.findAllByType(Button).find(node => node.props.label === label)!;
@@ -567,6 +572,35 @@ test("task management is gated by the desktop's capability and opens the page", 
   await act(async () => link("desktopSettings.tasks").props.onPress());
   expect(tasksPageProps).toMatchObject({ desktopOnline: true });
   expect(tasksPageProps!.settings).toBeDefined();
+});
+
+// The system back gesture and the header arrow both call the stack's `goBack`.
+// A page with levels of its own registers one, and it must consume the step
+// first: swiping out of an open task returns to the task list, not to the
+// settings home.
+test("asks the open page to leave a level before popping the route", async () => {
+  mockRemote.desktopOnline = true;
+  mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "tasks_v1"]);
+  // The stack's `goBack` is the handle the modal's back gesture calls, so the
+  // test drives the same entry point the phone does.
+  const handle: { current: SettingsScreenHandle | null } = { current: null };
+  await act(async () => tree.update(createElement(SettingsScreen, { ...props, ref: handle })));
+  await act(async () => link("desktopSettings.tasks").props.onPress());
+
+  // The page registers how to leave its own level; here it reports that it
+  // consumed the step (as it does while a task is open).
+  let asked = 0;
+  await act(async () => tasksPageProps!.onBackLevel!({ goBack: () => { asked += 1; return true; } }));
+  await act(async () => handle.current!.goBack());
+  expect(asked).toBe(1);
+  // Still on Tasks: the route was not popped.
+  expect(tasksPageProps).not.toBeNull();
+
+  // With nothing open the page declines, and the stack pops to the settings home.
+  await act(async () => tasksPageProps!.onBackLevel!({ goBack: () => false }));
+  await act(async () => handle.current!.goBack());
+  expect(asked).toBe(1);
+  expect(link("desktopSettings.tasks")).toBeDefined();
 });
 
 test("task management is unavailable while the desktop is offline", async () => {

@@ -251,8 +251,7 @@ Usage:
   future task show <id|name> [--json] [--prompt]    Show one task
   future task add --name N --prompt P|--prompt-file F --cwd D
         [--model M] [--thinking L] [--session new|existing]
-        [--conversation workspace|chat]
-        [--reflection off|ask|auto] [--disabled] [--json]
+        [--conversation workspace|chat] [--disabled] [--json]
         [--depends-on A[:success|failure|completed]]… [--join-any]
         (--manual | --at "YYYY-MM-DD HH:MM" | --every 30m
          | --daily [--time 09:00]
@@ -267,8 +266,8 @@ Usage:
   future task output <run-id> [--tail N] [--json]   A run's full answer
   future task feedback <run-id> good|bad [--note "…"]
   future task upstream|deps <id|name> [--json]     Dependency edges + progress
-  future task prompt log <id|name> [--json]         Prompt versions + suggestions
-  future task prompt apply <id|name> <revision-id>  Apply a version or suggestion
+  future task prompt log <id|name> [--json]         The prompt version history
+  future task prompt apply <id|name> <revision-id>  Put a stored version back in force
   future task prompt revert <id|name>               Back to the previous version
 
 Triggers:
@@ -300,31 +299,17 @@ Session:
                             the conversation's own temporary workspace, so
                             --cwd is optional).
 
-Prompt versions and suggestions:
+Prompt versions:
   Editing a prompt (here or in the desktop) records a new version and keeps the
   one it replaced, so `prompt revert` can walk all the way back to the task's
-  first prompt. Version source reads as: user (manual edit), reflection (a
-  suggested or accepted revision), rollback (a version re-applied), superseded
-  (an outgoing version kept for the history).
-
-Reflection (prompt suggestions):
-  --reflection off   Never reflect.
-  --reflection ask   Suggest a revised prompt after each run (default). The
-                     suggestion is listed by `prompt log` and applied with
-                     `prompt apply`; the prompt itself is not touched.
-  --reflection auto  Apply a suggestion automatically when the run completed
-                     and the model's confidence is at least 0.7, at most once
-                     a day.
-  A suggestion is not a version: it carries no version number until applied.
-  Both cadences refuse a suggestion that changes nothing, repeats the same
-  wording within a day, or walks back to the version the current prompt
-  replaced. The pass runs after the run it reflects on, in a conversation of
-  its own (archived, and linked from the run's ledger row).
+  first prompt. Version source reads as: user (manual edit), rollback (a version
+  re-applied), reflection (a version accepted from an older build's prompt
+  suggestions), superseded (an outgoing version kept for the history).
 
 Reading a run:
   `future task runs` lists the ledger (statuses, versions, summaries).
   `future task output <run-id>` prints the full answer behind a summary, and
-  `feedback` records a verdict on a run — which the next suggestion pass reads.
+  `feedback` records your verdict on a run.
 
 Execution:
   Runs are executed by the desktop (or headless desktop) tick loop, not by

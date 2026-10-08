@@ -460,9 +460,7 @@ const handlers: Record<string, (args: any) => unknown> = {
       depJoin: input.depJoin ?? "all",
       nextDueAt: input.triggerKind === "schedule" ? Date.now() + 60 * 60_000 : null,
       queued: false,
-      reflection: input.reflection ?? "ask",
       depCount: 0,
-      pendingProposals: 0,
       latestRun: null,
     };
     taskList.push(created);
@@ -481,7 +479,6 @@ const handlers: Record<string, (args: any) => unknown> = {
       modelId: input.modelId ?? null,
       thinkingLevel: input.thinkingLevel ?? null,
       sessionPolicy: input.sessionPolicy ?? target.sessionPolicy,
-      reflection: input.reflection ?? target.reflection,
       triggerKind: input.triggerKind ?? target.triggerKind,
       trigger: input.trigger ?? target.trigger,
       depJoin: input.depJoin ?? target.depJoin,

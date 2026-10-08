@@ -619,7 +619,6 @@ export const demoTasks = [
     trigger: { mode: "weekly", days: ["mon", "fri"], time: "10:00" },
     nextDueAt: Date.now() + 3 * 60 * 60_000,
     queued: false,
-    reflection: "ask",
     latestRun: { id: "trn_r2", kind: "main", origin: "schedule", status: "completed", threadId: "sess_review", startedAt: Date.now() - 2 * 24 * 60 * 60_000, finishedAt: Date.now() - 2 * 24 * 60 * 60_000 + 60_000, promptVersion: 4, resultSummary: "写入 reports/weekly-2026-10-05.md：3 条结论变化。", errorMessage: null },
   },
   {
@@ -630,7 +629,6 @@ export const demoTasks = [
     trigger: { mode: "interval", every_minutes: 720 },
     nextDueAt: Date.now() + 6 * 60 * 60_000,
     queued: true,
-    reflection: "auto",
     latestRun: { id: "trn_l9", kind: "main", origin: "schedule", status: "failed", threadId: "sess_lit", startedAt: Date.now() - 6 * 60 * 60_000, finishedAt: Date.now() - 6 * 60 * 60_000 + 40_000, promptVersion: 2, resultSummary: null, errorMessage: "检索服务返回 503" },
   },
   {
@@ -641,7 +639,6 @@ export const demoTasks = [
     trigger: { mode: "monthly", day: 31, time: "09:00" },
     nextDueAt: null,
     queued: false,
-    reflection: "ask",
     latestRun: null,
   },
 ];
