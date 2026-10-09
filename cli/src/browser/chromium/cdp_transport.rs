@@ -6,12 +6,14 @@
 //! test observers). `close()` is bounded so a Chrome that never completes
 //! the close handshake cannot hang the CLI.
 
+use crate::browser::target::SocketSpec;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::tungstenite::protocol::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::WebSocketStream;
 
 /// Transport event — an inbound text frame or a close notification.
 #[derive(Debug, Clone)]
@@ -33,8 +35,8 @@ pub struct WebSocketTransport {
 }
 
 impl WebSocketTransport {
-    /// Connect to a `ws(s)://` CDP endpoint. Resolves once the WebSocket
-    /// handshake completes; bounded by `timeout_ms`.
+    /// Connect to a `ws(s)://` CDP endpoint over TCP. Resolves once the
+    /// WebSocket handshake completes; bounded by `timeout_ms`.
     pub async fn connect(url: &str, timeout_ms: u64) -> Result<Self, String> {
         let ws = tokio::time::timeout(
             std::time::Duration::from_millis(timeout_ms),
@@ -47,8 +49,59 @@ impl WebSocketTransport {
         Ok(Self::from_stream(ws))
     }
 
+    /// Connect to a CDP endpoint that lives on a local socket.
+    ///
+    /// `path` is the URL **path** from `/json/version` (`/devtools/browser/<id>`),
+    /// not a full URL: a socket endpoint has no host, so the request is built
+    /// against a loopback authority purely so the handshake has a well-formed
+    /// `Host` header. Chrome's DevTools server accepts `localhost` — and would
+    /// reject a non-loopback host, which is its DNS-rebinding guard.
+    #[cfg(unix)]
+    pub async fn connect_over_socket(
+        spec: &SocketSpec,
+        path: &str,
+        timeout_ms: u64,
+    ) -> Result<Self, String> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let attempt = async {
+            let stream = spec.connect().await?;
+            let request = format!("ws://localhost{path}")
+                .into_client_request()
+                .map_err(|e| format!("WebSocket request over socket {spec} is invalid: {e}"))?;
+            let (ws, _) = tokio_tungstenite::client_async(request, stream)
+                .await
+                .map_err(|e| format!("WebSocket connection over socket {spec} failed: {e}"))?;
+            Ok::<_, String>(ws)
+        };
+
+        let ws = tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), attempt)
+            .await
+            .map_err(|_| format!("WebSocket connection timeout over socket {spec}"))??;
+        Ok(Self::from_stream(ws))
+    }
+
+    /// A socket endpoint on a platform without Unix sockets is a clear error,
+    /// not a silent fallback to TCP (which would drive the wrong browser).
+    #[cfg(not(unix))]
+    pub async fn connect_over_socket(
+        spec: &SocketSpec,
+        _path: &str,
+        _timeout_ms: u64,
+    ) -> Result<Self, String> {
+        Err(format!(
+            "browser endpoint {spec} is a socket, which needs a Unix-like platform; this build cannot connect to it"
+        ))
+    }
+
     /// Wrap an already-connected WebSocket stream.
-    pub fn from_stream(ws: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>) -> Self {
+    ///
+    /// Generic over the byte stream so the same transport serves a TCP socket
+    /// and a Unix socket; only the handshake differs.
+    pub fn from_stream<S>(ws: WebSocketStream<S>) -> Self
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
         let (mut sink, mut stream) = ws.split();
         let (sink_tx, mut sink_rx) = mpsc::unbounded_channel::<Message>();
         let (events_tx, _) = broadcast::channel::<TransportEvent>(1024);
@@ -147,6 +200,77 @@ mod tests {
     use tokio_tungstenite::accept_async;
 
     type ServerWs = tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>;
+
+    // ── Socket transport ──────────────────────────────────────────────
+
+    /// The handshake works over a Unix socket, and the request targets the
+    /// URL **path** with a loopback `Host`.
+    ///
+    /// Both halves matter: a socket endpoint has no host, so the request is
+    /// built from the path alone, and Chrome's DNS-rebinding guard rejects any
+    /// `Host` that is not loopback.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connect_over_socket_handshakes_with_the_path_and_a_loopback_host() {
+        use futures_util::SinkExt;
+
+        let dir = std::env::temp_dir().join(format!("cdp-ws-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket_path = dir.join("chrome.sock");
+        let _ = std::fs::remove_file(&socket_path);
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("bind");
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            // `accept_async` parses the HTTP upgrade request itself.
+            let mut ws = accept_async(stream).await.expect("handshake");
+            while let Some(frame) = ws.next().await {
+                match frame {
+                    Ok(Message::Text(text)) if text == "ping" => {
+                        ws.send(Message::Text("pong".to_string())).await.unwrap();
+                    }
+                    Ok(Message::Close(_)) | Err(_) => break,
+                    _ => continue,
+                }
+            }
+        });
+
+        let spec = SocketSpec::Path(socket_path.display().to_string());
+        let transport =
+            WebSocketTransport::connect_over_socket(&spec, "/devtools/browser/abc-123", 5_000)
+                .await
+                .expect("connect over socket");
+
+        let mut events = transport.subscribe();
+        transport.send("ping");
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Ok(TransportEvent::Message(text)) = events.recv().await {
+                    break text;
+                }
+            }
+        })
+        .await
+        .expect("reply arrives");
+        assert_eq!(reply, "pong");
+
+        transport.close().await;
+        drop(transport);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+        let _ = std::fs::remove_file(&socket_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connect_over_socket_reports_a_missing_socket() {
+        let spec = SocketSpec::Path("/tmp/definitely-not-there-ws.sock".to_string());
+        let result =
+            WebSocketTransport::connect_over_socket(&spec, "/devtools/browser/x", 1_000).await;
+        assert!(result.is_err(), "a missing socket must not connect");
+        let err = result.err().unwrap_or_default();
+        assert!(err.contains("definitely-not-there-ws.sock"), "{err}");
+    }
 
     /// Read frames until the client's Close frame arrives (answers it and
     /// returns true) or the peer goes away (false). Shared so the stream-end

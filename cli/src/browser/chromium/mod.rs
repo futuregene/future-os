@@ -11,4 +11,5 @@ pub mod chromium_page;
 pub mod chromium_screenshot;
 pub mod chromium_session;
 pub mod execution_context;
+pub mod socket_http;
 pub mod target_registry;

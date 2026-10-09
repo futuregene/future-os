@@ -30,15 +30,31 @@ pub async fn resolve_port(requested_port: i64) -> Result<i64, String> {
 }
 
 /// `endpointReachable(endpoint)` — GET /json/version within 1 s.
+///
+/// Accepts either transport: an `http(s)` base URL over TCP, or a local socket
+/// (`unix:`/`abstract:`). A socket that answers `/json/version` with a 2xx is a
+/// reachable browser, exactly like a live TCP port.
 pub async fn endpoint_reachable(endpoint: &str) -> bool {
-    let client = reqwest::Client::new();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        client.get(format!("{endpoint}/json/version")).send(),
-    )
-    .await
-    .map(|r| r.map(|resp| resp.status().is_success()).unwrap_or(false))
-    .unwrap_or(false)
+    let Ok(target) = crate::browser::target::EndpointTarget::parse(endpoint) else {
+        return false;
+    };
+    match target {
+        crate::browser::target::EndpointTarget::Http(base) => {
+            let client = reqwest::Client::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                client.get(format!("{base}/json/version")).send(),
+            )
+            .await
+            .map(|r| r.map(|resp| resp.status().is_success()).unwrap_or(false))
+            .unwrap_or(false)
+        }
+        crate::browser::target::EndpointTarget::Socket(_) => {
+            crate::browser::chromium::chromium_endpoint::resolve_cdp_endpoint(endpoint, 1_000)
+                .await
+                .is_ok()
+        }
+    }
 }
 
 /// `portHasListener(port)` — TCP connect probe with a 500 ms bound.

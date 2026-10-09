@@ -11,6 +11,7 @@
 use super::cdp_event_router::{CdpEventRouter, Unsubscribe};
 use super::cdp_transport::{TransportEvent, WebSocketTransport};
 use super::target_registry::{AttachedTarget, SharedTargetRegistry, TargetSessionRegistry};
+use crate::browser::target::SocketSpec;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -128,13 +129,34 @@ async fn run_dispatch_loop(
 }
 
 impl CdpConnection {
-    /// Connect to a CDP WebSocket endpoint and start the dispatch loop.
+    /// Connect to a CDP WebSocket endpoint over TCP and start the dispatch
+    /// loop.
     pub async fn connect(
         web_socket_debugger_url: &str,
         timeout_ms: u64,
     ) -> Result<Arc<Self>, String> {
-        let transport =
-            Arc::new(WebSocketTransport::connect(web_socket_debugger_url, timeout_ms).await?);
+        Self::connect_with_socket(web_socket_debugger_url, None, timeout_ms).await
+    }
+
+    /// Connect to a CDP WebSocket endpoint and start the dispatch loop.
+    ///
+    /// `socket` selects the transport: when it is set, `web_socket_debugger_url`
+    /// is the URL **path** on that socket (see [`resolve_cdp_endpoint`]);
+    /// otherwise it is a full `ws://` URL dialled over TCP.
+    ///
+    /// [`resolve_cdp_endpoint`]: super::chromium_endpoint::resolve_cdp_endpoint
+    pub async fn connect_with_socket(
+        web_socket_debugger_url: &str,
+        socket: Option<&SocketSpec>,
+        timeout_ms: u64,
+    ) -> Result<Arc<Self>, String> {
+        let transport = Arc::new(match socket {
+            Some(spec) => {
+                WebSocketTransport::connect_over_socket(spec, web_socket_debugger_url, timeout_ms)
+                    .await?
+            }
+            None => WebSocketTransport::connect(web_socket_debugger_url, timeout_ms).await?,
+        });
         let conn = Arc::new(CdpConnection {
             transport,
             request_id: AtomicU64::new(0),
