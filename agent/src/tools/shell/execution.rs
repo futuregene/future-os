@@ -838,13 +838,21 @@ pub(crate) fn format_shell_output(raw: &str, total_bytes: usize, exit_code: i32)
     let body = if total_bytes > MAX_KEEP {
         let truncated = total_bytes - MAX_KEEP;
         // Keep the LAST MAX_KEEP bytes (most relevant output is at the end).
-        let start = raw.ceil_char_boundary(raw.len() - MAX_KEEP);
+        let start = raw.ceil_char_boundary(raw.len().saturating_sub(MAX_KEEP));
         format!(
             "[output: {} total, showing last {}; {} truncated]\n{}",
             human_size(total_bytes),
             human_size(MAX_KEEP),
             human_size(truncated),
             &raw[start..],
+        )
+    } else if TRUNCATED.try_with(|flag| *flag.borrow()).unwrap_or(false) {
+        // Bounded pipe capture has already discarded the head. Keep the
+        // legacy truncation notice without inventing a total byte count.
+        format!(
+            "[output truncated during capture; showing last {}]\n{}",
+            human_size(raw.len()),
+            raw,
         )
     } else {
         raw.to_string()

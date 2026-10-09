@@ -209,6 +209,19 @@ fn model_projection_keeps_retry_evidence_without_repeating_generic_caveats() {
     assert!(projection::text(&facts).contains(facts.note.as_deref().unwrap()));
 }
 
+#[tokio::test]
+async fn already_bounded_output_keeps_truncation_notice_without_inventing_total() {
+    let output = TRUNCATED
+        .scope(RefCell::new(true), async {
+            execution::format_shell_output("tail", 4, 0)
+        })
+        .await;
+    assert!(output.contains("truncated"));
+    assert!(output.contains("showing last 4B"));
+    assert!(output.contains("tail\n[exit: 0]"));
+    assert!(!output.contains("total"));
+}
+
 #[cfg(target_os = "macos")]
 #[allow(clippy::await_holding_lock)] // Serialize process-global HOME during sandbox policy resolution.
 #[tokio::test]
