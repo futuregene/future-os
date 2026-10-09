@@ -325,6 +325,7 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
 ///   browser that must be brought back to the foreground.
 ///
 /// Costs one extra probe, and only on a path that has already failed.
+#[cfg(unix)]
 async fn unreachable_socket_reason(endpoint: &str, spec: &SocketSpec) -> String {
     if let Err(connect_error) = spec.connect().await {
         return format!(
@@ -349,6 +350,16 @@ async fn unreachable_socket_reason(endpoint: &str, spec: &SocketSpec) -> String 
             "{endpoint} answered a fresh probe but not the one that failed; retry the command."
         ),
     }
+}
+
+/// Off Unix there is no socket to connect to, so the distinction cannot be
+/// made: say what is true on this platform instead of guessing.
+#[cfg(not(unix))]
+async fn unreachable_socket_reason(_endpoint: &str, spec: &SocketSpec) -> String {
+    format!(
+        "{spec} is a socket endpoint, which this platform cannot connect to. \
+         Use an http(s) endpoint on this host, or a host that supports Unix sockets."
+    )
 }
 
 /// `start` for a socket endpoint: attach, never launch.
