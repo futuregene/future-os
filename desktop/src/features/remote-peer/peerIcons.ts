@@ -38,7 +38,8 @@ export const PEER_ICONS: PeerIcon[] = [
  * drawn separately by the rail, so this fallback is only ever for a remote host.
  */
 export function iconGlyph(id: string | null | undefined): string {
-  if (!id) return PEER_ICONS[0]!.glyph;
+  if (!id)
+    return PEER_ICONS[0]!.glyph;
   return PEER_ICONS.find(icon => icon.id === id)?.glyph ?? PEER_ICONS[0]!.glyph;
 }
 
@@ -48,7 +49,8 @@ export function iconGlyph(id: string | null | undefined): string {
  * timestamp — the full name is available in the host's own settings page.
  */
 export function peerBadgeText(peer: { icon: string | null; name: string | null; desktopId: string }, fallback: string): string {
-  if (peer.name) return peer.name;
+  if (peer.name)
+    return peer.name;
   // `desktop_ab12cd34…` is opaque; the tail is the part that differs between
   // machines of the same account, so it is the part worth showing.
   const tail = peer.desktopId.replace(/^desktop_/, "").slice(0, 6);

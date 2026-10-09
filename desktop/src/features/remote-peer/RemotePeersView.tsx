@@ -1,0 +1,311 @@
+import type { RemotePeer } from "./remotePeerClient";
+import { useCallback, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
+import { Badge } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { Dialog } from "../../components/ui/Dialog";
+import { TextInput } from "../../components/ui/TextInput";
+import { startWindowDrag } from "../../lib/windowDrag";
+import { PeerIconPicker } from "./PeerIconPicker";
+import { iconGlyph, peerBadgeText } from "./peerIcons";
+import {
+  connectRemotePeer,
+  disconnectRemotePeer,
+  listRemotePeers,
+  pairRemotePeer,
+  setRemotePeerLabel,
+  unpairRemotePeer,
+} from "./remotePeerClient";
+
+/**
+ * The client-role screen: the remote desktops *this* machine connects out to.
+ *
+ * Deliberately a management surface, not a conversation list. Sessions from
+ * every host live in the shared conversation list (with a source badge), so
+ * that there is exactly one place to look for "a conversation"; duplicating a
+ * second list here would make the user pick between two answers to the same
+ * question. What is unique to this screen is everything about the *machines*:
+ * pairing, naming, the icon, connection state, and unpairing.
+ */
+export function RemotePeersView({
+  leftPanelExpanded,
+  onToggleLeftPanel,
+}: {
+  leftPanelExpanded: boolean;
+  onToggleLeftPanel: () => void;
+}) {
+  const { t } = useTranslation("remotePeer");
+  const [peers, setPeers] = useState<RemotePeer[]>([]);
+  const [invitation, setInvitation] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [unpairTarget, setUnpairTarget] = useState<RemotePeer | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      setPeers(await listRemotePeers());
+    }
+    catch (err) {
+      // A read failure here is local (the credential book); the per-host
+      // connection errors arrive on the peers themselves.
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  async function run(desktopId: string, action: () => Promise<unknown>) {
+    setBusy(desktopId);
+    setError(null);
+    setWarning(null);
+    try {
+      await action();
+      await refresh();
+    }
+    catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    finally {
+      setBusy(null);
+    }
+  }
+
+  async function handlePair() {
+    const link = invitation.trim();
+    if (!link)
+      return;
+    setBusy("__pair__");
+    setError(null);
+    setWarning(null);
+    try {
+      await pairRemotePeer(link);
+      // The link is single-use: keeping it in the box would invite the user to
+      // press the button again and get a confusing failure.
+      setInvitation("");
+      await refresh();
+    }
+    catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleUnpair(peer: RemotePeer) {
+    await run(peer.desktopId, async () => {
+      const pending = await unpairRemotePeer(peer.desktopId);
+      // Local pairing is already gone; say so when the platform-side revoke
+      // could not be delivered instead of reporting a clean removal.
+      if (pending)
+        setWarning(t("unpairPendingWarning"));
+    });
+    setUnpairTarget(null);
+  }
+
+  return (
+    <section className="flex h-full min-h-0 flex-col bg-surface">
+      <header
+        className="flex h-12 shrink-0 select-none items-center justify-between border-b border-line-soft/40 px-4"
+        onMouseDown={startWindowDrag}
+      >
+        <div className="flex min-w-0 flex-1 items-center" data-tauri-drag-region>
+          <LeftPanelTitlebarToggle expanded={leftPanelExpanded} onToggle={onToggleLeftPanel} />
+          <span className="truncate text-sm font-semibold text-ink">{t("title")}</span>
+        </div>
+      </header>
+
+      <div className="min-h-0 flex-1 overflow-y-auto p-8">
+        <div className="mx-auto w-full max-w-3xl space-y-6">
+          <p className="text-sm text-ink-muted">{t("description")}</p>
+
+          <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
+            <label className="text-sm font-medium text-ink" htmlFor="peer-invitation">
+              {t("addTitle")}
+            </label>
+            <p className="mt-1 text-xs leading-5 text-ink-muted">{t("addHint")}</p>
+            <div className="mt-3 flex items-center gap-2">
+              <TextInput
+                id="peer-invitation"
+                onChange={event => setInvitation(event.target.value)}
+                placeholder="futureos://remote/pair?…"
+                value={invitation}
+              />
+              <Button
+                disabled={!invitation.trim() || busy !== null}
+                onClick={() => void handlePair()}
+                size="sm"
+                variant="primary"
+              >
+                {busy === "__pair__" ? t("adding") : t("add")}
+              </Button>
+            </div>
+            {/* Replacing the phone pairing on the other machine is a real
+                consequence of this action, so it is stated before, not after. */}
+            <p className="mt-2 text-xs leading-5 text-ink-muted">{t("slotWarning")}</p>
+          </div>
+
+          {error ? <p className="text-xs text-danger">{error}</p> : null}
+          {warning ? <p className="text-xs text-ink-muted">{warning}</p> : null}
+
+          {unpairTarget
+            ? (
+                // `Dialog` rather than `ConfirmDeleteDialog`: the shared confirm
+                // is worded for deletion ("Delete"), and unpairing a desktop is
+                // not deleting anything the user created — the other machine
+                // keeps all of its data.
+                <Dialog
+                  description={t("unpairConfirmDesc", { name: peerBadgeText(unpairTarget, unpairTarget.desktopId) })}
+                  footer={(
+                    <>
+                      <Button onClick={() => setUnpairTarget(null)} variant="ghost">
+                        {t("cancel")}
+                      </Button>
+                      <Button
+                        disabled={busy === unpairTarget.desktopId}
+                        onClick={() => void handleUnpair(unpairTarget)}
+                        variant="danger"
+                      >
+                        {t("unpair")}
+                      </Button>
+                    </>
+                  )}
+                  onClose={() => setUnpairTarget(null)}
+                  open
+                  title={t("unpairConfirmTitle")}
+                >
+                  <span />
+                </Dialog>
+              )
+            : null}
+
+          {peers.length === 0
+            ? <p className="text-sm text-ink-soft">{t("empty")}</p>
+            : (
+                <div className="space-y-2">
+                  {peers.map(peer => (
+                    <PeerRow
+                      busy={busy === peer.desktopId}
+                      editing={editing === peer.desktopId}
+                      key={peer.desktopId}
+                      onDisconnect={() => void run(peer.desktopId, () => disconnectRemotePeer(peer.desktopId))}
+                      onEdit={() => setEditing(editing === peer.desktopId ? null : peer.desktopId)}
+                      onReconnect={() => void run(peer.desktopId, () => connectRemotePeer(peer.desktopId))}
+                      onUnpair={() => setUnpairTarget(peer)}
+                      onUpdateLabel={patch => void run(peer.desktopId, () => setRemotePeerLabel(peer.desktopId, patch))}
+                      peer={peer}
+                    />
+                  ))}
+                </div>
+              )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function peerStatus(peer: RemotePeer, t: (key: string) => string): { tone: "accent" | "warning" | "danger"; label: string } {
+  if (!peer.connected) {
+    return { tone: peer.error ? "danger" : "warning", label: t("statusDisconnected") };
+  }
+  // A reachable bridge can still have an unreachable agent: the link is up and
+  // every command fails. Saying "connected" there would be a lie the user
+  // discovers only when their message does not send.
+  if (!peer.agentAvailable) {
+    return { tone: "warning", label: t("statusAgentUnavailable") };
+  }
+  return { tone: "accent", label: t("statusConnected") };
+}
+
+function PeerRow({
+  busy,
+  editing,
+  onDisconnect,
+  onEdit,
+  onReconnect,
+  onUnpair,
+  onUpdateLabel,
+  peer,
+}: {
+  busy: boolean;
+  editing: boolean;
+  onDisconnect: () => void;
+  onEdit: () => void;
+  onReconnect: () => void;
+  onUnpair: () => void;
+  onUpdateLabel: (patch: { name?: string; icon?: string }) => void;
+  peer: RemotePeer;
+}) {
+  const { t } = useTranslation("remotePeer");
+  const [name, setName] = useState(peer.name ?? "");
+  const status = peerStatus(peer, t);
+
+  return (
+    <div className="rounded-lg border border-line-soft p-4">
+      <div className="flex items-center gap-3">
+        <span aria-hidden className="text-lg" data-testid="peer-icon">{iconGlyph(peer.icon)}</span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-medium text-ink">
+              {peerBadgeText(peer, peer.desktopId)}
+            </span>
+            <Badge tone={status.tone}>{status.label}</Badge>
+          </div>
+          <div className="mt-0.5 truncate text-xs text-ink-muted">{peer.desktopId}</div>
+          {peer.error ? <div className="mt-1 text-xs text-danger">{peer.error}</div> : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {peer.connected
+            ? <Button disabled={busy} onClick={onDisconnect} size="sm">{t("disconnect")}</Button>
+            : <Button disabled={busy} onClick={onReconnect} size="sm" variant="primary">{t("connect")}</Button>}
+          <Button disabled={busy} onClick={onEdit} size="sm" variant="ghost">{t("edit")}</Button>
+        </div>
+      </div>
+
+      {editing
+        ? (
+            <div className="mt-4 space-y-3 border-t border-line-soft pt-4">
+              <div>
+                <label className="text-xs font-medium text-ink" htmlFor={`peer-name-${peer.desktopId}`}>
+                  {t("nameLabel")}
+                </label>
+                <div className="mt-1 flex items-center gap-2">
+                  <TextInput
+                    id={`peer-name-${peer.desktopId}`}
+                    onChange={event => setName(event.target.value)}
+                    placeholder={t("namePlaceholder")}
+                    value={name}
+                  />
+                  <Button
+                    disabled={busy || name === (peer.name ?? "")}
+                    onClick={() => onUpdateLabel({ name: name.trim() })}
+                    size="sm"
+                  >
+                    {t("save")}
+                  </Button>
+                </div>
+                <p className="mt-1 text-xs text-ink-muted">{t("nameHint")}</p>
+              </div>
+              <div>
+                <div className="text-xs font-medium text-ink">{t("icons.label")}</div>
+                <div className="mt-1">
+                  <PeerIconPicker
+                    onChange={icon => onUpdateLabel({ icon })}
+                    value={peer.icon}
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end">
+                <Button onClick={onUnpair} size="sm" variant="danger">{t("unpair")}</Button>
+              </div>
+            </div>
+          )
+        : null}
+    </div>
+  );
+}

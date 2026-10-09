@@ -9,6 +9,7 @@ import { AgentThread } from "../../features/agent/AgentThread";
 import { saveComposerDraft } from "../../features/agent/composerDraft";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { sessionMentionOptions } from "../../features/agent/sessionMention";
+import { RemotePeersView } from "../../features/remote-peer/RemotePeersView";
 import { startRemote, stopRemote } from "../../features/remote/remoteClient";
 import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
@@ -402,6 +403,7 @@ function ReadyAppShell({
     = centerMode === "new-chat"
       || section === "skill"
       || section === "remote"
+      || section === "peers"
       // Tasks are their own two-pane view (list + detail); the context panel
       // beside them would describe whichever conversation happened to be active
       // before, which is not what the tasks view is about.
@@ -741,53 +743,57 @@ function ReadyAppShell({
                     ? (
                         <RemoteView appSettings={appSettings} leftPanelExpanded={showLeftPanel} onChangeSettings={patch => void changeSettings(patch)} onToggleLeftPanel={handleToggleLeftPanel} remoteStatus={remoteStatus} onRefreshRemote={refreshRemote} />
                       )
-                    : storeError
+                    : section === "peers"
                       ? (
-                          <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
-                            {t("appShell.storeInitFailed")}
-                            {storeError}
-                          </div>
+                          <RemotePeersView leftPanelExpanded={showLeftPanel} onToggleLeftPanel={handleToggleLeftPanel} />
                         )
-                      : (
-                          <AgentThread
-                          // One instance per conversation: switching threads
-                          // remounts, so a conversation's messages, listeners and
-                          // in-flight writes can never bleed into another.
-                            key={activeThread?.id ?? "__none"}
-                            activeApproval={activeApproval}
-                            agentConnection={agentConnection}
-                            approvalTier={appSettings.approvalTier}
-                            loadingStore={loadingStore}
-                            modelId={activeThreadModelId}
-                            modelOptions={visibleModelOptions}
-                            onModelChange={changeModel}
-                            onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
-                            thinkingLevel={activeThinkingLevel}
-                            onThinkingLevelChange={changeThinkingLevel}
-                            pendingPrompt={pendingPrompt}
-                            thread={activeThread}
-                            sessionMentions={sessionMentions}
-                            workspacePath={activeWorkspace?.path ?? null}
-                            onApprovalDecision={handleApprovalDecision}
-                            leftPanelExpanded={showLeftPanel}
-                            onRetryAgentConnection={() => void refreshAgentModels()}
-                            onOpenAccount={handleOpenAccount}
-                            onOpenModels={handleOpenModels}
-                            onOpenProviders={handleOpenProviders}
-                            onToggleLeftPanel={handleToggleLeftPanel}
-                            skillRecommend={appSettings.skillRecommend}
-                            futureSessionStatus={futureSessionStatus}
-                            futureBalance={futureBalance}
-                            headerAction={terminalHeaderAction}
-                            onPromptConsumed={consumePendingPrompt}
-                            onForked={(forkedThreadId: string) => {
-                              void refreshStore(forkedThreadId);
-                            }}
-                            onThreadActivity={() => {
-                              void refreshStore(activeThread?.id ?? undefined);
-                            }}
-                          />
-                        )}
+                      : storeError
+                        ? (
+                            <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
+                              {t("appShell.storeInitFailed")}
+                              {storeError}
+                            </div>
+                          )
+                        : (
+                            <AgentThread
+                              // One instance per conversation: switching threads
+                              // remounts, so a conversation's messages, listeners and
+                              // in-flight writes can never bleed into another.
+                              key={activeThread?.id ?? "__none"}
+                              activeApproval={activeApproval}
+                              agentConnection={agentConnection}
+                              approvalTier={appSettings.approvalTier}
+                              loadingStore={loadingStore}
+                              modelId={activeThreadModelId}
+                              modelOptions={visibleModelOptions}
+                              onModelChange={changeModel}
+                              onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
+                              thinkingLevel={activeThinkingLevel}
+                              onThinkingLevelChange={changeThinkingLevel}
+                              pendingPrompt={pendingPrompt}
+                              thread={activeThread}
+                              sessionMentions={sessionMentions}
+                              workspacePath={activeWorkspace?.path ?? null}
+                              onApprovalDecision={handleApprovalDecision}
+                              leftPanelExpanded={showLeftPanel}
+                              onRetryAgentConnection={() => void refreshAgentModels()}
+                              onOpenAccount={handleOpenAccount}
+                              onOpenModels={handleOpenModels}
+                              onOpenProviders={handleOpenProviders}
+                              onToggleLeftPanel={handleToggleLeftPanel}
+                              skillRecommend={appSettings.skillRecommend}
+                              futureSessionStatus={futureSessionStatus}
+                              futureBalance={futureBalance}
+                              headerAction={terminalHeaderAction}
+                              onPromptConsumed={consumePendingPrompt}
+                              onForked={(forkedThreadId: string) => {
+                                void refreshStore(forkedThreadId);
+                              }}
+                              onThreadActivity={() => {
+                                void refreshStore(activeThread?.id ?? undefined);
+                              }}
+                            />
+                          )}
           </main>
           {/* Views without thread context hide the right panel entirely, including
           the collapsed expand affordance. */}

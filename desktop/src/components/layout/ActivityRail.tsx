@@ -11,6 +11,7 @@ import {
   Folder,
   ListChecks,
   MessageSquare,
+  MonitorSmartphone,
   PanelLeft,
   Pin,
   Plus,
@@ -39,7 +40,7 @@ import { useRailSelection } from "./hooks/useRailSelection";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, visibleThreadRows } from "./threadTree";
 
-export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote" | "settings";
+export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote" | "peers" | "settings";
 
 interface ActivityRailProps {
   active: ActivitySection;
@@ -361,6 +362,14 @@ export function ActivityRail({
                   {showRemote
                     ? <NavButton icon={Smartphone} indicator={remoteDot} label={t("activityRail.remote")} active={active === "remote"} onClick={() => onChange("remote")} />
                     : null}
+                  {/* The other side of the same idea: `remote` is who connects
+                      *to* this machine (a phone), `peers` is the machines this
+                      one connects *out* to. Two entries rather than one with a
+                      direction toggle, because they are reachable from
+                      different states (the phone one needs a sign-in, this one
+                      needs a pasteable link) and a user looking for one should
+                      not have to know the other exists. */}
+                  <NavButton icon={MonitorSmartphone} label={t("activityRail.peers")} active={active === "peers"} onClick={() => onChange("peers")} />
                 </div>
                 {featureItems.length > 0
                   ? (

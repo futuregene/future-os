@@ -101,8 +101,7 @@ describe("mergeConversations", () => {
   it("is stable for equal timestamps so a poll cannot reshuffle the list", () => {
     const rows = mergeConversations(
       [],
-      [catalog("desktop_b", [{ sessionId: "b", title: "b", lastMessageAt: 7 }]),
-        catalog("desktop_a", [{ sessionId: "a", title: "a", lastMessageAt: 7 }])],
+      [catalog("desktop_b", [{ sessionId: "b", title: "b", lastMessageAt: 7 }]), catalog("desktop_a", [{ sessionId: "a", title: "a", lastMessageAt: 7 }])],
       ALL,
     );
     expect(rows.map(row => row.id)).toEqual(["a", "b"]);

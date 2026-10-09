@@ -109,7 +109,8 @@ export function mergeConversations(
     for (const thread of threads) {
       // Deleted threads are not conversations the user can open; archived ones
       // are still listed (the rail has a restore action for them).
-      if (thread.status === "deleted") continue;
+      if (thread.status === "deleted")
+        continue;
       rows.push({
         key: rowKey(null, thread.id),
         desktopId: null,
@@ -126,10 +127,12 @@ export function mergeConversations(
 
   const seen = new Set(rows.map(row => row.key));
   for (const catalog of catalogs) {
-    if (!wantsHost(catalog.desktopId)) continue;
+    if (!wantsHost(catalog.desktopId))
+      continue;
     for (const session of catalog.sessions) {
       const key = rowKey(catalog.desktopId, session.sessionId);
-      if (seen.has(key)) continue;
+      if (seen.has(key))
+        continue;
       seen.add(key);
       rows.push({
         key,
@@ -154,10 +157,12 @@ export function mergeConversations(
  * flickering list is how a user misses the message they were reading.
  */
 export function compareConversations(a: MergedConversation, b: MergedConversation): number {
-  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+  if (a.pinned !== b.pinned)
+    return a.pinned ? -1 : 1;
   const at = a.lastMessageAt ?? Number.NEGATIVE_INFINITY;
   const bt = b.lastMessageAt ?? Number.NEGATIVE_INFINITY;
-  if (at !== bt) return bt - at;
+  if (at !== bt)
+    return bt - at;
   return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
 }
 

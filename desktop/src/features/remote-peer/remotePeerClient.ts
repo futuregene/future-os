@@ -93,10 +93,12 @@ export async function fetchRemoteSessions(desktopId: string): Promise<RemoteCata
   return {
     desktopId,
     sessions: sessions.flatMap((entry): RemoteSessionRow[] => {
-      if (typeof entry !== "object" || entry === null) return [];
+      if (typeof entry !== "object" || entry === null)
+        return [];
       const row = entry as Record<string, unknown>;
       const sessionId = row.sessionId;
-      if (typeof sessionId !== "string" || !sessionId) return [];
+      if (typeof sessionId !== "string" || !sessionId)
+        return [];
       return [{
         sessionId,
         title: typeof row.title === "string" && row.title ? row.title : sessionId,
