@@ -54,8 +54,15 @@ runs without Seatbelt wrapping **once** — no persistent policy change and no
 precise-path authorization generated. Full title and path display limits are in
 [COMMON §4](COMMON.md#4-审批协议与界面).
 
-The current rejection judgment includes `Operation not permitted` /
-`sandbox-exec` text heuristics; network errors are not grounds for rejection.
+The failure heuristic recognizes `operation not permitted` / `sandbox-exec`
+without ASCII case sensitivity and structured Node `Error: EPERM:` or
+`code: 'EPERM'` diagnostics. A nonzero exit is required. A match requests
+approval and, if approved, retries within the same tool call; the main model
+does not need to issue another call. Network and ordinary missing-file errors
+do not trigger this route. Tool-result summaries use the same permission hints.
+Diagnostic path mentions remain untrusted context, not confirmed targets.
+The macOS shell schema omits Windows-only `additional_permissions`; unexpected
+requests still fail the existing backend validation.
 The exact kernel-denied path, or that the command had no prior side effects,
 cannot be reliably proven — so no promise of zero false positives / safe
 automatic replay. Hard-deny rules also do not cover a bare command after user

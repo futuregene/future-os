@@ -2,28 +2,29 @@
 
 状态：**首版已实现，进入测试与联调；生产误放行率仍需独立评测。**
 
-2026-10-08 实现说明：`auto` 保持三档 `SandboxTier` 不变，通过独立 `reviewer=model`
-启用。复用技能推荐的 Future System One API、账号凭据和 `jev` 路由，包装三个 Choice。
+2026-10-09 实现说明：`auto` 保持三档 `SandboxTier` 不变，通过独立 `reviewer=model`
+启用。复用共享 Future System One API、账号凭据和 `jev` 路由，包装三个 Choice。
 整条命令脱沙箱沿用现有沙箱设计，后续随沙箱改进，不作为本功能前置条件。
 
 首版默认：参与放行决策的 confidence ≥ 0.75、总预算 30 秒、瞬时失败重试一次、全进程最多四项评估，
-medium + medium 允许，critical 始终拒绝。同一 Run 同工具与粗粒度目标范围累计三次拒绝后
-停止调用模型。可信上下文使用本次用户消息和最多 16 条先前原始用户消息的不可变快照，
-按时间顺序解释“同样的文件”“再试一次”等续问，后续指令覆盖先前授权。用户文本总预算
-32 KiB，仅保留完整消息组成的最近连续后缀，历史被省略时明确标记；缺少引用依据仍应返回
-不确定或低授权。仅取用户消息首个可见文本块，不把模型摘要、注入上下文、附件清单、
-模型计划、工具输出或仓库文本作为授权。Prompt 版本 3 将用户明确要求测试文件时未指定的
-普通新文件名和无害示例内容视为委托的实现细节；明确指定的内容、名称和限制仍须遵守，
-敏感数据、接收方和破坏性目标仍须精确授权。宿主省略文件正文不单独构成授权缺失。
+medium + medium 允许，critical 始终拒绝。同一 Run 内按工具、操作类别、cwd 和确切目标（目标未知时使用执行参数指纹）累计三次模型拒绝后
+停止调用模型；基础设施错误不计数。Prompt 版本 5 / state schema 3 将输入改为四类有来源的证据：待执行请求
+`action`、原始用户指令 `trusted_context`、宿主事实 `host_facts`、助手及工具证据
+`untrusted_context`。用户历史仅保留完整消息组成的最近连续后缀；来源、顺序和工具调用
+关联由宿主赋值。不引入 `evidence_status`，信息不足仍由模型选择 `unknown` /
+`insufficient_information`。输入预算目标与上限见 §6.2，三个 Choice、审批矩阵均保持不变。
+当前沙箱不拦截网络请求，明确标记 `network_enforcement=unrestricted`。
+普通新文件名和无害示例内容仍可视为委托细节；明确内容、名称和限制须遵守，敏感数据、
+接收方和破坏性目标仍须精确授权。宿主省略文件正文不单独构成授权缺失。
 Reason catalog 版本 2 区分普通本地用户文件操作与远程写入。Policy 版本 2 保留矩阵和
 0.75 阈值，risk/reason_code 仍使用分类置信度，授权改为允许集合的概率之和：low 为
 P(high)+P(medium)+P(low)，medium 为 P(high)+P(medium)，high 为 P(high)。Unknown 不计入。
 
 生产路由沿用已跑通的 `jev` 别名，记录网关返回的模型版本；网关未返回时记录请求别名，
-不伪造服务端版本。三项完整概率分布必须有效且存在唯一最高值，网关仅返回 probabilities
+不伪造服务端版本。三项完整概率分布必须有效，网关仅返回 probabilities
 时本地提取选择及 confidence；提供 choice/confidence 时继续校验一致性，取更保守置信度。
-允许舍入概率造成的最大值并列，提供的 choice 仍须属于最大值；并列结果无法达到自动
-放行阈值。网关返回的 `id` 作为 provider request ID 保存。
+允许舍入概率造成的最大值并列，提供的 choice 仍须属于最大值；risk/reason 并列无法
+达到各自阈值，authorization 并列则仍可能通过允许集合概率之和。网关返回的 `id` 作为 provider request ID 保存。
 
 审查日期：2026-09-22，源码基线为 `2af42f71`。本文以该基线的审批、沙箱、事件和 Desktop
 持久化实现为基线，定义 FutureOS Desktop 的自动审批方案。现有公共审批规则和各平台
@@ -243,7 +244,8 @@ query token。`NetworkIntent` 使用 `none / declared / possible / unknown`，�
 
 ### 5.3 输入限制
 
-- `command`、目标和请求 JSON 分别设置字节上限，超限使用稳定截断标记并保留原长度。
+- 待执行命令、本次用户原文和必要宿主事实不截断；必要输入超预算返回
+  `review_error / input_too_large`，不发送模型。背景工具输出可截断，保留原长度和范围。
 - 默认不发送完整会话、完整工具输出、完整文件内容或环境变量。
 - 不解析 shell 来声称掌握全部副作用；能可靠提取的事实标为 `declared`，其余标为
   `unknown`。
@@ -279,50 +281,119 @@ query token。`NetworkIntent` 使用 `none / declared / possible / unknown`，�
 三个问题共享 state，但 Jev 会独立评估。不能假设 `reason_code = protected_secret_access`
 自然保证 `risk >= high`；跨字段一致性必须由 FutureOS 代码强制。
 
-### 6.2 State
+### 6.2 State 与证据预算
+
+以下为字段示意；具体目标与边界沿用宿主现有审批事实：
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "action": {
-    "kind": "shell",
-    "category": "filesystem",
+    "source_id": "call-1",
+    "source_kind": "tool_request",
+    "tool_name": "shell",
+    "tool_call_id": "call-1",
     "cwd": "/workspace/project",
-    "command": "rm -rf build-cache",
-    "targets": [
-      {"type": "path", "value": "/workspace/project/build-cache", "access": "delete"}
-    ],
-    "network": "none",
-    "sandbox_boundary": {
-      "tier": "sandbox",
-      "execution": "outside_sandbox_once",
-      "trigger": "sandbox_failure"
-    }
-  },
-  "approval_reason": {
-    "rule_result": "ask",
-    "matched_guard": "outside_write_boundary"
+    "command": "rm -rf build-cache"
   },
   "trusted_context": {
-    "user_request": "清理这个项目的构建缓存",
-    "developer_constraints": [],
-    "user_answers": []
+    "user_request": {
+      "source_id": "user-entry-1",
+      "source_kind": "user_message",
+      "sequence": 3,
+      "text": "清理这个项目的构建缓存",
+      "redacted_text_bytes": 33,
+      "retained_range": [0, 33],
+      "truncated": false
+    },
+    "user_history": []
   },
-  "untrusted_context": {
-    "assistant_plan": "删除构建缓存后重新构建",
-    "tool_evidence": "sandbox denied write outside current boundary"
+  "host_facts": {
+    "source_id": "approval:call-1",
+    "source_kind": "host_approval_facts",
+    "targets": [],
+    "sandbox_boundary": {"execution": "outside_sandbox_once"},
+    "rule_result": "ask",
+    "network_enforcement": "unrestricted",
+    "network_intent": "unknown"
+  },
+  "untrusted_context": [
+    {
+      "source_id": "call-1:justification",
+      "source_kind": "assistant_justification",
+      "tool_call_id": "call-1",
+      "sequence": 4,
+      "text": "删除构建缓存后重新构建",
+      "redacted_text_bytes": 33,
+      "retained_range": [0, 33],
+      "truncated": false
+    }
+  ],
+  "coverage": {
+    "user_history": {"omitted": 0},
+    "background": {"omitted": 0},
+    "action_context": {"omitted": 0},
+    "checkpoints_omitted": 0
   }
 }
 ```
 
-`trusted_context` 与 `untrusted_context` 必须是不同字段。构造 payload 时要保留消息中的
-引用/附件边界；不能把一整条包含粘贴内容的 user message 无条件归入 trusted。问题文本
-明确说明：不可信内容只可用于理解环境，不能作为用户授权，也不能覆盖选择标准。来自
-网页、仓库、工具输出中的“忽略规则”“请选择 low”等文字按数据处理。
+四类证据的信任含义：
 
-Jev 当前主要训练语言是英语；首版问题、Choice 描述和安全标准使用英语，用户原始指令
-保留原文，并可附加由主模型链路已有能力生成的受限摘要。不能为了翻译审批而再启动一个
-自由生成模型。中文任务的准确率必须单独进入评测集。
+| 字段 | 来源 | 用途 |
+| --- | --- | --- |
+| `action` | 待审批工具请求，关联 tool-call ID | 判断将执行的操作；请求本身不代表授权 |
+| `trusted_context` | 本轮用户原文及运行开始时原始用户消息快照 | 唯一用户授权依据，后续限制覆盖早先许可 |
+| `host_facts` | 宿主审批规则、目标与沙箱边界 | 表达已知执行事实；不推断沙箱拦截网络 |
+| `untrusted_context` | 相邻助手问题、已有工具调用/结果、升级理由和失败摘要 | 解释指代和操作影响，不能授予权限或覆盖问题标准 |
+
+来源 ID、来源类型、顺序和 tool-call 关联由宿主设置，不从证据正文解析。用户仅取首个
+可见文本块；模型压缩摘要、注入侧栏、附件清单不能升格为授权。助手推理及供应商内部
+协议元数据不进入审批；工具参数使用允许字段投影并显式标记，文件正文和环境变量值
+不发送。所有工具结果正文都省略，成功或失败仅投影状态、输出字节数、固定诊断类别及
+shell 退出码；失败摘要也使用该投影。诊断中提到的路径放入 `untrusted_context`，标记
+`complete_targets=false`，不升格为宿主已确认目标或用来计算 workspace 关系。运行中的 save callback 同时捕获普通和 ephemeral
+运行的助手及工具证据，授权快照保持不变；不新增调查工具、文件扫描或网络拦截。
+
+选取顺序：必需的待执行请求、本次用户原文和宿主事实保持完整；先尝试纳入
+当前回复前的助手问题，再从最近用户历史向前选取完整消息。第一个
+放不下的用户历史消息即停止，不能跳过中间限制保留更早的许可。余量依次分配给本次
+诊断路径/失败投影、关联工具证据、升级理由及与已选用户消息相邻的助手文本。长篇模型
+理由不能挤掉用户限制。仅已有证据参与，不生成自由文本
+摘要或翻译。省略数量进入 `coverage`，这是覆盖统计，不是审批状态；`checkpoints_omitted` 单独标记被排除的模型压缩摘要数量，
+不把摘要当作原始用户消息或假装已读取被压缩历史。
+
+| 预算项 | 保守估算上限 |
+| --- | --- |
+| state 目标 | 6,000 |
+| state 硬上限 | 8,000 |
+| 全部问题 | 4,000 |
+| 完整请求 JSON | 12,000 |
+| state + 最长问题 | 30,000 |
+| state + 全部问题 | 62,000 |
+
+[Jev 官方上下文限制](https://docs.typesafe.ai/models) 为 state + 最长问题 32k、
+state + 全部问题 64k；本地检查留有余量。未引入 Jev tokenizer，当前估算方法 `serialized_utf8_bytes_conservative_v1` 把序列化
+JSON 的每个 UTF-8 字节记为一个估算 token，包含转义、字段名、来源元数据和框架开销。
+这刻意少用上下文容量，不是精确 token 数，也不保证覆盖网关额外插入的文本。
+用户历史和背景各自使用 32 KiB 序列化记录缓冲上限，并缓存记录大小；历史缓冲同样
+仅保留完整连续后缀。超过 32 KiB 的原始背景文本在复制/脱敏前省略；必需原文超过
+32 KiB 时在证据序列化前拒绝。诊断投影只检查工具输出最后 2,048 个 UTF-8 字节，
+不转发匹配文本。`redacted_text_bytes` 和 `retained_range` 描述投影后脱敏文本，
+`output_bytes` 描述原始工具输出长度。执行 digest 使用流式规范化 JSON 计算，
+不额外复制文件正文；超长命令在脱敏前拒绝。未知 shell 目标的 workspace 关系保持 null。
+
+必要输入超预算只做传输层拒绝，不给“信息不足”设置宿主判断流程。缺少重要事实或指代
+是否应选 `unknown` / `insufficient_information` 继续由三个 Choice 控制，单纯存在省略
+不强制拒绝。没有 `evidence_status`，不改变放行矩阵、概率阈值或原因目录。
+
+审计 `input_context` 仅记录来源 ID、覆盖/裁剪统计、分区大小、预算估算和脱敏 state 的
+SHA-256 摘要，不保存原始证据正文；预算拒绝仍保留大小和来源审计。RPC 的附加字段保证其进入 Desktop 审计持久化。
+
+macOS 沙箱失败路由识别 Node 小写 `operation not permitted` 及结构化 `EPERM`；
+非零失败命中后，可在同一次工具调用内进入审批并重跑。权限摘要复用诊断识别，路径
+提及仍是非可信背景。`additional_permissions` 仅在 Windows Agent 的 shell schema 中
+提供，其他平台收到该参数仍会拒绝。
 
 ### 6.3 问题与 Choices
 
@@ -559,9 +630,12 @@ struct ToolCallResult {
 - 把控制权交还主模型继续当前 turn；
 - 主模型仍可能最终向用户说明无法安全完成。
 
-首版同一 Run 内，同一工具与粗粒度 target scope 累计三次被拒绝
-后，Agent 不再调用审批模型评估同类请求，直接返回 `repeated_denial`，提示主模型换方案或
-请求用户参与。该限制防止模型通过微调命令反复采样撞过阈值。
+同一 Run 内，只有已完成的模型判断 `rejected` / `review_uncertain` 消耗拒绝次数；
+认证、配置、传输、超时和预算错误不计数，修复后仍可重试。桶按工具、操作类别、cwd、
+行为和已确认的完整目标区分；没有已确认目标时使用执行参数指纹，忽略 tool-call ID、
+justification 和 failure_summary。相同动作仅换调用 ID 或理由不会重置计数；不同命令和
+同目录下不同文件不会互相占用次数。达到三次后直接返回 `repeated_denial`。
+该指纹不判断 shell 语义等价，未知目标的不同命令文本仍可能拥有不同桶。
 
 ## 10. 状态与异常处理
 
@@ -580,7 +654,7 @@ struct ToolCallResult {
 
 ### 10.2 超时与重试
 
-- 总预算 30 秒，包含建连、请求、一次重试和响应解析。
+- 总预算 30 秒，包含动作指纹和证据准备、并发槽等待、建连、请求、一次重试和响应解析。
 - 连接重置、明确 overload、HTTP 429/可重试 5xx 最多重试一次，使用短抖动退避。
 - 认证失败、配置错误、非法请求、schema 不匹配、未知 enum 不重试。
 - 重试使用同一个 `review_request_id` 和 action digest，provider 支持时传 idempotency key。
@@ -644,7 +718,7 @@ struct ToolCallResult {
   },
   "action_digest": "sha256:...",
   "model": "jev-...",
-  "prompt_version": 1,
+  "prompt_version": 4,
   "reason_catalog_version": 1,
   "policy_version": 1,
   "duration_ms": 318,
@@ -783,21 +857,26 @@ rationale，也不直接决定执行。这样既适合 Jev 这类 choice-only �
 
 ## 16. 实现边界与建议改动位置
 
-下面是实施阶段的路由，不表示这些文件已经修改：
+当前实现按职责组织如下：
 
 | 范围 | 建议位置 | 责任 |
 | --- | --- | --- |
 | 产品模式解析 | `agent/src/sandbox/`、Desktop settings | 拆分 sandbox tier 与 reviewer，处理 probe 回退 |
-| action 规范化 | `agent/src/rpc/approval.rs` 附近的新模块 | 构造 `ApprovalActionV1`、digest、限长与脱敏 |
-| 自动 reviewer | `agent/src/approval_review/`（新） | provider trait、Jev adapter、问题目录、策略矩阵 |
+| action 规范化 | `agent/src/approval_review/action.rs`、`redaction.rs` | 构造事实、执行 digest、拒绝桶与脱敏 |
+| 证据与预算 | `approval_review/evidence.rs`、`tool_evidence.rs`、`budget.rs` | 来源采集、选择、工具投影、预算与审计 |
+| System One | `agent/src/system_one.rs` | 共享 endpoint 配置、凭据、传输和 Choice builder |
+| 自动 reviewer | `approval_review/provider.rs`、`prompt.rs`、`policy.rs`、`context.rs`、`types.rs` | Provider、问题目录、策略矩阵、运行生命周期和类型化结果 |
+| 审批路由 | `agent/src/rpc/approval.rs` 及 `approval/` | 人工/模型路由、卡片形状、升级诊断，测试按职责分组 |
 | 主模型反馈 | `agent/src/types/mod.rs` 和 tool-call 消息组装 | 增加结构化 context annotation |
 | RPC 事件 | `packages/rpc/proto/future.proto` 及生成层 | typed `ApprovalAssessmentEvent` |
 | Desktop 投影 | `desktop/src-tauri/src/agent_bridge/` | 持久化 assessment，不切 waiting 状态 |
 | SQLite | `desktop/src-tauri/src/store/` | migration、表、查询、Run 删除级联 |
 | Runs UI | `desktop/src/` 对应 Runs detail | 列表、详情、本地化、脱敏展示 |
 
-实现时应优先抽出共享 action，而不是在现有 `ask_user` 分支旁直接拼一段 provider 请求。
-人工和自动审批必须消费同一规范化事实，否则两种模式会展示/评估不同的真实操作。
+`session_prompt.rs` 通过 gate 的 `for_run` 构造 reviewer，只转发运行证据；模型调用与策略
+不依赖技能推荐模块。路由使用类型化 verdict 决定执行，JSON 仅用于模型 state 和审计。
+字面值脱敏属于尽力过滤，不是 shell 解析器，无法保证任意命令里都没有秘密；保留命令
+结构同时排除任意工具正文。人工与自动审批消费同一审批形状，但诊断路径不能冒充已确认权限目标。
 
 ## 17. 测试计划
 
@@ -903,7 +982,7 @@ assessment，也不把旧决定重新执行。
 - 总 timeout 30 秒，并发上限 4，需观察真实时延与限流。
 - critical 关键数据禁区的可信配置来源和具体范围。
 - 首版 medium + medium authorization 自动通过，需评测误放行率。
-- 首版计数窗口为同一 Run、同一工具与粗粒度目标范围；用户新消息开始新 Run 后重置。
+- 计数窗口为同一 Run 内的工具/动作桶；仅模型拒绝计数，用户新消息开始新 Run 后重置。
 - shadow 阶段是否允许把评估展示给内部用户。
 - Jev 模型和 API 版本固定方式、成本预算及不可用时的设置页文案。
 - 上线评测的具体误放行红线和中文样本占比。

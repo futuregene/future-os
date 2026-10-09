@@ -1367,4 +1367,6 @@ message ApprovalAssessmentEvent {
   int32 reason_catalog_version = 17;
   int32 policy_version = 18;
   int64 duration_ms = 19;
+  // Source IDs, omissions and budget metadata only; no original evidence text.
+  optional string input_context_json = 20;
 }

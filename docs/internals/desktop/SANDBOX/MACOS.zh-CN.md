@@ -21,7 +21,14 @@ Agent 的 Unix 进程组终止逻辑处理 timeout/abort。native read/write/edi
 
 主动 `escalated: true` + justification 或失败文本匹配后，经 `EscalationRequester` 回到 RPC 审批。批准后当前整命令不再包 Seatbelt，只有一次，不持久改档、不生成精确路径授权。完整标题、路径展示限制见 [COMMON §4](COMMON.zh-CN.md#4-审批协议与界面)。
 
-目前拒绝判断包含 `Operation not permitted` / `sandbox-exec` 文本启发式，网络错误不作为拒绝依据。无法可靠证明内核拒绝的确切路径或命令此前未产生副作用，因此不得承诺无误报/安全自动重放。规则文件 hard deny 也不覆盖用户批准后的裸命令。
+失败检测对 `operation not permitted` / `sandbox-exec` 不区分 ASCII 大小写，
+并识别 Node 的结构化 `Error: EPERM:` 或 `code: 'EPERM'`；必须是非零退出。
+命中后在当前工具调用内请求审批，通过后重跑，无需主模型再次调用。网络错误和普通
+文件不存在错误不触发该路径。工具结果摘要复用相同权限诊断，路径提及仍是非可信背景，
+不当作已确认目标。macOS shell schema 不暴露 Windows 专用 `additional_permissions`，
+收到不支持的参数时仍由原有 backend 校验拒绝。
+
+无法可靠证明内核拒绝的确切路径或命令此前未产生副作用，因此不得承诺无误报/安全自动重放。规则文件 hard deny 也不覆盖用户批准后的裸命令。
 
 源码 `sandbox/mod.rs` 当前 macOS availability 是 `/usr/bin/sandbox-exec` 的存在检查，**不是 Linux/Windows 那样的真实生产能力 probe**。不可用走公共 manual 行为。`sandbox-exec` deprecated 风险已接受；未来系统兼容性需持续原生复验。
 
