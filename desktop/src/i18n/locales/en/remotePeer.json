@@ -51,5 +51,8 @@
     "office": "Office",
     "rocket": "Rocket",
     "flask": "Lab"
-  }
+  },
+  "approvalFallbackTitle": "Approval required",
+  "allow": "Allow",
+  "deny": "Deny"
 }

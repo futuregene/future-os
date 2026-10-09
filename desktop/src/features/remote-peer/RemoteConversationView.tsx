@@ -1,4 +1,5 @@
 import type { RemotePeer } from "./remotePeerClient";
+import type { RemoteApproval } from "./useRemoteApprovals";
 import type { RemoteEntry } from "./useRemoteTimeline";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
@@ -16,24 +17,32 @@ import { iconGlyph, peerBadgeText } from "./peerIcons";
  * them, which is exactly the second-copy-of-truth this feature must avoid.
  */
 export function RemoteConversationView({
+  approvals,
+  approvalErrors,
+  approvalPending,
   composer,
   entries,
   error,
   hasMore,
   loading,
   loadingOlder,
+  onDecideApproval,
   onLoadOlder,
   onRetry,
   peer,
   streaming,
   title,
 }: {
+  approvals: RemoteApproval[];
+  approvalErrors: Record<string, string>;
+  approvalPending: string | null;
   composer: React.ReactNode;
   entries: RemoteEntry[];
   error: string | null;
   hasMore: boolean;
   loading: boolean;
   loadingOlder: boolean;
+  onDecideApproval: (approval: RemoteApproval, decision: "allow" | "deny") => void;
   onLoadOlder: () => void;
   onRetry: () => void;
   peer: RemotePeer | undefined;
@@ -90,8 +99,78 @@ export function RemoteConversationView({
         </div>
       </div>
 
+      {/* Approvals sit above the composer, not inside the transcript: they are a
+          decision the user has to make now, and a card that scrolls away with
+          history is a card that gets missed while the host waits. */}
+      {approvals.length > 0
+        ? (
+            <div className="shrink-0 space-y-2 border-t border-line-soft bg-surface-subtle px-4 py-3">
+              {approvals.map(approval => (
+                <ApprovalCard
+                  approval={approval}
+                  error={approvalErrors[approval.id] ?? null}
+                  key={approval.id}
+                  onDecide={onDecideApproval}
+                  pending={approvalPending === approval.id}
+                  peerName={peer ? peerBadgeText(peer, peer.desktopId) : ""}
+                />
+              ))}
+            </div>
+          )
+        : null}
+
       {composer}
     </section>
+  );
+}
+
+/**
+ * A pending approval on the host.
+ *
+ * The card states where the tool will run, because the decision is easy to make
+ * wrongly: "allow" on a card that does not name the machine reads as a local
+ * action, and the whole point of this feature is that it is not.
+ */
+function ApprovalCard({
+  approval,
+  error,
+  onDecide,
+  pending,
+  peerName,
+}: {
+  approval: RemoteApproval;
+  error: string | null;
+  onDecide: (approval: RemoteApproval, decision: "allow" | "deny") => void;
+  pending: boolean;
+  peerName: string;
+}) {
+  const { t } = useTranslation("remotePeer");
+  return (
+    <div className="mx-auto w-full max-w-3xl rounded-lg border border-line-soft bg-surface p-3">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-ink">
+            {approval.title || approval.toolName || t("approvalFallbackTitle")}
+          </div>
+          {approval.summary
+            ? <div className="mt-0.5 wrap-break-word text-xs text-ink-muted">{approval.summary}</div>
+            : null}
+          <div className="mt-1 text-xs text-ink-muted">
+            {t("runsOn", { name: peerName })}
+            {approval.riskLevel ? ` · ${approval.riskLevel}` : ""}
+          </div>
+          {error ? <div className="mt-1 text-xs text-danger">{error}</div> : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button disabled={pending} onClick={() => onDecide(approval, "deny")} size="sm" variant="ghost">
+            {t("deny")}
+          </Button>
+          <Button disabled={pending} onClick={() => onDecide(approval, "allow")} size="sm" variant="primary">
+            {t("allow")}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 

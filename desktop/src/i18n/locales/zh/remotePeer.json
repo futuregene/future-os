@@ -51,5 +51,8 @@
     "office": "办公室",
     "rocket": "发布机",
     "flask": "实验机"
-  }
+  },
+  "approvalFallbackTitle": "需要审批",
+  "allow": "允许",
+  "deny": "拒绝"
 }

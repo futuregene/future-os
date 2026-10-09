@@ -13,6 +13,7 @@ import { sessionMentionOptions } from "../../features/agent/sessionMention";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemotePeersView } from "../../features/remote-peer/RemotePeersView";
+import { useRemoteApprovals } from "../../features/remote-peer/useRemoteApprovals";
 import { useRemoteTimeline } from "../../features/remote-peer/useRemoteTimeline";
 import { startRemote, stopRemote } from "../../features/remote/remoteClient";
 import { RemoteView } from "../../features/remote/RemoteView";
@@ -654,6 +655,10 @@ function ReadyAppShell({
     activeRemote?.sessionId ?? null,
     activeRemote !== null,
   );
+  const remoteApprovals = useRemoteApprovals(
+    activeRemote?.desktopId ?? null,
+    activeRemote?.sessionId ?? null,
+  );
   const activeRemotePeer = activeRemote
     ? remotePeers.find(peer => peer.desktopId === activeRemote.desktopId)
     : undefined;
@@ -817,6 +822,9 @@ function ReadyAppShell({
                       : section === "chat" && activeRemote
                         ? (
                             <RemoteConversationView
+                              approvals={remoteApprovals.approvals}
+                              approvalErrors={remoteApprovals.errors}
+                              approvalPending={remoteApprovals.pending}
                               composer={(
                                 <RemoteComposer
                                   desktopId={activeRemote.desktopId}
@@ -833,6 +841,7 @@ function ReadyAppShell({
                               hasMore={remoteTimeline.hasMore}
                               loading={remoteTimeline.loading}
                               loadingOlder={remoteTimeline.loadingOlder}
+                              onDecideApproval={(approval, decision) => void remoteApprovals.decide(approval, decision)}
                               onLoadOlder={() => void remoteTimeline.loadOlder()}
                               onRetry={() => void remoteTimeline.refresh()}
                               peer={activeRemotePeer}
