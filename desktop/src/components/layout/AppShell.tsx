@@ -189,10 +189,21 @@ function ReadyAppShell({
   }, [activeThread?.id, activeThread?.agentSessionId]);
 
   // Conversations the composer's `#` menu offers: the rail's order, minus the
-  // conversation being composed in (referencing yourself would be a no-op).
+  // conversation being composed in (referencing yourself would be a no-op). On
+  // the new-chat screen nothing is being composed *in* — the thread does not
+  // exist until the first message is sent — so nothing is excluded there.
+  // `activeThread` is only the conversation the user came from, and excluding it
+  // would hide the very conversation a first message most often references:
+  // opening a fresh chat to ask about what you were just doing found "no
+  // matches" for the one title you could be sure of. The id is still dropped on
+  // a real thread, where the composer does have a conversation of its own.
   const sessionMentions = useMemo(
-    () => sessionMentionOptions(threads, workspaces, activeThread?.agentSessionId),
-    [threads, workspaces, activeThread?.agentSessionId],
+    () => sessionMentionOptions(
+      threads,
+      workspaces,
+      centerMode === "new-chat" ? null : activeThread?.agentSessionId,
+    ),
+    [centerMode, threads, workspaces, activeThread?.agentSessionId],
   );
 
   // Refresh the store when the agent session's cwd changes (e.g. TUI /cwd),

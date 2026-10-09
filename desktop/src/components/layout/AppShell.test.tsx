@@ -836,6 +836,28 @@ describe("app shell layout", () => {
     view.unmount();
   });
 
+  // The `#` menu drops the conversation being composed in, because referencing
+  // yourself is a no-op. The new-chat screen is composing in no conversation —
+  // the thread does not exist yet — so `activeThread` there is only where the
+  // user came from, and dropping it hid the one conversation a first message is
+  // most likely to reference (typing `#` and the title you just left matched
+  // nothing). Reported as "the menu cannot find that conversation".
+  it("offers the conversation it was opened from as a # reference on the new-chat screen", () => {
+    const view = mount(<AppShell />);
+    // On a real thread the conversation being composed in is dropped ...
+    expect(
+      (children.agentThread as { sessionMentions?: Array<{ sessionId: string }> }).sessionMentions,
+    ).toEqual([]);
+
+    // ... while the new-chat screen offers it (still minus none: it is the
+    // only conversation there is, and it is the one worth referencing).
+    act(() => rail().onNewChat());
+    expect(
+      (children.newConversation as { sessionMentions?: Array<{ sessionId: string }> }).sessionMentions,
+    ).toMatchObject([{ sessionId: "t1" }]);
+    view.unmount();
+  });
+
   it("reopens the create-workspace form on every workspace '+' click", () => {
     const view = mount(<AppShell />);
     act(() => rail().onNewWorkspace());
