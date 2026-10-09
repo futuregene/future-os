@@ -183,7 +183,9 @@ Owned by the Tauri desktop app (see `desktop/`):
 
 - `app.db` — the SQLite database (threads, runs, approval requests, …). Its
   `app_settings` table holds the app's own preferences, which `future desktop
-  settings` reads and writes (see [self-inspection](self-inspection.md)).
+  settings` reads and writes, and its `workspaces` table holds the workspaces
+  workspace conversations are filed under, which `future workspace` reads and
+  adds to (see [self-inspection](self-inspection.md)).
 - `images/` — persistent per-thread image tree (`<thread_id>/thumb/` and,
   for workspace conversations, `<thread_id>/origin/`). Kept under `~/.future`
   rather than the OS cache dir because macOS may purge the cache.

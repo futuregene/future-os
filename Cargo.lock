@@ -1006,6 +1006,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "future-app-workspaces"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rusqlite",
+ "serde",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "future-channel"
 version = "0.1.0"
 dependencies = [
@@ -1051,6 +1062,7 @@ dependencies = [
  "dirs",
  "future-agent",
  "future-app-settings",
+ "future-app-workspaces",
  "future-channel",
  "future-loop",
  "future-rpc",
@@ -1060,6 +1072,7 @@ dependencies = [
  "indexmap 2.14.0",
  "reqwest",
  "rpassword",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

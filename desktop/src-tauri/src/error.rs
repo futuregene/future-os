@@ -63,6 +63,16 @@ impl From<future_app_settings::Error> for AppError {
     }
 }
 
+impl From<future_app_workspaces::Error> for AppError {
+    fn from(error: future_app_workspaces::Error) -> Self {
+        match error {
+            future_app_workspaces::Error::Database(error) => AppError::Database(error),
+            future_app_workspaces::Error::Io(error) => AppError::Io(error),
+            future_app_workspaces::Error::Invalid(message) => AppError::Message(message),
+        }
+    }
+}
+
 impl From<String> for AppError {
     fn from(message: String) -> Self {
         AppError::Message(message)

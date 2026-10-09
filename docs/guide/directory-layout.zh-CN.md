@@ -151,7 +151,10 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
 
 归 Tauri 桌面应用所有（见 `desktop/`）：
 
-- `app.db` — SQLite 数据库（线程、run、审批请求等）。其中的 `app_settings` 表存放\n  桌面端自己的偏好，`future desktop settings` 可以读写（见\n  [自我认知](self-inspection.zh-CN.md)）。
+- `app.db` — SQLite 数据库（线程、run、审批请求等）。其中的 `app_settings` 表存放
+  桌面端自己的偏好，`future desktop settings` 可以读写；`workspaces` 表存放工作区会话
+  归档到的那些工作区，`future workspace` 可以读取并新增（见
+  [自我认知](self-inspection.zh-CN.md)）。
 - `images/` — 持久化的每线程图片树（`<thread_id>/thumb/`，工作区对话另有
   `<thread_id>/origin/`）。放在 `~/.future` 而非系统缓存目录，是因为 macOS
   可能清理缓存目录。

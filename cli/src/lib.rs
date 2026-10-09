@@ -138,6 +138,14 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
         return catch(out, commands::task::task(command, rest, out)).await;
     }
 
+    // `future workspace` — the desktop app's workspaces, from the terminal.
+    if group == Some("workspace") {
+        return catch(out, async {
+            commands::workspace::workspace(command, rest, out)
+        })
+        .await;
+    }
+
     // if (group === "auth" && (!command || command === "--help" || command === "-h"))
     if group == Some("auth")
         && (command.is_none() || command == Some("--help") || command == Some("-h"))

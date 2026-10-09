@@ -14,6 +14,7 @@
 |---|---|
 | `future config get [<key>] [--json]` | 生效中的全局设置（含默认值） |
 | `future desktop settings [<key>] [--json]` | 桌面端自己的设置（审批档、隐藏模型……，含默认值） |
+| `future workspace list --json` | 桌面端的工作区（工作区会话归档到的那些目录） |
 | `future doctor` | 一次检查登录、Agent 连接、沙箱、provider、会话与技能 |
 | `future models --json` | 本 Agent 可用的模型 |
 | `future version --json` | 这是哪个构建：版本、commit、目标平台、是否有未提交改动 |
@@ -296,6 +297,30 @@ future desktop settings set hiddenModels "future/glm-5.3, future/kimi-k3"
 
 读写都不需要桌面端在运行，桌面端会在下次读取设置时看到改动；在它自己的设置界面里
 做的修改则立即生效。
+
+## 桌面端的工作区
+
+**工作区**是「工作区会话」归档到的那一个目录。工作区记录存在同一个
+`~/.future/app/app.db` 的 `workspaces` 表里——这也是为什么在终端里加的工作区会
+出现在桌面端侧栏和已配对手机上（桌面端下一次 tick 会重新发布 catalogue）。
+
+```sh
+future workspace list                 # 用户自己的工作区
+future workspace list --json
+future workspace add ~/projects/demo  # 把一个已存在的目录登记为工作区
+future workspace add /srv/app --name "Service"
+```
+
+目录必须已存在——工作区指向一个目录，不会创建它。路径已经对应某个工作区时直接复用，
+不会重复创建：同一个目录始终只有一个工作区，无论路径怎么拼（`~`、软链、结尾多一个
+分隔符）。名称默认取目录名。`add` 会说明这次是新建还是复用
+（`--json` 下是 `"created": true|false`），这也是它为什么可以安全地重复执行。
+
+写入不需要桌面端在运行，正在运行的桌面端会在下次读取时看到它。
+
+> `future workspace` 管的是**桌面端**的工作区记录。会话的工作目录是 Agent 侧的属性
+> （`future session set <id> --cwd`）；桌面端导入会话时会由它推导出工作区记录，
+> 这是 Agent 侧会话出现在侧栏里的方式。
 
 ## 值得写明的边界
 

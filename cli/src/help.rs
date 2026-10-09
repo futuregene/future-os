@@ -12,6 +12,7 @@ Groups:
   init      Install built-in skills and initialize local commands
   config    Configure a model provider, and read/write global settings
   desktop   Read and change the desktop app's settings
+  workspace List, and add, the desktop app's workspaces
   auth      Authentication & API key management
   account   Platform account info
   run       Send a prompt to the agent (one-shot, non-interactive)
@@ -44,6 +45,7 @@ Run 'future <group> --help' for per-group details.
   future init --help         Initialization behavior
   future config --help       Interactive model-provider setup
   future desktop --help      Desktop app settings
+  future workspace --help    Desktop app workspaces (list/add)
   future run --help          All run options (model, fork, thinking, tools, etc.)
   future auth --help         Auth subcommands
   future account --help      Account subcommands
@@ -207,6 +209,35 @@ Settable keys (camelCase, as the desktop API spells them):
   skillRecommend          true|false         Recommend one uninstalled skill
 
 A list value is a JSON array or a comma-separated list; an empty value clears it."#;
+
+/// `future workspace --help` output.
+pub const WORKSPACE_HELP: &str = r#"future workspace — manage the desktop app's workspaces
+
+Usage:
+  future workspace list [--json]                    List the user's workspaces
+  future workspace add <path> [--name <name>] [--json]
+                                                   Add a directory as a workspace
+
+A workspace is a directory on this machine that workspace conversations are
+filed under. The records live in the desktop app's own database
+(~/.future/app/app.db) — the same store the app's new-conversation dialog and a
+paired phone write — so a workspace added here appears in the desktop app's
+sidebar and on the phone once the app publishes its catalogue. No running
+desktop app is required for the write.
+
+The directory must already exist: a workspace points at a directory, it does not
+create one. Adding a path that already has a workspace reopens that workspace
+instead of creating a second one for the same directory, however the path is
+spelled (~, a symlinked path, a trailing separator) — one directory is always
+one workspace.
+
+Examples:
+  future workspace list
+  future workspace add ~/projects/demo
+  future workspace add /srv/app --name "Service"
+
+With --json, list prints an array of workspace records and add prints the
+record it created or reopened, with "created" saying which."#;
 
 /// `future desktop settings get --help` output.
 pub const DESKTOP_GET_HELP: &str = r#"future desktop settings get — show the desktop app's effective settings
