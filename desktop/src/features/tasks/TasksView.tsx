@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
+import { defaultThinkingLevel, modelSupportsThinking, normalizeThinkingLevel } from "../../integrations/agent/agentClient";
 import { formatDateTime } from "../../lib/date";
 import { useTauriEvent } from "../../lib/useTauriEvent";
 import { useTasks } from "./useTasks";
@@ -82,7 +83,17 @@ const emptyDraft = {
   depJoin: "all",
 };
 
-/** Thinking levels the agent accepts, in the composer's order. */
+/**
+ * Thinking levels a task may pin, in the composer's order.
+ *
+ * Deliberately the full list rather than the selected model's declared
+ * `ThinkingLevelMap`: those maps are sparse (several models declare none, and
+ * `deepseek-flash` declares only `high`/`xhigh`), while an unmapped level is
+ * passed through to the provider as-is and is accepted. Filtering by the map
+ * would make the app default (`medium`) unselectable on most models. What the
+ * form does mirror is the composer's one real rule: a model with no reasoning
+ * support at all (`reasoning: false`) gets the control disabled.
+ */
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 type Draft = typeof emptyDraft;
@@ -446,6 +457,22 @@ function TaskForm({
   // listed after the enabled ones so the difference is visible.
   const enabledKeys = new Set(models.map(model => `${model.provider}/${model.id}`));
   const pinned = draft.modelId && !enabledKeys.has(draft.modelId) ? draft.modelId : null;
+  // Whether the chosen model can think at all. A model that cannot
+  // (`reasoning: false`) makes the level meaningless, so the control is
+  // disabled rather than left offering a choice that does nothing.
+  const supportsThinking = modelSupportsThinking(draft.modelId, models);
+  /**
+   * Switching models normalises the level the way the composer does. A task can
+   * hold a level from an earlier model, and saving it unchanged onto a model
+   * that cannot think would pin an effort the model never runs at.
+   */
+  const chooseModel = (modelId: string) =>
+    onChange({
+      modelId,
+      thinkingLevel: modelSupportsThinking(modelId, models)
+        ? normalizeThinkingLevel(draft.thinkingLevel)
+        : "off",
+    });
   const nameOf = (dep: DraftDep) => dep.name || dep.upstreamTaskId;
   const addable = candidates.filter(
     candidate => !draft.deps.some(dep => dep.upstreamTaskId === candidate.id),
@@ -536,7 +563,7 @@ function TaskForm({
       <div className="grid grid-cols-2 gap-3">
         <label className="block space-y-1.5">
           <span className="text-xs text-ink-soft">{t("form.model")}</span>
-          <Select value={draft.modelId} onChange={e => onChange({ modelId: e.target.value })}>
+          <Select value={draft.modelId} onChange={e => chooseModel(e.target.value)}>
             {/* No "default" entry: the model is the user's decision, and an
                 empty value only ever means "not chosen yet". */}
             <option value="" disabled>{t("form.modelPlaceholder")}</option>
@@ -553,12 +580,20 @@ function TaskForm({
         </label>
         <label className="block space-y-1.5">
           <span className="text-xs text-ink-soft">{t("form.thinking")}</span>
-          <Select value={draft.thinkingLevel} onChange={e => onChange({ thinkingLevel: e.target.value })}>
+          <Select
+            value={draft.thinkingLevel}
+            disabled={!supportsThinking}
+            title={supportsThinking ? undefined : t("agent:composer.thinkingUnsupported")}
+            onChange={e => onChange({ thinkingLevel: e.target.value })}
+          >
             <option value="" disabled>{t("form.thinkingPlaceholder")}</option>
             {THINKING_LEVELS.map(level => (
               <option key={level} value={level}>{t(`agent:composer.thinkingLevelLabels.${level}`)}</option>
             ))}
           </Select>
+          {!supportsThinking
+            ? <p className="text-xs text-ink-muted">{t("agent:composer.thinkingUnsupported")}</p>
+            : null}
         </label>
       </div>
 
@@ -956,7 +991,17 @@ function TaskDetail({
                       // per-task, so a detail page that omits them cannot answer "what
                       // does this run on?".
                       [t("colModel"), task.modelId ?? t("modelDefault")],
-                      [t("colThinking"), task.thinkingLevel ? t(`agent:composer.thinkingLevelLabels.${task.thinkingLevel}`) : t("thinkingDefault")],
+                      // An unset level is not "unknown": the agent applies its own
+                      // default, so the row names that value rather than saying
+                      // "Default" and leaving the user to guess what it means. The
+                      // value comes from the constant the composer uses, so it
+                      // cannot drift from what a session actually gets.
+                      [
+                        t("colThinking"),
+                        task.thinkingLevel
+                          ? t(`agent:composer.thinkingLevelLabels.${task.thinkingLevel}`)
+                          : `${t("thinkingDefault")} (${t(`agent:composer.thinkingLevelLabels.${defaultThinkingLevel}`)})`,
+                      ],
                       // A chat task may name no directory at all: it runs in its own
                       // conversation's workspace, and an empty row would read as "missing".
                       [t("colCwd"), task.cwd.trim() || (task.conversationMode === "chat" ? t("cwdChatWorkspace") : "—")],
