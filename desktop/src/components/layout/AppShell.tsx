@@ -1,3 +1,4 @@
+import type { DeviceFilter, MergedConversation, RemoteCatalog } from "../../features/remote-peer/mergeConversations";
 import type { SettingsTab } from "../../features/settings/SettingsDialog";
 import type { FutureAuthState, ProvidersView } from "../../integrations/agent/providers";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
@@ -9,7 +10,10 @@ import { AgentThread } from "../../features/agent/AgentThread";
 import { saveComposerDraft } from "../../features/agent/composerDraft";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { sessionMentionOptions } from "../../features/agent/sessionMention";
+import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
+import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemotePeersView } from "../../features/remote-peer/RemotePeersView";
+import { useRemoteTimeline } from "../../features/remote-peer/useRemoteTimeline";
 import { startRemote, stopRemote } from "../../features/remote/remoteClient";
 import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
@@ -52,6 +56,7 @@ import { useHasProviders } from "./hooks/useHasProviders";
 import { useLeftPanelWidth } from "./hooks/useLeftPanelWidth";
 import { useModelSelection } from "./hooks/useModelSelection";
 import { useNewConversation } from "./hooks/useNewConversation";
+import { useRemotePeers } from "./hooks/useRemotePeers";
 import { useRemoteStatus } from "./hooks/useRemoteStatus";
 import { useRightPanelWidth } from "./hooks/useRightPanelWidth";
 import { useThreadDialogs } from "./hooks/useThreadDialogs";
@@ -69,6 +74,24 @@ interface WorkspaceCreateRequest {
   name?: string | null;
   path: string;
   createDirectory: boolean;
+}
+
+/**
+ * A remote session's title, from the catalogue the rows are built from.
+ *
+ * Falls back to the session id rather than to an empty header: a conversation
+ * the catalogue has not caught up with yet is still *open*, and a blank title
+ * would read as a broken view instead of a pending read.
+ */
+function titleOfRemote(
+  catalogs: RemoteCatalog[],
+  target: { desktopId: string; sessionId: string },
+): string {
+  return catalogs
+    .find(catalog => catalog.desktopId === target.desktopId)
+    ?.sessions
+    .find(session => session.sessionId === target.sessionId)
+    ?.title ?? target.sessionId;
 }
 
 export function AppShell() {
@@ -97,6 +120,21 @@ function ReadyAppShell({
   const { t } = useTranslation("layout");
   const [section, setSection] = useState<ActivitySection>("chat");
   const [centerMode, setCenterMode] = useState<"thread" | "new-chat">("thread");
+  /**
+   * Which machines the conversation list shows. Kept at the shell rather than
+   * in the rail so the choice survives the rail remounting when the sidebar
+   * collapses.
+   */
+  const [deviceFilter, setDeviceFilter] = useState<DeviceFilter>({ kind: "all" });
+  /**
+   * The remote conversation on screen, if any.
+   *
+   * Its own state rather than a third `centerMode`: the two are different kinds
+   * of thing (a local thread id vs a `(desktopId, sessionId)` pair), and the
+   * new-chat flows only know how to leave the thread view — giving them a mode
+   * they never set is how a stale remote view reappears.
+   */
+  const [activeRemote, setActiveRemote] = useState<{ desktopId: string; sessionId: string } | null>(null);
   const [leftExpanded, setLeftExpanded] = useState(true);
   const [leftOverlayOpen, setLeftOverlayOpen] = useState(false);
   const [rightExpanded, setRightExpanded] = useState(false);
@@ -126,6 +164,10 @@ function ReadyAppShell({
     status: futureSessionStatus,
   } = useFutureAccount(initialAuth);
   const { appSettings, changeSettings } = useAppSettings(futureSessionStatus);
+  // Remote desktops (client role). Enabled for the whole session: the merged
+  // conversation list is the chat section's own list, so a peer appearing must
+  // update it without the user having visited the Remote Desktops screen first.
+  const { peers: remotePeers, catalogs: remoteCatalogs, refresh: refreshRemotePeers } = useRemotePeers(true);
   useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
   useAgentDoneBell(appSettings.bellOnComplete);
   const { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initPending } = useHasProviders(futureSessionStatus, initialProviders);
@@ -607,9 +649,34 @@ function ReadyAppShell({
     setLeftOverlayOpen(open);
   }
 
+  const remoteTimeline = useRemoteTimeline(
+    activeRemote?.desktopId ?? null,
+    activeRemote?.sessionId ?? null,
+    activeRemote !== null,
+  );
+  const activeRemotePeer = activeRemote
+    ? remotePeers.find(peer => peer.desktopId === activeRemote.desktopId)
+    : undefined;
+
+  function openRemoteConversation(conversation: MergedConversation) {
+    if (conversation.desktopId === null)
+      return;
+    setActiveRemote({ desktopId: conversation.desktopId, sessionId: conversation.id });
+    setSection("chat");
+  }
+
   const activityRailProps = {
     active: section,
     activeThreadId,
+    remotePeers,
+    remoteCatalogs,
+    deviceFilter,
+    onChangeDeviceFilter: setDeviceFilter,
+    onOpenRemoteConversation: openRemoteConversation,
+    onManageDesktops: () => handleSectionChange("peers"),
+    activeRemoteKey: activeRemote
+      ? `${activeRemote.desktopId}::${activeRemote.sessionId}`
+      : null,
     hasUpdate,
     threads,
     threadRunStatuses,
@@ -747,53 +814,79 @@ function ReadyAppShell({
                       ? (
                           <RemotePeersView leftPanelExpanded={showLeftPanel} onToggleLeftPanel={handleToggleLeftPanel} />
                         )
-                      : storeError
+                      : section === "chat" && activeRemote
                         ? (
-                            <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
-                              {t("appShell.storeInitFailed")}
-                              {storeError}
-                            </div>
+                            <RemoteConversationView
+                              composer={(
+                                <RemoteComposer
+                                  desktopId={activeRemote.desktopId}
+                                  onSent={() => {
+                                    void remoteTimeline.refresh();
+                                    void refreshRemotePeers();
+                                  }}
+                                  peer={activeRemotePeer}
+                                  sessionId={activeRemote.sessionId}
+                                />
+                              )}
+                              entries={remoteTimeline.entries}
+                              error={remoteTimeline.error}
+                              hasMore={remoteTimeline.hasMore}
+                              loading={remoteTimeline.loading}
+                              loadingOlder={remoteTimeline.loadingOlder}
+                              onLoadOlder={() => void remoteTimeline.loadOlder()}
+                              onRetry={() => void remoteTimeline.refresh()}
+                              peer={activeRemotePeer}
+                              streaming={remoteTimeline.streaming}
+                              title={titleOfRemote(remoteCatalogs, activeRemote)}
+                            />
                           )
-                        : (
-                            <AgentThread
+                        : storeError
+                          ? (
+                              <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
+                                {t("appShell.storeInitFailed")}
+                                {storeError}
+                              </div>
+                            )
+                          : (
+                              <AgentThread
                               // One instance per conversation: switching threads
                               // remounts, so a conversation's messages, listeners and
                               // in-flight writes can never bleed into another.
-                              key={activeThread?.id ?? "__none"}
-                              activeApproval={activeApproval}
-                              agentConnection={agentConnection}
-                              approvalTier={appSettings.approvalTier}
-                              loadingStore={loadingStore}
-                              modelId={activeThreadModelId}
-                              modelOptions={visibleModelOptions}
-                              onModelChange={changeModel}
-                              onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
-                              thinkingLevel={activeThinkingLevel}
-                              onThinkingLevelChange={changeThinkingLevel}
-                              pendingPrompt={pendingPrompt}
-                              thread={activeThread}
-                              sessionMentions={sessionMentions}
-                              workspacePath={activeWorkspace?.path ?? null}
-                              onApprovalDecision={handleApprovalDecision}
-                              leftPanelExpanded={showLeftPanel}
-                              onRetryAgentConnection={() => void refreshAgentModels()}
-                              onOpenAccount={handleOpenAccount}
-                              onOpenModels={handleOpenModels}
-                              onOpenProviders={handleOpenProviders}
-                              onToggleLeftPanel={handleToggleLeftPanel}
-                              skillRecommend={appSettings.skillRecommend}
-                              futureSessionStatus={futureSessionStatus}
-                              futureBalance={futureBalance}
-                              headerAction={terminalHeaderAction}
-                              onPromptConsumed={consumePendingPrompt}
-                              onForked={(forkedThreadId: string) => {
-                                void refreshStore(forkedThreadId);
-                              }}
-                              onThreadActivity={() => {
-                                void refreshStore(activeThread?.id ?? undefined);
-                              }}
-                            />
-                          )}
+                                key={activeThread?.id ?? "__none"}
+                                activeApproval={activeApproval}
+                                agentConnection={agentConnection}
+                                approvalTier={appSettings.approvalTier}
+                                loadingStore={loadingStore}
+                                modelId={activeThreadModelId}
+                                modelOptions={visibleModelOptions}
+                                onModelChange={changeModel}
+                                onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
+                                thinkingLevel={activeThinkingLevel}
+                                onThinkingLevelChange={changeThinkingLevel}
+                                pendingPrompt={pendingPrompt}
+                                thread={activeThread}
+                                sessionMentions={sessionMentions}
+                                workspacePath={activeWorkspace?.path ?? null}
+                                onApprovalDecision={handleApprovalDecision}
+                                leftPanelExpanded={showLeftPanel}
+                                onRetryAgentConnection={() => void refreshAgentModels()}
+                                onOpenAccount={handleOpenAccount}
+                                onOpenModels={handleOpenModels}
+                                onOpenProviders={handleOpenProviders}
+                                onToggleLeftPanel={handleToggleLeftPanel}
+                                skillRecommend={appSettings.skillRecommend}
+                                futureSessionStatus={futureSessionStatus}
+                                futureBalance={futureBalance}
+                                headerAction={terminalHeaderAction}
+                                onPromptConsumed={consumePendingPrompt}
+                                onForked={(forkedThreadId: string) => {
+                                  void refreshStore(forkedThreadId);
+                                }}
+                                onThreadActivity={() => {
+                                  void refreshStore(activeThread?.id ?? undefined);
+                                }}
+                              />
+                            )}
           </main>
           {/* Views without thread context hide the right panel entirely, including
           the collapsed expand affordance. */}
