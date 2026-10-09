@@ -73,9 +73,28 @@ struct Runtime {
     /// The subscription task per host, aborted on disconnect so a host the user
     /// removed cannot keep emitting into a UI that has forgotten it.
     tasks: HashMap<String, tokio::task::JoinHandle<()>>,
+    /// The reconnect task per host, aborted on an explicit disconnect so a
+    /// deliberate stop cannot be undone by a retry that was already scheduled.
+    supervisors: HashMap<String, tokio::task::JoinHandle<()>>,
     /// The last failure per host. Kept after a disconnect so the list can say
     /// *why* a host is not connected instead of only that it is not.
     errors: HashMap<String, String>,
+}
+
+/// The retry schedule for a dropped connection, in seconds.
+///
+/// Mirrors the contract the phone implements: bounded backoff with jitter, and
+/// a total window after which the client stops trying and reports a terminal
+/// failure. An unbounded retry against a host that will never come back is
+/// indistinguishable, to the user, from a hung app.
+const RECONNECT_DELAYS_SECS: &[u64] = &[1, 2, 4, 8, 16, 30];
+
+fn reconnect_delay(attempt: usize) -> std::time::Duration {
+    let base = RECONNECT_DELAYS_SECS[attempt.min(RECONNECT_DELAYS_SECS.len() - 1)];
+    // ±20% jitter: several hosts coming back after a network blip must not
+    // stampede the relay in the same second.
+    let jitter = 1.0 + (rand::random::<f64>() - 0.5) * 0.4;
+    std::time::Duration::from_secs_f64(base as f64 * jitter)
 }
 
 fn runtime() -> &'static Mutex<Runtime> {
@@ -292,8 +311,54 @@ pub(crate) async fn connect_with_emitter(
             );
         }
         live.live.insert(desktop_id.to_string(), peer_session);
+        // A live connection is proof the retry loop is no longer needed; it is
+        // restarted below only if this connection later drops.
+        if let Some(supervisor) = live.supervisors.remove(desktop_id) {
+            supervisor.abort();
+        }
     }
     Ok(summary)
+}
+
+/// Keep one host connected: watch the socket, and reconnect when it drops.
+///
+/// Runs until it succeeds, until its retry window is exhausted, or until it is
+/// aborted (an explicit disconnect, or a newer connection replacing it). The
+/// window is what makes the failure terminal: a client that retries forever
+/// looks identical to one that hung, and the user has no way to tell which.
+pub(crate) fn spawn_supervisor(
+    desktop_id: String,
+    emitter: Option<Emitter>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut attempt = 0usize;
+        loop {
+            tokio::time::sleep(reconnect_delay(attempt)).await;
+            // Already connected (something else reconnected while we waited).
+            let connected = runtime().lock().await.live.contains_key(&desktop_id);
+            if connected {
+                return;
+            }
+            match resume(&desktop_id, emitter.clone()).await {
+                Ok(()) => return,
+                Err(error) => {
+                    eprintln!("remote_peer: reconnect attempt for {desktop_id} failed: {error}");
+                }
+            }
+            attempt += 1;
+            // Measured in *attempts*, not wall clock: the delay schedule already
+            // caps the wait, and a clock here would need a monotonic source the
+            // tests would have to fake.
+            if attempt >= RECONNECT_DELAYS_SECS.len() * 3 {
+                return;
+            }
+        }
+    })
+}
+
+/// Refresh credentials when needed, then reconnect and re-subscribe.
+async fn resume(desktop_id: &str, emitter: Option<Emitter>) -> Result<(), crate::AppError> {
+    connect_with_emitter(desktop_id, emitter).await.map(|_| ())
 }
 
 /// Drain the host's event and presence subscriptions into `emitter`.
@@ -350,6 +415,11 @@ pub(crate) async fn disconnect(desktop_id: &str) {
     let mut live = runtime().lock().await;
     if let Some(task) = live.tasks.remove(desktop_id) {
         task.abort();
+    }
+    // Without this, a retry scheduled a second ago would silently bring the
+    // connection back after the user asked for it to stop.
+    if let Some(supervisor) = live.supervisors.remove(desktop_id) {
+        supervisor.abort();
     }
     live.live.remove(desktop_id);
 }
@@ -432,6 +502,13 @@ pub(crate) async fn request(
             live.errors
                 .insert(desktop_id.to_string(), error.to_string());
             live.live.remove(desktop_id);
+            // The connection was healthy and then was not: exactly the case
+            // automatic recovery is for. An explicit disconnect takes the
+            // supervisor with it, so this cannot resurrect a stopped link.
+            if !live.supervisors.contains_key(desktop_id) {
+                let supervisor = spawn_supervisor(desktop_id.to_string(), None);
+                live.supervisors.insert(desktop_id.to_string(), supervisor);
+            }
         }
     }
     result
@@ -475,4 +552,71 @@ fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The retry schedule is bounded and non-shrinking: an unbounded retry
+    /// against a host that will never return is indistinguishable, to the user,
+    /// from an app that hung.
+    /// The *base* schedule is what must grow and be bounded; jitter only
+    /// perturbs each draw around its step, so a jittered sample is deliberately
+    /// not monotonic (30s×1.2 can exceed the next step's 30s×0.8 — that is the
+    /// point of jitter). Asserting on the drawn values would test the noise.
+    #[test]
+    fn the_reconnect_schedule_grows_and_is_capped() {
+        for pair in RECONNECT_DELAYS_SECS.windows(2) {
+            assert!(
+                pair[1] >= pair[0],
+                "the base schedule must not shrink: {RECONNECT_DELAYS_SECS:?}"
+            );
+        }
+        assert_eq!(
+            RECONNECT_DELAYS_SECS.last(),
+            Some(&30),
+            "the last step is the cap"
+        );
+        // Past the end the delay stays at the cap rather than growing without
+        // bound, and every draw stays inside the jitter band for its step.
+        for attempt in 0..RECONNECT_DELAYS_SECS.len() + 5 {
+            let base = RECONNECT_DELAYS_SECS[attempt.min(RECONNECT_DELAYS_SECS.len() - 1)] as f64;
+            for _ in 0..16 {
+                let drawn = reconnect_delay(attempt).as_secs_f64();
+                assert!(
+                    drawn >= base * 0.8 && drawn <= base * 1.2,
+                    "attempt {attempt}: {drawn}s is outside the ±20% band around {base}s"
+                );
+            }
+        }
+    }
+
+    /// Jitter is what keeps several hosts from retrying in the same instant, so
+    /// it has to actually vary — a constant would pass the range check above.
+    #[test]
+    fn reconnect_delays_are_jittered_not_constant() {
+        let samples: Vec<f64> = (0..64).map(|_| reconnect_delay(5).as_secs_f64()).collect();
+        let min = samples.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = samples.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        assert!(max - min > 0.5, "delay never varied: {min}..{max}");
+    }
+
+    /// An explicit disconnect must take the retry with it, or a reconnect
+    /// scheduled a moment earlier silently undoes the user's decision.
+    #[tokio::test]
+    async fn disconnect_aborts_the_supervisor() {
+        let _home = crate::remote::test_support::HomeGuard::new("peer-disconnect-supervisor");
+        let handle = spawn_supervisor("desktop_a".into(), None);
+        runtime()
+            .lock()
+            .await
+            .supervisors
+            .insert("desktop_a".into(), handle);
+        disconnect("desktop_a").await;
+        assert!(
+            !runtime().lock().await.supervisors.contains_key("desktop_a"),
+            "the supervisor must not outlive an explicit disconnect"
+        );
+    }
 }
