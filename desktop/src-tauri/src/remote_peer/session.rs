@@ -63,10 +63,7 @@ impl PeerSession {
     /// A reachable bridge with an unavailable agent is `LC003` in the support
     /// table: the link is up and every command fails.
     pub(crate) fn agent_available(&self) -> bool {
-        self.presence
-            .get("agentAvailable")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
+        agent_available(&self.presence)
     }
 
     /// The traffic-key mutex, shared with the event stream task. The task takes
@@ -175,6 +172,19 @@ pub(crate) fn command_subject(pair_id: &str, session_key: &str) -> String {
         session_key
     };
     format!("p.{pair_id}.cmd.{key}")
+}
+
+/// The host's own statement about its agent, read from the handshake presence.
+///
+/// Absent or non-boolean reads as `false`, not `true`: the value gates a UI that
+/// says "everything is fine", so an older host that does not report the field
+/// must not be assumed healthy — the user would find out from a failed command
+/// instead.
+pub(crate) fn agent_available(presence: &Value) -> bool {
+    presence
+        .get("agentAvailable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// A completed connection, plus what the handshake learned about the pairing.
@@ -472,5 +482,21 @@ mod tests {
         assert_eq!(command_subject("pair_1", ""), "p.pair_1.cmd.new");
         assert_eq!(command_subject("pair_1", "list"), "p.pair_1.cmd.list");
         assert_eq!(command_subject("pair_1", "sess_9"), "p.pair_1.cmd.sess_9");
+    }
+
+    /// Asserted here rather than through a live connection: whether an agent
+    /// happens to be reachable is a property of the machine running the test,
+    /// not of the client, so an end-to-end check of it would be asserting the
+    /// environment. What the client owns is the *reading*.
+    #[test]
+    fn agent_availability_is_read_from_the_hosts_own_statement() {
+        assert!(agent_available(&json!({ "agentAvailable": true })));
+        assert!(!agent_available(&json!({ "agentAvailable": false })));
+        // An older host that omits the field, or reports it as something else,
+        // must not be treated as healthy: the UI says "everything is fine" on
+        // `true`, and the user would otherwise find out from a failed command.
+        assert!(!agent_available(&json!({})));
+        assert!(!agent_available(&json!({ "agentAvailable": "yes" })));
+        assert!(!agent_available(&Value::Null));
     }
 }
