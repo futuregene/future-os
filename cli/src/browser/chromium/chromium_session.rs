@@ -121,9 +121,13 @@ impl ChromiumSession {
 
         let endpoint_info = resolve_cdp_endpoint(self.params.endpoint(), 5_000).await?;
 
-        let connection = CdpConnection::connect(&endpoint_info.web_socket_debugger_url, 10_000)
-            .await
-            .map_err(|e| e.to_string())?;
+        let connection = CdpConnection::connect_with_socket(
+            &endpoint_info.web_socket_debugger_url,
+            endpoint_info.socket.as_ref(),
+            10_000,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
         let browser_sess = CdpSession::new("", connection.clone());
 

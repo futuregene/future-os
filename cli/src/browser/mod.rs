@@ -3,6 +3,7 @@
 //! Modules:
 //! - `backend` — session interfaces, deadline, options
 //! - `types` — BrowserConfig / connection config / timeouts
+//! - `target` — endpoint parsing (http URL vs local socket)
 //! - `errors` — user-actionable error classes
 //! - `browser_state` — config.json read/write + v1→v2 migration
 //! - `discovery` — findBrowser(executablePath?)
@@ -26,6 +27,7 @@ pub mod screenshot_writer;
 pub mod scripts;
 pub mod selector;
 pub mod tab_order;
+pub mod target;
 pub mod types;
 pub mod windows_process;
 

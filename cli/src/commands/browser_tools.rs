@@ -20,6 +20,7 @@ use crate::browser::safari::safari_manager::safari_start;
 use crate::browser::screenshot_writer::{browser_dir, resolve_screenshot_path, write_screenshot};
 use crate::browser::scripts::SNAPSHOT_FUNCTION_SOURCE;
 use crate::browser::selector::resolve_target;
+use crate::browser::target::{EndpointTarget, SocketSpec};
 use crate::browser::types::{BrowserConfig, BrowserConnectionConfig, DEFAULT_TIMEOUTS};
 use crate::output::Output;
 use serde_json::{json, Map, Value};
@@ -36,21 +37,40 @@ pub struct BrowserToolEntry {
 }
 
 /// `BROWSER_TOOL_CATALOG` — the single `browser` tool.
+///
+/// Every argument the tool actually reads belongs here: this catalog is what
+/// `future tools describe browser` prints, so a flag missing from it is a flag
+/// nobody can discover. `endpoint` in particular is the only way to reach a
+/// browser that is not on the default TCP port (including a local socket).
 pub fn browser_tool_catalog() -> Vec<(&'static str, BrowserToolEntry)> {
     vec![(
         "browser",
         BrowserToolEntry {
-            description: "Control a local Chrome/Edge/Safari browser for web automation: navigate pages, take snapshots, click elements, fill forms, capture screenshots.",
+            description: "Control a local Chrome/Edge/Safari browser for web automation: navigate pages, take snapshots, click elements, fill forms, capture screenshots. Connects over HTTP (a remote debugging port) or a local socket (`unix:<path>` / `abstract:<name>`, e.g. Chrome on Android).",
             args: vec![
                 ("command", "sub-command: start | status | open | snapshot | click | type | press | scroll | screenshot | console | tabs (required)"),
                 ("url", "URL to navigate to (for open / start)"),
                 ("ref", "element reference from a previous snapshot (for click / type)"),
+                ("selector", "CSS selector, when no ref is available (for click / type / scroll)"),
+                ("target", "alias for selector"),
                 ("text", "text to type into an element (for type)"),
                 ("key", "key to press, e.g. \"Enter\" or \"Escape\" (for press)"),
+                ("submit", "press Enter after typing, e.g. to submit a form (for type, default: false)"),
+                ("clear", "clear the element before typing (for type, default: true)"),
+                ("direction", "scroll direction: \"up\" | \"down\" (for scroll, default: down)"),
+                ("amount", "scroll distance in pixels (for scroll, default: 300)"),
+                ("action", "tab action: list | new | select | close (for tabs, default: list)"),
+                ("index", "tab index, from the tab list (for tabs select / close)"),
                 ("fullPage", "capture the full scrollable page (for screenshot, default: false)"),
                 ("limit", "max snapshot lines to return (default: 80)"),
                 ("path", "file path to save screenshot, e.g. ./page.png (for screenshot)"),
+                ("output", "alias for path (for screenshot)"),
                 ("level", "console message level to filter: \"log\" | \"warn\" | \"error\" (for console)"),
+                ("endpoint", "CDP endpoint to use instead of the saved one, e.g. \"http://127.0.0.1:9222\", \"unix:/tmp/chrome.sock\", or \"abstract:chrome_devtools_remote\". Does not modify the saved endpoint."),
+                ("port", "debugging port (for start, default: 9222). Ignored for a socket endpoint."),
+                ("browser", "which browser to launch (for start): \"chrome\" | \"edge\" | \"safari\" (default: auto-detect)"),
+                ("executablePath", "browser binary to launch (for start), when auto-detection misses it"),
+                ("profileDir", "user-data directory for a launched browser (for start)"),
             ],
             example: "{\"command\": \"open\", \"url\": \"https://example.com\"}",
         },
@@ -136,6 +156,26 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
     // Safari path — delegate to SafariManager.
     if browser_arg.as_deref() == Some("safari") {
         return browser_start_safari(args, requested_port).await;
+    }
+
+    // A socket endpoint is attach-only (see `browser_start_socket`). An
+    // explicit `--endpoint` decides first; otherwise a socket saved in the
+    // config still applies, unless the caller asked for a specific TCP port —
+    // that is a request to move back to TCP.
+    let socket_source = match (
+        string_arg(args, "endpoint"),
+        number_arg(args, "port").is_some(),
+    ) {
+        (Some(raw), _) => Some(raw),
+        (None, false) => Some(config_endpoint_or_default(
+            &load_browser_config().await.unwrap_or_default(),
+        )),
+        (None, true) => None,
+    };
+    if let Some(raw) = socket_source {
+        if let Ok(EndpointTarget::Socket(spec)) = EndpointTarget::parse(&raw) {
+            return browser_start_socket(&raw, &spec).await;
+        }
     }
 
     // Chrome/Edge/Chromium path
@@ -273,6 +313,48 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
     })
 }
 
+/// `start` for a socket endpoint: attach, never launch.
+///
+/// There is no port to open and nothing here could be launched — the browser
+/// belongs to the environment that owns the socket (Chrome on an Android
+/// device, say), and it is already listening. So `start` records the endpoint
+/// for later commands, which is what the TCP path does when it finds a
+/// browser already running.
+async fn browser_start_socket(
+    endpoint: &str,
+    spec: &SocketSpec,
+) -> Result<LocalToolResult, String> {
+    if !endpoint_reachable(endpoint).await {
+        return Err(format!(
+            "browser start: no browser is answering on {spec}. Start the browser in the environment that owns that socket — this tool cannot launch it there."
+        ));
+    }
+    let _transaction = lock_browser_config().await?;
+    let mut config = load_browser_config().await?;
+    let existing_endpoint = config.connection.endpoint().to_string();
+    config.connection = BrowserConnectionConfig::Cdp {
+        browser_kind: "chromium".to_string(),
+        endpoint: endpoint.to_string(),
+    };
+    save_browser_config(&config).await?;
+    let note = if !existing_endpoint.is_empty() && existing_endpoint != endpoint {
+        format!(
+            "Browser endpoint was updated (was {existing_endpoint}). Subsequent commands will use this browser."
+        )
+    } else {
+        "Browser is already running at this endpoint.".to_string()
+    };
+    Ok(LocalToolResult {
+        text: None,
+        structured_content: Some(json!({
+            "endpoint": endpoint,
+            "socket": spec.to_string(),
+            "status": "already_running",
+            "note": note,
+        })),
+    })
+}
+
 /// Safari start path (browser-tools.ts `if (browserArg === "safari")`).
 async fn browser_start_safari(
     args: &Map<String, Value>,
@@ -335,6 +417,32 @@ fn is_permission_error(e: &str) -> bool {
 
 async fn browser_status(args: &Map<String, Value>) -> Result<LocalToolResult, String> {
     let endpoint = endpoint_for(args).await;
+    // A socket endpoint has no URL to GET: the transport *is* the socket, so it
+    // goes through the shared resolver. Keeping the HTTP path below as it is
+    // preserves the status-code field it reports on an HTTP error.
+    if matches!(
+        EndpointTarget::parse(&endpoint),
+        Ok(EndpointTarget::Socket(_))
+    ) {
+        return Ok(match resolve_cdp_endpoint(&endpoint, 1_000).await {
+            Ok(info) => LocalToolResult {
+                text: None,
+                structured_content: Some(json!({
+                    "endpoint": endpoint,
+                    "reachable": true,
+                    "version": info.version,
+                })),
+            },
+            Err(error) => LocalToolResult {
+                text: None,
+                structured_content: Some(json!({
+                    "endpoint": endpoint,
+                    "reachable": false,
+                    "error": error,
+                })),
+            },
+        });
+    }
     let client = reqwest::Client::new();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(1),
@@ -1369,6 +1477,51 @@ mod tests {
         assert!(entry.example.contains("open"));
         assert!(is_browser_tool("browser"));
         assert!(!is_browser_tool("web_search"));
+    }
+
+    /// Every argument the handlers read is documented, and vice versa.
+    ///
+    /// The catalog is what `future tools describe browser` prints, so an
+    /// argument missing from it cannot be discovered — which is exactly how
+    /// `endpoint` (and `port`, `selector`, …) stayed invisible while this tool
+    /// supported them. Scanning the source keeps the two in step without a
+    /// second hand-maintained list.
+    #[test]
+    fn the_catalog_documents_every_argument_the_handlers_read() {
+        use std::collections::BTreeSet;
+
+        let source = include_str!("browser_tools.rs");
+        let mut read: BTreeSet<String> = BTreeSet::new();
+        for helper in ["string_arg", "number_arg", "boolean_arg"] {
+            for rest in source.split(helper).skip(1) {
+                // The call is `<helper>(<args>, "name")`.
+                let Some(after) = rest.split_once("args, \"").map(|(_, tail)| tail) else {
+                    continue;
+                };
+                if let Some((name, _)) = after.split_once('"') {
+                    read.insert(name.to_string());
+                }
+            }
+        }
+
+        let documented: BTreeSet<String> = browser_tool_catalog()
+            .remove(0)
+            .1
+            .args
+            .iter()
+            .map(|(key, _)| (*key).to_string())
+            .collect();
+
+        let undocumented: Vec<&String> = read.difference(&documented).collect();
+        assert!(
+            undocumented.is_empty(),
+            "these arguments are read but not documented, so `future tools describe browser` hides them: {undocumented:?}"
+        );
+        let unused: Vec<&String> = documented.difference(&read).collect();
+        assert!(
+            unused.is_empty(),
+            "the catalog documents arguments nothing reads: {unused:?}"
+        );
     }
 
     #[tokio::test]
