@@ -43,6 +43,12 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: mocks.openDialog }));
 /** The enabled-model list the view is handed (Settings → Models decides it). */
 const MODELS: AgentModelOption[] = [{ id: "gpt-5", label: "GPT-5", provider: "future" }];
 
+/** Adds a model the agent catalogue marks as having no reasoning support. */
+const MODELS_WITHOUT_THINKING: AgentModelOption[] = [
+  ...MODELS,
+  { id: "jev", label: "Jev", provider: "future", reasoning: false },
+];
+
 function task(overrides: Partial<TaskView> = {}): TaskView {
   return {
     id: "tsk_1",
@@ -605,7 +611,9 @@ describe("tasksView", () => {
     await openDetail(container);
     const text = container.textContent ?? "";
     expect(text).toContain("Default model");
-    expect(text).toContain("Default");
+    // The level the run will really use, not a bare "Default" the reader has to
+    // decode: an unset level means the agent's own default, which is medium.
+    expect(text).toContain("Default (Medium)");
   });
 
   it("says a chat task runs in its own workspace rather than an empty directory row", async () => {
@@ -1013,6 +1021,47 @@ describe("tasksView", () => {
     expect(thinking.options[0]!.textContent).toBe("Choose a thinking level");
     // Exactly the enabled models are offered.
     expect([...model.options].slice(1).map(option => option.value)).toEqual(["future/gpt-5"]);
+  });
+
+  it("disables the thinking picker for a model that cannot think", async () => {
+    // `reasoning: false` is the one case where a level means nothing, so the
+    // picker is disabled rather than left offering a choice the run ignores —
+    // the same rule the composer applies.
+    const { container } = await renderView([], vi.fn(), MODELS_WITHOUT_THINKING);
+    await click(buttonByText(container, "New task"));
+    expect((field(container, "Thinking level") as HTMLSelectElement).disabled).toBe(false);
+
+    await setValue(field(container, "Model") as HTMLSelectElement, "future/jev");
+    expect((field(container, "Thinking level") as HTMLSelectElement).disabled).toBe(true);
+  });
+
+  it("normalises the thinking level when the model changes", async () => {
+    const { container } = await renderView([], vi.fn(), MODELS_WITHOUT_THINKING);
+    await click(buttonByText(container, "New task"));
+    await setValue(field(container, "Model") as HTMLSelectElement, "future/gpt-5");
+
+    // A model that cannot think pins "off": the stored level must not keep
+    // claiming an effort the model never runs at.
+    await setValue(field(container, "Thinking level") as HTMLSelectElement, "high");
+    await setValue(field(container, "Model") as HTMLSelectElement, "future/jev");
+    expect((field(container, "Thinking level") as HTMLSelectElement).value).toBe("off");
+
+    // Switching back keeps it: "off" is a level the new model does accept, and
+    // normalisation only replaces a level the model cannot run (or none at all).
+    // Re-deciding here would silently overwrite a deliberate "off" — the value
+    // is on screen either way, and the field is editable again.
+    await setValue(field(container, "Model") as HTMLSelectElement, "future/gpt-5");
+    expect((field(container, "Thinking level") as HTMLSelectElement).value).toBe("off");
+  });
+
+  it("gives a model change the app default when no level was chosen yet", async () => {
+    const { container } = await renderView([], vi.fn(), MODELS_WITHOUT_THINKING);
+    await click(buttonByText(container, "New task"));
+    // Untouched, the picker still says "not chosen yet"; picking a model fills in
+    // the app default rather than leaving the required field empty.
+    expect((field(container, "Thinking level") as HTMLSelectElement).value).toBe("");
+    await setValue(field(container, "Model") as HTMLSelectElement, "future/gpt-5");
+    expect((field(container, "Thinking level") as HTMLSelectElement).value).toBe("medium");
   });
 
   it("carries every editor field into the saved task", async () => {

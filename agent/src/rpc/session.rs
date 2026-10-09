@@ -27,6 +27,16 @@ async fn scheduler_wake_worker(
 // opt-in via settings. Matches config::default_permission_level().
 const DEFAULT_PERMISSION_LEVEL: &str = "all";
 
+/// Default thinking level for a session that never chose one.
+///
+/// Defined once because two places need it — the [`ServerSession`] constructor
+/// and the `new_session` handler — and when each carried its own `"xhigh"`
+/// literal they could drift apart silently. "medium" matches the desktop's own
+/// default (`defaultThinkingLevel`), so "the app default" means one thing: a
+/// task or conversation that leaves the level unset does not quietly run at a
+/// different effort than the desktop would pick.
+pub const DEFAULT_THINKING_LEVEL: &str = "medium";
+
 // ─── ServerSession ────────────────────────────────────────────────────────
 
 /// In-memory representation of one agent session.
@@ -241,8 +251,8 @@ impl ServerSession {
             messages: Arc::new(parking_lot::RwLock::new(vec![])),
             history_loaded: true,
             model: String::new(),
-            thinking_level: "xhigh".to_string(), // Match default
-            auto_compaction: true,               // Match default
+            thinking_level: DEFAULT_THINKING_LEVEL.to_string(),
+            auto_compaction: true,
             auto_retry: true,
             no_context_files: false,
             compaction_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1792,9 +1802,10 @@ mod tests {
     }
 
     #[test]
-    fn default_thinking_level_is_xhigh() {
+    fn default_thinking_level_is_medium() {
         let session = make_test_session("s1");
-        assert_eq!(session.thinking_level, "xhigh");
+        assert_eq!(session.thinking_level, DEFAULT_THINKING_LEVEL);
+        assert_eq!(session.thinking_level, "medium");
     }
 
     #[test]
@@ -2544,7 +2555,12 @@ mod tests {
                 .read()
                 .scheduled_setting_summary("run-second")
                 .unwrap(),
-            (String::new(), "xhigh".to_string(), true, "all".to_string())
+            (
+                String::new(),
+                DEFAULT_THINKING_LEVEL.to_string(),
+                true,
+                "all".to_string()
+            )
         );
 
         // Settings changed after acceptance belong to a later submission; the
@@ -2557,7 +2573,12 @@ mod tests {
                 .read()
                 .scheduled_setting_summary("run-second")
                 .unwrap(),
-            (String::new(), "xhigh".to_string(), true, "all".to_string())
+            (
+                String::new(),
+                DEFAULT_THINKING_LEVEL.to_string(),
+                true,
+                "all".to_string()
+            )
         );
 
         release.notify_one();
@@ -3053,7 +3074,7 @@ mod tests {
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
         );
         assert_eq!(session.session_id(), "own_loop_test");
-        assert_eq!(session.thinking_level, "xhigh");
+        assert_eq!(session.thinking_level, DEFAULT_THINKING_LEVEL);
         assert_eq!(session.get_permission_level(), "all");
         assert!(session.auto_compaction);
     }
