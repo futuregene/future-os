@@ -30,6 +30,7 @@ import {
 import type { ReactNode } from "react";
 import { ActionMenu } from "../components/ActionMenu";
 import { useAppDialog } from "../components/useAppDialog";
+import { showToast } from "../features/chat/utils";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
 import { effectiveRunStatus } from "../remote/sessionStatus";
 import type { RemoteSession } from "../remote/types";
@@ -290,6 +291,11 @@ export function SessionList({
     setMenuWorkspace(workspace);
   };
 
+  const hostName = (desktopId: string | null | undefined) => {
+    if (!desktopId) return "";
+    return remote.desktops.find(desktop => desktop.desktopId === desktopId)?.name ?? desktopId;
+  };
+
   const renderRow = ({ item }: { item: CatalogRow }) => {
     if (item.kind === "workspace") {
       const isCollapsed = collapsed.has(item.workspace.id) && !query.trim();
@@ -390,11 +396,25 @@ export function SessionList({
           accessibilityRole="button"
           disabled={!remote.desktopOnline || deleting}
           onPress={() => {
-            if (!selecting) {
-              void remote.selectSession(session.sessionId);
+            if (selecting) {
+              if (selectable) toggleSelection(session.sessionId);
               return;
             }
-            if (selectable) toggleSelection(session.sessionId);
+            // A merged row from *another* desktop belongs to a machine this
+            // connection is not talking to: the phone holds one active
+            // connection, so selecting it here would name a conversation the
+            // active desktop has never heard of. The row is opened on the
+            // machine that owns it — the same switch the device picker makes.
+            // A row of the active desktop (or an unmerged list, where no row
+            // carries a source) is the plain selection it always was.
+            if (item.desktopId && item.desktopId !== activeDesktopId) {
+              void remote.openSessionOnDesktop(item.desktopId, session.sessionId)
+                .catch(() => showToast(t("sessions.openOnDesktopFailed", {
+                  name: hostName(item.desktopId),
+                })));
+              return;
+            }
+            void remote.selectSession(session.sessionId);
           }}
           onLongPress={() => {
             if (!selecting) onMenu(session);

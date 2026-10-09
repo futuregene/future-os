@@ -49,17 +49,19 @@ const mockConnection: {
   desktopOnline: boolean;
   presence: { agentAvailable: boolean };
   credentials: RemoteCredentials | null;
+  switchDesktop: jest.Mock;
 } = {
   phase: "ready",
   desktopOnline: true,
   presence: { agentAvailable: true },
   credentials: null,
+  switchDesktop: jest.fn(async () => {}),
 };
 const mockConversation = {
   modelId: "",
   thinkingLevel: "off",
   openingSession: false,
-  selectSession: jest.fn(async () => {}),
+  selectSession: jest.fn(async (_sessionId: string) => {}),
   applySessionSettings: jest.fn(),
   handleSessionSettingsEvent: jest.fn(),
 };
@@ -342,5 +344,47 @@ test("both context hooks refuse to be used outside the provider", () => {
     } finally {
       error.mockRestore();
     }
+  }
+});
+
+/**
+ * Opening a conversation that lives on another desktop switches the active
+ * connection first.
+ *
+ * The phone holds one connection, so selecting another machine's row through
+ * it would name a conversation the connected desktop has never heard of — which
+ * it used to answer by *creating* one, re-homing the message. The order is the
+ * whole fix: switching after selecting would open the conversation on a link
+ * that is already being torn down.
+ */
+test("a conversation from another desktop switches that desktop before opening it", async () => {
+  mockConnection.credentials = { pairId: "pair", expectedDesktopId: "desk-a", userJwt: "jwt" } as RemoteCredentials;
+  let consumer!: ReturnType<typeof useRemoteControls>;
+  function Consumer() {
+    consumer = useRemoteControls();
+    return null;
+  }
+  const renderer = mount(createElement(Consumer));
+  try {
+    const order: string[] = [];
+    mockConnection.switchDesktop.mockImplementation(async (desktopId: string) => {
+      order.push(`switch:${desktopId}`);
+    });
+    mockConversation.selectSession.mockImplementation(async (sessionId: string) => {
+      order.push(`select:${sessionId}`);
+    });
+
+    await act(async () => { await consumer.openSessionOnDesktop("desk-b", "s9"); });
+    expect(order).toEqual(["switch:desk-b", "select:s9"]);
+
+    // A row of the desktop already connected is selected as it always was: no
+    // reconnect for a conversation this link can read.
+    order.length = 0;
+    mockConnection.switchDesktop.mockClear();
+    await act(async () => { await consumer.openSessionOnDesktop("desk-a", "s1"); });
+    expect(mockConnection.switchDesktop).not.toHaveBeenCalled();
+    expect(order).toEqual(["select:s1"]);
+  } finally {
+    act(() => renderer.unmount());
   }
 });

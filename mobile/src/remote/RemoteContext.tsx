@@ -94,6 +94,18 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   refreshSessions(): Promise<void>;
   refreshWorkspaces(): Promise<void>;
   selectSession(sessionId: string): Promise<void>;
+  /**
+   * Open a conversation on the desktop that owns it, switching the active
+   * connection when the row came from another machine.
+   *
+   * The phone runs one active connection, so a row merged in from a second
+   * desktop cannot be read where it lives: selecting it through the current
+   * connection would address a machine that has never heard of it. The merged
+   * list would be a list of rows that only work on whichever machine you
+   * happen to be connected to, so the switch is what makes the row mean what it
+   * says.
+   */
+  openSessionOnDesktop(desktopId: string, sessionId: string): Promise<void>;
   retryTimeline(): Promise<void>;
   loadOlderTimeline(): Promise<false | string[]>;
   /** Pull-to-refresh: rebuild the visible timeline from durable history. */
@@ -397,6 +409,28 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     return () => { settingsSink.current = null; };
   }, [applySessionSettings, handleSessionSettingsEvent]);
 
+  /**
+   * Open a conversation on the desktop that owns it.
+   *
+   * A row merged in from a second desktop belongs to a machine this connection
+   * is not talking to; selecting it here would address the active desktop with
+   * an id it does not have. So the switch comes first — the same switch the
+   * device picker performs — and the conversation opens on its own machine.
+   * A row on the active desktop (or one with no recorded source) is the plain
+   * selection it always was.
+   */
+  const openSessionOnDesktop = useCallback(
+    async (desktopId: string, sessionId: string) => {
+      if (!desktopId || desktopId === credentialsRef.current?.expectedDesktopId) {
+        await selectSession(sessionId);
+        return;
+      }
+      await switchDesktop(desktopId);
+      await selectSession(sessionId);
+    },
+    [selectSession, switchDesktop],
+  );
+
   const { sending, sendMessage, continueRun } = usePromptOutbox({
     clientRef,
     credentialsRef,
@@ -492,6 +526,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       refreshSessions,
       refreshWorkspaces,
       selectSession,
+      openSessionOnDesktop,
       retryTimeline,
       loadOlderTimeline,
       reloadTimeline,
@@ -570,6 +605,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       rename,
       generateTitle,
       selectSession,
+      openSessionOnDesktop,
       selectedSessionId,
       selectedTitle,
       sendMessage,

@@ -42,6 +42,27 @@ pub(crate) fn init_store() {
     crate::store::initialize_app_store().expect("store init under test HOME");
 }
 
+/// Seed the Desktop projection a client's `list_sessions` would have shown: a
+/// chat thread bound to that agent session.
+///
+/// A remote prompt names a conversation the client *listed*, so a fixture that
+/// invents a session id has to give it a thread too. The host refuses an id no
+/// thread here owns rather than answering it by creating a conversation of its
+/// own (which would silently re-home the message); a bare `unique("sess")`
+/// therefore describes something no client can send.
+pub(crate) fn thread_for_session(session: &str) -> String {
+    crate::store::create_thread(crate::store::CreateThreadInput {
+        mode: "chat".to_string(),
+        title: Some("fixture".to_string()),
+        workspace_id: None,
+        workspace_path: Some("/tmp/fixture".to_string()),
+        workspace_name: Some("fixture".to_string()),
+        agent_session_id: Some(session.to_string()),
+    })
+    .expect("fixture thread")
+    .id
+}
+
 /// A direct connection to the GUI store's database, for fixtures the store's
 /// own write path cannot express: a row left behind by an out-of-band delete
 /// (a `runs` row whose thread is gone) or one whose column holds a value the
