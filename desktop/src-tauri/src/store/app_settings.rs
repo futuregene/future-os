@@ -59,7 +59,14 @@ pub fn get_app_settings() -> Result<AppSettings, crate::AppError> {
     Ok(future_app_settings::read(&conn)?)
 }
 
-pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings, crate::AppError> {
+pub fn update_app_settings(
+    mut input: UpdateAppSettingsInput,
+) -> Result<AppSettings, crate::AppError> {
+    if input.approval_tier.as_deref() == Some("auto")
+        && crate::future_login::future_api_key().is_err()
+    {
+        input.approval_tier = Some("sandbox".to_string());
+    }
     let mut conn = connect()?;
     let tx = conn.transaction()?;
     let now = now_millis();

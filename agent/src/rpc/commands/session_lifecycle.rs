@@ -390,8 +390,8 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
     if let Err(e) = new_sess.set_model(&default_model.clone()) {
         tracing::warn!("[new_session] could not sync model to fresh loop: {e}");
     }
-    // Always start new sessions at the preferred thinking level.
-    new_sess.thinking_level = "xhigh".to_string();
+    // Always start new sessions at the app's preferred thinking level.
+    new_sess.thinking_level = crate::rpc::session::DEFAULT_THINKING_LEVEL.to_string();
 
     // Apply user settings (previously applied only to the startup "default
     // session" — with sessions as equal peers, every new session gets them).

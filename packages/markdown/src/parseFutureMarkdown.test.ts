@@ -714,6 +714,59 @@ describe("parseFutureMarkdown — autolink boundaries and CJK emphasis", () => {
   });
 });
 
+describe("parseFutureMarkdown — links with an unclosed angle destination", () => {
+  it("recovers `](<path)` as a file chip instead of leaking the destination", () => {
+    // The model drops the `>` far more often than not: without a repair the
+    // bracketed label becomes a chip and the rest renders literally, so the
+    // reader sees the path twice — `bench/REPORT.md(<./bench/REPORT.md)`.
+    expect(first("结论：[bench/REPORT.md](<./bench/REPORT.md)（脚本：[out.py](<./out.py)）\n"))
+      .toEqual({
+        children: [
+          text("结论："),
+          {
+            reference: { label: "bench/REPORT.md", source: "inline", targetId: "bench/REPORT.md", targetType: "file", view: "chip" },
+            children: [text("bench/REPORT.md")],
+            type: "futureReference",
+          },
+          text("（脚本："),
+          {
+            reference: { label: "out.py", source: "inline", targetId: "out.py", targetType: "file", view: "chip" },
+            children: [text("out.py")],
+            type: "futureReference",
+          },
+          text("）"),
+        ],
+        type: "paragraph",
+      });
+  });
+
+  it("leaves a well-formed angle destination alone", () => {
+    expect(first("[bench/REPORT.md](<./bench/REPORT.md>)\n")).toEqual({
+      children: [{
+        reference: { label: "bench/REPORT.md", source: "inline", targetId: "bench/REPORT.md", targetType: "file", view: "chip" },
+        children: [text("bench/REPORT.md")],
+        type: "futureReference",
+      }],
+      type: "paragraph",
+    });
+    // The repair only manufactures a file link; an ordinary destination parses
+    // through the normal link path.
+    expect(first("[site](<https://x.com/a>)\n")).toEqual({
+      children: [{ children: [text("site")], href: "https://x.com/a", type: "link" }],
+      type: "paragraph",
+    });
+  });
+
+  it("does not reach across a closing parenthesis or a line break", () => {
+    // The destination cannot contain `)`, `>` or whitespace, so a stray `(<`
+    // that is not a broken link stays literal text.
+    expect(first("a (<not a link) b\n")).toEqual({
+      children: [text("a (<not a link) b")],
+      type: "paragraph",
+    });
+  });
+});
+
 describe("collectReferences", () => {
   it("collects embeds and inline references in document order across containers", () => {
     const document = parse(

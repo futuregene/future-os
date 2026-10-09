@@ -288,6 +288,38 @@ Two commands spend or act rather than read, and are explicit for that reason:
 it prints the suggestion and only renames with `--apply`), and
 `future session abort|cancel|approve|reject` act on live work.
 
+One more command acts, and it is the way one conversation reaches another:
+
+```sh
+future run --session <id> "<message>"     # start a run in THAT session
+```
+
+`--session` requires the session to exist (`switch_session` refuses an unknown
+id rather than creating one) and the prompt is appended to it — behind an
+in-progress run by default, or interrupting it with `--steer`. Which of those two
+is right is the caller's judgement, not a fixed behaviour: appending leaves work
+already under way alone, interrupting pre-empts it, and only the caller knows
+what the user actually wanted. This is the send half of a `#`-picked conversation
+reference: a user message can carry `[title](futureos://session/<id>)`, and the id
+in that link is what `--session` takes. It is a full run in the other
+conversation, so it spends credits, and the command returns when that run ends
+(the shell tool's own timeout applies) — a long one needs a raised timeout. The
+read half is `future session transcript --session <id>` /
+`future session history search --session <id>` above.
+
+Two things only the sender can supply, because the target conversation receives
+a bare user turn: **provenance** — that the message came from another
+conversation rather than from the user, with the sending session's id — and
+**intent** — whether the target is expected to act on the content or merely to
+take note. Without them the target cannot tell a relayed report from a request
+addressed to it, and may start work nobody asked for.
+
+A long or non-ASCII payload should be written to a file and passed as
+`@<file>`; the CLI reads that file itself. Do not read it into a shell variable
+first: on Windows PowerShell 5.1 `Get-Content` decodes a BOM-less UTF-8 file
+with the ANSI code page, so what arrives in the other conversation is mojibake
+(the same wart as the `read`-tool-not-`Get-Content` rule for the shell).
+
 Changing a setting changes how every later session behaves, so the skill treats
 it as the user's decision: state the old value and the new one, and make the
 change when the user agrees.

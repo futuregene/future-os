@@ -33,7 +33,7 @@ import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { PendingApprovalCard } from "../../../components/TimelineCard";
 import type { RemoteControls } from "../../../remote/RemoteContext";
 import { deleteTemporaryAttachment } from "../../../remote/files";
-import type { MobileAttachment, RemoteSkill, TimelineItem } from "../../../remote/types";
+import type { MobileAttachment, RemoteSkill, SessionReferenceMap, SessionReferenceTarget, TimelineItem } from "../../../remote/types";
 import {
   chatTypography,
   colors,
@@ -43,12 +43,14 @@ import {
 } from "../../../theme/tokens";
 import { COMPOSER_FADE_CLEARANCE, formatBytes } from "../utils";
 import { useSkillCompletion } from "../useSkillCompletion";
+import { sessionMentionGroups } from "../sessionMention";
 import type { PendingSuggestion } from "../useSkillRecommendation";
 import type { SlashAction } from "../skillCompletion";
 import { useStopRequest } from "../useStopRequest";
 import { SkillDetailsDialog } from "./SkillDetailsDialog";
 import { SkillSuggestionCard } from "./SkillSuggestionCard";
 import { SkillPicker, skillPickerHeight } from "./SkillPicker";
+import { SessionPicker, sessionPickerHeight } from "./SessionPicker";
 import { FloatingTimelineButton } from "./FloatingTimelineButton";
 
 type Remote = RemoteControls;
@@ -61,6 +63,8 @@ const INPUT_MAX_HEIGHT = 240;
 function ComposerDockView({
   message,
   setMessage,
+  sessionRefs,
+  rememberSessionRef,
   attachments,
   setAttachments,
   supportsImages,
@@ -88,6 +92,12 @@ function ComposerDockView({
 }: {
   message: string;
   setMessage: Dispatch<SetStateAction<string>>;
+  /**
+   * The draft's conversation references: the `#title` tokens it shows and the
+   * conversations they stand for (see `useComposerDraft`).
+   */
+  sessionRefs: SessionReferenceMap;
+  rememberSessionRef: (token: string, target: SessionReferenceTarget) => void;
   attachments: MobileAttachment[];
   setAttachments: Dispatch<SetStateAction<MobileAttachment[]>>;
   supportsImages: boolean;
@@ -140,14 +150,40 @@ function ComposerDockView({
     && !compacting && !remote.busy && !remote.draft && !!remote.selectedSessionId
     && remote.desktopOnline && remote.connectionPresentation.level === "connected"
     && !remote.streaming;
-  const slashActions = useMemo<SlashAction[]>(() => compactionActionEnabled
-    ? [{
-      id: "compact",
-      label: t("chat.compactContext"),
-      description: t("chat.compactContextDescription"),
-      searchText: "compact compaction compress context 压缩 上下文",
-    }]
-    : [], [compactionActionEnabled, t]);
+  // Whether any conversation can be referenced at all (the same filter the `#`
+  // menu's own grouping applies). The `/` menu offers the reference entry only
+  // when it leads somewhere — a row that opens an empty list is a dead end.
+  const canReference = useMemo(
+    () => (remote.sessions ?? []).some(
+      session => session.sessionId && session.sessionId !== remote.selectedSessionId,
+    ),
+    [remote.sessions, remote.selectedSessionId],
+  );
+  const slashActions = useMemo<SlashAction[]>(() => {
+    const actions: SlashAction[] = [];
+    if (canReference) {
+      // The phone has no `#` key to speak of (it sits on the keyboard's symbol
+      // page) while `/` has a button of its own, so the reference would be
+      // unreachable in practice. Leaving `#` in the draft hands over to the
+      // conversation menu — the same hand-off the desktop gets by typing it.
+      actions.push({
+        id: "reference",
+        label: t("chat.referenceConversation"),
+        description: t("chat.referenceConversationDescription"),
+        searchText: "reference session conversation 引用 会话 对话 #",
+        insert: "#",
+      });
+    }
+    if (compactionActionEnabled) {
+      actions.push({
+        id: "compact",
+        label: t("chat.compactContext"),
+        description: t("chat.compactContextDescription"),
+        searchText: "compact compaction compress context 压缩 上下文",
+      });
+    }
+    return actions;
+  }, [canReference, compactionActionEnabled, t]);
   const handleSlashAction = useCallback((action: SlashAction) => {
     if (action.id === "compact" && compactionActionEnabled) onCompactContext?.();
   }, [compactionActionEnabled, onCompactContext]);
@@ -163,12 +199,30 @@ function ComposerDockView({
     editable && selector === null,
     inputRef,
     handleSlashAction,
+    { refs: sessionRefs, remember: rememberSessionRef },
   );
   const pickerHeight = skillPickerHeight(height, keyboardHeight, slashActions.length);
+  // The `#` menu's conversations, filed by workspace — computed here (not in the
+  // picker) so its height can account for the headings it will draw.
+  const sessionGroups = useMemo(
+    () => sessionMentionGroups(
+      remote.sessions ?? [],
+      remote.workspaces ?? [],
+      completion.session?.query ?? "",
+      remote.selectedSessionId,
+    ),
+    [completion.session?.query, remote.sessions, remote.workspaces, remote.selectedSessionId],
+  );
+  const sessionHeight = sessionPickerHeight(
+    height,
+    keyboardHeight,
+    sessionGroups.reduce((count, group) => count + group.sessions.length, 0),
+    sessionGroups.length,
+  );
   const maxInputHeight = Math.max(
     INPUT_MIN_HEIGHT,
     Math.min(
-      completion.query ? 90 : INPUT_MAX_HEIGHT,
+      completion.query || completion.session ? 90 : INPUT_MAX_HEIGHT,
       Math.floor(height * 0.3),
     ),
   );
@@ -231,6 +285,14 @@ function ComposerDockView({
         />
       ) : null}
       <View style={styles.composerArea}>
+        {completion.session && (
+          <SessionPicker
+            groups={sessionGroups}
+            maxHeight={sessionHeight}
+            onClose={completion.close}
+            onSelect={completion.selectSession}
+          />
+        )}
         {completion.query && (
           <SkillPicker
             key={`${remote.credentials?.pairId}:${remote.presence?.bridgeInstanceId}:${remote.selectedSessionId}:${remote.draftWorkspaceId}`}

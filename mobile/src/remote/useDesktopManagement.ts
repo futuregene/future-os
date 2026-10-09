@@ -2,6 +2,13 @@ import { useCallback, useMemo, type RefObject } from "react";
 import type { RemoteClient } from "./client";
 import { requestReadPage } from "./readPages";
 import type {
+  RemoteTaskDep,
+  RemoteTaskDetail,
+  RemoteTaskRevision,
+  RemoteTaskRow,
+  RemoteTaskRun,
+} from "./taskTypes";
+import type {
   AvailableSkill,
   BuiltinProviderUpdate,
   CustomProviderUpsert,
@@ -63,5 +70,29 @@ export function useDesktopManagement(clientRef: RefObject<RemoteClient | null>) 
       request<ProvidersView>({ type: "upsert_custom_provider", provider }, true),
     deleteCustomProvider: (providerId: string) =>
       request<ProvidersView>({ type: "delete_custom_provider", providerId }, true),
+    // Tasks: the phone manages them and reads run ledgers; execution stays on
+    // the paired desktop's tick loop.
+    listTasks: async () => (await request<{ tasks: RemoteTaskRow[] }>({ type: "list_tasks" })).tasks,
+    getTask: (taskId: string) => request<RemoteTaskDetail>({ type: "get_task", taskId }),
+    createTask: (task: Record<string, unknown>) =>
+      request<RemoteTaskDetail>({ type: "create_task", task }, true),
+    updateTask: (taskId: string, task: Record<string, unknown>) =>
+      request<RemoteTaskDetail>({ type: "update_task", taskId, task }, true),
+    deleteTask: (taskId: string) => request<void>({ type: "delete_task", taskId }, true),
+    setTaskEnabled: (taskId: string, enabled: boolean) =>
+      request<RemoteTaskDetail>({ type: "set_task_enabled", taskId, enabled }, true),
+    runTask: (taskId: string) => request<RemoteTaskDetail>({ type: "run_task", taskId }, true),
+    listTaskRuns: async (taskId: string, limit = 20) =>
+      (await request<{ runs: RemoteTaskRun[] }>({ type: "list_task_runs", taskId, limit })).runs,
+    listTaskDeps: async (taskId: string) =>
+      (await request<{ deps: RemoteTaskDep[] }>({ type: "list_task_deps", taskId })).deps,
+    setTaskDep: (taskId: string, upstreamTaskId: string, on: string) =>
+      request<void>({ type: "set_task_dep", taskId, upstreamTaskId, on }, true),
+    removeTaskDep: (taskId: string, upstreamTaskId: string) =>
+      request<void>({ type: "remove_task_dep", taskId, upstreamTaskId }, true),
+    listTaskRevisions: async (taskId: string) =>
+      (await request<{ revisions: RemoteTaskRevision[] }>({ type: "list_task_revisions", taskId })).revisions,
+    applyTaskRevision: (taskId: string, revisionId: string) =>
+      request<RemoteTaskDetail>({ type: "apply_task_revision", taskId, revisionId }, true),
   }), [request]);
 }

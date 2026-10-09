@@ -1,8 +1,15 @@
 import { useEffect, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { BackHandler, Keyboard, type TextInput } from "react-native";
+import { completeSessionReference, sessionQuery as findSessionQuery } from "./sessionCompletion";
 import { completeSkill, insertSkillSlash, removeSkillQuery, skillQuery, type SlashAction, type TextSelection } from "./skillCompletion";
+import type { SessionReferenceMap, SessionReferenceTarget } from "../../remote/types";
 
-export function useSkillCompletion(message: string, setMessage: Dispatch<SetStateAction<string>>, enabled: boolean, inputRef: RefObject<TextInput | null>, onAction?: (action: SlashAction) => void) {
+export function useSkillCompletion(message: string, setMessage: Dispatch<SetStateAction<string>>, enabled: boolean, inputRef: RefObject<TextInput | null>, onAction?: (action: SlashAction) => void, sessionReference?: {
+  /** The draft's existing references, so a repeated title can be made distinct. */
+  refs: SessionReferenceMap;
+  /** Record which conversation a freshly inserted token stands for. */
+  remember: (token: string, target: SessionReferenceTarget) => void;
+}) {
   const [selection, setSelection] = useState<TextSelection>({ start: message.length, end: message.length });
   // Observe normal native caret movement without controlling it on every
   // keystroke (important for IME composition and asynchronously restored drafts).
@@ -11,8 +18,13 @@ export function useSkillCompletion(message: string, setMessage: Dispatch<SetStat
   const [dismissed, setDismissed] = useState(false);
   const query = enabled && focused && !dismissed ? skillQuery(message, selection) : null;
   const open = query !== null;
+  // `#` (a conversation reference) shares this hook's caret tracking with `/`
+  // (skills and actions) because the two never both apply at one caret — `/`
+  // wins when they could, matching the desktop composer's trigger order.
+  const session = !query && enabled && focused && !dismissed ? findSessionQuery(message, selection) : null;
+  const menuOpen = open || session !== null;
   useEffect(() => {
-    if (!open) return;
+    if (!menuOpen) return;
     const back = BackHandler.addEventListener("hardwareBackPress", () => {
       setDismissed(true);
       return true;
@@ -20,10 +32,10 @@ export function useSkillCompletion(message: string, setMessage: Dispatch<SetStat
     // Android's IME can consume Back before RN's BackHandler sees it.
     const keyboard = Keyboard.addListener("keyboardDidHide", () => setDismissed(true));
     return () => { back.remove(); keyboard.remove(); };
-  }, [open]);
+  }, [menuOpen]);
 
   return {
-    selection, inputSelection, query,
+    selection, inputSelection, query, session,
     onSelectionChange: (next: TextSelection) => {
       setSelection(next);
       setInputSelection(undefined);
@@ -76,14 +88,41 @@ export function useSkillCompletion(message: string, setMessage: Dispatch<SetStat
       setDismissed(true);
       inputRef.current?.focus();
     },
-    runAction: (action: SlashAction) => {
-      if (!query || !enabled) return;
-      // Clear the typed command first: it is a control, not part of the draft.
-      const next = removeSkillQuery(message, query);
+    /** Insert the picked conversation as a reference carrying its session id. */
+    selectSession: (picked: SessionReferenceTarget) => {
+      if (!session || !enabled) return;
+      const next = completeSessionReference(message, session, picked, sessionReference?.refs);
       setMessage(next.text);
       setSelection(next.selection);
       setInputSelection(next.selection);
       setDismissed(true);
+      inputRef.current?.focus();
+      // The draft only shows the compact token; the id it stands for lives in
+      // the draft's reference map until the send expands it again.
+      sessionReference?.remember(next.token, picked);
+    },
+    runAction: (action: SlashAction) => {
+      if (!query || !enabled) return;
+      // Clear the typed command first: it is a control, not part of the draft.
+      const next = removeSkillQuery(message, query);
+      // An action may leave a token behind (see `SlashAction.insert`): the draft
+      // then reads as if the token had been typed, which is what opens the menu
+      // that token belongs to.
+      const placed = action.insert
+        ? {
+            text: `${next.text.slice(0, next.selection.start)}${action.insert}${next.text.slice(next.selection.start)}`,
+            selection: {
+              start: next.selection.start + action.insert.length,
+              end: next.selection.start + action.insert.length,
+            },
+          }
+        : next;
+      setMessage(placed.text);
+      setSelection(placed.selection);
+      setInputSelection(placed.selection);
+      // Keep the composer's menu open when the action handed over to another one
+      // — dismissing would close the conversation list before it was shown.
+      setDismissed(!action.insert);
       inputRef.current?.focus();
       onAction?.(action);
     },

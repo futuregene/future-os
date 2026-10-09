@@ -245,6 +245,33 @@ future session set <id> --context-files off --auto-compact off --auto-retry on
 会话的模型生成标题（一次模型调用；只打印建议，加 `--apply` 才改名），
 `future session abort|cancel|approve|reject` 作用于正在运行的工作。
 
+还有一条命令同样是「动手」，而它就是「一个会话触达另一个会话」的方式：
+
+```sh
+future run --session <id> "<message>"     # 在那个会话里起一次 run
+```
+
+`--session` 要求该会话已存在（未知 id 会被 `switch_session` 拒绝，而不是新建一个），
+提示词追加到该会话 —— 默认排在正在进行的 run 之后，用 `--steer` 则打断它。
+选哪一种由调用方自己判断，而不是固定行为：追加不动已经在跑的工作，打断则抢占它，
+只有调用方知道用户真正想要什么。
+它就是 `#` 选中的会话引用的「发送」那一半：用户消息里可以带
+`[标题](futureos://session/<id>)`，链接里的 id 正是 `--session` 的参数。
+这是另一个会话里的一次完整 run，因此会花积分；命令会在那次 run 结束时返回
+（受 shell 工具自身的超时约束），长时间的任务需要相应调大超时。
+「读」的那一半是上面的 `future session transcript --session <id>` /
+`future session history search --session <id>`。
+
+有两件事只有发送方才能提供，因为目标会话收到的只是一条普通的 user turn：
+**来源** —— 这条消息来自另一个会话而不是用户，并给出发送方会话 id；
+**意图** —— 期望目标是据此行动，还是仅作知悉。缺了这两项，目标无法分辨
+「转发过来的通报」与「向它提出的请求」，可能去做没人让它做的工作。
+
+较长或含非 ASCII 的内容应写入文件后用 `@<file>` 传入，由 CLI 自己读取该文件。
+不要先把它读进 shell 变量：Windows PowerShell 5.1 下 `Get-Content` 会用 ANSI
+码页解码无 BOM 的 UTF-8 文件，最终落到另一个会话里的就是乱码（与 shell 工具
+「读已知文件用 read 工具、不要用 `Get-Content`」是同一条坑）。
+
 改设置会改变此后每一个会话的行为，所以技能把它当作用户的决定：说明旧值与新值，
 在用户同意后再改。
 

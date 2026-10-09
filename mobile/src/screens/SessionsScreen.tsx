@@ -469,6 +469,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
             onClose={() => setSettingsOpen(false)}
             onCheckUpdate={() => afterSettings(() => void checkUpdate())}
             checkingUpdate={checkingUpdate}
+            onOpenConversation={sessionId => afterSettings(() => void remote.selectSession(sessionId))}
           /> : null}
         </Modal>
 

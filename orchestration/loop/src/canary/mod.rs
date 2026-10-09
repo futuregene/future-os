@@ -112,6 +112,9 @@ pub const PREMERGE_GATE_REPORT_SCHEMA_VERSION: &str = "canary_premerge_gate_v0";
 /// is never vacuous (a gate that checked zero goals proves nothing).
 pub const PREMERGE_FIXTURE_GOAL_ID: &str = "canary-premerge-fixture";
 
+/// The fixture's single work item; its presence is what makes a re-seed a no-op.
+pub const PREMERGE_FIXTURE_TODO_ID: &str = "T1";
+
 /// A gate verdict over a smoke run. The pass rule reuses the release gate's
 /// rule — every check must pass — plus a non-vacuity guard for CI: the run
 /// must have seen at least one registered goal.
@@ -174,17 +177,31 @@ pub struct PremergeGateReport {
 
 /// Seed a minimal but real fixture goal so the premerge gate is non-vacuous:
 /// one registered goal with a started ledger and one open advancement todo.
+///
+/// **Idempotent from the ledger, not from the event id.** Appending the same
+/// event twice is normally deduped by the content-derived event id, but these
+/// events carry `now_epoch()`: a re-seed that crosses a second boundary is a
+/// *different* event and `apply` pushes a second `TodoAdded`, leaving the
+/// fixture goal with two identical todos. The gate may run more than once
+/// against the same root (`run_premerge_gate_in` seeds on every call), so the
+/// decision has to be made on the replayed state.
 pub fn seed_premerge_fixture(store: &mut Store) -> Result<String> {
     let goal_id = PREMERGE_FIXTURE_GOAL_ID.to_string();
     let goal = crate::state::Goal::new(&goal_id, "canary premerge fixture", "/tmp");
     store.register(&goal)?;
+    let seeded = store
+        .replay(&goal_id)?
+        .is_some_and(|g| g.todos.iter().any(|t| t.id == PREMERGE_FIXTURE_TODO_ID));
+    if seeded {
+        return Ok(goal_id);
+    }
     store.append(crate::store::Event::GoalStarted {
         goal_id: goal_id.clone(),
         ts: crate::state::now_epoch(),
     })?;
     store.append(crate::store::Event::TodoAdded {
         goal_id: goal_id.clone(),
-        todo: crate::state::Todo::advancement("T1", "fixture work item"),
+        todo: crate::state::Todo::advancement(PREMERGE_FIXTURE_TODO_ID, "fixture work item"),
         ts: crate::state::now_epoch(),
     })?;
     Ok(goal_id)

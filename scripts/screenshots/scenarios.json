@@ -661,6 +661,223 @@
             "shot": "d-skill-reco-card.png"
           }
         ]
+      },
+      "tasks-list": {
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('每周进展周报')) throw new Error('task list did not render'); if (!/周一.*周五/.test(t) && !/Mon.*Fri/.test(t)) throw new Error('the weekly trigger summary shows raw weekday codes'); if (/\\bmon\\b|\\bfri\\b/.test(t)) throw new Error('untranslated weekday codes are visible'); })()"
+          },
+          {
+            "shot": "d-tasks-list.png"
+          }
+        ]
+      },
+      "tasks-detail": {
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行记录')) throw new Error('the run history is not on the opened page'); if (!t.includes('提示词版本')) throw new Error('the version list is not on the opened page'); if (document.querySelector('dl')) throw new Error('a definition list is rendered while folded'); ['工作目录', '本周新增或改动', '全部到齐'].forEach(k => { if (t.includes(k)) throw new Error('the definition is not folded: ' + k + ' is visible'); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (!toggle) throw new Error('the settings disclosure is missing'); if (toggle.getAttribute('aria-expanded') !== 'false') throw new Error('the settings start expanded'); const runs = [...document.querySelectorAll('h3')].find(h => (h.textContent || '').trim() === '运行记录'); if (!runs) throw new Error('the run history heading is missing'); if (toggle.compareDocumentPosition(runs) & Node.DOCUMENT_POSITION_PRECEDING) throw new Error('the settings fold is below the run history'); })()"
+          },
+          {
+            "shot": "d-tasks-detail.png"
+          },
+          {
+            "eval": "(() => { const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); toggle.click(); return 'unfolded'; })()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!document.querySelector('dl')) throw new Error('the unfolded definition has no settings list'); ['工作目录', '本周新增或改动', '全部到齐'].forEach(k => { if (!t.includes(k)) throw new Error('the unfolded definition is missing ' + k); }); const toggle = [...document.querySelectorAll('button[aria-expanded]')].find(b => (b.textContent || '').trim() === '设置'); if (toggle.getAttribute('aria-expanded') !== 'true') throw new Error('the disclosure did not report itself open'); })()"
+          },
+          {
+            "eval": "(() => { const scrollers = [...document.querySelectorAll('div,main,section')].filter(el => el.scrollHeight > el.clientHeight + 40 && /auto|scroll/.test(getComputedStyle(el).overflowY)); if (!scrollers.length) throw new Error('no scroll container'); const target = scrollers.sort((a, b) => b.scrollHeight - a.scrollHeight)[0]; target.scrollTop = target.scrollHeight; return target.scrollTop;})()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => { const rows = [...document.querySelectorAll('li')].map(li => (li.textContent || '').trim()).filter(t => t.startsWith('v')); if (!rows.length) throw new Error('no prompt-version rows rendered'); const joined = rows.join(' | '); if (!joined.includes('更早的版本')) throw new Error('a superseded version is not labelled: ' + joined); if (!joined.includes('反省')) throw new Error('a reflection version is not labelled: ' + joined); })()"
+          },
+          {
+            "shot": "d-tasks-detail-versions.png"
+          }
+        ]
+      },
+      "tasks-editor": {
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "编辑"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('触发器')) throw new Error('editor is missing the trigger section'); if (!t.includes('完全权限')) throw new Error('the full-permission warning is not shown'); })()"
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行后会话')) throw new Error('the editor has no conversation-retention field'); const select = [...document.querySelectorAll('select')].find(s => [...s.options].some(o => (o.textContent || '').trim() === '删除')); if (!select) throw new Error('the retention select has no delete option'); if (select.value !== 'keep') throw new Error('a stored task should default to keep, got ' + select.value); select.value = 'delete'; select.dispatchEvent(new Event('change', { bubbles: true })); return 'switched to delete'; })()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('删除它的会话')) throw new Error('the consequence of deleting the conversation is not stated'); })()"
+          },
+          {
+            "eval": "(() => { const browse = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '浏览'); if (!browse) throw new Error('the working-directory row has no browse button'); const box = browse.getBoundingClientRect(); const panel = browse.closest('section').getBoundingClientRect(); if (box.right > panel.right + 1) throw new Error('the browse button runs past the panel edge: button ' + Math.round(box.right) + ' vs panel ' + Math.round(panel.right)); if (box.width < 56) throw new Error('the browse button is squeezed to ' + Math.round(box.width) + 'px'); const field = document.querySelector(\"input[aria-label='工作目录']\"); if (!field) throw new Error('a workspace conversation has no directory field'); const fieldBox = field.getBoundingClientRect(); if (fieldBox.right > box.left + 1) throw new Error('the field overlaps the button'); })()"
+          },
+          {
+            "shot": "d-tasks-editor.png"
+          },
+          {
+            "eval": "(() => { const labels = [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim()); ['保存', '取消'].forEach(k => { if (!labels.includes(k)) throw new Error('the editor is missing its ' + k + ' button'); }); })()"
+          },
+          {
+            "eval": "(() => { const scrollers = [...document.querySelectorAll('div,main,section')]   .filter(el => el.scrollHeight > el.clientHeight + 40 && /auto|scroll/.test(getComputedStyle(el).overflowY)); if (!scrollers.length) throw new Error('no scroll container'); const target = scrollers.sort((a, b) => b.scrollHeight - a.scrollHeight)[0]; target.scrollTop = target.scrollHeight; return target.scrollTop;})()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => { const labels = [...document.querySelectorAll('button')].map(b => (b.textContent || '').trim()); ['保存', '取消'].forEach(k => { if (!labels.includes(k)) throw new Error('the editor is missing its ' + k + ' button'); }); })()"
+          },
+          {
+            "shot": "d-tasks-editor-actions.png"
+          }
+        ]
+      },
+      "tasks-deps": {
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "编辑"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const trigger = document.querySelector('fieldset'); const mode = [...trigger.querySelectorAll('select')].find(s => [...s.options].some(o => o.value === 'dependency')); if (!mode) throw new Error('dependency is not a trigger choice'); if (mode.value !== 'weekly') throw new Error('a scheduled task does not open on its schedule: ' + mode.value); const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor'); if (!fs.innerText.includes('本任务还有定时触发')) throw new Error('a scheduled task with upstreams does not explain itself: ' + fs.innerText.slice(0, 200)); const stored = fs.querySelector('select[aria-label=\"文献监控 的触发条件\"]'); if (!stored) throw new Error('the stored edge has no condition picker'); if (stored.value !== 'completed') throw new Error('the stored condition is not shown: ' + stored.value); const offered = [...fs.querySelector('select[aria-label=\"添加上游任务\"]').options].map(o => o.textContent); if (!offered.includes('月末归档')) throw new Error('the other tasks are not offered: ' + offered.join(',')); if (offered.includes('每周进展周报')) throw new Error('a task offers itself as its own upstream'); })()"
+          },
+          {
+            "eval": "(() => { const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor'); fs.scrollIntoView({ block: 'center' }); return 'scrolled'; })()"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "shot": "d-tasks-deps.png"
+          },
+          {
+            "eval": "(() => { const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor');const picker = fs.querySelector('select[aria-label=\"添加上游任务\"]');const option = [...picker.options].find(o => o.textContent === '月末归档');if (!option) throw new Error('月末归档 is not offered');const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;setter.call(picker, option.value);picker.dispatchEvent(new Event('change', { bubbles: true })); return 'picked'; })()"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "eval": "(() => { const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor'); const button = [...fs.querySelectorAll('button')].find(b => b.textContent.trim() === '添加'); if (!button) throw new Error('no add button'); if (button.disabled) throw new Error('the add button is disabled after picking an upstream'); button.click(); return 'added'; })()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => { const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor'); const rows = [...fs.querySelectorAll('li')].map(li => li.innerText.replace(/\\n/g, ' ')); if (rows.length !== 2) throw new Error('expected two dependency rows, got ' + rows.length + ': ' + rows.join(' | ')); if (!rows.some(r => r.includes('月末归档'))) throw new Error('the added upstream is not listed: ' + rows.join(' | ')); if (!fs.querySelector('select[aria-label=\"多个上游的到达条件\"]')) throw new Error('two upstreams do not offer the join policy'); })()"
+          },
+          {
+            "eval": "(() => { const fs = document.querySelector('select[aria-label=\"添加上游任务\"]').closest('fieldset'); if (!fs) throw new Error('no dependency editor'); fs.scrollIntoView({ block: 'center' }); return 'scrolled'; })()"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "shot": "d-tasks-deps-two.png"
+          }
+        ]
+      },
+      "tasks-new": {
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "新建任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { if (document.querySelector(\"input[aria-label='工作目录']\")) throw new Error('a chat task must not ask for a directory'); const pickers = [...document.querySelectorAll('select')]; const values = pickers.map(s => s.value); if (!values.includes('chat')) throw new Error('the conversation picker does not open on chat: ' + values.join(',')); if (values.filter(v => v === '').length < 2) throw new Error('the model and thinking pickers are not both unset: ' + values.join(',')); const model = pickers.find(s => [...s.options].some(o => o.textContent === '请选择模型')); if (!model) throw new Error('no model picker'); if ([...model.options].some(o => o.textContent.includes('默认'))) throw new Error('a default model option is still offered'); })()"
+          },
+          {
+            "eval": "(() => { if (document.querySelector('select[aria-label=\"添加上游任务\"]')) throw new Error('a new task shows the dependency editor before its trigger asks for it'); const mode = [...document.querySelectorAll('select')].map(s => s.value); if (!mode.includes('manual')) throw new Error('a new task does not open on the manual trigger: ' + mode.join(',')); })()"
+          },
+          {
+            "shot": "d-tasks-new.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",
@@ -668,7 +885,7 @@
   },
   "mobile": {
     "port": 8099,
-    "assetsPort": 7392,
+    "assetsPort": 7391,
     "url": "http://localhost:8099/",
     "settle": 600,
     "viewport": {
@@ -2141,6 +2358,252 @@
           },
           {
             "shot": "m-tabs-annotated.png"
+          }
+        ]
+      },
+      "settings-tasks": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "tap": "任务设置"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('新建任务')) throw new Error('the list has no create control'); if (!t.includes('每周进展周报')) throw new Error('the list lost its rows'); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
+          },
+          {
+            "shot": "m-settings-tasks.png"
+          }
+        ]
+      },
+      "settings-tasks-detail": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "tap": "任务设置"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => { const fold = document.querySelector('[role=button][aria-label=\"设置\"]'); if (!fold) throw new Error('the settings fold is missing'); if (fold.getAttribute('aria-expanded') !== 'false') throw new Error('the form is not folded on open'); fold.click(); return 'unfolded'; })()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('提示词')) throw new Error('mobile detail is missing the prompt section'); })()"
+          },
+          {
+            "shot": "m-settings-tasks-detail.png"
+          }
+        ]
+      },
+      "settings-tasks-history": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "tap": "任务设置"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "wait": 800
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; ['运行记录', '提示词版本'].forEach(k => { if (!t.includes(k)) throw new Error('the opened page is missing ' + k); }); if (!t.includes('写入 reports/weekly-2026-10-05.md')) throw new Error('the run summary is missing'); if (document.querySelectorAll('input').length) throw new Error('the form is rendered while folded'); })()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "shot": "m-settings-tasks-history.png"
+          }
+        ]
+      },
+      "settings-tasks-form": {
+        "url": "http://localhost:8099/",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "tap": "任务设置"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => { const fold = document.querySelector('[role=button][aria-label=\"设置\"]'); if (!fold) throw new Error('the settings fold is missing'); if (fold.getAttribute('aria-expanded') !== 'false') throw new Error('the form is not folded on open'); fold.click(); return 'unfolded'; })()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; const missing = [\"任务信息\", \"名称\", \"提示词\", \"工作目录\", \"模型\", \"思考等级\", \"会话策略\", \"会话类型\", \"状态\", \"删除\", \"返回\"].filter(k => !t.includes(k)); if (missing.length) throw new Error('MISSING:' + missing.join('/')); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
+          },
+          {
+            "shot": "m-settings-tasks-form.png"
+          }
+        ]
+      },
+      "settings-tasks-create": {
+        "url": "http://localhost:8099/",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "tap": "任务设置"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "新建任务"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; const missing = ['新建任务', '任务信息', '名称', '提示词', '工作目录'].filter(k => !t.includes(k)); if (missing.length) throw new Error('MISSING:' + missing.join('/')); const blank = [...document.querySelectorAll('input,textarea')].filter(el => el.value === '').length; if (blank < 2) throw new Error('the create form is not blank: ' + blank); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
+          },
+          {
+            "shot": "m-settings-tasks-create.png"
+          }
+        ]
+      },
+      "settings-tasks-create-bottom": {
+        "url": "http://localhost:8099/",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "tap": "任务设置"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "新建任务"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => { const scrollers = [...document.querySelectorAll('div')].filter(el => el.scrollHeight > el.clientHeight + 40 && /auto|scroll/.test(getComputedStyle(el).overflowY)); if (!scrollers.length) throw new Error('no scroll container'); const target = scrollers.sort((a, b) => b.scrollHeight - a.scrollHeight)[0]; target.scrollTop = target.scrollHeight; return target.scrollTop;})()"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; const missing = [\"触发器\", \"保存\", \"任务以完全权限运行\", \"取消\", \"给任务起个名字\"].filter(k => !t.includes(k)); if (missing.length) throw new Error('MISSING:' + missing.join('/')); const leaks = [...new Set(t.match(/tasks\\.[a-zA-Z.]+/g) || [])]; if (leaks.length) throw new Error('LEAK:' + leaks.join('/')); })()"
+          },
+          {
+            "shot": "m-settings-tasks-create-bottom.png"
           }
         ]
       }

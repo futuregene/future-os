@@ -4,13 +4,15 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { listAvailableSkills } from "../../integrations/skills/skillsClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { ContextToolOption, MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
+import type { SessionMentionOption } from "./sessionMention";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowUp, ChevronDown, Loader2, Paperclip, ShieldCheck, ShieldOff, ShieldQuestion, Square, TriangleAlert, X } from "lucide-react";
+import { ArrowUp, ChevronDown, Loader2, Paperclip, ShieldCheck, ShieldKeyhole, ShieldOff, ShieldQuestion, Square, TriangleAlert, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
 import { localizedModelDescription, modelKey, modelLabel, modelOption, modelSupportsThinking, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
+import { automaticApprovalAvailable, effectiveApprovalTier } from "../../integrations/agent/automaticApproval";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
 import { loadSkillCatalog } from "../../integrations/skills/skillsClient";
@@ -24,19 +26,21 @@ import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "./comp
 import { MentionEditor } from "./MentionEditor";
 
 /** Approval-tier order for the composer dropdown (availability is host-gated). */
-const APPROVAL_TIERS: ApprovalTier[] = ["manual", "sandbox", "off"];
+const APPROVAL_TIERS: ApprovalTier[] = ["manual", "sandbox", "auto", "off"];
 const MAX_COPIED_FILES_PER_PASTE = 10;
 const MAX_COPIED_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_COPIED_FILES_TOTAL_BYTES = 20 * 1024 * 1024;
 
 /**
  * Icon per approval tier, shared between the dropdown rows and the trigger so
- * the button always mirrors the selected tier. Shield family: question (asks
- * you) → check (sandboxed) → off (unrestricted).
+ * the button always mirrors the selected tier. The check identifies automatic
+ * review, while the keyhole identifies sandbox protection.
  */
 function tierIcon(tier: ApprovalTier, className: string) {
-  if (tier === "sandbox")
+  if (tier === "auto")
     return <ShieldCheck className={className} />;
+  if (tier === "sandbox")
+    return <ShieldKeyhole className={className} />;
   if (tier === "off")
     return <ShieldOff className={className} />;
   return <ShieldQuestion className={className} />;
@@ -102,6 +106,7 @@ interface ComposerProps {
   thinkingLevel?: string;
   onThinkingLevelChange?: (thinkingLevel: string) => void;
   approvalTier?: ApprovalTier;
+  futureSessionStatus?: string;
   onChangeApprovalTier?: (value: ApprovalTier) => void;
   /**
    * A reply is streaming. The send button becomes an interrupt button and
@@ -123,6 +128,12 @@ interface ComposerProps {
   placeholder?: string;
   textareaClassName?: string;
   workspaceId?: string | null;
+  /**
+   * Conversations offered by the `#` menu, already ordered and with the current
+   * conversation excluded (see `sessionMentionOptions`). Omit/empty to disable
+   * the menu.
+   */
+  sessionMentions?: SessionMentionOption[];
   /**
    * Identifies the conversation whose unsent input (text, mentions, attachments)
    * this composer holds. The draft is scoped to this key in sessionStorage, so
@@ -150,6 +161,7 @@ function ComposerImpl({
   thinkingLevel,
   onThinkingLevelChange,
   approvalTier,
+  futureSessionStatus = "checking",
   onChangeApprovalTier,
   sending,
   onAbort,
@@ -159,11 +171,14 @@ function ComposerImpl({
   placeholder,
   textareaClassName,
   workspaceId,
+  sessionMentions,
   draftKey,
   onDragStateChange,
 }: ComposerProps) {
   const { t, i18n } = useTranslation("agent");
   const sandboxAvailability = useSandboxAvailability();
+  const autoAvailable = automaticApprovalAvailable(futureSessionStatus);
+  const visibleApprovalTier = effectiveApprovalTier(approvalTier ?? "off", futureSessionStatus);
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   // Drag-over verdict: null (no drag), "accept" (droppable), "reject"
@@ -862,6 +877,7 @@ function ComposerImpl({
         workspaceId={workspaceId}
         skills={skills}
         contextTools={contextTools}
+        sessions={sessionMentions}
         // Locked while the recommender is being asked: the message about to be
         // sent must be the one that was evaluated, and a box that silently
         // ignores the send button reads as broken (the send button below spins
@@ -913,8 +929,8 @@ function ComposerImpl({
                       type="button"
                       title={t("composer.approval")}
                     >
-                      {tierIcon(approvalTier ?? "off", "size-3 shrink-0")}
-                      <span className="truncate">{t(`composer.approvalTier.${approvalTier ?? "off"}`)}</span>
+                      {tierIcon(visibleApprovalTier, "size-3 shrink-0")}
+                      <span className="truncate">{t(`composer.approvalTier.${visibleApprovalTier}`)}</span>
                       <ChevronDown className="size-3 shrink-0" />
                     </button>
                   )}
@@ -922,9 +938,9 @@ function ComposerImpl({
                   {APPROVAL_TIERS.map(tier => (
                     <SelectMenuItem
                       className="py-1.5"
-                      disabled={tier === "sandbox" && !sandboxAvailability.available}
+                      disabled={((tier === "sandbox" || tier === "auto") && !sandboxAvailability.available) || (tier === "auto" && !autoAvailable)}
                       key={tier}
-                      selected={(approvalTier ?? "off") === tier}
+                      selected={visibleApprovalTier === tier}
                       onSelect={() => {
                         onChangeApprovalTier(tier);
                         setApprovalMenuOpen(false);
@@ -934,17 +950,19 @@ function ComposerImpl({
                       <span className="min-w-0 flex-1 space-y-0.5">
                         <span className="block truncate font-medium leading-tight text-ink">{t(`composer.approvalTier.${tier}`)}</span>
                         <span className="block text-xs leading-tight text-ink-muted">
-                          {tier === "sandbox" && !sandboxAvailability.resolved
-                            ? t("composer.approvalTierDesc.sandboxChecking")
-                            : tier === "sandbox" && !sandboxAvailability.available
-                              ? t("composer.approvalTierDesc.sandboxUnavailable")
-                              : tier === "off"
-                                ? <Trans t={t} i18nKey="composer.approvalTierDesc.off" components={{ em: <span className="font-semibold" /> }} />
-                                : t(tier === "sandbox" && isWindows
-                                    ? "composer.approvalTierDesc.sandboxWindows"
-                                    : tier === "sandbox" && isLinux
-                                      ? "composer.approvalTierDesc.sandboxLinux"
-                                      : `composer.approvalTierDesc.${tier}`)}
+                          {tier === "auto" && !autoAvailable
+                            ? t(futureSessionStatus === "checking" ? "composer.approvalTierDesc.autoChecking" : "composer.approvalTierDesc.autoSignInRequired")
+                            : (tier === "sandbox" || tier === "auto") && !sandboxAvailability.resolved
+                                ? t("composer.approvalTierDesc.sandboxChecking")
+                                : (tier === "sandbox" || tier === "auto") && !sandboxAvailability.available
+                                    ? t("composer.approvalTierDesc.sandboxUnavailable")
+                                    : tier === "off"
+                                      ? <Trans t={t} i18nKey="composer.approvalTierDesc.off" components={{ em: <span className="font-semibold" /> }} />
+                                      : t(tier === "sandbox" && isWindows
+                                          ? "composer.approvalTierDesc.sandboxWindows"
+                                          : tier === "sandbox" && isLinux
+                                            ? "composer.approvalTierDesc.sandboxLinux"
+                                            : `composer.approvalTierDesc.${tier}`)}
                         </span>
                       </span>
                     </SelectMenuItem>

@@ -189,6 +189,26 @@ impl RunClient {
             .await
     }
 
+    /// `getLastAssistantText(sessionId)` — `get_last_assistant_text` → `{text}`.
+    ///
+    /// The session's last assistant message: the full text behind a run's
+    /// ledger summary, which the host truncates before storing it.
+    pub async fn last_assistant_text(&self, session_id: &str) -> Result<String, String> {
+        let value = self
+            .execute_command(
+                "get_last_assistant_text",
+                RpcCommand::default(),
+                Some(session_id),
+                20,
+            )
+            .await?;
+        Ok(value
+            .get("text")
+            .and_then(|text| text.as_str())
+            .unwrap_or_default()
+            .to_string())
+    }
+
     /// `listSessions()` — `list_sessions` → `{sessions: [...]}`.
     pub async fn list_sessions(&self) -> Result<Value, String> {
         self.execute_command("list_sessions", RpcCommand::default(), None, 5)
@@ -469,7 +489,8 @@ impl RunClient {
         use future_rpc::proto::SandboxPolicy;
         let cmd = RpcCommand {
             sandbox_policy: Some(SandboxPolicy {
-                tier: tier.to_string(),
+                reviewer: if tier == "auto" { "model" } else { "user" }.to_string(),
+                tier: if tier == "auto" { "sandbox" } else { tier }.to_string(),
             }),
             ..Default::default()
         };

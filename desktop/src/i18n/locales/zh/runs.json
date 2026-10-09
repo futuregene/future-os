@@ -68,5 +68,53 @@
     "abortRequested": "已被用户中止",
     "timeout": "超时",
     "unknown": "未知错误"
+  },
+  "autoApproval": {
+    "title": "自动审批记录",
+    "loadError": "无法加载自动审批记录",
+    "riskLabel": "风险",
+    "authorizationLabel": "授权",
+    "message": {
+      "rejected": "未获授权，操作未执行。",
+      "review_uncertain": "无法确认是否可以执行，操作未放行。",
+      "review_error": "暂时无法完成审批，操作未执行。",
+      "cancelled": "本次操作已取消。",
+      "stale_request": "操作信息已变化，请重试。"
+    },
+    "status": {
+      "approved": "已放行",
+      "rejected": "已拒绝",
+      "review_error": "评估失败",
+      "review_uncertain": "评估不确定",
+      "cancelled": "已取消",
+      "stale_request": "上下文已变化"
+    },
+    "risk": {
+      "low": "低",
+      "medium": "中",
+      "high": "高",
+      "critical": "严重",
+      "unknown": "未知"
+    },
+    "authorization": {
+      "unknown": "未知",
+      "low": "低",
+      "medium": "中",
+      "high": "高"
+    },
+    "reason": {
+      "routine_bounded_action": "常规且范围受限的操作",
+      "bounded_external_side_effect": "范围受限的外部影响",
+      "authorization_scope_mismatch": "超出用户授权范围",
+      "protected_secret_access": "访问受保护的凭据或密钥",
+      "sensitive_data_transfer": "传输敏感数据",
+      "broad_destructive_action": "大范围破坏性操作",
+      "security_or_privilege_change": "改变安全配置或权限",
+      "production_or_shared_impact": "影响生产或共享系统",
+      "catastrophic_system_destruction": "灾难性系统破坏",
+      "irreversible_critical_data_loss": "关键数据不可逆丢失",
+      "loss_of_security_control": "破坏安全控制",
+      "insufficient_information": "缺少必要信息"
+    }
   }
 }

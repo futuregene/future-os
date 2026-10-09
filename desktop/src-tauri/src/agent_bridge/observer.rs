@@ -358,6 +358,17 @@ pub fn spawn_session_discovery() {
                 return;
             }
             super::import::import_missing_sessions().await;
+            // Rows mirrored for a session that has no message at all (an
+            // announcement imported before its first prompt existed) are not
+            // conversations. Same pass, same reachability rule.
+            match crate::store::reconcile_empty_conversations().await {
+                Ok(0) => {}
+                Ok(removed) => {
+                    eprintln!("FutureOS: removed {removed} empty conversation(s)");
+                    crate::emit_threads_updated();
+                }
+                Err(error) => eprintln!("FutureOS: empty-conversation reconcile failed: {error}"),
+            }
             // Sessions deleted elsewhere leave a thread row whose Agent side is
             // gone; the same pass that discovers new sessions reconciles those
             // away. It is a no-op when the Agent is unreachable.

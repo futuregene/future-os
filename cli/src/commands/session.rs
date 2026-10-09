@@ -60,7 +60,7 @@ Applied to the live session (until this agent stops):
                           Append to the system prompt.
   --permission <level>    Tool permission: all|workspace|none. This is the
                           approval gate; it is not the OS sandbox.
-  --sandbox <tier>        OS sandbox tier: off|manual|sandbox. `sandbox` is
+  --sandbox <tier>        Approval mode: off|manual|sandbox|auto. `sandbox` is
                           refused when the platform cannot provide one.
   --context-files <on|off>
                           Load CLAUDE.md and friends into the prompt.

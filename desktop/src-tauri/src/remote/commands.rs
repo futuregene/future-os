@@ -773,7 +773,7 @@ async fn handle_pair_handshake_confirm(
             "bridgeInstanceId": state.bridge_instance_id,
             "deviceId": cmd.device_id,
             "desktopNonce": cmd.desktop_nonce,
-            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "desktop_settings_v1", "skill_management_v1", "compaction_v1", "provider_management_v1", "fork_v1"],
+            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "desktop_settings_v1", "skill_management_v1", "compaction_v1", "provider_management_v1", "fork_v1", "tasks_v1", "task_deps_v1"],
             "presence": super::build_presence_payload(
                 &state.creds.pair_id,
                 &state.bridge_instance_id,
@@ -2039,7 +2039,9 @@ mod bridge_tests {
                 "skill_management_v1",
                 "compaction_v1",
                 "provider_management_v1",
-                "fork_v1"
+                "fork_v1",
+                "tasks_v1",
+                "task_deps_v1"
             ])
         );
         assert!(bridge.handshake.active_flag().load(Ordering::Acquire));
@@ -4698,6 +4700,8 @@ mod bridge_tests {
     /// desktop cannot honour is downgraded (not silently stored, and not an
     /// error): the phone is told which tier is actually in force. When the
     /// desktop cannot even ask, the write is refused.
+    // macOS sandbox availability is fixed; only Windows/Linux consume a probe.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     #[tokio::test]
     async fn the_approval_tier_reflects_what_the_desktop_can_enforce() {
         let _lock = mock_agent_lock();
@@ -4752,6 +4756,39 @@ mod bridge_tests {
             reply["error"].as_str().unwrap().contains("probe exploded"),
             "got: {reply}"
         );
+        bridge.stop().await;
+    }
+
+    #[tokio::test]
+    async fn automatic_approval_tier_requires_a_future_account() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-auto-approval-account").await;
+        let agent = ensure_mock_agent();
+        for (signed_in, expected) in [(false, "sandbox"), (true, "auto"), (false, "sandbox")] {
+            if signed_in {
+                crate::auth_store::set_future_login("fixture-key", "https://future.example/api")
+                    .unwrap();
+            } else {
+                crate::auth_store::clear_future_key().unwrap();
+            }
+            agent.clear_scripts();
+            agent.script(
+                "probe_sandbox",
+                true,
+                json!({"available":true,"code":"available","backend":"fixture"}),
+                "",
+            );
+            let response = bridge
+                .call(json!({"id":unique("cmd"),"type":"set_approval_tier","tier":"auto"}))
+                .await;
+            assert_eq!(response["success"], json!(true), "{response}");
+            assert_eq!(response["data"]["approvalTier"], json!(expected));
+            assert_eq!(
+                crate::store::get_app_settings().unwrap().approval_tier,
+                expected
+            );
+        }
+        agent.clear_scripts();
         bridge.stop().await;
     }
 

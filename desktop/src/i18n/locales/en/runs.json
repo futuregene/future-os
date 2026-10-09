@@ -68,5 +68,53 @@
     "abortRequested": "Aborted by user",
     "timeout": "Timeout",
     "unknown": "Unknown error"
+  },
+  "autoApproval": {
+    "title": "Automatic reviews",
+    "loadError": "Unable to load automatic reviews",
+    "riskLabel": "Risk",
+    "authorizationLabel": "Authorization",
+    "message": {
+      "rejected": "This action was not authorized and was not run.",
+      "review_uncertain": "Unable to confirm this action can proceed. It was not run.",
+      "review_error": "Review is temporarily unavailable. This action was not run.",
+      "cancelled": "This action was cancelled.",
+      "stale_request": "The action has changed. Please try again."
+    },
+    "status": {
+      "approved": "Approved",
+      "rejected": "Rejected",
+      "review_error": "Review failed",
+      "review_uncertain": "Uncertain",
+      "cancelled": "Cancelled",
+      "stale_request": "Context changed"
+    },
+    "risk": {
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High",
+      "critical": "Critical",
+      "unknown": "Unknown"
+    },
+    "authorization": {
+      "unknown": "Unknown",
+      "low": "Low",
+      "medium": "Medium",
+      "high": "High"
+    },
+    "reason": {
+      "routine_bounded_action": "Routine bounded action",
+      "bounded_external_side_effect": "Bounded external side effect",
+      "authorization_scope_mismatch": "Outside authorized scope",
+      "protected_secret_access": "Protected credential or key access",
+      "sensitive_data_transfer": "Sensitive data transfer",
+      "broad_destructive_action": "Broad destructive action",
+      "security_or_privilege_change": "Security or privilege change",
+      "production_or_shared_impact": "Production or shared impact",
+      "catastrophic_system_destruction": "Catastrophic system destruction",
+      "irreversible_critical_data_loss": "Irreversible critical data loss",
+      "loss_of_security_control": "Loss of security controls",
+      "insufficient_information": "Insufficient information"
+    }
   }
 }

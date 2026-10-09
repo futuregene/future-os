@@ -170,7 +170,7 @@ export function ChatScreen() {
   // advertise it leaves the affordance hidden rather than failing on tap.
   const forkSupported = remote.capabilities.has("fork_v1");
 
-  const { message, setMessage, attachments, setAttachments } = useComposerDraft(
+  const { message, setMessage, attachments, setAttachments, sessionRefs, rememberSessionRef } = useComposerDraft(
     remote,
     t,
   );
@@ -192,6 +192,7 @@ export function ChatScreen() {
     setMessage,
     setAttachments,
     setTransferProgress,
+    sessionRefs,
     compactContext.pending,
   );
 
@@ -467,6 +468,12 @@ export function ChatScreen() {
     (path: string) => void timelineActionsRef.current.openFile(path),
     [],
   );
+  // Tapping a `#` reference in a sent message opens that conversation, the same
+  // way picking one from the composer menu referenced it.
+  const handleTimelineSession = useCallback(
+    (sessionId: string) => void controls.selectSession(sessionId),
+    [controls],
+  );
   const handleTimelineRetry = useCallback(
     (item: TimelineItem) => timelineActionsRef.current.retry(item),
     [],
@@ -493,6 +500,7 @@ export function ChatScreen() {
           isLatestAssistant={item.id === latestAssistantId}
           onOpenAttachment={handleTimelineAttachment}
           onOpenFile={handleTimelineFile}
+          onOpenSession={handleTimelineSession}
           onRetry={handleTimelineRetry}
           onContinue={handleTimelineContinue}
           onFork={forkSupported ? handleTimelineFork : undefined}
@@ -508,6 +516,7 @@ export function ChatScreen() {
       handleTimelineFile,
       handleTimelineFork,
       handleTimelineRetry,
+      handleTimelineSession,
       latestAssistantId,
       onRowLayout,
     ],
@@ -774,6 +783,8 @@ export function ChatScreen() {
                 keyboardHeight={keyboardHeight}
                 message={message}
                 setMessage={setMessage}
+                sessionRefs={sessionRefs}
+                rememberSessionRef={rememberSessionRef}
                 attachments={attachments}
                 setAttachments={setAttachments}
                 supportsImages={supportsImages}

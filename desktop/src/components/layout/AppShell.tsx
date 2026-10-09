@@ -8,10 +8,12 @@ import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { saveComposerDraft } from "../../features/agent/composerDraft";
 import { NewConversation } from "../../features/agent/NewConversation";
+import { sessionMentionOptions } from "../../features/agent/sessionMention";
 import { startRemote, stopRemote } from "../../features/remote/remoteClient";
 import { RemoteView } from "../../features/remote/RemoteView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
+import { TasksView } from "../../features/tasks/TasksView";
 import { terminalTarget } from "../../features/terminal/panelTarget";
 import { TerminalPanel } from "../../features/terminal/TerminalPanel";
 import { TerminalToggleButton } from "../../features/terminal/TerminalToggleButton";
@@ -111,9 +113,6 @@ function ReadyAppShell({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
 
-  const { appSettings, changeSettings } = useAppSettings();
-  useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
-  useAgentDoneBell(appSettings.bellOnComplete);
   const { hasUpdate, cachedStatus, markSeen: markUpdateSeen } = useUpdateChecker();
   // Drives the onboarding gate below. Kept with the other top-level hooks so
   // the early returns further down stay after every hook call (rules of hooks).
@@ -125,6 +124,9 @@ function ReadyAppShell({
     refreshBalance: refreshFutureBalance,
     status: futureSessionStatus,
   } = useFutureAccount(initialAuth);
+  const { appSettings, changeSettings } = useAppSettings(futureSessionStatus);
+  useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
+  useAgentDoneBell(appSettings.bellOnComplete);
   const { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initPending } = useHasProviders(futureSessionStatus, initialProviders);
 
   const windowWidth = useWindowWidth();
@@ -185,6 +187,24 @@ function ReadyAppShell({
       invokeCommand("observe_session", { threadId, sessionId }).catch(() => {});
     }
   }, [activeThread?.id, activeThread?.agentSessionId]);
+
+  // Conversations the composer's `#` menu offers: the rail's order, minus the
+  // conversation being composed in (referencing yourself would be a no-op). On
+  // the new-chat screen nothing is being composed *in* — the thread does not
+  // exist until the first message is sent — so nothing is excluded there.
+  // `activeThread` is only the conversation the user came from, and excluding it
+  // would hide the very conversation a first message most often references:
+  // opening a fresh chat to ask about what you were just doing found "no
+  // matches" for the one title you could be sure of. The id is still dropped on
+  // a real thread, where the composer does have a conversation of its own.
+  const sessionMentions = useMemo(
+    () => sessionMentionOptions(
+      threads,
+      workspaces,
+      centerMode === "new-chat" ? null : activeThread?.agentSessionId,
+    ),
+    [centerMode, threads, workspaces, activeThread?.agentSessionId],
+  );
 
   // Refresh the store when the agent session's cwd changes (e.g. TUI /cwd),
   // so the thread moves to the correct workspace in the sidebar.
@@ -382,6 +402,10 @@ function ReadyAppShell({
     = centerMode === "new-chat"
       || section === "skill"
       || section === "remote"
+      // Tasks are their own two-pane view (list + detail); the context panel
+      // beside them would describe whichever conversation happened to be active
+      // before, which is not what the tasks view is about.
+      || section === "tasks"
       || !rightPanelAvailable;
 
   // The terminal belongs to a conversation: it is offered only while a real
@@ -460,6 +484,22 @@ function ReadyAppShell({
     setActiveThreadId(thread.id);
     setCenterMode("thread");
     setNewChatWorkspaceId(null);
+  }
+
+  /// Open the conversation a task run produced (from the Tasks panel).
+  function handleOpenTaskThread(threadId: string) {
+    const thread = threads.find(candidate => candidate.id === threadId);
+    if (thread) {
+      handleSelectThread(thread);
+      return;
+    }
+    // A run's conversation may not be in the local list yet (it was created by
+    // the tick loop); refresh the catalog and open it by id.
+    setSection("chat");
+    setActiveThreadId(threadId);
+    setCenterMode("thread");
+    setNewChatWorkspaceId(null);
+    void refreshStore();
   }
 
   function handleSelectWorkspace(_workspace: StoredWorkspace, workspaceThreads: StoredThread[]) {
@@ -679,6 +719,7 @@ function ReadyAppShell({
                     onDismissSkillGuide={() => void changeSettings({ skillGuideDismissed: true })}
                     workspaces={userWorkspaces}
                     skillRecommend={appSettings.skillRecommend}
+                    sessionMentions={sessionMentions}
                     futureSessionStatus={futureSessionStatus}
                     futureBalance={futureBalance}
                   />
@@ -687,56 +728,66 @@ function ReadyAppShell({
                 ? (
                     <SkillsView leftPanelExpanded={showLeftPanel} onToggleLeftPanel={handleToggleLeftPanel} onStartCoachConversation={handleStartCoachConversation} onTrySkill={handleTrySkill} />
                   )
-                : section === "remote"
+                : section === "tasks"
                   ? (
-                      <RemoteView appSettings={appSettings} leftPanelExpanded={showLeftPanel} onChangeSettings={patch => void changeSettings(patch)} onToggleLeftPanel={handleToggleLeftPanel} remoteStatus={remoteStatus} onRefreshRemote={refreshRemote} />
+                      <TasksView
+                        leftPanelExpanded={showLeftPanel}
+                        modelOptions={visibleModelOptions}
+                        onOpenThread={handleOpenTaskThread}
+                        onToggleLeftPanel={handleToggleLeftPanel}
+                      />
                     )
-                  : storeError
+                  : section === "remote"
                     ? (
-                        <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
-                          {t("appShell.storeInitFailed")}
-                          {storeError}
-                        </div>
+                        <RemoteView appSettings={appSettings} leftPanelExpanded={showLeftPanel} onChangeSettings={patch => void changeSettings(patch)} onToggleLeftPanel={handleToggleLeftPanel} remoteStatus={remoteStatus} onRefreshRemote={refreshRemote} />
                       )
-                    : (
-                        <AgentThread
+                    : storeError
+                      ? (
+                          <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
+                            {t("appShell.storeInitFailed")}
+                            {storeError}
+                          </div>
+                        )
+                      : (
+                          <AgentThread
                           // One instance per conversation: switching threads
                           // remounts, so a conversation's messages, listeners and
                           // in-flight writes can never bleed into another.
-                          key={activeThread?.id ?? "__none"}
-                          activeApproval={activeApproval}
-                          agentConnection={agentConnection}
-                          approvalTier={appSettings.approvalTier}
-                          loadingStore={loadingStore}
-                          modelId={activeThreadModelId}
-                          modelOptions={visibleModelOptions}
-                          onModelChange={changeModel}
-                          onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
-                          thinkingLevel={activeThinkingLevel}
-                          onThinkingLevelChange={changeThinkingLevel}
-                          pendingPrompt={pendingPrompt}
-                          thread={activeThread}
-                          workspacePath={activeWorkspace?.path ?? null}
-                          onApprovalDecision={handleApprovalDecision}
-                          leftPanelExpanded={showLeftPanel}
-                          onRetryAgentConnection={() => void refreshAgentModels()}
-                          onOpenAccount={handleOpenAccount}
-                          onOpenModels={handleOpenModels}
-                          onOpenProviders={handleOpenProviders}
-                          onToggleLeftPanel={handleToggleLeftPanel}
-                          skillRecommend={appSettings.skillRecommend}
-                          futureSessionStatus={futureSessionStatus}
-                          futureBalance={futureBalance}
-                          headerAction={terminalHeaderAction}
-                          onPromptConsumed={consumePendingPrompt}
-                          onForked={(forkedThreadId: string) => {
-                            void refreshStore(forkedThreadId);
-                          }}
-                          onThreadActivity={() => {
-                            void refreshStore(activeThread?.id ?? undefined);
-                          }}
-                        />
-                      )}
+                            key={activeThread?.id ?? "__none"}
+                            activeApproval={activeApproval}
+                            agentConnection={agentConnection}
+                            approvalTier={appSettings.approvalTier}
+                            loadingStore={loadingStore}
+                            modelId={activeThreadModelId}
+                            modelOptions={visibleModelOptions}
+                            onModelChange={changeModel}
+                            onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
+                            thinkingLevel={activeThinkingLevel}
+                            onThinkingLevelChange={changeThinkingLevel}
+                            pendingPrompt={pendingPrompt}
+                            thread={activeThread}
+                            sessionMentions={sessionMentions}
+                            workspacePath={activeWorkspace?.path ?? null}
+                            onApprovalDecision={handleApprovalDecision}
+                            leftPanelExpanded={showLeftPanel}
+                            onRetryAgentConnection={() => void refreshAgentModels()}
+                            onOpenAccount={handleOpenAccount}
+                            onOpenModels={handleOpenModels}
+                            onOpenProviders={handleOpenProviders}
+                            onToggleLeftPanel={handleToggleLeftPanel}
+                            skillRecommend={appSettings.skillRecommend}
+                            futureSessionStatus={futureSessionStatus}
+                            futureBalance={futureBalance}
+                            headerAction={terminalHeaderAction}
+                            onPromptConsumed={consumePendingPrompt}
+                            onForked={(forkedThreadId: string) => {
+                              void refreshStore(forkedThreadId);
+                            }}
+                            onThreadActivity={() => {
+                              void refreshStore(activeThread?.id ?? undefined);
+                            }}
+                          />
+                        )}
           </main>
           {/* Views without thread context hide the right panel entirely, including
           the collapsed expand affordance. */}

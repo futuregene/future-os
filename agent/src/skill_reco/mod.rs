@@ -48,10 +48,10 @@ const NONE_OPTION: &str = "none_of_these";
 
 /// Where a call goes and what authenticates it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Endpoint {
-    url: String,
-    key: String,
-    model: String,
+pub(crate) struct Endpoint {
+    pub(crate) url: String,
+    pub(crate) key: String,
+    pub(crate) model: String,
 }
 
 /// Resolve the endpoint from the Future account: its credential authenticates
@@ -61,7 +61,7 @@ struct Endpoint {
 ///
 /// `None` means the feature is unavailable (not signed in), which the caller
 /// treats the same as "no recommendation" — the feature is off, not broken.
-fn endpoint() -> Option<Endpoint> {
+pub(crate) fn endpoint() -> Option<Endpoint> {
     resolve(&crate::auth::AuthStore::load())
 }
 
@@ -216,12 +216,7 @@ fn attempt_call(
     }
 
     let request = build_request(query, candidates, &endpoint.model);
-    let response = match client
-        .post(&endpoint.url)
-        .bearer_auth(&endpoint.key)
-        .json(&request)
-        .send()
-    {
+    let response = match crate::system_one::blocking_post(client, endpoint, &request) {
         Ok(response) => response,
         Err(error) => {
             return (

@@ -8,8 +8,8 @@ use std::sync::{Arc, LazyLock, Mutex, Weak};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
 use super::client::{
-    connect_agent, get_state_command, list_session_ids_command, list_sessions_command,
-    map_rpc_error, set_session_name_command, RpcResponseExt,
+    connect_agent, get_session_entries_page_command, get_state_command, list_session_ids_command,
+    list_sessions_command, map_rpc_error, set_session_name_command, RpcResponseExt,
 };
 use crate::store;
 
@@ -195,6 +195,66 @@ fn session_title(summary: &AgentSessionSummary) -> String {
         return cwd_basename.to_string();
     }
     "Imported Chat".to_string()
+}
+
+/// The entry roles a transcript renders as a message. Everything else a journal
+/// holds — `session_info` metadata, `run_started` / `run_terminal` markers,
+/// compaction checkpoints — is bookkeeping that no list should turn into a
+/// conversation row.
+fn is_message_role(role: &str) -> bool {
+    matches!(role, "user" | "assistant" | "tool")
+}
+
+/// Whether a fetched history holds at least one message entry.
+///
+/// A session exists (and is announced) the moment a client creates it, while
+/// its first prompt arrives afterwards: mirroring that interval produces an
+/// empty conversation in every list, plus the throw-away temp workspace the
+/// mirror creates for it. Import waits for the first message instead — the
+/// periodic pass re-reads the session and imports it then, so nothing is lost
+/// by waiting, and a session that is still empty after a restart is simply not
+/// a conversation yet.
+fn has_message(entries: &[serde_json::Value]) -> bool {
+    entries.iter().any(|entry| {
+        entry
+            .get("role")
+            .and_then(|role| role.as_str())
+            .is_some_and(is_message_role)
+    })
+}
+
+/// Entries read to decide whether a session holds any message. The probe is
+/// only a prefix — a conversation's first exchange is at its very start — and a
+/// page that ends mid-journal is reported as "has messages" (see below), so the
+/// bound can never turn a partial read into "empty".
+const MESSAGE_PROBE_PAGE: i64 = 50;
+
+/// Whether the Agent can already show a message for `session_id`.
+///
+/// Errors (an unreadable journal, an offline Agent) propagate: no caller may
+/// treat "could not read" as "empty" — one of them deletes local rows.
+pub(crate) async fn session_has_messages(session_id: &str) -> Result<bool, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(get_session_entries_page_command(
+            session_id.to_string(),
+            0,
+            MESSAGE_PROBE_PAGE,
+        ))
+        .await
+        .map_err(|status| map_rpc_error("get_session_entries", status))?
+        .into_inner()
+        .ok_or_rpc_error("get_session_entries rejected")?;
+    let page = future_rpc::decode::decode_session_entries_page(&response).ok_or_else(|| {
+        crate::AppError::Message("get_session_entries typed page is missing or invalid".to_string())
+    })?;
+    // A page that stops mid-journal proves nothing about the entries it did not
+    // include, so it counts as "has messages".
+    Ok(page.has_more
+        || page
+            .entries
+            .iter()
+            .any(|entry| is_message_role(&entry.role)))
 }
 
 /// Create a completed run record for one assistant reply in an imported session.
@@ -428,6 +488,13 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
     // Validate/read the history before creating any local rows. A corrupt
     // journal must not leave behind a thread that looks like an empty session.
     let entries = fetch_session_entries(&summary.id).await?;
+    // Nor may a session that has produced no message yet: it is announced at
+    // creation, before its first prompt, and mirroring it would add an empty
+    // conversation (and its temp workspace) to every client's list. Waiting is
+    // lossless — the next discovery pass imports it with its history.
+    if !has_message(&entries) {
+        return Ok(0);
+    }
     let title = best_title;
     let (mode, workspace_id, workspace_path, workspace_name) = thread_mode(summary, &title);
 
@@ -505,7 +572,8 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
 /// synthetic historical runs here (as `import_one` does) would duplicate the
 /// live run. Title/model heal on the next full `import_missing_sessions`
 /// pass, which has richer summaries. Returns `true` when a stub was created,
-/// `false` when the session was already known (or tombstoned).
+/// `false` when the session was already known, tombstoned, or still without a
+/// message of its own.
 pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, crate::AppError> {
     let import_lock = session_import_lock(session_id);
     let _import_guard = import_lock.lock().await;
@@ -513,6 +581,13 @@ pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, 
         return Ok(false);
     }
     if store::find_thread_by_agent_session(session_id)?.is_some() {
+        return Ok(false);
+    }
+    // The announcement arrives when a client *creates* the session, before its
+    // first prompt exists, so it is not evidence of a conversation. Mirror only
+    // what the Agent can already show a message for; the periodic discovery
+    // pass imports the rest as soon as they have one.
+    if !session_has_messages(session_id).await? {
         return Ok(false);
     }
     let mut client = connect_agent().await?;
@@ -1267,12 +1342,17 @@ mod tests {
     async fn import_one_creates_a_workspace_thread() {
         let home = super::super::test_support::TestHome::new("import-ws");
         let mock = super::super::test_support::mock_agent();
-        mock.push_data("get_session_entries", serde_json::json!({"entries": []}));
+        mock.push_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [
+                {"id":"u1","role":"user","kind":"user","blocks":[{"kind":"text","text":"hi"}],"runId":"history-ws","createdAtMs":1000}
+            ]}),
+        );
         let cwd = home.path().join("proj");
         std::fs::create_dir_all(&cwd).unwrap();
         let s = summary("sess-ws", &cwd.display().to_string());
         let runs = import_one(&s).await.expect("import");
-        assert_eq!(runs, 0, "empty history must not fabricate a run");
+        assert_eq!(runs, 1);
         settle_spawns().await;
         let thread = crate::store::find_thread_by_agent_session("sess-ws")
             .expect("find")
@@ -1280,12 +1360,48 @@ mod tests {
         assert_eq!(thread.mode, "workspace");
     }
 
+    /// A session announced at creation has no message until its first prompt
+    /// lands. Mirroring that interval is what put empty conversations (and the
+    /// temp workspace a mirror allocates) in every client's list, so the import
+    /// must wait for a message — and must not leave any row behind meanwhile.
+    #[tokio::test]
+    async fn import_one_skips_a_session_without_messages() {
+        let home = super::super::test_support::TestHome::new("import-empty");
+        let mock = super::super::test_support::mock_agent();
+        // Metadata only: a session_info entry is bookkeeping, not a message.
+        mock.push_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [
+                {"id":"m1","role":"system","kind":"session_info","blocks":[],"createdAtMs":1000}
+            ]}),
+        );
+        let cwd = home.path().join("proj");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let s = summary("sess-empty", &cwd.display().to_string());
+
+        assert_eq!(import_one(&s).await.expect("skip"), 0);
+        settle_spawns().await;
+        assert!(crate::store::find_thread_by_agent_session("sess-empty")
+            .expect("find")
+            .is_none());
+        assert!(
+            crate::store::list_workspaces()
+                .expect("workspaces")
+                .is_empty(),
+            "a skipped session must not allocate its workspace either"
+        );
+    }
+
     #[tokio::test]
     async fn import_discovered_session_variants() {
         let _home = super::super::test_support::TestHome::new("import-streaming");
         let mock = super::super::test_support::mock_agent();
+        let page_with_message = serde_json::json!({"entries": [
+            {"id":"u1","role":"user","kind":"user","blocks":[{"kind":"text","text":"hi"}],"createdAtMs":1000}
+        ]});
 
-        // get_state reject → Err.
+        // get_state reject → Err (probe first: the session has a message).
+        mock.push_data("get_session_entries", page_with_message.clone());
         mock.push(
             "get_state",
             super::super::test_support::Reply::Reject("gone".into()),
@@ -1295,7 +1411,19 @@ mod tests {
             .expect_err("reject");
         assert!(err.to_string().contains("get_state"), "{err}");
 
+        // Announcement of a session that still has no message → nothing mirrored,
+        // and no get_state is even asked for.
+        mock.push_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [], "hasMore": false}),
+        );
+        assert!(!import_discovered_session("sess-empty").await.expect("skip"));
+        assert!(crate::store::find_thread_by_agent_session("sess-empty")
+            .expect("find")
+            .is_none());
+
         // Success → thread stub created.
+        mock.push_data("get_session_entries", page_with_message);
         mock.push_data(
             "get_state",
             serde_json::json!({
@@ -1342,7 +1470,14 @@ mod tests {
         let _home = super::super::test_support::TestHome::new("import-disc-concurrent");
         let mock = super::super::test_support::mock_agent();
         // The per-session lock makes the loser observe the stored winner before
-        // issuing get_state, so one scripted response is sufficient.
+        // issuing any RPC, so one scripted message probe and one get_state are
+        // sufficient.
+        mock.push_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [
+                {"id":"u1","role":"user","kind":"user","blocks":[{"kind":"text","text":"hi"}],"createdAtMs":1000}
+            ]}),
+        );
         mock.push_data(
             "get_state",
             serde_json::json!({

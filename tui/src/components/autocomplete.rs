@@ -38,6 +38,10 @@ pub struct AutocompleteContext {
 
 pub trait AutocompleteProvider {
     fn update_state(&mut self, _cwd: &str, _models: &[String], _sessions: &[String]) {}
+    /// Refresh the conversations a `#` reference can point at. Separate from
+    /// `update_state` because a reference needs each session's *label*, not the
+    /// bare id list the older providers complete against.
+    fn update_session_refs(&mut self, _refs: &[SessionReferenceItem]) {}
     fn name(&self) -> &str;
     /// Return non-null context if this provider should handle the input.
     /// `cursor_pos` and context token offsets are UTF-8 byte offsets.
@@ -85,6 +89,12 @@ impl AutocompleteManager {
     pub fn update_state(&mut self, cwd: &str, models: &[String], sessions: &[String]) {
         for provider in &mut self.providers {
             provider.update_state(cwd, models, sessions);
+        }
+    }
+
+    pub fn update_session_refs(&mut self, refs: &[SessionReferenceItem]) {
+        for provider in &mut self.providers {
+            provider.update_session_refs(refs);
         }
     }
 
@@ -455,6 +465,112 @@ impl AutocompleteProvider for FilePathProvider {
                     label: display,
                     description: Some(if is_dir { "dir".into() } else { String::new() }),
                 }
+            })
+            .collect()
+    }
+}
+
+// ─── Session Reference Provider ────────────────────────────────────────────
+
+/// One conversation a `#` reference can point at: the session id it carries and
+/// what to show for it. `description` is the workspace/cwd the conversation is
+/// filed under, which is also what makes "narrow by workspace" work — the
+/// query matches it as well as the label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionReferenceItem {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+}
+
+/// The markdown link a picked conversation serializes to: the session id lives
+/// in the destination, which is what lets the conversation it names be looked
+/// up again (the same format the desktop and mobile composers write).
+pub fn session_reference_link(id: &str, label: &str) -> String {
+    // Brackets would close the label early and push the id out of the link.
+    let clean: String = label.chars().filter(|c| *c != '[' && *c != ']').collect();
+    let clean = clean.split_whitespace().collect::<Vec<_>>().join(" ");
+    let label = if clean.is_empty() { id } else { &clean };
+    format!("[{label}](futureos://session/{id})")
+}
+
+fn hash_token_re() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?:^|\s)(#[^\s#]*)$").unwrap())
+}
+
+/// Conversation provider: triggered by `#` to reference another conversation.
+///
+/// Registered alongside the `/`, `@` and path providers; a `#` token can only
+/// be this one (the others need their own sigil), so registration order does not
+/// matter. The context's `token` INCLUDES the `#` while `token_start` points AT
+/// it, so completing replaces the sigil with the reference link — unlike the
+/// slash provider, whose completion value re-supplies its own sigil.
+pub struct SessionReferenceProvider {
+    refs: Vec<SessionReferenceItem>,
+}
+
+impl Default for SessionReferenceProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SessionReferenceProvider {
+    pub fn new() -> Self {
+        Self { refs: Vec::new() }
+    }
+
+    /// Offered grouped by the workspace they were filed under, so conversations
+    /// from one workspace sit together; the caller supplies them newest-first and
+    /// `sort_by` is stable, so that order survives inside each group.
+    fn ordered(&self) -> Vec<&SessionReferenceItem> {
+        let mut refs: Vec<&SessionReferenceItem> = self.refs.iter().collect();
+        refs.sort_by(|a, b| a.description.cmp(&b.description));
+        refs
+    }
+}
+
+impl AutocompleteProvider for SessionReferenceProvider {
+    fn update_session_refs(&mut self, refs: &[SessionReferenceItem]) {
+        self.refs = refs.to_vec();
+    }
+    fn name(&self) -> &str {
+        "session-reference"
+    }
+
+    fn r#match(&self, text: &str, cursor_pos: usize) -> Option<AutocompleteContext> {
+        let prefix = &text[..text.floor_char_boundary(cursor_pos.min(text.len()))];
+        // `#` must open a token: `##` (a markdown heading) and `issue#12` are
+        // text, not triggers.
+        let caps = hash_token_re().captures(prefix)?;
+        let full = caps.get(0)?;
+        let token = caps.get(1)?.as_str();
+        let hash_idx = full.as_str().find('#')?;
+        Some(AutocompleteContext {
+            text: text.to_string(),
+            cursor_pos,
+            token: token.to_string(),
+            token_start: full.start() + hash_idx,
+        })
+    }
+
+    fn get_completions(&self, ctx: &AutocompleteContext) -> Vec<AutocompleteItem> {
+        let query = ctx.token.trim_start_matches('#').to_lowercase();
+        let matches = |item: &SessionReferenceItem| {
+            query.is_empty()
+                || item.label.to_lowercase().contains(&query)
+                || item.description.to_lowercase().contains(&query)
+                || item.id.to_lowercase().contains(&query)
+        };
+        self.ordered()
+            .into_iter()
+            .filter(|item| matches(item))
+            .take(20)
+            .map(|item| AutocompleteItem {
+                value: session_reference_link(&item.id, &item.label),
+                label: item.label.clone(),
+                description: (!item.description.is_empty()).then(|| item.description.clone()),
             })
             .collect()
     }
@@ -1908,5 +2024,115 @@ mod tests {
         // on the character boundary, so this must not panic.
         assert!(provider.r#match("/技能", 0).is_none());
         assert!(provider.r#match("/技能", 1).is_some());
+    }
+
+    // ─── Session reference provider ────────────────────────────────────
+
+    fn session_refs() -> Vec<SessionReferenceItem> {
+        vec![
+            SessionReferenceItem {
+                id: "s-new".into(),
+                label: "Retry policy".into(),
+                description: "~/future-os".into(),
+            },
+            SessionReferenceItem {
+                id: "s-old".into(),
+                label: "Fix the flaky test".into(),
+                description: "~/notes".into(),
+            },
+            SessionReferenceItem {
+                id: "s-mid".into(),
+                label: "Cache warmup".into(),
+                description: "~/future-os".into(),
+            },
+        ]
+    }
+
+    fn reference_provider() -> SessionReferenceProvider {
+        let mut provider = SessionReferenceProvider::new();
+        provider.update_session_refs(&session_refs());
+        provider
+    }
+
+    #[test]
+    fn reference_token_includes_the_sigil_so_completing_replaces_it() {
+        let provider = reference_provider();
+        let ctx = provider.r#match("see #fix", 8).unwrap();
+        // `token_start` points AT the `#` and `token` includes it, so the applier
+        // swaps the whole token for the link instead of leaving a stray signal.
+        assert_eq!(ctx.token, "#fix");
+        assert_eq!(ctx.token_start, 4);
+        let link = provider.get_completions(&ctx)[0].value.clone();
+        // What the applier will actually write into the draft.
+        let before = &ctx.text[..ctx.token_start];
+        let after = &ctx.text[ctx.token_start + ctx.token.len()..];
+        assert_eq!(
+            format!("{before}{link}{after}"),
+            "see [Fix the flaky test](futureos://session/s-old)"
+        );
+    }
+
+    #[test]
+    fn reference_match_rejects_headings_and_embedded_hashes() {
+        let provider = reference_provider();
+        assert!(provider.r#match("## heading", 10).is_none());
+        assert!(provider.r#match("issue#12", 8).is_none());
+        assert!(provider.r#match("a #", 3).is_some());
+        assert!(provider.r#match("#修复", "#修复".len()).is_some());
+    }
+
+    #[test]
+    fn reference_completions_narrow_by_title_or_workspace() {
+        let provider = reference_provider();
+        let bare = provider.get_completions(&provider.r#match("#", 1).unwrap());
+        // Same-workspace conversations end up adjacent.
+        assert_eq!(
+            bare.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
+            vec!["Retry policy", "Cache warmup", "Fix the flaky test"]
+        );
+        assert_eq!(bare[0].description.as_deref(), Some("~/future-os"));
+
+        let by_title = provider.get_completions(&provider.r#match("#flaky", 6).unwrap());
+        assert_eq!(
+            by_title
+                .iter()
+                .map(|i| i.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Fix the flaky test"]
+        );
+
+        // A workspace name narrows to its own conversations.
+        let by_workspace = provider.get_completions(&provider.r#match("#notes", 6).unwrap());
+        assert_eq!(by_workspace.len(), 1);
+        assert_eq!(
+            by_workspace[0].value,
+            "[Fix the flaky test](futureos://session/s-old)"
+        );
+
+        assert!(provider
+            .get_completions(&provider.r#match("#zzz", 4).unwrap())
+            .is_empty());
+    }
+
+    #[test]
+    fn reference_provider_offers_nothing_until_sessions_arrive() {
+        // The manager falls through to the next provider on an empty list, so a
+        // `#` typed before the session list lands must not swallow the trigger.
+        let provider = SessionReferenceProvider::new();
+        assert!(provider
+            .get_completions(&provider.r#match("#", 1).unwrap())
+            .is_empty());
+    }
+
+    #[test]
+    fn reference_link_sanitizes_the_label_and_falls_back_to_the_id() {
+        assert_eq!(
+            session_reference_link("s-1", "a [b] c"),
+            "[a b c](futureos://session/s-1)"
+        );
+        assert_eq!(
+            session_reference_link("s-1", "  \n "),
+            "[s-1](futureos://session/s-1)"
+        );
     }
 }

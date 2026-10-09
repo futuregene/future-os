@@ -605,3 +605,73 @@ export const demoAvailableSkills = [
   { id: "future-web", name: "Web Search", nameZh: "网页检索", description: "Search the public web and verify facts.", descriptionZh: "搜索公开网页并核实信息", latestVersion: "1.0.9" },
   { id: "future-browser", name: "Browser", nameZh: "浏览器", description: "Control a local browser.", descriptionZh: "操作本机浏览器", latestVersion: "1.3.0" },
 ];
+
+// ── Tasks (phone) ────────────────────────────────────────────────────────────
+// The shapes the desktop bridge serves over `tasks_v1`. The list rows carry no
+// prompt body (that is the production wire contract); the detail does.
+
+export const demoTasks = [
+  {
+    id: "tsk_weekly_report",
+    name: "每周进展周报",
+    enabled: true,
+    triggerKind: "schedule",
+    trigger: { mode: "weekly", days: ["mon", "fri"], time: "10:00" },
+    nextDueAt: Date.now() + 3 * 60 * 60_000,
+    queued: false,
+    latestRun: { id: "trn_r2", kind: "main", origin: "schedule", status: "completed", threadId: "sess_review", startedAt: Date.now() - 2 * 24 * 60 * 60_000, finishedAt: Date.now() - 2 * 24 * 60 * 60_000 + 60_000, promptVersion: 4, resultSummary: "写入 reports/weekly-2026-10-05.md：3 条结论变化。", errorMessage: null },
+  },
+  {
+    id: "tsk_lit_watch",
+    name: "文献监控",
+    enabled: true,
+    triggerKind: "schedule",
+    trigger: { mode: "interval", every_minutes: 720 },
+    nextDueAt: Date.now() + 6 * 60 * 60_000,
+    queued: true,
+    latestRun: { id: "trn_l9", kind: "main", origin: "schedule", status: "failed", threadId: "sess_lit", startedAt: Date.now() - 6 * 60 * 60_000, finishedAt: Date.now() - 6 * 60 * 60_000 + 40_000, promptVersion: 2, resultSummary: null, errorMessage: "检索服务返回 503" },
+  },
+  {
+    id: "tsk_month_end",
+    name: "月末归档",
+    enabled: false,
+    triggerKind: "schedule",
+    trigger: { mode: "monthly", day: 31, time: "09:00" },
+    nextDueAt: null,
+    queued: false,
+    latestRun: null,
+  },
+];
+
+export const demoTaskDetail = {
+  ...demoTasks[0]!,
+  prompt: [
+    "读一遍本目录下 notes/ 里本周新增或改动的文件，把其中的结论变化整理成中文周报。",
+    "",
+    "要求：",
+    "- 只写本周实际发生的进展，不要复述背景。",
+    "- 每条结论后附上对应文件路径。",
+    "- 写入 reports/weekly-<信封里的 due 日期>.md。",
+  ].join("\n"),
+  promptVersion: 4,
+  cwd: "~/Research/dopamine-decision",
+  modelId: "future/deepseek-v4-pro",
+  thinkingLevel: "high",
+  sessionPolicy: "existing",
+  conversationMode: "chat",
+  depJoin: "all",
+};
+
+export const demoTaskRuns = [
+  demoTasks[0]!.latestRun,
+  { id: "trn_r1", kind: "main", origin: "schedule", status: "completed", threadId: "sess_review", startedAt: Date.now() - 5 * 24 * 60 * 60_000, finishedAt: Date.now() - 5 * 24 * 60 * 60_000 + 120_000, promptVersion: 3, resultSummary: "写入 reports/weekly-2026-10-02.md：2 条结论变化。", errorMessage: null },
+];
+
+export const demoTaskDeps = [
+  { upstreamTaskId: "tsk_lit_watch", upstreamName: "文献监控", on: "completed", satisfied: true },
+];
+
+export const demoTaskRevisions = [
+  { id: "rev_w4", version: 4, source: "reflection", status: "active", reason: "上一版没写明输出路径，结果无处可查。", confidence: 0.82, createdAt: Date.now() - 2 * 24 * 60 * 60_000, promptPreview: "（当前生效版本）补上文件路径要求。" },
+  { id: "rev_w3", version: 3, source: "user", status: "superseded", reason: null, confidence: null, createdAt: Date.now() - 9 * 24 * 60 * 60_000, promptPreview: "读 notes/ 里本周新增或改动的文件。" },
+];

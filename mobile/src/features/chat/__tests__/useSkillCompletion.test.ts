@@ -145,6 +145,54 @@ test("an edit with nothing in common places the caret at the end", () => {
   expect(completion.selection).toEqual({ start: 3, end: 3 });
 });
 
+test("an action may hand over to another menu by leaving its token behind", () => {
+  // The `/` menu is how the phone reaches the `#` one: tapping "Reference a
+  // conversation" must leave `#` in the draft, because that token is what opens
+  // the conversation list. It must also keep the menu open — dismissing would
+  // close the list before it was ever shown.
+  const onAction = jest.fn();
+  function Harness() {
+    const [text, setText] = useState("");
+    const input = useRef({ focus } as unknown as TextInput);
+    const result = useSkillCompletion(text, setText, true, input, onAction);
+    useLayoutEffect(() => { message = text; completion = result; });
+    return null;
+  }
+  act(() => { tree = create(createElement(Harness)); });
+  act(() => completion.onFocus());
+  type("/ref");
+  expect(completion.query?.query).toBe("ref");
+  act(() => completion.runAction({
+    id: "reference",
+    label: "Reference a conversation",
+    description: "",
+    searchText: "#",
+    insert: "#",
+  }));
+  expect(message).toBe("#");
+  expect(completion.query).toBeNull();
+  expect(completion.session?.query).toBe("");
+  expect(onAction).toHaveBeenCalledTimes(1);
+  // The caret sits after the token, ready to narrow the conversation list.
+  expect(completion.selection).toEqual({ start: 1, end: 1 });
+});
+
+test("an action that leaves a token keeps the surrounding draft", () => {
+  function Harness() {
+    const [text, setText] = useState("看一下 ");
+    const input = useRef({ focus } as unknown as TextInput);
+    const result = useSkillCompletion(text, setText, true, input);
+    useLayoutEffect(() => { message = text; completion = result; });
+    return null;
+  }
+  act(() => { tree = create(createElement(Harness)); });
+  act(() => completion.onFocus());
+  act(() => completion.onChangeText("看一下 /ref"));
+  act(() => completion.runAction({ id: "reference", label: "", description: "", searchText: "", insert: "#" }));
+  expect(message).toBe("看一下 #");
+  expect(completion.selection).toEqual({ start: 5, end: 5 });
+});
+
 test("a slash action with no open query is ignored instead of clearing the draft", () => {
   const onAction = jest.fn();
   function ActionHarness() {
@@ -167,5 +215,81 @@ test("a slash action with no open query is ignored instead of clearing the draft
   act(() => completion.runAction({ id: "compact", label: "Compact", insert: "" } as never));
   expect(onAction).toHaveBeenCalledTimes(1);
   expect(message).toBe("");
+});
+
+test("typed # opens the conversation query and inserting one writes the reference token", () => {
+  const remember = jest.fn();
+  const refs = {};
+  function Harness() {
+    const [text, setText] = useState("");
+    const input = useRef({ focus } as unknown as TextInput);
+    const result = useSkillCompletion(text, setText, true, input, undefined, { refs, remember });
+    useLayoutEffect(() => { message = text; completion = result; });
+    return null;
+  }
+  act(() => { tree = create(createElement(Harness)); });
+  act(() => completion.onFocus());
+  type("ask #fla");
+  expect(completion.session?.query).toBe("fla");
+  expect(completion.query).toBeNull();
+  act(() => completion.selectSession({ sessionId: "s-1", title: "Fix the flaky test" }));
+  // The draft shows what the desktop's pill shows; the id is kept aside for the
+  // send (a phone TextInput cannot style part of its text).
+  expect(message).toBe("ask #Fix the flaky test ");
+  expect(remember).toHaveBeenCalledWith("#Fix the flaky test", { sessionId: "s-1", title: "Fix the flaky test" });
+  expect(completion.selection).toEqual({ start: 24, end: 24 });
+  expect(completion.session).toBeNull();
+  expect(focus).toHaveBeenCalled();
+});
+
+test("a second conversation sharing a title gets its own token", () => {
+  // Without the disambiguated token the map would hold one entry for two
+  // conversations and the send would expand both to the same one.
+  const first = { sessionId: "s-1", title: "未命名" };
+  const refs = { "#未命名": first };
+  const remember = jest.fn();
+  function Harness() {
+    const [text, setText] = useState("#未命名 ");
+    const input = useRef({ focus } as unknown as TextInput);
+    const result = useSkillCompletion(text, setText, true, input, undefined, { refs, remember });
+    useLayoutEffect(() => { message = text; completion = result; });
+    return null;
+  }
+  act(() => { tree = create(createElement(Harness)); });
+  act(() => completion.onFocus());
+  act(() => completion.onChangeText("看到 #未命名 和 #未"));
+  expect(completion.session?.query).toBe("未");
+  act(() => completion.selectSession({ sessionId: "s-2", title: "未命名" }));
+  expect(message).toBe("看到 #未命名 和 #未命名·s-2 ");
+  expect(remember).toHaveBeenCalledWith("#未命名·s-2", { sessionId: "s-2", title: "未命名" });
+});
+
+test("a `#` that is not opening a token stays literal", () => {
+  act(() => { tree = create(createElement(Harness, {})); });
+  act(() => completion.onFocus());
+  type("## heading");
+  expect(completion.session).toBeNull();
+  type("issue#12");
+  expect(completion.session).toBeNull();
+  // Neither trigger accepts a token containing the other's sigil, so `#/`
+  // opens no menu at all rather than guessing which one was meant.
+  type("x #/");
+  expect(completion.query).toBeNull();
+  expect(completion.session).toBeNull();
+  type("x #/f");
+  expect(completion.session).toBeNull();
+});
+
+test("closing the conversation menu keeps the draft, and a disabled composer cannot insert", () => {
+  act(() => { tree = create(createElement(Harness, {})); });
+  act(() => completion.onFocus());
+  type("#fix");
+  act(() => completion.close());
+  expect(completion.session).toBeNull();
+  expect(message).toBe("#fix");
+  type("#fix");
+  act(() => tree.update(createElement(Harness, { enabled: false })));
+  act(() => completion.selectSession({ sessionId: "s-1", title: "Fix" }));
+  expect(message).toBe("#fix");
 });
 

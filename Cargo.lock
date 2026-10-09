@@ -1054,6 +1054,7 @@ dependencies = [
  "future-channel",
  "future-loop",
  "future-rpc",
+ "future-tasks",
  "future-tui",
  "futures-util",
  "indexmap 2.14.0",
@@ -1121,6 +1122,22 @@ dependencies = [
  "tonic-build",
  "tower 0.4.13",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "future-tasks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "future-rpc",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

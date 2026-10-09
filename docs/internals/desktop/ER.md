@@ -187,6 +187,13 @@ Relations:
   the final constraint under concurrent imports, and notifications, event
   stream reconnects, and low-frequency full reconciliation reuse the same
   get-or-create semantics.
+- A session is mirrored only once its journal holds a message. A client
+  announces a session when it *creates* it, before its first prompt exists, so
+  the announcement alone is not a conversation: mirroring that interval would
+  add an empty row (and the throw-away temp workspace it needs) to every list.
+  The low-frequency pass imports the session as soon as a message exists, and
+  the same rule sweeps rows that older builds stored for sessions that were
+  never prompted.
 - The Desktop's install-level `device_id` is the source of
   `session_created.creatorId`; it is independent of remote pairing and
   survives Debug Reset. `createdBy` only expresses the client category; a
@@ -497,6 +504,18 @@ Notes:
   - `kind` gains `sandbox_escalation` (escalation approval for out-of-boundary
     bash failures); `outside_workspace_read` is a deprecated old enum variant
     no longer produced by the current implementation.
+
+#### Automatic review audit
+
+`approval_assessments` stores immutable model-review results: `id`,
+`approval_request_id` (cascade FK), `run_id` (cascade FK), `tool_call_id`,
+`status`, `payload` (versioned JSON) and `created_at`. Index: `(run_id, created_at)`.
+The payload contains reported/effective classification, probability/confidence,
+sanitized action and digest, reviewer attribution, versions, duration and error code.
+Automatic requests are written directly as terminal approved/rejected/cancelled,
+with reviewer `model`, decision source `auto_review` and scope `once`; neither pending
+queue nor Run waiting status is used. Migration: `v1.2.2-auto-approval`.
+See [automatic approval](AUTO_APPROVAL.md).
 
 ### 4.9 Review Changeset
 
@@ -1104,6 +1123,36 @@ Key trade-offs:
   (ASCII; no Chinese / emoji / fullwidth) / Base URL (http(s)) / models etc.
   rules are in PLAN.md's "Custom provider field validation" — frontend
   immediate + backend authoritative.
+
+### 6.10 Tasks keep their own store, not the GUI SQLite
+
+Tasks (a reusable prompt + trigger that runs at full permission) are owned by the
+`future-tasks` crate and persist to `<home>/.future/tasks/tasks.db` — a third
+store beside `agent.db` and `app.db`, read and written identically by the GUI,
+the CLI (`future task`) and the remote bridge. Two reasons it is not an `app.db`
+table:
+
+- **The CLI must not open the GUI database.** `app.db` has a released schema
+  with its own versioned migrations and a single owner; `future desktop
+  settings` can write it only because `future-app-settings` holds the shared
+  schema. Tasks are a first-class CLI surface, so they need an owner both sides
+  share rather than a second writer into the GUI's store.
+- **TUI and headless desktop must be able to run the same tasks.** The store is
+  resolved from the FutureOS home (`FUTURE_HOME` replaces the root), so the same
+  task list is visible to every client and the executor can be hosted anywhere.
+
+The GUI therefore has **no task tables and no task migration**. A task's
+conversations are ordinary Threads: they appear in the sidebar under the task's
+title, and the task → conversation link is `task_runs.thread_id` inside the
+tasks store (queried through the task panel/runs view). A `threads.task_id`
+column for a sidebar badge is deliberately deferred — it would need a versioned
+`app.db` migration, and the title already satisfies "the conversation shows up
+in the list".
+
+Execution stays on the desktop (or headless desktop) tick loop, which is the
+single writer: the CLI and the phone only write `pending_request_at` and read the
+run ledger. `task_runs` is the audit trail — kind, origin, actor, status, timings,
+prompt version and the truncated result summary.
 
 ## 7. Agent SQLite storage
 

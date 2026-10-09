@@ -136,6 +136,7 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 - 一个 Thread 可以产生多个 Review Changeset。
 - 一个 Thread 可以由另一个 Thread 分叉（fork）或通过 loop 派生执行产生。`parent_session_id` 经 `agent_session_id` 解析为父 Thread，GUI 最多展示三层；不存在的父节点将子节点提升为根。`v1.1.6-thread-parent-session` 迁移为已发布数据库增列；关系同步不改变活动时间，重新绑定另一 Agent session 时清除旧关系。
 - 一个 Agent session 最多映射到一个 Thread；数据库唯一索引是并发导入时的最终约束，通知、事件流重连与低频完整 reconciliation 复用同一个 get-or-create 语义。
+- 只有日志里已经有消息的 session 才会被镜像。客户端是在**创建** session 时广播 `session_created` 的，此时第一条 prompt 还没有产生，所以广播本身不等于一个对话：镜像这段空窗只会在所有列表里多出一行空对话（以及它占用的临时 Workspace）。低频完整对账会在消息出现的下一次导入它；同一条规则也会清掉旧版本为「创建后从未提问」的 session 留下的行。
 - Desktop 的安装级 `device_id` 是 `session_created.creatorId` 的来源；它独立于远程配对并在 Debug Reset 后保留。`createdBy` 只表示客户端类别，未来的 `clientId` 应表示进程或连接实例。
 
 说明：
@@ -347,6 +348,16 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
   - `approval_requests` 新增 `save_suggestion`（TEXT，JSON）——审批卡片“本工作区/对话允许”的建议规则 `{path, access, action}`；敏感文件为空（只能允许一次）。
   - **三张预留配置表 `sandbox_config` / `approval_policy_config` / `approval_rules` 已删除**（2026-07-05）——规则迁到文件后它们成为死结构；对应 `store/approval_config.rs` 模块与三个 record 类型一并移除。旧库里遗留的空表无害（无代码引用），新库不再创建。Phase 2 曾短暂用 `approval_rules` 存规则并经 gRPC 下发，v2 已拆除该链路。
   - `kind` 扩展 `sandbox_escalation`（bash 越界失败的升级审批）；`outside_workspace_read` 是已废弃的旧枚举，不再由当前实现产生。
+
+#### 自动审批审计
+
+`approval_assessments` 保存不可变模型评估：`id`、`approval_request_id`（级联外键）、
+`run_id`（级联外键）、`tool_call_id`、`status`、`payload`（版本化 JSON）、`created_at`。
+索引为 `(run_id, created_at)`。payload 保存 reported/effective 分类、概率与置信度、
+脱敏动作及 digest、模型归属、版本、耗时和错误码。自动请求直接写终态
+approved/rejected/cancelled，reviewer=model、decision_source=auto_review、scope=once，
+不进入 pending 队列、不改变 Run 为 waiting。迁移版本为 `v1.2.2-auto-approval`。
+详见[自动审批](AUTO_APPROVAL.zh-CN.md)。
 
 ### 4.9 Review Changeset
 
@@ -703,6 +714,17 @@ Provider、模型与登录凭证不进 GUI 的 SQLite，而是读写 agent 的�
 - **兼容凭证优先级**：Agent 先读取 `~/.future/agent/auth.json`；只有该文件不存在、不可读或无法解析时，才尝试旧的 `~/.future/agent-app/auth.json`。两者不合并。生产写路径写入前者，因此旧文件不会覆盖当前配置。
 - **模型可见性**：GUI 用应用设置里的 `hiddenModels`（opt-out）控制展示；agent 的 `enabledModels`（opt-in 白名单）非空时会限制 `list_models` 返回集——两者叠加时新登录 provider 的模型可能被旧白名单挡住（见 PLAN.md 待办）。
 - **字段校验**：自定义 provider 的 id（小写 `[a-z0-9_-]`）/ 名称（ASCII，禁中文 / emoji / 全角）/ Base URL（http(s)）/ 模型 等规则见 PLAN.md「自定义 Provider 字段校验」，前端即时 + 后端权威。
+
+### 6.10 任务用独立存储，不落 GUI SQLite
+
+任务（可复用提示词 + 触发器，全权限运行）由 `future-tasks` crate 拥有，持久化在 `<home>/.future/tasks/tasks.db`——是 `agent.db`、`app.db` 之外的第三份存储，GUI、CLI（`future task`）与远程桥以完全相同的方式读写它。不放进 `app.db` 的原因有两条：
+
+- **CLI 不该打开 GUI 数据库。** `app.db` 有已发布 schema 与自己的版本化迁移、单一所有者；`future desktop settings` 能写它，是因为 `future-app-settings` 持有共享 schema。任务是第一等的 CLI 能力，需要的是两端共享的所有者，而不是给 GUI 的库再加第二个写者。
+- **TUI 与无头桌面要能跑同一批任务。** 存储根由 FutureOS home 解析（`FUTURE_HOME` 替换整根），因此同一份任务列表对所有客户端可见，执行器可以寄宿在任意一端。
+
+所以 GUI **没有任何任务表、也没有任务迁移**。任务会话就是普通 Thread：按任务标题出现在侧栏，任务 → 会话的关联是任务库里的 `task_runs.thread_id`（经任务面板/运行记录查询）。用于侧栏徽标的 `threads.task_id` 列**刻意延后**——它需要一条 `app.db` 版本化迁移，而标题已经满足「会话出现在列表里」。
+
+执行只发生在 desktop（或无头 desktop）的 tick 循环里，它是唯一写者：CLI 与手机只写 `pending_request_at`、只读运行台账。`task_runs` 是审计轨迹——kind、origin、actor、状态、时间、提示词版本与截断后的结果摘要。
 
 ## 7. Agent SQLite 存储
 

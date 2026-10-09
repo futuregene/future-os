@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronRight,
   Folder,
+  ListChecks,
   MessageSquare,
   PanelLeft,
   Pin,
@@ -38,7 +39,7 @@ import { useRailSelection } from "./hooks/useRailSelection";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, visibleThreadRows } from "./threadTree";
 
-export type ActivitySection = "chat" | "workspace" | "skill" | "remote" | "settings";
+export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote" | "settings";
 
 interface ActivityRailProps {
   active: ActivitySection;
@@ -353,6 +354,10 @@ export function ActivityRail({
                         )
                       : null}
                   </div>
+                  {/* Task sits with the other standing entries, above Phone
+                      control: it is something you set up and keep, while the
+                      phone entry is a link to another device. */}
+                  <NavButton icon={ListChecks} label={t("activityRail.tasks")} active={active === "tasks"} onClick={() => onChange("tasks")} />
                   {showRemote
                     ? <NavButton icon={Smartphone} indicator={remoteDot} label={t("activityRail.remote")} active={active === "remote"} onClick={() => onChange("remote")} />
                     : null}
@@ -639,6 +644,24 @@ export function ActivityRail({
                   active={false}
                   onClick={onOpenModels}
                 />
+                {featureItems.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <IconButton
+                      key={item.id}
+                      icon={<Icon className="size-4" />}
+                      label={item.label}
+                      active={active === item.id}
+                      onClick={() => onChange(item.id)}
+                    />
+                  );
+                })}
+                <IconButton
+                  icon={<ListChecks className="size-4" />}
+                  label={t("activityRail.tasks")}
+                  active={active === "tasks"}
+                  onClick={() => onChange("tasks")}
+                />
                 {showRemote
                   ? (
                       <IconButton
@@ -654,18 +677,6 @@ export function ActivityRail({
                       />
                     )
                   : null}
-                {featureItems.map((item) => {
-                  const Icon = item.icon;
-                  return (
-                    <IconButton
-                      key={item.id}
-                      icon={<Icon className="size-4" />}
-                      label={item.label}
-                      active={active === item.id}
-                      onClick={() => onChange(item.id)}
-                    />
-                  );
-                })}
                 <IconButton
                   icon={<Folder className="size-4" />}
                   label={t("activityRail.workspace")}

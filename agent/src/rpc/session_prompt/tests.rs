@@ -114,6 +114,7 @@ async fn loop_workspace_scope_blocks_unapproved_absolute_write_from_model_tool_c
     let mut sandbox = crate::sandbox::ResolvedSandbox::resolve(
         &crate::sandbox::SandboxPolicy {
             tier: crate::sandbox::SandboxTier::Manual,
+            model_reviewer: false,
         },
         workspace.to_string_lossy().as_ref(),
     );
@@ -1531,6 +1532,7 @@ async fn run_sandbox_denial_escalates_through_session_wiring() {
     let mut session = fixture.session;
     session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
         tier: crate::sandbox::SandboxTier::Sandbox,
+        model_reviewer: false,
     });
     if !crate::sandbox::platform_sandbox_available() {
         return;
@@ -1641,6 +1643,7 @@ async fn enqueue_with_sandbox_policy_parses_tier() {
     let mut session = fixture.session;
     session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
         tier: crate::sandbox::SandboxTier::Manual,
+        model_reviewer: false,
     });
     let ack = session
         .enqueue_prompt(
@@ -2001,6 +2004,7 @@ async fn prompt_workspace_permission_routes_through_approval_gate() {
     session.set_permission_level("workspace");
     session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
         tier: crate::sandbox::SandboxTier::Manual,
+        model_reviewer: false,
     });
     // The outside path is past the sandbox boundary → the gate asks; the
     // decider approves, so the write proceeds.

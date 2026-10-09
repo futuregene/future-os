@@ -1526,6 +1526,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "future-tasks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "future-rpc",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "futureos"
 version = "0.0.0"
 dependencies = [
@@ -1539,6 +1554,7 @@ dependencies = [
  "future-app-settings",
  "future-remote-crypto",
  "future-rpc",
+ "future-tasks",
  "futures",
  "fuzzy-matcher",
  "ignore",

@@ -1,0 +1,25 @@
+[package]
+name = "future-tasks"
+version = "0.1.0"
+edition = "2021"
+description = "FutureOS tasks: reusable prompt + trigger + full-permission agent runs. Deterministic kernel (next_due/join/claim) + host-agnostic executor; hosts are desktop (GUI), headless desktop, and TUI."
+license = "Apache-2.0"
+
+[lib]
+name = "future_tasks"
+path = "src/lib.rs"
+
+[dependencies]
+# gRPC wire types for the agent (session/prompt/compact) come from future-rpc.
+future-rpc = { path = "../../packages/rpc" }
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+rusqlite = { version = "0.40", features = ["bundled"] }
+tokio = { workspace = true, features = ["time", "sync", "rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"

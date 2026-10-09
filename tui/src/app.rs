@@ -20,7 +20,7 @@
 
 use crate::components::autocomplete::{
     AttachmentProvider, AutocompleteItem, AutocompleteManager, AutocompletePopup, FilePathProvider,
-    SlashCommand, SlashCommandProvider,
+    SessionReferenceItem, SessionReferenceProvider, SlashCommand, SlashCommandProvider,
 };
 use crate::components::chat_area::{ChatArea, ChatMessage, ChatRole, RunState, ToolStatus};
 use crate::components::footer::{Footer, FooterData};
@@ -1455,6 +1455,15 @@ fn export_result_message(value: &Value) -> String {
     "Session export finished (the agent reported no file path).".to_string()
 }
 
+/// True when the draft's last token is a `#` conversation trigger. The provider
+/// owns the real matching rule; this only decides whether the session list has to
+/// be fetched first, the way `/model ` and `/sessions ` fetch their caches.
+fn hash_token_opens(text: &str) -> bool {
+    text.rsplit(char::is_whitespace)
+        .next()
+        .is_some_and(|token| token.starts_with('#') && !token.starts_with("##"))
+}
+
 fn sanitize_session_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut pending_space = false;
@@ -1611,6 +1620,10 @@ pub struct App<T: TerminalIo> {
     /// drives the `/model` autocomplete fetch.
     model_image_support: HashMap<String, bool>,
     cached_sessions: Vec<String>,
+    /// The `#` menu's view of the same list: what each session is called and the
+    /// workspace it is filed under. Filled wherever `cached_sessions` is, since
+    /// it comes from the same fetch.
+    cached_session_refs: Vec<SessionReferenceItem>,
     /// Session id → display label, captured when the sessions/tree menu is
     /// built. `MenuState` hands back values (ids) only, so the label used in
     /// the "Switched to …" notice is looked up here.
@@ -1791,6 +1804,7 @@ impl<T: TerminalIo> App<T> {
             cached_models: Vec::new(),
             model_image_support: HashMap::new(),
             cached_sessions: Vec::new(),
+            cached_session_refs: Vec::new(),
             session_labels: HashMap::new(),
             clipboard: crate::clipboard::Clipboard::new(),
             clipboard_capture: crate::paste::ClipboardCapture::new(),
@@ -2154,6 +2168,8 @@ impl<T: TerminalIo> App<T> {
             .register(Box::new(FilePathProvider::new(Some(cwd))));
         self.ac_manager
             .register(Box::new(AttachmentProvider::default()));
+        self.ac_manager
+            .register(Box::new(SessionReferenceProvider::new()));
 
         // Register global keybindings (actions route through UiCmd).
         let tx = self.op_tx.clone();
@@ -2422,6 +2438,21 @@ impl<T: TerminalIo> App<T> {
             UiCmd::SessionsLoaded { result, purpose } => match result {
                 Ok(sessions) => {
                     self.cached_sessions = sessions.iter().map(|s| s.id.clone()).collect();
+                    // The `#` menu's own view of the same list: id + label + the
+                    // workspace it is filed under (the row description).
+                    let home = std::env::var("HOME").unwrap_or_default();
+                    self.cached_session_refs = sessions
+                        .iter()
+                        .map(|s| SessionReferenceItem {
+                            id: s.id.clone(),
+                            label: sanitize_session_name(&session_display_name(s)),
+                            description: if s.cwd.is_empty() {
+                                String::new()
+                            } else {
+                                shorten_cwd(&s.cwd, &home)
+                            },
+                        })
+                        .collect();
                     match purpose {
                         SessionsPurpose::Browse => self.show_sessions_overlay(sessions),
                         SessionsPurpose::Tree => self.show_tree_overlay(sessions),
@@ -4497,7 +4528,19 @@ impl<T: TerminalIo> App<T> {
 
     fn trigger_autocomplete(&mut self) {
         let text = self.input.get_value();
-        if text.starts_with("/model ") && self.cached_models.is_empty() {
+        // The `#` menu has to know each session's title, so it is fetched when a
+        // `#` token opens and the reference cache is still empty (the slash-arg
+        // caches above are refreshed the same way).
+        if hash_token_opens(text) && self.cached_session_refs.is_empty() {
+            let client = self.client.clone();
+            let tx = self.op_tx.clone();
+            tokio::spawn(async move {
+                let _ = tx.send(UiCmd::SessionsLoaded {
+                    result: client.list_sessions().await,
+                    purpose: SessionsPurpose::Autocomplete,
+                });
+            });
+        } else if text.starts_with("/model ") && self.cached_models.is_empty() {
             let client = self.client.clone();
             let tx = self.op_tx.clone();
             tokio::spawn(async move {
@@ -4526,6 +4569,8 @@ impl<T: TerminalIo> App<T> {
     fn query_autocomplete_cached(&mut self) {
         self.ac_manager
             .update_state(&self.state.cwd, &self.cached_models, &self.cached_sessions);
+        self.ac_manager
+            .update_session_refs(&self.cached_session_refs);
         let text = self.input.get_value().to_string();
         let cursor = self.input.cursor_byte();
         self.ac_manager.query_immediate(&text, cursor);
@@ -24698,6 +24743,18 @@ mod tests {
             vec!["s1".to_string()],
             "but it does refresh the cached names"
         );
+        // The `#` menu reads the same answer: the label to show, and the
+        // workspace the row is filed under (the cwd, shortened like the
+        // sessions picker shows it).
+        assert_eq!(
+            app.cached_session_refs,
+            vec![SessionReferenceItem {
+                id: "s1".to_string(),
+                label: "first".to_string(),
+                description: "/tmp".to_string(),
+            }],
+            "the `#` menu's rows come from the same fetch"
+        );
 
         // Browse: the picker opens.
         app.handle_cmd(UiCmd::SessionsLoaded {
@@ -24708,6 +24765,18 @@ mod tests {
             !app.overlay_stack.is_empty(),
             "the browse purpose opens the session picker"
         );
+    }
+
+    #[test]
+    fn hash_token_opens_only_for_a_reference_token() {
+        // Opens: the fetch trigger the `#` provider needs the session list for.
+        for text in ["#", "#fix", "see #fix", "ask #修复"] {
+            assert!(hash_token_opens(text), "{text:?} should open");
+        }
+        // Not a trigger: a heading, an id with a hash, and a closed token.
+        for text in ["## heading", "issue#12", "#done ", "", "plain"] {
+            assert!(!hash_token_opens(text), "{text:?} should not open");
+        }
     }
 
     /// The client is re-aligned to the latest session switch only when there is

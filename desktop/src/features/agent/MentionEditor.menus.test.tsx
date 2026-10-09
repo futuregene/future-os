@@ -2,6 +2,7 @@ import type { Root } from "react-dom/client";
 import type { Mock } from "vitest";
 // @vitest-environment jsdom
 import type { ContextToolOption, MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
+import type { SessionMentionOption } from "./sessionMention";
 import { act, createRef } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -554,6 +555,134 @@ describe("mentionEditor / slash menu", () => {
 
     type("/fut");
     expect(menuLabels()).toEqual(["/future-webSearch the web", "/future-paperWrite a paper"]);
+  });
+});
+
+describe("mentionEditor # session menu", () => {
+  const SESSIONS: SessionMentionOption[] = [
+    { sessionId: "s-chat", title: "Loose chat", workspace: null },
+    { sessionId: "s-a1", title: "Fix the flaky test", workspace: { id: "w1", name: "Payments" } },
+    { sessionId: "s-a2", title: "Retry policy", workspace: { id: "w1", name: "Payments" } },
+  ];
+
+  it("groups the conversations by workspace, chats first", () => {
+    render({ sessions: SESSIONS });
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    type("#");
+
+    expect(menuLabels()).toEqual(["Loose chat", "Fix the flaky test", "Retry policy"]);
+    // Both workspace groups and the chat group are named, so a title alone
+    // never has to be guessed at.
+    expect(menu()!.textContent).toContain("Chats");
+    expect(menu()!.textContent).toContain("Payments");
+  });
+
+  it("narrows by title and by the workspace a conversation is filed under", () => {
+    render({ sessions: SESSIONS });
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+
+    type("#flaky");
+    expect(menuLabels()).toEqual(["Fix the flaky test"]);
+
+    // A workspace name matches its whole group — the way to narrow by scope.
+    type("#payments");
+    expect(menuLabels()).toEqual(["Fix the flaky test", "Retry policy"]);
+  });
+
+  it("reports no matches instead of hiding the menu", () => {
+    render({ sessions: SESSIONS });
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    type("#nothingmatches");
+    expect(menu()!.textContent).toBe("No matching conversations.");
+  });
+
+  it("lands a picked conversation as a pill and serializes the session id", () => {
+    render({ sessions: SESSIONS });
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    type("please #flaky");
+
+    act(() => {
+      menuRows()[0]!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    });
+
+    const pill = editor.querySelector<HTMLElement>("[data-mention='session']")!;
+    expect(pill.getAttribute("data-session")).toBe("s-a1");
+    expect(pill.textContent).toBe("#Fix the flaky test");
+    expect(pill.getAttribute("contenteditable")).toBe("false");
+    // The whole point: the agent receives the id inside the link.
+    expect(editorWithHandle().getContent())
+      .toBe("please [Fix the flaky test](futureos://session/s-a1) ");
+  });
+
+  it.each(["Enter", "Tab"])("selects the highlighted conversation with %s", (key) => {
+    render({ sessions: SESSIONS });
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    type("#retry");
+    press(key);
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(editorWithHandle().getContent()).toContain("futureos://session/s-a2");
+  });
+
+  it("wraps the highlight and resets it when the query changes", () => {
+    render({ sessions: SESSIONS });
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    type("#");
+    press("ArrowUp");
+    expect(highlightedIndex()).toBe(2);
+    type("#flaky");
+    expect(highlightedIndex()).toBe(0);
+  });
+
+  it("closes on Escape and does not fire for a bare # in prose", () => {
+    render({ sessions: SESSIONS });
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    type("#");
+    expect(menu()).not.toBeNull();
+    press("Escape");
+    expect(menu()).toBeNull();
+
+    // boundary: `##` is a markdown heading and `issue#12` is an id, not a trigger;
+    // a space closes the menu rather than searching for it.
+    type("## heading");
+    expect(menu()).toBeNull();
+    type("issue#12");
+    expect(menu()).toBeNull();
+    type("# ");
+    expect(menu()).toBeNull();
+  });
+
+  it("rebuilds a session pill when a draft is restored", () => {
+    render({ sessions: SESSIONS });
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    act(() => editorWithHandle().restore("ask [Fix the flaky test](futureos://session/s-a1) now"));
+
+    const pill = editor.querySelector<HTMLElement>("[data-mention='session']")!;
+    expect(pill.getAttribute("data-session")).toBe("s-a1");
+    expect(editorWithHandle().getContent())
+      .toBe("ask [Fix the flaky test](futureos://session/s-a1) now");
+  });
+
+  it("opens no menu when the conversation list is empty", () => {
+    render({ sessions: [] });
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    type("#");
+    expect(menu()).toBeNull();
+  });
+
+  it("names a workspace group whose workspace has no name to show", () => {
+    // A conversation whose workspace was deleted still belongs to that
+    // workspace, so the menu labels the group generically instead of leaving a
+    // blank heading (or worse, reading as the chats section).
+    render({
+      sessions: [
+        { sessionId: "c1", title: "A chat", workspace: null },
+        { sessionId: "g1", title: "Orphaned", workspace: { id: "ghost", name: "" } },
+      ],
+    });
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    type("#");
+    const headings = [...menu()!.querySelectorAll("div > div.text-xs")].map(node => node.textContent);
+    expect(headings).toEqual(["Chats", "Workspace"]);
   });
 });
 

@@ -8,9 +8,11 @@ use std::future::Future;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "gui")]
 use tauri::Emitter;
 
 use crate::agent_bridge::SyncFutureModelsResult;
+#[cfg(feature = "gui")]
 use crate::commands::UpdateStatus;
 use crate::future_login::FutureBalance;
 use crate::AppError;
@@ -99,7 +101,7 @@ where
     F: FnMut() -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    tauri::async_runtime::spawn(async move {
+    let loop_body = async move {
         loop {
             tokio::time::sleep_until(tokio::time::Instant::from_std(job.next_due())).await;
             if !job.claim_if_due(Instant::now()) {
@@ -110,7 +112,15 @@ where
             let _execution = job.execution.lock().await;
             run().await;
         }
-    });
+    };
+    // The window build spawns on Tauri's runtime (the one the WebView's
+    // asynchronous commands run on); the server build has no Tauri runtime and
+    // uses the process runtime `headless::run` installs, exactly like
+    // `tasks::start_headless`.
+    #[cfg(feature = "gui")]
+    tauri::async_runtime::spawn(loop_body);
+    #[cfg(not(feature = "gui"))]
+    tokio::spawn(loop_body);
 }
 
 async fn run_explicit<T, F, Fut>(job: &'static FixedIntervalJob, run: F) -> Result<T, AppError>
@@ -143,6 +153,7 @@ fn future_signed_in() -> bool {
 ///
 /// Generic over the runtime so the wiring can be exercised from a
 /// `tauri::test::mock_app()` handle as well as from the real Wry one.
+#[cfg(feature = "gui")]
 pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     let update_app = app.clone();
     spawn_fixed_interval(&APP_UPDATE_JOB, move || {
@@ -195,6 +206,40 @@ pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     });
 }
 
+/// The headless entry point's maintenance loop: the same Future-catalogue job
+/// with the same interval and the same signed-in gate, without the two the
+/// server cannot use. The window build uses [`start`] instead; this exists in
+/// both so the server path can share the job, its clock and its tests.
+///
+/// `app update` needs the Tauri updater plugin and an installer to hand the
+/// downloaded bundle to, so it does not exist in the server build at all; the
+/// `balance` job's only output is a WebView event, and the phone reads neither
+/// the balance nor that event. The catalogue is different: the Agent announces
+/// its own refresh (`publish_provider_config_changed`), which the remote bridge
+/// already forwards to the phone, so a server that runs for weeks keeps the
+/// phone's model list current instead of freezing it at first launch.
+pub fn start_headless() {
+    spawn_fixed_interval(&FUTURE_MODELS_JOB, refresh_future_catalogue_if_signed_in);
+}
+
+/// The server's catalogue job body. Split out so the signed-in gate is testable
+/// without a runtime, and so the automatic run stays on the job's own clock: it
+/// must never reset the deadline the way the explicit `*_now` entry points do.
+async fn refresh_future_catalogue_if_signed_in() {
+    if !future_signed_in() {
+        return;
+    }
+    match crate::agent_bridge::sync_future_models().await {
+        Ok(result) if result.synced => eprintln!(
+            "FutureOS: Future model catalogue refreshed ({} models).",
+            result.model_count
+        ),
+        Ok(_) => {}
+        Err(error) => eprintln!("FutureOS scheduled model refresh failed: {error}"),
+    }
+}
+
+#[cfg(feature = "gui")]
 pub async fn check_app_update_now<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<UpdateStatus, AppError> {
@@ -402,9 +447,10 @@ mod tests {
         );
     }
 
-    /// `start` wires the three loops and must not panic without a real window
-    /// (the headless server calls it the same way). A mock app is the whole
-    /// requirement: the loops sleep for a full interval before doing anything.
+    /// `start` wires the three window loops and must not panic without a real
+    /// window. A mock app is the whole requirement: the loops sleep for a full
+    /// interval before doing anything.
+    #[cfg(feature = "gui")]
     #[test]
     fn starting_the_loops_on_a_mock_app_is_inert() {
         let app = tauri::test::mock_app();
@@ -420,6 +466,32 @@ mod tests {
         assert_eq!(FUTURE_BALANCE_EVENT, "scheduler-future-balance");
         assert_eq!(FUTURE_AUTH_INVALID_EVENT, "scheduler-future-auth-invalid");
         assert_eq!(FUTURE_MODELS_EVENT, "scheduler-future-models");
+    }
+
+    /// The server build's maintenance loop: the catalogue job's body is gated on
+    /// the account and, unlike the explicit `*_now` entry points, must leave the
+    /// scheduled deadline alone — otherwise the automatic run and a manual
+    /// refresh would keep pushing each other out and neither would settle.
+    ///
+    /// Deliberately never signs in: the signed-in arm reaches the Agent, and a
+    /// developer machine running its own `future agent` must stay untouched.
+    #[tokio::test]
+    async fn the_headless_catalogue_job_skips_while_signed_out_and_keeps_its_clock() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("scheduler_headless");
+
+        // Signed out: the body returns before the Agent is contacted at all.
+        assert!(!future_signed_in());
+        let before = FUTURE_MODELS_JOB.next_due();
+        refresh_future_catalogue_if_signed_in().await;
+        assert_eq!(
+            FUTURE_MODELS_JOB.next_due(),
+            before,
+            "an automatic run must not re-anchor the schedule; only an explicit trigger does"
+        );
+        // Arming the loop is inert: the first automatic run is a full interval
+        // away, so the deadline is untouched by the spawn.
+        start_headless();
+        assert_eq!(FUTURE_MODELS_JOB.next_due(), before);
     }
 
     /// `future_signed_in` gates both signed-in-only jobs. It must be false for
@@ -500,9 +572,16 @@ mod tests {
             "a failed manual refresh must still reset the automatic deadline"
         );
 
+        // The model sync does not consult the account: its outcome depends on
+        // whether an Agent answers (the scripted test double another test in
+        // the process may have installed) or is unreachable. Both are ordinary
+        // production outcomes, so only the clock is asserted here — the failure
+        // path is covered by the balance job above.
         let before = Instant::now();
-        let result = refresh_future_models_now().await;
-        assert!(result.is_err(), "no key means no model sync");
-        assert!(FUTURE_MODELS_JOB.next_due() >= before + Duration::from_secs(3600));
+        let _ = refresh_future_models_now().await;
+        assert!(
+            FUTURE_MODELS_JOB.next_due() >= before + Duration::from_secs(3600),
+            "a manual refresh must reset the automatic deadline whatever the Agent says"
+        );
     }
 }

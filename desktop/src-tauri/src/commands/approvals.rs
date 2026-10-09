@@ -316,3 +316,10 @@ mod tests {
         .is_err());
     }
 }
+
+#[tauri::command]
+pub fn list_approval_assessments(
+    run_id: String,
+) -> Result<Vec<store::ApprovalAssessmentRecord>, crate::AppError> {
+    store::list_approval_assessments(&run_id)
+}

@@ -211,6 +211,14 @@ mod tests {
         let _home = TestHome::new("session-events-import");
         let mock = mock_agent();
 
+        // The announced session holds a message: a session still empty at
+        // announcement time is deliberately left to the discovery pass.
+        mock.push_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [
+                {"id":"u1","role":"user","kind":"user","blocks":[],"createdAtMs":1000}
+            ]}),
+        );
         mock.push_data(
             "get_state",
             serde_json::json!({
@@ -278,6 +286,12 @@ mod tests {
         let mock = mock_agent();
         mock.push_typed_data("list_sessions", serde_json::json!({"sessions": []}));
         mock.push_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [
+                {"id":"u1","role":"user","kind":"user","blocks":[],"createdAtMs":1000}
+            ]}),
+        );
+        mock.push_data(
             "get_state",
             serde_json::json!({
                 "sessionId": "s-live",
@@ -314,6 +328,12 @@ mod tests {
         let _home = TestHome::new("session-events-stream");
         let mock = mock_agent();
         mock.push_typed_data("list_sessions", serde_json::json!({"sessions": []}));
+        mock.push_data(
+            "get_session_entries",
+            serde_json::json!({"entries": [
+                {"id":"u1","role":"user","kind":"user","blocks":[],"createdAtMs":1000}
+            ]}),
+        );
         mock.push_data(
             "get_state",
             serde_json::json!({

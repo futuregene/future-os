@@ -1,7 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { File } from "expo-file-system";
 import { createAsyncOperationQueue } from "./asyncOperationQueue";
-import type { MobileAttachment } from "./types";
+import type { MobileAttachment, SessionReferenceMap } from "./types";
 
 /**
  * Per-session composer draft: the *unsent* input a conversation carries between
@@ -14,6 +14,13 @@ export interface SessionDraft {
   version: number;
   text: string;
   attachments: MobileAttachment[];
+  /**
+   * The conversations the text's `#title` tokens stand for. Part of the draft
+   * because the token alone carries no id (see `SessionReferenceMap`), so a
+   * restored draft must restore the map with it or the reference would go out
+   * as plain text. Absent for drafts written before this field existed.
+   */
+  refs?: SessionReferenceMap;
 }
 
 const DRAFT_VERSION = 1;
@@ -72,6 +79,24 @@ function attachmentFileExists(localUri: string): boolean {
 }
 
 /**
+ * A draft's references, validated: a token or target that is not the shape we
+ * wrote is dropped rather than half-restored (an unreadable entry can only make
+ * the send expand the wrong conversation).
+ */
+function parseRefs(raw: unknown): SessionReferenceMap | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const refs: SessionReferenceMap = {};
+  for (const [token, value] of Object.entries(raw as Record<string, unknown>)) {
+    const target = value as { sessionId?: unknown; title?: unknown } | null;
+    if (!token.startsWith("#") || !target || typeof target !== "object") continue;
+    if (typeof target.sessionId !== "string" || typeof target.title !== "string") continue;
+    if (!target.sessionId) continue;
+    refs[token] = { sessionId: target.sessionId, title: target.title };
+  }
+  return Object.keys(refs).length > 0 ? refs : undefined;
+}
+
+/**
  * Read a session's draft, or null when absent/unreadable/stale-version.
  * Attachments whose backing file no longer exists (a temporary camera/cache
  * file was pruned) are dropped rather than surfacing a dead tap target.
@@ -96,7 +121,7 @@ async function loadSessionDraftDirect(sessionId: string): Promise<SessionDraft |
         )
       : [];
     if (text.trim().length === 0 && attachments.length === 0) return null;
-    return { version: DRAFT_VERSION, text, attachments };
+    return { version: DRAFT_VERSION, text, attachments, refs: parseRefs(parsed.refs) };
   } catch {
     return null;
   }

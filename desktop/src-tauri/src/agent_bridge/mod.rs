@@ -19,7 +19,7 @@ mod session_events;
 mod skills;
 mod stream;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -39,7 +39,7 @@ pub use self::delete_outbox::{reconcile_delete_outbox, spawn_delete_outbox_worke
 pub use self::headless::{
     prepare_prompt_persisted_with_trigger, run_prepared_prompt_with_acceptance, PreparedPrompt,
 };
-pub(crate) use self::import::list_agent_session_ids;
+pub(crate) use self::import::{list_agent_session_ids, session_has_messages};
 pub use self::models::{list_agent_models, list_builtin_providers, AgentModelOption};
 #[cfg(test)]
 pub(crate) use self::observer::has_observer;
@@ -51,6 +51,7 @@ pub use self::observer::{
 pub use self::prompt::agent_prompt;
 pub(crate) use self::prompt::agent_prompt_with_acceptance;
 pub use self::prompt::{agent_prompt_with_model_context, AgentPromptRequest, AgentPromptResponse};
+pub use self::queries::provision_agent_session_with_policy;
 #[cfg(test)]
 use self::queries::reload_agent_credentials;
 pub use self::queries::{
@@ -71,6 +72,7 @@ pub use self::reconciliation::{
 pub use self::run_control::{abort_run, compact_agent_session, compact_thread_context};
 pub(crate) use self::run_control::{abort_session, wait_for_agent_idle};
 pub use self::session::fork_agent_session;
+pub(crate) use self::session::set_agent_sandbox_policy_tier;
 pub use self::session_events::spawn_session_events_observer;
 pub use self::skills::{
     install_skill, list_available_skills, list_installed_skills, refresh_skills, suggest_skill,

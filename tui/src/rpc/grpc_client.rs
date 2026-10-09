@@ -707,7 +707,7 @@ impl GrpcClient {
             .await
     }
 
-    /// `setSandboxPolicy(tier)` — `off` | `manual` | `sandbox`.
+    /// `setSandboxPolicy(tier)` — `off` | `manual` | `sandbox` | `auto`.
     ///
     /// Returns the agent's *own* summary rather than `()`: the agent answers
     /// `tier:"manual"` with `requestedTier:"sandbox"` when the probe found no
@@ -716,7 +716,8 @@ impl GrpcClient {
     pub async fn set_sandbox_policy(&self, tier: &str) -> Result<Value, String> {
         let cmd = RpcCommand {
             sandbox_policy: Some(future_rpc::proto::SandboxPolicy {
-                tier: tier.to_string(),
+                tier: if tier == "auto" { "sandbox" } else { tier }.to_string(),
+                reviewer: if tier == "auto" { "model" } else { "user" }.to_string(),
             }),
             ..Default::default()
         };

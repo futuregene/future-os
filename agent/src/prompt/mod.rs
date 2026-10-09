@@ -418,6 +418,20 @@ fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
             "Use the shell tool (PowerShell) for command-line exploration such as Get-ChildItem and Select-String; but to read a known file's contents use the read tool, not Get-Content. Prefer write/edit tools for ordinary file writes."
                 .to_string(),
         );
+        // A `#`-picked conversation reaches the model as
+        // `[title](futureos://session/<id>)`, so the id is already in the
+        // message. Acting on it goes through the ordinary `future` CLI rather
+        // than a dedicated tool, the same way the agent inspects itself (see
+        // docs/guide/self-inspection.md): this guideline only has to name the
+        // two commands the reference is for, since the id alone is not
+        // self-explanatory. The last two sentences cover what the target
+        // session cannot see for itself: the message arrives as a bare user
+        // turn with no sender, and the payload can be mangled on the way — see
+        // docs/guide/self-inspection.md.
+        guidelines.push(
+            "A user message may reference another conversation as [title](futureos://session/<session-id>): the id in that link identifies that conversation. Read it with the shell tool — `future session transcript --session <id>` (add --select/--grep/--limit/--counts to read it cheaply, --runs for its run outcomes) or `future session history search --session <id> --query \"<text>\"` to find a passage. To send it a message use `future run --session <id> \"<message>\"`, which starts a real run there and spends the user's credits; if that conversation is mid-run, you decide whether to append behind it (the default) or interrupt it with --steer. The command returns when that run ends, so raise the shell tool's timeout for a long one. The target sees only a bare user turn, so state what it cannot infer: that the message comes from another conversation (name the sending session id) and whether you expect it to act on the content or merely take note. When the payload is long or non-ASCII, write it to a file and pass it as `@<file>` — the CLI reads the file itself — instead of reading it into a shell variable first: on Windows PowerShell 5.1 `Get-Content` decodes a BOM-less UTF-8 file with the ANSI code page, and the mojibake is what lands in the other conversation."
+                .to_string(),
+        );
     }
 
     guidelines
@@ -882,6 +896,47 @@ mod tests {
         assert!(has_tool(&tools, "shell"));
         assert!(has_tool(&tools, "read"));
         assert!(!has_tool(&tools, "nonexistent"));
+    }
+
+    /// A `#`-picked conversation arrives as a link carrying its session id, and
+    /// the model acts on it through the `future` CLI — the commands have to be
+    /// named in the prompt, and only when a shell tool can run them.
+    #[test]
+    fn session_reference_guideline_needs_a_shell_tool() {
+        let with_shell = build_prompt(&PromptOptions {
+            tools: vec![crate::tools::shell_tool()],
+            ..Default::default()
+        });
+        assert!(with_shell.contains("futureos://session/<session-id>"));
+        assert!(with_shell.contains("future session transcript --session <id>"));
+        assert!(with_shell.contains("future run --session <id>"));
+        // Sending spends credits, so the prompt must say so.
+        assert!(with_shell.contains("spends the user's credits"));
+        // Both ways to handle a run already in progress are named, and the
+        // prompt says the choice is the model's — naming only the default would
+        // leave it unable to judge, and naming only one would be an instruction.
+        assert!(with_shell.contains("you decide whether to append behind it"));
+        assert!(with_shell.contains("--steer"));
+        // The command waits for that run either way; without this the model
+        // cannot size the shell timeout.
+        assert!(with_shell.contains("raise the shell tool's timeout"));
+        // The target sees a bare user turn: without provenance and intent in
+        // the message it cannot tell a relayed report from the user's own
+        // request.
+        assert!(with_shell.contains("comes from another conversation"));
+        assert!(with_shell.contains("merely take note"));
+        // Piping a BOM-less UTF-8 payload through `Get-Content` first is what
+        // put mojibake into another conversation's history; `@<file>` is read
+        // by the CLI itself.
+        assert!(with_shell.contains("@<file>"));
+
+        // Without a shell there is no way to run either command, so promising
+        // them would only invite the model to try.
+        let read_only = build_prompt(&PromptOptions {
+            tools: vec![crate::tools::read_tool()],
+            ..Default::default()
+        });
+        assert!(!read_only.contains("futureos://session/<session-id>"));
     }
 
     #[test]
