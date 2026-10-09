@@ -216,3 +216,84 @@ describe("useRemoteTimeline", () => {
     hook.unmount();
   });
 });
+
+/**
+ * `streaming` drives the composer's Stop-vs-Send, so a wrong value puts a wrong
+ * affordance in front of the user: "Stop" that stops nothing, or a Send that the
+ * host refuses because it is already answering.
+ */
+describe("useRemoteTimeline run state", () => {
+  // `sessionId` is required: the timeline ignores another session's events, so
+  // an event without one would never reach the reducer and these assertions
+  // would pass without exercising anything.
+  const event = (type: string, data: unknown = {}) => ({
+    sessionId: "sess_1",
+    eventId: `e_${type}`,
+    timestamp: "2026-01-01T00:00:00Z",
+    type,
+    data: JSON.stringify(data),
+  });
+
+  async function openTimeline() {
+    requestMock.mockResolvedValue(page([]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    return hook;
+  }
+
+  it("runs from the first activity frame to the settling one", async () => {
+    const hook = await openTimeline();
+    expect(hook.current.streaming).toBe(false);
+
+    push(event("agent_start"));
+    expect(hook.current.streaming).toBe(true);
+
+    push(event("text_chunk", { text: "hi" }));
+    expect(hook.current.streaming).toBe(true);
+
+    push(event("run_finished"));
+    expect(hook.current.streaming).toBe(false);
+    hook.unmount();
+  });
+
+  /**
+   * The defect this replaced: `!isTerminal(type)` counted *every* unrecognized
+   * type as "a run just started", so a compaction left the conversation looking
+   * busy and the composer offering Stop for a run that did not exist. A type
+   * from another family must leave the run state exactly as it was.
+   */
+  it("does not mistake another family of event for a running agent", async () => {
+    const hook = await openTimeline();
+
+    for (const type of [
+      "compaction_started",
+      "compaction_committed",
+      "compaction_failed",
+      "compaction_unchanged",
+      "settings_changed",
+      "presence",
+      "future_event_this_client_has_never_seen",
+    ]) {
+      push(event(type));
+      expect(hook.current.streaming).toBe(false);
+    }
+    hook.unmount();
+  });
+
+  /** The same, in the other direction: a mid-run compaction does not end the run. */
+  it("keeps a run running when an unrelated event arrives during it", async () => {
+    const hook = await openTimeline();
+
+    push(event("agent_start"));
+    push(event("compaction_started"));
+    expect(hook.current.streaming).toBe(true);
+
+    push(event("compaction_committed"));
+    expect(hook.current.streaming).toBe(true);
+
+    push(event("agent_end"));
+    expect(hook.current.streaming).toBe(false);
+    hook.unmount();
+  });
+});
+
