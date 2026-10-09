@@ -513,19 +513,26 @@ pub(crate) fn handle_set_sandbox_policy(
             capabilities: None,
         },
     };
+    let configured_mode = policy.mode().to_string();
+    let account_fallback = policy.model_reviewer && crate::skill_reco::endpoint().is_none();
+    policy = crate::approval_review::account_sandbox_policy(policy, !account_fallback);
     let requested_tier = policy.tier.as_str().to_string();
     let fallback = requested_tier == "sandbox" && !probe.available;
     if fallback {
         policy.tier = crate::sandbox::SandboxTier::Manual;
+        policy.model_reviewer = false;
     }
     let tier = policy.tier.as_str().to_string();
     let summary = serde_json::json!({
         "tier": tier,
+        "configuredMode": configured_mode,
+        "effectiveMode": policy.mode(),
+        "reviewer": if policy.model_reviewer { "model" } else { "user" },
         "requestedTier": requested_tier,
         "sandboxAvailable": probe.available,
         "sandboxCode": probe.code,
         "sandboxBackend": probe.backend,
-        "fallback": if fallback { Some("manual") } else { None },
+        "fallback": if fallback { Some("manual") } else if account_fallback { Some("sandbox") } else { None },
     });
     session.write().set_sandbox_policy(policy);
     let sess = session.read();

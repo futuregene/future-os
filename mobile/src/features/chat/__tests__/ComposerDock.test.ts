@@ -5,6 +5,7 @@ import { useCompactContext } from "../useCompactContext";
 import { emptyTimeline } from "../../../remote/timeline";
 import type { CompactionOutcome } from "../../../remote/types";
 import { SkillPicker } from "../components/SkillPicker";
+import { SessionPicker } from "../components/SessionPicker";
 import { SkillSuggestionCard } from "../components/SkillSuggestionCard";
 import { SkillDetailsDialog } from "../components/SkillDetailsDialog";
 import { PendingApprovalCard } from "../../../components/TimelineCard";
@@ -21,7 +22,7 @@ jest.mock("react-native", () => {
   });
 });
 
-jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowDown", "ChevronDown", "CircleAlert", "FileText", "Info", "Lightbulb", "Paperclip", "Send", "Slash", "Square", "X"].map(name => [name, () => null])));
+jest.mock("lucide-react-native", () => Object.fromEntries(["ArrowDown", "ChevronDown", "CircleAlert", "FileText", "Info", "Lightbulb", "MessageCircle", "Paperclip", "Send", "Slash", "Square", "X"].map(name => [name, () => null])));
 // The composer takes `t` as a prop, but the details dialog and the surfaces
 // below it call `useTranslation` themselves. Standing up the real i18n module
 // would drag expo-localization into a component test; the translations are
@@ -492,6 +493,117 @@ test("slash button opens above the composer and skill selection edits without se
   } finally { act(() => tree!.unmount()); }
 });
 
+test("typing # opens the conversation picker and picking one writes the reference", () => {
+  // The `/` path has its own case above; this is the `#` one, through the same
+  // dock. It is the only coverage that proves the sessions catalogue the screen
+  // hands down actually reaches the menu on this platform.
+  const sessions = [
+    { sessionId: "s2", threadId: "t2", title: "Fix the flaky test", mode: "workspace", workspaceId: "w1", streaming: false },
+    { sessionId: "s3", threadId: "t3", title: "A chat", mode: "chat", streaming: false },
+  ];
+  const props = baseProps({
+    remote: {
+      draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: false, busy: false, capabilities: new Set(),
+      sessions, workspaces: [{ id: "w1", name: "Payments", path: "/w" }],
+    },
+  });
+  function Harness() {
+    const [message, setMessage] = useState("");
+    return createElement(ComposerDock, { ...props, message, setMessage });
+  }
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(Harness)); });
+  try {
+    act(() => tree.root.findByType(TextInput).props.onFocus());
+    act(() => tree.root.findByType(TextInput).props.onChangeText("#"));
+    const picker = tree.root.findByType(SessionPicker);
+    // Filed by mode: the chat is its own group, the workspace conversation under
+    // its workspace — and the conversation being composed in (s1) is not offered.
+    expect(picker.props.groups.map((group: { workspace: { name: string } | null }) => group.workspace?.name ?? null))
+      .toEqual([null, "Payments"]);
+    expect(picker.props.groups.flatMap((group: { sessions: { sessionId: string }[] }) => group.sessions.map(item => item.sessionId)))
+      .toEqual(["s3", "s2"]);
+    act(() => picker.props.onSelect({ sessionId: "s2", title: "Fix the flaky test" }));
+    // The draft shows the compact token, the way the desktop's pill reads.
+    expect(tree.root.findByType(TextInput).props.value)
+      .toBe("#Fix the flaky test ");
+    expect(tree.root.findAllByType(SessionPicker)).toHaveLength(0);
+  } finally {
+    act(() => tree.unmount());
+  }
+});
+
+test("the / menu offers the conversation reference, which opens the # menu", () => {
+  // On a phone `#` has no key in reach (it is on the keyboard's symbol page)
+  // while `/` has a button, so without this row the reference is unreachable in
+  // practice. Tapping it must leave `#` in the draft and show the list.
+  const sessions = [
+    { sessionId: "s2", threadId: "t2", title: "Fix the flaky test", mode: "workspace", workspaceId: "w1", streaming: false },
+  ];
+  const props = baseProps({
+    remote: {
+      draft: false, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: false, busy: false, capabilities: new Set(),
+      sessions, workspaces: [{ id: "w1", name: "Payments", path: "/w" }],
+    },
+  });
+  function Harness() {
+    const [message, setMessage] = useState("");
+    return createElement(ComposerDock, { ...props, message, setMessage });
+  }
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(Harness)); });
+  try {
+    act(() => tree.root.findByType(TextInput).props.onFocus());
+    const slashButton = tree.root.findAll(node =>
+      node.props.accessibilityLabel === "skills.choose" && node.props.onPress)[0]!;
+    act(() => slashButton.props.onPress());
+    const picker = tree.root.findByType(SkillPicker);
+    // The action reaches the picker's own menu, searchable by the words a user
+    // would type for it.
+    const action = picker.props.actions.find((item: { id: string }) => item.id === "reference");
+    expect(action).toMatchObject({ label: "chat.referenceConversation", insert: "#" });
+    act(() => picker.props.onActionSelect(action));
+    expect(tree.root.findByType(TextInput).props.value).toBe("#");
+    expect(tree.root.findAllByType(SkillPicker)).toHaveLength(0);
+    expect(tree.root.findByType(SessionPicker).props.groups.flatMap(
+      (group: { sessions: { sessionId: string }[] }) => group.sessions.map(item => item.sessionId),
+    )).toEqual(["s2"]);
+  } finally {
+    act(() => tree.unmount());
+  }
+});
+
+test("the reference row is absent when there is nothing to reference", () => {
+  // A row that opens an empty list is a dead end; with no other conversation in
+  // the catalogue the menu offers nothing at all.
+  const props = baseProps({
+    remote: {
+      draft: true, selectedSessionId: "s1", desktopOnline: true,
+      connectionPresentation: { level: "connected" }, models: [], modelId: "model",
+      streaming: false, busy: false, capabilities: new Set(), sessions: [], workspaces: [],
+    },
+  });
+  function Harness() {
+    const [message, setMessage] = useState("");
+    return createElement(ComposerDock, { ...props, message, setMessage });
+  }
+  let tree!: ReactTestRenderer;
+  act(() => { tree = create(createElement(Harness)); });
+  try {
+    act(() => tree.root.findByType(TextInput).props.onFocus());
+    act(() => tree.root.findAll(node =>
+      node.props.accessibilityLabel === "skills.choose" && node.props.onPress)[0]!.props.onPress());
+    const picker = tree.root.findByType(SkillPicker);
+    expect(picker.props.actions.some((item: { id: string }) => item.id === "reference")).toBe(false);
+  } finally {
+    act(() => tree.unmount());
+  }
+});
+
 test("both languages define the history retry label", () => {
   expect(resources.en.translation.common.retry).toBe("Retry");
   expect(resources.zh.translation.common.retry).toBe("重试");
@@ -501,6 +613,9 @@ test("both languages define the history retry label", () => {
 function baseProps(overrides: Record<string, unknown> = {}) {
   return {
     message: "", setMessage: jest.fn(), attachments: [], setAttachments: jest.fn(),
+    // The draft's conversation references (see `useComposerDraft`): the tests
+    // that exercise `#` override these.
+    sessionRefs: {}, rememberSessionRef: jest.fn(),
     supportsImages: true, activeModelLabel: "model", t: (key: string) => key,
     remote: {
       draft: false, selectedSessionId: "s1", desktopOnline: true,

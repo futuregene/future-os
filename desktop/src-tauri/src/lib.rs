@@ -14,6 +14,7 @@ mod auth_store;
 mod build_info;
 mod commands;
 mod config_io;
+mod conversations;
 mod device_identity;
 mod error;
 mod future_login;
@@ -33,7 +34,6 @@ mod remote;
 mod remote_host;
 mod run_error;
 mod runtime;
-#[cfg(feature = "gui")]
 mod scheduler;
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
 mod shadow_review;
@@ -971,6 +971,20 @@ mod gui {
                         if let Err(error) = store::reconcile_orphan_sessions().await {
                             eprintln!("FutureOS orphan-session reconcile failed: {error}");
                         }
+                        // Rows mirrored by older builds for sessions that were
+                        // created but never prompted are empty conversations
+                        // with no run to their name; drop them so the list
+                        // converges without waiting for the periodic pass.
+                        match store::reconcile_empty_conversations().await {
+                            Ok(0) => {}
+                            Ok(removed) => {
+                                eprintln!("FutureOS: removed {removed} empty conversation(s)");
+                                crate::emit_threads_updated();
+                            }
+                            Err(error) => {
+                                eprintln!("FutureOS empty-conversation reconcile failed: {error}")
+                            }
+                        }
                         // Rows produced by older startup convergence builds are
                         // terminal locally (`cancelled/interrupted`) and therefore
                         // outside the active-run watchdog. Reconcile that legacy
@@ -1070,6 +1084,7 @@ mod gui {
                 list_tool_calls_bulk,
                 list_tool_outputs,
                 list_approval_requests,
+                list_approval_assessments,
                 list_pending_approval_requests,
                 decide_approval_request,
                 save_approval_rule,

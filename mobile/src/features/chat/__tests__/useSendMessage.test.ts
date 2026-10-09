@@ -41,6 +41,7 @@ function mount(options: {
   remote: Parameters<typeof useSendMessage>[0];
   message?: string;
   attachments?: MobileAttachment[];
+  sessionRefs?: import("../../../remote/types").SessionReferenceMap;
   compactionPending?: boolean;
 }) {
   const setMessage = jest.fn();
@@ -49,7 +50,7 @@ function mount(options: {
   function Harness() {
     api = useSendMessage(
       options.remote, t as never, options.message ?? "", options.attachments ?? [],
-      setMessage, setAttachments, setTransferProgress, options.compactionPending ?? false,
+      setMessage, setAttachments, setTransferProgress, options.sessionRefs ?? {}, options.compactionPending ?? false,
     );
     return null;
   }
@@ -110,6 +111,31 @@ describe("sending", () => {
     await act(async () => { await api.send(); });
     expect(setTransferProgress.mock.calls[0]).toEqual([0]);
     expect(setTransferProgress).toHaveBeenLastCalledWith(null);
+  });
+
+  test("a # reference is sent as the session link, while the draft keeps the token", async () => {
+    // The composer shows `#title` (a phone TextInput cannot style part of its
+    // text the way the desktop pill does), so the id it stands for has to be put
+    // back on the way out — otherwise the agent receives a title and no id.
+    const remote = remoteFor();
+    const refs = { "#Fix the flaky test": { sessionId: "sess-1", title: "Fix the flaky test" } };
+    const { setMessage } = mount({ remote, message: "ask #Fix the flaky test", sessionRefs: refs });
+    await act(async () => { await api.send(); });
+    expect(remote.sendMessage).toHaveBeenCalledWith(
+      "ask [Fix the flaky test](futureos://session/sess-1)", [], expect.any(Function),
+    );
+    expect(setMessage).toHaveBeenCalledWith("");
+  });
+
+  test("a failed send restores the draft's token, not the expanded link", async () => {
+    // Restoring the expanded text would put the whole markdown link back in the
+    // input — exactly the display this keeps out of the composer.
+    const remote = remoteFor({ sendMessage: jest.fn(async () => { throw new Error("disconnected"); }) });
+    const refs = { "#Fix the flaky test": { sessionId: "sess-1", title: "Fix the flaky test" } };
+    const { setMessage } = mount({ remote, message: "ask #Fix the flaky test", sessionRefs: refs });
+    await act(async () => { await api.send(); });
+    expect(setMessage).toHaveBeenCalledWith("ask #Fix the flaky test");
+    expect(toast).toHaveBeenCalledWith("t:chat.sendFailed");
   });
 
   test("an unknown total leaves the bar indeterminate instead of dividing by zero", async () => {

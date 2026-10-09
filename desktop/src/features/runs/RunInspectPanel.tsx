@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type {
   StoredRun,
   StoredToolCall,
@@ -26,6 +27,7 @@ import { formatDuration, formatTime } from "../../lib/date";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { isRecord } from "../../lib/objects";
 import { useAsyncResource } from "../../lib/useAsyncResource";
+import { ApprovalAssessments } from "./ApprovalAssessments";
 import {
   formatRunStatus,
   runTone,
@@ -144,6 +146,7 @@ export function RunInspectPanel({
             primaryTool
               ? (
                   <ToolCallDetail
+                    approval={<ApprovalAssessments className="mt-2" run={run} toolCallId={primaryTool.id} />}
                     fill
                     outputs={outputsByTool[primaryTool.id] ?? []}
                     showHeader={false}
@@ -222,6 +225,8 @@ export function RunInspectPanel({
                     )
                   : null}
               </section>
+
+              <ApprovalAssessments run={run} />
 
               <section className="space-y-2">
                 <label className="relative block">
@@ -324,12 +329,14 @@ function dispatchRunRecovery(run: StoredRun, action: "continue" | "retry") {
 }
 
 function ToolCallDetail({
+  approval,
   fill = false,
   outputs,
   showHeader = true,
   showStatus = true,
   tool,
 }: {
+  approval?: ReactNode;
   fill?: boolean;
   outputs: StoredToolOutput[];
   showHeader?: boolean;
@@ -387,6 +394,7 @@ function ToolCallDetail({
         noTopMargin={!showHeader}
         tool={tool}
       />
+      {approval}
       <div className="mt-2 shrink-0">
         <div className="mb-1 text-[11px] font-medium text-ink-muted">
           {details.command

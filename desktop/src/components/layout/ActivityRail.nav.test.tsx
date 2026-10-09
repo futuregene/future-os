@@ -98,7 +98,7 @@ function buttonByText(container: HTMLElement, text: string) {
  *  order. Discovered from a deliberate mismatch while writing the guard test
  *  below; the trailing two come from that test's workspace/account fixtures.
  */
-const EXPECTED_NAV_ENTRIES = ["New Chat", "Models", "Skills", "Phone Control", "Tasks", "Alpha", "Aalice"];
+const EXPECTED_NAV_ENTRIES = ["New Chat", "Models", "Skills", "Tasks", "Phone Control", "Alpha", "Aalice"];
 
 beforeEach(() => {
   localStorage.clear();
@@ -121,6 +121,8 @@ describe("activity rail navigation", () => {
     expect(p.onChange).toHaveBeenCalledWith("skill");
     act(() => buttonByText(view.container, "Phone Control")!.click());
     expect(p.onChange).toHaveBeenLastCalledWith("remote");
+    act(() => buttonByText(view.container, "Tasks")!.click());
+    expect(p.onChange).toHaveBeenLastCalledWith("tasks");
 
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"New workspace\"]")!.click());
     expect(p.onNewWorkspace).toHaveBeenCalledTimes(1);
@@ -142,9 +144,11 @@ describe("activity rail navigation", () => {
     // The list below is the complete set of labelled buttons in the nav, in
     // render order: the four section entries (each wired to a different handler,
     // which is why they cannot be isolated by "who calls onChange"), then the
-    // workspace group header and the account button. The last two come from this
-    // test's own fixtures (workspace "Alpha", email "alice@example.com"), so the
-    // expectation is deterministic; a deliberate UI addition updates this line.
+    // workspace group header and the account button. The order is part of the
+    // expectation: Tasks sits with the standing entries, above Phone Control.
+    // The last two come from this test's own fixtures (workspace "Alpha", email
+    // "alice@example.com"), so the expectation is deterministic; a deliberate UI
+    // addition updates this line.
     const view = mount(<ActivityRail {...props([thread("root")])} />);
     const nav = view.container.querySelector("nav")!;
     const labels = [...nav.querySelectorAll<HTMLButtonElement>("button")]
@@ -163,13 +167,14 @@ describe("activity rail navigation", () => {
   it("routes the collapsed rail's icon buttons", () => {
     const p = props([thread("root")], { expanded: false });
     const view = mount(<ActivityRail {...p} />);
-
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"New chat\"]")!.click());
     expect(p.onNewChat).toHaveBeenCalledWith();
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Models\"]")!.click());
     expect(p.onOpenModels).toHaveBeenCalledTimes(1);
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Phone Control\"]")!.click());
     expect(p.onChange).toHaveBeenCalledWith("remote");
+    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Tasks\"]")!.click());
+    expect(p.onChange).toHaveBeenLastCalledWith("tasks");
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Workspace\"]")!.click());
     expect(p.onChange).toHaveBeenCalledWith("workspace");
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Chat\"]")!.click());

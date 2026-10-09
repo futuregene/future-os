@@ -214,6 +214,9 @@ pub struct SandboxPolicy {
     /// "off" (unrestricted) | "manual" (approval required) | "sandbox" (macOS Seatbelt, macOS only).
     #[prost(string, tag = "7")]
     pub tier: ::prost::alloc::string::String,
+    /// Empty/user = human; model requires sandbox. Older agents safely keep human approval.
+    #[prost(string, tag = "8")]
+    pub reviewer: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AuthUpdate {
@@ -729,7 +732,7 @@ pub struct RuntimeMetricsResponse {
 pub struct EventPayload {
     #[prost(
         oneof = "event_payload::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
     )]
     pub kind: ::core::option::Option<event_payload::Kind>,
 }
@@ -765,6 +768,8 @@ pub mod event_payload {
         Error(super::ErrorEvent),
         #[prost(message, tag = "14")]
         UserMessage(super::UserMessageEvent),
+        #[prost(message, tag = "15")]
+        ApprovalAssessment(super::ApprovalAssessmentEvent),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -1482,6 +1487,57 @@ pub struct ProjectedRunEvent {
     /// so projection snapshots and live frames decode through one path.
     #[prost(message, optional, tag = "20")]
     pub payload: ::core::option::Option<EventPayload>,
+}
+/// Terminal automatic-review audit. Never a human pending approval.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ApprovalClassification {
+    #[prost(string, optional, tag = "1")]
+    pub risk: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "2")]
+    pub authorization: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "3")]
+    pub reason_code: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ApprovalAssessmentEvent {
+    #[prost(string, tag = "1")]
+    pub assessment_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub approval_request_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub tool_call_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub reviewer: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub status: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "6")]
+    pub reported: ::core::option::Option<ApprovalClassification>,
+    #[prost(message, optional, tag = "7")]
+    pub effective: ::core::option::Option<ApprovalClassification>,
+    #[prost(map = "string, double", tag = "8")]
+    pub confidence: ::std::collections::HashMap<::prost::alloc::string::String, f64>,
+    #[prost(string, tag = "9")]
+    pub probabilities_json: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "10")]
+    pub model: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "11")]
+    pub provider_request_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "12")]
+    pub error_code: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, tag = "13")]
+    pub action_json: ::prost::alloc::string::String,
+    #[prost(string, tag = "14")]
+    pub action_digest: ::prost::alloc::string::String,
+    #[prost(int32, tag = "15")]
+    pub attempt: i32,
+    #[prost(int32, tag = "16")]
+    pub prompt_version: i32,
+    #[prost(int32, tag = "17")]
+    pub reason_catalog_version: i32,
+    #[prost(int32, tag = "18")]
+    pub policy_version: i32,
+    #[prost(int64, tag = "19")]
+    pub duration_ms: i64,
 }
 /// Generated client implementations.
 pub mod future_agent_client {

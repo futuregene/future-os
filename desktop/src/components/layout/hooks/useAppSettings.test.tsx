@@ -69,3 +69,43 @@ it("mirrors the UI language for automatic titles and preserves an explicit opt-o
     expect(updateAppSettings).not.toHaveBeenCalled();
   }
 });
+
+it("downgrades a saved automatic preference on logout without restoring it on later login", async () => {
+  let stored: AppSettings = { ...DEFAULT_APP_SETTINGS, approvalTier: "auto" };
+  vi.mocked(getAppSettings).mockImplementation(async () => ({ ...stored }));
+  vi.mocked(updateAppSettings).mockImplementation(async (patch) => {
+    stored = { ...stored, ...patch };
+    return { ...stored };
+  });
+  vi.mocked(updateAppSettings).mockClear();
+  let settings: ReturnType<typeof useAppSettings>;
+  function Host({ status }: { status: string }) {
+    settings = useAppSettings(status);
+    return null;
+  }
+  const root = createRoot(document.createElement("div"));
+  const render = async (status: string) => {
+    await act(async () => root.render(<Host status={status} />));
+  };
+  try {
+    await render("checking");
+    expect(settings!.appSettings.approvalTier).toBe("auto");
+    expect(stored.approvalTier).toBe("auto");
+    await render("unavailable");
+    expect(settings!.appSettings.approvalTier).toBe("auto");
+    expect(stored.approvalTier).toBe("auto");
+    await render("authenticated");
+    expect(settings!.appSettings.approvalTier).toBe("auto");
+    await render("signed_out");
+    expect(settings!.appSettings.approvalTier).toBe("sandbox");
+    expect(stored.approvalTier).toBe("sandbox");
+    expect(vi.mocked(updateAppSettings).mock.calls.filter(([patch]) => patch.approvalTier === "sandbox")).toHaveLength(1);
+    await render("authenticated");
+    expect(settings!.appSettings.approvalTier).toBe("sandbox");
+    await act(async () => settings!.changeSettings({ approvalTier: "auto" }));
+    expect(stored.approvalTier).toBe("auto");
+    await render("invalid");
+    expect(stored.approvalTier).toBe("sandbox");
+  }
+  finally { await act(async () => root.unmount()); }
+});

@@ -1,6 +1,7 @@
 import type { AppSettings } from "../../../integrations/storage/appSettings";
 import { useCallback, useEffect, useRef, useState } from "react";
 import i18n, { getLanguage } from "../../../i18n";
+import { automaticApprovalAvailable, effectiveApprovalTier, shouldPersistAutomaticApprovalFallback } from "../../../integrations/agent/automaticApproval";
 import {
   shouldPersistSandboxFallback,
   useSandboxAvailability,
@@ -22,7 +23,7 @@ export interface UseAppSettingsResult {
  * the server result. Writes are serialized; a failed latest write reports the
  * error and reloads the authoritative state instead of leaving false UI.
  */
-export function useAppSettings(): UseAppSettingsResult {
+export function useAppSettings(futureSessionStatus = "checking"): UseAppSettingsResult {
   const { data: loadedAppSettings } = useAsyncResource<AppSettings>(
     getAppSettings,
     [],
@@ -38,6 +39,7 @@ export function useAppSettings(): UseAppSettingsResult {
   const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const mutationGenerationRef = useRef(0);
   const sandboxFallbackRef = useRef(false);
+  const autoFallbackRef = useRef(false);
   const sandboxAvailability = useSandboxAvailability();
 
   useEffect(() => {
@@ -46,7 +48,9 @@ export function useAppSettings(): UseAppSettingsResult {
     setAppSettings(loadedAppSettings);
   }, [loadedAppSettings]);
 
-  async function changeSettings(patch: Partial<AppSettings>) {
+  const changeSettings = useCallback(async (patch: Partial<AppSettings>) => {
+    if (patch.approvalTier === "auto" && !automaticApprovalAvailable(futureSessionStatus))
+      patch = { ...patch, approvalTier: "sandbox" };
     dirtyRef.current = true;
     const generation = ++mutationGenerationRef.current;
     setAppSettings(current => ({ ...current, ...patch }));
@@ -80,7 +84,7 @@ export function useAppSettings(): UseAppSettingsResult {
     });
     writeQueueRef.current = write;
     await write;
-  }
+  }, [futureSessionStatus]);
 
   const reloadSettings = useCallback(() => {
     dirtyRef.current = true;
@@ -116,12 +120,24 @@ export function useAppSettings(): UseAppSettingsResult {
     return () => {
       i18n.off("languageChanged", syncTitleLanguage);
     };
-  }, []);
+  }, [changeSettings]);
 
   const sandboxFallbackRequired = shouldPersistSandboxFallback(
     sandboxAvailability,
     appSettings.approvalTier,
   );
+
+  const autoFallbackRequired = shouldPersistAutomaticApprovalFallback(appSettings.approvalTier, futureSessionStatus);
+  useEffect(() => {
+    if (!autoFallbackRequired) {
+      autoFallbackRef.current = false;
+      return;
+    }
+    if (autoFallbackRef.current)
+      return;
+    autoFallbackRef.current = true;
+    void changeSettings({ approvalTier: "sandbox" });
+  }, [autoFallbackRequired, changeSettings]);
 
   useEffect(() => {
     if (!sandboxFallbackRequired) {
@@ -142,9 +158,13 @@ export function useAppSettings(): UseAppSettingsResult {
     });
   }, [
     appSettings.approvalTier,
+    changeSettings,
     sandboxAvailability.code,
     sandboxFallbackRequired,
   ]);
 
-  return { appSettings, changeSettings };
+  return {
+    appSettings: { ...appSettings, approvalTier: effectiveApprovalTier(appSettings.approvalTier, futureSessionStatus) },
+    changeSettings,
+  };
 }

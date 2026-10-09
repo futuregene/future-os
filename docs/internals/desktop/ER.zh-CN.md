@@ -136,6 +136,7 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 - 一个 Thread 可以产生多个 Review Changeset。
 - 一个 Thread 可以由另一个 Thread 分叉（fork）或通过 loop 派生执行产生。`parent_session_id` 经 `agent_session_id` 解析为父 Thread，GUI 最多展示三层；不存在的父节点将子节点提升为根。`v1.1.6-thread-parent-session` 迁移为已发布数据库增列；关系同步不改变活动时间，重新绑定另一 Agent session 时清除旧关系。
 - 一个 Agent session 最多映射到一个 Thread；数据库唯一索引是并发导入时的最终约束，通知、事件流重连与低频完整 reconciliation 复用同一个 get-or-create 语义。
+- 只有日志里已经有消息的 session 才会被镜像。客户端是在**创建** session 时广播 `session_created` 的，此时第一条 prompt 还没有产生，所以广播本身不等于一个对话：镜像这段空窗只会在所有列表里多出一行空对话（以及它占用的临时 Workspace）。低频完整对账会在消息出现的下一次导入它；同一条规则也会清掉旧版本为「创建后从未提问」的 session 留下的行。
 - Desktop 的安装级 `device_id` 是 `session_created.creatorId` 的来源；它独立于远程配对并在 Debug Reset 后保留。`createdBy` 只表示客户端类别，未来的 `clientId` 应表示进程或连接实例。
 
 说明：
@@ -347,6 +348,16 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
   - `approval_requests` 新增 `save_suggestion`（TEXT，JSON）——审批卡片“本工作区/对话允许”的建议规则 `{path, access, action}`；敏感文件为空（只能允许一次）。
   - **三张预留配置表 `sandbox_config` / `approval_policy_config` / `approval_rules` 已删除**（2026-07-05）——规则迁到文件后它们成为死结构；对应 `store/approval_config.rs` 模块与三个 record 类型一并移除。旧库里遗留的空表无害（无代码引用），新库不再创建。Phase 2 曾短暂用 `approval_rules` 存规则并经 gRPC 下发，v2 已拆除该链路。
   - `kind` 扩展 `sandbox_escalation`（bash 越界失败的升级审批）；`outside_workspace_read` 是已废弃的旧枚举，不再由当前实现产生。
+
+#### 自动审批审计
+
+`approval_assessments` 保存不可变模型评估：`id`、`approval_request_id`（级联外键）、
+`run_id`（级联外键）、`tool_call_id`、`status`、`payload`（版本化 JSON）、`created_at`。
+索引为 `(run_id, created_at)`。payload 保存 reported/effective 分类、概率与置信度、
+脱敏动作及 digest、模型归属、版本、耗时和错误码。自动请求直接写终态
+approved/rejected/cancelled，reviewer=model、decision_source=auto_review、scope=once，
+不进入 pending 队列、不改变 Run 为 waiting。迁移版本为 `v1.2.2-auto-approval`。
+详见[自动审批](AUTO_APPROVAL.zh-CN.md)。
 
 ### 4.9 Review Changeset
 

@@ -262,7 +262,7 @@ impl ServerSession {
             sandbox_tier: self
                 .sandbox_policy
                 .as_ref()
-                .map(|policy| policy.tier.as_str().to_string()),
+                .map(|policy| policy.mode().to_string()),
         };
         // Freeze the provider, model, tools and AgentConfig before accepting.
         // A queued run must not observe a later set_model/set_thinking/tools
@@ -520,12 +520,14 @@ impl ServerSession {
             settings
                 .sandbox_tier
                 .as_deref()
-                .map(|tier| crate::sandbox::SandboxPolicy {
-                    tier: crate::sandbox::SandboxTier::parse(tier),
-                })
+                .map(crate::sandbox::SandboxPolicy::from_mode)
         } else {
             self.sandbox_policy.clone()
-        };
+        }
+        .map(|policy| {
+            let signed_in = !policy.model_reviewer || crate::skill_reco::endpoint().is_some();
+            crate::approval_review::account_sandbox_policy(policy, signed_in)
+        });
 
         let cwd_path = std::path::Path::new(&run_cwd);
         crate::utils::ensure_workspace_accessible(
@@ -796,7 +798,8 @@ impl ServerSession {
         let creator_id = self.creator_id.clone();
         let source_meta = self.source_meta.clone();
         let auto_compaction = self.auto_compaction;
-        let approval_gate = self.approval_gate.clone();
+        run_loop.clear_interrupt();
+        let mut approval_gate = self.approval_gate.clone();
         let is_ephemeral = self.ephemeral;
 
         // Resolve the sandbox boundary once per run: canonicalized writable
@@ -815,6 +818,26 @@ impl ServerSession {
             ),
             None => crate::sandbox::ResolvedSandbox::disabled(&session_cwd),
         });
+
+        // Auto is an approval reviewer, never a new OS sandbox tier. A failed
+        // sandbox probe always retains the existing human Manual flow.
+        if run_sandbox_policy
+            .as_ref()
+            .is_some_and(|policy| policy.model_reviewer)
+            && sandbox.wraps_shell()
+        {
+            run_loop.tool_review_annotations =
+                Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
+            approval_gate = approval_gate.with_model_reviewer(
+                crate::approval_review::ReviewContext::new(
+                    prompt.message.to_string(),
+                    run_loop.interrupt_flag(),
+                    approval_gate.generation.clone(),
+                    run_loop.tool_review_annotations.clone(),
+                )
+                .with_user_history(&initial_messages[..initial_messages.len() - 1]),
+            );
+        }
 
         // Build per-session StreamContext (callbacks) — these are session-
         // specific closures and must NOT be stored on the shared Loop.
@@ -908,7 +931,6 @@ impl ServerSession {
 
         // Clear any stale interrupt flag copied from the next-run control
         // plane. Each run owns its snapshot after this boundary.
-        run_loop.clear_interrupt();
         let shared_interrupt_flag = run_loop.interrupt_flag();
         self.broadcaster
             .set_persistence_interrupt(shared_interrupt_flag.clone());

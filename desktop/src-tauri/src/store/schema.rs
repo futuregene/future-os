@@ -5,7 +5,8 @@
 /// must also have a versioned migration for existing databases; changing this
 /// constant alone is insufficient. See `desktop/CLAUDE.md`, “Released database
 /// migrations”.
-pub(super) const SCHEMA: &str = r#"
+pub(super) const SCHEMA: &str = concat!(
+    r#"
 CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -275,7 +276,9 @@ CREATE INDEX IF NOT EXISTS idx_approval_requests_run_status ON approval_requests
 CREATE INDEX IF NOT EXISTS idx_artifacts_workspace ON artifacts(workspace_id, deleted_at);
 -- Every read is "today's rows", so index the day the queries all filter on.
 CREATE INDEX IF NOT EXISTS idx_skill_reco_events_day ON skill_reco_events(day);
-"#;
+"#,
+    include_str!("approval_assessments.sql")
+);
 
 /// Columns added to pre-existing tables after their initial `CREATE`. SQLite's
 /// `CREATE TABLE IF NOT EXISTS` will not add columns to a table that already

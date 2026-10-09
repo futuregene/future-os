@@ -184,6 +184,7 @@ export function SettingsDialog({
               ? (
                   <GeneralPage
                     approvalTier={appSettings.approvalTier}
+                    futureSessionStatus={futureSessionStatus}
                     onChangeApprovalTier={value => onChangeSettings({ approvalTier: value })}
                     autoUpgradeSkills={appSettings.autoUpgradeSkills}
                     onToggleAutoUpgradeSkills={value => onChangeSettings({ autoUpgradeSkills: value })}

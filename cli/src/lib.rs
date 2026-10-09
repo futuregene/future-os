@@ -135,7 +135,7 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
 
     // if (group === "task") — reusable prompt + trigger + full-permission runs.
     if group == Some("task") {
-        return catch(out, async { commands::task::task(command, rest, out) }).await;
+        return catch(out, commands::task::task(command, rest, out)).await;
     }
 
     // if (group === "auth" && (!command || command === "--help" || command === "-h"))

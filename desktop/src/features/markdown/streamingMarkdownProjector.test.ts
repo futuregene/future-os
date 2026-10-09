@@ -92,4 +92,26 @@ describe("incremental single-table projection", () => {
       assertEquivalent(project, text);
     }
   });
+
+  it("repairs an unclosed link destination in the tree it reuses for a single block", () => {
+    // A one-block reply hands *this* processor's tree straight to
+    // `parseFutureMarkdown` (see the plugin set above), so a repair registered
+    // only on the canonical processor would leave the streaming render leaking
+    // `bench/REPORT.md(<./bench/REPORT.md)` until the reply settled.
+    const project = createStreamingMarkdownProjector();
+    const text = "结论：[bench/REPORT.md](<./bench/REPORT.md)（脚本：[out.py](<./out.py)）";
+    for (const live of [true, false]) {
+      const blocks = assertEquivalent(project, text, live);
+      expect(blocks[0]?.document?.nodes).toMatchObject([{
+        type: "paragraph",
+        children: [
+          { type: "text", text: "结论：" },
+          { type: "futureReference", reference: { label: "bench/REPORT.md" } },
+          { type: "text", text: "（脚本：" },
+          { type: "futureReference", reference: { label: "out.py" } },
+          { type: "text", text: "）" },
+        ],
+      }]);
+    }
+  });
 });

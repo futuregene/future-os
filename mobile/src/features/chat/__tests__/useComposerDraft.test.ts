@@ -98,16 +98,16 @@ test("the empty composer is not persisted while the draft is still loading", asy
     await Promise.resolve();
   });
   expect(current.message).toBe("restored");
-  expect(schedule).toHaveBeenCalledWith("desk-1:s1", { attachments: [], text: "restored" });
+  expect(schedule).toHaveBeenCalledWith("desk-1:s1", { attachments: [], refs: {}, text: "restored" });
 });
 
 test("an edit is persisted under the conversation's own key", async () => {
   render();
   await settle();
   act(() => current.setMessage("hello"));
-  expect(schedule).toHaveBeenCalledWith("desk-1:s1", { attachments: [], text: "hello" });
+  expect(schedule).toHaveBeenCalledWith("desk-1:s1", { attachments: [], refs: {}, text: "hello" });
   act(() => current.setAttachments([attachment]));
-  expect(schedule).toHaveBeenLastCalledWith("desk-1:s1", { attachments: [attachment], text: "hello" });
+  expect(schedule).toHaveBeenLastCalledWith("desk-1:s1", { attachments: [attachment], refs: {}, text: "hello" });
 });
 
 test("the draft conversation uses the fixed new-conversation slot", async () => {

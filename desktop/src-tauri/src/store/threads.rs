@@ -600,22 +600,7 @@ pub(crate) fn delete_thread_inner(
         if owner_count == 1 {
             super::deletions::enqueue_agent_session_delete_in(&tx, session_id)?;
         }
-        delete_thread_children_in(&tx, &thread.id)?;
-
-        if thread.mode == "chat" {
-            // Keep durable cleanup intent until physical removal succeeds. A
-            // file error after this transaction is therefore retryable by the
-            // cleanup reconciler and can never be recorded as already cleaned.
-            const PENDING_SQL: &str = "UPDATE workspaces
-                 SET cleanup_status = 'pending_cleanup',
-                     cleanup_requested_at = COALESCE(cleanup_requested_at, ?1),
-                     updated_at = ?1
-                 WHERE id = ?2
-                   AND kind = 'temporary'
-                   AND cleanup_status = 'active'";
-            tx.execute(PENDING_SQL, params![now, thread.workspace_id])?;
-        }
-        tx.execute("DELETE FROM threads WHERE id = ?1", params![thread.id])?;
+        delete_thread_rows_in(&tx, thread, now)?;
     }
     tx.commit()?;
     mark_catalog_dirty();
@@ -640,6 +625,52 @@ pub(crate) fn delete_thread_inner(
     }
 
     Ok(root)
+}
+
+/// The local half of a conversation delete: children, the chat scratch
+/// directory's cleanup intent, and the row itself. Whatever the caller owes the
+/// Agent is its own business — only a *user* delete owns the session (see
+/// [`forget_thread_mirror`]).
+fn delete_thread_rows_in(
+    conn: &Connection,
+    thread: &ThreadRecord,
+    now: i64,
+) -> rusqlite::Result<()> {
+    delete_thread_children_in(conn, &thread.id)?;
+    if thread.mode == "chat" {
+        // Keep durable cleanup intent until physical removal succeeds. A file
+        // error after this transaction is therefore retryable by the cleanup
+        // reconciler and can never be recorded as already cleaned.
+        const PENDING_SQL: &str = "UPDATE workspaces
+                 SET cleanup_status = 'pending_cleanup',
+                     cleanup_requested_at = COALESCE(cleanup_requested_at, ?1),
+                     updated_at = ?1
+                 WHERE id = ?2
+                   AND kind = 'temporary'
+                   AND cleanup_status = 'active'";
+        conn.execute(PENDING_SQL, params![now, thread.workspace_id])?;
+    }
+    conn.execute("DELETE FROM threads WHERE id = ?1", params![thread.id])?;
+    Ok(())
+}
+
+/// Drop this side's projection of a conversation **the Agent still owns**.
+///
+/// [`delete_thread`] is a user delete: it queues the Agent-side session
+/// deletion and tombstones the id, so the conversation can never come back. A
+/// reconciliation that removes a row it can prove holds no conversation must do
+/// neither — the session stays, its owner may still prompt it, and the import
+/// that mirrors it again once it has a message must not be fenced out. Only the
+/// local rows go, with the same bookkeeping as a delete.
+pub fn forget_thread_mirror(thread_id: &str) -> Result<(), crate::AppError> {
+    let mut conn = connect()?;
+    let root = loaded(get_thread_in(&conn, thread_id)?, "Thread")?;
+    let now = now_millis();
+    let tx = conn.transaction()?;
+    delete_thread_rows_in(&tx, &root, now)?;
+    tx.commit()?;
+    mark_catalog_dirty();
+    Ok(())
 }
 
 /// Batch-delete multiple threads. For each thread:
@@ -1290,6 +1321,35 @@ mod tests {
             crate::store::is_agent_session_tombstoned("sess_unique").expect("check"),
             "the sole owner tombstones the session"
         );
+    }
+
+    /// The mirror removal a reconciliation uses must leave the Agent session
+    /// untouched: no queued Agent delete, no tombstone that would fence out the
+    /// import that mirrors the session again once it has a message.
+    #[test]
+    fn forgetting_a_mirror_never_touches_the_agent_session() {
+        let (_home, _conn) = guarded_conn("threads_forget_mirror");
+        let thread = session_chat_thread("sess_mirror", None);
+
+        forget_thread_mirror(&thread.id).expect("forget");
+
+        assert!(get_thread(&thread.id).expect("thread lookup").is_none());
+        assert!(
+            !crate::store::is_agent_session_tombstoned("sess_mirror").expect("check"),
+            "the session stays importable"
+        );
+        assert!(
+            crate::store::pending_agent_session_deletes()
+                .expect("outbox")
+                .is_empty(),
+            "nothing is queued for the Agent to delete"
+        );
+        // The local bookkeeping of a delete still happens: a chat thread's
+        // scratch directory is released.
+        let workspace = get_workspace(&thread.workspace_id)
+            .expect("workspace")
+            .expect("workspace row remains for cleanup");
+        assert_eq!(workspace.cleanup_status, "pending_cleanup");
     }
 
     /// A chat thread bound to `session`, optionally parented to another Agent

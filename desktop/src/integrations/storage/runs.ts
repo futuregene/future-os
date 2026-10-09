@@ -118,3 +118,29 @@ export async function saveApprovalRules(input: {
 }) {
   return invokeCommand<void>("save_approval_rules", { input });
 }
+
+export interface StoredApprovalAssessment {
+  id: string;
+  runId: string;
+  toolCallId: string;
+  status: string;
+  createdAt: number;
+  payload: {
+    effective: { risk?: string; authorization?: string };
+    reported?: { risk: string; authorization: string; reason_code: string };
+    confidence: Record<string, number>;
+    action: unknown;
+    action_digest: string;
+    error_code?: string;
+    model?: string;
+    provider_request_id?: string;
+    policy_version: number;
+    prompt_version: number;
+    reason_catalog_version: number;
+    duration_ms: number;
+  };
+}
+
+export function listApprovalAssessments(runId: string) {
+  return invokeCommand<StoredApprovalAssessment[]>("list_approval_assessments", { runId });
+}

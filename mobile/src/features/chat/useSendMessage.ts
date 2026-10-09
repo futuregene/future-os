@@ -3,7 +3,8 @@ import type { TFunction } from "i18next";
 import { File } from "expo-file-system";
 import { mimeFor } from "../../remote/files";
 import { useRemote } from "../../remote/RemoteContext";
-import type { MobileAttachment, TimelineItem } from "../../remote/types";
+import type { MobileAttachment, SessionReferenceMap, TimelineItem } from "../../remote/types";
+import { expandSessionReferences } from "./sessionCompletion";
 import { showToast } from "./utils";
 
 type Remote = ReturnType<typeof useRemote>;
@@ -29,13 +30,18 @@ export function useSendMessage(
   setMessage: Dispatch<SetStateAction<string>>,
   setAttachments: Dispatch<SetStateAction<MobileAttachment[]>>,
   setTransferProgress: (value: number | null) => void,
+  /** The draft's conversation references, expanded back into links on send. */
+  sessionRefs: SessionReferenceMap = {},
   compactionPending = false,
 ): SendMessageApi {
   const { sendMessage } = remote;
   const compacting = compactionPending || remote.compacting;
   const send = useCallback(async (override?: string) => {
     if (compacting) { showToast(t("chat.compacting")); return; }
-    const value = (override ?? message).trim();
+    // The draft shows a reference as `#title` (the desktop shows a pill); the
+    // message it sends carries the link, which is where the session id lives.
+    const draftValue = (override ?? message).trim();
+    const value = expandSessionReferences(draftValue, sessionRefs);
     if (!value && attachments.length === 0) return;
     const pendingAttachments = attachments;
     setTransferProgress(pendingAttachments.length ? 0 : null);
@@ -48,13 +54,14 @@ export function useSendMessage(
     } catch (error) {
       // M9: sendMessage now throws for busy/streaming/disconnected instead of
       // swallowing the input — always restore the draft so nothing vanishes.
-      setMessage(value);
+      // The *draft* form, not the expanded text: the composer shows tokens.
+      setMessage(draftValue);
       const key = error instanceof Error ? error.message : "";
       showToast(key === "send_compacting" ? t("chat.compacting") : key === "prompt_too_large" ? t("chat.promptTooLarge") : t("chat.sendFailed"));
     } finally {
       setTransferProgress(null);
     }
-  }, [attachments, compacting, message, sendMessage, setAttachments, setMessage, setTransferProgress, t]);
+  }, [attachments, compacting, message, sendMessage, sessionRefs, setAttachments, setMessage, setTransferProgress, t]);
 
   const retryMessage = useCallback(
     (item: TimelineItem) => {

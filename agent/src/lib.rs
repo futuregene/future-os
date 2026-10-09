@@ -1,6 +1,7 @@
 //! future-agent — Rust implementation of the FutureAgent agent backend
 
 pub mod agent;
+pub mod approval_review;
 pub mod auth;
 pub mod cli;
 pub mod compaction;
@@ -17,6 +18,7 @@ pub mod sandbox;
 pub mod session;
 pub mod skill_reco;
 pub mod skills;
+mod system_one;
 pub mod tools;
 pub mod types;
 pub mod utils;

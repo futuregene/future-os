@@ -15,7 +15,8 @@
       "sandbox": "命令在 macOS 沙箱中运行，必要时请求批准。",
       "sandboxWindows": "命令启用 Windows 写保护，必要时请求批准。",
       "sandboxLinux": "命令在 Linux 沙箱中运行，必要时请求批准。",
-      "off": "全部放开，不再询问，也不启用沙箱。"
+      "off": "全部放开，不再询问，也不启用沙箱。",
+      "auto": "自动判断是否放行，保留沙箱保护。"
     },
     "fallbackNotice": "沙箱保护不可用（诊断码：{{code}}）。已切换为手动审批：获批或白名单命令在没有 OS 沙箱的情况下运行。",
     "linuxUnavailable": {
@@ -35,7 +36,11 @@
         "probeTransportError": "暂时无法连接 Agent 检测 Linux 沙箱，请稍后再试或重启 FutureOS。（{{code}}）",
         "unknown": "Linux 沙箱当前不可用，请运行 future doctor 查看详情，修复后重启 FutureOS。（{{code}}）"
       }
-    }
+    },
+    "auto": "自动审批",
+    "autoUnavailable": "此主机的沙箱不可用，当前按人工审批执行；自动审批设置会保留。",
+    "autoSignInRequired": "自动审批（需登录）",
+    "autoChecking": "自动审批（检查登录中）"
   },
   "autoUpgradeSkills": {
     "title": "自动升级技能",

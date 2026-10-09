@@ -19,7 +19,7 @@ mod session_events;
 mod skills;
 mod stream;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -39,7 +39,7 @@ pub use self::delete_outbox::{reconcile_delete_outbox, spawn_delete_outbox_worke
 pub use self::headless::{
     prepare_prompt_persisted_with_trigger, run_prepared_prompt_with_acceptance, PreparedPrompt,
 };
-pub(crate) use self::import::list_agent_session_ids;
+pub(crate) use self::import::{list_agent_session_ids, session_has_messages};
 pub use self::models::{list_agent_models, list_builtin_providers, AgentModelOption};
 #[cfg(test)]
 pub(crate) use self::observer::has_observer;

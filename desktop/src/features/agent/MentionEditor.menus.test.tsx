@@ -668,6 +668,22 @@ describe("mentionEditor # session menu", () => {
     type("#");
     expect(menu()).toBeNull();
   });
+
+  it("names a workspace group whose workspace has no name to show", () => {
+    // A conversation whose workspace was deleted still belongs to that
+    // workspace, so the menu labels the group generically instead of leaving a
+    // blank heading (or worse, reading as the chats section).
+    render({
+      sessions: [
+        { sessionId: "c1", title: "A chat", workspace: null },
+        { sessionId: "g1", title: "Orphaned", workspace: { id: "ghost", name: "" } },
+      ],
+    });
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    type("#");
+    const headings = [...menu()!.querySelectorAll("div > div.text-xs")].map(node => node.textContent);
+    expect(headings).toEqual(["Chats", "Workspace"]);
+  });
 });
 
 describe("mentionEditor serialization round-trip", () => {

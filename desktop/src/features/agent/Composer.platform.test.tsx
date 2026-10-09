@@ -60,6 +60,7 @@ function render() {
   act(() => root.render(
     <Composer
       approvalTier="sandbox"
+      futureSessionStatus="authenticated"
       modelId="m1"
       modelOptions={MODELS}
       onChangeApprovalTier={vi.fn()}
@@ -125,4 +126,10 @@ describe("approval-tier description by platform", () => {
     expect(container.textContent).toContain("Runs sandboxed and asks when needed");
     expect(container.textContent).not.toContain("Restricts out-of-scope writes");
   });
+});
+
+it("describes automatic review when the sandbox is available", async () => {
+  render();
+  await openTierMenu();
+  expect(container.textContent).toContain("Reviews actions automatically");
 });

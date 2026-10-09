@@ -143,7 +143,10 @@ async fn reachable(address: &str) -> bool {
     .is_ok()
 }
 
-fn find_sidecar() -> Result<PathBuf, crate::AppError> {
+/// The bundled `future` CLI: beside the running executable, then the explicitly
+/// installed CLI on PATH. Also spawns `future init` for the built-in skills, so
+/// the message names the binary rather than only the Agent.
+pub(super) fn find_sidecar() -> Result<PathBuf, crate::AppError> {
     let current = std::env::current_exe()?;
     let parent = current
         .parent()
@@ -158,7 +161,7 @@ fn find_sidecar() -> Result<PathBuf, crate::AppError> {
     sidecar_candidates(parent, std::env::var_os("PATH").as_deref(), name)
         .into_iter()
         .find(|path| path.is_absolute() && path.is_file())
-        .ok_or_else(|| "No Agent found. Place the matching future CLI beside Desktop, install it on PATH, or start `future agent` separately.".into())
+        .ok_or_else(|| "No `future` CLI found. Place the matching future CLI beside Desktop, install it on PATH, or start `future agent` separately.".into())
 }
 
 fn sidecar_candidates(parent: &Path, path: Option<&std::ffi::OsStr>, name: &str) -> Vec<PathBuf> {

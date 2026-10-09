@@ -113,9 +113,6 @@ function ReadyAppShell({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
 
-  const { appSettings, changeSettings } = useAppSettings();
-  useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
-  useAgentDoneBell(appSettings.bellOnComplete);
   const { hasUpdate, cachedStatus, markSeen: markUpdateSeen } = useUpdateChecker();
   // Drives the onboarding gate below. Kept with the other top-level hooks so
   // the early returns further down stay after every hook call (rules of hooks).
@@ -127,6 +124,9 @@ function ReadyAppShell({
     refreshBalance: refreshFutureBalance,
     status: futureSessionStatus,
   } = useFutureAccount(initialAuth);
+  const { appSettings, changeSettings } = useAppSettings(futureSessionStatus);
+  useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
+  useAgentDoneBell(appSettings.bellOnComplete);
   const { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initPending } = useHasProviders(futureSessionStatus, initialProviders);
 
   const windowWidth = useWindowWidth();
@@ -189,10 +189,21 @@ function ReadyAppShell({
   }, [activeThread?.id, activeThread?.agentSessionId]);
 
   // Conversations the composer's `#` menu offers: the rail's order, minus the
-  // conversation being composed in (referencing yourself would be a no-op).
+  // conversation being composed in (referencing yourself would be a no-op). On
+  // the new-chat screen nothing is being composed *in* — the thread does not
+  // exist until the first message is sent — so nothing is excluded there.
+  // `activeThread` is only the conversation the user came from, and excluding it
+  // would hide the very conversation a first message most often references:
+  // opening a fresh chat to ask about what you were just doing found "no
+  // matches" for the one title you could be sure of. The id is still dropped on
+  // a real thread, where the composer does have a conversation of its own.
   const sessionMentions = useMemo(
-    () => sessionMentionOptions(threads, workspaces, activeThread?.agentSessionId),
-    [threads, workspaces, activeThread?.agentSessionId],
+    () => sessionMentionOptions(
+      threads,
+      workspaces,
+      centerMode === "new-chat" ? null : activeThread?.agentSessionId,
+    ),
+    [centerMode, threads, workspaces, activeThread?.agentSessionId],
   );
 
   // Refresh the store when the agent session's cwd changes (e.g. TUI /cwd),
@@ -391,6 +402,10 @@ function ReadyAppShell({
     = centerMode === "new-chat"
       || section === "skill"
       || section === "remote"
+      // Tasks are their own two-pane view (list + detail); the context panel
+      // beside them would describe whichever conversation happened to be active
+      // before, which is not what the tasks view is about.
+      || section === "tasks"
       || !rightPanelAvailable;
 
   // The terminal belongs to a conversation: it is offered only while a real
@@ -704,6 +719,7 @@ function ReadyAppShell({
                     onDismissSkillGuide={() => void changeSettings({ skillGuideDismissed: true })}
                     workspaces={userWorkspaces}
                     skillRecommend={appSettings.skillRecommend}
+                    sessionMentions={sessionMentions}
                     futureSessionStatus={futureSessionStatus}
                     futureBalance={futureBalance}
                   />
@@ -714,7 +730,12 @@ function ReadyAppShell({
                   )
                 : section === "tasks"
                   ? (
-                      <TasksView leftPanelExpanded={showLeftPanel} onToggleLeftPanel={handleToggleLeftPanel} onOpenThread={handleOpenTaskThread} />
+                      <TasksView
+                        leftPanelExpanded={showLeftPanel}
+                        modelOptions={visibleModelOptions}
+                        onOpenThread={handleOpenTaskThread}
+                        onToggleLeftPanel={handleToggleLeftPanel}
+                      />
                     )
                   : section === "remote"
                     ? (

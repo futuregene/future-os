@@ -826,6 +826,7 @@ mod tests {
 
         let policy = crate::agent_proto::SandboxPolicy {
             tier: "sandbox".to_string(),
+            reviewer: String::new(),
         };
         let cmd = set_sandbox_policy_command(policy, "sess".to_string());
         assert_eq!(cmd.r#type, "set_sandbox_policy");

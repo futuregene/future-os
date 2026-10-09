@@ -27,6 +27,16 @@ async fn scheduler_wake_worker(
 // opt-in via settings. Matches config::default_permission_level().
 const DEFAULT_PERMISSION_LEVEL: &str = "all";
 
+/// Default thinking level for a session that never chose one.
+///
+/// Defined once because two places need it — the [`ServerSession`] constructor
+/// and the `new_session` handler — and when each carried its own `"xhigh"`
+/// literal they could drift apart silently. "medium" matches the desktop's own
+/// default (`defaultThinkingLevel`), so "the app default" means one thing: a
+/// task or conversation that leaves the level unset does not quietly run at a
+/// different effort than the desktop would pick.
+pub const DEFAULT_THINKING_LEVEL: &str = "medium";
+
 // ─── ServerSession ────────────────────────────────────────────────────────
 
 /// In-memory representation of one agent session.
@@ -241,8 +251,8 @@ impl ServerSession {
             messages: Arc::new(parking_lot::RwLock::new(vec![])),
             history_loaded: true,
             model: String::new(),
-            thinking_level: "xhigh".to_string(), // Match default
-            auto_compaction: true,               // Match default
+            thinking_level: DEFAULT_THINKING_LEVEL.to_string(),
+            auto_compaction: true,
             auto_retry: true,
             no_context_files: false,
             compaction_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -968,12 +978,14 @@ impl ServerSession {
     }
 
     pub fn set_system_prompt(&mut self, prompt: &str) {
+        self.approval_gate.invalidate();
         let mut loop_ = self.agent_loop.try_write().unwrap();
         loop_.system_prompt = prompt.to_string();
         loop_.config.system_prompt = prompt.to_string();
     }
 
     pub fn set_tools(&mut self, tool_names: &[String]) {
+        self.approval_gate.invalidate();
         let all_tools = crate::tools::all_tools();
         let selected: Vec<_> = all_tools
             .into_iter()
@@ -983,14 +995,17 @@ impl ServerSession {
     }
 
     pub fn disable_tools(&mut self) {
+        self.approval_gate.invalidate();
         self.agent_loop.try_write().unwrap().tools = vec![];
     }
 
     pub fn disable_builtin_tools(&mut self) {
+        self.approval_gate.invalidate();
         self.agent_loop.try_write().unwrap().tools = vec![];
     }
 
     pub fn append_system_prompt(&mut self, append: &str) {
+        self.approval_gate.invalidate();
         let current = self.agent_loop.try_read().unwrap().system_prompt.clone();
         let new_prompt = if current.is_empty() {
             append.to_string()
@@ -1430,14 +1445,17 @@ impl ServerSession {
     }
 
     pub fn set_cwd(&mut self, cwd: &str) {
+        self.approval_gate.invalidate();
         self.cwd = cwd.to_string();
     }
 
     pub fn set_permission_level(&mut self, level: &str) {
+        self.approval_gate.invalidate();
         self.permission_level = level.to_string();
     }
 
     pub fn set_sandbox_policy(&mut self, policy: crate::sandbox::SandboxPolicy) {
+        self.approval_gate.invalidate();
         self.sandbox_policy = Some(policy);
     }
 
@@ -1445,6 +1463,7 @@ impl ServerSession {
     /// tandem with writing the rule file). Takes effect for the live run's
     /// subsequent tool calls; the file carries it to future runs.
     pub fn add_session_rule(&self, raw_pattern: &str, access: &str) {
+        self.approval_gate.invalidate();
         crate::sandbox::rules::push_session_allow(
             &self.session_rules,
             std::path::Path::new(&self.cwd),
@@ -1783,9 +1802,10 @@ mod tests {
     }
 
     #[test]
-    fn default_thinking_level_is_xhigh() {
+    fn default_thinking_level_is_medium() {
         let session = make_test_session("s1");
-        assert_eq!(session.thinking_level, "xhigh");
+        assert_eq!(session.thinking_level, DEFAULT_THINKING_LEVEL);
+        assert_eq!(session.thinking_level, "medium");
     }
 
     #[test]
@@ -2535,7 +2555,12 @@ mod tests {
                 .read()
                 .scheduled_setting_summary("run-second")
                 .unwrap(),
-            (String::new(), "xhigh".to_string(), true, "all".to_string())
+            (
+                String::new(),
+                DEFAULT_THINKING_LEVEL.to_string(),
+                true,
+                "all".to_string()
+            )
         );
 
         // Settings changed after acceptance belong to a later submission; the
@@ -2548,7 +2573,12 @@ mod tests {
                 .read()
                 .scheduled_setting_summary("run-second")
                 .unwrap(),
-            (String::new(), "xhigh".to_string(), true, "all".to_string())
+            (
+                String::new(),
+                DEFAULT_THINKING_LEVEL.to_string(),
+                true,
+                "all".to_string()
+            )
         );
 
         release.notify_one();
@@ -3044,7 +3074,7 @@ mod tests {
             Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
         );
         assert_eq!(session.session_id(), "own_loop_test");
-        assert_eq!(session.thinking_level, "xhigh");
+        assert_eq!(session.thinking_level, DEFAULT_THINKING_LEVEL);
         assert_eq!(session.get_permission_level(), "all");
         assert!(session.auto_compaction);
     }
@@ -3814,6 +3844,7 @@ mod tests {
         assert!(session.sandbox_policy.is_none());
         session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
             tier: crate::sandbox::SandboxTier::Off,
+            model_reviewer: false,
         });
         assert_eq!(
             session.sandbox_policy.as_ref().map(|policy| policy.tier),
@@ -3822,6 +3853,7 @@ mod tests {
         // A later policy replaces the previous one instead of being ignored.
         session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
             tier: crate::sandbox::SandboxTier::Sandbox,
+            model_reviewer: false,
         });
         assert_eq!(
             session.sandbox_policy.as_ref().map(|policy| policy.tier),

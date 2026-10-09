@@ -622,6 +622,7 @@ export function AgentThread({
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={onThinkingLevelChange}
               approvalTier={approvalTier}
+              futureSessionStatus={futureSessionStatus}
               onChangeApprovalTier={onChangeApprovalTier}
               sending={isSending}
               onAbort={handleComposerAbort}

@@ -84,6 +84,24 @@ impl SandboxTier {
 #[derive(Debug, Clone, Default)]
 pub struct SandboxPolicy {
     pub tier: SandboxTier,
+    /// Orthogonal to OS enforcement; never retained after an unavailable probe.
+    pub model_reviewer: bool,
+}
+
+impl SandboxPolicy {
+    pub fn from_mode(mode: &str) -> Self {
+        Self {
+            tier: SandboxTier::parse(if mode == "auto" { "sandbox" } else { mode }),
+            model_reviewer: mode == "auto",
+        }
+    }
+    pub fn mode(&self) -> &'static str {
+        if self.model_reviewer {
+            "auto"
+        } else {
+            self.tier.as_str()
+        }
+    }
 }
 
 /// A resolved sandbox for one session/workspace: the layered rule set plus the
@@ -1516,6 +1534,7 @@ mod tests {
         ResolvedSandbox::resolve(
             &SandboxPolicy {
                 tier: SandboxTier::Manual,
+                model_reviewer: false,
             },
             workspace,
         )
@@ -1535,6 +1554,7 @@ mod tests {
         let mut sandbox = ResolvedSandbox::resolve(
             &SandboxPolicy {
                 tier: SandboxTier::Sandbox,
+                model_reviewer: false,
             },
             &ws,
         );
@@ -1732,6 +1752,7 @@ mod tests {
         let s = ResolvedSandbox::resolve_with_session(
             &SandboxPolicy {
                 tier: SandboxTier::Manual,
+                model_reviewer: false,
             },
             &ws,
             session,
@@ -1828,6 +1849,7 @@ mod tests {
         let mut s = ResolvedSandbox::resolve(
             &SandboxPolicy {
                 tier: SandboxTier::Sandbox,
+                model_reviewer: false,
             },
             &ws,
         );
@@ -1966,6 +1988,7 @@ mod tests {
         let s = ResolvedSandbox::resolve(
             &SandboxPolicy {
                 tier: SandboxTier::Sandbox,
+                model_reviewer: false,
             },
             &ws,
         );

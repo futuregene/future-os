@@ -135,6 +135,7 @@ async fn main() -> Result<()> {
     let sandbox = ResolvedSandbox::resolve_with_session(
         &SandboxPolicy {
             tier: SandboxTier::Sandbox,
+            model_reviewer: false,
         },
         &workspace,
         Arc::new(Mutex::new(compiled)),

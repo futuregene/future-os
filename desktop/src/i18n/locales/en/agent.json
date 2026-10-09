@@ -181,6 +181,7 @@
     "skillsSection": "Skills",
     "noSessionMatches": "No matching conversations.",
     "sessionsSection": "Chats",
+    "workspaceSection": "Workspace",
     "compactContext": "Compact",
     "compactContextDescription": "Compact this conversation's context",
     "compacting": "Compacting context…",
@@ -193,7 +194,8 @@
     "approvalTier": {
       "manual": "Manual",
       "sandbox": "Sandboxed",
-      "off": "Unrestricted"
+      "off": "Unrestricted",
+      "auto": "Automatic review"
     },
     "approvalTierDesc": {
       "manual": "Asks before each action",
@@ -202,7 +204,10 @@
       "sandboxLinux": "Runs sandboxed and asks when needed",
       "sandboxChecking": "Checking the system sandbox…",
       "sandboxUnavailable": "The system sandbox is unavailable; see Settings for details",
-      "off": "<em>ANY</em> command, no approval"
+      "off": "<em>ANY</em> command, no approval",
+      "auto": "Reviews actions automatically",
+      "autoSignInRequired": "Sign in to FutureOS to use",
+      "autoChecking": "Checking sign-in…"
     },
     "attachImageUnsupportedHint": "The current model doesn't support images and may not read this image correctly",
     "attachDialogFilterNoImage": "Supported (PDF, text)",

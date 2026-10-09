@@ -86,6 +86,10 @@ export function useDesktopManagement(clientRef: RefObject<RemoteClient | null>) 
       (await request<{ runs: RemoteTaskRun[] }>({ type: "list_task_runs", taskId, limit })).runs,
     listTaskDeps: async (taskId: string) =>
       (await request<{ deps: RemoteTaskDep[] }>({ type: "list_task_deps", taskId })).deps,
+    setTaskDep: (taskId: string, upstreamTaskId: string, on: string) =>
+      request<void>({ type: "set_task_dep", taskId, upstreamTaskId, on }, true),
+    removeTaskDep: (taskId: string, upstreamTaskId: string) =>
+      request<void>({ type: "remove_task_dep", taskId, upstreamTaskId }, true),
     listTaskRevisions: async (taskId: string) =>
       (await request<{ revisions: RemoteTaskRevision[] }>({ type: "list_task_revisions", taskId })).revisions,
     applyTaskRevision: (taskId: string, revisionId: string) =>

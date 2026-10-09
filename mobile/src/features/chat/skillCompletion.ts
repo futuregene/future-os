@@ -76,6 +76,14 @@ export interface SlashAction {
   description: string;
   /** Extra search terms, e.g. the English and Chinese command words. */
   searchText: string;
+  /**
+   * Text to leave in the draft in place of the typed command. Absent: the
+   * command is a pure control and is consumed silently (see
+   * `removeSkillQuery`). `#` is the case that needs it — the action does not run
+   * an operation, it opens the conversation menu, and that menu is triggered by
+   * the `#` token being in the draft.
+   */
+  insert?: string;
 }
 
 export function filterActions(actions: SlashAction[], query: string) {
