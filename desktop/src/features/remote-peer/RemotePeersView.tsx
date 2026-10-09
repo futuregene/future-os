@@ -30,9 +30,15 @@ import { RemotePeerSettings } from "./RemotePeerSettings";
  */
 export function RemotePeersView({
   leftPanelExpanded,
+  onStartConversation,
   onToggleLeftPanel,
 }: {
   leftPanelExpanded: boolean;
+  /**
+   * Open a new conversation on that host. Owned by the shell because it decides
+   * what the user is looking at; this screen only knows the machine.
+   */
+  onStartConversation: (desktopId: string) => void;
   onToggleLeftPanel: () => void;
 }) {
   const { t } = useTranslation("remotePeer");
@@ -216,6 +222,7 @@ export function RemotePeersView({
                               key={peer.desktopId}
                               onDisconnect={() => void run(peer.desktopId, () => disconnectRemotePeer(peer.desktopId))}
                               onEdit={() => setSettingsFor(peer.desktopId)}
+                              onNewConversation={() => onStartConversation(peer.desktopId)}
                               onReconnect={() => void run(peer.desktopId, () => connectRemotePeer(peer.desktopId))}
                               peer={peer}
                             />
@@ -247,17 +254,23 @@ function PeerRow({
   busy,
   onDisconnect,
   onEdit,
+  onNewConversation,
   onReconnect,
   peer,
 }: {
   busy: boolean;
   onDisconnect: () => void;
   onEdit: () => void;
+  onNewConversation: () => void;
   onReconnect: () => void;
   peer: RemotePeer;
 }) {
   const { t } = useTranslation("remotePeer");
   const status = peerStatus(peer, t);
+  // Starting a conversation needs the host's *agent*, not just its bridge: the
+  // bridge can be reachable while every prompt fails. Offering the button there
+  // would hand the user a box whose messages cannot go anywhere.
+  const canConverse = peer.connected && peer.agentAvailable;
 
   return (
     <div className="flex items-center gap-3 rounded-lg border border-line-soft p-4">
@@ -273,6 +286,13 @@ function PeerRow({
         {peer.error ? <div className="mt-1 text-xs text-danger">{peer.error}</div> : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
+        {canConverse
+          ? (
+              <Button disabled={busy} onClick={onNewConversation} size="sm" variant="primary">
+                {t("newConversation")}
+              </Button>
+            )
+          : null}
         {peer.connected
           ? <Button disabled={busy} onClick={onDisconnect} size="sm">{t("disconnect")}</Button>
           : <Button disabled={busy} onClick={onReconnect} size="sm" variant="primary">{t("connect")}</Button>}

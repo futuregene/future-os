@@ -84,6 +84,10 @@ interface ActivityRailProps {
   onChangeDeviceFilter?: (filter: DeviceFilter) => void;
   /** Open a conversation that lives on another machine. */
   onOpenRemoteConversation?: (conversation: MergedConversation) => void;
+  /** Rename a conversation on the machine that owns it. */
+  onRenameRemoteConversation?: (conversation: MergedConversation) => void;
+  /** Re-read paired hosts and their catalogues (after a remote row action). */
+  onRemoteConversationsChanged?: () => void;
   /** Jump to the Remote Desktops screen. */
   onManageDesktops?: () => void;
   /** The remote conversation currently open (client role), if any. */
@@ -143,6 +147,8 @@ export function ActivityRail({
   deviceFilter = { kind: "all" },
   onChangeDeviceFilter,
   onOpenRemoteConversation,
+  onRenameRemoteConversation,
+  onRemoteConversationsChanged,
   onManageDesktops,
   activeRemoteKey = null,
   futureBalance,
@@ -515,7 +521,9 @@ export function ActivityRail({
                               <MergedRows
                                 activeKey={activeConversationKey}
                                 filter={deviceFilter}
+                                onChangedRemote={() => onRemoteConversationsChanged?.()}
                                 onOpenRemote={conversation => onOpenRemoteConversation?.(conversation)}
+                                onRenameRemote={conversation => onRenameRemoteConversation?.(conversation)}
                                 peers={remotePeers}
                                 renderLocalRow={renderLocalRow}
                                 rows={visibleRemoteRows}

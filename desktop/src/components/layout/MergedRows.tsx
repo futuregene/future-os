@@ -17,7 +17,9 @@ import { RemoteConversationRow } from "./RemoteConversationRow";
  */
 export function MergedRows({
   activeKey,
+  onChangedRemote,
   onOpenRemote,
+  onRenameRemote,
   peers,
   renderLocalRow,
   rows,
@@ -25,7 +27,10 @@ export function MergedRows({
 }: {
   activeKey: string | null;
   filter: unknown;
+  /** Re-read a host's catalogue after one of its rows was acted on. */
+  onChangedRemote: () => void;
   onOpenRemote: (conversation: MergedConversation) => void;
+  onRenameRemote: (conversation: MergedConversation) => void;
   peers: RemotePeer[];
   renderLocalRow: (thread: StoredThread, depth?: number, hasChildren?: boolean) => ReactNode;
   rows: MergedConversation[];
@@ -47,7 +52,9 @@ export function MergedRows({
         active={activeKey === conversation.key}
         conversation={conversation}
         key={conversation.key}
+        onChanged={onChangedRemote}
         onOpen={onOpenRemote}
+        onOpenRename={onRenameRemote}
         peer={peers.find(peer => peer.desktopId === conversation.desktopId)}
       />
     );
