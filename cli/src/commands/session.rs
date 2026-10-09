@@ -47,7 +47,12 @@ Recorded with the session:
   --parent <session-id>   Record another session as this session's parent;
                           pass an empty string to detach
   --title <name>          Session title
-  --cwd <dir>             Working directory
+  --cwd <dir>             Working directory. The conversation is also filed in
+                          the desktop app's workspace list under this directory
+                          (see `future workspace`), the same way the app files
+                          it when it observes the change itself — so it does not
+                          depend on the app being open. A directory that does
+                          not exist is reported as a note, after the change.
   --model <id>            Model ID
   --thinking <level>      Thinking level: off, minimal, low, medium, high, xhigh
 
@@ -1099,9 +1104,19 @@ async fn set_session_command(args: &[String], out: &Output) -> Result<(), String
             Err(err) => failures.push(("title", missing_session_error(err, &target_id))),
         }
     }
+    // The cwd is an agent-side property and the workspace a desktop-side record;
+    // changing one has always filed the conversation under the other when the
+    // desktop app was there to notice. Doing it here too is what makes a cwd
+    // changed from the terminal land the same way with the app closed — and it
+    // is the same code (`future_app_workspaces::file_session_for_cwd`), so the
+    // two writers cannot disagree about where a directory's conversation goes.
+    let mut notes: Vec<String> = Vec::new();
     if let Some(cwd) = &parsed.cwd {
         match client.set_cwd(cwd, &target_id).await {
-            Ok(()) => applied.push(("cwd", cwd.clone())),
+            Ok(()) => {
+                applied.push(("cwd", cwd.clone()));
+                notes.extend(crate::commands::workspace::file_session_cwd(&target_id, cwd).note());
+            }
             Err(err) => failures.push(("cwd", missing_session_error(err, &target_id))),
         }
     }
@@ -1195,20 +1210,24 @@ async fn set_session_command(args: &[String], out: &Output) -> Result<(), String
             .iter()
             .map(|(key, value)| (key.to_string(), Value::String(value.clone())))
             .collect();
-        out.log(
-            &serde_json::to_string(&json!({
-                "sessionId": target_id,
-                "updated": updated,
-                "failed": failed,
-            }))
-            .expect("json serializes"),
-        );
+        let mut document = json!({
+            "sessionId": target_id,
+            "updated": updated,
+            "failed": failed,
+        });
+        if !notes.is_empty() {
+            document["notes"] = json!(notes);
+        }
+        out.log(&serde_json::to_string(&document).expect("json serializes"));
     } else {
         if !applied.is_empty() {
             out.log(&format!("Updated session {target_id}"));
         }
         for (key, value) in &applied {
             out.log(&format!("  {}{value}", option_label(key)));
+        }
+        for note in &notes {
+            out.log(&format!("  {note}"));
         }
     }
 
@@ -1532,7 +1551,26 @@ mod tests {
             "FUTURE_AGENT_GRPC_ADDR",
             std::ffi::OsString::from(addr),
         )]);
+        // `session set --cwd` files the conversation in the desktop app's own
+        // store (`~/.future/app/app.db`), so every one of these tests must run
+        // against a throwaway home: without this they would read — and, on a
+        // machine where the desktop app has imported the session, *write* — the
+        // real app database.
+        isolate_home();
         (agent, env)
+    }
+
+    /// Point HOME at a fresh temporary directory for the rest of this test,
+    /// keeping the directory alive in a thread-local so the guard's drop leaves
+    /// nothing behind and no test deletes a directory another one is using.
+    fn isolate_home() {
+        use std::cell::RefCell;
+        thread_local! {
+            static HOMES: RefCell<Vec<tempfile::TempDir>> = const { RefCell::new(Vec::new()) };
+        }
+        let home = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("HOME", home.path());
+        HOMES.with(|homes| homes.borrow_mut().push(home));
     }
 
     #[tokio::test]
@@ -2021,6 +2059,190 @@ mod tests {
         }
         // No --parent → no session list probe.
         assert!(agent.seen_of("list_sessions").is_empty());
+    }
+
+    /// `--cwd` also files the conversation in the desktop app's store: the
+    /// workspace record follows the new directory, the same way the desktop app
+    /// files it when it observes the change itself. A cwd changed here with the
+    /// app closed must not wait for the app to be opened later.
+    #[tokio::test]
+    async fn set_cwd_files_the_conversation_in_the_desktop_store() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert("get_state".into(), "{}".into());
+        let (_agent, _env) = mock_env(agent).await;
+
+        let directory = tempfile::tempdir().expect("project directory");
+        seed_desktop_thread("sess-1", "thread-1");
+        let (out, cap) = Output::memory();
+        session(
+            Some("set"),
+            &[
+                "sess-1".into(),
+                "--cwd".into(),
+                directory.path().display().to_string(),
+            ],
+            &out,
+        )
+        .await
+        .expect("set");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("workspace: created"), "{stdout}");
+
+        // The workspace is the app's own row, and the thread now points at it.
+        let conn = open_app_db();
+        let workspace = future_app_workspaces::list(&conn).expect("list").remove(0);
+        assert_eq!(workspace.kind, "user");
+        assert_eq!(
+            workspace.path,
+            directory
+                .path()
+                .canonicalize()
+                .unwrap()
+                .display()
+                .to_string()
+        );
+        assert_eq!(thread_workspace_id(&conn, "thread-1"), workspace.id);
+
+        // A second session pointing at the same directory reuses that row.
+        // Same home: a second `mock_env` would point HOME at a fresh directory
+        // and this would be a different desktop store.
+        seed_desktop_thread("sess-2", "thread-2");
+        let (out, cap) = Output::memory();
+        session(
+            Some("set"),
+            &[
+                "sess-2".into(),
+                "--cwd".into(),
+                directory.path().display().to_string(),
+            ],
+            &out,
+        )
+        .await
+        .expect("set");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("workspace: filed under"), "{stdout}");
+        let conn = open_app_db();
+        assert_eq!(future_app_workspaces::list(&conn).expect("list").len(), 1);
+        assert_eq!(thread_workspace_id(&conn, "thread-2"), workspace.id);
+    }
+
+    /// A directory that does not exist is reported as a note, not as a failed
+    /// `--cwd`: the agent-side change really did happen, and the fix is the one
+    /// the note names.
+    #[tokio::test]
+    async fn set_cwd_reports_a_directory_it_cannot_file() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert("get_state".into(), "{}".into());
+        let (_agent, _env) = mock_env(agent).await;
+        seed_desktop_thread("sess-1", "thread-1");
+
+        let missing = tempfile::tempdir()
+            .expect("parent")
+            .path()
+            .join("not-there");
+        let (out, cap) = Output::memory();
+        session(
+            Some("set"),
+            &[
+                "sess-1".into(),
+                "--json".into(),
+                "--cwd".into(),
+                missing.display().to_string(),
+            ],
+            &out,
+        )
+        .await
+        .expect("the cwd change itself succeeded");
+        let parsed: Value =
+            serde_json::from_str(&String::from_utf8(cap.out.lock().unwrap().clone()).unwrap())
+                .expect("json");
+        assert_eq!(parsed["updated"]["cwd"], missing.display().to_string());
+        let notes = parsed["notes"].as_array().expect("notes");
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].as_str().unwrap().contains("does not exist"),
+            "got: {notes:?}"
+        );
+        assert!(
+            notes[0].as_str().unwrap().contains("future workspace add"),
+            "the note names the fix: {notes:?}"
+        );
+    }
+
+    /// With no desktop app store there is nothing to file and nothing to say:
+    /// the plain `--cwd` output is unchanged on a machine that has never run
+    /// the app.
+    #[tokio::test]
+    async fn set_cwd_says_nothing_without_a_desktop_store() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert("get_state".into(), "{}".into());
+        let (_agent, _env) = mock_env(agent).await;
+
+        let directory = tempfile::tempdir().expect("directory");
+        let (out, cap) = Output::memory();
+        session(
+            Some("set"),
+            &[
+                "sess-1".into(),
+                "--cwd".into(),
+                directory.path().display().to_string(),
+            ],
+            &out,
+        )
+        .await
+        .expect("set");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(
+            stdout,
+            format!(
+                "Updated session sess-1\n  CWD:          {}\n",
+                directory.path().display()
+            )
+        );
+    }
+
+    /// The desktop app's database in the isolated home, opened for a test to
+    /// seed and inspect. It uses the same schema the CLI writes.
+    fn open_app_db() -> rusqlite::Connection {
+        let path = future_app_settings::app_db_path().expect("app db path");
+        std::fs::create_dir_all(path.parent().expect("app dir")).expect("app dir");
+        let conn = rusqlite::Connection::open(&path).expect("open app db");
+        future_app_workspaces::ensure_table(&conn).expect("workspaces table");
+        conn
+    }
+
+    /// A thread bound to an Agent session, plus the tables the filing rule reads
+    /// — what the desktop app's import creates when it adopts a session.
+    fn seed_desktop_thread(session_id: &str, thread_id: &str) {
+        let conn = open_app_db();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS threads (
+                 id TEXT PRIMARY KEY,
+                 workspace_id TEXT NOT NULL,
+                 agent_session_id TEXT,
+                 status TEXT NOT NULL DEFAULT 'active',
+                 updated_at INTEGER NOT NULL DEFAULT 0
+             );",
+        )
+        .expect("threads table");
+        conn.execute(
+            "INSERT OR REPLACE INTO threads (id, workspace_id, agent_session_id, status, updated_at)
+             VALUES (?1, '', ?2, 'active', 0)",
+            rusqlite::params![thread_id, session_id],
+        )
+        .expect("seed thread");
+    }
+
+    fn thread_workspace_id(conn: &rusqlite::Connection, thread_id: &str) -> String {
+        conn.query_row(
+            "SELECT workspace_id FROM threads WHERE id = ?1",
+            rusqlite::params![thread_id],
+            |row| row.get(0),
+        )
+        .expect("thread workspace")
     }
 
     #[tokio::test]

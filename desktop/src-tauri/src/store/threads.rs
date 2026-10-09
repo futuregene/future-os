@@ -378,19 +378,6 @@ pub fn record_thread_message_activity(
 }
 
 /// Move a thread to a different workspace (e.g. when cwd changes).
-pub fn move_thread_to_workspace(
-    thread_id: &str,
-    workspace_id: &str,
-) -> Result<(), crate::AppError> {
-    let now = now_millis();
-    const SQL: &str = "UPDATE threads SET workspace_id = ?1, updated_at = ?2
-         WHERE id = ?3 AND status != 'deleted'";
-    let conn = connect()?;
-    conn.execute(SQL, params![workspace_id, now, thread_id])?;
-    mark_catalog_dirty();
-    Ok(())
-}
-
 pub fn pin_thread(input: PinThreadInput) -> Result<ThreadRecord, crate::AppError> {
     // `updated_at` is deliberately untouched: pinning is an ordering flag, not
     // an activity event. If it stamped `updated_at`, unpinning a thread would
@@ -1213,13 +1200,6 @@ mod tests {
             .expect("find")
             .expect("some");
         assert_eq!(found.id, "t2");
-
-        // move_thread_to_workspace
-        move_thread_to_workspace("t2", "ws2").expect("move");
-        assert_eq!(
-            get_thread("t2").expect("get").expect("some").workspace_id,
-            "ws2"
-        );
 
         // pin / archive / restore
         let pinned = pin_thread(PinThreadInput {

@@ -566,65 +566,22 @@ pub async fn attach_remote_stream(thread_id: &str) -> Result<String, String> {
         .ok_or_else(|| "Unable to create local run for the agent's active run".to_string())
 }
 
-/// When the agent session's cwd changes (via TUI /cwd or another client),
-/// move the thread to the workspace that matches the new cwd.
+/// When the agent session's cwd changes (via TUI /cwd, the CLI — `future
+/// session set <id> --cwd` — or another client), file the thread under the
+/// workspace that matches the new cwd.
+///
+/// The rule itself is `future_app_workspaces::file_session_for_cwd`, shared with
+/// the CLI so a cwd changed from either side lands identically whether or not
+/// this app was running to notice it. What stays here is the app's own view of
+/// the outcome: an unimported session is an error the UI shows, and a write
+/// marks the catalogue dirty for this process's publisher.
 pub fn reconcile_thread_workspace(session_id: &str, new_cwd: &str) -> Result<(), String> {
-    let thread = crate::store::find_thread_by_agent_session(session_id)
-        .map_err(|e| format!("find_thread: {e}"))?
-        .ok_or_else(|| "No thread found for this session".to_string())?;
-
-    let cwd = new_cwd.trim().trim_end_matches(['/', '\\']);
-    if cwd.is_empty() {
-        return Ok(());
+    let filing = crate::store::file_session_workspace(session_id, new_cwd)
+        .map_err(|error| format!("reconcile: {error}"))?;
+    match filing {
+        Some(future_app_workspaces::CwdFiling::NotImported) => {
+            Err("No thread found for this session".to_string())
+        }
+        _ => Ok(()),
     }
-
-    // Determine workspace type.
-    let is_chat = {
-        let cwd_normalized = cwd.replace('\\', "/");
-        // Normalize the home separators too: `cwd_normalized` is forward-slash
-        // but a Windows home is not, and comparing the two spellings would
-        // route a chat cwd into the project-workspace branch (where the
-        // directory has to already exist). See `is_desktop_chat_cwd`, which
-        // normalizes the same way.
-        let home = crate::home_dir().unwrap_or_default().replace('\\', "/");
-        let chat_dir = format!("{}/.future/workspaces/chat/", home.trim_end_matches('/'));
-        cwd_normalized.starts_with(&chat_dir) || cwd_normalized == chat_dir.trim_end_matches('/')
-    };
-
-    if is_chat {
-        crate::store::update_chat_workspace_path(&thread.id, cwd)
-            .map_err(|e| format!("update_workspace: {e}"))?;
-        return Ok(());
-    }
-
-    // Project workspace: find or create by cwd path.
-    let workspace_name = std::path::Path::new(cwd)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(cwd)
-        .to_string();
-
-    // Identity is the canonical directory, not the spelling the agent
-    // reported: `/tmp/x` and `/private/tmp/x` are one workspace.
-    let existing =
-        crate::store::find_user_workspace_by_path(std::path::Path::new(cwd)).unwrap_or(None);
-
-    let workspace_id = if let Some(ws) = existing {
-        ws.id
-    } else {
-        let ws = crate::store::create_workspace(crate::store::CreateWorkspaceInput {
-            name: Some(workspace_name),
-            path: cwd.to_string(),
-            description: None,
-            create_directory: Some(false),
-        })
-        .map_err(|e| format!("create_workspace: {e}"))?;
-        ws.id
-    };
-
-    // Update the thread's workspace assignment.
-    crate::store::move_thread_to_workspace(&thread.id, &workspace_id)
-        .map_err(|e| format!("move_thread: {e}"))?;
-
-    Ok(())
 }

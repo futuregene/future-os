@@ -377,10 +377,18 @@ safe to run twice.
 The write needs no running desktop app, and a running one sees it on its next
 read.
 
+Workspaces also appear without `add`: `future session set <id> --cwd <dir>`
+files that conversation under the directory's workspace, exactly as the desktop
+app does when it observes a cwd change — so the desktop-side record no longer
+depends on the app being open at the moment of the change. The output says what
+happened (`workspace: created …` / `filed under …`), and a directory that does
+not exist is a note rather than a failure, since the cwd change itself already
+happened on the agent.
+
 > `future workspace` manages the *desktop app's* workspace records. A session's
 > working directory is an agent-side property (`future session set <id> --cwd`);
-> the app derives a workspace row from it when it imports a session, which is
-> how an agent-side session appears in the sidebar.
+> setting it is what files the conversation, and the app derives a workspace row
+> the same way when it imports a session.
 
 ## Boundaries worth stating
 

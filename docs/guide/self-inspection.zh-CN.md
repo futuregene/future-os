@@ -318,9 +318,14 @@ future workspace add /srv/app --name "Service"
 
 写入不需要桌面端在运行，正在运行的桌面端会在下次读取时看到它。
 
+工作区也会自己出现：`future session set <id> --cwd <dir>` 会把该会话归档到该目录对应的
+工作区，和桌面端观察到 cwd 变化时做的事完全一样——因此这条桌面侧记录不再依赖「改 cwd 的
+那一刻桌面端正好开着」。命令会说明结果（`workspace: created …` / `filed under …`）；
+目录不存在时只是一条提示而不是失败，因为 agent 侧的 cwd 改动已经生效。
+
 > `future workspace` 管的是**桌面端**的工作区记录。会话的工作目录是 Agent 侧的属性
-> （`future session set <id> --cwd`）；桌面端导入会话时会由它推导出工作区记录，
-> 这是 Agent 侧会话出现在侧栏里的方式。
+> （`future session set <id> --cwd`）；设置它就会归档会话，桌面端导入会话时也按同一规则
+> 推导出工作区记录。
 
 ## 值得写明的边界
 
