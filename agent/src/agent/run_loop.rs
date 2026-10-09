@@ -1261,6 +1261,7 @@ impl Loop {
                         exit_code: None,
                         is_soft_fail: None,
                         target_path: None,
+                        shell_result: None,
                     });
                 }
                 // Close a possibly unfinished reasoning display before the
@@ -1327,6 +1328,7 @@ impl Loop {
                         exit_code: None,
                         is_soft_fail: None,
                         target_path: None,
+                        shell_result: None,
                     });
                 }
                 if model_stream_failed {

@@ -43,5 +43,6 @@ pub enum RunEvent {
         exit_code: Option<i32>,
         is_soft_fail: Option<bool>,
         target_path: Option<String>,
+        shell_result: Option<future_rpc::shell_result::ShellResult>,
     },
 }

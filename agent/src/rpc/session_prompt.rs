@@ -1479,19 +1479,6 @@ impl ServerSession {
             session_id: self.session_id.clone(),
             model: model.to_owned(),
             thinking_level: thinking_level.to_owned(),
-            prompt_guidelines: vec![
-                // The write-via-shell prohibition is platform-neutral, but its
-                // examples must name the redirection forms the host's shell
-                // actually has, or a PowerShell model won't map "don't use
-                // `cat > file`" onto "don't use Out-File".
-                {
-                    #[cfg(not(target_os = "windows"))]
-                    let forms = "`>`, `>>`, tee, heredocs, `cat > file`";
-                    #[cfg(target_os = "windows")]
-                    let forms = "`>`, `>>`, Out-File, Set-Content, Add-Content";
-                    format!("When asked to create, save, write, or modify a file, ALWAYS use the write or edit tool — including for absolute paths and paths outside the current working directory (both tools accept any path). Do NOT use shell redirection ({forms}) to write files: shell file writes bypass file tracking and the approval flow. Reserve shell redirection for piping between commands, not for creating files. Only describe file changes after the tool succeeds.")
-                },
-            ],
             ..Default::default()
         });
         (prompt, context_files)

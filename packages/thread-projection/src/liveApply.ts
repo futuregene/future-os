@@ -1,3 +1,4 @@
+import { shellResult } from "./shellResult";
 import type { RunEvent } from "./events";
 import type { AgentActivityItem, AgentActivityKind, MessageSegment, StreamRetryState } from "./model";
 import { isRecord, pathBasename, singleLine } from "./utils";
@@ -71,6 +72,7 @@ type Slot
       };
 
 interface ToolActivity {
+  shellResult?: import("./shellResult").ShellResult;
   id: string;
   kind: Exclude<AgentActivityKind, "thinking">;
   status: AgentActivityItem["status"];
@@ -464,6 +466,7 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
           activeToolCallId = null;
         toolActivities.set(toolId, {
           ...existing,
+          shellResult: shellResult(isRecord(payload) ? payload.shell_result : undefined),
           status: hasToolError(payload, existing.detail) ? "failed" : "completed",
         });
         sawVisibleWork = true;
@@ -476,6 +479,7 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
         ...existing,
         ...tool,
         id: toolId,
+        shellResult: shellResult(isRecord(payload) ? payload.shell_result : undefined),
         status: hasToolError(payload, existing?.detail ?? tool.detail) ? "failed" : "completed",
         order: existing?.order ?? tool.order,
         // The end event carries the result, not the args, so `tool.target` is
@@ -743,6 +747,7 @@ function toActivityItem(tool: ToolActivity): AgentActivityItem {
     status: tool.status,
     target: tool.target,
     detail: tool.detail,
+    shellResult: tool.shellResult,
     ...(tool.toolCallId && tool.runId
       ? { toolCallId: tool.toolCallId, runId: tool.runId }
       : {}),
@@ -861,6 +866,9 @@ const SOFT_FAIL_COMMANDS = new Set(["grep", "egrep", "fgrep", "rg", "findstr", "
 function hasToolError(payload: unknown, command: string | undefined) {
   if (!isRecord(payload))
     return false;
+  const facts = shellResult(payload.shell_result);
+  if (facts)
+    return facts.is_error;
   const error = stringValue(payload.error) ?? stringValue(payload.errorText);
   if (error?.trim())
     return true;

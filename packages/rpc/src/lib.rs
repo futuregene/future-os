@@ -14,6 +14,7 @@
 
 pub mod command_policy;
 pub mod home;
+pub mod shell_result;
 pub mod transport;
 
 pub mod proto {

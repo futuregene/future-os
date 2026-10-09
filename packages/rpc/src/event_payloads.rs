@@ -176,6 +176,8 @@ pub struct ToolEndData {
     pub is_soft_fail: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell_result: Option<crate::shell_result::ShellResult>,
 }
 
 // ── approvals ────────────────────────────────────────────────────────────────

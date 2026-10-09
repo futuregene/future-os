@@ -579,6 +579,10 @@ jobs:
         working-directory: desktop
         run: npm run test
 
+      - name: Shared shell result projection regressions
+        working-directory: desktop
+        run: npx vitest run --config ../packages/markdown/vitest.config.ts thread-projection/src/shellResult.test.ts
+
   # ─── Mobile: typecheck + eslint + jest ───────────────────────────────────
   mobile:
     name: Mobile typecheck + lint + test

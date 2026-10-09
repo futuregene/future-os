@@ -875,6 +875,9 @@ pub struct ToolEnd {
     pub is_soft_fail: ::core::option::Option<bool>,
     #[prost(string, optional, tag = "7")]
     pub target_path: ::core::option::Option<::prost::alloc::string::String>,
+    /// Serialized host-owned ShellResult. Absent for legacy records.
+    #[prost(string, optional, tag = "8")]
+    pub shell_result_json: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ApprovalDecisionEvent {

@@ -317,7 +317,7 @@ async fn request_escalation_approved_and_denied() {
         crate::sandbox::EscalationDecision::Denied(note) => {
             assert_eq!(note, "stay sandboxed")
         }
-        crate::sandbox::EscalationDecision::Approved => panic!("must be denied"),
+        _ => panic!("must be denied"),
     }
 }
 
@@ -504,7 +504,7 @@ async fn request_escalation_cancelled_variants() {
     assert!(decider.join().unwrap(), "approval request never appeared");
     assert!(matches!(
         decision,
-        crate::sandbox::EscalationDecision::Denied(ref note) if note == "approval request ended"
+        crate::sandbox::EscalationDecision::Cancelled(ref note) if note == "approval request ended"
     ));
 
     // Non-empty note → the note is the denial reason.
@@ -522,7 +522,7 @@ async fn request_escalation_cancelled_variants() {
     assert!(decider.join().unwrap(), "approval request never appeared");
     assert!(matches!(
         decision,
-        crate::sandbox::EscalationDecision::Denied(ref note) if note == "window closed"
+        crate::sandbox::EscalationDecision::Cancelled(ref note) if note == "window closed"
     ));
 }
 

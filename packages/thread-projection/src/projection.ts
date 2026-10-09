@@ -1,3 +1,4 @@
+import { shellResult } from "./shellResult";
 import type {
   AgentActivityItem,
   AgentMessage,
@@ -303,7 +304,11 @@ function foldToolEntry(acc: ExchangeAcc | null, entry: SessionEntry) {
     );
     if (index < 0) continue;
     const [item] = acc.pendingTools.splice(index, 1);
-    if (block.isError && item) item.status = "failed";
+    const facts = shellResult(entry.metadata?.shell_result);
+    if (facts && item) {
+      item.shellResult = facts;
+      item.status = facts.is_error ? "failed" : "completed";
+    } else if (block.isError && item) item.status = "failed";
   }
 }
 

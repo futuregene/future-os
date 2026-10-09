@@ -897,6 +897,7 @@ function segmentToTimeline(segment: MessageSegment): TimelineSegment {
           name: activity.kind,
           complete: activity.status !== "running",
           status: activity.status,
+          shellResult: activity.shellResult,
           ...(activity.detail ? { detail: activity.detail } : {}),
           ...(activity.count != null && activity.count > 1 ? { count: activity.count } : {}),
           ...(activity.children?.length
@@ -926,6 +927,7 @@ function activityToToolRow(activity: AgentActivityItem): TimelineToolRow {
     name: activity.kind,
     complete: activity.status !== "running",
     status: activity.status,
+    shellResult: activity.shellResult,
     ...(activity.detail ? { detail: activity.detail } : {}),
     ...(activity.toolCallId ? { toolCallId: activity.toolCallId } : {}),
     ...(activity.runId ? { runId: activity.runId } : {}),

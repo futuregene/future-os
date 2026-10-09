@@ -1011,6 +1011,16 @@ fn tool_end_status(payload: Option<&str>, command: Option<&str>) -> String {
     if has_error {
         return "failed".to_string();
     }
+    if let Some(facts) = v.get("shell_result").and_then(|value| {
+        serde_json::from_value::<future_rpc::shell_result::ShellResult>(value.clone()).ok()
+    }) {
+        return if facts.is_error {
+            "failed"
+        } else {
+            "completed"
+        }
+        .into();
+    }
     if let Some(code) = v
         .get("exit_code")
         .or_else(|| v.get("exitCode"))
