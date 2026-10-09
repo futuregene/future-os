@@ -1,0 +1,622 @@
+//! Live client connections, one per paired remote host.
+//!
+//! Scope, stated plainly because the omissions are deliberate: this holds
+//! *connections* and answers requests. It is not yet the reconnecting
+//! supervisor the host side has — no automatic retry, no credential-refresh
+//! timer, no event fan-out into the UI. A caller that wants a connection opens
+//! one ([`ensure_connected`]); a dead socket surfaces as an error and the next
+//! request opens a fresh one. Everything that would make a *background*
+//! promise (retry budgets, sleep/wake, refresh scheduling) is left out rather
+//! than half-implemented, because a client that silently stops delivering
+//! events is worse than one that is visibly disconnected.
+//!
+//! Sessions are keyed by the remote host's desktop id — the identity the user
+//! sees and renames. The pair id is carried alongside but is not the key: a
+//! re-pair of the same host replaces its entry rather than adding a second one,
+//! which is the same rule the credential book enforces.
+
+use super::creds::{self, PeerCreds};
+use super::session::{self, PeerSession};
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use futures::StreamExt;
+use serde::Serialize;
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::OnceLock;
+use tokio::sync::Mutex;
+
+/// What the UI shows for one paired host. Never carries a token or a seed.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerSummary {
+    pub desktop_id: String,
+    pub pair_id: String,
+    /// The user's name for this host, if they set one. The UI falls back to a
+    /// short form of the id.
+    pub name: Option<String>,
+    /// The user's chosen glyph (see the icon picker). Rendered in place of the
+    /// full name in the merged list, which is why it exists at all.
+    pub icon: Option<String>,
+    pub connected: bool,
+    /// Last connection error for this host, cleared on a successful connect.
+    pub error: Option<String>,
+    /// The host's bridge instance while connected; `None` when not.
+    pub bridge_instance_id: Option<String>,
+    /// Capabilities the host declared in its handshake confirmation. The UI
+    /// gates optional actions (file transfer, compaction, fork) on these
+    /// instead of guessing from a version string.
+    pub features: Vec<String>,
+    /// The host's own statement, at handshake time, whether its *agent* was
+    /// reachable. A reachable bridge with an unavailable agent is the case the
+    /// support table calls `LC003`: the link is up and every command fails.
+    pub agent_available: bool,
+}
+
+/// Where pushed events go. Injected rather than hard-coded to Tauri so the
+/// runtime stays testable and the desktop app is not the only possible host.
+pub(crate) type Emitter = std::sync::Arc<dyn Fn(PeerEvent) + Send + Sync>;
+
+/// One decrypted push from a host, forwarded to the UI verbatim.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerEvent {
+    pub desktop_id: String,
+    /// `event` for `evt.*` (a session event, which carries its own `sessionId`),
+    /// `presence` for a liveness tick.
+    pub kind: &'static str,
+    pub payload: Value,
+}
+
+#[derive(Default)]
+struct Runtime {
+    live: HashMap<String, PeerSession>,
+    /// The subscription task per host, aborted on disconnect so a host the user
+    /// removed cannot keep emitting into a UI that has forgotten it.
+    tasks: HashMap<String, tokio::task::JoinHandle<()>>,
+    /// The reconnect task per host, aborted on an explicit disconnect so a
+    /// deliberate stop cannot be undone by a retry that was already scheduled.
+    supervisors: HashMap<String, tokio::task::JoinHandle<()>>,
+    /// The last failure per host. Kept after a disconnect so the list can say
+    /// *why* a host is not connected instead of only that it is not.
+    errors: HashMap<String, String>,
+}
+
+/// The retry schedule for a dropped connection, in seconds.
+///
+/// Mirrors the contract the phone implements: bounded backoff with jitter, and
+/// a total window after which the client stops trying and reports a terminal
+/// failure. An unbounded retry against a host that will never come back is
+/// indistinguishable, to the user, from a hung app.
+const RECONNECT_DELAYS_SECS: &[u64] = &[1, 2, 4, 8, 16, 30];
+
+fn reconnect_delay(attempt: usize) -> std::time::Duration {
+    let base = RECONNECT_DELAYS_SECS[attempt.min(RECONNECT_DELAYS_SECS.len() - 1)];
+    // ±20% jitter: several hosts coming back after a network blip must not
+    // stampede the relay in the same second.
+    let jitter = 1.0 + (rand::random::<f64>() - 0.5) * 0.4;
+    std::time::Duration::from_secs_f64(base as f64 * jitter)
+}
+
+fn runtime() -> &'static Mutex<Runtime> {
+    static RUNTIME: OnceLock<Mutex<Runtime>> = OnceLock::new();
+    RUNTIME.get_or_init(|| Mutex::new(Runtime::default()))
+}
+
+/// Pair with a remote host from a pasted `futureos://remote/pair` link, then
+/// connect once so the caller learns immediately whether it worked.
+///
+/// The link failures carry the mobile client's `PA*` support codes, so both
+/// platforms name the same fault the same way and a support conversation means
+/// the same thing on either.
+pub(crate) async fn pair_with_emitter(
+    invitation: &str,
+    emitter: Option<Emitter>,
+) -> Result<PeerSummary, crate::AppError> {
+    let parsed = super::link::parse_invitation(invitation, now_secs()).map_err(|error| {
+        crate::AppError::Remote {
+            status: 0,
+            code: Some(error.support_code().to_string()),
+            message: error.message().to_string(),
+        }
+    })?;
+    let device = nkeys::KeyPair::new_user();
+    let (private, public) = future_remote_crypto::generate_identity()
+        .map_err(|_| crate::AppError::Message("remote_secure_channel_invalid".into()))?;
+    let device_id = crate::device_identity::device_id()?;
+    let claimed =
+        super::platform::claim(&parsed, &device_id, &device.public_key(), &device_name()).await?;
+    let creds = PeerCreds {
+        pair_id: claimed.pair_id,
+        desktop_id: parsed.desktop_id.clone(),
+        device_id,
+        nkey_seed: device
+            .seed()
+            .map_err(|error| crate::AppError::Message(format!("generate device NKey: {error}")))?,
+        user_jwt: claimed.user_jwt,
+        refresh_token: claimed.refresh_token,
+        nats_url: claimed.nats_url,
+        nats_ws_url: claimed.nats_ws_url,
+        jwt_expires_at: claimed.jwt_expires_at,
+        token_url: parsed.claim_url.replace("/pair/claim", "/auth/token"),
+        secure: Some(creds::PeerIdentity {
+            private_key: URL_SAFE_NO_PAD.encode(private),
+            public_key: URL_SAFE_NO_PAD.encode(&public),
+            // Known from the link, not learned from the handshake: the first
+            // connection is authenticated by the invitation itself.
+            peer_public_key: Some(parsed.secure_key.clone()),
+            secret: Some(parsed.secret.clone()),
+        }),
+    };
+    let desktop_id = creds.desktop_id.clone();
+    creds::upsert(creds)?;
+    connect_with_emitter(&desktop_id, emitter).await
+}
+
+/// What the remote host shows in its "a new device paired" state. The platform
+/// stores it verbatim, so it is the only place the host can learn that this
+/// machine (rather than a phone) took the slot.
+fn device_name() -> String {
+    let host = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    match host {
+        Some(host) => format!("FutureOS Desktop ({host})"),
+        None => "FutureOS Desktop".to_string(),
+    }
+}
+
+/// The book's view of one host, without any live state.
+fn paired_summary(desktop_id: &str) -> Result<PeerSummary, crate::AppError> {
+    let book = creds::load()?;
+    let peer = book
+        .find(desktop_id)
+        .ok_or_else(|| crate::AppError::Message("peer_not_paired".into()))?;
+    Ok(PeerSummary {
+        desktop_id: peer.creds.desktop_id.clone(),
+        pair_id: peer.creds.pair_id.clone(),
+        name: peer.label.name.clone(),
+        icon: peer.label.icon.clone(),
+        connected: false,
+        error: None,
+        bridge_instance_id: None,
+        features: Vec::new(),
+        // Not connected yet, so nothing has been heard from the host. `false`
+        // rather than `true` keeps "unknown" on the safe side of the UI's
+        // "everything is fine" check.
+        agent_available: false,
+    })
+}
+
+/// Every paired host, whether or not it is currently connected.
+pub(crate) async fn list() -> Result<Vec<PeerSummary>, crate::AppError> {
+    let book = creds::load()?;
+    let live = runtime().lock().await;
+    Ok(book
+        .peers
+        .iter()
+        .map(|peer| {
+            let session = live.live.get(&peer.creds.desktop_id);
+            PeerSummary {
+                desktop_id: peer.creds.desktop_id.clone(),
+                pair_id: peer.creds.pair_id.clone(),
+                name: peer.label.name.clone(),
+                icon: peer.label.icon.clone(),
+                connected: session.is_some(),
+                error: live.errors.get(&peer.creds.desktop_id).cloned(),
+                bridge_instance_id: session.map(|session| session.bridge_instance_id().to_string()),
+                features: session
+                    .map(|session| session.features().to_vec())
+                    .unwrap_or_default(),
+                agent_available: session.is_some_and(|session| session.agent_available()),
+            }
+        })
+        .collect())
+}
+
+/// Open a connection unless one is already live.
+pub(crate) async fn ensure_connected(desktop_id: &str) -> Result<PeerSummary, crate::AppError> {
+    if let Some(peer) = list()
+        .await?
+        .into_iter()
+        .find(|peer| peer.desktop_id == desktop_id)
+        .filter(|peer| peer.connected)
+    {
+        return Ok(peer);
+    }
+    connect(desktop_id).await
+}
+
+/// Connect (replacing any existing connection for this host). A failed attempt
+/// is recorded against the host so the list can explain it, then returned.
+pub(crate) async fn connect(desktop_id: &str) -> Result<PeerSummary, crate::AppError> {
+    connect_with_emitter(desktop_id, None).await
+}
+
+/// Connect and, when an emitter is supplied, start streaming that host's events
+/// into it.
+pub(crate) async fn connect_with_emitter(
+    desktop_id: &str,
+    emitter: Option<Emitter>,
+) -> Result<PeerSummary, crate::AppError> {
+    let mut creds = stored_creds(desktop_id)?;
+    // Renew before connecting: a token that expires mid-handshake fails it in a
+    // way that looks like a protocol fault.
+    if creds.needs_refresh(now_secs()) {
+        let fresh = super::platform::refresh(&creds).await?;
+        creds::update_credentials(
+            desktop_id,
+            fresh.user_jwt.clone(),
+            fresh.nats_url.clone(),
+            fresh.nats_ws_url.clone(),
+            fresh.jwt_expires_at,
+        )?;
+        creds.user_jwt = fresh.user_jwt;
+        creds.nats_url = fresh.nats_url;
+        creds.nats_ws_url = fresh.nats_ws_url;
+        creds.jwt_expires_at = fresh.jwt_expires_at;
+    }
+    let connected = match session::connect(&creds).await {
+        Ok(connected) => connected,
+        Err(error) => {
+            runtime()
+                .lock()
+                .await
+                .errors
+                .insert(desktop_id.to_string(), error.to_string());
+            return Err(error);
+        }
+    };
+    // The PSK has now been spent. Drop it from disk while we know the host has
+    // bound this identity; from here every connection is `Noise_IK`.
+    if connected.consumed_invitation {
+        if let Err(error) = creds::clear_secret(desktop_id) {
+            eprintln!("remote_peer: could not clear the invitation secret: {error}");
+        }
+    }
+    let mut summary = paired_summary(desktop_id)?;
+    summary.connected = true;
+    // Subscribe before taking the runtime lock: subscription is a network
+    // round-trip, and a failure there must not keep a usable connection out of
+    // the map.
+    let peer_session = connected.session;
+    let stream = match emitter {
+        Some(emitter) => match peer_session.subscribe().await {
+            Ok((events, presence)) => {
+                Some((peer_session.channel_for_stream(), events, presence, emitter))
+            }
+            Err(error) => {
+                eprintln!("remote_peer: could not subscribe for {desktop_id}: {error}");
+                None
+            }
+        },
+        None => None,
+    };
+    {
+        let mut live = runtime().lock().await;
+        live.errors.remove(desktop_id);
+        summary.bridge_instance_id = Some(peer_session.bridge_instance_id().to_string());
+        summary.features = peer_session.features().to_vec();
+        summary.agent_available = peer_session.agent_available();
+        // A reconnect replaces the stream: the old task's socket is gone, and
+        // leaving it running would emit from a dead connection.
+        if let Some(previous) = live.tasks.remove(desktop_id) {
+            previous.abort();
+        }
+        if let Some((channel, events, presence, emitter)) = stream {
+            live.tasks.insert(
+                desktop_id.to_string(),
+                spawn_event_stream(desktop_id.to_string(), channel, events, presence, emitter),
+            );
+        }
+        live.live.insert(desktop_id.to_string(), peer_session);
+        // A live connection is proof the retry loop is no longer needed; it is
+        // restarted below only if this connection later drops.
+        if let Some(supervisor) = live.supervisors.remove(desktop_id) {
+            supervisor.abort();
+        }
+    }
+    Ok(summary)
+}
+
+/// Keep one host connected: watch the socket, and reconnect when it drops.
+///
+/// Runs until it succeeds, until its retry window is exhausted, or until it is
+/// aborted (an explicit disconnect, or a newer connection replacing it). The
+/// window is what makes the failure terminal: a client that retries forever
+/// looks identical to one that hung, and the user has no way to tell which.
+pub(crate) fn spawn_supervisor(
+    desktop_id: String,
+    emitter: Option<Emitter>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut attempt = 0usize;
+        loop {
+            tokio::time::sleep(reconnect_delay(attempt)).await;
+            // Already connected (something else reconnected while we waited).
+            let connected = runtime().lock().await.live.contains_key(&desktop_id);
+            if connected {
+                return;
+            }
+            match resume(&desktop_id, emitter.clone()).await {
+                Ok(()) => return,
+                Err(error) => {
+                    eprintln!("remote_peer: reconnect attempt for {desktop_id} failed: {error}");
+                }
+            }
+            attempt += 1;
+            // Measured in *attempts*, not wall clock: the delay schedule already
+            // caps the wait, and a clock here would need a monotonic source the
+            // tests would have to fake.
+            if attempt >= RECONNECT_DELAYS_SECS.len() * 3 {
+                return;
+            }
+        }
+    })
+}
+
+/// Refresh credentials when needed, then reconnect and re-subscribe.
+async fn resume(desktop_id: &str, emitter: Option<Emitter>) -> Result<(), crate::AppError> {
+    connect_with_emitter(desktop_id, emitter).await.map(|_| ())
+}
+
+/// Drain the host's event and presence subscriptions into `emitter`.
+///
+/// The traffic-key mutex is shared with the command path, so this task and a
+/// concurrent request take the same short lock; neither holds it across an
+/// `await`.
+fn spawn_event_stream(
+    desktop_id: String,
+    channel: std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
+    mut events: async_nats::Subscriber,
+    mut presence: async_nats::Subscriber,
+    emitter: Emitter,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        fn open(
+            channel: &std::sync::Mutex<future_remote_crypto::Channel>,
+            subject: &str,
+            payload: &[u8],
+        ) -> Option<Value> {
+            let opened = channel
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .open(subject, payload)
+                .ok()?;
+            serde_json::from_slice(&opened).ok()
+        }
+        loop {
+            let next = tokio::select! {
+                message = events.next() => message.map(|message| ("event", message)),
+                message = presence.next() => message.map(|message| ("presence", message)),
+            };
+            let Some((kind, message)) = next else {
+                // Both streams ended: the socket is gone. The next status poll
+                // and the next command both notice; this task just stops.
+                return;
+            };
+            let Some(payload) = open(&channel, &message.subject, &message.payload) else {
+                // Unauthenticated or unparsable: a relay can inject either at
+                // will and the connection is not at fault, so drop it.
+                continue;
+            };
+            emitter(PeerEvent {
+                desktop_id: desktop_id.clone(),
+                kind,
+                payload,
+            });
+        }
+    })
+}
+
+/// Drop the connection but keep the pairing (the user's "disconnect").
+pub(crate) async fn disconnect(desktop_id: &str) {
+    let mut live = runtime().lock().await;
+    if let Some(task) = live.tasks.remove(desktop_id) {
+        task.abort();
+    }
+    // Without this, a retry scheduled a second ago would silently bring the
+    // connection back after the user asked for it to stop.
+    if let Some(supervisor) = live.supervisors.remove(desktop_id) {
+        supervisor.abort();
+    }
+    live.live.remove(desktop_id);
+}
+
+/// Drop the pairing locally, then try to revoke it server-side.
+///
+/// Local first, always: an unreachable platform must not leave a host the user
+/// removed still connectable. A revoke failure is *returned* rather than
+/// swallowed so a caller can queue a retry, but it is not fatal — pairing again
+/// is a new invitation either way.
+pub(crate) async fn unpair(desktop_id: &str) -> Result<Option<String>, crate::AppError> {
+    let creds = stored_creds(desktop_id)?;
+    disconnect(desktop_id).await;
+    creds::remove(desktop_id)?;
+    Ok(super::platform::revoke(&creds)
+        .await
+        .err()
+        .map(|error| error.to_string()))
+}
+
+pub(crate) fn set_label(
+    desktop_id: &str,
+    name: Option<&str>,
+    icon: Option<&str>,
+) -> Result<(), crate::AppError> {
+    creds::set_label(desktop_id, name, icon)
+}
+
+/// The remote catalogue, stamped with the host it came from.
+///
+/// The stamp is added here rather than derived by the caller: a merged list is
+/// built from several hosts' snapshots, and a row that cannot name its host
+/// would be routed to the wrong machine on click.
+pub(crate) async fn sessions(desktop_id: &str) -> Result<Value, crate::AppError> {
+    let data = request(desktop_id, json!({ "type": "list_sessions" }), "list").await?;
+    stamp_live(desktop_id, data).await
+}
+
+pub(crate) async fn workspaces(desktop_id: &str) -> Result<Value, crate::AppError> {
+    let data = request(desktop_id, json!({ "type": "list_workspaces" }), "list").await?;
+    stamp_live(desktop_id, data).await
+}
+
+/// One command to one host.
+///
+/// `lane` is the fallback routing token; when the command carries a
+/// `sessionId`, that is what the host routes on, so a caller cannot address a
+/// conversation on a host it did not name.
+pub(crate) async fn request(
+    desktop_id: &str,
+    mut command: Value,
+    lane: &str,
+) -> Result<Value, crate::AppError> {
+    ensure_connected(desktop_id).await?;
+    if let Some(object) = command.as_object_mut() {
+        object
+            .entry("id")
+            .or_insert_with(|| json!(crate::store::create_id("cmd")));
+    }
+    let key = if lane == "list" {
+        "list".to_string()
+    } else {
+        command
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .unwrap_or(lane)
+            .to_string()
+    };
+    let mut live = runtime().lock().await;
+    let Some(session) = live.live.get_mut(desktop_id) else {
+        return Err(crate::AppError::Message("peer_not_connected".into()));
+    };
+    let subject = session.command_subject(&key);
+    let result = session
+        .request(&subject, command, session::COMMAND_TIMEOUT)
+        .await;
+    if let Err(error) = &result {
+        // A dead socket must not keep looking connected on the next poll.
+        if matches!(error, crate::AppError::RemoteTransport(_)) {
+            live.errors
+                .insert(desktop_id.to_string(), error.to_string());
+            live.live.remove(desktop_id);
+            // The connection was healthy and then was not: exactly the case
+            // automatic recovery is for. An explicit disconnect takes the
+            // supervisor with it, so this cannot resurrect a stopped link.
+            if !live.supervisors.contains_key(desktop_id) {
+                let supervisor = spawn_supervisor(desktop_id.to_string(), None);
+                live.supervisors.insert(desktop_id.to_string(), supervisor);
+            }
+        }
+    }
+    result
+}
+
+/// Stamp a catalogue snapshot with the host and the *live* pairing it came
+/// from.
+///
+/// Both ids travel: `desktopId` is what the UI keys a row by, and `pairId` is
+/// what the host used. They diverge after a re-pair of the same machine, so a
+/// row carrying only one of them could be routed to a connection the other no
+/// longer matches. The pair id is read from the live connection rather than the
+/// credential file, so a stale file cannot label a row with a pairing the
+/// socket is not speaking.
+async fn stamp_live(desktop_id: &str, data: Value) -> Result<Value, crate::AppError> {
+    let pair_id = runtime()
+        .lock()
+        .await
+        .live
+        .get(desktop_id)
+        .map(|session| session.pair_id().to_string());
+    let mut data = data;
+    if let Some(object) = data.as_object_mut() {
+        object.insert("desktopId".into(), json!(desktop_id));
+        if let Some(pair_id) = pair_id {
+            object.insert("pairId".into(), json!(pair_id));
+        }
+    }
+    Ok(data)
+}
+
+fn stored_creds(desktop_id: &str) -> Result<PeerCreds, crate::AppError> {
+    creds::load()?
+        .find(desktop_id)
+        .map(|peer| peer.creds.clone())
+        .ok_or_else(|| crate::AppError::Message("peer_not_paired".into()))
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The retry schedule is bounded and non-shrinking: an unbounded retry
+    /// against a host that will never return is indistinguishable, to the user,
+    /// from an app that hung.
+    /// The *base* schedule is what must grow and be bounded; jitter only
+    /// perturbs each draw around its step, so a jittered sample is deliberately
+    /// not monotonic (30s×1.2 can exceed the next step's 30s×0.8 — that is the
+    /// point of jitter). Asserting on the drawn values would test the noise.
+    #[test]
+    fn the_reconnect_schedule_grows_and_is_capped() {
+        for pair in RECONNECT_DELAYS_SECS.windows(2) {
+            assert!(
+                pair[1] >= pair[0],
+                "the base schedule must not shrink: {RECONNECT_DELAYS_SECS:?}"
+            );
+        }
+        assert_eq!(
+            RECONNECT_DELAYS_SECS.last(),
+            Some(&30),
+            "the last step is the cap"
+        );
+        // Past the end the delay stays at the cap rather than growing without
+        // bound, and every draw stays inside the jitter band for its step.
+        for attempt in 0..RECONNECT_DELAYS_SECS.len() + 5 {
+            let base = RECONNECT_DELAYS_SECS[attempt.min(RECONNECT_DELAYS_SECS.len() - 1)] as f64;
+            for _ in 0..16 {
+                let drawn = reconnect_delay(attempt).as_secs_f64();
+                assert!(
+                    drawn >= base * 0.8 && drawn <= base * 1.2,
+                    "attempt {attempt}: {drawn}s is outside the ±20% band around {base}s"
+                );
+            }
+        }
+    }
+
+    /// Jitter is what keeps several hosts from retrying in the same instant, so
+    /// it has to actually vary — a constant would pass the range check above.
+    #[test]
+    fn reconnect_delays_are_jittered_not_constant() {
+        let samples: Vec<f64> = (0..64).map(|_| reconnect_delay(5).as_secs_f64()).collect();
+        let min = samples.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = samples.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        assert!(max - min > 0.5, "delay never varied: {min}..{max}");
+    }
+
+    /// An explicit disconnect must take the retry with it, or a reconnect
+    /// scheduled a moment earlier silently undoes the user's decision.
+    #[tokio::test]
+    async fn disconnect_aborts_the_supervisor() {
+        let _home = crate::remote::test_support::HomeGuard::new("peer-disconnect-supervisor");
+        let handle = spawn_supervisor("desktop_a".into(), None);
+        runtime()
+            .lock()
+            .await
+            .supervisors
+            .insert("desktop_a".into(), handle);
+        disconnect("desktop_a").await;
+        assert!(
+            !runtime().lock().await.supervisors.contains_key("desktop_a"),
+            "the supervisor must not outlive an explicit disconnect"
+        );
+    }
+}

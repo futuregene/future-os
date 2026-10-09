@@ -2,6 +2,7 @@ import * as SecureStore from "expo-secure-store";
 import {
   clearCredentials,
   clearPendingRevoke,
+  labelDesktop,
   loadCredentials,
   loadPairedDesktops,
   loadDeviceId,
@@ -196,6 +197,51 @@ describe("credential storage", () => {
       { desktopId: "desktop_1", pairId: "pair_1" },
     ]);
     expect((await loadCredentials())?.pairId).toBe("pair_1");
+  });
+
+  test("an icon is stored, survives a credential refresh, and clears independently of the name", async () => {
+    await saveCredentials(credentials);
+    await labelDesktop(credentials.expectedDesktopId, { name: "Studio", icon: "rocket" });
+    expect(await loadPairedDesktops()).toEqual([
+      { desktopId: "desktop_1", pairId: "pair_1", name: "Studio", icon: "rocket" },
+    ]);
+
+    // A refresh rotates credentials; it is not the user changing the label.
+    await saveCredentials({ ...credentials, userJwt: "new-jwt" });
+    expect(await loadPairedDesktops()).toEqual([
+      { desktopId: "desktop_1", pairId: "pair_1", name: "Studio", icon: "rocket" },
+    ]);
+
+    // Clearing the name leaves the icon, and clearing the icon leaves the name:
+    // the patch is per-field, which is what the editor's two controls rely on.
+    await renameDesktop(credentials.expectedDesktopId, "");
+    expect(await loadPairedDesktops()).toEqual([
+      { desktopId: "desktop_1", pairId: "pair_1", icon: "rocket" },
+    ]);
+    await labelDesktop(credentials.expectedDesktopId, { icon: "" });
+    expect(await loadPairedDesktops()).toEqual([
+      { desktopId: "desktop_1", pairId: "pair_1" },
+    ]);
+  });
+
+  test("labelling one desktop leaves the others alone", async () => {
+    await saveCredentials(credentials);
+    await saveCredentials(other);
+    await labelDesktop(credentials.expectedDesktopId, { icon: "home" });
+    expect(await loadPairedDesktops()).toEqual([
+      { desktopId: "desktop_1", pairId: "pair_1", icon: "home" },
+      { desktopId: "desktop_2", pairId: "pair_2" },
+    ]);
+    // An unknown desktop is a no-op rather than an error: the picker can fire
+    // while a concurrent unpair is removing the entry.
+    await expect(labelDesktop("desktop_gone", { icon: "home" })).resolves.toBeUndefined();
+  });
+
+  test("an icon survives reload and is dropped with the pairing", async () => {
+    await saveCredentials(credentials);
+    await labelDesktop(credentials.expectedDesktopId, { icon: "flask" });
+    await clearCredentials(credentials.pairId);
+    await expect(loadPairedDesktops()).resolves.toEqual([]);
   });
 
   test("renaming an unknown desktop is a no-op", async () => {

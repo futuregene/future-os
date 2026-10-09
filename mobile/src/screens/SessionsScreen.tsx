@@ -1,9 +1,7 @@
 import {
-  ChevronDown,
   ChevronLeft,
   Folder,
   MessageCircle,
-  Monitor,
   Plus,
   Pin,
   Pencil,
@@ -12,7 +10,7 @@ import {
   Unplug,
   X,
 } from "lucide-react-native";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Modal,
@@ -32,8 +30,12 @@ import { DialogSurface } from "../components/DialogSurface";
 import { useAppDialog } from "../components/useAppDialog";
 import { RenameModal } from "../features/chat/components/RenameModal";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
+import { useDesktopCatalogs } from "../remote/useDesktopCatalogs";
+import { mergeSessions, type DesktopFilter } from "../remote/mergeSessions";
+import { iconGlyph } from "../remote/peerIcons";
 import type { RemoteSession } from "../remote/types";
 import { SessionList } from "./SessionList";
+import { DesktopPicker } from "./DesktopPicker";
 import { DisconnectedScreen } from "./DisconnectedScreen";
 import { colors, layout, radius, spacing } from "../theme/tokens";
 import { promptUpgrade } from "../update/prompt";
@@ -62,12 +64,36 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const selectedDesktop =
     remote.desktops.find((desktop) => desktop.pairId === remote.credentials?.pairId) ??
     remote.desktops[0];
-  const selectedDesktopName =
-    selectedDesktop?.name ??
-    remote.credentials?.expectedDesktopId ??
-    selectedDesktop?.desktopId ??
-    t("desktops.title");
   const [tab, setTabState] = useState<Tab>(lastTab);
+  /**
+   * Which desktops the session list shows. Kept for the life of the screen: a
+   * filter that reset itself on every re-render would look like the list had a
+   * mind of its own.
+   */
+  const [desktopFilter, setDesktopFilter] = useState<DesktopFilter>({ kind: "all" });
+  const activeDesktopId = remote.credentials?.expectedDesktopId ?? null;
+  // Catalogues for the *other* paired desktops, so the merged list can show
+  // their sessions without disturbing the active connection.
+  const catalogs = useDesktopCatalogs(activeDesktopId, remote.sessions);
+  const mergedRows = useMemo(
+    () => mergeSessions(catalogs.catalogs, desktopFilter),
+    [catalogs.catalogs, desktopFilter],
+  );
+  /**
+   * The merged view replaces the workspace tree only when it has something the
+   * tree cannot show — rows from another desktop. A user with one pairing keeps
+   * today's list exactly, because the flat view is a different information
+   * architecture (a workspace name can exist on two machines at once).
+   */
+  const showMerged = useMemo(
+    () => mergedRows.some(row => row.desktopId !== activeDesktopId),
+    [mergedRows, activeDesktopId],
+  );
+  const peerIcons = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const desktop of remote.desktops) map.set(desktop.desktopId, iconGlyph(desktop.icon));
+    return map;
+  }, [remote.desktops]);
   const setTab = (next: Tab) => {
     lastTab = next;
     setTabState(next);
@@ -366,20 +392,13 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           ] : []}
         />
         <View style={styles.deviceBar}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={t("desktops.title")}
-          onPress={onManageDesktops}
-          style={({ pressed }) => [styles.desktopSelector, pressed && styles.pressed]}
-        >
-          <View style={styles.desktopIcon}>
-            <Monitor color={colors.accent} size={20} />
-          </View>
-          <Text numberOfLines={1} style={styles.desktopIdentity}>
-            {selectedDesktopName}
-          </Text>
-          <ChevronDown color={colors.inkSoft} size={16} />
-        </Pressable>
+          <DesktopPicker
+            activeDesktopId={remote.credentials?.expectedDesktopId ?? null}
+            desktops={remote.desktops}
+            filter={desktopFilter}
+            onChange={setDesktopFilter}
+            onManage={onManageDesktops}
+          />
           <View style={styles.topActions}>
             <ConnectionBadge
               active={active}
@@ -417,6 +436,9 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           tab={tab}
           active={active}
           onTabChange={setTab}
+          activeDesktopId={remote.credentials?.expectedDesktopId ?? null}
+          icons={peerIcons}
+          merged={showMerged ? mergedRows : undefined}
           empty={tab === "workspace" ? workspaceEmpty : !connected ? offlineEmpty : createChatEmpty}
           onMenu={openSessionMenu}
         />}

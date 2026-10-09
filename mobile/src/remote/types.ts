@@ -29,6 +29,13 @@ export interface PairedDesktop {
   pairId: string;
   /** Absent until the user renames the desktop; the id is shown instead. */
   name?: string;
+  /**
+   * A glyph id from the fixed set (mobile `config/peerIcons.ts`), chosen by the
+   * user. Stored as the id rather than the glyph so the set can be restyled or
+   * translated later without rewriting saved labels — and so an unknown value
+   * renders the default instead of arbitrary stored text.
+   */
+  icon?: string;
 }
 
 export interface RemoteCredentials {
@@ -57,6 +64,13 @@ export interface RemoteSession {
   pinned?: boolean;
   streaming: boolean;
   status?: string;
+  /**
+   * Last activity (unix millis), from the desktop's own
+   * `COALESCE(last_message_at, updated_at, created_at)`. Absent on a desktop
+   * older than the field, in which case the session sorts below dated ones
+   * rather than pretending to be current.
+   */
+  lastMessageAt?: number | null;
 }
 
 export interface RemoteWorkspace {

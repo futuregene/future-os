@@ -1,3 +1,4 @@
+import { PEER_ICONS } from "../remote/peerIcons";
 import { ArrowLeft, Check, Monitor, Pencil, Plus, Trash2 } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -72,6 +73,20 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack?(): void; onAdd(): vo
       setFailed("desktops.switchFailed");
     } finally {
       setBusy(false);
+    }
+  };
+
+  const submitIcon = async (icon: string) => {
+    const desktop = renameTarget;
+    if (!desktop) return;
+    // Toggle: picking the current icon clears it, so the user can go back to the
+    // default without a separate "none" affordance.
+    const next = desktop.icon === icon ? "" : icon;
+    setRenameTarget({ ...desktop, icon: next || undefined });
+    try {
+      await remote.labelDesktop(desktop.desktopId, { icon: next });
+    } catch {
+      setFailed("desktops.actionFailed");
     }
   };
 
@@ -199,6 +214,30 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack?(): void; onAdd(): vo
               style={styles.input}
               value={renameValue}
             />
+            {/* The icon is a sibling of the name, not part of it: it replaces the
+                name in the session list, and the two are cleared separately. */}
+            <Text style={styles.iconLabel}>{t("desktops.iconLabel")}</Text>
+            <View accessibilityRole="radiogroup" style={styles.iconRow}>
+              {PEER_ICONS.map(icon => {
+                const selected = renameTarget?.icon === icon.id;
+                return (
+                  <Pressable
+                    accessibilityLabel={t(`desktops.icons.${icon.labelKey}`)}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: selected }}
+                    key={icon.id}
+                    onPress={() => void submitIcon(icon.id)}
+                    style={({ pressed }) => [
+                      styles.iconOption,
+                      selected && styles.iconOptionSelected,
+                      pressed && styles.pressed,
+                    ]}
+                  >
+                    <Text style={styles.iconGlyph}>{icon.glyph}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
             <View style={styles.dialogActions}>
               <View style={styles.dialogAction}>
                 <Button
@@ -273,4 +312,17 @@ const styles = StyleSheet.create({
   },
   dialogActions: { flexDirection: "row", gap: spacing.md },
   dialogAction: { flex: 1 },
+  iconLabel: { color: colors.inkMuted, fontSize: 13 },
+  iconRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+  iconOption: {
+    width: 40,
+    height: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: radius.md,
+  },
+  iconOptionSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
+  iconGlyph: { fontSize: 18 },
 });

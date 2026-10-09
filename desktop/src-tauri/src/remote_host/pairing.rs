@@ -266,7 +266,13 @@ pub(crate) async fn retry_pending_revokes() -> Result<(), crate::AppError> {
     Ok(())
 }
 
-fn http_client() -> Result<reqwest::Client, crate::AppError> {
+// The four helpers below are `pub(crate)` because the *client* role
+// (`remote_peer`) speaks to the same platform API and must fail the same way:
+// one HTTP/TLS policy per process, one reading of the platform's
+// `{error, message}` body, one JWT-expiry rule. Duplicating them per role is
+// how the two would drift into disagreeing about, say, whether a 401 is
+// "revoked" or "retry".
+pub(crate) fn http_client() -> Result<reqwest::Client, crate::AppError> {
     crate::install_rustls_provider();
     reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
@@ -278,7 +284,7 @@ fn http_client() -> Result<reqwest::Client, crate::AppError> {
 /// response was possible (so the UI can say "check your network"), a plain
 /// [`Message`] otherwise. The original reqwest detail is preserved in both for
 /// logs.
-fn transport_or_message(action: &str, error: reqwest::Error) -> crate::AppError {
+pub(crate) fn transport_or_message(action: &str, error: reqwest::Error) -> crate::AppError {
     let message = format!("Failed to {action}: {error}");
     if is_transport_error(&error) {
         crate::AppError::RemoteTransport(message)
@@ -295,7 +301,7 @@ fn is_transport_error(error: &reqwest::Error) -> bool {
     error.is_connect() || error.is_timeout() || error.is_request() || error.is_redirect()
 }
 
-async fn parse_response<T: serde::de::DeserializeOwned>(
+pub(crate) async fn parse_response<T: serde::de::DeserializeOwned>(
     response: reqwest::Response,
     action: &str,
 ) -> Result<T, crate::AppError> {
@@ -342,7 +348,7 @@ async fn response_error(response: reqwest::Response, action: &str) -> crate::App
     }
 }
 
-fn jwt_expiry(jwt: &str) -> Result<i64, crate::AppError> {
+pub(crate) fn jwt_expiry(jwt: &str) -> Result<i64, crate::AppError> {
     let payload = jwt.split('.').nth(1).ok_or_else(|| {
         crate::AppError::Message("Remote server returned an invalid JWT.".to_string())
     })?;
