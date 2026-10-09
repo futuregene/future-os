@@ -29,6 +29,10 @@ pub(crate) mod platform;
 pub(crate) mod runtime;
 pub(crate) mod session;
 
+// Only the GUI command layer consumes these; a headless build (no `gui`
+// feature) has no caller, and an unconditional re-export there is an unused
+// import — which CI's `--no-default-features` clippy pass turns into an error.
+#[cfg(feature = "gui")]
 pub use self::runtime::{PeerEvent, PeerSummary};
 
 #[cfg(test)]
