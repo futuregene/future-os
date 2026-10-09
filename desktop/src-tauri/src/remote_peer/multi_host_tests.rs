@@ -31,8 +31,9 @@
 //! nothing asserted here depends on it — but a reader seeing the log should know
 //! it is expected rather than a second host failing to start.
 
+use super::creds;
 use super::runtime::{
-    connect_with_emitter, disconnect, list, live_count, request, reset_for_test, sessions, unpair,
+    connect, connect_with_emitter, disconnect, list, live_count, reset_for_test, sessions, unpair,
     Emitter, PeerEvent, PeerSummary,
 };
 use super::testing::claim;
@@ -458,5 +459,69 @@ async fn one_desktop_app_connects_to_several_headless_hosts_at_once() {
     }
 
     drop(hosts);
+    let _ = std::fs::remove_dir_all(&signals);
+}
+
+/// A credential directory that cannot be written is housekeeping trouble, not a
+/// connection failure: pairing still succeeds, and only the write that drops the
+/// spent invitation secret is skipped.
+///
+/// It has to be driven with a host in **another process**: in one process the
+/// host and the client share `HOME`, and the host writes its own pairing file at
+/// exactly the same moment, so a read-only directory would break the handshake
+/// for a reason this test is not about.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_spent_secret_that_cannot_be_dropped_is_only_housekeeping() {
+    use std::os::unix::fs::PermissionsExt;
+
+    reset_for_test().await;
+    let _home = HomeGuard::new("peer-e2e-readonly-home");
+    init_store();
+    let platform = MockPlatform::start().await;
+    let nats = FakeNats::start().await;
+    let signals = std::env::temp_dir().join(format!("futureos-peer-ro-{}", std::process::id()));
+    std::fs::create_dir_all(&signals).expect("signal dir");
+
+    let pair_id = "pair_readonly";
+    platform.respond_pair_code_for(pair_id, nats.url());
+    let mut host = HostProcess::spawn("readonly", platform.url(), &signals);
+    let ready = host.wait_ready();
+    let invitation = ready["invitation"].as_str().expect("invitation");
+    // Claiming legitimately writes the credentials; the directory becomes
+    // unwritable only afterwards, so the pairing itself is not in question.
+    let paired = claim(&platform, invitation, pair_id, nats.url()).await;
+    let desktop_id = paired.creds.desktop_id.clone();
+
+    let dir = PathBuf::from(std::env::var("HOME").expect("home")).join(".future");
+    let original = std::fs::metadata(&dir).expect("home dir").permissions();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).expect("read-only");
+
+    let result = connect(&desktop_id).await;
+
+    // Restore before asserting: a panic with the directory still read-only
+    // would leave the fixture unremovable and every later test broken.
+    std::fs::set_permissions(&dir, original).expect("restore");
+
+    let summary = result.expect("the connect itself succeeds");
+    assert!(summary.connected, "{summary:?}");
+    // The pairing still works, and the housekeeping that was skipped is visible
+    // for what it is: the invitation secret is still on disk.
+    let catalogue = sessions(&desktop_id).await.expect("sessions");
+    assert_eq!(catalogue["desktopId"], json!(desktop_id));
+    assert!(
+        creds::load()
+            .expect("book")
+            .find(&desktop_id)
+            .expect("peer")
+            .creds
+            .secure
+            .as_ref()
+            .and_then(|identity| identity.secret.clone())
+            .is_some(),
+        "the write that would have dropped the secret was the one skipped"
+    );
+
+    drop(host);
     let _ = std::fs::remove_dir_all(&signals);
 }

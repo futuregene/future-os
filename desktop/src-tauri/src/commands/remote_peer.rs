@@ -28,12 +28,23 @@ pub(crate) const PEER_EVENT: &str = "remote-peer-event";
 /// `AppHandle` untestable (the reason this layer had no coverage at all).
 fn emitter<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> runtime::Emitter {
     std::sync::Arc::new(move |event: PeerEvent| {
-        if let Err(error) = app.emit(PEER_EVENT, event) {
-            // A closed window is not a connection fault; the next status poll
-            // still sees the host as connected.
-            eprintln!("remote_peer: could not deliver a peer event: {error}");
-        }
+        report_emit_failure(app.emit(PEER_EVENT, event));
     })
+}
+
+/// Report a push that could not be delivered.
+///
+/// Extracted so the "the window is gone" arm is reachable at all: a mock app's
+/// `emit` returns `Ok` even with no webview, and a real window cannot be made to
+/// fail on demand, so a branch left inline here would be an arm no test could
+/// ever execute.
+///
+/// It is deliberately not a fault: a closed window is not a connection fault,
+/// and the next status poll still sees the host as connected.
+fn report_emit_failure<E: std::fmt::Display>(result: Result<(), E>) {
+    if let Err(error) = result {
+        eprintln!("remote_peer: could not deliver a peer event: {error}");
+    }
 }
 
 /// Pair from a pasted `futureos://remote/pair` link and connect once.
@@ -166,6 +177,14 @@ mod tests {
                 ),
             ],
         );
+    }
+
+    /// A push that cannot be delivered is logged, not propagated: the window may
+    /// simply be closed, which says nothing about the connection.
+    #[test]
+    fn an_undeliverable_push_is_reported_not_raised() {
+        report_emit_failure::<&str>(Ok(()));
+        report_emit_failure(Err("no window to receive it"));
     }
 
     #[tokio::test]

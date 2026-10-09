@@ -105,20 +105,8 @@ impl PeerSession {
     pub(crate) async fn subscribe(
         &self,
     ) -> Result<(async_nats::Subscriber, async_nats::Subscriber), crate::AppError> {
-        let events = self
-            .client
-            .subscribe(format!("p.{}.evt.>", self.pair_id))
-            .await
-            .map_err(|error| {
-                crate::AppError::RemoteTransport(format!("Remote subscribe failed: {error}"))
-            })?;
-        let presence = self
-            .client
-            .subscribe(format!("p.{}.presence", self.pair_id))
-            .await
-            .map_err(|error| {
-                crate::AppError::RemoteTransport(format!("Remote subscribe failed: {error}"))
-            })?;
+        let events = subscribe(&self.client, format!("p.{}.evt.>", self.pair_id)).await?;
+        let presence = subscribe(&self.client, format!("p.{}.presence", self.pair_id)).await?;
         Ok((events, presence))
     }
 
@@ -483,6 +471,21 @@ async fn handshake(
         )
         .await?;
     Ok(session)
+}
+
+/// Subscribe to one subject, with the failure classified the same way for both
+/// streams.
+///
+/// One implementation rather than two identical `map_err`s: the second one would
+/// only ever be reachable by the call that happens to run first, so it could
+/// never be exercised.
+async fn subscribe(
+    client: &async_nats::Client,
+    subject: String,
+) -> Result<async_nats::Subscriber, crate::AppError> {
+    client.subscribe(subject).await.map_err(|error| {
+        crate::AppError::RemoteTransport(format!("Remote subscribe failed: {error}"))
+    })
 }
 
 /// One unencrypted handshake leg, exercised directly by a test.

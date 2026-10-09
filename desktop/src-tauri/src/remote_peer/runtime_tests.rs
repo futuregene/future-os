@@ -12,11 +12,12 @@ use super::runtime::{
     close_socket_for_test, connect, connect_with_emitter, disconnect, ensure_connected,
     forget_connection_for_test, install_supervisor_for_test, list, live_count, pair_with_emitter,
     request, reset_for_test, sessions, set_label, spawn_supervisor, stream_count, supervisor_count,
-    unpair, workspaces, Emitter, PeerEvent, PeerSummary,
+    unpair, workspaces, Emitter, PeerEvent, PeerSummary, INJECT_CONNECTION_LOST,
 };
 use super::testing::{fixture, teardown, Fixture};
 use crate::remote::test_support::{HomeGuard, MockPlatform};
 use serde_json::json;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 /// Every test starts from a clean singleton and a free host-bridge port: the
@@ -886,6 +887,17 @@ async fn a_forged_push_is_dropped_without_disturbing_the_stream() {
         .await
         .expect("connect");
 
+    // Wait for the *broker* to have registered the subscription: `subscribe()`
+    // returning only means the command was sent, so injecting immediately would
+    // race and the test would pass without the message ever being delivered —
+    // which is exactly how its first version passed while covering nothing.
+    fx.nats
+        .wait_for_sub(
+            &format!("p.{}.evt.>", fx.pair_id),
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+
     // Garbage on the event subject, from the broker's own inject path: exactly
     // what a malicious relay can do.
     fx.nats.inject(
@@ -893,7 +905,7 @@ async fn a_forged_push_is_dropped_without_disturbing_the_stream() {
         None,
         b"not a sealed record at all".to_vec(),
     );
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     assert!(
         count.lock().unwrap().is_empty(),
@@ -938,6 +950,41 @@ async fn a_command_that_is_not_an_object_is_sent_as_is() {
         .await
         .expect_err("a malformed command is the host's to reject");
     assert!(!error.to_string().is_empty());
+
+    teardown().await;
+}
+
+/// The race guard between connecting and addressing the connection: a session
+/// that disappears in that window is reported, not panicked on.
+///
+/// The interleaving is real — a concurrent command's transport failure, or the
+/// user pressing Disconnect — and it is injected because it cannot be produced
+/// from outside without racing (the same seam style `remote_host::pairing` uses
+/// for a credential-write failure).
+#[tokio::test]
+async fn a_connection_that_vanishes_between_connect_and_request_is_reported() {
+    let (_home, fx) = start("peer-rt-vanished").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+
+    INJECT_CONNECTION_LOST.store(true, Ordering::SeqCst);
+    let error = request(
+        &desktop_id,
+        serde_json::json!({ "type": "list_workspaces" }),
+        "list",
+    )
+    .await
+    .expect_err("a session that is gone cannot be addressed");
+    assert!(error.to_string().contains("peer_not_connected"), "{error}");
+
+    // One-shot: the next call reconnects rather than staying broken.
+    let data = request(
+        &desktop_id,
+        serde_json::json!({ "type": "list_workspaces" }),
+        "list",
+    )
+    .await
+    .expect("the next call reconnects");
+    assert!(data["workspaces"].is_array());
 
     teardown().await;
 }

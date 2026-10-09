@@ -116,6 +116,17 @@ fn reconnect_delay(attempt: usize) -> std::time::Duration {
     delay_unit().mul_f64(base * jitter)
 }
 
+/// One-shot injected race, for tests only: drop the connection between
+/// `ensure_connected` and the lookup that follows it in [`request`].
+///
+/// The interleaving is real — a concurrent command's transport failure or a
+/// user disconnect removes the entry — but it cannot be produced from outside
+/// without racing, so it is injected the same way `remote_host::pairing`
+/// injects a credential-write failure.
+#[cfg(test)]
+pub(crate) static INJECT_CONNECTION_LOST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 fn runtime() -> &'static Mutex<Runtime> {
     static RUNTIME: OnceLock<Mutex<Runtime>> = OnceLock::new();
     RUNTIME.get_or_init(|| Mutex::new(Runtime::default()))
@@ -659,6 +670,14 @@ pub(crate) async fn request(
             .to_string()
     };
     let mut live = runtime().lock().await;
+    #[cfg(test)]
+    if INJECT_CONNECTION_LOST.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        // The real interleaving this guards: a concurrent command's transport
+        // failure, or the user pressing Disconnect, removes the entry between
+        // the connect above and the lookup below. Forced here because it cannot
+        // be produced from outside without racing.
+        live.live.remove(desktop_id);
+    }
     let Some(session) = live.live.get_mut(desktop_id) else {
         return Err(crate::AppError::Message("peer_not_connected".into()));
     };
@@ -701,12 +720,18 @@ async fn stamp_live(desktop_id: &str, data: Value) -> Result<Value, crate::AppEr
         .get(desktop_id)
         .map(|session| session.pair_id().to_string());
     let mut data = data;
-    if let Some(object) = data.as_object_mut() {
-        object.insert("desktopId".into(), json!(desktop_id));
-        if let Some(pair_id) = pair_id {
-            object.insert("pairId".into(), json!(pair_id));
-        }
-    }
+    // A reply that is not an object violates the host's own contract. Reported
+    // rather than asserted: the field comes from a *remote* peer, and panicking
+    // on remote input would hand a broken or hostile host a way to take the app
+    // down.
+    let object = data
+        .as_object_mut()
+        .ok_or_else(|| crate::AppError::Message("peer_reply_not_an_object".into()))?;
+    object.insert("desktopId".into(), json!(desktop_id));
+    // `null` rather than omitted when the connection has already gone: the row
+    // still came from this host, and a reader can tell "no live pairing" from
+    // "field missing".
+    object.insert("pairId".into(), pair_id.map_or(Value::Null, |id| json!(id)));
     Ok(data)
 }
 
@@ -807,12 +832,12 @@ mod tests {
         let (_home, fx, _desktop_id) = connected_fixture("peer-rt-bad-seed").await;
         let mut broken = fx.paired.creds.clone();
         broken.nkey_seed = "not-a-seed".into();
-        // Matching rather than `expect_err`: the ok arm holds a live connection,
-        // which is neither `Debug` nor something to print on failure.
-        let error = match super::super::session::connect(&broken).await {
-            Ok(_) => panic!("an invalid seed cannot sign"),
-            Err(error) => error,
-        };
+        // `err()` rather than `expect_err`: the ok arm holds a live connection,
+        // which has no `Debug` (and should not grow one just for a test).
+        let error = super::super::session::connect(&broken)
+            .await
+            .err()
+            .expect("an invalid seed cannot sign");
         assert!(
             error.to_string().contains("Invalid stored device NKey"),
             "{error}"
@@ -925,6 +950,25 @@ mod tests {
         let name = device_name();
         assert!(name.starts_with("FutureOS Desktop"), "{name}");
         assert!(!name.ends_with("()"), "{name}");
+    }
+
+    /// A catalogue reply that is not an object is a protocol violation, not a
+    /// shape to invent — and it must not panic, because the reply comes from a
+    /// remote peer: a broken or hostile host could otherwise take the app down.
+    #[tokio::test]
+    async fn a_catalogue_reply_that_is_not_an_object_is_refused() {
+        let _home = crate::remote::test_support::HomeGuard::new("peer-stamp-non-object");
+        reset_for_test().await;
+        for reply in [
+            serde_json::json!([1, 2, 3]),
+            serde_json::json!("a string"),
+            serde_json::Value::Null,
+        ] {
+            let error = stamp_live("desktop_any", reply.clone())
+                .await
+                .expect_err("a non-object reply cannot be stamped");
+            assert_eq!(error.to_string(), "peer_reply_not_an_object", "{reply}");
+        }
     }
 
     /// An explicit disconnect must take the retry with it, or a reconnect
