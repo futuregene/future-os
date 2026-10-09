@@ -112,8 +112,14 @@ impl SocketSpec {
 
 #[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
 async fn connect_abstract(name: &str) -> Result<tokio::net::UnixStream, String> {
+    // The *address* type is the Unix one on both platforms; only the trait that
+    // turns a name into it differs (`std::os::linux` vs `std::os::android`).
+    #[cfg(target_os = "android")]
+    use std::os::android::net::SocketAddrExt;
+    #[cfg(target_os = "linux")]
     use std::os::linux::net::SocketAddrExt;
-    let addr = std::os::linux::net::SocketAddr::from_abstract_name(name.as_bytes())
+
+    let addr = std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes())
         .map_err(|e| format!("invalid abstract socket name {name:?}: {e}"))?;
     tokio::net::UnixStream::connect_addr(&addr)
         .await
@@ -220,11 +226,14 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[tokio::test]
     async fn an_abstract_socket_is_reachable_by_name() {
+        #[cfg(target_os = "android")]
+        use std::os::android::net::SocketAddrExt;
+        #[cfg(target_os = "linux")]
         use std::os::linux::net::SocketAddrExt;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let name = format!("future-cdp-test-{}", std::process::id());
-        let addr = std::os::linux::net::SocketAddr::from_abstract_name(name.as_bytes())
+        let addr = std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes())
             .expect("abstract name");
         let listener = tokio::net::UnixListener::bind_addr(&addr).expect("bind abstract");
 
