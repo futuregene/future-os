@@ -158,7 +158,10 @@ pub(crate) async fn execute(args: serde_json::Value) -> Result<String> {
         .ok()
         .flatten();
     let run = async {
-        let output = run_command(&params, timeout).await;
+        // Keep platform execution futures off the caller's stack. Nested
+        // task-local scopes otherwise duplicate their large pipe/preparation
+        // state in debug builds on Linux's default-sized threads.
+        let output = Box::pin(run_command(&params, timeout)).await;
         let facts = FACTS.with(|slot| std::mem::take(&mut *slot.borrow_mut()));
         (output, facts)
     };

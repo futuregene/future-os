@@ -23,6 +23,11 @@ function history(result?: ShellResult): SessionEntry[] {
     { ...base, id: "out", kind: "tool", role: "tool", blocks: [{ kind: "tool_result", toolCallId: "t", isError: result?.is_error ?? false }], metadata: result ? { shell_result: result } : undefined },
   ];
 }
+function replayActivities(entries: SessionEntry[]) {
+  const message = entriesToMessages(entries).find(message => message.role === "assistant");
+  // History uses ordered segments; activityItems is the legacy/live fallback.
+  return message?.segments?.flatMap(segment => segment.kind === "activity" ? [segment.item] : []) ?? [];
+}
 
 describe("single-command facts across live and history projections", () => {
   it.each([
@@ -33,8 +38,7 @@ describe("single-command facts across live and history projections", () => {
       event("tool_start", { tool_id: "t", tool_name: "shell" }, 1),
       event("tool_end", { tool_id: "t", exit_code: 0, text: "[exit: 0]", shell_result: result }, 2),
     ]);
-    const replay = entriesToMessages(history(result));
-    const replayItem = replay.find(message => message.role === "assistant")?.activityItems?.[0];
+    const replayItem = replayActivities(history(result))[0];
     expect(live.activityItems[0]?.shellResult).toEqual(result);
     expect(live.activityItems[0]?.status).toBe(result.is_error ? "failed" : "completed");
     expect(replayItem?.shellResult).toEqual(result);
@@ -57,9 +61,9 @@ describe("single-command facts across live and history projections", () => {
     result.approval = "approved";
     result.attempts = [facts(7).attempts[0]!, { ...result.attempts[0]!, escalated: true }];
     const live = buildAssistantRunProjection([event("tool_end", { tool_id: "t", tool_name: "shell", shell_result: result }, 1)]);
-    const replay = entriesToMessages(history(result));
+    const replay = replayActivities(history(result));
     expect(live.activityItems[0]?.shellResult?.attempts.map(attempt => attempt.exit_code)).toEqual([7, 0]);
-    expect(replay.find(message => message.role === "assistant")?.activityItems?.[0]?.shellResult).toEqual(result);
+    expect(replay[0]?.shellResult).toEqual(result);
     expect(live.activityItems[0]?.status).toBe("completed");
   });
 
@@ -79,8 +83,8 @@ describe("single-command facts across live and history projections", () => {
       blocks: [{ kind: "tool_result", toolCallId: "t2", isError: false }],
       metadata: { shell_result: second },
     });
-    const replay = entriesToMessages(entries).find(message => message.role === "assistant");
-    for (const items of [live.activityItems, replay?.activityItems]) {
+    const replay = replayActivities(entries);
+    for (const items of [live.activityItems, replay]) {
       expect(items).toHaveLength(1);
       expect(items?.[0]?.count).toBe(2);
       expect(items?.[0]?.children?.map(child => child.shellResult)).toEqual([first, second]);
@@ -88,7 +92,9 @@ describe("single-command facts across live and history projections", () => {
   });
 
   it("does not invent attempt history for old records", () => {
-    expect(entriesToMessages(history()).find(message => message.role === "assistant")?.activityItems?.[0]?.shellResult).toBeUndefined();
+    const replay = replayActivities(history());
+    expect(replay).toHaveLength(1);
+    expect(replay[0]?.shellResult).toBeUndefined();
   });
 
   it("uses the host verdict for normal query returns and retains nonzero", () => {

@@ -379,14 +379,16 @@ pub(crate) async fn spawn_shell_with_report(
                         );
                         Err(anyhow!("Total execution budget exhausted"))
                     } else {
-                        spawn_shell_impl(
+                        // Bound the size of the task-local orchestration
+                        // future independently of platform pipe state.
+                        Box::pin(spawn_shell_impl(
                             command,
                             timeout_secs,
                             sandbox,
                             escalated,
                             approved_capability,
                             retry,
-                        )
+                        ))
                         .await
                     };
                     let mut fact = PROCESS
