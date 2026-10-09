@@ -48,6 +48,16 @@ export interface MergedConversation {
   desktopId: string | null;
   /** The local thread id, or the remote session id. */
   id: string;
+  /**
+   * The *host* thread id for a remote row; `null` for local rows.
+   *
+   * Distinct from `id` on purpose: a remote row is addressed by its session id
+   * for anything session-scoped (prompt, abort, rename, reading history), but
+   * the host's pin and delete routes take a **thread** id. Dropping this in the
+   * merge would make those two actions unaddressable, and guessing that the two
+   * ids are interchangeable would pin or delete the wrong record.
+   */
+  threadId: string | null;
   title: string;
   pinned: boolean;
   streaming: boolean;
@@ -115,6 +125,9 @@ export function mergeConversations(
         key: rowKey(null, thread.id),
         desktopId: null,
         id: thread.id,
+        // A local row's thread id *is* its id: the local store addresses
+        // threads by that id everywhere, so there is nothing to translate.
+        threadId: thread.id,
         title: thread.title,
         pinned: thread.pinned,
         streaming: false,
@@ -138,6 +151,11 @@ export function mergeConversations(
         key,
         desktopId: catalog.desktopId,
         id: session.sessionId,
+        // Absent only on a host that predates the catalogue's thread id. The
+        // row is still readable and promptable; pin and delete stay disabled
+        // rather than falling back to the session id, which the host's pin and
+        // delete routes do not accept.
+        threadId: session.threadId ?? null,
         title: session.title,
         pinned: session.pinned === true,
         streaming: session.streaming === true,

@@ -101,6 +101,7 @@ export async function fetchRemoteSessions(desktopId: string): Promise<RemoteCata
         return [];
       return [{
         sessionId,
+        ...(typeof row.threadId === "string" && row.threadId ? { threadId: row.threadId } : {}),
         title: typeof row.title === "string" && row.title ? row.title : sessionId,
         mode: row.mode === "workspace" ? "workspace" : "chat",
         ...(typeof row.workspaceId === "string" ? { workspaceId: row.workspaceId } : {}),
@@ -111,6 +112,110 @@ export async function fetchRemoteSessions(desktopId: string): Promise<RemoteCata
       }];
     }),
   };
+}
+
+/**
+ * How a remote conversation is addressed: the host's **session** id, plus its
+ * **thread** id where the host has one.
+ *
+ * These are two different strings on the host, and they are not
+ * interchangeable: prompt, abort and history reads are session-scoped, while
+ * pin and delete go through the host's thread store. `threadId` is `null` only
+ * on a host that predates the catalogue's thread id, and pin/delete are refused
+ * rather than falling back to the session id — sending the session id where a
+ * thread id is expected is how the wrong record gets pinned.
+ */
+export interface RemoteSessionAddress {
+  sessionId: string;
+  threadId: string | null;
+}
+
+/**
+ * The host routes that act on one of its conversations.
+ *
+ * All of them are requests on the addressed session's lane, so a host that
+ * refuses one rejects the promise and the caller surfaces it — none of these is
+ * fire-and-forget.
+ */
+export function renameRemoteConversation(
+  desktopId: string,
+  address: RemoteSessionAddress,
+  name: string,
+): Promise<unknown> {
+  return requestRemotePeer(
+    desktopId,
+    { type: "set_session_name", sessionId: address.sessionId, name },
+    address.sessionId,
+  );
+}
+
+/** Refuses when the host reported no thread id: see `RemoteSessionAddress`. */
+export async function pinRemoteConversation(
+  desktopId: string,
+  address: RemoteSessionAddress,
+  pinned: boolean,
+): Promise<unknown> {
+  const threadId = requireThreadId(address);
+  return requestRemotePeer(
+    desktopId,
+    { type: "set_session_pinned", threadId, pinned },
+    address.sessionId,
+  );
+}
+
+/** Idempotent on the host: deleting an already-deleted thread succeeds. */
+export async function deleteRemoteConversation(
+  desktopId: string,
+  address: RemoteSessionAddress,
+): Promise<unknown> {
+  const threadId = requireThreadId(address);
+  return requestRemotePeer(desktopId, { type: "delete_session", threadId }, address.sessionId);
+}
+
+/**
+ * Both callers above are `async` so the refusal arrives as a *rejection*. A
+ * half-synchronous API — where one argument makes the call throw and another
+ * makes it reject — is caught differently by `try/catch` and by `.catch()`, and
+ * the bug that produces is a pin that silently never happened.
+ */
+function requireThreadId(address: RemoteSessionAddress): string {
+  if (!address.threadId)
+    throw new Error("remote_conversation_without_thread_id");
+  return address.threadId;
+}
+
+/** Stop whatever run is in flight for a conversation on that host. */
+export function abortRemoteRun(desktopId: string, sessionId: string): Promise<unknown> {
+  return requestRemotePeer(desktopId, { type: "abort", sessionId }, sessionId);
+}
+
+/**
+ * Send a prompt, optionally to *no* conversation yet.
+ *
+ * An empty `sessionId` is the host's own signal for a new conversation: it
+ * creates the thread and answers with the ids it chose. The client cannot mint
+ * them (they are the host's), which is why the ack is the only way to learn the
+ * conversation it just made.
+ */
+export interface RemotePromptAck {
+  sessionId: string;
+  threadId: string;
+}
+
+export async function promptRemoteConversation(
+  desktopId: string,
+  sessionId: string,
+  message: string,
+): Promise<RemotePromptAck> {
+  const ack = await requestRemotePeer<Record<string, unknown>>(
+    desktopId,
+    { type: "prompt", sessionId, message },
+    sessionId || "new",
+  );
+  const created = ack?.sessionId;
+  if (typeof created !== "string" || !created)
+    throw new Error("remote_prompt_without_session_id");
+  return { sessionId: created, threadId: typeof ack.threadId === "string" ? ack.threadId : "" };
 }
 
 /**

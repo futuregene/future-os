@@ -24,6 +24,7 @@ interface HookSpies {
   refreshAuth: () => void;
   refreshBalance: () => void;
   refreshRemote: () => void;
+  refreshRemotePeers: () => void;
   refreshSkills: () => void;
   restoreThread: (threadId: string) => Promise<unknown>;
   revalidateAgentState: (threadId: string) => void;
@@ -47,6 +48,9 @@ const children = vi.hoisted(() => ({
   contextPanel: null as unknown,
   newConversation: null as unknown,
   onboardingGate: null as unknown,
+  peersView: null as unknown,
+  remoteComposer: null as unknown,
+  remoteConversationView: null as unknown,
   remoteView: null as unknown,
   settingsDialog: null as unknown,
   skillsView: null as unknown,
@@ -64,6 +68,7 @@ const mocks = vi.hoisted(() => ({
   geometry: { left: true, right: true },
   hooks: {} as HookSpies,
   nudgeLeftPanel: undefined as undefined | ReturnType<typeof vi.fn>,
+  remotePeers: undefined as undefined | { catalogs?: unknown[]; peers?: unknown[] },
   invoke: vi.fn(async (_command: string, _args?: unknown) => {}),
   refreshStore: vi.fn(async (_threadId?: string) => {}),
   remoteStatus: { phase: "idle" } as Record<string, unknown>,
@@ -99,6 +104,36 @@ vi.mock("../../features/remote/RemoteView", async () => {
     RemoteView: (props: unknown) => {
       children.remoteView = props;
       return createElement("div", { "data-child": "remote-view" });
+    },
+  };
+});
+// The client role's conversation surface: stubbed so the shell's own wiring can
+// be read (which host a draft opens on, and the ids it adopts) without standing
+// up a remote host.
+vi.mock("../../features/remote-peer/RemoteConversationView", async () => {
+  const { createElement } = await import("react");
+  return {
+    RemoteConversationView: (props: { composer?: unknown }) => {
+      children.remoteConversationView = props;
+      return createElement("div", { "data-child": "remote-conversation-view" }, props.composer as never);
+    },
+  };
+});
+vi.mock("../../features/remote-peer/RemoteComposer", async () => {
+  const { createElement } = await import("react");
+  return {
+    RemoteComposer: (props: unknown) => {
+      children.remoteComposer = props;
+      return createElement("div", { "data-child": "remote-composer" });
+    },
+  };
+});
+vi.mock("../../features/remote-peer/RemotePeersView", async () => {
+  const { createElement } = await import("react");
+  return {
+    RemotePeersView: (props: unknown) => {
+      children.peersView = props;
+      return createElement("div", { "data-child": "peers-view" });
     },
   };
 });
@@ -277,6 +312,11 @@ vi.mock("./hooks/useNewConversation", () => ({
 }));
 vi.mock("./hooks/useRemoteStatus", () => ({
   useRemoteStatus: () => ({ indicator: null, refresh: mocks.hooks.refreshRemote, status: mocks.remoteStatus }),
+}));
+// Stubbed so the shell can be given paired hosts and their catalogues; the real
+// hook polls the backend.
+vi.mock("./hooks/useRemotePeers", () => ({
+  useRemotePeers: () => mocks.remotePeers ?? { catalogs: [], peers: [], refresh: mocks.hooks.refreshRemotePeers },
 }));
 vi.mock("./hooks/useThreadStore", () => ({ useThreadStore: () => mocks.store.threadStore }));
 vi.mock("./hooks/useUnreadThreads", () => ({ useUnreadThreads: () => (mocks.store.unreadThreadIds as Set<string>) ?? new Set() }));
@@ -487,6 +527,7 @@ beforeEach(() => {
     reclamp: vi.fn(),
     refreshAgentModels: vi.fn(async () => {}),
     refreshRemote: vi.fn(),
+    refreshRemotePeers: vi.fn(),
     refreshAuth: vi.fn(),
     refreshBalance: vi.fn(),
     refreshSkills: vi.fn(async () => {}),
@@ -499,6 +540,7 @@ beforeEach(() => {
     useAgentStatus: () => ({ agentVersion: null, desktopVersion: "1.0", phase: "ready", showWait: false }),
   };
   mocks.remoteStatus = { phase: "idle" };
+  mocks.remotePeers = undefined;
   mocks.startRemote.mockClear();
   mocks.stopRemote.mockClear();
   mocks.tauriEvents = {};
@@ -1430,5 +1472,118 @@ describe("app shell collapsed-panel affordances", () => {
     act(() => (children.settingsDialog as { onProvidersChanged: () => void }).onProvidersChanged());
     expect(mocks.hooks.refreshAgentModels).toHaveBeenCalledTimes(1);
     view.unmount();
+  });
+
+  describe("the client role's conversation lifecycle", () => {
+    /** A conversation as the merged list hands it to the shell. */
+    function remoteConversation(overrides: Record<string, unknown> = {}) {
+      return {
+        desktopId: "desktop_a",
+        id: "sess_1",
+        key: "desktop_a::sess_1",
+        lastMessageAt: 1,
+        mode: "chat",
+        pinned: false,
+        streaming: false,
+        threadId: "thread_1",
+        title: "Remote conversation",
+        workspaceId: null,
+        ...overrides,
+      } as never;
+    }
+
+    const composer = () => children.remoteComposer as { onCreated?: (id: string) => void; sessionId: string; streaming: boolean };
+
+    it("opens a remote conversation on the machine that owns it", () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+
+      expect(children.remoteConversationView).not.toBeNull();
+      expect(composer().sessionId).toBe("sess_1");
+      view.unmount();
+    });
+
+    /**
+     * A draft is addressed with an empty session id — the host's own signal to
+     * create the conversation. The shell must *adopt* the ids in the ack, or the
+     * next prompt would create a second conversation.
+     */
+    it("starts a draft on a chosen host and adopts the conversation the host creates", () => {
+      const view = mount(<AppShell />);
+      // The entry lives on the desktop-management screen.
+      act(() => rail().onManageDesktops?.());
+      const peersView = children.peersView as { onStartConversation: (desktopId: string) => void };
+
+      act(() => peersView.onStartConversation("desktop_a"));
+      expect(composer().sessionId).toBe("");
+
+      act(() => composer().onCreated?.("sess_new"));
+      expect(composer().sessionId).toBe("sess_new");
+      view.unmount();
+    });
+
+    /**
+     * The composer must carry the machine the conversation belongs to. A prompt
+     * with the wrong `desktopId` is delivered to another host — the failure this
+     * whole screen is built to avoid.
+     */
+    it("points the composer at the machine that owns the conversation", () => {
+      mocks.remotePeers = {
+        catalogs: [],
+        peers: [{ desktopId: "desktop_a", name: "Studio iMac" }],
+      };
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+
+      const props = children.remoteComposer as { desktopId: string; peer?: { name?: string } };
+      expect(props.desktopId).toBe("desktop_a");
+      expect(props.peer?.name).toBe("Studio iMac");
+      view.unmount();
+    });
+
+    /** A remote row action re-reads the hosts, so the list reflects it. */
+    it("re-reads paired hosts when a remote conversation changes", () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onRemoteConversationsChanged?.());
+      expect(mocks.hooks.refreshRemotePeers).toHaveBeenCalledTimes(1);
+      view.unmount();
+    });
+
+    it("opens the rename dialog for a remote conversation", () => {
+      const view = mount(<AppShell />);
+      expect(view.container.textContent).not.toContain("Rename conversation");
+
+      act(() => rail().onRenameRemoteConversation?.(remoteConversation()));
+      expect(view.container.textContent).toContain("Rename conversation");
+
+      // And it closes again, so the dialog is not stuck on screen.
+      act(() => railButton(view.container, "Cancel").click());
+      expect(view.container.textContent).not.toContain("Rename conversation");
+      view.unmount();
+    });
+
+    /**
+     * A completed rename re-reads the host, which is the only thing that brings
+     * the new title into the list.
+     */
+    it("re-reads the host after a remote conversation is renamed", async () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onRenameRemoteConversation?.(remoteConversation()));
+
+      const input = view.container.querySelector("input")!;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+        setter.call(input, "Renamed remotely");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => railButton(view.container, "Save").click());
+      await act(async () => {
+        for (let i = 0; i < 4; i += 1) await Promise.resolve();
+      });
+
+      expect(mocks.hooks.refreshRemotePeers).toHaveBeenCalledTimes(1);
+      expect(view.container.textContent).not.toContain("Rename conversation");
+      view.unmount();
+    });
   });
 });

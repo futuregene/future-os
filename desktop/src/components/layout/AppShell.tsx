@@ -13,6 +13,7 @@ import { sessionMentionOptions } from "../../features/agent/sessionMention";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemotePeersView } from "../../features/remote-peer/RemotePeersView";
+import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { useRemoteApprovals } from "../../features/remote-peer/useRemoteApprovals";
 import { useRemoteTimeline } from "../../features/remote-peer/useRemoteTimeline";
 import { startRemote, stopRemote } from "../../features/remote/remoteClient";
@@ -136,6 +137,8 @@ function ReadyAppShell({
    * they never set is how a stale remote view reappears.
    */
   const [activeRemote, setActiveRemote] = useState<{ desktopId: string; sessionId: string } | null>(null);
+  /** The remote conversation whose rename dialog is open, if any. */
+  const [remoteRename, setRemoteRename] = useState<MergedConversation | null>(null);
   const [leftExpanded, setLeftExpanded] = useState(true);
   const [leftOverlayOpen, setLeftOverlayOpen] = useState(false);
   const [rightExpanded, setRightExpanded] = useState(false);
@@ -670,6 +673,19 @@ function ReadyAppShell({
     setSection("chat");
   }
 
+  /**
+   * A conversation that does not exist yet on a host.
+   *
+   * The empty session id *is* the request: the host creates the thread and
+   * answers with the ids it chose. A draft is therefore not an error state to
+   * guard against — it is the only way to start a conversation remotely, since
+   * the client cannot mint a host-side session id.
+   */
+  function startRemoteConversation(desktopId: string) {
+    setActiveRemote({ desktopId, sessionId: "" });
+    setSection("chat");
+  }
+
   const activityRailProps = {
     active: section,
     activeThreadId,
@@ -678,6 +694,8 @@ function ReadyAppShell({
     deviceFilter,
     onChangeDeviceFilter: setDeviceFilter,
     onOpenRemoteConversation: openRemoteConversation,
+    onRenameRemoteConversation: setRemoteRename,
+    onRemoteConversationsChanged: () => void refreshRemotePeers(),
     onManageDesktops: () => handleSectionChange("peers"),
     activeRemoteKey: activeRemote
       ? `${activeRemote.desktopId}::${activeRemote.sessionId}`
@@ -817,7 +835,11 @@ function ReadyAppShell({
                       )
                     : section === "peers"
                       ? (
-                          <RemotePeersView leftPanelExpanded={showLeftPanel} onToggleLeftPanel={handleToggleLeftPanel} />
+                          <RemotePeersView
+                            leftPanelExpanded={showLeftPanel}
+                            onStartConversation={startRemoteConversation}
+                            onToggleLeftPanel={handleToggleLeftPanel}
+                          />
                         )
                       : section === "chat" && activeRemote
                         ? (
@@ -828,12 +850,20 @@ function ReadyAppShell({
                               composer={(
                                 <RemoteComposer
                                   desktopId={activeRemote.desktopId}
+                                  onCreated={(createdSessionId) => {
+                                    // Adopt the conversation the host just made, so
+                                    // the next prompt goes to it by name instead
+                                    // of creating a second one.
+                                    setActiveRemote({ desktopId: activeRemote.desktopId, sessionId: createdSessionId });
+                                    void refreshRemotePeers();
+                                  }}
                                   onSent={() => {
                                     void remoteTimeline.refresh();
                                     void refreshRemotePeers();
                                   }}
                                   peer={activeRemotePeer}
                                   sessionId={activeRemote.sessionId}
+                                  streaming={remoteTimeline.streaming}
                                 />
                               )}
                               entries={remoteTimeline.entries}
@@ -952,6 +982,15 @@ function ReadyAppShell({
         onConfirmDeleteWorkspace={() => void confirmWorkspaceDelete()}
         onConfirmRenameWorkspace={() => void confirmWorkspaceRename()}
       />
+      {remoteRename
+        ? (
+            <RemoteRenameDialog
+              conversation={remoteRename}
+              onClose={() => setRemoteRename(null)}
+              onRenamed={() => void refreshRemotePeers()}
+            />
+          )
+        : null}
       <SettingsDialog
         appSettings={appSettings}
         cachedUpdateStatus={cachedStatus}

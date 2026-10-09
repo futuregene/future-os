@@ -80,5 +80,13 @@
   "iconSectionHint": "在会话列表里显示在它的会话旁。",
   "localSection": "仅本机",
   "dangerSection": "配对",
-  "unpairHint": "那台电脑的数据不会受影响，只是解除这次配对。"
+  "unpairHint": "那台电脑的数据不会受影响，只是解除这次配对。",
+  "conversationActions": "更多操作",
+  "renameTitle": "重命名会话",
+  "renameHint": "新名称会保存在那台远程桌面上。",
+  "saving": "保存中…",
+  "stop": "停止",
+  "stopping": "正在停止…",
+  "newConversation": "新建对话",
+  "newConversationHint": "在那台远程桌面上新建。"
 }
