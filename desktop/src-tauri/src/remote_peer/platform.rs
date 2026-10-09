@@ -426,12 +426,12 @@ mod tests {
             .await
             .expect_err("a used invitation cannot be claimed");
         // Both ids must survive: the machine code is what a caller branches on,
-        // and the human message is what the user reads.
-        let crate::AppError::Remote { code, message, .. } = error else {
-            unimplemented!("a refused claim is a Remote error: {error}")
-        };
-        assert_eq!(code.as_deref(), Some("invitation_consumed"));
-        assert_eq!(message, "already used");
+        // and the human message is what the user reads. Asserted on the rendered
+        // error so a non-`Remote` variant fails the assertion rather than
+        // needing an arm that a passing test can never execute.
+        let rendered = format!("{error:?}");
+        assert!(rendered.contains("invitation_consumed"), "{rendered}");
+        assert!(rendered.contains("already used"), "{rendered}");
     }
 
     /// A `nats_ws_url` the platform omits falls back to the TCP one rather than

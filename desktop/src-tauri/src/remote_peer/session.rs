@@ -75,6 +75,13 @@ impl PeerSession {
         self.channel.clone()
     }
 
+    /// The underlying connection, so a test can drive a handshake on a socket it
+    /// has closed.
+    #[cfg(test)]
+    pub(crate) fn client_for_test(&self) -> &async_nats::Client {
+        &self.client
+    }
+
     /// Drain the connection: every subscription this session holds ends.
     ///
     /// `drain` rather than a bare drop, because draining is what actually
@@ -476,6 +483,20 @@ async fn handshake(
         )
         .await?;
     Ok(session)
+}
+
+/// One unencrypted handshake leg, exercised directly by a test.
+///
+/// The only way to make a handshake fail is against a socket the test itself
+/// controls: a broker that accepts a connection and then stops answering is not
+/// something the fake broker can be scripted into mid-handshake.
+#[cfg(test)]
+pub(crate) async fn exchange_for_test(
+    client: &async_nats::Client,
+    subject: &str,
+    body: Value,
+) -> Result<Value, crate::AppError> {
+    exchange(client, subject, body).await
 }
 
 /// One unencrypted handshake leg. Every field this client reads is optional by

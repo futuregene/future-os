@@ -176,10 +176,13 @@ pub(crate) async fn supervisor_count() -> usize {
 /// broker shutdown (a reconnecting client keeps its subscriptions open).
 #[cfg(test)]
 pub(crate) async fn close_socket_for_test(desktop_id: &str) {
-    let mut live = runtime().lock().await;
-    if let Some(session) = live.live.remove(desktop_id) {
-        let _ = session.close_socket().await;
-    }
+    let session = runtime()
+        .lock()
+        .await
+        .live
+        .remove(desktop_id)
+        .expect("a live session for the test to close");
+    let _ = session.close_socket().await;
 }
 ///
 /// Pretend a retry loop is already running for this host.
@@ -418,15 +421,7 @@ pub(crate) async fn connect_with_emitter(
     // the map.
     let peer_session = connected.session;
     let stream = match emitter {
-        Some(emitter) => match peer_session.subscribe().await {
-            Ok((events, presence)) => {
-                Some((peer_session.channel_for_stream(), events, presence, emitter))
-            }
-            Err(error) => {
-                eprintln!("remote_peer: could not subscribe for {desktop_id}: {error}");
-                None
-            }
-        },
+        Some(emitter) => attach_stream(&peer_session, emitter, desktop_id).await,
         None => None,
     };
     {
@@ -502,6 +497,38 @@ pub(crate) fn spawn_supervisor(
 /// Refresh credentials when needed, then reconnect and re-subscribe.
 async fn resume(desktop_id: &str, emitter: Option<Emitter>) -> Result<(), crate::AppError> {
     connect_with_emitter(desktop_id, emitter).await.map(|_| ())
+}
+
+/// The stream half of a connection: the traffic-key handle and the two
+/// subscriptions the event task drains.
+type StreamParts = (
+    std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
+    async_nats::Subscriber,
+    async_nats::Subscriber,
+    Emitter,
+);
+
+/// Subscribe to a host's pushes, or say why not.
+///
+/// A failure here leaves the connection *usable for commands* — only the live
+/// half is missing, and the UI falls back to fetching history — so it is
+/// reported and turned into `None` rather than propagated. Split out from the
+/// connect path so this decision is reachable without a broker that accepts a
+/// handshake and then refuses a subscription.
+async fn attach_stream(
+    peer_session: &PeerSession,
+    emitter: Emitter,
+    desktop_id: &str,
+) -> Option<StreamParts> {
+    match peer_session.subscribe().await {
+        Ok((events, presence)) => {
+            Some((peer_session.channel_for_stream(), events, presence, emitter))
+        }
+        Err(error) => {
+            eprintln!("remote_peer: could not subscribe for {desktop_id}: {error}");
+            None
+        }
+    }
 }
 
 /// Drain the host's event and presence subscriptions into `emitter`.
@@ -700,10 +727,124 @@ fn now_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::remote_peer::testing::{fixture, teardown};
 
-    /// The retry schedule is bounded and non-shrinking: an unbounded retry
-    /// against a host that will never return is indistinguishable, to the user,
-    /// from an app that hung.
+    /// An emitter that records nothing; these tests are about whether the stream
+    /// attaches, not about what it carries.
+    fn silent_emitter() -> Emitter {
+        std::sync::Arc::new(|_event: PeerEvent| {})
+    }
+
+    /// Take a session out of the runtime so a test owns it (a `SecureChannel` is
+    /// not `Clone`, and taking it is also what removes it from the serving path).
+    async fn take_session(desktop_id: &str) -> PeerSession {
+        runtime()
+            .lock()
+            .await
+            .live
+            .remove(desktop_id)
+            .expect("a live session")
+    }
+
+    /// The runtime is a process-global singleton, so each of these starts from a
+    /// clean one, and the fixture is returned so the host bridge and its broker
+    /// outlive the call — dropping it would stop the server under test.
+    async fn connected_fixture(
+        label: &str,
+    ) -> (
+        crate::remote::test_support::HomeGuard,
+        crate::remote_peer::testing::Fixture,
+        String,
+    ) {
+        reset_for_test().await;
+        let (home, fx) = fixture(label).await;
+        let desktop_id = fx.paired.creds.desktop_id.clone();
+        connect(&desktop_id).await.expect("connect");
+        (home, fx, desktop_id)
+    }
+
+    /// A control for the test below: on a healthy socket the stream attaches, so
+    /// that test is about the closed socket rather than about `attach_stream`
+    /// refusing everything.
+    #[tokio::test]
+    async fn a_fresh_socket_attaches_its_stream() {
+        let (_home, fx, desktop_id) = connected_fixture("peer-rt-attach-fresh").await;
+        let session = take_session(&desktop_id).await;
+        assert!(
+            attach_stream(&session, silent_emitter(), &desktop_id)
+                .await
+                .is_some(),
+            "a healthy socket must attach"
+        );
+        drop(fx);
+        teardown().await;
+    }
+
+    /// A subscription cannot be installed on a socket that is gone, and the
+    /// connection must stay usable for commands when that happens: only the live
+    /// half is missing, and the UI falls back to fetching history.
+    #[tokio::test]
+    async fn attaching_a_stream_to_a_closed_socket_reports_no_stream() {
+        let (_home, fx, desktop_id) = connected_fixture("peer-rt-attach-closed").await;
+        let session = take_session(&desktop_id).await;
+        session.close_socket().await.expect("close the socket");
+        // Let the close take effect before the subscribe is attempted.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            attach_stream(&session, silent_emitter(), &desktop_id)
+                .await
+                .is_none(),
+            "a closed socket cannot carry a subscription"
+        );
+        drop(fx);
+        teardown().await;
+    }
+
+    /// A stored seed that cannot be read is a local credential fault, and must be
+    /// reported as one rather than sent to the host as an empty key.
+    #[tokio::test]
+    async fn a_stored_seed_that_cannot_be_read_is_reported() {
+        let (_home, fx, _desktop_id) = connected_fixture("peer-rt-bad-seed").await;
+        let mut broken = fx.paired.creds.clone();
+        broken.nkey_seed = "not-a-seed".into();
+        // Matching rather than `expect_err`: the ok arm holds a live connection,
+        // which is neither `Debug` nor something to print on failure.
+        let error = match super::super::session::connect(&broken).await {
+            Ok(_) => panic!("an invalid seed cannot sign"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("Invalid stored device NKey"),
+            "{error}"
+        );
+        drop(fx);
+        teardown().await;
+    }
+
+    /// A handshake sent on a socket that has gone cannot be answered, and the
+    /// failure has to reach the caller as a transport fault rather than a hang.
+    #[tokio::test]
+    async fn a_handshake_on_a_closed_socket_is_a_transport_failure() {
+        let (_home, fx, desktop_id) = connected_fixture("peer-rt-handshake-closed").await;
+        let session = take_session(&desktop_id).await;
+        session.close_socket().await.expect("close the socket");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let error = super::super::session::exchange_for_test(
+            session.client_for_test(),
+            "p.pair_1.cmd.handshake",
+            serde_json::json!({ "type": "secure_open" }),
+        )
+        .await
+        .expect_err("a closed socket cannot carry a handshake");
+        assert!(
+            matches!(error, crate::AppError::RemoteTransport(_)),
+            "{error}"
+        );
+        drop(fx);
+        teardown().await;
+    }
+
     /// The *base* schedule is what must grow and be bounded; jitter only
     /// perturbs each draw around its step, so a jittered sample is deliberately
     /// not monotonic (30s×1.2 can exceed the next step's 30s×0.8 — that is the

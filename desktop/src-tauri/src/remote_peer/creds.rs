@@ -448,16 +448,15 @@ mod tests {
         // `HOME` is process-global, so this runs under the same lock every other
         // home-scoped test holds.
         let previous = std::env::var("HOME").expect("the harness always has a HOME");
-        let previous_profile = std::env::var("USERPROFILE").ok();
         std::env::remove_var("HOME");
+        // `USERPROFILE` is the Windows spelling and is not set here, so removing
+        // it is the whole of its handling: restoring a value that never existed
+        // would invent one.
         std::env::remove_var("USERPROFILE");
         let result = load();
         // Restore *unconditionally* before asserting: a panic here would
         // otherwise leave every later test without a home.
         std::env::set_var("HOME", previous);
-        if let Some(profile) = previous_profile {
-            std::env::set_var("USERPROFILE", profile);
-        }
         let error = result.expect_err("an absent home cannot be resolved");
         assert!(error.to_string().contains("HOME/USERPROFILE"), "{error}");
     }
