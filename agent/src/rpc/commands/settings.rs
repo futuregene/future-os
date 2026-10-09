@@ -514,7 +514,7 @@ pub(crate) fn handle_set_sandbox_policy(
         },
     };
     let configured_mode = policy.mode().to_string();
-    let account_fallback = policy.model_reviewer && crate::skill_reco::endpoint().is_none();
+    let account_fallback = policy.model_reviewer && crate::system_one::endpoint().is_none();
     policy = crate::approval_review::account_sandbox_policy(policy, !account_fallback);
     let requested_tier = policy.tier.as_str().to_string();
     let fallback = requested_tier == "sandbox" && !probe.available;

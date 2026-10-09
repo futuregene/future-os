@@ -500,6 +500,10 @@ pub fn event_payload(event_type: &str, data_json: &str) -> Option<proto::EventPa
                 reason_catalog_version: value["reason_catalog_version"].as_i64()? as i32,
                 policy_version: value["policy_version"].as_i64()? as i32,
                 duration_ms: value["duration_ms"].as_i64()?,
+                input_context_json: value
+                    .get("input_context")
+                    .filter(|v| !v.is_null())
+                    .map(serde_json::Value::to_string),
             }))
         }
         "approval_request" => approval_card_to_proto(&value).map(Kind::ApprovalRequest),

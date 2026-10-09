@@ -14,6 +14,7 @@
 //! sessions opt in; everything else runs fully open.
 
 pub mod backend;
+pub(crate) mod diagnostics;
 pub mod linux;
 pub mod paths;
 pub mod rules;
@@ -1264,7 +1265,9 @@ pub fn looks_like_sandbox_denial(sandbox: &ResolvedSandbox, exit_code: i32, stde
     ) {
         return sandbox_violation(sandbox, exit_code, stderr).is_some();
     }
-    stderr.contains("Operation not permitted") || stderr.contains("sandbox-exec")
+    diagnostics::permission_diagnostic(stderr)
+        == Some(diagnostics::PermissionDiagnostic::OperationNotPermitted)
+        || stderr.to_ascii_lowercase().contains("sandbox-exec")
 }
 
 #[cfg(test)]
@@ -1955,6 +1958,21 @@ mod tests {
             "sandbox-exec: deny(1) file-write"
         ));
         assert!(!looks_like_sandbox_denial(&s, 1, "file not found"));
+        for diagnostic in [
+            "Error: EPERM: operation not permitted, open '/outside/file'",
+            "Error: EPERM: 本地化错误, open '/outside/file'",
+            "code: 'EPERM'",
+        ] {
+            assert!(looks_like_sandbox_denial(&s, 1, diagnostic), "{diagnostic}");
+            assert!(!looks_like_sandbox_denial(&s, 0, diagnostic));
+        }
+        for diagnostic in [
+            "Error: ENOENT: no such file or directory, open '/outside/EPERM'",
+            "curl: (6) Could not resolve host",
+            "EPERM",
+        ] {
+            assert!(!looks_like_sandbox_denial(&s, 1, diagnostic));
+        }
     }
 
     #[test]

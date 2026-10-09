@@ -186,7 +186,7 @@ fn make_tool(
 // ─── Shell Tool ───────────────────────────────────────────────────────────────
 
 fn shell_schema() -> serde_json::Value {
-    serde_json::json!({
+    let mut schema = serde_json::json!({
         "type": "object",
         "properties": {
             "command": {
@@ -239,7 +239,16 @@ fn shell_schema() -> serde_json::Value {
             }
         },
         "required": ["command"]
-    })
+    });
+    // The schema belongs to the executing Agent's platform. Keep validation
+    // for unsupported input in the handler/gate, but do not invite its use.
+    if !cfg!(windows) {
+        schema["properties"]
+            .as_object_mut()
+            .unwrap()
+            .remove("additional_permissions");
+    }
+    schema
 }
 
 fn shell_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
@@ -995,8 +1004,11 @@ fn tool_args_object(tool_args: &serde_json::Value) -> Option<serde_json::Value> 
 /// the sandbox-denial heuristic. Exit code is now at the end as "[exit: N]".
 fn parse_result_failure(result: &str) -> (i32, String) {
     let exit_code = shell_result_exit_code(result).unwrap_or(0);
-    let tail_start = result.len().saturating_sub(2000);
-    let tail = result.get(tail_start..).unwrap_or(result).to_string();
+    let mut tail_start = result.len().saturating_sub(2000);
+    while !result.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let tail = result[tail_start..].to_string();
     (exit_code, tail)
 }
 
@@ -2672,6 +2684,16 @@ mod tests {
         assert!(tail.contains("[exit: 5]"));
     }
 
+    #[test]
+    fn failure_tail_stays_bounded_at_multibyte_boundaries() {
+        let output = "中".repeat(3_000) + "\nError: EPERM: 本地化错误\n[exit: 1]";
+        let (exit, tail) = parse_result_failure(&output);
+        assert_eq!(exit, 1);
+        assert!(tail.len() <= 2_000);
+        assert!(tail.contains("EPERM"));
+        assert!(tail.ends_with("[exit: 1]"));
+    }
+
     // ─── tool_end_semantics ────────────────────────────────────────────────
 
     #[test]
@@ -3087,6 +3109,12 @@ mod tests {
         let schema = shell_schema();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["command"].is_object());
+        assert_eq!(
+            schema["properties"].get("additional_permissions").is_some(),
+            cfg!(windows)
+        );
+        assert!(schema["properties"]["escalated"].is_object());
+        assert!(schema["properties"]["justification"].is_object());
     }
 
     #[test]
@@ -3468,6 +3496,58 @@ mod tests {
         .await;
         let error = result.unwrap_err().to_string();
         assert!(error.contains("not approved: no way"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn node_denial_requests_review_in_the_same_tool_call() {
+        let workspace = test_path("node-denial-review");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let scope = escalation_scope(
+            &workspace,
+            true,
+            EscalationDecision::Denied("keep sandbox".into()),
+            calls.clone(),
+        );
+        let output = "Error: EPERM: operation not permitted, open '/outside/2.txt'\n[exit: 1]";
+        let outcome = post_hoc_escalation(
+            &scope.escalation,
+            &scope.sandbox,
+            "node gen2.js",
+            10,
+            output,
+            ShellRetry::ClassifyOutput,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(outcome.contains("not approved: keep sandbox"));
+        {
+            let requests = calls.lock();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(
+                requests[0].trigger,
+                crate::sandbox::EscalationTrigger::SandboxFailure
+            );
+            assert_eq!(requests[0].command, "node gen2.js");
+            assert!(requests[0].failure_summary.contains("EPERM"));
+        }
+        for output in [
+            "Error: EPERM: operation not permitted\n[exit: 0]",
+            "Error: ENOENT: no such file or directory\n[exit: 1]",
+            "curl: (6) Could not resolve host\n[exit: 6]",
+        ] {
+            assert!(post_hoc_escalation(
+                &scope.escalation,
+                &scope.sandbox,
+                "node gen2.js",
+                10,
+                output,
+                ShellRetry::ClassifyOutput
+            )
+            .await
+            .is_none());
+        }
+        assert_eq!(calls.lock().len(), 1);
     }
 
     #[tokio::test]

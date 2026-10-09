@@ -525,7 +525,7 @@ impl ServerSession {
             self.sandbox_policy.clone()
         }
         .map(|policy| {
-            let signed_in = !policy.model_reviewer || crate::skill_reco::endpoint().is_some();
+            let signed_in = !policy.model_reviewer || crate::system_one::endpoint().is_some();
             crate::approval_review::account_sandbox_policy(policy, signed_in)
         });
 
@@ -828,14 +828,12 @@ impl ServerSession {
         {
             run_loop.tool_review_annotations =
                 Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
-            approval_gate = approval_gate.with_model_reviewer(
-                crate::approval_review::ReviewContext::new(
-                    prompt.message.to_string(),
-                    run_loop.interrupt_flag(),
-                    approval_gate.generation.clone(),
-                    run_loop.tool_review_annotations.clone(),
-                )
-                .with_user_history(&initial_messages[..initial_messages.len() - 1]),
+            approval_gate = approval_gate.for_run(
+                prompt.message.to_string(),
+                &initial_messages[..initial_messages.len() - 1],
+                &user_entry_id,
+                run_loop.interrupt_flag(),
+                run_loop.tool_review_annotations.clone(),
             );
         }
 
@@ -844,12 +842,14 @@ impl ServerSession {
         let save_messages = messages_arc.clone();
         let save_persistence = self.persistence.clone();
         let persisted_run_id = run_lease.run_id.clone();
+        let review_gate = approval_gate.clone();
         let save_closure: crate::agent::PersistCallback =
             Arc::new(move |msg: &mut crate::types::AgentMessage| {
+                msg.ensure_journal_entry_id();
+                review_gate.observe_review_message(msg);
                 if is_ephemeral {
                     return;
                 }
-                msg.ensure_journal_entry_id();
                 let mut persisted = msg.clone();
                 // Every entry of this run carries its run identity — not just
                 // assistant entries — so a message's home run never has to be

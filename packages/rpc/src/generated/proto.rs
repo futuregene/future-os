@@ -1538,6 +1538,9 @@ pub struct ApprovalAssessmentEvent {
     pub policy_version: i32,
     #[prost(int64, tag = "19")]
     pub duration_ms: i64,
+    /// Source IDs, omissions and budget metadata only; no original evidence text.
+    #[prost(string, optional, tag = "20")]
+    pub input_context_json: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Generated client implementations.
 pub mod future_agent_client {
