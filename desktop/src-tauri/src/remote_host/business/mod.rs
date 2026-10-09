@@ -74,6 +74,7 @@ pub(crate) fn route(cmd_type: &str) -> Option<Route> {
         | "set_session_pinned"
         | "delete_session"
         | "fork_session"
+        | "create_workspace"
         | "set_workspace_pinned"
         | "delete_workspace" => Route::Catalog,
         "list_tasks"
@@ -177,6 +178,7 @@ mod tests {
         "compact_context",
         "continue_run",
         "create_task",
+        "create_workspace",
         "delete_custom_provider",
         "delete_session",
         "delete_task",

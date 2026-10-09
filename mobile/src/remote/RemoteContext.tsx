@@ -145,6 +145,12 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   generateTitle(sessionId: string, language: string): Promise<string>;
   deleteSession(sessionId: string, threadId: string): Promise<void>;
   deleteWorkspace(workspaceId: string): Promise<void>;
+  /**
+   * Register an existing directory on the desktop as a workspace. Resolves the
+   * created row (a path that already names a workspace reopens it); rejects
+   * with the desktop's reason when the directory does not exist.
+   */
+  createWorkspace(path: string, name: string): Promise<import("./types").RemoteWorkspace>;
   setSessionPinned(sessionId: string, threadId: string, pinned: boolean): Promise<void>;
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
   /** Fork the open conversation at a persisted user entry and open the child. */
@@ -205,6 +211,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     generateTitle,
     deleteSession: removeSession,
     deleteWorkspace: removeWorkspace,
+    createWorkspace,
     setSessionPinned,
     setWorkspacePinned,
     reset: resetCatalog,
@@ -503,6 +510,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       generateTitle,
       deleteSession,
       deleteWorkspace,
+      createWorkspace,
       setSessionPinned,
       setWorkspacePinned,
       decideApproval,
@@ -530,6 +538,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       clearError,
       connectionPresentation,
       continueRun,
+      createWorkspace,
       decideApproval,
       forkConversation,
       desktopOnline,

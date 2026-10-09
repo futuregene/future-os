@@ -159,6 +159,42 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 }
             }
         }
+        "create_workspace" => {
+            let path = cmd.path.trim();
+            if path.is_empty() {
+                reply(sink, false, Value::Null, Some("missing path")).await;
+                return;
+            }
+            // The phone types the host path (it has no folder picker for the
+            // desktop), so this is exactly the Desktop's own `create_workspace`:
+            // the directory must already exist and a path that names an existing
+            // workspace reopens that row instead of duplicating it.
+            let name = cmd.name.trim();
+            let input = crate::store::CreateWorkspaceInput {
+                name: (!name.is_empty()).then(|| name.to_string()),
+                path: path.to_string(),
+                description: None,
+                create_directory: Some(false),
+            };
+            match crate::commands::create_workspace(input) {
+                Ok(workspace) => {
+                    crate::emit_threads_updated();
+                    // Answer from the fresh catalogue so the phone's own version
+                    // gate applies, and carry the created row so it can select it
+                    // without re-deriving the id from its path.
+                    match crate::remote_host::catalog::workspaces() {
+                        Some((mut payload, _)) => {
+                            if let Ok(record) = serde_json::to_value(&workspace) {
+                                payload["workspace"] = record;
+                            }
+                            reply(sink, true, payload, None).await
+                        }
+                        None => reply(sink, false, Value::Null, Some("catalog_unavailable")).await,
+                    }
+                }
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            }
+        }
         "set_workspace_pinned" => {
             if cmd.workspace_id.is_empty() {
                 reply(sink, false, Value::Null, Some("missing workspace_id")).await;
@@ -409,6 +445,108 @@ mod dispatch_tests {
             "the pin must not be confirmed from a snapshot we cannot read"
         );
         assert_eq!(error.as_deref(), Some("catalog_unavailable"));
+    }
+
+    /// The phone registers an existing desktop directory as a workspace — the
+    /// same store write as the Desktop's own dialog, with the same
+    /// directory-must-exist rule. The reply carries the created row *and* the
+    /// fresh catalogue, so the phone can select the new workspace without
+    /// re-deriving its id from the path it typed.
+    #[tokio::test]
+    async fn create_workspace_registers_a_directory_and_answers_the_catalogue() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-create-workspace");
+        crate::remote::test_support::init_store();
+        let dir = std::env::temp_dir().join(format!("futureos-catalog-ws-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("make the host directory");
+
+        let sink = crate::remote::test_support::RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "create_workspace".into(),
+            path: dir.display().to_string(),
+            name: "Handpicked".into(),
+            ..Default::default()
+        };
+        execute(&cmd, &sink).await;
+
+        let (success, data, error) = sink.last();
+        assert!(success, "create must succeed: {error:?}");
+        assert_eq!(data["workspace"]["name"], json!("Handpicked"));
+        assert_eq!(data["workspaces"].as_array().map(Vec::len), Some(1));
+        let created = data["workspace"]["id"].as_str().expect("created id");
+        assert!(
+            data["workspaces"]
+                .as_array()
+                .is_some_and(|list| list.iter().any(|w| w["id"] == json!(created))),
+            "the answered catalogue contains the created row"
+        );
+        // The stored spelling is the directory's canonical path.
+        let canonical = std::fs::canonicalize(&dir)
+            .expect("canonicalize the hosted directory")
+            .display()
+            .to_string();
+        assert_eq!(data["workspace"]["path"], json!(canonical));
+        assert_eq!(crate::store::list_workspaces().expect("list").len(), 1);
+
+        // A second create for the same directory reopens the existing row: the
+        // phone retrying a lost reply must not duplicate the workspace.
+        let sink = crate::remote::test_support::RecordingSink::default();
+        execute(&cmd, &sink).await;
+        let (success, data, error) = sink.last();
+        assert!(success, "re-create must succeed: {error:?}");
+        assert_eq!(data["workspace"]["id"], json!(created));
+        assert_eq!(crate::store::list_workspaces().expect("list").len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A missing path is the phone's own protocol error and must not reach the
+    /// store; the store cannot register the empty string as a directory.
+    #[tokio::test]
+    async fn create_workspace_rejects_an_empty_path_before_any_work() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-create-workspace-args");
+        crate::remote::test_support::init_store();
+        let sink = crate::remote::test_support::RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "create_workspace".into(),
+            path: "   ".into(),
+            ..Default::default()
+        };
+        execute(&cmd, &sink).await;
+        let (success, _data, error) = sink.last();
+        assert!(!success);
+        assert_eq!(error.as_deref(), Some("missing path"));
+        assert!(crate::store::list_workspaces().expect("list").is_empty());
+    }
+
+    /// A path that is not an existing directory is refused with the store's own
+    /// reason — the phone shows it, and no workspace row is created for a
+    /// directory the desktop cannot use.
+    #[tokio::test]
+    async fn create_workspace_refuses_a_directory_that_does_not_exist() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-create-workspace-ghost");
+        crate::remote::test_support::init_store();
+        let missing = std::env::temp_dir().join(format!(
+            "futureos-catalog-missing-{}-{}",
+            std::process::id(),
+            "nope"
+        ));
+        let sink = crate::remote::test_support::RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "create_workspace".into(),
+            path: missing.display().to_string(),
+            ..Default::default()
+        };
+        execute(&cmd, &sink).await;
+        let (success, _data, error) = sink.last();
+        assert!(!success, "a missing directory must not be registered");
+        assert!(
+            error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("does not exist"),
+            "the store's reason is surfaced: {error:?}"
+        );
+        assert!(crate::store::list_workspaces().expect("list").is_empty());
     }
 
     /// A failed lookup is not "the thread is already gone". The delete is

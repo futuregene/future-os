@@ -580,6 +580,8 @@ export interface RemoteCommand {
   name?: string;
   transferName?: string;
   workspaceId?: string;
+  /** create_workspace: the desktop-side directory path the phone typed. */
+  path?: string;
   /** Thread-scoped mutating commands (delete_session / set_session_pinned). */
   threadId?: string;
   pinned?: boolean;
@@ -615,6 +617,8 @@ export interface ModelsData {
 export interface WorkspacesData {
   version?: SnapshotVersion;
   workspaces: RemoteWorkspace[];
+  /** create_workspace echoes the created row; the catalogue list omits it. */
+  workspace?: RemoteWorkspace;
 }
 
 export interface HistoryData {
