@@ -417,6 +417,16 @@ impl ChromiumPageManager {
         self.get_active_page().map(|p| p.target_id)
     }
 
+    /// The page the user selected, if any — with no inference.
+    ///
+    /// [`Self::get_active_page`] falls back to the last tab in order, which is
+    /// a guess. Callers that can observe the real answer (the visible page)
+    /// need to know whether a choice was actually made, so they can resolve it
+    /// instead of inheriting the guess.
+    pub fn active_page_id(&self) -> Option<String> {
+        self.data.lock().ok().and_then(|d| d.active_page_id.clone())
+    }
+
     pub fn get_tab_order(&self) -> Vec<String> {
         self.data.lock().unwrap().tab_order.clone()
     }

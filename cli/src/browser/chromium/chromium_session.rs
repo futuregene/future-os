@@ -18,6 +18,7 @@ use crate::browser::backend::{
 };
 use crate::browser::errors::{element_not_found_error, element_not_interactable_error};
 use crate::browser::input::parse_key;
+use crate::browser::scripts::VISIBILITY_STATE_SCRIPT;
 use async_trait::async_trait;
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
@@ -149,8 +150,21 @@ impl ChromiumSession {
         self.init().await?;
         let connection = self.connection.clone().unwrap();
         let browser_sess = self.browser_sess.clone().unwrap();
-        let page_mgr = self.page_mgr.as_mut().unwrap();
 
+        // Only an explicitly chosen page counts as "the one being driven".
+        // Inferring it (last in tab order) is how a run ends up clicking a page
+        // the user cannot see: Chrome reports no "current tab", so the only
+        // trustworthy answer is the page that reports itself visible.
+        let chosen = self.page_mgr.as_ref().and_then(|mgr| mgr.active_page_id());
+        if chosen.is_none() {
+            if let Some(visible) = self.visible_page_id().await {
+                if let Some(mgr) = self.page_mgr.as_ref() {
+                    mgr.set_active_page_id(&visible);
+                }
+            }
+        }
+
+        let page_mgr = self.page_mgr.as_mut().unwrap();
         let mut page = page_mgr.get_active_page();
         if page.is_none() {
             let created = page_mgr.create_page("about:blank").await?;
@@ -220,6 +234,33 @@ impl ChromiumSession {
     }
 
     // ── Evaluate helpers ──────────────────────────────────────────────
+
+    /// The page the user is looking at, asked of the page itself.
+    ///
+    /// Chrome exposes no "current tab" over CDP: `Target.getTargets` carries no
+    /// such field, so a client either observes visibility or guesses. Guessing
+    /// is what makes `click` report success on a tab nobody can see, so every
+    /// page is asked for `document.visibilityState` and the first that says
+    /// `visible` wins. Tab order breaks ties deterministically.
+    async fn visible_page_id(&self) -> Option<String> {
+        let connection = self.connection.clone()?;
+        let pages = self.page_mgr.as_ref()?.get_pages();
+        for page in pages {
+            // Only page targets render, so only they can be visible; and only an
+            // attached session can be asked (initialization attaches them all).
+            if page.r#type != "page" || page.session_id.is_empty() {
+                continue;
+            }
+            let session = CdpSession::new(&page.session_id, connection.clone());
+            let state: String = self
+                .evaluate_expression(&session, VISIBILITY_STATE_SCRIPT)
+                .await;
+            if state == "visible" {
+                return Some(page.target_id);
+            }
+        }
+        None
+    }
 
     async fn evaluate_expression<T>(&self, session: &CdpSession, expression: &str) -> T
     where
@@ -378,6 +419,14 @@ impl BrowserSession for ChromiumSession {
 
     fn protocol(&self) -> &'static str {
         "cdp"
+    }
+
+    /// Persisted by the tool so `--index` stays meaningful across invocations.
+    fn tab_order(&mut self) -> Vec<String> {
+        self.page_mgr
+            .as_ref()
+            .map(|mgr| mgr.get_tab_order())
+            .unwrap_or_default()
     }
 
     // ── Open ──────────────────────────────────────────────────────────
@@ -795,12 +844,26 @@ impl BrowserSession for ChromiumSession {
 
     async fn tabs(&mut self, action: &TabsAction) -> Result<InternalTabsResult, String> {
         self.init().await?;
+        // Only `list` reports visibility, so only `list` pays for the probe.
+        // Resolved before the mutable borrow below.
+        let visible_id = if matches!(action, TabsAction::List) {
+            self.visible_page_id().await
+        } else {
+            None
+        };
         let page_mgr = self.page_mgr.as_mut().unwrap();
 
         match action {
             TabsAction::List => {
                 let pages = page_mgr.get_pages();
-                let active_id = page_mgr.get_active_page_id();
+                // The chosen page wins; otherwise the one that reports itself
+                // visible. Never a bare guess: `active` is what this tool will
+                // act on, so it must not silently name a page the user cannot
+                // see.
+                let active_id = page_mgr
+                    .active_page_id()
+                    .or_else(|| visible_id.clone())
+                    .or_else(|| pages.last().map(|p| p.target_id.clone()));
                 Ok(InternalTabsResult::List {
                     tabs: pages
                         .iter()
@@ -811,6 +874,7 @@ impl BrowserSession for ChromiumSession {
                             title: p.title.clone(),
                             url: p.url.clone(),
                             active: Some(&p.target_id) == active_id.as_ref(),
+                            visible: Some(&p.target_id) == visible_id.as_ref(),
                         })
                         .collect(),
                 })
@@ -819,6 +883,11 @@ impl BrowserSession for ChromiumSession {
                 let (target_id, page) = page_mgr
                     .create_page(url.as_deref().unwrap_or("about:blank"))
                     .await?;
+                // Chrome switches to the tab it just opened, and the caller saves
+                // it as the active page too — so the in-memory choice must follow,
+                // or the response would report the new tab as created while still
+                // naming the old one as active.
+                page_mgr.set_active_page_id(&target_id);
                 let pages = page_mgr.get_pages();
                 let index = pages
                     .iter()
@@ -961,7 +1030,7 @@ async fn get_main_frame_state(session: &CdpSession) -> Result<(String, String), 
 mod tests {
     use super::*;
     use crate::browser::types::DEFAULT_TIMEOUTS;
-    use crate::test_cdp::MockCdp;
+    use crate::test_cdp::{hidden_target, target as mock_target, MockCdp};
 
     /// A ChromiumSession bound to the mock browser.
     /// TabsResult extractors (panic arms covered by a dedicated test).
@@ -1431,6 +1500,37 @@ mod tests {
 
     // ── tabs ──────────────────────────────────────────────────────────
 
+    /// A newly created tab becomes the active one, in memory and in the report.
+    ///
+    /// Chrome switches to the tab it opens, so a response that still named the
+    /// previous tab would send the next command to the wrong page even though
+    /// the caller had just watched a new one appear.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_new_tab_becomes_the_active_one() {
+        let mock =
+            MockCdp::start_with(vec![mock_target("T-1", "http://one/", "One")], "Chrome/126").await;
+        let mut s = session_over(&mock);
+
+        s.tabs(&TabsAction::New {
+            url: Some("http://two/".to_string()),
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            s.tab_order(),
+            vec!["T-1".to_string(), "T-2".to_string()],
+            "the new tab is appended to the order"
+        );
+        let tabs = expect_tabs_list(s.tabs(&TabsAction::List).await.unwrap());
+        let active: Vec<&str> = tabs
+            .iter()
+            .filter(|t| t.active)
+            .map(|t| t.page_id.as_str())
+            .collect();
+        assert_eq!(active, vec!["T-2"], "the tab Chrome switched to is active");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn tabs_all_actions_against_mock() {
         let mock = MockCdp::start().await;
@@ -1467,6 +1567,85 @@ mod tests {
     }
 
     // ── evaluate ──────────────────────────────────────────────────────
+
+    /// With no page chosen, the tool acts on the **visible** tab — not on the
+    /// last one in its own order.
+    ///
+    /// This is the difference between a working command and a silent one:
+    /// `click` on a background tab touches a DOM the user cannot see and still
+    /// reports success. Chrome offers no "current tab" over CDP, so the only
+    /// honest answer comes from asking the pages; `document.visibilityState`
+    /// makes the hidden one say so.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unconfigured_session_acts_on_the_visible_tab_not_the_last_one() {
+        // Order puts the hidden page last, so "last in order" and "visible"
+        // disagree: the old fallback would pick T-2.
+        let mock = MockCdp::start_with(
+            vec![
+                hidden_target("T-1", "http://hidden/", "Hidden"),
+                mock_target("T-2", "http://visible/", "Visible"),
+            ],
+            "Chrome/126",
+        )
+        .await;
+        // MockCdp::start_with reports the first target as visible by
+        // construction; flip them so the visible one is deliberately NOT last.
+        {
+            let mut state = mock.state.lock().unwrap();
+            state.targets[0].visibility_state = "visible".to_string();
+            state.targets[1].visibility_state = "hidden".to_string();
+        }
+        let mut s = session_over(&mock);
+
+        let tabs = expect_tabs_list(s.tabs(&TabsAction::List).await.unwrap());
+        let visible: Vec<&str> = tabs
+            .iter()
+            .filter(|t| t.visible)
+            .map(|t| t.page_id.as_str())
+            .collect();
+        assert_eq!(visible, vec!["T-1"], "visibility is observed, not assumed");
+        let active: Vec<&str> = tabs
+            .iter()
+            .filter(|t| t.active)
+            .map(|t| t.page_id.as_str())
+            .collect();
+        assert_eq!(
+            active,
+            vec!["T-1"],
+            "with nothing chosen, `active` must be the visible tab, not the last in order"
+        );
+    }
+
+    /// Once a page is chosen, that choice wins over visibility.
+    ///
+    /// `tabs select` is the user saying "this one"; a later command must not
+    /// second-guess it just because a different tab happens to be on screen.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_chosen_page_outranks_visibility() {
+        let mock = MockCdp::start_with(
+            vec![
+                mock_target("T-1", "http://one/", "One"),
+                mock_target("T-2", "http://two/", "Two"),
+            ],
+            "Chrome/126",
+        )
+        .await;
+        {
+            let mut state = mock.state.lock().unwrap();
+            state.targets[0].visibility_state = "hidden".to_string();
+            state.targets[1].visibility_state = "visible".to_string();
+        }
+        let mut s = session_over(&mock);
+
+        // Choose the hidden page explicitly.
+        s.tabs(&TabsAction::Select { index: 0 }).await.unwrap();
+        let tabs = expect_tabs_list(s.tabs(&TabsAction::List).await.unwrap());
+        assert!(tabs[0].active, "the choice is honoured");
+        assert!(!tabs[1].active);
+        // The observation is still reported, so a caller can see the mismatch.
+        assert!(!tabs[0].visible);
+        assert!(tabs[1].visible);
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn evaluate_expression_and_function_forms() {

@@ -313,6 +313,44 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
     })
 }
 
+/// Why a socket endpoint did not answer, in the terms the user needs.
+///
+/// Two failures look identical in a bare "not reachable" but have different
+/// fixes, so they are told apart:
+///
+/// - the socket refused the connection (or does not exist) → nothing is
+///   listening: the browser is not running;
+/// - the socket accepted the connection and then stayed silent → something is
+///   there but not serving, which on Android means a backgrounded/frozen
+///   browser that must be brought back to the foreground.
+///
+/// Costs one extra probe, and only on a path that has already failed.
+async fn unreachable_socket_reason(endpoint: &str, spec: &SocketSpec) -> String {
+    if let Err(connect_error) = spec.connect().await {
+        return format!(
+            "nothing is listening on {spec} ({connect_error}). Start the browser in the \
+             environment that owns that socket."
+        );
+    }
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        crate::browser::chromium::socket_http::get(spec, "/json/version"),
+    )
+    .await
+    {
+        // Connected, but the probe that said "unreachable" had already timed
+        // out; say so rather than blaming the browser's absence.
+        Err(_) => format!(
+            "{spec} accepted a connection but nothing answered. If the browser is running, \
+             bring it to the foreground (it may be backgrounded or frozen), then retry."
+        ),
+        Ok(Err(error)) => format!("{spec} accepted a connection but the probe failed: {error}"),
+        Ok(Ok(_)) => format!(
+            "{endpoint} answered a fresh probe but not the one that failed; retry the command."
+        ),
+    }
+}
+
 /// `start` for a socket endpoint: attach, never launch.
 ///
 /// There is no port to open and nothing here could be launched — the browser
@@ -326,7 +364,10 @@ async fn browser_start_socket(
 ) -> Result<LocalToolResult, String> {
     if !endpoint_reachable(endpoint).await {
         return Err(format!(
-            "browser start: no browser is answering on {spec}. Start the browser in the environment that owns that socket — this tool cannot launch it there."
+            "browser start: {}\n\
+             The browser is not something this tool can launch for you — it belongs to \
+             the environment that owns that socket.",
+            unreachable_socket_reason(endpoint, spec).await
         ));
     }
     let _transaction = lock_browser_config().await?;
@@ -424,6 +465,11 @@ async fn browser_status(args: &Map<String, Value>) -> Result<LocalToolResult, St
         EndpointTarget::parse(&endpoint),
         Ok(EndpointTarget::Socket(_))
     ) {
+        let spec = match EndpointTarget::parse(&endpoint) {
+            Ok(EndpointTarget::Socket(spec)) => spec,
+            // Unreachable: the guard above matched a socket.
+            _ => return Err(format!("not a socket endpoint: {endpoint}")),
+        };
         return Ok(match resolve_cdp_endpoint(&endpoint, 1_000).await {
             Ok(info) => LocalToolResult {
                 text: None,
@@ -433,12 +479,12 @@ async fn browser_status(args: &Map<String, Value>) -> Result<LocalToolResult, St
                     "version": info.version,
                 })),
             },
-            Err(error) => LocalToolResult {
+            Err(_) => LocalToolResult {
                 text: None,
                 structured_content: Some(json!({
                     "endpoint": endpoint,
                     "reachable": false,
-                    "error": error,
+                    "error": unreachable_socket_reason(&endpoint, &spec).await,
                 })),
             },
         });
@@ -581,18 +627,14 @@ async fn browser_tabs(ctx: &mut SessionContext) -> Result<LocalToolResult, Strin
 
     if action == "list" {
         let result = ctx.session.tabs(&TabsAction::List).await?;
+        // Storing the order here is what makes a later `tabs select --index N`
+        // address the tab this listing named.
+        let order = ctx.session.tab_order();
+        save_tab_order(&order).await?;
         let tabs = match result {
-            crate::browser::backend::InternalTabsResult::List { tabs } => tabs
-                .iter()
-                .map(|tab| {
-                    json!({
-                        "index": tab.index,
-                        "title": tab.title,
-                        "url": tab.url,
-                        "active": tab.active,
-                    })
-                })
-                .collect::<Vec<_>>(),
+            crate::browser::backend::InternalTabsResult::List { tabs } => {
+                tabs.iter().map(tab_json).collect::<Vec<_>>()
+            }
             _ => Vec::new(),
         };
         return Ok(LocalToolResult {
@@ -679,20 +721,47 @@ async fn browser_tabs(ctx: &mut SessionContext) -> Result<LocalToolResult, Strin
 }
 
 /// `(tabs, tabCount)` — the full tab list in the "list" shape.
+/// One tab, as the tool reports it.
+///
+/// The single place this shape is built: `list` and the refresh after
+/// `new`/`select`/`close` must agree, and when they did not (`visible` was
+/// missing from the refresh) the same command reported different fields
+/// depending on the action.
+/// Remember the tab order the session just used.
+///
+/// Each invocation is a fresh process, so an order that is not stored is
+/// re-derived from CDP discovery order next time — which is how `--index 1`
+/// could address a different tab than it did a moment ago.
+async fn save_tab_order(order: &[String]) -> Result<(), String> {
+    if order.is_empty() {
+        return Ok(());
+    }
+    let _transaction = lock_browser_config().await?;
+    let mut config = load_browser_config().await?;
+    config.tab_order = Some(order.to_vec());
+    save_browser_config(&config).await.map_err(String::from)
+}
+
+fn tab_json(tab: &crate::browser::backend::InternalTabInfo) -> Value {
+    json!({
+        "index": tab.index,
+        "title": tab.title,
+        "url": tab.url,
+        // `active` is what commands will act on; `visible` is what the page
+        // says the user is looking at. Normally equal — they diverge exactly
+        // when a command would touch something the user cannot see, which is
+        // why both are reported.
+        "active": tab.active,
+        "visible": tab.visible,
+    })
+}
+
 async fn list_tabs(ctx: &mut SessionContext) -> Result<(Vec<Value>, usize), String> {
     let result = ctx.session.tabs(&TabsAction::List).await?;
     let tabs = match result {
-        crate::browser::backend::InternalTabsResult::List { tabs } => tabs
-            .iter()
-            .map(|tab| {
-                json!({
-                    "index": tab.index,
-                    "title": tab.title,
-                    "url": tab.url,
-                    "active": tab.active,
-                })
-            })
-            .collect::<Vec<_>>(),
+        crate::browser::backend::InternalTabsResult::List { tabs } => {
+            tabs.iter().map(tab_json).collect::<Vec<_>>()
+        }
         _ => Vec::new(),
     };
     let count = tabs.len();
@@ -1553,6 +1622,7 @@ mod tests {
                         title: "TA".to_string(),
                         url: "http://a/".to_string(),
                         active: true,
+                        visible: true,
                     },
                     InternalTabInfo {
                         page_id: "b".to_string(),
@@ -1560,6 +1630,7 @@ mod tests {
                         title: "TB".to_string(),
                         url: "http://b/".to_string(),
                         active: false,
+                        visible: false,
                     },
                 ],
             })),
@@ -2332,6 +2403,117 @@ mod tests {
             sc["error"],
             json!("Local browser endpoint is not reachable.")
         );
+    }
+
+    /// The chosen order survives into the stored config.
+    ///
+    /// Without this, every CLI run re-derives the order from CDP discovery, and
+    /// `tabs select --index N` can address a tab other than the one a listing
+    /// just named — the reason the workaround for "wrong tab" was unreliable
+    /// too.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn listing_tabs_stores_the_order_for_the_next_command() {
+        let (_g, _e, _d) = isolated_home().await;
+        let mock = crate::test_cdp::MockCdp::start_with(
+            vec![
+                crate::test_cdp::target("T-1", "http://one/", "One"),
+                crate::test_cdp::target("T-2", "http://two/", "Two"),
+            ],
+            "Chrome/126",
+        )
+        .await;
+        save_cdp_config(&mock.http_url, "chromium").await;
+
+        let (out, _cap) = Output::memory();
+        call_browser_tool(
+            "browser",
+            &args(&[("command", json!("tabs")), ("action", json!("list"))]),
+            &out,
+        )
+        .await
+        .unwrap();
+
+        let stored = load_browser_config().await.unwrap();
+        assert_eq!(
+            stored.tab_order.as_deref(),
+            Some(["T-1".to_string(), "T-2".to_string()].as_slice()),
+            "the listing's order is persisted for the next invocation"
+        );
+    }
+
+    #[tokio::test]
+    async fn saving_an_empty_order_leaves_the_stored_one_alone() {
+        let (_g, _e, _d) = isolated_home().await;
+        save_tab_order(&["T-9".to_string()]).await.unwrap();
+        // The default trait impl returns empty for a session with no order to
+        // keep — that must not erase what is stored.
+        save_tab_order(&[]).await.unwrap();
+        let stored = load_browser_config().await.unwrap();
+        assert_eq!(
+            stored.tab_order.as_deref(),
+            Some(["T-9".to_string()].as_slice())
+        );
+    }
+
+    // ── is_permission_error ───────────────────────────────────────────
+
+    /// Two failures that look alike are told apart: nothing listening means
+    /// start the browser, while a silent socket means bring it to the
+    /// foreground.
+    ///
+    /// Collapsing them into one "not reachable" sent a reader looking for a
+    /// browser that was already running.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_socket_with_nothing_listening_says_to_start_the_browser() {
+        let spec = SocketSpec::Path("/tmp/future-no-listener-here.sock".to_string());
+        let reason =
+            unreachable_socket_reason("unix:/tmp/future-no-listener-here.sock", &spec).await;
+        assert!(reason.contains("nothing is listening"), "{reason}");
+        assert!(reason.contains("Start the browser"), "{reason}");
+        assert!(
+            !reason.contains("foreground"),
+            "a missing browser is not a foregrounding problem: {reason}"
+        );
+    }
+
+    /// A socket that accepts and then says nothing is the opposite diagnosis.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_socket_that_never_answers_points_at_the_foreground() {
+        let path = std::env::temp_dir().join(format!("future-silent-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = tokio::net::UnixListener::bind(&path).expect("bind");
+        // Accept and hold: connected, never answered.
+        let held = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            drop(stream);
+        });
+
+        let spec = SocketSpec::Path(path.display().to_string());
+        let reason = unreachable_socket_reason(&format!("unix:{}", path.display()), &spec).await;
+        assert!(reason.contains("nothing answered"), "{reason}");
+        assert!(reason.contains("foreground"), "{reason}");
+        assert!(
+            !reason.contains("nothing is listening"),
+            "something *is* listening: {reason}"
+        );
+
+        held.abort();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `status` reports that reason rather than a bare "not reachable".
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn status_over_a_dead_socket_explains_why() {
+        let (_g, _e, _d) = isolated_home().await;
+        let a = args(&[("endpoint", json!("unix:/tmp/future-status-dead.sock"))]);
+        let sc = structured(&browser_status(&a).await.unwrap());
+        assert_eq!(sc["reachable"], json!(false));
+        let error = sc["error"].as_str().unwrap_or_default();
+        assert!(error.contains("nothing is listening"), "{error}");
     }
 
     // ── is_permission_error ───────────────────────────────────────────

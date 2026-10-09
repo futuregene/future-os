@@ -208,6 +208,13 @@ pub struct SnapshotResult {
     pub items: Vec<SnapshotItem>,
 }
 
+/// `VISIBILITY_STATE_SCRIPT` — asks a page whether it is the visible one.
+///
+/// `document.visibilityState` is the page's own verdict. Chrome exposes no
+/// "current tab" through CDP, so this is the only way to know which tab the user
+/// is looking at rather than assuming one. Background tabs report `hidden`.
+pub const VISIBILITY_STATE_SCRIPT: &str = "document.visibilityState || ''";
+
 #[cfg(test)]
 mod tests {
     use super::*;
