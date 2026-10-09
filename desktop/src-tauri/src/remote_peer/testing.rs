@@ -153,8 +153,15 @@ pub(crate) struct Fixture {
 }
 
 /// Bring up platform + broker + host bridge, then claim the invitation.
+///
+/// The runtime's singleton state is cleared **after** the home guard is held,
+/// not before: the guard is what serializes these tests, and clearing first
+/// leaves a window in which the previous test's in-flight work — or a test that
+/// still holds the guard — can repopulate the map. Clearing under the guard is
+/// the only point at which nothing else can be writing.
 pub(crate) async fn fixture(label: &str) -> (HomeGuard, Fixture) {
     let home = HomeGuard::new(label);
+    super::runtime::reset_for_test().await;
     init_store();
     let platform = MockPlatform::start().await;
     let nats = FakeNats::start().await;

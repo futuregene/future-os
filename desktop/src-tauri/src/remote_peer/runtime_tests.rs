@@ -11,8 +11,8 @@ use super::creds;
 use super::runtime::{
     close_socket_for_test, connect, connect_with_emitter, disconnect, ensure_connected,
     forget_connection_for_test, install_supervisor_for_test, list, live_count, pair_with_emitter,
-    request, reset_for_test, sessions, set_label, spawn_supervisor, stream_count, supervisor_count,
-    unpair, workspaces, Emitter, PeerEvent, PeerSummary, INJECT_CONNECTION_LOST,
+    request, sessions, set_label, spawn_supervisor, stream_count, supervisor_count, unpair,
+    workspaces, Emitter, PeerEvent, PeerSummary, INJECT_CONNECTION_LOST,
 };
 use super::testing::{fixture, teardown, Fixture};
 use crate::remote::test_support::{HomeGuard, MockPlatform};
@@ -20,11 +20,12 @@ use serde_json::json;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-/// Every test starts from a clean singleton and a free host-bridge port: the
-/// runtime outlives a single test, and two tests sharing its state (or the
-/// shared test port) would be asserting against each other's sockets.
+/// Every test starts from a clean singleton and a free host-bridge port.
+///
+/// The clearing happens inside `fixture`, under the home guard: the runtime
+/// outlives a single test, and clearing before the guard is taken would leave a
+/// window for whatever still holds it to repopulate the state.
 async fn start(label: &str) -> (HomeGuard, Fixture) {
-    reset_for_test().await;
     fixture(label).await
 }
 

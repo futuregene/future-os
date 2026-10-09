@@ -308,8 +308,11 @@ const HOST_COUNT: usize = 3;
 /// would deadlock, which is a property of the test, not of the code under test.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_desktop_app_connects_to_several_headless_hosts_at_once() {
-    reset_for_test().await;
     let _home = HomeGuard::new("peer-e2e-multi-host");
+    // Under the guard: the guard is what serializes these tests, so clearing
+    // before it is taken leaves a window for the previous test's work to
+    // repopulate the runtime.
+    reset_for_test().await;
     init_store();
     let platform = MockPlatform::start().await;
     let nats = FakeNats::start().await;
@@ -493,8 +496,8 @@ async fn one_desktop_app_connects_to_several_headless_hosts_at_once() {
 async fn a_spent_secret_that_cannot_be_dropped_is_only_housekeeping() {
     use std::os::unix::fs::PermissionsExt;
 
-    reset_for_test().await;
     let _home = HomeGuard::new("peer-e2e-readonly-home");
+    reset_for_test().await;
     init_store();
     let platform = MockPlatform::start().await;
     let nats = FakeNats::start().await;
