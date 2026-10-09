@@ -72,10 +72,10 @@ struct Runtime {
     live: HashMap<String, PeerSession>,
     /// The subscription task per host, aborted on disconnect so a host the user
     /// removed cannot keep emitting into a UI that has forgotten it.
-    tasks: HashMap<String, tokio::task::JoinHandle<()>>,
+    tasks: HashMap<String, crate::runtime::TaskHandle>,
     /// The reconnect task per host, aborted on an explicit disconnect so a
     /// deliberate stop cannot be undone by a retry that was already scheduled.
-    supervisors: HashMap<String, tokio::task::JoinHandle<()>>,
+    supervisors: HashMap<String, crate::runtime::TaskHandle>,
     /// The last failure per host. Kept after a disconnect so the list can say
     /// *why* a host is not connected instead of only that it is not.
     errors: HashMap<String, String>,
@@ -170,7 +170,7 @@ pub(crate) async fn stream_count() -> usize {
         .await
         .tasks
         .values()
-        .filter(|handle| !handle.is_finished())
+        .filter(|handle| !crate::runtime::task_finished(handle))
         .count()
 }
 
@@ -475,11 +475,15 @@ fn reconnect_attempt_budget() -> usize {
 ///
 /// Runs until it succeeds, until its retry window is exhausted, or until it is
 /// aborted (an explicit disconnect, or a newer connection replacing it).
+///
+/// Also a process-lifetime task, and therefore spawned through
+/// `crate::runtime` for the same reason as the stream above: a retry loop that
+/// outlives its test would keep reconnecting under the next test's `HOME`.
 pub(crate) fn spawn_supervisor(
     desktop_id: String,
     emitter: Option<Emitter>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+) -> crate::runtime::TaskHandle {
+    crate::runtime::spawn(async move {
         let mut attempt = 0usize;
         loop {
             tokio::time::sleep(reconnect_delay(attempt)).await;
@@ -547,14 +551,20 @@ async fn attach_stream(
 /// The traffic-key mutex is shared with the command path, so this task and a
 /// concurrent request take the same short lock; neither holds it across an
 /// `await`.
+///
+/// Spawned through `crate::runtime` rather than `tokio::spawn`: this is a
+/// process-lifetime task, and the crate's spawner is what lets a test fixture
+/// stop it before switching `HOME`. A raw spawn outlives the runtime that
+/// started it — in the test harness that means one test's stream still running
+/// while another test owns the process-global runtime and `HOME`.
 fn spawn_event_stream(
     desktop_id: String,
     channel: std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
     mut events: async_nats::Subscriber,
     mut presence: async_nats::Subscriber,
     emitter: Emitter,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+) -> crate::runtime::TaskHandle {
+    crate::runtime::spawn(async move {
         fn open(
             channel: &std::sync::Mutex<future_remote_crypto::Channel>,
             subject: &str,
