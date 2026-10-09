@@ -440,6 +440,45 @@ mod tests {
         assert!(persist_after_corrupt(&path).is_err());
     }
 
+    /// With no home there is nowhere to keep the book, and that is a local
+    /// configuration fault rather than "this machine has no pairings".
+    #[test]
+    fn an_absent_home_is_an_error_not_an_empty_book() {
+        let _home = home("peer-book-no-home");
+        // `HOME` is process-global, so this runs under the same lock every other
+        // home-scoped test holds.
+        let previous = std::env::var("HOME").expect("the harness always has a HOME");
+        std::env::remove_var("HOME");
+        // `USERPROFILE` is the Windows spelling and is not set here, so removing
+        // it is the whole of its handling: restoring a value that never existed
+        // would invent one.
+        std::env::remove_var("USERPROFILE");
+        let result = load();
+        // Restore *unconditionally* before asserting: a panic here would
+        // otherwise leave every later test without a home.
+        std::env::set_var("HOME", previous);
+        let error = result.expect_err("an absent home cannot be resolved");
+        assert!(error.to_string().contains("HOME/USERPROFILE"), "{error}");
+    }
+
+    /// A refresh can arrive for a host the user has already removed (a slow
+    /// rotation racing an unpair, say). Writing it back would resurrect a
+    /// partial entry; the call is a no-op instead.
+    #[test]
+    fn a_credential_refresh_for_an_unknown_host_is_a_no_op() {
+        let _home = home("peer-book-refresh-unknown");
+        update_credentials(
+            "desktop_nobody",
+            "jwt".into(),
+            "nats://127.0.0.1:4222".into(),
+            "wss://example.invalid".into(),
+            1_000,
+        )
+        .expect("no-op");
+        assert!(load().expect("book").peers.is_empty());
+        clear_secret("desktop_nobody").expect("no-op");
+    }
+
     fn persist_after_corrupt(_path: &std::path::Path) -> Result<(), crate::AppError> {
         set_label("desktop_a", Some("x"), None)
     }

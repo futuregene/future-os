@@ -11,141 +11,14 @@
 //! (so the PSK and Noise keys are the host's real ones), with its claim code
 //! replaced by one that carries the nonce/claim_url the client requires.
 
-use super::{creds, link, platform, session};
-use crate::remote::test_support::{
-    init_store, jwt, now_secs, sign_in, FakeNats, HomeGuard, MockPlatform,
-};
-use crate::remote::{publish_event, start, stop, RemoteStartInput};
+use super::testing::{claim, start_host, wait_for_web_port_free};
+use super::{creds, platform, session};
+use crate::remote::test_support::{init_store, now_secs, FakeNats, HomeGuard, MockPlatform};
+use crate::remote::{publish_event, stop};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use futures::StreamExt;
 use serde_json::json;
 use std::time::Duration;
-
-/// `stop()` aborts the test web server asynchronously; its socket lingers
-/// briefly. The host tests do the same dance — each test in this file starts a
-/// bridge, so they would otherwise collide on the shared test port.
-async fn wait_for_web_port_free() {
-    // Must match `remote::diagnostics::WEB_PORT`: the host bridge's test web
-    // server, whose socket lingers after `stop()`.
-    const WEB_PORT: u16 = 8022;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        if let Ok(listener) = std::net::TcpListener::bind(("0.0.0.0", WEB_PORT)) {
-            drop(listener);
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the test web port never freed"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-}
-
-/// The host bridge's invitation, retargeted at a claim endpoint we control.
-///
-/// Replacing the `code` is legitimate rather than a shortcut: the host never
-/// inspects it — the code is the *platform's* one-time nonce, and the host's
-/// own identity (the PSK and both keys) stays exactly as minted.
-fn invitation_for(host_invitation: &str, claim_url: &str) -> String {
-    let host = reqwest::Url::parse(host_invitation).expect("host invitation url");
-    let field = |name: &str| {
-        host.query_pairs()
-            .find(|(key, _)| key == name)
-            .map(|(_, value)| value.into_owned())
-            .unwrap_or_else(|| panic!("host invitation is missing {name}"))
-    };
-    let code = URL_SAFE_NO_PAD.encode(
-        json!({
-            "nonce": format!("nonce_{}", now_secs()),
-            "claim_url": claim_url,
-            "exp": now_secs() + 600,
-        })
-        .to_string(),
-    );
-    let mut url = reqwest::Url::parse("futureos://remote/pair").expect("constant url");
-    url.query_pairs_mut()
-        .append_pair("v", "2")
-        .append_pair("code", &code)
-        .append_pair("desktopId", &field("desktopId"))
-        .append_pair("desktopKey", &field("desktopKey"))
-        .append_pair("secureKey", &field("secureKey"))
-        .append_pair("secret", &field("secret"));
-    url.into()
-}
-
-/// Everything a claim produces, split the way the client stores it: this
-/// installation's own identity (generated here, never sent) plus the grant.
-struct Paired {
-    creds: creds::PeerCreds,
-}
-
-async fn claim(
-    platform: &MockPlatform,
-    host_invitation: &str,
-    pair_id: &str,
-    nats_url: &str,
-) -> Paired {
-    let claim_url = format!("{}/client/v1/remote/pair/claim", platform.url());
-    let invitation =
-        link::parse_invitation(&invitation_for(host_invitation, &claim_url), now_secs())
-            .expect("a usable invitation");
-    platform.push(
-        "/client/v1/remote/pair/claim",
-        200,
-        json!({
-            "pair_id": pair_id,
-            "user_jwt": jwt(now_secs() + 3_600),
-            "refresh_token": "refresh-token-1",
-            "nats_url": nats_url,
-            "nats_ws_url": nats_url.replace("nats://", "ws://"),
-        }),
-    );
-    let device = nkeys::KeyPair::new_user();
-    let claimed = platform::claim(
-        &invitation,
-        "dev_test",
-        &device.public_key(),
-        "Test Desktop",
-    )
-    .await
-    .expect("claim the invitation");
-    assert_eq!(claimed.pair_id, pair_id);
-    let (private, public) = future_remote_crypto::generate_identity().expect("identity");
-    let creds = creds::PeerCreds {
-        pair_id: claimed.pair_id,
-        desktop_id: invitation.desktop_id.clone(),
-        device_id: "dev_test".into(),
-        nkey_seed: device.seed().expect("device seed"),
-        user_jwt: claimed.user_jwt,
-        refresh_token: claimed.refresh_token,
-        nats_url: claimed.nats_url,
-        nats_ws_url: claimed.nats_ws_url,
-        jwt_expires_at: claimed.jwt_expires_at,
-        token_url: claim_url.replace("/pair/claim", "/auth/token"),
-        secure: Some(creds::PeerIdentity {
-            private_key: URL_SAFE_NO_PAD.encode(private),
-            public_key: URL_SAFE_NO_PAD.encode(&public),
-            peer_public_key: Some(invitation.secure_key.clone()),
-            secret: Some(invitation.secret.clone()),
-        }),
-    };
-    creds::upsert(creds.clone()).expect("store peer creds");
-    Paired { creds }
-}
-
-/// Start a host bridge and return (pair_id, its invitation URL).
-async fn start_host(platform: &MockPlatform, nats: &FakeNats) -> (String, String) {
-    sign_in(platform.url());
-    let pair_id = format!("pair_{}", now_secs());
-    platform.respond_pair_code_for(&pair_id, nats.url());
-    let status = start(RemoteStartInput {}).await.expect("host bridge start");
-    let invitation = status
-        .pairing_code
-        .clone()
-        .expect("host shows an invitation");
-    (status.pair_id, invitation)
-}
 
 #[tokio::test]
 async fn a_desktop_client_pairs_with_a_real_host_and_reads_its_catalog() {

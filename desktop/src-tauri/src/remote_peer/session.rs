@@ -75,6 +75,28 @@ impl PeerSession {
         self.channel.clone()
     }
 
+    /// The underlying connection, so a test can drive a handshake on a socket it
+    /// has closed.
+    #[cfg(test)]
+    pub(crate) fn client_for_test(&self) -> &async_nats::Client {
+        &self.client
+    }
+
+    /// Drain the connection: every subscription this session holds ends.
+    ///
+    /// `drain` rather than a bare drop, because draining is what actually
+    /// *ends the streams* — the state a process shutdown leaves behind, and the
+    /// only way a stream task can observe that its socket is gone. Killing the
+    /// broker does not do it: the client reconnects and keeps the subscriptions
+    /// open.
+    #[cfg(test)]
+    pub(crate) async fn close_socket(&self) -> Result<(), crate::AppError> {
+        self.client
+            .drain()
+            .await
+            .map_err(|error| crate::AppError::RemoteTransport(error.to_string()))
+    }
+
     /// Subscribe to the host's event and presence streams.
     ///
     /// `p.{pair}.evt.>` carries session events and `p.{pair}.presence` the
@@ -83,20 +105,8 @@ impl PeerSession {
     pub(crate) async fn subscribe(
         &self,
     ) -> Result<(async_nats::Subscriber, async_nats::Subscriber), crate::AppError> {
-        let events = self
-            .client
-            .subscribe(format!("p.{}.evt.>", self.pair_id))
-            .await
-            .map_err(|error| {
-                crate::AppError::RemoteTransport(format!("Remote subscribe failed: {error}"))
-            })?;
-        let presence = self
-            .client
-            .subscribe(format!("p.{}.presence", self.pair_id))
-            .await
-            .map_err(|error| {
-                crate::AppError::RemoteTransport(format!("Remote subscribe failed: {error}"))
-            })?;
+        let events = subscribe(&self.client, format!("p.{}.evt.>", self.pair_id)).await?;
+        let presence = subscribe(&self.client, format!("p.{}.presence", self.pair_id)).await?;
         Ok((events, presence))
     }
 
@@ -172,6 +182,63 @@ pub(crate) fn command_subject(pair_id: &str, session_key: &str) -> String {
         session_key
     };
     format!("p.{pair_id}.cmd.{key}")
+}
+
+/// What the host's handshake confirmation has to say for the connection to be
+/// usable.
+///
+/// A pure validator, deliberately: every rejection here is a *protocol* fault a
+/// real host should never produce, so the only way to exercise them is to feed
+/// in the malformed confirmation a buggy or hostile peer would send — which
+/// cannot be arranged against a real host by construction.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Confirmed {
+    pub(crate) bridge_instance_id: String,
+    pub(crate) features: Vec<String>,
+    pub(crate) presence: Value,
+}
+
+impl Confirmed {
+    pub(crate) fn from_confirmation(
+        confirmation: &Value,
+        pair_id: &str,
+    ) -> Result<Self, crate::AppError> {
+        let invalid = || crate::AppError::Message("remote_secure_channel_invalid".into());
+        let bridge_instance_id = confirmation
+            .get("bridgeInstanceId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(invalid)?
+            .to_string();
+        // The confirmation is the host's statement about *this* pairing. A reply
+        // that confirms a different pair, or that does not claim v2, is a
+        // protocol mismatch rather than a degraded session — accepting it would
+        // mean trusting an identity the handshake never proved.
+        if confirmation.get("confirmed").and_then(Value::as_bool) != Some(true)
+            || confirmation.get("pairId").and_then(Value::as_str) != Some(pair_id)
+        {
+            return Err(invalid());
+        }
+        let features: Vec<String> = confirmation
+            .get("features")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !features.iter().any(|feature| feature == "e2ee_v2") {
+            return Err(invalid());
+        }
+        Ok(Self {
+            bridge_instance_id,
+            features,
+            presence: confirmation.get("presence").cloned().unwrap_or(Value::Null),
+        })
+    }
 }
 
 /// The host's own statement about its agent, read from the handshake presence.
@@ -380,46 +447,15 @@ async fn handshake(
         .map_err(|_| crate::AppError::Message("remote_secure_channel_invalid".into()))?;
     let confirmation: Value = serde_json::from_slice(&confirmation)
         .map_err(|_| crate::AppError::Message("remote_secure_channel_invalid".into()))?;
-    let bridge_instance_id = confirmation
-        .get("bridgeInstanceId")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| crate::AppError::Message("remote_secure_channel_invalid".into()))?
-        .to_string();
-    // The confirmation is the host's statement about *this* pairing. A reply
-    // that confirms a different pair, or that omits the v2 capability, is a
-    // protocol mismatch, not a degraded session.
-    if confirmation.get("confirmed").and_then(Value::as_bool) != Some(true)
-        || confirmation.get("pairId").and_then(Value::as_str) != Some(creds.pair_id.as_str())
-    {
-        return Err(crate::AppError::Message(
-            "remote_secure_channel_invalid".into(),
-        ));
-    }
-    let features: Vec<String> = confirmation
-        .get("features")
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    if !features.iter().any(|feature| feature == "e2ee_v2") {
-        return Err(crate::AppError::Message(
-            "remote_secure_channel_invalid".into(),
-        ));
-    }
+    let confirmed = Confirmed::from_confirmation(&confirmation, &creds.pair_id)?;
 
     let mut session = PeerSession {
         pair_id: creds.pair_id.clone(),
         client: client.clone(),
         channel: std::sync::Arc::new(std::sync::Mutex::new(channel)),
-        bridge_instance_id,
-        features,
-        presence: confirmation.get("presence").cloned().unwrap_or(Value::Null),
+        bridge_instance_id: confirmed.bridge_instance_id,
+        features: confirmed.features,
+        presence: confirmed.presence,
     };
     // Note the *absence* of declared capabilities: this client deliberately
     // asks for the conservative lanes (no coalescing, no reply gzip, no lean
@@ -435,6 +471,35 @@ async fn handshake(
         )
         .await?;
     Ok(session)
+}
+
+/// Subscribe to one subject, with the failure classified the same way for both
+/// streams.
+///
+/// One implementation rather than two identical `map_err`s: the second one would
+/// only ever be reachable by the call that happens to run first, so it could
+/// never be exercised.
+async fn subscribe(
+    client: &async_nats::Client,
+    subject: String,
+) -> Result<async_nats::Subscriber, crate::AppError> {
+    client.subscribe(subject).await.map_err(|error| {
+        crate::AppError::RemoteTransport(format!("Remote subscribe failed: {error}"))
+    })
+}
+
+/// One unencrypted handshake leg, exercised directly by a test.
+///
+/// The only way to make a handshake fail is against a socket the test itself
+/// controls: a broker that accepts a connection and then stops answering is not
+/// something the fake broker can be scripted into mid-handshake.
+#[cfg(test)]
+pub(crate) async fn exchange_for_test(
+    client: &async_nats::Client,
+    subject: &str,
+    body: Value,
+) -> Result<Value, crate::AppError> {
+    exchange(client, subject, body).await
 }
 
 /// One unencrypted handshake leg. Every field this client reads is optional by
@@ -498,5 +563,75 @@ mod tests {
         assert!(!agent_available(&json!({})));
         assert!(!agent_available(&json!({ "agentAvailable": "yes" })));
         assert!(!agent_available(&Value::Null));
+    }
+
+    fn confirmation(overrides: Value) -> Value {
+        let mut base = json!({
+            "confirmed": true,
+            "pairId": "pair_1",
+            "bridgeInstanceId": "bridge-1",
+            "features": ["e2ee_v2"],
+            "presence": { "agentAvailable": true },
+        });
+        // A non-object override cannot be merged; the cases below are all
+        // objects, and asserting that keeps the helper from silently ignoring
+        // one that is not.
+        let target = base.as_object_mut().expect("a JSON object literal");
+        for (key, value) in overrides.as_object().expect("object overrides") {
+            target.insert(key.clone(), value.clone());
+        }
+        base
+    }
+
+    #[test]
+    fn a_well_formed_confirmation_is_accepted() {
+        let confirmed = Confirmed::from_confirmation(&confirmation(json!({})), "pair_1")
+            .expect("valid confirmation");
+        assert_eq!(confirmed.bridge_instance_id, "bridge-1");
+        assert_eq!(confirmed.features, vec!["e2ee_v2".to_string()]);
+        assert_eq!(confirmed.presence["agentAvailable"], json!(true));
+    }
+
+    /// Every case here is a protocol fault no real host produces, so handing the
+    /// validator what a buggy or hostile one would send is the only way to reach
+    /// the arms — and they are exactly the arms that decide whether a client
+    /// trusts a claimed identity.
+    #[test]
+    fn a_confirmation_that_does_not_prove_this_pairing_is_refused() {
+        let cases = [
+            // A relay replaying another pairing's confirmation.
+            ("another pair", json!({ "pairId": "pair_other" })),
+            ("missing pair", json!({ "pairId": null })),
+            // A host that never affirmed the handshake.
+            ("not confirmed", json!({ "confirmed": false })),
+            ("confirmed missing", json!({ "confirmed": null })),
+            // No bridge identity: nothing to tell one host incarnation from another.
+            ("no bridge", json!({ "bridgeInstanceId": null })),
+            ("empty bridge", json!({ "bridgeInstanceId": "" })),
+            // A peer that cannot speak the record layer we are about to use.
+            ("no features", json!({ "features": null })),
+            ("other features", json!({ "features": ["something_else"] })),
+            ("features wrong type", json!({ "features": "e2ee_v2" })),
+        ];
+        for (label, overrides) in cases {
+            let result = Confirmed::from_confirmation(&confirmation(overrides), "pair_1");
+            assert!(result.is_err(), "{label} must be refused, but was accepted");
+            assert_eq!(
+                result.err().map(|error| error.to_string()).as_deref(),
+                Some("remote_secure_channel_invalid"),
+                "{label}"
+            );
+        }
+    }
+
+    /// A host that reports no presence at all is still usable: only the fields
+    /// the client actually relies on are required.
+    #[test]
+    fn a_missing_presence_is_not_a_protocol_fault() {
+        let confirmed =
+            Confirmed::from_confirmation(&confirmation(json!({ "presence": null })), "pair_1")
+                .expect("presence is optional");
+        assert_eq!(confirmed.presence, Value::Null);
+        assert!(!agent_available(&confirmed.presence));
     }
 }

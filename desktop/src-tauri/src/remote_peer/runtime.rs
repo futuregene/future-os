@@ -72,10 +72,10 @@ struct Runtime {
     live: HashMap<String, PeerSession>,
     /// The subscription task per host, aborted on disconnect so a host the user
     /// removed cannot keep emitting into a UI that has forgotten it.
-    tasks: HashMap<String, tokio::task::JoinHandle<()>>,
+    tasks: HashMap<String, crate::runtime::TaskHandle>,
     /// The reconnect task per host, aborted on an explicit disconnect so a
     /// deliberate stop cannot be undone by a retry that was already scheduled.
-    supervisors: HashMap<String, tokio::task::JoinHandle<()>>,
+    supervisors: HashMap<String, crate::runtime::TaskHandle>,
     /// The last failure per host. Kept after a disconnect so the list can say
     /// *why* a host is not connected instead of only that it is not.
     errors: HashMap<String, String>,
@@ -89,17 +89,156 @@ struct Runtime {
 /// indistinguishable, to the user, from a hung app.
 const RECONNECT_DELAYS_SECS: &[u64] = &[1, 2, 4, 8, 16, 30];
 
+/// The unit the schedule's numbers are counted in.
+///
+/// Seconds in production; milliseconds under test, so the suite does not spend
+/// real minutes waiting out backoff. The *shape* being exercised is the real
+/// one either way — scaling the unit is what keeps the schedule itself honest.
+#[cfg(not(test))]
+fn delay_unit() -> std::time::Duration {
+    std::time::Duration::from_secs(1)
+}
+#[cfg(test)]
+fn delay_unit() -> std::time::Duration {
+    std::time::Duration::from_millis(1)
+}
+
+/// The un-jittered delay for an attempt, in seconds.
+fn reconnect_base_secs(attempt: usize) -> u64 {
+    RECONNECT_DELAYS_SECS[attempt.min(RECONNECT_DELAYS_SECS.len() - 1)]
+}
+
 fn reconnect_delay(attempt: usize) -> std::time::Duration {
-    let base = RECONNECT_DELAYS_SECS[attempt.min(RECONNECT_DELAYS_SECS.len() - 1)];
+    let base = reconnect_base_secs(attempt) as f64;
     // ±20% jitter: several hosts coming back after a network blip must not
     // stampede the relay in the same second.
     let jitter = 1.0 + (rand::random::<f64>() - 0.5) * 0.4;
-    std::time::Duration::from_secs_f64(base as f64 * jitter)
+    delay_unit().mul_f64(base * jitter)
 }
+
+/// One-shot injected race, for tests only: drop the connection between
+/// `ensure_connected` and the lookup that follows it in [`request`].
+///
+/// The interleaving is real — a concurrent command's transport failure or a
+/// user disconnect removes the entry — but it cannot be produced from outside
+/// without racing, so it is injected the same way `remote_host::pairing`
+/// injects a credential-write failure.
+#[cfg(test)]
+pub(crate) static INJECT_CONNECTION_LOST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn runtime() -> &'static Mutex<Runtime> {
     static RUNTIME: OnceLock<Mutex<Runtime>> = OnceLock::new();
     RUNTIME.get_or_init(|| Mutex::new(Runtime::default()))
+}
+
+/// Drop every live connection and background task.
+///
+/// The runtime is a process-global singleton, so a test that inherits the
+/// previous one's `live` map would be asserting against another test's socket.
+/// `HomeGuard` already serializes the tests and cancels the tasks that outlived
+/// their owner; this clears the state those tasks left behind.
+#[cfg(test)]
+pub(crate) async fn reset_for_test() {
+    let mut live = runtime().lock().await;
+    for (_, task) in live.tasks.drain() {
+        task.abort();
+    }
+    for (_, supervisor) in live.supervisors.drain() {
+        supervisor.abort();
+    }
+    live.live.clear();
+    live.errors.clear();
+}
+
+/// How many hosts are currently connected. Tests assert on counts rather than
+/// poking at the map, so the test does not have to hold the runtime lock while
+/// it reasons about the result.
+#[cfg(test)]
+pub(crate) async fn live_count() -> usize {
+    runtime().lock().await.live.len()
+}
+
+/// How many event-stream tasks are *running*.
+///
+/// Finished handles stay in the map until something replaces them, so counting
+/// the map would report a task that has already returned.
+#[cfg(test)]
+pub(crate) async fn stream_count() -> usize {
+    runtime()
+        .lock()
+        .await
+        .tasks
+        .values()
+        .filter(|handle| !crate::runtime::task_finished(handle))
+        .count()
+}
+
+/// How many retry loops are running.
+#[cfg(test)]
+pub(crate) async fn supervisor_count() -> usize {
+    runtime().lock().await.supervisors.len()
+}
+
+/// Close a live connection's socket without touching the retry state.
+///
+/// The state a process shutting down leaves behind: the subscription streams
+/// end, so a test can drive the stream task's own exit instead of racing a
+/// broker shutdown (a reconnecting client keeps its subscriptions open).
+#[cfg(test)]
+pub(crate) async fn close_socket_for_test(desktop_id: &str) {
+    let session = runtime()
+        .lock()
+        .await
+        .live
+        .remove(desktop_id)
+        .expect("a live session for the test to close");
+    let _ = session.close_socket().await;
+}
+///
+/// Pretend a retry loop is already running for this host.
+///
+/// The state a transport failure leaves behind, so a test can drive "a connect
+/// found a retry loop and replaced it" without first having to induce the
+/// failure and wait for the loop to be installed.
+#[cfg(test)]
+pub(crate) async fn install_supervisor_for_test(desktop_id: &str) {
+    let handle = spawn_supervisor(desktop_id.to_string(), None);
+    runtime()
+        .lock()
+        .await
+        .supervisors
+        .insert(desktop_id.to_string(), handle);
+}
+
+/// Renew the grant and persist it.
+///
+/// Persisting is part of the operation, not a nicety: a rotated token that is
+/// only held in memory makes the *next* launch renew again from the token this
+/// process already replaced.
+async fn renew_credentials(creds: &PeerCreds) -> Result<PeerCreds, crate::AppError> {
+    let fresh = super::platform::refresh(creds).await?;
+    creds::update_credentials(
+        &creds.desktop_id,
+        fresh.user_jwt.clone(),
+        fresh.nats_url.clone(),
+        fresh.nats_ws_url.clone(),
+        fresh.jwt_expires_at,
+    )?;
+    let mut renewed = creds.clone();
+    renewed.user_jwt = fresh.user_jwt;
+    renewed.nats_url = fresh.nats_url;
+    renewed.nats_ws_url = fresh.nats_ws_url;
+    renewed.jwt_expires_at = fresh.jwt_expires_at;
+    Ok(renewed)
+}
+
+/// Forget a connection without the command path noticing — the state a socket
+/// drop leaves behind, so a test can drive the recovery path deterministically
+/// instead of racing a broker shutdown.
+#[cfg(test)]
+pub(crate) async fn forget_connection_for_test(desktop_id: &str) {
+    runtime().lock().await.live.remove(desktop_id);
 }
 
 /// Pair with a remote host from a pasted `futureos://remote/pair` link, then
@@ -156,9 +295,17 @@ pub(crate) async fn pair_with_emitter(
 /// stores it verbatim, so it is the only place the host can learn that this
 /// machine (rather than a phone) took the slot.
 fn device_name() -> String {
-    let host = std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .ok()
+    device_name_from(
+        std::env::var("COMPUTERNAME")
+            .or_else(|_| std::env::var("HOSTNAME"))
+            .ok(),
+    )
+}
+
+/// The formatting half, split out so both arms are testable without mutating
+/// the process environment (which no test can do safely alongside others).
+fn device_name_from(host: Option<String>) -> String {
+    let host = host
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     match host {
@@ -244,18 +391,21 @@ pub(crate) async fn connect_with_emitter(
     // Renew before connecting: a token that expires mid-handshake fails it in a
     // way that looks like a protocol fault.
     if creds.needs_refresh(now_secs()) {
-        let fresh = super::platform::refresh(&creds).await?;
-        creds::update_credentials(
-            desktop_id,
-            fresh.user_jwt.clone(),
-            fresh.nats_url.clone(),
-            fresh.nats_ws_url.clone(),
-            fresh.jwt_expires_at,
-        )?;
-        creds.user_jwt = fresh.user_jwt;
-        creds.nats_url = fresh.nats_url;
-        creds.nats_ws_url = fresh.nats_ws_url;
-        creds.jwt_expires_at = fresh.jwt_expires_at;
+        match renew_credentials(&creds).await {
+            Ok(renewed) => creds = renewed,
+            Err(error) => {
+                // A refused or unpersistable renewal happens before any socket
+                // exists, so it must be recorded here — otherwise the UI shows a
+                // host that is simply "not connected" with no reason, while
+                // nothing will ever retry it.
+                runtime()
+                    .lock()
+                    .await
+                    .errors
+                    .insert(desktop_id.to_string(), error.to_string());
+                return Err(error);
+            }
+        }
     }
     let connected = match session::connect(&creds).await {
         Ok(connected) => connected,
@@ -282,15 +432,7 @@ pub(crate) async fn connect_with_emitter(
     // the map.
     let peer_session = connected.session;
     let stream = match emitter {
-        Some(emitter) => match peer_session.subscribe().await {
-            Ok((events, presence)) => {
-                Some((peer_session.channel_for_stream(), events, presence, emitter))
-            }
-            Err(error) => {
-                eprintln!("remote_peer: could not subscribe for {desktop_id}: {error}");
-                None
-            }
-        },
+        Some(emitter) => attach_stream(&peer_session, emitter, desktop_id).await,
         None => None,
     };
     {
@@ -320,17 +462,28 @@ pub(crate) async fn connect_with_emitter(
     Ok(summary)
 }
 
+/// How many attempts the supervisor makes before it stops for good.
+///
+/// The schedule's length times three: the window is what makes a failure
+/// terminal, and a client that retries forever looks identical, to the user, to
+/// one that hung.
+fn reconnect_attempt_budget() -> usize {
+    RECONNECT_DELAYS_SECS.len() * 3
+}
+///
 /// Keep one host connected: watch the socket, and reconnect when it drops.
 ///
 /// Runs until it succeeds, until its retry window is exhausted, or until it is
-/// aborted (an explicit disconnect, or a newer connection replacing it). The
-/// window is what makes the failure terminal: a client that retries forever
-/// looks identical to one that hung, and the user has no way to tell which.
+/// aborted (an explicit disconnect, or a newer connection replacing it).
+///
+/// Also a process-lifetime task, and therefore spawned through
+/// `crate::runtime` for the same reason as the stream above: a retry loop that
+/// outlives its test would keep reconnecting under the next test's `HOME`.
 pub(crate) fn spawn_supervisor(
     desktop_id: String,
     emitter: Option<Emitter>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+) -> crate::runtime::TaskHandle {
+    crate::runtime::spawn(async move {
         let mut attempt = 0usize;
         loop {
             tokio::time::sleep(reconnect_delay(attempt)).await;
@@ -349,7 +502,7 @@ pub(crate) fn spawn_supervisor(
             // Measured in *attempts*, not wall clock: the delay schedule already
             // caps the wait, and a clock here would need a monotonic source the
             // tests would have to fake.
-            if attempt >= RECONNECT_DELAYS_SECS.len() * 3 {
+            if attempt >= reconnect_attempt_budget() {
                 return;
             }
         }
@@ -361,19 +514,57 @@ async fn resume(desktop_id: &str, emitter: Option<Emitter>) -> Result<(), crate:
     connect_with_emitter(desktop_id, emitter).await.map(|_| ())
 }
 
+/// The stream half of a connection: the traffic-key handle and the two
+/// subscriptions the event task drains.
+type StreamParts = (
+    std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
+    async_nats::Subscriber,
+    async_nats::Subscriber,
+    Emitter,
+);
+
+/// Subscribe to a host's pushes, or say why not.
+///
+/// A failure here leaves the connection *usable for commands* — only the live
+/// half is missing, and the UI falls back to fetching history — so it is
+/// reported and turned into `None` rather than propagated. Split out from the
+/// connect path so this decision is reachable without a broker that accepts a
+/// handshake and then refuses a subscription.
+async fn attach_stream(
+    peer_session: &PeerSession,
+    emitter: Emitter,
+    desktop_id: &str,
+) -> Option<StreamParts> {
+    match peer_session.subscribe().await {
+        Ok((events, presence)) => {
+            Some((peer_session.channel_for_stream(), events, presence, emitter))
+        }
+        Err(error) => {
+            eprintln!("remote_peer: could not subscribe for {desktop_id}: {error}");
+            None
+        }
+    }
+}
+
 /// Drain the host's event and presence subscriptions into `emitter`.
 ///
 /// The traffic-key mutex is shared with the command path, so this task and a
 /// concurrent request take the same short lock; neither holds it across an
 /// `await`.
+///
+/// Spawned through `crate::runtime` rather than `tokio::spawn`: this is a
+/// process-lifetime task, and the crate's spawner is what lets a test fixture
+/// stop it before switching `HOME`. A raw spawn outlives the runtime that
+/// started it — in the test harness that means one test's stream still running
+/// while another test owns the process-global runtime and `HOME`.
 fn spawn_event_stream(
     desktop_id: String,
     channel: std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
     mut events: async_nats::Subscriber,
     mut presence: async_nats::Subscriber,
     emitter: Emitter,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+) -> crate::runtime::TaskHandle {
+    crate::runtime::spawn(async move {
         fn open(
             channel: &std::sync::Mutex<future_remote_crypto::Channel>,
             subject: &str,
@@ -489,6 +680,14 @@ pub(crate) async fn request(
             .to_string()
     };
     let mut live = runtime().lock().await;
+    #[cfg(test)]
+    if INJECT_CONNECTION_LOST.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        // The real interleaving this guards: a concurrent command's transport
+        // failure, or the user pressing Disconnect, removes the entry between
+        // the connect above and the lookup below. Forced here because it cannot
+        // be produced from outside without racing.
+        live.live.remove(desktop_id);
+    }
     let Some(session) = live.live.get_mut(desktop_id) else {
         return Err(crate::AppError::Message("peer_not_connected".into()));
     };
@@ -531,12 +730,18 @@ async fn stamp_live(desktop_id: &str, data: Value) -> Result<Value, crate::AppEr
         .get(desktop_id)
         .map(|session| session.pair_id().to_string());
     let mut data = data;
-    if let Some(object) = data.as_object_mut() {
-        object.insert("desktopId".into(), json!(desktop_id));
-        if let Some(pair_id) = pair_id {
-            object.insert("pairId".into(), json!(pair_id));
-        }
-    }
+    // A reply that is not an object violates the host's own contract. Reported
+    // rather than asserted: the field comes from a *remote* peer, and panicking
+    // on remote input would hand a broken or hostile host a way to take the app
+    // down.
+    let object = data
+        .as_object_mut()
+        .ok_or_else(|| crate::AppError::Message("peer_reply_not_an_object".into()))?;
+    object.insert("desktopId".into(), json!(desktop_id));
+    // `null` rather than omitted when the connection has already gone: the row
+    // still came from this host, and a reader can tell "no live pairing" from
+    // "field missing".
+    object.insert("pairId".into(), pair_id.map_or(Value::Null, |id| json!(id)));
     Ok(data)
 }
 
@@ -557,20 +762,137 @@ fn now_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::remote_peer::testing::{fixture, teardown};
 
-    /// The retry schedule is bounded and non-shrinking: an unbounded retry
-    /// against a host that will never return is indistinguishable, to the user,
-    /// from an app that hung.
+    /// An emitter that records nothing; these tests are about whether the stream
+    /// attaches, not about what it carries.
+    fn silent_emitter() -> Emitter {
+        std::sync::Arc::new(|_event: PeerEvent| {})
+    }
+
+    /// Take a session out of the runtime so a test owns it (a `SecureChannel` is
+    /// not `Clone`, and taking it is also what removes it from the serving path).
+    async fn take_session(desktop_id: &str) -> PeerSession {
+        runtime()
+            .lock()
+            .await
+            .live
+            .remove(desktop_id)
+            .expect("a live session")
+    }
+
+    /// The runtime is a process-global singleton, so each of these starts from a
+    /// clean one, and the fixture is returned so the host bridge and its broker
+    /// outlive the call — dropping it would stop the server under test.
+    async fn connected_fixture(
+        label: &str,
+    ) -> (
+        crate::remote::test_support::HomeGuard,
+        crate::remote_peer::testing::Fixture,
+        String,
+    ) {
+        reset_for_test().await;
+        let (home, fx) = fixture(label).await;
+        let desktop_id = fx.paired.creds.desktop_id.clone();
+        connect(&desktop_id).await.expect("connect");
+        (home, fx, desktop_id)
+    }
+
+    /// A control for the test below: on a healthy socket the stream attaches, so
+    /// that test is about the closed socket rather than about `attach_stream`
+    /// refusing everything.
+    #[tokio::test]
+    async fn a_fresh_socket_attaches_its_stream() {
+        let (_home, fx, desktop_id) = connected_fixture("peer-rt-attach-fresh").await;
+        let session = take_session(&desktop_id).await;
+        assert!(
+            attach_stream(&session, silent_emitter(), &desktop_id)
+                .await
+                .is_some(),
+            "a healthy socket must attach"
+        );
+        drop(fx);
+        teardown().await;
+    }
+
+    /// A subscription cannot be installed on a socket that is gone, and the
+    /// connection must stay usable for commands when that happens: only the live
+    /// half is missing, and the UI falls back to fetching history.
+    #[tokio::test]
+    async fn attaching_a_stream_to_a_closed_socket_reports_no_stream() {
+        let (_home, fx, desktop_id) = connected_fixture("peer-rt-attach-closed").await;
+        let session = take_session(&desktop_id).await;
+        session.close_socket().await.expect("close the socket");
+        // Let the close take effect before the subscribe is attempted.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            attach_stream(&session, silent_emitter(), &desktop_id)
+                .await
+                .is_none(),
+            "a closed socket cannot carry a subscription"
+        );
+        drop(fx);
+        teardown().await;
+    }
+
+    /// A stored seed that cannot be read is a local credential fault, and must be
+    /// reported as one rather than sent to the host as an empty key.
+    #[tokio::test]
+    async fn a_stored_seed_that_cannot_be_read_is_reported() {
+        let (_home, fx, _desktop_id) = connected_fixture("peer-rt-bad-seed").await;
+        let mut broken = fx.paired.creds.clone();
+        broken.nkey_seed = "not-a-seed".into();
+        // `err()` rather than `expect_err`: the ok arm holds a live connection,
+        // which has no `Debug` (and should not grow one just for a test).
+        let error = super::super::session::connect(&broken)
+            .await
+            .err()
+            .expect("an invalid seed cannot sign");
+        assert!(
+            error.to_string().contains("Invalid stored device NKey"),
+            "{error}"
+        );
+        drop(fx);
+        teardown().await;
+    }
+
+    /// A handshake sent on a socket that has gone cannot be answered, and the
+    /// failure has to reach the caller as a transport fault rather than a hang.
+    #[tokio::test]
+    async fn a_handshake_on_a_closed_socket_is_a_transport_failure() {
+        let (_home, fx, desktop_id) = connected_fixture("peer-rt-handshake-closed").await;
+        let session = take_session(&desktop_id).await;
+        session.close_socket().await.expect("close the socket");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        let error = super::super::session::exchange_for_test(
+            session.client_for_test(),
+            "p.pair_1.cmd.handshake",
+            serde_json::json!({ "type": "secure_open" }),
+        )
+        .await
+        .expect_err("a closed socket cannot carry a handshake");
+        assert!(
+            matches!(error, crate::AppError::RemoteTransport(_)),
+            "{error}"
+        );
+        drop(fx);
+        teardown().await;
+    }
+
     /// The *base* schedule is what must grow and be bounded; jitter only
     /// perturbs each draw around its step, so a jittered sample is deliberately
     /// not monotonic (30s×1.2 can exceed the next step's 30s×0.8 — that is the
     /// point of jitter). Asserting on the drawn values would test the noise.
     #[test]
     fn the_reconnect_schedule_grows_and_is_capped() {
-        for pair in RECONNECT_DELAYS_SECS.windows(2) {
+        let bases: Vec<u64> = (0..RECONNECT_DELAYS_SECS.len() + 5)
+            .map(reconnect_base_secs)
+            .collect();
+        for pair in bases.windows(2) {
             assert!(
                 pair[1] >= pair[0],
-                "the base schedule must not shrink: {RECONNECT_DELAYS_SECS:?}"
+                "the schedule must not shrink: {bases:?}"
             );
         }
         assert_eq!(
@@ -580,13 +902,14 @@ mod tests {
         );
         // Past the end the delay stays at the cap rather than growing without
         // bound, and every draw stays inside the jitter band for its step.
+        let unit = delay_unit().as_secs_f64();
         for attempt in 0..RECONNECT_DELAYS_SECS.len() + 5 {
-            let base = RECONNECT_DELAYS_SECS[attempt.min(RECONNECT_DELAYS_SECS.len() - 1)] as f64;
+            let base = reconnect_base_secs(attempt) as f64;
             for _ in 0..16 {
-                let drawn = reconnect_delay(attempt).as_secs_f64();
+                let ratio = reconnect_delay(attempt).as_secs_f64() / unit;
                 assert!(
-                    drawn >= base * 0.8 && drawn <= base * 1.2,
-                    "attempt {attempt}: {drawn}s is outside the ±20% band around {base}s"
+                    ratio >= base * 0.8 && ratio <= base * 1.2,
+                    "attempt {attempt}: {ratio} is outside the ±20% band around {base}"
                 );
             }
         }
@@ -596,10 +919,66 @@ mod tests {
     /// it has to actually vary — a constant would pass the range check above.
     #[test]
     fn reconnect_delays_are_jittered_not_constant() {
-        let samples: Vec<f64> = (0..64).map(|_| reconnect_delay(5).as_secs_f64()).collect();
+        let unit = delay_unit().as_secs_f64();
+        let samples: Vec<f64> = (0..64)
+            .map(|_| reconnect_delay(5).as_secs_f64() / unit)
+            .collect();
         let min = samples.iter().cloned().fold(f64::INFINITY, f64::min);
         let max = samples.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         assert!(max - min > 0.5, "delay never varied: {min}..{max}");
+    }
+
+    /// The window is finite, and it is a multiple of the schedule: a client that
+    /// retries forever is indistinguishable from one that hung.
+    #[test]
+    fn the_attempt_budget_is_bounded() {
+        assert_eq!(reconnect_attempt_budget(), RECONNECT_DELAYS_SECS.len() * 3);
+        assert!(reconnect_attempt_budget() > 0);
+    }
+
+    #[test]
+    fn the_hostname_is_used_when_present_and_omitted_when_not() {
+        assert_eq!(
+            device_name_from(Some("studio-imac".into())),
+            "FutureOS Desktop (studio-imac)"
+        );
+        // Whitespace is not a hostname; an empty name would produce a trailing
+        // "()" that reads like a bug in the host's UI.
+        assert_eq!(device_name_from(Some("   ".into())), "FutureOS Desktop");
+        assert_eq!(
+            device_name_from(Some("  padded  ".into())),
+            "FutureOS Desktop (padded)"
+        );
+        assert_eq!(device_name_from(None), "FutureOS Desktop");
+    }
+
+    /// The environment-reading wrapper still resolves to a usable name. It is
+    /// asserted as an *invariant* rather than a specific value, because the host
+    /// it produces depends on the machine running the test.
+    #[test]
+    fn the_live_hostname_resolves_to_a_usable_name() {
+        let name = device_name();
+        assert!(name.starts_with("FutureOS Desktop"), "{name}");
+        assert!(!name.ends_with("()"), "{name}");
+    }
+
+    /// A catalogue reply that is not an object is a protocol violation, not a
+    /// shape to invent — and it must not panic, because the reply comes from a
+    /// remote peer: a broken or hostile host could otherwise take the app down.
+    #[tokio::test]
+    async fn a_catalogue_reply_that_is_not_an_object_is_refused() {
+        let _home = crate::remote::test_support::HomeGuard::new("peer-stamp-non-object");
+        reset_for_test().await;
+        for reply in [
+            serde_json::json!([1, 2, 3]),
+            serde_json::json!("a string"),
+            serde_json::Value::Null,
+        ] {
+            let error = stamp_live("desktop_any", reply.clone())
+                .await
+                .expect_err("a non-object reply cannot be stamped");
+            assert_eq!(error.to_string(), "peer_reply_not_an_object", "{reply}");
+        }
     }
 
     /// An explicit disconnect must take the retry with it, or a reconnect
@@ -607,6 +986,7 @@ mod tests {
     #[tokio::test]
     async fn disconnect_aborts_the_supervisor() {
         let _home = crate::remote::test_support::HomeGuard::new("peer-disconnect-supervisor");
+        reset_for_test().await;
         let handle = spawn_supervisor("desktop_a".into(), None);
         runtime()
             .lock()

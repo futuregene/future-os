@@ -75,12 +75,13 @@ impl LinkError {
     }
 }
 
-/// The claim endpoint is where credentials are handed over, so it must be
-/// HTTPS — with one deliberate exception: a loopback address. That is how the
-/// repo's own local platform harness and a developer's same-machine platform
-/// are reached, and a loopback hop cannot be intercepted off-host. Without it
-/// the client could not be tested against the same harness the rest of the
-/// remote stack uses, and the rule would be verified only in production.
+/// The platform endpoints to use for a claimed pairing, derived from the claim
+/// URL so a self-hosted platform works without another configuration knob.
+///
+/// Only reachable for a URL the platform actually offered; the scheme guard
+/// below exists so a non-HTTP scheme (a `data:` URL, or a typo like `htps:`) is
+/// refused rather than handed to `reqwest`, which would reject it later with a
+/// message that names no cause.
 fn is_acceptable_claim_url(url: &reqwest::Url) -> bool {
     match url.scheme() {
         "https" => true,
@@ -321,6 +322,71 @@ mod tests {
                 Err(LinkError::InvalidField),
                 "{refused} must not receive credentials in the clear"
             );
+        }
+    }
+
+    /// A non-HTTP scheme is refused as a bad *link* rather than handed to
+    /// `reqwest`, which would fail later with a message that names no cause.
+    #[test]
+    fn a_claim_url_with_a_non_http_scheme_is_refused() {
+        let with_claim = |claim: &str| {
+            let code =
+                URL_SAFE_NO_PAD.encode(json!({ "nonce": "n-1", "claim_url": claim }).to_string());
+            parse_invitation(&invitation(&[("code", &code)]), 1_000)
+        };
+        for refused in [
+            "ftp://future-os.cn/client/v1/remote/pair/claim",
+            "data:text/plain,hi",
+            "//future-os.cn/client/v1/remote/pair/claim",
+        ] {
+            assert_eq!(
+                with_claim(refused),
+                Err(LinkError::InvalidField),
+                "{refused} is not a claim endpoint"
+            );
+        }
+    }
+
+    /// The scheme decision, asserted directly: the link-level tests above cover
+    /// the wiring, and this covers every arm of the decision itself — including
+    /// the non-HTTP one, which a link can only reach with a scheme `reqwest`
+    /// would otherwise reject later with an unhelpful message.
+    #[test]
+    fn only_https_or_loopback_http_is_an_acceptable_claim_endpoint() {
+        let url = |value: &str| reqwest::Url::parse(value).expect("test url");
+        assert!(is_acceptable_claim_url(&url("https://future-os.cn/x")));
+        assert!(is_acceptable_claim_url(&url("http://127.0.0.1:1/x")));
+        assert!(is_acceptable_claim_url(&url("http://localhost/x")));
+        assert!(is_acceptable_claim_url(&url("http://[::1]:1/x")));
+        assert!(!is_acceptable_claim_url(&url("http://example.com/x")));
+        assert!(!is_acceptable_claim_url(&url("ftp://example.com/x")));
+        assert!(!is_acceptable_claim_url(&url("data:text/plain,hi")));
+        // A `file:` URL parses with no host at all, so the `http` arm's
+        // `host_str()` is `None` there; the `https` guard is what keeps this
+        // from being a file read.
+        assert!(!is_acceptable_claim_url(&url("file:///etc/passwd")));
+    }
+
+    /// The public shape of a link failure: every variant carries the code and
+    /// the message the UI shows, asserted directly so a new variant cannot be
+    /// added without deciding both.
+    #[test]
+    fn every_link_failure_carries_the_shared_support_code_and_message() {
+        let cases = [
+            (LinkError::Malformed, "pairing_link_malformed"),
+            (
+                LinkError::UnsupportedVersion,
+                "pairing_link_unsupported_version",
+            ),
+            (LinkError::InvalidField, "pairing_link_invalid_field"),
+            (LinkError::Expired, "pairing_link_expired"),
+        ];
+        for (error, message) in cases {
+            // Every link failure is `PA002` — the phone's "this code did not
+            // work, make a new one" — so a support conversation means the same
+            // thing on either platform.
+            assert_eq!(error.support_code(), "PA002", "{message}");
+            assert_eq!(error.message(), message);
         }
     }
 

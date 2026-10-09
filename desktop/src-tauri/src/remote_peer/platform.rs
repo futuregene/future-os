@@ -32,6 +32,22 @@ pub(crate) struct Claimed {
     pub jwt_expires_at: i64,
 }
 
+/// Debug without the secrets: this value ends up in `expect`/`assert` output on
+/// failure, and a panic message is one of the easiest places for a bearer token
+/// to leak into a log or a bug report.
+impl std::fmt::Debug for Claimed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Claimed")
+            .field("pair_id", &self.pair_id)
+            .field("user_jwt", &"<redacted>")
+            .field("refresh_token", &"<redacted>")
+            .field("nats_url", &self.nats_url)
+            .field("nats_ws_url", &self.nats_ws_url)
+            .field("jwt_expires_at", &self.jwt_expires_at)
+            .finish()
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ClaimResponse {
     pair_id: String,
@@ -185,6 +201,29 @@ fn required_endpoint(value: Option<String>, field: &str) -> Result<String, crate
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::remote::test_support::{jwt, now_secs, FakeNats, HomeGuard, MockPlatform};
+
+    fn creds(token_url: &str, nkey_seed: &str) -> super::super::creds::PeerCreds {
+        super::super::creds::PeerCreds {
+            pair_id: "pair_1".into(),
+            desktop_id: "desktop_1".into(),
+            device_id: "dev_1".into(),
+            nkey_seed: nkey_seed.into(),
+            user_jwt: jwt(now_secs() + 3_600),
+            refresh_token: "refresh".into(),
+            nats_url: "nats://127.0.0.1:4222".into(),
+            nats_ws_url: "wss://example.invalid".into(),
+            jwt_expires_at: now_secs() + 3_600,
+            token_url: token_url.into(),
+            secure: None,
+        }
+    }
+
+    /// A real NKey seed, so the signing path is exercised rather than short-
+    /// circuited by an invalid one.
+    fn valid_seed() -> String {
+        nkeys::KeyPair::new_user().seed().expect("seed")
+    }
 
     #[test]
     fn a_missing_tcp_endpoint_is_an_error_not_a_websocket_fallback() {
@@ -194,5 +233,251 @@ mod tests {
             required_endpoint(Some(" nats://host:4222 ".into()), "nats_url").unwrap(),
             "nats://host:4222"
         );
+    }
+
+    /// A stored seed that cannot be read is a *local* credential fault, and must
+    /// be reported as one rather than sent to the platform as an empty key.
+    #[tokio::test]
+    async fn an_unreadable_seed_is_reported_before_any_request() {
+        let _home = HomeGuard::new("peer-platform-bad-seed");
+        let broken = creds(
+            "http://127.0.0.1:1/client/v1/remote/auth/token",
+            "not-a-seed",
+        );
+        let error = refresh(&broken)
+            .await
+            .expect_err("an invalid seed cannot sign");
+        assert!(
+            error.to_string().contains("Invalid stored device NKey"),
+            "{error}"
+        );
+        let error = revoke(&broken)
+            .await
+            .expect_err("an invalid seed cannot sign");
+        assert!(
+            error.to_string().contains("Invalid stored device NKey"),
+            "{error}"
+        );
+    }
+
+    /// A platform that cannot be reached is a *transport* failure, so the UI can
+    /// say "check your network" rather than showing a server error.
+    #[tokio::test]
+    async fn an_unreachable_platform_is_reported_as_a_transport_failure() {
+        let _home = HomeGuard::new("peer-platform-unreachable");
+        // Port 1 is reserved and never listening, so the send fails outright.
+        let unreachable = creds(
+            "http://127.0.0.1:1/client/v1/remote/auth/token",
+            &valid_seed(),
+        );
+        assert!(matches!(
+            refresh(&unreachable).await,
+            Err(crate::AppError::RemoteTransport(_))
+        ));
+        assert!(matches!(
+            revoke(&unreachable).await,
+            Err(crate::AppError::RemoteTransport(_))
+        ));
+    }
+
+    /// Claiming an invitation whose endpoint is gone is the same class of
+    /// failure: no HTTP response was possible, so it is transport, not server.
+    #[tokio::test]
+    async fn an_unreachable_claim_endpoint_is_a_transport_failure() {
+        let _home = HomeGuard::new("peer-platform-claim-unreachable");
+        let invitation = super::super::link::Invitation {
+            code: "code".into(),
+            desktop_id: "desktop_1".into(),
+            desktop_key: "UKEY".into(),
+            secure_key: "key".into(),
+            secret: "secret".into(),
+            expires_at: None,
+            claim_url: "http://127.0.0.1:1/client/v1/remote/pair/claim".into(),
+            nonce: "nonce".into(),
+        };
+        let error = claim(&invitation, "dev_1", "UDEV", "Test")
+            .await
+            .expect_err("an unreachable claim endpoint cannot succeed");
+        assert!(
+            matches!(error, crate::AppError::RemoteTransport(_)),
+            "{error}"
+        );
+    }
+
+    /// A refresh the platform refuses is a *server* answer, not a transport
+    /// failure — the distinction is what tells the UI to stop retrying.
+    #[tokio::test]
+    async fn a_refused_refresh_reports_the_platforms_own_error() {
+        let _home = HomeGuard::new("peer-platform-refused");
+        let platform = MockPlatform::start().await;
+        platform.respond_refresh_revoked();
+        let creds = creds(
+            &format!("{}/client/v1/remote/auth/token", platform.url()),
+            &valid_seed(),
+        );
+        let error = refresh(&creds).await.expect_err("a refused refresh fails");
+        assert!(
+            !matches!(error, crate::AppError::RemoteTransport(_)),
+            "{error}"
+        );
+    }
+
+    /// A response with no TCP endpoint is an error rather than a silent
+    /// downgrade to the WebSocket one, whose TLS this client does not verify the
+    /// way it does for TCP.
+    #[tokio::test]
+    async fn a_refresh_without_a_tcp_endpoint_is_an_error() {
+        let _home = HomeGuard::new("peer-platform-no-endpoint");
+        let platform = MockPlatform::start().await;
+        platform.push(
+            "/client/v1/remote/auth/token",
+            200,
+            serde_json::json!({
+                "user_jwt": jwt(now_secs() + 3_600),
+                "nats_ws_url": "wss://example.invalid",
+            }),
+        );
+        let creds = creds(
+            &format!("{}/client/v1/remote/auth/token", platform.url()),
+            &valid_seed(),
+        );
+        let error = refresh(&creds).await.expect_err("no nats_url is unusable");
+        assert!(error.to_string().contains("nats_url"), "{error}");
+    }
+
+    /// The redaction is the whole point of the manual `Debug`: this value ends up
+    /// in `expect`/`assert` output, and a bearer token in a panic message is a
+    /// The redaction is the whole point of the manual `Debug`: this value ends up
+    /// in `expect`/`assert` output, and a bearer token in a panic message is a
+    /// token in a bug report.
+    #[test]
+    fn debug_redacts_the_claim_secrets() {
+        let claimed = Claimed {
+            pair_id: "pair_1".into(),
+            user_jwt: "jwt-secret".into(),
+            refresh_token: "refresh-secret".into(),
+            nats_url: "nats://host:4222".into(),
+            nats_ws_url: "wss://host:4222".into(),
+            jwt_expires_at: 42,
+        };
+        let rendered = format!("{claimed:?}");
+        assert!(!rendered.contains("jwt-secret"), "{rendered}");
+        assert!(!rendered.contains("refresh-secret"), "{rendered}");
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+        // The non-secret fields stay, so a failure is still diagnosable.
+        assert!(rendered.contains("pair_1"), "{rendered}");
+        assert!(rendered.contains("nats://host:4222"), "{rendered}");
+    }
+
+    /// The claim endpoint has the same rule, and is the one that matters most:
+    /// a claim *hands over* credentials.
+    #[tokio::test]
+    async fn a_claim_without_a_tcp_endpoint_is_an_error() {
+        let _home = HomeGuard::new("peer-platform-claim-no-endpoint");
+        let platform = MockPlatform::start().await;
+        platform.push(
+            "/client/v1/remote/pair/claim",
+            200,
+            serde_json::json!({
+                "pair_id": "pair_1",
+                "user_jwt": jwt(now_secs() + 3_600),
+                "refresh_token": "refresh",
+                "nats_ws_url": "wss://example.invalid",
+            }),
+        );
+        let invitation = super::super::link::Invitation {
+            code: "code".into(),
+            desktop_id: "desktop_1".into(),
+            desktop_key: "UKEY".into(),
+            secure_key: "key".into(),
+            secret: "secret".into(),
+            expires_at: None,
+            claim_url: format!("{}/client/v1/remote/pair/claim", platform.url()),
+            nonce: "nonce".into(),
+        };
+        let error = claim(&invitation, "dev_1", "UDEV", "Test")
+            .await
+            .expect_err("no nats_url is unusable");
+        assert!(error.to_string().contains("nats_url"), "{error}");
+    }
+
+    /// A claim the platform answers with an error body must surface that body's
+    /// machine code, not a generic message.
+    #[tokio::test]
+    async fn a_refused_claim_reports_the_platforms_error_code() {
+        let _home = HomeGuard::new("peer-platform-claim-refused");
+        let platform = MockPlatform::start().await;
+        platform.push(
+            "/client/v1/remote/pair/claim",
+            400,
+            serde_json::json!({ "error": "invitation_consumed", "message": "already used" }),
+        );
+        let invitation = super::super::link::Invitation {
+            code: "code".into(),
+            desktop_id: "desktop_1".into(),
+            desktop_key: "UKEY".into(),
+            secure_key: "key".into(),
+            secret: "secret".into(),
+            expires_at: None,
+            claim_url: format!("{}/client/v1/remote/pair/claim", platform.url()),
+            nonce: "nonce".into(),
+        };
+        let error = claim(&invitation, "dev_1", "UDEV", "Test")
+            .await
+            .expect_err("a used invitation cannot be claimed");
+        // Both ids must survive: the machine code is what a caller branches on,
+        // and the human message is what the user reads. Asserted on the rendered
+        // error so a non-`Remote` variant fails the assertion rather than
+        // needing an arm that a passing test can never execute.
+        let rendered = format!("{error:?}");
+        assert!(rendered.contains("invitation_consumed"), "{rendered}");
+        assert!(rendered.contains("already used"), "{rendered}");
+    }
+
+    /// A `nats_ws_url` the platform omits falls back to the TCP one rather than
+    /// to an empty string: the field is stored for a UI that may show it.
+    #[tokio::test]
+    async fn a_missing_websocket_endpoint_falls_back_to_the_tcp_one() {
+        let _home = HomeGuard::new("peer-platform-ws-fallback");
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        platform.push(
+            "/client/v1/remote/auth/token",
+            200,
+            serde_json::json!({
+                "user_jwt": jwt(now_secs() + 3_600),
+                "nats_url": nats.url(),
+            }),
+        );
+        let creds = creds(
+            &format!("{}/client/v1/remote/auth/token", platform.url()),
+            &valid_seed(),
+        );
+        let fresh = refresh(&creds).await.expect("refresh");
+        assert_eq!(fresh.nats_url, nats.url());
+        assert_eq!(fresh.nats_ws_url, nats.url());
+    }
+
+    /// A blank `nats_ws_url` is the same as an absent one.
+    #[tokio::test]
+    async fn a_blank_websocket_endpoint_falls_back_to_the_tcp_one() {
+        let _home = HomeGuard::new("peer-platform-ws-blank");
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        platform.push(
+            "/client/v1/remote/auth/token",
+            200,
+            serde_json::json!({
+                "user_jwt": jwt(now_secs() + 3_600),
+                "nats_url": nats.url(),
+                "nats_ws_url": "   ",
+            }),
+        );
+        let creds = creds(
+            &format!("{}/client/v1/remote/auth/token", platform.url()),
+            &valid_seed(),
+        );
+        let fresh = refresh(&creds).await.expect("refresh");
+        assert_eq!(fresh.nats_ws_url, nats.url());
     }
 }
