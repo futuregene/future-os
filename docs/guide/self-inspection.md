@@ -19,6 +19,7 @@ themselves.
 |---|---|
 | `future config get [<key>] [--json]` | The effective global settings, defaults included |
 | `future desktop settings [<key>] [--json]` | The desktop app's own settings (approval tier, hidden models, …), defaults included |
+| `future workspace list --json` | The desktop app's workspaces (the directories workspace conversations are filed under) |
 | `future doctor` | One pass over login, agent connectivity, sandbox, providers, sessions and skills |
 | `future models --json` | Models this agent can use |
 | `future version --json` | Which build this is: version, commit, target, dirty state |
@@ -349,6 +350,37 @@ database the app has never written reports the defaults and does not create one.
 Reads and writes need no running desktop app, and the app picks the change up
 the next time it reads the settings; a change made in the app's own Settings
 screen applies immediately.
+
+## The desktop app's workspaces
+
+A *workspace* is the directory a workspace conversation is filed under. The
+records live in the `workspaces` table of the same `~/.future/app/app.db`, which
+is why a workspace added from the terminal shows up in the desktop app's
+sidebar and on a paired phone (the app republishes its catalogue on the next
+tick).
+
+```sh
+future workspace list                 # the user's own workspaces
+future workspace list --json
+future workspace add ~/projects/demo  # register an existing directory
+future workspace add /srv/app --name "Service"
+```
+
+The directory must already exist — a workspace points at a directory, it does
+not create one. Adding a path that already has a workspace reopens that one
+instead of creating a second: one directory is one workspace, however the path
+is spelled (`~`, a symlinked path, a trailing separator). The name defaults to
+the directory's own name. `add` prints whether it created a row or reopened one
+(`"created": true|false` with `--json`), which is also what makes the command
+safe to run twice.
+
+The write needs no running desktop app, and a running one sees it on its next
+read.
+
+> `future workspace` manages the *desktop app's* workspace records. A session's
+> working directory is an agent-side property (`future session set <id> --cwd`);
+> the app derives a workspace row from it when it imports a session, which is
+> how an agent-side session appears in the sidebar.
 
 ## Boundaries worth stating
 

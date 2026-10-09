@@ -1497,6 +1497,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "future-app-workspaces"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rusqlite",
+ "serde",
+ "uuid",
+]
+
+[[package]]
 name = "future-remote-crypto"
 version = "0.1.0"
 dependencies = [
@@ -1552,6 +1562,7 @@ dependencies = [
  "flate2",
  "fs2",
  "future-app-settings",
+ "future-app-workspaces",
  "future-remote-crypto",
  "future-rpc",
  "future-tasks",
