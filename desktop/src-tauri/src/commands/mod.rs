@@ -25,6 +25,8 @@ mod references;
 #[cfg(feature = "gui")]
 mod remote;
 #[cfg(feature = "gui")]
+mod remote_peer;
+#[cfg(feature = "gui")]
 mod review;
 #[cfg(feature = "gui")]
 mod runs;
@@ -61,6 +63,8 @@ pub use self::providers::*;
 pub use self::references::*;
 #[cfg(feature = "gui")]
 pub use self::remote::*;
+#[cfg(feature = "gui")]
+pub use self::remote_peer::*;
 #[cfg(feature = "gui")]
 pub use self::review::*;
 #[cfg(feature = "gui")]

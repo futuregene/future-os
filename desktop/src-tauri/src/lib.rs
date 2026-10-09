@@ -32,6 +32,7 @@ mod menu;
 mod proc;
 mod remote;
 mod remote_host;
+mod remote_peer;
 mod run_error;
 mod runtime;
 mod scheduler;
@@ -1134,6 +1135,15 @@ mod gui {
                 remote_status,
                 remote_unpair,
                 remote_pairing_status,
+                remote_peer_list,
+                remote_peer_pair,
+                remote_peer_connect,
+                remote_peer_disconnect,
+                remote_peer_unpair,
+                remote_peer_set_label,
+                remote_peer_sessions,
+                remote_peer_workspaces,
+                remote_peer_request,
                 terminal_server_info,
                 open_url
             ])
