@@ -211,4 +211,45 @@ mod tests {
             "the error names the valid forms: {err}"
         );
     }
+
+    /// An abstract socket is reachable by name — the Android case.
+    ///
+    /// Gated to Linux/Android because abstract sockets only exist there; the
+    /// syscall is the same one Android Chrome's `@chrome_devtools_remote` needs,
+    /// so a Linux CI run is the closest this repository gets to exercising it.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[tokio::test]
+    async fn an_abstract_socket_is_reachable_by_name() {
+        use std::os::linux::net::SocketAddrExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let name = format!("future-cdp-test-{}", std::process::id());
+        let addr = std::os::linux::net::SocketAddr::from_abstract_name(name.as_bytes())
+            .expect("abstract name");
+        let listener = tokio::net::UnixListener::bind_addr(&addr).expect("bind abstract");
+
+        let mut stream = SocketSpec::Abstract(name)
+            .connect()
+            .await
+            .expect("connect by abstract name");
+        let (mut server_side, _) = listener.accept().await.expect("accept");
+
+        // Real traffic in both directions: the same socket, not just a
+        // successful connect.
+        stream.write_all(b"ping").await.expect("write");
+        let mut buf = [0u8; 4];
+        server_side.read_exact(&mut buf).await.expect("read");
+        assert_eq!(&buf, b"ping");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[tokio::test]
+    async fn a_missing_abstract_socket_names_it_in_the_error() {
+        let err = SocketSpec::Abstract("future-no-such-socket".to_string())
+            .connect()
+            .await
+            .expect_err("no listener");
+        assert!(err.contains("future-no-such-socket"), "{err}");
+        assert!(err.contains('@'), "names the abstract form: {err}");
+    }
 }
