@@ -1501,3 +1501,27 @@ mod tests {
         assert_eq!(page, before);
     }
 }
+
+#[cfg(test)]
+mod shell_attempts_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn lean_live_and_history_keep_structured_attempts() {
+        let facts = json!({"command":"action", "cwd":"/repo", "duration_ms":8,
+        "status":"exited", "exit_code":2, "is_soft_fail":false, "is_error":true,
+        "attempts":[{"status":"exited","exit_code":7,"duration_ms":4,"output":"original [exit: 0]","output_truncated":false,"escalated":false},
+        {"status":"exited","exit_code":2,"duration_ms":4,"output":"retry","output_truncated":false,"escalated":true}],
+        "approval":"approved","note":null});
+        let data =
+            json!({"tool_id":"t","shell_result":facts,"text":"last output [exit: 0]"}).to_string();
+        let lean: Value =
+            serde_json::from_str(&lean_event_data("tool_end", &data).unwrap()).unwrap();
+        assert_eq!(lean["shell_result"], facts);
+        assert!(lean.get("text").is_none());
+        let mut entries = json!([{"metadata":{"shell_result":facts},"blocks":[{"kind":"tool_result","toolCallId":"t","text":"summary","isError":true}]}]);
+        lean_entries(&mut entries);
+        assert_eq!(entries[0]["metadata"]["shell_result"], facts);
+        assert_eq!(entries[0]["blocks"][0]["isError"], true);
+    }
+}

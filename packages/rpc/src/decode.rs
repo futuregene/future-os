@@ -950,6 +950,10 @@ fn typed_event_json_inner(kind: &proto::event_payload::Kind) -> Option<serde_jso
             exit_code: data.exit_code,
             is_soft_fail: data.is_soft_fail,
             target_path: data.target_path.clone(),
+            shell_result: data
+                .shell_result_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str(json).ok()),
         })
         .ok(),
         K::ApprovalAssessment(data) => {

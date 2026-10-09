@@ -1,4 +1,4 @@
-//! Prompt building — 1:1 compatible with internal/prompt/
+//! Prompt composition: behavior, skills, project context, memory and environment.
 
 mod project_context;
 pub(crate) use project_context::load_project_context;
@@ -9,8 +9,8 @@ use crate::types::AgentTool;
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /// BuildPrompt produces a fully assembled system prompt from the given options.
-/// Section ordering matches 's BuildPrompt():
-///   1. Identity (who you are + tool list + behavior rules)
+/// Section ordering:
+///   1. Identity + tool execution, approval feedback and user communication
 ///   2. Skills (available capabilities — only if read tool is present)
 ///   3. Project context (AGENTS.md / CLAUDE.md / GEMINI.md)
 ///   4. Workspace memory (FUTURE.md)
@@ -343,7 +343,7 @@ fn build_identity_section(opts: &PromptOptions) -> String {
     let mut parts = vec![];
 
     // Identity
-    parts.push("You are an expert coding assistant operating inside FutureAgent, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.".to_string());
+    parts.push("You are FutureAgent, an AI assistant in FutureOS. Work with the user to complete their tasks using the available tools and skills.".to_string());
 
     // Tool list
     let tools_list = if opts.tools.is_empty() {
@@ -363,39 +363,38 @@ fn build_identity_section(opts: &PromptOptions) -> String {
     };
     parts.push("Available tools:".to_string());
     parts.push(tools_list);
-    parts.push("In addition to the tools above, you may have access to other custom tools depending on the project.".to_string());
 
-    // Dynamic tool guidelines
+    // Keep tool-specific execution facts separate from approval handling and
+    // user-facing writing requirements. Custom prompts still replace this
+    // entire default block; project and append instructions remain later.
     let tool_names: Vec<&str> = opts
         .tools
         .iter()
         .map(|t| t.def.function.name.as_str())
         .collect();
-    let mut guidelines: Vec<String> = build_dynamic_tool_guidelines(&tool_names);
-    // PromptGuidelines from opts
-    for g in &opts.prompt_guidelines {
-        guidelines.push(g.clone());
+    let mut guidelines = build_dynamic_tool_guidelines(&tool_names);
+    guidelines.extend(opts.tools.iter().flat_map(|t| t.guidelines.iter()).cloned());
+    let guidelines = dedup(guidelines)
+        .into_iter()
+        .map(|g| format!("- {g}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut execution = include_str!("execution.md").trim().to_owned();
+    if !guidelines.is_empty() {
+        execution.push_str("\n\n## Tool-Specific Execution Rules\n\n");
+        execution.push_str(&guidelines);
     }
-    // Per-tool guidelines
-    for g in opts.tools.iter().flat_map(|t| t.guidelines.iter()) {
-        guidelines.push(g.clone());
+    parts.push(execution);
+    parts.push(include_str!("approval.md").trim().to_owned());
+    parts.push(include_str!("communication.md").trim().to_owned());
+    if !opts.prompt_guidelines.is_empty() {
+        let guidelines = dedup(opts.prompt_guidelines.clone())
+            .into_iter()
+            .map(|g| format!("- {g}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        parts.push(format!("# Additional Guidelines\n\n{guidelines}"));
     }
-    // Default behavioral guidelines (always appended last)
-    guidelines.push("Be concise in your responses".to_string());
-    guidelines.push("Show file paths clearly when working with files".to_string());
-    guidelines.push("Write ordinary responses in standard Markdown. To reference a file you created or edited on disk, use a normal Markdown link whose destination is the file path from the write tool result: [name](<path>). Wrap the path in angle brackets so paths with spaces work, and write it verbatim (an absolute path keeps its leading slash; a workspace-relative path MUST start with ./ — e.g. [notes.txt](<./notes.txt>), never [notes.txt](<notes.txt>)). Use forward slashes even on Windows. Do NOT percent-encode the path or use any custom URL scheme.".to_string());
-    // Minimal link mode: application-object references (futureos:// links and
-    // futureos-* fenced embeds) are disabled while we trial the simplest link
-    // set. The GUI no longer renders them (see desktop parseFutureMarkdown.ts), so we
-    // don't instruct the model to emit them. File links above are unaffected.
-    // To restore, uncomment the two guidelines below.
-    // guidelines.push("Only use an id-based reference — [label](futureos://artifact/<id>), [label](futureos://run/<id>), [label](futureos://tool/<id>), [label](futureos://approval/<id>), or [label](futureos://review/<id>) — when you actually have that object's id from earlier in the conversation or tool results. NEVER invent or guess an id; if you don't have one (e.g. a file you just wrote), use a plain [name](<path>) file link instead. Prefer a reference over pasting long stdout, full diffs, or large file contents inline.".to_string());
-    // guidelines.push("For block-level FutureOS objects, use fenced directives with language names such as `futureos-artifact`, `futureos-run`, `futureos-tool`, `futureos-approval`, or `futureos-review`, and include id and view fields. Do not embed long stdout, full diffs, or large file contents directly in the assistant message when an object reference is available.".to_string());
-    // The default guidelines above guarantee the list is non-empty.
-    let deduped = dedup(guidelines);
-    let lines: Vec<String> = deduped.iter().map(|g| format!("- {}", g)).collect();
-    parts.push("Guidelines:".to_string());
-    parts.push(lines.join("\n"));
 
     parts.join("\n\n")
 }
@@ -406,18 +405,10 @@ fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
     let mut guidelines = vec![];
 
     if has_shell {
-        // Platform-matched examples: the same tool speaks bash on Unix and
-        // PowerShell 5.1 on Windows (see sandbox::shell_invocation).
-        #[cfg(not(target_os = "windows"))]
-        guidelines.push(
-            "Use the shell tool for command-line exploration such as ls, rg, and find; but to read a known file's contents use the read tool, not cat. Prefer write/edit tools for ordinary file writes."
-                .to_string(),
-        );
-        #[cfg(target_os = "windows")]
-        guidelines.push(
-            "Use the shell tool (PowerShell) for command-line exploration such as Get-ChildItem and Select-String; but to read a known file's contents use the read tool, not Get-Content. Prefer write/edit tools for ordinary file writes."
-                .to_string(),
-        );
+        // Recommend only tools actually available in this session.
+        if tool_names.contains(&"read") {
+            guidelines.push("Prefer the read tool for known file contents; use shell when command-line processing is useful.".to_string());
+        }
         // A `#`-picked conversation reaches the model as
         // `[title](futureos://session/<id>)`, so the id is already in the
         // message. Acting on it goes through the ordinary `future` CLI rather
@@ -543,8 +534,7 @@ fn os_hint_for(os: &str, shell: &str, legacy_bash: bool, supports_chaining: bool
             let legacy_note = if legacy_bash {
                 " IMPORTANT: This is bash 3.2 — do NOT use bash 4+ features: \
                  no associative arrays (declare -A), no globstar \
-                 (**), no ${var,,}/${var^^}, no mapfile/readarray. Use \
-                 POSIX-compatible syntax only."
+                 (**), no ${var,,}/${var^^}, no mapfile/readarray."
             } else {
                 ""
             };
@@ -571,9 +561,10 @@ fn os_hint_for(os: &str, shell: &str, legacy_bash: bool, supports_chaining: bool
             };
             format!(
                 "Host platform: Windows. Shell commands are interpreted by \
-                 {shell} — NOT cmd and NOT bash. Use PowerShell syntax only: \
+                 {shell}. Use PowerShell syntax for the command wrapper: \
                  {chaining}, environment variables as $env:VAR (never %VAR%), \
-                 path separators \\ (not /). \
+                 and Windows paths. External programs and scripts may use \
+                 their own syntax. \
                  {skills_hint} (Example: {example})"
             )
         }
@@ -581,8 +572,7 @@ fn os_hint_for(os: &str, shell: &str, legacy_bash: bool, supports_chaining: bool
             let legacy_note = if legacy_bash {
                 " IMPORTANT: This is bash 3.x — do NOT use bash 4+ features: \
                  no associative arrays (declare -A), no globstar \
-                 (**), no ${var,,}/${var^^}, no mapfile/readarray. Use \
-                 POSIX-compatible syntax only."
+                 (**), no ${var,,}/${var^^}, no mapfile/readarray."
             } else {
                 ""
             };
@@ -846,7 +836,43 @@ mod tests {
         });
         assert!(prompt.contains("You are a custom assistant."));
         // Should not have the default identity section
-        assert!(!prompt.contains("You are an expert coding assistant"));
+        assert!(!prompt.contains("You are FutureAgent"));
+        for heading in [
+            "# Tool Execution",
+            "# Approval Feedback",
+            "# User Communication",
+        ] {
+            assert!(!prompt.contains(heading));
+        }
+    }
+
+    #[test]
+    fn prompt_routes_tool_rules_separately_and_preserves_override_layers() {
+        let shell = crate::tools::shell_tool();
+        let rule = shell.guidelines[0].clone();
+        let prompt = build_prompt(&PromptOptions {
+            tools: vec![shell],
+            prompt_guidelines: vec!["ADDITIONAL_INSTRUCTION".into()],
+            agent_content: "PROJECT_INSTRUCTION".into(),
+            append_prompt: "APPEND_INSTRUCTION".into(),
+            ..Default::default()
+        });
+        let execution = prompt.find("# Tool Execution").unwrap();
+        let approval = prompt.find("# Approval Feedback").unwrap();
+        let communication = prompt.find("# User Communication").unwrap();
+        let additional = prompt.find("# Additional Guidelines").unwrap();
+        let project = prompt.find("# Project Context").unwrap();
+        let append = prompt.find("APPEND_INSTRUCTION").unwrap();
+        let environment = prompt.find("# Environment").unwrap();
+        assert!(execution < approval && approval < communication);
+        assert!(communication < additional && additional < project);
+        assert!(project < append && append < environment);
+        assert_eq!(prompt.matches(&rule).count(), 1);
+        assert!(prompt[execution..approval].contains(&rule));
+        assert!(!prompt[approval..communication].contains(&rule));
+        assert!(!prompt[communication..additional].contains(&rule));
+        assert!(prompt[additional..project].contains("ADDITIONAL_INSTRUCTION"));
+        assert!(prompt[project..append].contains("PROJECT_INSTRUCTION"));
     }
 
     #[test]

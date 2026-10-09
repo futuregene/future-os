@@ -1227,6 +1227,8 @@ pub struct EscalationRequest {
 pub enum EscalationDecision {
     Approved,
     Denied(String),
+    Cancelled(String),
+    ContextInvalidated(String),
 }
 
 /// Callback the RPC layer injects so `run_shell` can raise a `sandbox_escalation`

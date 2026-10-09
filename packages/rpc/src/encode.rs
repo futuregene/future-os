@@ -471,6 +471,10 @@ pub fn event_payload(event_type: &str, data_json: &str) -> Option<proto::EventPa
                     exit_code: data.exit_code,
                     is_soft_fail: data.is_soft_fail,
                     target_path: data.target_path,
+                    shell_result_json: data
+                        .shell_result
+                        .as_ref()
+                        .and_then(|facts| serde_json::to_string(facts).ok()),
                 })
             }),
         "approval_assessment" => {

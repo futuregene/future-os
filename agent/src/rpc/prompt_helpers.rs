@@ -114,11 +114,13 @@ pub(super) fn run_event_to_sse(event: crate::agent::RunEvent) -> Option<super::S
             exit_code,
             is_soft_fail,
             target_path,
+            shell_result,
         } => {
             let mut data = serde_json::Map::new();
             insert_some(&mut data, "exit_code", exit_code);
             insert_some(&mut data, "is_soft_fail", is_soft_fail);
             insert_some(&mut data, "target_path", target_path);
+            insert_some(&mut data, "shell_result", shell_result);
             data.insert("type".into(), serde_json::json!("tool_end"));
             if !output.is_empty() {
                 data.insert("text".into(), serde_json::json!(output));
@@ -543,6 +545,7 @@ mod tests {
                     exit_code: Some(0),
                     is_soft_fail: None,
                     target_path: None,
+                    shell_result: None,
                 },
                 "tool_end",
                 r#"{"exit_code":0,"type":"tool_end","text":"done","tool_name":"shell","tool_id":"call"}"#,

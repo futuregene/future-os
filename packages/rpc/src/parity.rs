@@ -952,3 +952,19 @@ fn text_chunk_encode_stays_within_budget() {
         "text_chunk encode too slow: {per_event:?}/event"
     );
 }
+
+#[test]
+fn shell_attempts_event_and_history_metadata_survive_typed_transport() {
+    let facts = json!({"command":"action", "cwd":"/repo", "duration_ms":8,
+        "status":"exited", "exit_code":2, "is_soft_fail":false, "is_error":true,
+        "attempts":[{"status":"exited","exit_code":7,"duration_ms":4,"output":"original [exit: 0]","output_truncated":false,"escalated":false},
+        {"status":"exited","exit_code":2,"duration_ms":4,"output":"retry","output_truncated":false,"escalated":true}],
+        "approval":"approved","note":null});
+    assert_event_parity(
+        "tool_end",
+        json!({"tool_id":"command", "tool_name":"shell", "shell_result":facts}),
+    );
+    // History metadata shares the existing typed JSON metadata transport.
+    let typed: crate::shell_result::ShellResult = serde_json::from_value(facts.clone()).unwrap();
+    assert_eq!(serde_json::to_value(typed).unwrap(), facts);
+}

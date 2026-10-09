@@ -173,6 +173,20 @@ impl ApprovalGate {
                 &shape,
                 normalize_requested_action(arguments),
             );
+            crate::tools::shell::record_gate_outcome(match &outcome {
+                ApprovalOutcome::Approved(_) => "approved",
+                ApprovalOutcome::Rejected(_) => "denied",
+                ApprovalOutcome::Cancelled(_)
+                    if self.review.as_ref().is_some_and(|context| {
+                        context.invalidated().is_some_and(|verdict| {
+                            verdict.status == crate::approval_review::ReviewStatus::StaleRequest
+                        })
+                    }) =>
+                {
+                    "context_invalidated"
+                }
+                ApprovalOutcome::Cancelled(_) => "cancelled",
+            });
             return match outcome {
                 ApprovalOutcome::Approved(_) => None,
                 ApprovalOutcome::Cancelled(_) => Some(crate::types::ToolCallResult {
@@ -300,14 +314,29 @@ impl ApprovalGate {
         }
 
         let shape = windows_capability_shape(command, &prepared, sandbox);
-        match self.resolve_approval(
+        let outcome = self.resolve_approval(
             broadcaster,
             session_id,
             tool_id,
             "shell",
             &shape,
             normalize_requested_action(arguments),
-        ) {
+        );
+        crate::tools::shell::record_gate_outcome(match &outcome {
+            ApprovalOutcome::Approved(_) => "approved",
+            ApprovalOutcome::Rejected(_) => "denied",
+            ApprovalOutcome::Cancelled(_)
+                if self.review.as_ref().is_some_and(|context| {
+                    context.invalidated().is_some_and(|verdict| {
+                        verdict.status == crate::approval_review::ReviewStatus::StaleRequest
+                    })
+                }) =>
+            {
+                "context_invalidated"
+            }
+            ApprovalOutcome::Cancelled(_) => "cancelled",
+        });
+        match outcome {
             ApprovalOutcome::Approved(request_id) => {
                 let Some(receipt) = prepared.approved_receipt(request_id) else {
                     return Some(crate::types::ToolCallResult {
@@ -405,7 +434,16 @@ impl ApprovalGate {
         ) {
             ApprovalOutcome::Approved(_) => EscalationDecision::Approved,
             ApprovalOutcome::Rejected(note) => EscalationDecision::Denied(note),
-            ApprovalOutcome::Cancelled(note) => EscalationDecision::Denied(if note.is_empty() {
+            ApprovalOutcome::Cancelled(note)
+                if self.review.as_ref().is_some_and(|context| {
+                    context.invalidated().is_some_and(|verdict| {
+                        verdict.status == crate::approval_review::ReviewStatus::StaleRequest
+                    })
+                }) =>
+            {
+                EscalationDecision::ContextInvalidated(note)
+            }
+            ApprovalOutcome::Cancelled(note) => EscalationDecision::Cancelled(if note.is_empty() {
                 "approval request ended".to_string()
             } else {
                 note

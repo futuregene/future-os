@@ -1,3 +1,5 @@
+import type { ShellResult } from "@future-os/thread-projection";
+
 export type ConnectionPhase =
   | "booting"
   /** Desktop explicitly ended the remote session; wait for a user retry. */
@@ -418,6 +420,7 @@ export interface TimelineToolRow {
    *  calls the summary row stands for. */
   count?: number;
   children?: TimelineToolRow[];
+  shellResult?: ShellResult;
   /** The call's identity and run, on rows projected from persisted entries.
    *  A lean history page omits a shell call's arguments, so a row with no
    *  target fetches its command back by this identity when opened. */

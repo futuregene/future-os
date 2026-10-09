@@ -1,6 +1,9 @@
 //! Tools — 1:1 compatible with Go internal/tools/
 
 mod cmd_exe_rewrite;
+pub(crate) mod shell;
+#[cfg(test)]
+use shell::execution::*;
 
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
@@ -191,15 +194,17 @@ fn shell_schema() -> serde_json::Value {
         "properties": {
             "command": {
                 "type": "string",
-                "description": "The shell command to execute"
+                "minLength": 1, "maxLength": 65536,
+                "description": "A shell command or script executed as one unit in the current working directory."
             },
             "timeout": {
                 "type": "integer",
+                "minimum": 1, "maximum": 600,
                 "description": "Optional timeout in seconds"
             },
             "escalated": {
                 "type": "boolean",
-                "description": "Request user approval to run this command outside the sandbox. Run inside the sandbox first by default; do not request approval merely because you suspect a restriction. Set escalated to true only when execution results indicate that a sandbox restriction blocked an operation required to complete the task. Preserve the actual failure status and error output of required operations: do not hide failures with || true, force a successful exit, or suppress error output, as this can prevent sandbox restriction detection. Tolerate only failures that are explicitly safe to ignore, and never treat those operations as successful. An overall exit code of 0 does not mean every operation succeeded. When requesting a retry, include only the blocked necessary operations where possible to avoid repeating steps that already succeeded."
+                "description": "Request approval to run this command outside the sandbox. Default false. Set true only after execution results show a sandbox restriction blocked a necessary operation; provide justification. Approval applies to this command only. Follow approval feedback and inspect partial effects before retrying."
             },
             "justification": {
                 "type": "string",
@@ -238,8 +243,10 @@ fn shell_schema() -> serde_json::Value {
                 "additionalProperties": false
             }
         },
+        "additionalProperties": false,
         "required": ["command"]
     });
+    schema["properties"]["timeout"]["description"] = serde_json::json!("Execution budget in seconds, including retries; default 120, maximum 600. A retry uses only the remaining budget.");
     // The schema belongs to the executing Agent's platform. Keep validation
     // for unsupported input in the handler/gate, but do not invite its use.
     if !cfg!(windows) {
@@ -252,49 +259,7 @@ fn shell_schema() -> serde_json::Value {
 }
 
 fn shell_handler(args: serde_json::Value) -> Pin<Box<dyn Future<Output = Result<String>> + Send>> {
-    Box::pin(async move {
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct ShellParams {
-            command: String,
-            timeout: Option<u64>,
-            escalated: Option<bool>,
-            justification: Option<String>,
-            #[serde(
-                default,
-                rename = "additional_permissions",
-                alias = "additionalPermissions"
-            )]
-            additional_permissions: Option<crate::sandbox::windows_request::AdditionalPermissions>,
-        }
-        let params: ShellParams = serde_json::from_value(args)?;
-        let approved_capability = if let Some(permissions) = params.additional_permissions.as_ref()
-        {
-            let sandbox = TOOL_SCOPE
-                .try_with(|scope| scope.sandbox.clone())
-                .unwrap_or_default();
-            let prepared =
-                crate::sandbox::windows_request::prepare(&sandbox, &params.command, permissions)?;
-            if prepared.needs_approval() {
-                let receipt = consume_windows_capability(&prepared).ok_or_else(|| {
-                    anyhow!("additional write permission is missing an exact approval receipt")
-                })?;
-                Some(receipt)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        run_shell_with_capability(
-            &params.command,
-            params.timeout.unwrap_or(120),
-            params.escalated.unwrap_or(false),
-            params.justification.as_deref().unwrap_or(""),
-            approved_capability.as_ref(),
-        )
-        .await
-    })
+    Box::pin(async move { shell::execute(args).await })
 }
 
 pub fn shell_tool() -> AgentTool {
@@ -302,23 +267,14 @@ pub fn shell_tool() -> AgentTool {
     // command on this platform — it is the model's only reliable signal for
     // generating syntax that will parse (see sandbox::shell_invocation).
     #[cfg(not(target_os = "windows"))]
-    let description = "Execute a shell command in the current working directory. Commands are interpreted by the host shell identified in the system prompt. Use this for exploration and command-line programs. For ordinary file creation or edits, prefer write/edit tools, but shell redirection and heredocs may be used when they are the better fit. Returns stdout and stderr merged. Output is truncated to last 500000 bytes.";
+    let description = "Execute a shell command in the current working directory. Commands are interpreted by the host shell identified in the system prompt. Use this for exploration and command-line programs. For ordinary file creation or edits, prefer write/edit tools, but shell redirection and heredocs may be used when they are the better fit. Returns process facts for this command and each execution attempt, with merged stdout/stderr. Execution metadata is for internal diagnosis; normally report only the task outcome and useful verification to the user. Total retained output is bounded to 500000 bytes.";
     // Version-neutral on Windows: the precise interpreter (pwsh 7 vs Windows
     // PowerShell 5.1) and its chaining rules live in the host-platform section
     // of the system prompt (prompt::os_hint), resolved at runtime.
     #[cfg(target_os = "windows")]
-    let description = "Execute a shell command in the current working directory. Commands are interpreted by PowerShell — use PowerShell syntax: environment variables as $env:VAR (never %VAR%), single quotes for literal strings, and see the host-platform note for command chaining. To run an executable whose path contains spaces, use the call operator: & \"C:\\Program Files\\app\\tool.exe\" args. Use this for exploration and command-line programs. For ordinary file creation or edits, prefer write/edit tools. Returns stdout and stderr merged. Output is truncated to last 500000 bytes.";
+    let description = "Execute a shell command in the current working directory. Commands are interpreted by PowerShell — use PowerShell syntax: environment variables as $env:VAR (never %VAR%), single quotes for literal strings, and see the host-platform note for command chaining. To run an executable whose path contains spaces, use the call operator: & \"C:\\Program Files\\app\\tool.exe\" args. Use this for exploration and command-line programs. For ordinary file creation or edits, prefer write/edit tools. Returns process facts for this command and each execution attempt, with merged stdout/stderr. Execution metadata is for internal diagnosis; normally report only the task outcome and useful verification to the user. Total retained output is bounded to 500000 bytes.";
 
-    #[cfg(not(target_os = "windows"))]
-    let guidelines = vec![
-        "Prefer one shell command per turn",
-        "Prefer write/edit for ordinary file writes; use shell redirection, heredocs, tee, or cat > file only when they are more appropriate for the task.",
-    ];
-    #[cfg(target_os = "windows")]
-    let guidelines = vec![
-        "Prefer one shell command per turn",
-        "Prefer write/edit for ordinary file writes; use PowerShell redirection (> or Out-File) only when it is more appropriate for the task. Note: on Windows PowerShell 5.1 these default to UTF-16 with a BOM — pass -Encoding utf8 if another tool must read the file.",
-    ];
+    let guidelines = shell::guidelines();
 
     make_tool(
         "shell",
@@ -729,158 +685,6 @@ fn shell_segments(command: &str) -> Vec<Vec<String>> {
     segments
 }
 
-/// Pre-execution escalation: the model explicitly asked for unsandboxed
-/// execution. Returns the decision-driven outcome to propagate, or None when
-/// no escalation channel is registered (caller falls through to a normal
-/// sandboxed run).
-async fn pre_execution_escalation(
-    escalation: &Option<crate::sandbox::EscalationRequester>,
-    command: &str,
-    timeout_secs: u64,
-    justification: &str,
-    sandbox: &ResolvedSandbox,
-) -> Option<Result<String>> {
-    let requester = escalation.as_ref()?;
-    let request = EscalationRequest {
-        trigger: crate::sandbox::EscalationTrigger::ModelRequest,
-        command: command.to_string(),
-        justification: justification.to_string(),
-        failure_summary: String::new(),
-    };
-    Some(match requester(&request) {
-        EscalationDecision::Approved => {
-            spawn_shell(command, timeout_secs, sandbox, true, None).await
-        }
-        EscalationDecision::Denied(note) => Err(anyhow!(
-            "Escalated execution was not approved{}. Run the command inside the sandbox instead, or explain to the user why it needs these permissions.",
-            if note.is_empty() { String::new() } else { format!(": {note}") }
-        )),
-    })
-}
-
-/// Post-hoc escalation: the sandboxed run failed with a sandbox-denial
-/// signature. Returns the outcome to propagate (approved → unsandboxed
-/// re-run; denied → annotated original output), or None when the failure
-/// doesn't look like a sandbox denial / no escalation channel exists.
-async fn post_hoc_escalation(
-    escalation: &Option<crate::sandbox::EscalationRequester>,
-    sandbox: &ResolvedSandbox,
-    command: &str,
-    timeout_secs: u64,
-    result: &str,
-    retry: ShellRetry,
-) -> Option<Result<String>> {
-    let requester = escalation.as_ref()?;
-    let (exit_code, tail) = parse_result_failure(result);
-    if retry == ShellRetry::Blocked
-        || exit_code == 0
-        || !crate::sandbox::looks_like_sandbox_denial(sandbox, exit_code, &tail)
-    {
-        return None;
-    }
-    let request = EscalationRequest {
-        trigger: crate::sandbox::EscalationTrigger::SandboxFailure,
-        command: command.to_string(),
-        justification: String::new(),
-        failure_summary: tail,
-    };
-    Some(match requester(&request) {
-        EscalationDecision::Approved => {
-            spawn_shell(command, timeout_secs, sandbox, true, None).await
-        }
-        EscalationDecision::Denied(note) => Ok(format!(
-            "{result}\n[sandbox] The command appears to have been blocked by the sandbox; running it without the sandbox was not approved{}.",
-            if note.is_empty() { String::new() } else { format!(": {note}") }
-        )),
-    })
-}
-
-#[cfg(test)]
-async fn run_shell(
-    command: &str,
-    timeout_secs: u64,
-    escalated: bool,
-    justification: &str,
-) -> Result<String> {
-    run_shell_with_capability(command, timeout_secs, escalated, justification, None).await
-}
-
-async fn run_shell_with_capability(
-    command: &str,
-    timeout_secs: u64,
-    escalated: bool,
-    justification: &str,
-    approved_capability: Option<&crate::sandbox::windows_request::ApprovedWriteCapability>,
-) -> Result<String> {
-    // Defense-in-depth: reject obviously destructive commands before they
-    // reach the OS.  The sandbox provides the primary enforcement boundary;
-    // this is a loud, fast-fail layer that catches the most egregious patterns.
-    reject_dangerous_command(command)?;
-
-    // On Windows, cmd.exe strips double quotes when processing arguments to
-    // npm-generated .cmd wrappers (like the `future` CLI). This corrupts
-    // --args JSON that contains commas in string values. Rewrite such
-    // commands to pipe JSON through --stdin via a temp file.
-    let command_owned =
-        cmd_exe_rewrite::rewrite_future_tools_args(command).unwrap_or_else(|| command.to_string());
-    let command: &str = &command_owned;
-
-    let sandbox = TOOL_SCOPE
-        .try_with(|scope| scope.sandbox.clone())
-        .unwrap_or_default();
-    let escalation = TOOL_SCOPE
-        .try_with(|scope| scope.escalation.clone())
-        .unwrap_or(None);
-
-    // Model explicitly requested escalated permissions: approve BEFORE running.
-    // Only honored when the command would actually run sandboxed — in degraded
-    // or full-access modes the pre-execution approval flow already covered it,
-    // and escalating would double-prompt the user.
-    if escalated && sandbox.wraps_shell() {
-        // No escalation channel: fall through to a normal sandboxed run.
-        #[allow(clippy::single_match)]
-        // match keeps each edge's region on its arm line; an if-let whose body always diverges leaves a phantom zero-count region on its closing brace
-        match pre_execution_escalation(&escalation, command, timeout_secs, justification, &sandbox)
-            .await
-        {
-            Some(outcome) => return outcome,
-            None => {}
-        }
-    }
-
-    let sandboxed = sandbox.wraps_shell();
-    if sandboxed {
-        if let Ok(Some(notify)) = TOOL_SCOPE.try_with(|scope| scope.on_sandboxed.clone()) {
-            notify(command);
-        }
-    }
-    let mut retry = ShellRetry::ClassifyOutput;
-    let result = spawn_shell_with_report(
-        command,
-        timeout_secs,
-        &sandbox,
-        false,
-        approved_capability,
-        &mut retry,
-    )
-    .await?;
-
-    // Post-hoc escalation: only when the failure narrowly looks like a sandbox
-    // denial (conservative heuristic — ordinary failures go back to the model).
-    if sandboxed && retry != ShellRetry::Blocked {
-        #[allow(clippy::single_match)]
-        // match keeps each edge's region on its arm line; an if-let whose body always diverges leaves a phantom zero-count region on its closing brace
-        match post_hoc_escalation(&escalation, &sandbox, command, timeout_secs, &result, retry)
-            .await
-        {
-            Some(outcome) => return outcome,
-            None => {}
-        }
-    }
-
-    Ok(result)
-}
-
 /// The exit code carried by a shell tool result's `[exit: N]` footer, if any.
 /// `None` for non-shell results and for `[exit: signal]` (killed by a signal —
 /// no numeric code).
@@ -925,10 +729,12 @@ pub fn is_soft_fail_command(command: &str) -> bool {
 ///
 /// Failure means the agent raised an error for the call, or a shell command
 /// exited non-zero for a reason other than the grep/diff "no match" signal
-/// ([`is_soft_fail_command`]). Everything else is not a failure — including a
-/// signal-killed run without a numeric exit code, which only reaches this
-/// verdict as a success if the shell tool reported `Ok` (timeouts are `Err`).
+/// ([`is_soft_fail_command`]). Everything else is not a failure — new calls use host process facts, including missing exit codes, cancellation
+/// and timeout. The footer fallback applies only when structured facts are absent.
 pub fn outcome_is_error(error: Option<&str>, semantics: &ToolEndSemantics) -> bool {
+    if let Some(result) = &semantics.shell_result {
+        return error.is_some() || result.is_error;
+    }
     if error.is_some() {
         return true;
     }
@@ -942,7 +748,7 @@ pub fn outcome_is_error(error: Option<&str>, semantics: &ToolEndSemantics) -> bo
 /// panel, artifact persistence, other clients) stop re-parsing the output
 /// prose. Empty object when the tool has nothing structured to report:
 ///
-/// - `shell`: `exit_code` from the result's `[exit: N]` footer, plus
+/// - `shell`: host process facts for new calls; legacy `[exit: N]` fallback, plus
 ///   `is_soft_fail` when exit 1 is the command's normal no-match signal (see
 ///   [`is_soft_fail_command`]); exit 2+ from those programs is a real error.
 /// - `write` / `edit`: `target_path` from the call arguments.
@@ -951,6 +757,7 @@ pub struct ToolEndSemantics {
     pub exit_code: Option<i32>,
     pub is_soft_fail: Option<bool>,
     pub target_path: Option<String>,
+    pub shell_result: Option<future_rpc::shell_result::ShellResult>,
 }
 
 pub fn tool_end_semantics(
@@ -997,537 +804,6 @@ fn tool_args_object(tool_args: &serde_json::Value) -> Option<serde_json::Value> 
     match tool_args {
         serde_json::Value::String(s) => serde_json::from_str(s).ok(),
         other => Some(other.clone()),
-    }
-}
-
-/// Extract the exit code and output tail from a formatted run_shell result, for
-/// the sandbox-denial heuristic. Exit code is now at the end as "[exit: N]".
-fn parse_result_failure(result: &str) -> (i32, String) {
-    let exit_code = shell_result_exit_code(result).unwrap_or(0);
-    let mut tail_start = result.len().saturating_sub(2000);
-    while !result.is_char_boundary(tail_start) {
-        tail_start += 1;
-    }
-    let tail = result[tail_start..].to_string();
-    (exit_code, tail)
-}
-
-/// Spawn a shell command (sandbox-wrapped unless `escalated`) and wait for it
-/// with timeout + interrupt handling. Returns the formatted combined output.
-#[cfg(windows)]
-async fn spawn_windows_restricted_shell(
-    command: &str,
-    timeout_secs: u64,
-    sandbox: &ResolvedSandbox,
-    cwd: &Path,
-    approved_capability: Option<&crate::sandbox::windows_request::ApprovedWriteCapability>,
-) -> Result<String> {
-    use tokio::io::AsyncReadExt;
-
-    let mut env_overrides = vec![(
-        std::ffi::OsString::from("PWD"),
-        cwd.as_os_str().to_os_string(),
-    )];
-    if let Some(path) = path_with_own_dir(std::env::current_exe()) {
-        env_overrides.push((std::ffi::OsString::from("PATH"), path.into()));
-    }
-    let mut child = crate::sandbox::windows::runner::spawn(
-        sandbox,
-        command,
-        cwd,
-        &env_overrides,
-        approved_capability,
-    )
-    .map_err(|error| anyhow!("Failed to initialize Windows write protection: {error}"))?;
-    let mut stdout = tokio::fs::File::from_std(
-        child
-            .take_stdout()
-            .ok_or_else(|| anyhow!("Failed to capture restricted stdout"))?,
-    );
-    let mut stderr = tokio::fs::File::from_std(
-        child
-            .take_stderr()
-            .ok_or_else(|| anyhow!("Failed to capture restricted stderr"))?,
-    );
-    let stdout_task = tokio::spawn(async move {
-        let mut bytes = Vec::new();
-        stdout.read_to_end(&mut bytes).await.map(|_| bytes)
-    });
-    let stderr_task = tokio::spawn(async move {
-        let mut bytes = Vec::new();
-        stderr.read_to_end(&mut bytes).await.map(|_| bytes)
-    });
-    let interrupt_flag = TOOL_SCOPE
-        .try_with(|scope| scope.interrupt_flag.clone())
-        .unwrap_or_else(|_| Arc::new(AtomicBool::new(false)));
-    let timeout = std::time::Duration::from_secs(timeout_secs.max(1));
-
-    enum Completion {
-        Exit(std::io::Result<u32>),
-        Timeout,
-        Interrupted,
-    }
-    let completion = tokio::select! {
-        result = tokio::time::timeout(timeout, child.wait()) => match result {
-            Ok(exit) => Completion::Exit(exit),
-            Err(_) => Completion::Timeout,
-        },
-        _ = wait_for_interrupt(interrupt_flag) => Completion::Interrupted,
-    };
-    if matches!(&completion, Completion::Timeout | Completion::Interrupted) {
-        child.terminate();
-        let _ = child.wait().await;
-    }
-    let stdout = stdout_task
-        .await
-        .map_err(|error| anyhow!("restricted stdout task failed: {error}"))??;
-    let stderr = stderr_task
-        .await
-        .map_err(|error| anyhow!("restricted stderr task failed: {error}"))??;
-    let mut combined = stdout;
-    if !stderr.is_empty() {
-        if !combined.is_empty() && !combined.ends_with(b"\n") {
-            combined.push(b'\n');
-        }
-        combined.extend_from_slice(&stderr);
-    }
-    let combined = crate::sandbox::decode_restricted_shell_output(&combined);
-
-    match completion {
-        Completion::Exit(exit) => {
-            let exit = exit.map_err(|error| anyhow!("Restricted shell wait failed: {error}"))?;
-            Ok(format_shell_output(&combined, combined.len(), exit as i32))
-        }
-        Completion::Timeout if combined.is_empty() => Err(anyhow!(
-            "Shell command timed out after {} seconds (no output captured)",
-            timeout_secs.max(1)
-        )),
-        Completion::Timeout => Err(anyhow!(
-            "Shell command timed out after {} seconds.\nPartial output ({} total):\n{}",
-            timeout_secs.max(1),
-            human_size(combined.len()),
-            format_shell_output(&combined, combined.len(), -1),
-        )),
-        Completion::Interrupted => Err(anyhow!("Shell command interrupted by abort")),
-    }
-}
-
-async fn spawn_shell(
-    command: &str,
-    timeout_secs: u64,
-    sandbox: &ResolvedSandbox,
-    escalated: bool,
-    approved_capability: Option<&crate::sandbox::windows_request::ApprovedWriteCapability>,
-) -> Result<String> {
-    spawn_shell_with_report(
-        command,
-        timeout_secs,
-        sandbox,
-        escalated,
-        approved_capability,
-        &mut ShellRetry::ClassifyOutput,
-    )
-    .await
-}
-
-/// Internal evidence, never deserialized from command output or model input.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ShellRetry {
-    ClassifyOutput,
-    Blocked,
-}
-
-async fn spawn_shell_with_report(
-    command: &str,
-    timeout_secs: u64,
-    sandbox: &ResolvedSandbox,
-    escalated: bool,
-    approved_capability: Option<&crate::sandbox::windows_request::ApprovedWriteCapability>,
-    retry: &mut ShellRetry,
-) -> Result<String> {
-    let cwd = active_workspace()?;
-    #[cfg(windows)]
-    if !escalated && sandbox.wraps_shell() {
-        return spawn_windows_restricted_shell(
-            command,
-            timeout_secs,
-            sandbox,
-            &cwd,
-            approved_capability,
-        )
-        .await;
-    }
-    #[cfg(not(windows))]
-    let _ = approved_capability;
-    // Unix: wrap in a subshell to merge stderr into stdout, preserving the
-    // original interleaving order that separate pipes lose. Internal
-    // redirections in the user's command are respected inside the subshell;
-    // only the subshell's own stderr (empty after the merge) goes to /dev/null.
-    #[cfg(not(windows))]
-    let merged_cmd = format!("( {} ) 2>&1", command);
-    // Windows: `( … ) 2>&1` is a bash-ism — PowerShell's `( … )` rejects
-    // multi-statement commands. The PowerShell wrapper built by
-    // `sandbox::shell_invocation` does the stderr merge and exit-code capture
-    // itself, so the command passes through unmodified.
-    #[cfg(windows)]
-    let merged_cmd = command.to_string();
-    // Preparation can scan a large workspace before a child exists. Let Abort
-    // cancel that scan as well as the process execution below.
-    let interrupt_flag = TOOL_SCOPE
-        .try_with(|scope| scope.interrupt_flag.clone())
-        .unwrap_or_else(|_| Arc::new(AtomicBool::new(false)));
-    // Keep directory I/O off the async executor so it can process the Abort
-    // request even on a single-worker runtime. The worker only prepares a
-    // request: dropping this future can never launch the user command later.
-    #[cfg(target_os = "linux")]
-    let preparation = {
-        let sandbox = sandbox.clone();
-        let cwd = cwd.clone();
-        let cancelled = interrupt_flag.clone();
-        tokio::task::spawn_blocking(move || {
-            sandbox.prepare_shell_for_cwd_with_cancel(&merged_cmd, escalated, &cwd, &|| {
-                cancelled.load(Ordering::Relaxed)
-            })
-        })
-        .await
-        .map_err(|error| anyhow!("Failed to initialize OS sandbox worker: {error}"))?
-    };
-    #[cfg(not(target_os = "linux"))]
-    let preparation = sandbox.prepare_shell_for_cwd(&merged_cmd, escalated, &cwd);
-    let prepared =
-        preparation.map_err(|error| anyhow!("Failed to initialize OS sandbox: {error}"))?;
-    if interrupt_flag.load(Ordering::Relaxed) {
-        return Err(anyhow!(
-            "Shell command interrupted by abort before execution"
-        ));
-    }
-    let report_digest = prepared.boundary.policy_digest.clone();
-    let expects_report =
-        prepared.boundary.backend == crate::sandbox::backend::ShellBackend::LinuxBubblewrap;
-    if expects_report {
-        *retry = ShellRetry::Blocked;
-    }
-    let (mut child, mut report_reader) = prepared
-        .into_command_with_report()
-        .map_err(|error| anyhow!("Failed to initialize OS sandbox request transport: {error}"))?;
-    #[cfg(windows)]
-    let _ = (&report_digest, &mut report_reader);
-    child.current_dir(&cwd).env("PWD", &cwd);
-    // Prepend the agent binary's directory to PATH so bundled tools in the
-    // same directory are discoverable by shell commands. (map + discard: a
-    // lone if-let closing brace here collected a phantom zero-count region.)
-    let _ = path_with_own_dir(std::env::current_exe()).map(|path| child.env("PATH", path));
-    child.stdout(std::process::Stdio::piped());
-    // Plain Unix shells merge in the subshell. Linux sandbox helpers instead
-    // dup stderr to stdout before exec (PreparedShell::into_command), preserving
-    // initialization errors emitted before that subshell even exists.
-    // Windows: PowerShell's own failures (a parse error in the
-    // -Command string never executes the 2>&1 merge) surface only on the
-    // process's stderr — capture it so those errors aren't silently dropped.
-    #[cfg(not(windows))]
-    child.stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    child.stderr(std::process::Stdio::piped());
-    child.kill_on_drop(true);
-    // Run the shell as the leader of its own process group so abort/timeout can kill
-    // the whole tree. kill_on_drop alone only SIGKILLs the shell itself, leaving
-    // grandchildren (e.g. a `sleep` spawned by the command) running as orphans.
-    // sandbox-exec execs its child, so the group covers the wrapped tree too.
-    #[cfg(unix)]
-    child.process_group(0);
-
-    let mut spawned = child
-        .spawn()
-        .map_err(|e| anyhow!("Failed to run shell command: {}", e))?;
-    #[cfg(unix)]
-    let pgid = spawned.id().map(|id| id as i32);
-    #[cfg(windows)]
-    let job = {
-        let job = crate::sandbox::windows::Job::create().ok();
-        if let (Some(job), Some(pid)) = (&job, spawned.id()) {
-            let _ = job.assign(pid);
-        }
-        job
-    };
-
-    // Windows: drain stderr concurrently so a PowerShell parse error can't
-    // deadlock the pipe, and its text can be appended to the output below.
-    #[cfg(windows)]
-    let stderr_task = spawned.stderr.take().map(|mut err| {
-        tokio::spawn(async move {
-            use tokio::io::AsyncReadExt;
-            let mut buf = Vec::new();
-            let _ = err.read_to_end(&mut buf).await;
-            buf
-        })
-    });
-
-    // Read stdout incrementally — on timeout we keep whatever was captured.
-    let mut stdout = spawned
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("Failed to capture stdout"))?;
-    let mut output_buf = Vec::new();
-    let mut read_buf = [0u8; 8192];
-    let timeout_dur = std::time::Duration::from_secs(timeout_secs.max(1));
-
-    // On Windows, EOF is not proof of success. Include process exit in the
-    // same deadline, and keep kill-on-close armed on every failure path.
-    #[cfg(windows)]
-    {
-        let result = tokio::select! {
-            result = tokio::time::timeout(timeout_dur, async {
-                read_shell_output(&mut stdout, &mut output_buf, &mut read_buf).await?;
-                spawned.wait().await.map_err(|error| anyhow!("Failed to wait for shell: {error}"))
-            }) => result,
-            _ = wait_for_interrupt(interrupt_flag.clone()) => {
-                if let Some(job) = &job {
-                    job.terminate();
-                }
-                return Err(anyhow!("Shell command interrupted by abort"));
-            }
-        };
-
-        // PowerShell may keep stderr open while waiting for the browser too.
-        // Do not await that drain after stdout has provided the completion
-        // signal, or it would recreate the same hang.
-        drop(stderr_task);
-
-        match result {
-            Ok(Ok(status)) => {
-                if let Some(job) = &job {
-                    job.disarm();
-                }
-                let combined = String::from_utf8_lossy(&output_buf);
-                Ok(format_shell_output(
-                    &combined,
-                    combined.len(),
-                    status.code().unwrap_or(-1),
-                ))
-            }
-            Ok(Err(e)) => Err(e),
-            Err(_elapsed) => {
-                let combined = String::from_utf8_lossy(&output_buf);
-                let combined = if expects_report {
-                    std::borrow::Cow::Owned(crate::sandbox::linux::report::untrusted_output(
-                        &combined,
-                    ))
-                } else {
-                    combined
-                };
-                let total = combined.len();
-                if total == 0 {
-                    Err(anyhow!(
-                        "Shell command timed out after {} seconds (no output captured)",
-                        timeout_secs.max(1)
-                    ))
-                } else {
-                    spawned.kill().await.ok();
-                    Ok(format_shell_output(&combined, total, -1))
-                }
-            }
-        }
-    }
-
-    #[cfg(not(windows))]
-    let read_result = tokio::select! {
-        result = tokio::time::timeout(timeout_dur, async {
-            read_shell_output(&mut stdout, &mut output_buf, &mut read_buf).await?;
-            // Channel a wait() failure through the same error edge as read
-            // failures so the match below needs no OS-failure-only arm.
-            spawned
-                .wait()
-                .await
-                .map_err(|e| anyhow!("Failed to run shell command: {e}"))
-        }) => result,
-        _ = wait_for_interrupt(interrupt_flag.clone()) => {
-            kill_process_group(pgid);
-            return Err(anyhow!("Shell command interrupted by abort"));
-        }
-    };
-
-    #[cfg(not(windows))]
-    {
-        // `outcome?` keeps the (injection-proof) read/wait error edge on the
-        // same line as the success pattern — no unreachable match arm.
-        let status = match read_result {
-            Ok(outcome) => outcome?,
-            Err(_elapsed) => {
-                // Timeout — kill process tree, drain remaining pipe content.
-                kill_process_group(pgid);
-                // Drain whatever the process wrote before the kill took effect.
-                drain_shell_output(&mut stdout, &mut output_buf, &mut read_buf).await;
-                let combined = String::from_utf8_lossy(&output_buf);
-                let combined = if expects_report {
-                    std::borrow::Cow::Owned(crate::sandbox::linux::report::untrusted_output(
-                        &combined,
-                    ))
-                } else {
-                    combined
-                };
-                let total = combined.len();
-                if total == 0 {
-                    return Err(anyhow!(
-                        "Shell command timed out after {} seconds (no output captured)",
-                        timeout_secs.max(1)
-                    ));
-                }
-                let formatted = format_shell_output(&combined, total, -1);
-                return Err(anyhow!(
-                    "Shell command timed out after {} seconds.\nPartial output ({} total):\n{}",
-                    timeout_secs.max(1),
-                    human_size(total),
-                    formatted,
-                ));
-            }
-        };
-        // Normal completion. On unix a successful command never kills the
-        // process group, so intentionally detached grandchildren survive.
-        // Drain leftover bytes (rare: process exited but pipe still has data).
-        drain_shell_output(&mut stdout, &mut output_buf, &mut read_buf).await;
-        let combined = String::from_utf8_lossy(&output_buf);
-        let exit_code = status.code().unwrap_or(-1);
-        if expects_report {
-            // Never parse command-printed markers as helper evidence. Only the
-            // per-spawn anonymous channel may suppress post-hoc escalation.
-            let mut output = crate::sandbox::linux::report::untrusted_output(&combined);
-            let report = report_reader
-                .as_mut()
-                .zip(report_digest.as_deref())
-                .ok_or_else(|| anyhow!("missing helper report channel"))
-                .and_then(|(file, digest)| {
-                    crate::sandbox::linux::report::HelperReport::read(file, digest)
-                });
-            match report {
-                Ok(report) => {
-                    *retry = if report.events.is_empty() {
-                        ShellRetry::ClassifyOutput
-                    } else {
-                        ShellRetry::Blocked
-                    };
-                    // Format/truncate command text before appending verified
-                    // reports so they cannot be lost to command-output volume.
-                    output = format_shell_output(&output, output.len(), exit_code);
-                    for event in &report.events {
-                        output.push('\n');
-                        output.push_str(&crate::sandbox::linux::violation::marker(event));
-                    }
-                }
-                Err(_) => {
-                    output = format_shell_output(&output, output.len(), exit_code);
-                    output.push_str("\n[sandbox] Helper report unavailable or invalid. Detection results are unknown; automatic unsandboxed retry is disabled. The command's exit status is unchanged.");
-                }
-            }
-            return Ok(output);
-        }
-        Ok(format_shell_output(&combined, combined.len(), exit_code))
-    }
-}
-
-/// Prepend the agent binary's own directory to the inherited PATH, so tools
-/// bundled next to the binary are discoverable by shell commands. Returns
-/// None when the binary's location can't be determined (no PATH prepend).
-fn path_with_own_dir(exe: std::io::Result<std::path::PathBuf>) -> Option<String> {
-    let exe = exe.ok()?;
-    let dir = exe.parent()?;
-    let existing = std::env::var("PATH").unwrap_or_default();
-    let sep = if cfg!(windows) { ";" } else { ":" };
-    Some(format!("{}{}{}", dir.display(), sep, existing))
-}
-
-/// Read the child's stdout into `buf` until EOF; a read error aborts the run.
-/// Extracted from spawn_shell so the error arm is directly testable with a
-/// failing reader (a real pipe read failure has no reliable injection point).
-async fn read_shell_output<R: tokio::io::AsyncRead + Unpin>(
-    reader: &mut R,
-    buf: &mut Vec<u8>,
-    chunk: &mut [u8],
-) -> Result<()> {
-    use tokio::io::AsyncReadExt;
-    loop {
-        match reader.read(chunk).await {
-            Ok(0) => return Ok(()),
-            Ok(n) => buf.extend_from_slice(&chunk[..n]),
-            Err(e) => return Err(anyhow!("Failed to read shell output: {}", e)),
-        }
-    }
-}
-
-/// Drain leftover pipe bytes after process exit/kill; EOF or a read error
-/// (the kill racing the pipe) both end the drain silently.
-#[cfg(not(windows))]
-async fn drain_shell_output<R: tokio::io::AsyncRead + Unpin>(
-    reader: &mut R,
-    buf: &mut Vec<u8>,
-    chunk: &mut [u8],
-) {
-    use tokio::io::AsyncReadExt;
-    loop {
-        match reader.read(chunk).await {
-            Ok(0) | Err(_) => return,
-            Ok(n) => buf.extend_from_slice(&chunk[..n]),
-        }
-    }
-}
-
-/// Drop the CLIXML noise Windows PowerShell serializes onto its stderr when it
-/// is a redirected pipe (each block starts with a `#< CLIXML` marker line
-/// followed by a `<Objs …>…</Objs>` XML payload). Line-based so it never eats
-/// genuine error text. No-op when there is no CLIXML marker.
-#[cfg(all(windows, test))]
-fn strip_powershell_clixml(text: &str) -> String {
-    if !text.contains("#< CLIXML") {
-        return text.to_string();
-    }
-    text.lines()
-        .filter(|line| {
-            let t = line.trim_start();
-            !(t.starts_with("#< CLIXML")
-                || (t.starts_with("<Objs") && t.contains("schemas.microsoft.com/powershell")))
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Format shell output with truncation info and exit code footer.
-/// Kept out of the hot path so the timeout branch can reuse it.
-fn format_shell_output(raw: &str, total_bytes: usize, exit_code: i32) -> String {
-    const MAX_KEEP: usize = 500_000;
-
-    let body = if total_bytes > MAX_KEEP {
-        let truncated = total_bytes - MAX_KEEP;
-        // Keep the LAST MAX_KEEP bytes (most relevant output is at the end).
-        let start = raw.ceil_char_boundary(raw.len() - MAX_KEEP);
-        format!(
-            "[output: {} total, showing last {}; {} truncated]\n{}",
-            human_size(total_bytes),
-            human_size(MAX_KEEP),
-            human_size(truncated),
-            &raw[start..],
-        )
-    } else {
-        raw.to_string()
-    };
-
-    let footer = if exit_code >= 0 {
-        format!("[exit: {}]", exit_code)
-    } else {
-        "[exit: signal]".to_string()
-    };
-
-    let result = format!("{}\n{}", body, footer);
-    // The footer ("[exit: …]") is always non-empty, so trim_end can never
-    // yield an empty string — the untrimmed fallback was dead by construction.
-    result.trim_end().to_string()
-}
-
-fn human_size(bytes: usize) -> String {
-    if bytes < 1024 {
-        format!("{}B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{}KB", bytes / 1024)
-    } else {
-        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
     }
 }
 

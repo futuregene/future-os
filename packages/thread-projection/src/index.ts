@@ -48,3 +48,6 @@ export {
 } from "./approval";
 export { isRecord, pathBasename, pathExtension, singleLine, truncate } from "./utils";
 export { userMessageFromEvent, upsertUserMessage } from "./userMessage";
+
+export { shellResult } from "./shellResult";
+export type { ShellResult, ShellAttempt, ShellStatus } from "./shellResult";

@@ -789,6 +789,8 @@ message ToolEnd {
   optional int32 exit_code = 5;
   optional bool is_soft_fail = 6;
   optional string target_path = 7;
+  // Serialized host-owned ShellResult. Absent for legacy records.
+  optional string shell_result_json = 8;
 }
 
 // An approval_request card travels as ApprovalRequestInfo (see above): the
