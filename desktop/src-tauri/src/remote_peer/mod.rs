@@ -36,4 +36,10 @@ pub(crate) mod session;
 pub use self::runtime::{PeerEvent, PeerSummary};
 
 #[cfg(test)]
+mod multi_host_tests;
+#[cfg(test)]
+pub(crate) mod runtime_tests;
+#[cfg(test)]
+pub(crate) mod testing;
+#[cfg(test)]
 mod tests;

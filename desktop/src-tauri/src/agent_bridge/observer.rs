@@ -186,10 +186,7 @@ pub(crate) fn has_observer(session_id: &str) -> bool {
 }
 
 #[cfg(test)]
-type TestObserverTask = (
-    crate::runtime::JoinHandle<()>,
-    std::sync::mpsc::Receiver<()>,
-);
+type TestObserverTask = (crate::runtime::TaskHandle, std::sync::mpsc::Receiver<()>);
 #[cfg(test)]
 static TEST_OBSERVER_TASKS: LazyLock<Mutex<Vec<TestObserverTask>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
