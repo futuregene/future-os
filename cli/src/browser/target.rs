@@ -121,6 +121,8 @@ async fn connect_abstract(name: &str) -> Result<tokio::net::UnixStream, String> 
 
     let addr = std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes())
         .map_err(|e| format!("invalid abstract socket name {name:?}: {e}"))?;
+    // tokio wraps the std address in its own newtype.
+    let addr = tokio::net::unix::SocketAddr::from(addr);
     tokio::net::UnixStream::connect_addr(&addr)
         .await
         .map_err(|e| format!("cannot connect to abstract browser socket @{name}: {e}"))
@@ -233,8 +235,9 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let name = format!("future-cdp-test-{}", std::process::id());
-        let addr = std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes())
+        let std_addr = std::os::unix::net::SocketAddr::from_abstract_name(name.as_bytes())
             .expect("abstract name");
+        let addr = tokio::net::unix::SocketAddr::from(std_addr);
         let listener = tokio::net::UnixListener::bind_addr(&addr).expect("bind abstract");
 
         let mut stream = SocketSpec::Abstract(name)
