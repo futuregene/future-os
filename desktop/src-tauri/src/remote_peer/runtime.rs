@@ -89,17 +89,142 @@ struct Runtime {
 /// indistinguishable, to the user, from a hung app.
 const RECONNECT_DELAYS_SECS: &[u64] = &[1, 2, 4, 8, 16, 30];
 
+/// The unit the schedule's numbers are counted in.
+///
+/// Seconds in production; milliseconds under test, so the suite does not spend
+/// real minutes waiting out backoff. The *shape* being exercised is the real
+/// one either way — scaling the unit is what keeps the schedule itself honest.
+#[cfg(not(test))]
+fn delay_unit() -> std::time::Duration {
+    std::time::Duration::from_secs(1)
+}
+#[cfg(test)]
+fn delay_unit() -> std::time::Duration {
+    std::time::Duration::from_millis(1)
+}
+
+/// The un-jittered delay for an attempt, in seconds.
+fn reconnect_base_secs(attempt: usize) -> u64 {
+    RECONNECT_DELAYS_SECS[attempt.min(RECONNECT_DELAYS_SECS.len() - 1)]
+}
+
 fn reconnect_delay(attempt: usize) -> std::time::Duration {
-    let base = RECONNECT_DELAYS_SECS[attempt.min(RECONNECT_DELAYS_SECS.len() - 1)];
+    let base = reconnect_base_secs(attempt) as f64;
     // ±20% jitter: several hosts coming back after a network blip must not
     // stampede the relay in the same second.
     let jitter = 1.0 + (rand::random::<f64>() - 0.5) * 0.4;
-    std::time::Duration::from_secs_f64(base as f64 * jitter)
+    delay_unit().mul_f64(base * jitter)
 }
 
 fn runtime() -> &'static Mutex<Runtime> {
     static RUNTIME: OnceLock<Mutex<Runtime>> = OnceLock::new();
     RUNTIME.get_or_init(|| Mutex::new(Runtime::default()))
+}
+
+/// Drop every live connection and background task.
+///
+/// The runtime is a process-global singleton, so a test that inherits the
+/// previous one's `live` map would be asserting against another test's socket.
+/// `HomeGuard` already serializes the tests and cancels the tasks that outlived
+/// their owner; this clears the state those tasks left behind.
+#[cfg(test)]
+pub(crate) async fn reset_for_test() {
+    let mut live = runtime().lock().await;
+    for (_, task) in live.tasks.drain() {
+        task.abort();
+    }
+    for (_, supervisor) in live.supervisors.drain() {
+        supervisor.abort();
+    }
+    live.live.clear();
+    live.errors.clear();
+}
+
+/// How many hosts are currently connected. Tests assert on counts rather than
+/// poking at the map, so the test does not have to hold the runtime lock while
+/// it reasons about the result.
+#[cfg(test)]
+pub(crate) async fn live_count() -> usize {
+    runtime().lock().await.live.len()
+}
+
+/// How many event-stream tasks are *running*.
+///
+/// Finished handles stay in the map until something replaces them, so counting
+/// the map would report a task that has already returned.
+#[cfg(test)]
+pub(crate) async fn stream_count() -> usize {
+    runtime()
+        .lock()
+        .await
+        .tasks
+        .values()
+        .filter(|handle| !handle.is_finished())
+        .count()
+}
+
+/// How many retry loops are running.
+#[cfg(test)]
+pub(crate) async fn supervisor_count() -> usize {
+    runtime().lock().await.supervisors.len()
+}
+
+/// Close a live connection's socket without touching the retry state.
+///
+/// The state a process shutting down leaves behind: the subscription streams
+/// end, so a test can drive the stream task's own exit instead of racing a
+/// broker shutdown (a reconnecting client keeps its subscriptions open).
+#[cfg(test)]
+pub(crate) async fn close_socket_for_test(desktop_id: &str) {
+    let mut live = runtime().lock().await;
+    if let Some(session) = live.live.remove(desktop_id) {
+        let _ = session.close_socket().await;
+    }
+}
+///
+/// Pretend a retry loop is already running for this host.
+///
+/// The state a transport failure leaves behind, so a test can drive "a connect
+/// found a retry loop and replaced it" without first having to induce the
+/// failure and wait for the loop to be installed.
+#[cfg(test)]
+pub(crate) async fn install_supervisor_for_test(desktop_id: &str) {
+    let handle = spawn_supervisor(desktop_id.to_string(), None);
+    runtime()
+        .lock()
+        .await
+        .supervisors
+        .insert(desktop_id.to_string(), handle);
+}
+
+/// Renew the grant and persist it.
+///
+/// Persisting is part of the operation, not a nicety: a rotated token that is
+/// only held in memory makes the *next* launch renew again from the token this
+/// process already replaced.
+async fn renew_credentials(creds: &PeerCreds) -> Result<PeerCreds, crate::AppError> {
+    let fresh = super::platform::refresh(creds).await?;
+    creds::update_credentials(
+        &creds.desktop_id,
+        fresh.user_jwt.clone(),
+        fresh.nats_url.clone(),
+        fresh.nats_ws_url.clone(),
+        fresh.jwt_expires_at,
+    )?;
+    let mut renewed = creds.clone();
+    renewed.user_jwt = fresh.user_jwt;
+    renewed.nats_url = fresh.nats_url;
+    renewed.nats_ws_url = fresh.nats_ws_url;
+    renewed.jwt_expires_at = fresh.jwt_expires_at;
+    Ok(renewed)
+}
+
+/// Forget a connection without the command path noticing — the state a socket
+/// drop leaves behind, so a test can drive the recovery path deterministically
+/// instead of racing a broker shutdown.
+#[cfg(test)]
+pub(crate) async fn forget_connection_for_test(desktop_id: &str) {
+    runtime().lock().await.live.remove(desktop_id);
 }
 
 /// Pair with a remote host from a pasted `futureos://remote/pair` link, then
@@ -156,9 +281,17 @@ pub(crate) async fn pair_with_emitter(
 /// stores it verbatim, so it is the only place the host can learn that this
 /// machine (rather than a phone) took the slot.
 fn device_name() -> String {
-    let host = std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .ok()
+    device_name_from(
+        std::env::var("COMPUTERNAME")
+            .or_else(|_| std::env::var("HOSTNAME"))
+            .ok(),
+    )
+}
+
+/// The formatting half, split out so both arms are testable without mutating
+/// the process environment (which no test can do safely alongside others).
+fn device_name_from(host: Option<String>) -> String {
+    let host = host
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     match host {
@@ -244,18 +377,21 @@ pub(crate) async fn connect_with_emitter(
     // Renew before connecting: a token that expires mid-handshake fails it in a
     // way that looks like a protocol fault.
     if creds.needs_refresh(now_secs()) {
-        let fresh = super::platform::refresh(&creds).await?;
-        creds::update_credentials(
-            desktop_id,
-            fresh.user_jwt.clone(),
-            fresh.nats_url.clone(),
-            fresh.nats_ws_url.clone(),
-            fresh.jwt_expires_at,
-        )?;
-        creds.user_jwt = fresh.user_jwt;
-        creds.nats_url = fresh.nats_url;
-        creds.nats_ws_url = fresh.nats_ws_url;
-        creds.jwt_expires_at = fresh.jwt_expires_at;
+        match renew_credentials(&creds).await {
+            Ok(renewed) => creds = renewed,
+            Err(error) => {
+                // A refused or unpersistable renewal happens before any socket
+                // exists, so it must be recorded here — otherwise the UI shows a
+                // host that is simply "not connected" with no reason, while
+                // nothing will ever retry it.
+                runtime()
+                    .lock()
+                    .await
+                    .errors
+                    .insert(desktop_id.to_string(), error.to_string());
+                return Err(error);
+            }
+        }
     }
     let connected = match session::connect(&creds).await {
         Ok(connected) => connected,
@@ -320,12 +456,19 @@ pub(crate) async fn connect_with_emitter(
     Ok(summary)
 }
 
+/// How many attempts the supervisor makes before it stops for good.
+///
+/// The schedule's length times three: the window is what makes a failure
+/// terminal, and a client that retries forever looks identical, to the user, to
+/// one that hung.
+fn reconnect_attempt_budget() -> usize {
+    RECONNECT_DELAYS_SECS.len() * 3
+}
+///
 /// Keep one host connected: watch the socket, and reconnect when it drops.
 ///
 /// Runs until it succeeds, until its retry window is exhausted, or until it is
-/// aborted (an explicit disconnect, or a newer connection replacing it). The
-/// window is what makes the failure terminal: a client that retries forever
-/// looks identical to one that hung, and the user has no way to tell which.
+/// aborted (an explicit disconnect, or a newer connection replacing it).
 pub(crate) fn spawn_supervisor(
     desktop_id: String,
     emitter: Option<Emitter>,
@@ -349,7 +492,7 @@ pub(crate) fn spawn_supervisor(
             // Measured in *attempts*, not wall clock: the delay schedule already
             // caps the wait, and a clock here would need a monotonic source the
             // tests would have to fake.
-            if attempt >= RECONNECT_DELAYS_SECS.len() * 3 {
+            if attempt >= reconnect_attempt_budget() {
                 return;
             }
         }
@@ -567,10 +710,13 @@ mod tests {
     /// point of jitter). Asserting on the drawn values would test the noise.
     #[test]
     fn the_reconnect_schedule_grows_and_is_capped() {
-        for pair in RECONNECT_DELAYS_SECS.windows(2) {
+        let bases: Vec<u64> = (0..RECONNECT_DELAYS_SECS.len() + 5)
+            .map(reconnect_base_secs)
+            .collect();
+        for pair in bases.windows(2) {
             assert!(
                 pair[1] >= pair[0],
-                "the base schedule must not shrink: {RECONNECT_DELAYS_SECS:?}"
+                "the schedule must not shrink: {bases:?}"
             );
         }
         assert_eq!(
@@ -580,13 +726,14 @@ mod tests {
         );
         // Past the end the delay stays at the cap rather than growing without
         // bound, and every draw stays inside the jitter band for its step.
+        let unit = delay_unit().as_secs_f64();
         for attempt in 0..RECONNECT_DELAYS_SECS.len() + 5 {
-            let base = RECONNECT_DELAYS_SECS[attempt.min(RECONNECT_DELAYS_SECS.len() - 1)] as f64;
+            let base = reconnect_base_secs(attempt) as f64;
             for _ in 0..16 {
-                let drawn = reconnect_delay(attempt).as_secs_f64();
+                let ratio = reconnect_delay(attempt).as_secs_f64() / unit;
                 assert!(
-                    drawn >= base * 0.8 && drawn <= base * 1.2,
-                    "attempt {attempt}: {drawn}s is outside the ±20% band around {base}s"
+                    ratio >= base * 0.8 && ratio <= base * 1.2,
+                    "attempt {attempt}: {ratio} is outside the ±20% band around {base}"
                 );
             }
         }
@@ -596,10 +743,47 @@ mod tests {
     /// it has to actually vary — a constant would pass the range check above.
     #[test]
     fn reconnect_delays_are_jittered_not_constant() {
-        let samples: Vec<f64> = (0..64).map(|_| reconnect_delay(5).as_secs_f64()).collect();
+        let unit = delay_unit().as_secs_f64();
+        let samples: Vec<f64> = (0..64)
+            .map(|_| reconnect_delay(5).as_secs_f64() / unit)
+            .collect();
         let min = samples.iter().cloned().fold(f64::INFINITY, f64::min);
         let max = samples.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         assert!(max - min > 0.5, "delay never varied: {min}..{max}");
+    }
+
+    /// The window is finite, and it is a multiple of the schedule: a client that
+    /// retries forever is indistinguishable from one that hung.
+    #[test]
+    fn the_attempt_budget_is_bounded() {
+        assert_eq!(reconnect_attempt_budget(), RECONNECT_DELAYS_SECS.len() * 3);
+        assert!(reconnect_attempt_budget() > 0);
+    }
+
+    #[test]
+    fn the_hostname_is_used_when_present_and_omitted_when_not() {
+        assert_eq!(
+            device_name_from(Some("studio-imac".into())),
+            "FutureOS Desktop (studio-imac)"
+        );
+        // Whitespace is not a hostname; an empty name would produce a trailing
+        // "()" that reads like a bug in the host's UI.
+        assert_eq!(device_name_from(Some("   ".into())), "FutureOS Desktop");
+        assert_eq!(
+            device_name_from(Some("  padded  ".into())),
+            "FutureOS Desktop (padded)"
+        );
+        assert_eq!(device_name_from(None), "FutureOS Desktop");
+    }
+
+    /// The environment-reading wrapper still resolves to a usable name. It is
+    /// asserted as an *invariant* rather than a specific value, because the host
+    /// it produces depends on the machine running the test.
+    #[test]
+    fn the_live_hostname_resolves_to_a_usable_name() {
+        let name = device_name();
+        assert!(name.starts_with("FutureOS Desktop"), "{name}");
+        assert!(!name.ends_with("()"), "{name}");
     }
 
     /// An explicit disconnect must take the retry with it, or a reconnect
@@ -607,6 +791,7 @@ mod tests {
     #[tokio::test]
     async fn disconnect_aborts_the_supervisor() {
         let _home = crate::remote::test_support::HomeGuard::new("peer-disconnect-supervisor");
+        reset_for_test().await;
         let handle = spawn_supervisor("desktop_a".into(), None);
         runtime()
             .lock()
