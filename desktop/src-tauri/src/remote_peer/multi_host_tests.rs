@@ -354,7 +354,25 @@ async fn one_desktop_app_connects_to_several_headless_hosts_at_once() {
 
     // All three are connected, and each is a distinct machine.
     let peers = list().await.expect("list");
-    assert_eq!(peers.len(), HOST_COUNT);
+    assert_eq!(
+        peers.len(),
+        HOST_COUNT,
+        "the book holds {} peers: {:?} (HOME={:?}, mine={:?})",
+        peers.len(),
+        peers
+            .iter()
+            .map(|peer| (
+                peer.desktop_id.clone(),
+                peer.pair_id.clone(),
+                peer.name.clone()
+            ))
+            .collect::<Vec<_>>(),
+        std::env::var("HOME"),
+        paired
+            .iter()
+            .map(|(label, desktop_id, _)| (label.clone(), desktop_id.clone()))
+            .collect::<Vec<_>>(),
+    );
     assert_eq!(live_count().await, HOST_COUNT);
     let desktop_ids: Vec<&str> = peers.iter().map(|peer| peer.desktop_id.as_str()).collect();
     assert_eq!(
