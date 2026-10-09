@@ -1210,6 +1210,15 @@ re-open local remote access; it ends with the Desktop process.
   mismatches, auto-recovery can only query accepted receipts; without a
   receipt, clear the auto-delivery intent and keep the session draft. A user
   actively re-sending is a new authorization action.
+- A remote `prompt` names a conversation the client *listed*. An empty session
+  id is a new-conversation draft and still creates its thread lazily; a session
+  id no thread on this Desktop owns is refused (`session_not_on_desktop`) rather
+  than answered with a conversation of its own. The old behavior made "message
+  for conversation A" and "message for an id I have never seen" the same thing,
+  so a client reading a merged list across Desktops had its text silently
+  re-homed into a new chat — under a title derived from it, with nothing
+  reported. A deleted conversation reads the same way and is refused for the
+  same reason.
 - Agent probes take at most 3 seconds per round, 3 seconds apart; a successful
   result over 10 seconds old is no longer considered available; monotonic
   clocks are used. Only the existing Agent is connected — no second Agent

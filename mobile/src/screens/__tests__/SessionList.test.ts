@@ -25,10 +25,12 @@ const mockRemote: {
   unreadSessions: Set<string>;
   desktopOnline: boolean;
   capabilities: Set<string>;
+  desktops: { desktopId: string; pairId: string; name?: string }[];
   deleteSession: jest.Mock;
   deleteWorkspace: jest.Mock;
   setWorkspacePinned: jest.Mock;
   selectSession: jest.Mock;
+  openSessionOnDesktop: jest.Mock;
   newConversation: jest.Mock;
 } = {
   sessions: [
@@ -40,10 +42,12 @@ const mockRemote: {
   unreadSessions: new Set<string>(),
   desktopOnline: true,
   capabilities: new Set(["workspace_pinning_v1"]),
+  desktops: [{ desktopId: "desk-a", pairId: "p1", name: "Studio" }],
   deleteSession: jest.fn(),
   deleteWorkspace: jest.fn(),
   setWorkspacePinned: jest.fn(),
   selectSession: jest.fn(),
+  openSessionOnDesktop: jest.fn(),
   newConversation: jest.fn(),
 };
 const mockStorage = new Map<string, string>();
@@ -174,6 +178,7 @@ beforeEach(async () => {
   mockRemote.deleteSession.mockResolvedValue(undefined);
   mockRemote.setWorkspacePinned.mockResolvedValue(undefined);
   mockRemote.newConversation.mockResolvedValue(undefined);
+  mockRemote.openSessionOnDesktop.mockResolvedValue(undefined);
   await act(async () => {
     tree = create(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange }));
     // Let the persisted-folds read land inside act() so it cannot update the
@@ -1068,4 +1073,48 @@ test("pressing and releasing a row leaves no stuck pressed state", () => {
   expect(rowStyle().backgroundColor).toBeDefined();
   act(() => sessionBody("First").props.onPressOut());
   expect(rowStyle().backgroundColor).toBeUndefined();
+});
+
+/**
+ * A merged row's tap is routed to the machine that owns it.
+ *
+ * The phone holds one active connection, so selecting another desktop's row
+ * through it names a conversation that desktop has never heard of — and the
+ * host used to answer that by *creating* a conversation of its own, which is
+ * how a follow-up written inside one conversation appeared under a brand new
+ * chat. The active desktop's own row stays the plain selection it always was.
+ */
+test("a merged row from another desktop is opened on that desktop", () => {
+  const merged = [
+    {
+      key: "desk-a::s1",
+      desktopId: "desk-a",
+      lastMessageAt: 2,
+      session: mockRemote.sessions[0]!,
+    },
+    {
+      key: "desk-b::s9",
+      desktopId: "desk-b",
+      lastMessageAt: 1,
+      session: { sessionId: "s9", threadId: "t9", title: "Elsewhere", streaming: false },
+    },
+  ];
+  act(() => tree.update(createElement(SessionList, {
+    tab: "chat",
+    empty: null,
+    onMenu,
+    onTabChange,
+    merged,
+    activeDesktopId: "desk-a",
+    icons: new Map([["desk-a", "🖥"], ["desk-b", "💻"]]),
+  })));
+
+  act(() => sessionBody("Elsewhere").props.onPress());
+  expect(mockRemote.openSessionOnDesktop).toHaveBeenCalledWith("desk-b", "s9");
+  expect(mockRemote.selectSession).not.toHaveBeenCalled();
+
+  // The active desktop's own row is the plain selection it always was.
+  act(() => sessionBody("First").props.onPress());
+  expect(mockRemote.selectSession).toHaveBeenCalledWith("s1");
+  expect(mockRemote.openSessionOnDesktop).toHaveBeenCalledTimes(1);
 });

@@ -283,6 +283,8 @@ export const resources = {
           'Delete the workspace "{{title}}" and all {{count}} conversations in it? This cannot be undone. The files in the workspace folder on the desktop are not deleted.',
         deleteWorkspaceFailed:
           "Could not delete the workspace. Reconnect and retry.",
+        openOnDesktopFailed:
+          "Could not switch to {{name}} to open that conversation. Reconnect and retry.",
       },
       chat: {
         new: "New conversation",
@@ -331,6 +333,8 @@ export const resources = {
         tokens: "{{formattedCount}} tokens",
         loadFailed: "Could not load the conversation.",
         sendFailed: "Message failed to send.",
+        sessionNotOnDesktop:
+          "That conversation is not on the connected desktop. Open it from the machine that owns it.",
         promptTooLarge:
           "That message is too long to send. Please shorten it to under 512 KB.",
         noHistory: "No messages yet.",
@@ -1141,6 +1145,8 @@ export const resources = {
         deleteWorkspaceConfirm:
           "删除工作区「{{title}}」及其中的 {{count}} 个会话？此操作无法恢复，桌面端工作区文件夹里的文件不会被删除。",
         deleteWorkspaceFailed: "工作区删除失败，请恢复连接后重试。",
+        openOnDesktopFailed:
+          "切换到「{{name}}」打开该会话失败，请恢复连接后重试。",
       },
       chat: {
         new: "新对话",
@@ -1189,6 +1195,7 @@ export const resources = {
         tokens: "{{formattedCount}} tokens",
         loadFailed: "无法加载会话。",
         sendFailed: "消息发送失败。",
+        sessionNotOnDesktop: "该会话不在当前连接的设备上。请到拥有它的那台设备上打开。",
         promptTooLarge: "这条消息太长了，无法发送。请将其缩短到 512 KB 以内。",
         noHistory: "还没有消息。",
         loadingHistory: "正在加载消息…",

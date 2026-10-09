@@ -57,7 +57,19 @@ export function useSendMessage(
       // The *draft* form, not the expanded text: the composer shows tokens.
       setMessage(draftValue);
       const key = error instanceof Error ? error.message : "";
-      showToast(key === "send_compacting" ? t("chat.compacting") : key === "prompt_too_large" ? t("chat.promptTooLarge") : t("chat.sendFailed"));
+      showToast(
+        key === "send_compacting"
+          ? t("chat.compacting")
+          : key === "prompt_too_large"
+          ? t("chat.promptTooLarge")
+          // The desktop refuses a prompt naming a conversation it does not have
+          // (a merged row from another machine, or one deleted since the list
+          // was read). "Failed to send" would hide the one fact that matters:
+          // the conversation lives somewhere else.
+          : key.includes("session_not_on_desktop")
+          ? t("chat.sessionNotOnDesktop")
+          : t("chat.sendFailed"),
+      );
     } finally {
       setTransferProgress(null);
     }

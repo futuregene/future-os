@@ -5059,6 +5059,9 @@ mod bridge_tests {
         let agent = ensure_mock_agent();
         agent.clear_scripts();
         let session = unique("sess");
+        // A phone prompts a conversation it listed, so the fixture needs the
+        // thread `list_sessions` would have shown for that id.
+        crate::remote::test_support::thread_for_session(&session);
         let prompt_id = unique("cmd");
         let body = || {
             json!({
@@ -5132,10 +5135,13 @@ mod bridge_tests {
         assert!(reply["data"].is_null());
 
         let prompt_id = unique("cmd");
+        // Named by its own thread, as a listed conversation is.
+        let session = unique("sess");
+        crate::remote::test_support::thread_for_session(&session);
         agent.complete_next_run_stream();
         let started = bridge
             .call(json!({
-                "id": prompt_id, "type": "prompt", "sessionId": unique("sess"),
+                "id": prompt_id, "type": "prompt", "sessionId": session,
                 "message": "hello", "modelId": "m1", "providerId": "p1"
             }))
             .await;

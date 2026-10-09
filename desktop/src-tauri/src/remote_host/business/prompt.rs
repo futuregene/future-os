@@ -289,8 +289,29 @@ pub(crate) struct RemotePromptOptions {
     pub(crate) command_id: String,
 }
 
-/// Find the thread for `session_id` (create a new chat thread when unknown —
-/// remote policy), then persist user message + run via `agent_bridge::headless`.
+/// The stable token a refusal of an unknown session carries, so a client can
+/// recognize *why* the prompt failed instead of showing a generic send error.
+/// Prefixed to the human sentence: the phone's toast maps the token, the text
+/// stays readable in the desktop's own logs.
+pub(crate) const UNKNOWN_SESSION_CODE: &str = "session_not_on_desktop";
+
+/// Find the thread for `session_id`, then persist user message + run via
+/// `agent_bridge::headless`.
+///
+/// An **empty** `session_id` is a client's new-conversation draft, and the
+/// thread is born with the first message (lazy creation): titled from the
+/// message, and given a real agent session id up front so the ack, the event
+/// subjects and history all agree from the start (no empty row, no id drift).
+///
+/// A **non-empty** id no thread here owns is refused. Creating a thread from it
+/// would answer a message addressed to conversation A with a brand new
+/// conversation B — on whichever machine happens to be connected. The user's
+/// text lands somewhere they were not looking, under a title derived from it,
+/// while the conversation they meant to continue never sees it; and because
+/// nothing fails, nothing tells them. Naming a conversation this desktop does
+/// not have means the client is reading a list that is not this machine's (a
+/// merged row from another desktop) or that the conversation has since been
+/// deleted — both want an error at the sender.
 pub(crate) async fn prepare_remote_prompt(
     session_id: &str,
     message: String,
@@ -306,6 +327,12 @@ pub(crate) async fn prepare_remote_prompt(
     } = options;
     let thread = match crate::store::find_thread_by_agent_session(session_id)? {
         Some(thread) => thread,
+        None if !session_id.trim().is_empty() => {
+            return Err(crate::AppError::Message(format!(
+                "{UNKNOWN_SESSION_CODE}: this conversation is not on this desktop. \
+                 Open it from the machine that owns it, or start a new conversation."
+            )));
+        }
         None => {
             // Lazy creation: the thread is born with the first message, titled
             // from it (mirrors the GUI new-chat draft), and immediately gets a
@@ -426,6 +453,92 @@ mod tests {
                 "session {session:?} run {run:?} -> {error}"
             );
         }
+    }
+
+    /// A prompt addressed to a conversation this desktop does not have must be
+    /// refused, not answered with a conversation of its own. The old lazy
+    /// creation made "message for conversation A" and "message for a
+    /// conversation I have never heard of" the same thing, so a client reading
+    /// another machine's merged list (or a list whose conversation was since
+    /// deleted) had its text quietly re-homed into a brand new chat under a
+    /// title derived from it — with nothing reported, so nothing told the user.
+    ///
+    /// The refusal must also leave the store untouched: a phantom thread/run
+    /// would show up in the sidebar as the very conversation the user was
+    /// trying to avoid.
+    #[tokio::test]
+    async fn a_prompt_for_an_unknown_conversation_is_refused_before_it_persists() {
+        use crate::remote::test_support::{HomeGuard, RecordingSink};
+
+        let _home = HomeGuard::new("business-prompt-unknown-session");
+        crate::remote::test_support::init_store();
+        let threads_before = crate::store::list_threads().expect("thread list").len();
+        let command_id = "cmd-unknown-session";
+
+        let sink = RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "prompt".to_string(),
+            id: command_id.to_string(),
+            // The shape a phone sends when it opens a row belonging to another
+            // desktop: a real session id, just not one of ours.
+            session_id: "20260101-000000-session-from-another-desktop".to_string(),
+            message: "继续".to_string(),
+            ..Default::default()
+        };
+        execute(&cmd, &sink).await;
+        let (success, data, error) = sink.last();
+        assert!(!success, "an unknown conversation must not be accepted");
+        assert!(data.is_null(), "a refusal carries no ack: {data}");
+        let error = error.expect("a failed reply carries the reason");
+        assert!(
+            error.starts_with(UNKNOWN_SESSION_CODE),
+            "the reply must carry the code a client maps to a message, got {error:?}"
+        );
+        assert_eq!(
+            crate::store::list_threads().expect("thread list").len(),
+            threads_before,
+            "the refusal must not create the conversation it refused"
+        );
+        assert!(
+            crate::store::find_run_by_trigger_message_id(command_id)
+                .expect("run lookup")
+                .is_none(),
+            "a refused prompt must leave no run behind"
+        );
+    }
+
+    /// The refusal is scoped to a *named* conversation. An empty session id is a
+    /// client's new-conversation draft and still takes the lazy-creation path —
+    /// asserted through the workspace branch, which refuses a missing workspace
+    /// before any Agent call, so the test needs no Agent to tell the two apart.
+    #[tokio::test]
+    async fn an_empty_session_id_is_still_a_draft_not_an_unknown_conversation() {
+        use crate::remote::test_support::HomeGuard;
+
+        let _home = HomeGuard::new("business-prompt-draft-session");
+        crate::remote::test_support::init_store();
+
+        let error = prepare_remote_prompt(
+            "",
+            "hi".to_string(),
+            RemotePromptOptions {
+                model_id: None,
+                thinking_level: None,
+                mode: "workspace".to_string(),
+                workspace_id: String::new(),
+                upload_references: Vec::new(),
+                command_id: "cmd-draft-session".to_string(),
+            },
+        )
+        .await
+        .err()
+        .expect("a workspace draft without a workspace cannot be prepared")
+        .to_string();
+        assert!(
+            !error.contains(UNKNOWN_SESSION_CODE),
+            "a draft must not be read as an unknown conversation: {error:?}"
+        );
+        assert!(error.contains("Select a workspace"), "{error:?}");
     }
 
     /// A receipt lookup is the first thing `prompt`, `get_prompt_receipt` and
