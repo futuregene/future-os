@@ -188,4 +188,34 @@ describe("mergeConversations", () => {
     expect(merged[0]!.workspaceId).toBe("ws_a");
     expect(merged[0]!.streaming).toBe(false);
   });
+
+  /**
+   * The host's pin and delete routes take a *thread* id, which is not the
+   * session id. A row that dropped it would leave those two actions
+   * unaddressable; a row that conflated the two would pin or delete something
+   * else. Both sides are asserted, and so is the host that reports neither.
+   */
+  it("carries the host thread id, and a local row's own id as its thread id", () => {
+    const merged = mergeConversations(
+      [thread({ id: "local_1" })],
+      [catalog("desktop_a", [
+        { sessionId: "sess_1", threadId: "thread_1", title: "remote", lastMessageAt: 2 },
+        { sessionId: "sess_2", title: "older host", lastMessageAt: 1 },
+      ])],
+      ALL,
+    );
+
+    const local = merged.find(row => row.id === "local_1")!;
+    // The local store addresses threads by this id everywhere, so there is
+    // nothing to translate.
+    expect(local.threadId).toBe("local_1");
+
+    const remote = merged.find(row => row.id === "sess_1")!;
+    expect(remote.threadId).toBe("thread_1");
+    expect(remote.threadId).not.toBe(remote.id);
+
+    // A host that predates the field: pin and delete are refused downstream
+    // rather than silently addressed with the session id.
+    expect(merged.find(row => row.id === "sess_2")!.threadId).toBeNull();
+  });
 });
