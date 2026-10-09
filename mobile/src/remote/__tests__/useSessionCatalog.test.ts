@@ -797,6 +797,59 @@ describe("useSessionCatalog", () => {
     expect(result.current.titleOverrides).toEqual({ elsewhere: "Kept" });
   });
 
+  test("createWorkspace registers the typed path and applies the answered catalogue", async () => {
+    renderWorkspaceCatalog();
+    request.mockResolvedValueOnce({
+      data: {
+        version: { epoch: "source", revision: 2 },
+        workspaces: [
+          { id: "w", name: "Workspace", path: "/w" },
+          { id: "w2", name: "New", path: "/host/new" },
+        ],
+        workspace: { id: "w2", name: "New", path: "/host/new" },
+      },
+    });
+    let created: unknown;
+    await act(async () => {
+      created = await result.current.createWorkspace("/host/new", "  New  ");
+    });
+    // The name is trimmed, and the path travels as the user typed it (the
+    // desktop canonicalizes what it stores).
+    expect(request).toHaveBeenLastCalledWith(
+      { type: "create_workspace", path: "/host/new", name: "New" },
+      "list",
+    );
+    expect(created).toEqual({ id: "w2", name: "New", path: "/host/new" });
+    expect(result.current.workspaces.map((w) => w.id)).toEqual(["w", "w2"]);
+  });
+
+  test("createWorkspace rejects an empty path rather than asking the desktop", async () => {
+    render();
+    await expect(result.current.createWorkspace("   ", "New")).rejects.toThrow(
+      "Workspace path unavailable",
+    );
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  test("createWorkspace refuses an answer that carries no created row", async () => {
+    // Selecting a workspace the desktop did not confirm would let the phone
+    // start a workspace conversation against an id it invented.
+    render();
+    request.mockResolvedValueOnce({ data: { workspaces: [] } });
+    await expect(result.current.createWorkspace("/host/new", "")).rejects.toThrow(
+      "Invalid workspace snapshot",
+    );
+  });
+
+  test("createWorkspace surfaces the desktop's refusal and keeps the catalogue", async () => {
+    renderWorkspaceCatalog();
+    request.mockRejectedValueOnce(new Error("path does not exist"));
+    await expect(result.current.createWorkspace("/host/missing", "")).rejects.toThrow(
+      "path does not exist",
+    );
+    expect(result.current.workspaces.map((w) => w.id)).toEqual(["w"]);
+  });
+
   test("a live finish marks a session the user is not reading as unread", async () => {
     render();
     selectedRef.current = "other";

@@ -581,6 +581,35 @@ export function useSessionCatalog(
     [clientRef, setSessions],
   );
 
+  /**
+   * Register an existing directory on the desktop as a workspace — the same
+   * store write as the desktop's own create-workspace dialog. The directory
+   * must already exist (the phone has no folder picker for the host, so it
+   * types the path). The desktop answers the fresh catalogue so the shared
+   * version gate applies, and echoes the created row so the caller can select
+   * it without re-deriving the id from the path.
+   */
+  const createWorkspace = useCallback(
+    async (path: string, name: string): Promise<RemoteWorkspace> => {
+      const client = clientRef.current;
+      const trimmedPath = path.trim();
+      if (!client || !trimmedPath) throw new Error("Workspace path unavailable");
+      const epoch = catalogEpoch.current;
+      const response = await client.request<WorkspacesData>(
+        { type: "create_workspace", path: trimmedPath, name: name.trim() },
+        "list",
+      );
+      const workspace = response.data?.workspace;
+      if (!workspace?.id) throw new Error("Invalid workspace snapshot");
+      if (clientRef.current === client && catalogEpoch.current === epoch) {
+        if (Array.isArray(response.data.workspaces))
+          applyWorkspaces(response.data.workspaces, response.data.version);
+      }
+      return workspace;
+    },
+    [applyWorkspaces, clientRef],
+  );
+
   const setWorkspacePinned = useCallback(
     async (workspaceId: string, pinned: boolean) => {
       const client = clientRef.current;
@@ -624,6 +653,7 @@ export function useSessionCatalog(
     generateTitle,
     deleteSession,
     deleteWorkspace,
+    createWorkspace,
     setSessionPinned,
     setWorkspacePinned,
     reset,

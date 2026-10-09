@@ -27,6 +27,12 @@ development and distribution maintenance.
   workspaces can be deleted wholesale (including their sessions; files inside
   the desktop's workspace directory are not deleted), and workspace
   collapse state survives restarts.
+- The workspace picker in the new-conversation dialog can register a directory
+  on the connected desktop as a workspace. The user types the host path (the
+  phone has no folder picker for the desktop); the directory must already exist,
+  and a path that already has a workspace reopens that one instead of
+  duplicating it. The action requires the desktop's `workspace_create_v1`
+  capability; older desktops do not expose it.
 - Workspaces can be pinned too (the group menu in the workspace tab). A pinned
   group sits below the pinned conversations and above every unpinned group; the
   flag lives in the desktop store, so it survives a re-pair and the desktop rail

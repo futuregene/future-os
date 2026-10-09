@@ -75,6 +75,9 @@ pub(crate) struct IncomingCmd {
     pub(crate) pinned: bool,
     // prompt creation mode / existing workspace selection
     pub(crate) workspace_id: String,
+    // create_workspace: the desktop-side directory to register (the phone has
+    // no folder picker for the host, so it types the path).
+    pub(crate) path: String,
     // file transfer control + prompt attachment references
     pub(crate) mime_type: String,
     pub(crate) kind: String,
@@ -144,6 +147,7 @@ impl Default for IncomingCmd {
             thread_id: String::new(),
             pinned: false,
             workspace_id: String::new(),
+            path: String::new(),
             mime_type: String::new(),
             kind: String::new(),
             original_size: 0,

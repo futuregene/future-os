@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Modal, Platform, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Modal, Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { ConnectionBadge } from "../../components/ConnectionBadge";
 import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
@@ -20,7 +20,7 @@ const mockRemote = {
   workspaces: [] as { id: string; name: string }[],
   connectionPresentation: { level: "connected", titleKey: "connection.connected", hintKey: "connection.offlineHint" },
   desktopOnline: true,
-  capabilities: new Set(["desktop_settings_v1", "skill_management_v1"]),
+  capabilities: new Set(["desktop_settings_v1", "skill_management_v1", "workspace_create_v1"]),
   desktopSettingsRevision: 0,
   skillsRevision: 0,
   getDesktopSettings: jest.fn(async () => ({ autoUpgradeSkills: true, autoTitleFirstTurn: true, autoConnectRemote: true, hiddenModels: [] })),
@@ -36,6 +36,7 @@ const mockRemote = {
   rename: jest.fn(async () => {}),
   generateTitle: jest.fn(async () => {}),
   deleteSession: jest.fn(async () => {}),
+  createWorkspace: jest.fn(async (_path: string, _name: string) => ({ id: "w9", name: "New", path: "/host/new" })),
   clearError: jest.fn(),
   phase: "connected" as string,
   hasConnectedContent: true,
@@ -203,6 +204,73 @@ test("new chat opens immediately, without an extra creation dialog", () => {
   act(() => tree.root.findByType(SessionList).props.onTabChange("chat"));
   act(() => button("sessions.new").props.onPress());
   expect(mockRemote.newConversation).toHaveBeenCalledWith("chat");
+});
+
+const createWorkspaceRow = () =>
+  tree.root.findAll(node =>
+    node.props.accessibilityLabel === "sessions.createWorkspace"
+    && typeof node.props.onPress === "function",
+  )[0]!;
+const formInput = (label: string) =>
+  visibleModal()!.findAllByType(TextInput).find(node => node.props.accessibilityLabel === label);
+const footerButton = (label: string) =>
+  visibleModal()!.findAllByType(Button).find(node => node.props.label === label)!;
+
+test("the create-workspace row opens a form that registers a typed desktop path", async () => {
+  act(() => tree.root.findByType(SessionList).props.onTabChange("workspace"));
+  act(() => button("sessions.new").props.onPress());
+  act(() => createWorkspaceRow().props.onPress());
+  // The form replaces the picker, and its action stays disabled until a path
+  // is typed — an empty path names no directory on the desktop.
+  expect(formInput("sessions.workspacePath")).toBeDefined();
+  expect(footerButton("sessions.createWorkspaceAction").props.disabled).toBe(true);
+  act(() => formInput("sessions.workspaceName")!.props.onChangeText("New"));
+  act(() => formInput("sessions.workspacePath")!.props.onChangeText("  /host/new  "));
+  expect(footerButton("sessions.createWorkspaceAction").props.disabled).toBe(false);
+  await act(async () => { footerButton("sessions.createWorkspaceAction").props.onPress(); });
+  // The path is trimmed before it reaches the desktop; the name is optional.
+  expect(mockRemote.createWorkspace).toHaveBeenCalledWith("/host/new", "New");
+  // Back on the picker with the created workspace selected, so the ordinary
+  // "new conversation" action starts a conversation against it.
+  expect(formInput("sessions.workspacePath")).toBeUndefined();
+  const dialog = visibleModal()!;
+  act(() => footerButton("sessions.new").props.onPress());
+  expect(mockRemote.newConversation).not.toHaveBeenCalled();
+  act(() => dialog.props.onDismiss());
+  expect(mockRemote.newConversation).toHaveBeenCalledWith("workspace", "w9");
+});
+
+test("an empty workspace list still offers the create row", () => {
+  act(() => tree.root.findByType(SessionList).props.onTabChange("workspace"));
+  act(() => button("sessions.new").props.onPress());
+  expect(createWorkspaceRow()).toBeDefined();
+});
+
+test("a desktop that does not advertise the capability hides the create row", () => {
+  const advertised = mockRemote.capabilities;
+  mockRemote.capabilities = new Set(["desktop_settings_v1"]);
+  try {
+    act(() => tree.root.findByType(SessionList).props.onTabChange("workspace"));
+    act(() => button("sessions.new").props.onPress());
+    // An older desktop answers `create_workspace` with "Unsupported command",
+    // so the action must not be offered at all.
+    expect(createWorkspaceRow()).toBeUndefined();
+  } finally {
+    mockRemote.capabilities = advertised;
+  }
+});
+
+test("a refused workspace creation is reported and keeps the path on screen", async () => {
+  jest.mocked(mockRemote.createWorkspace).mockRejectedValueOnce(new Error("no such directory"));
+  act(() => tree.root.findByType(SessionList).props.onTabChange("workspace"));
+  act(() => button("sessions.new").props.onPress());
+  act(() => createWorkspaceRow().props.onPress());
+  act(() => formInput("sessions.workspacePath")!.props.onChangeText("/host/missing"));
+  await act(async () => { footerButton("sessions.createWorkspaceAction").props.onPress(); });
+  expect(modalText()).toContain("sessions.createWorkspaceFailed");
+  // The form stays open with the path, so the user corrects it instead of
+  // retyping from the picker.
+  expect(formInput("sessions.workspacePath")!.props.value).toBe("/host/missing");
 });
 
 const visibleModal = () =>
