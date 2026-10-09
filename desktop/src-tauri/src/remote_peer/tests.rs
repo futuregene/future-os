@@ -15,9 +15,11 @@ use super::{creds, link, platform, session};
 use crate::remote::test_support::{
     init_store, jwt, now_secs, sign_in, FakeNats, HomeGuard, MockPlatform,
 };
-use crate::remote::{start, stop, RemoteStartInput};
+use crate::remote::{publish_event, start, stop, RemoteStartInput};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use futures::StreamExt;
 use serde_json::json;
+use std::time::Duration;
 
 /// `stop()` aborts the test web server asynchronously; its socket lingers
 /// briefly. The host tests do the same dance — each test in this file starts a
@@ -275,6 +277,84 @@ async fn a_swapped_host_key_is_refused_not_adopted() {
     assert!(
         outcome.is_err(),
         "a mismatched peer key cannot authenticate"
+    );
+
+    stop();
+    wait_for_web_port_free().await;
+}
+
+/// The live half: a host-side event must reach a subscribed client decrypted,
+/// tagged with the host id, and carrying the session it belongs to. This is the
+/// path a session *view* depends on, and it is a different code path from
+/// request/reply — it decrypts records the client never asked for.
+#[tokio::test]
+async fn a_host_event_reaches_a_subscriber_decrypted() {
+    let _home = HomeGuard::new("peer-e2e-events");
+    init_store();
+    let platform = MockPlatform::start().await;
+    let nats = FakeNats::start().await;
+    let (pair_id, host_invitation) = start_host(&platform, &nats).await;
+    let paired = claim(&platform, &host_invitation, &pair_id, nats.url()).await;
+
+    let connected = session::connect(&paired.creds).await.expect("pair");
+    let (mut events, mut presence) = connected.session.subscribe().await.expect("subscribe");
+    let channel = connected.session.channel_for_stream();
+
+    // The host publishes through its own event path, exactly as a run does.
+    publish_event(
+        "sess_live",
+        "agent_text",
+        r#"{"text":"hello from the host"}"#,
+        "run-1",
+        1,
+        1,
+        "evt-1",
+        "2026-01-01T00:00:00Z",
+        1,
+        1,
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let event = loop {
+        let next = tokio::select! {
+            message = events.next() => message,
+            message = presence.next() => message,
+        };
+        let Some(message) = next else {
+            panic!("the subscription ended before the event arrived");
+        };
+        let opened = channel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .open(&message.subject, &message.payload);
+        let Ok(opened) = opened else {
+            // A presence tick or something else on the wire; keep looking.
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "nothing authenticated on the event stream"
+            );
+            continue;
+        };
+        let payload: serde_json::Value = serde_json::from_slice(&opened).expect("json");
+        if payload["sessionId"] == json!("sess_live") {
+            break payload;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the host's event never arrived"
+        );
+    };
+    // The envelope the UI consumes: the event type, the session it belongs to,
+    // and the run it is part of. `data` is the event's own JSON, carried as a
+    // string by the host's wire contract.
+    assert_eq!(event["type"], json!("agent_text"));
+    assert_eq!(event["sessionId"], json!("sess_live"));
+    assert_eq!(event["runId"], json!("run-1"));
+    assert!(
+        event["data"]
+            .as_str()
+            .is_some_and(|data| data.contains("hello from the host")),
+        "the event's own payload must survive: {event}"
     );
 
     stop();

@@ -18,6 +18,7 @@
 use super::creds::{self, PeerCreds};
 use super::session::{self, PeerSession};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use futures::StreamExt;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -51,9 +52,27 @@ pub struct PeerSummary {
     pub agent_available: bool,
 }
 
+/// Where pushed events go. Injected rather than hard-coded to Tauri so the
+/// runtime stays testable and the desktop app is not the only possible host.
+pub(crate) type Emitter = std::sync::Arc<dyn Fn(PeerEvent) + Send + Sync>;
+
+/// One decrypted push from a host, forwarded to the UI verbatim.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerEvent {
+    pub desktop_id: String,
+    /// `event` for `evt.*` (a session event, which carries its own `sessionId`),
+    /// `presence` for a liveness tick.
+    pub kind: &'static str,
+    pub payload: Value,
+}
+
 #[derive(Default)]
 struct Runtime {
     live: HashMap<String, PeerSession>,
+    /// The subscription task per host, aborted on disconnect so a host the user
+    /// removed cannot keep emitting into a UI that has forgotten it.
+    tasks: HashMap<String, tokio::task::JoinHandle<()>>,
     /// The last failure per host. Kept after a disconnect so the list can say
     /// *why* a host is not connected instead of only that it is not.
     errors: HashMap<String, String>,
@@ -70,7 +89,10 @@ fn runtime() -> &'static Mutex<Runtime> {
 /// The link failures carry the mobile client's `PA*` support codes, so both
 /// platforms name the same fault the same way and a support conversation means
 /// the same thing on either.
-pub(crate) async fn pair(invitation: &str) -> Result<PeerSummary, crate::AppError> {
+pub(crate) async fn pair_with_emitter(
+    invitation: &str,
+    emitter: Option<Emitter>,
+) -> Result<PeerSummary, crate::AppError> {
     let parsed = super::link::parse_invitation(invitation, now_secs()).map_err(|error| {
         crate::AppError::Remote {
             status: 0,
@@ -108,7 +130,7 @@ pub(crate) async fn pair(invitation: &str) -> Result<PeerSummary, crate::AppErro
     };
     let desktop_id = creds.desktop_id.clone();
     creds::upsert(creds)?;
-    connect(&desktop_id).await
+    connect_with_emitter(&desktop_id, emitter).await
 }
 
 /// What the remote host shows in its "a new device paired" state. The platform
@@ -190,6 +212,15 @@ pub(crate) async fn ensure_connected(desktop_id: &str) -> Result<PeerSummary, cr
 /// Connect (replacing any existing connection for this host). A failed attempt
 /// is recorded against the host so the list can explain it, then returned.
 pub(crate) async fn connect(desktop_id: &str) -> Result<PeerSummary, crate::AppError> {
+    connect_with_emitter(desktop_id, None).await
+}
+
+/// Connect and, when an emitter is supplied, start streaming that host's events
+/// into it.
+pub(crate) async fn connect_with_emitter(
+    desktop_id: &str,
+    emitter: Option<Emitter>,
+) -> Result<PeerSummary, crate::AppError> {
     let mut creds = stored_creds(desktop_id)?;
     // Renew before connecting: a token that expires mid-handshake fails it in a
     // way that looks like a protocol fault.
@@ -225,31 +256,102 @@ pub(crate) async fn connect(desktop_id: &str) -> Result<PeerSummary, crate::AppE
             eprintln!("remote_peer: could not clear the invitation secret: {error}");
         }
     }
-    let bridge_instance_id = connected.session.bridge_instance_id().to_string();
+    let mut summary = paired_summary(desktop_id)?;
+    summary.connected = true;
+    // Subscribe before taking the runtime lock: subscription is a network
+    // round-trip, and a failure there must not keep a usable connection out of
+    // the map.
+    let peer_session = connected.session;
+    let stream = match emitter {
+        Some(emitter) => match peer_session.subscribe().await {
+            Ok((events, presence)) => {
+                Some((peer_session.channel_for_stream(), events, presence, emitter))
+            }
+            Err(error) => {
+                eprintln!("remote_peer: could not subscribe for {desktop_id}: {error}");
+                None
+            }
+        },
+        None => None,
+    };
     {
         let mut live = runtime().lock().await;
         live.errors.remove(desktop_id);
-        live.live.insert(desktop_id.to_string(), connected.session);
+        summary.bridge_instance_id = Some(peer_session.bridge_instance_id().to_string());
+        summary.features = peer_session.features().to_vec();
+        summary.agent_available = peer_session.agent_available();
+        // A reconnect replaces the stream: the old task's socket is gone, and
+        // leaving it running would emit from a dead connection.
+        if let Some(previous) = live.tasks.remove(desktop_id) {
+            previous.abort();
+        }
+        if let Some((channel, events, presence, emitter)) = stream {
+            live.tasks.insert(
+                desktop_id.to_string(),
+                spawn_event_stream(desktop_id.to_string(), channel, events, presence, emitter),
+            );
+        }
+        live.live.insert(desktop_id.to_string(), peer_session);
     }
-    let _ = bridge_instance_id;
-    let summary = {
-        let live = runtime().lock().await;
-        let session = live
-            .live
-            .get(desktop_id)
-            .expect("the session was just inserted");
-        let mut summary = paired_summary(desktop_id)?;
-        summary.connected = true;
-        summary.bridge_instance_id = Some(session.bridge_instance_id().to_string());
-        summary.features = session.features().to_vec();
-        summary.agent_available = session.agent_available();
-        summary
-    };
     Ok(summary)
 }
+
+/// Drain the host's event and presence subscriptions into `emitter`.
+///
+/// The traffic-key mutex is shared with the command path, so this task and a
+/// concurrent request take the same short lock; neither holds it across an
+/// `await`.
+fn spawn_event_stream(
+    desktop_id: String,
+    channel: std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
+    mut events: async_nats::Subscriber,
+    mut presence: async_nats::Subscriber,
+    emitter: Emitter,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        fn open(
+            channel: &std::sync::Mutex<future_remote_crypto::Channel>,
+            subject: &str,
+            payload: &[u8],
+        ) -> Option<Value> {
+            let opened = channel
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .open(subject, payload)
+                .ok()?;
+            serde_json::from_slice(&opened).ok()
+        }
+        loop {
+            let next = tokio::select! {
+                message = events.next() => message.map(|message| ("event", message)),
+                message = presence.next() => message.map(|message| ("presence", message)),
+            };
+            let Some((kind, message)) = next else {
+                // Both streams ended: the socket is gone. The next status poll
+                // and the next command both notice; this task just stops.
+                return;
+            };
+            let Some(payload) = open(&channel, &message.subject, &message.payload) else {
+                // Unauthenticated or unparsable: a relay can inject either at
+                // will and the connection is not at fault, so drop it.
+                continue;
+            };
+            emitter(PeerEvent {
+                desktop_id: desktop_id.clone(),
+                kind,
+                payload,
+            });
+        }
+    })
+}
+
 /// Drop the connection but keep the pairing (the user's "disconnect").
 pub(crate) async fn disconnect(desktop_id: &str) {
-    runtime().lock().await.live.remove(desktop_id);
+    let mut live = runtime().lock().await;
+    if let Some(task) = live.tasks.remove(desktop_id) {
+        task.abort();
+    }
+    live.live.remove(desktop_id);
 }
 
 /// Drop the pairing locally, then try to revoke it server-side.

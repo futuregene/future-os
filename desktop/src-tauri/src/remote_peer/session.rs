@@ -33,7 +33,12 @@ pub(crate) struct PeerSession {
     client: async_nats::Client,
     /// Per-connection traffic keys. Never persisted, never reused across
     /// connections: a new socket always starts from a new handshake.
-    channel: future_remote_crypto::Channel,
+    ///
+    /// Behind a `std` mutex rather than an async one because the guard is never
+    /// held across an `await`: sealing and opening are pure CPU, and holding a
+    /// lock while awaiting a reply would serialise the event subscription loop
+    /// behind a slow command.
+    channel: std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
     /// The host's bridge instance, from the handshake confirmation. Sent with
     /// every command so a host that restarted mid-conversation can be told
     /// apart from the one the client handshook with.
@@ -64,6 +69,40 @@ impl PeerSession {
             .unwrap_or(false)
     }
 
+    /// The traffic-key mutex, shared with the event stream task. The task takes
+    /// this same lock, so a stream and a concurrent command both work without
+    /// holding it across an await.
+    pub(crate) fn channel_for_stream(
+        &self,
+    ) -> std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>> {
+        self.channel.clone()
+    }
+
+    /// Subscribe to the host's event and presence streams.
+    ///
+    /// `p.{pair}.evt.>` carries session events and `p.{pair}.presence` the
+    /// host's liveness. Both are decrypted with the same channel as commands,
+    /// so a pushed event is authenticated exactly as strongly as a reply.
+    pub(crate) async fn subscribe(
+        &self,
+    ) -> Result<(async_nats::Subscriber, async_nats::Subscriber), crate::AppError> {
+        let events = self
+            .client
+            .subscribe(format!("p.{}.evt.>", self.pair_id))
+            .await
+            .map_err(|error| {
+                crate::AppError::RemoteTransport(format!("Remote subscribe failed: {error}"))
+            })?;
+        let presence = self
+            .client
+            .subscribe(format!("p.{}.presence", self.pair_id))
+            .await
+            .map_err(|error| {
+                crate::AppError::RemoteTransport(format!("Remote subscribe failed: {error}"))
+            })?;
+        Ok((events, presence))
+    }
+
     /// A command subject for `session_key`: the host routes on the trailing
     /// token, and `list` / `new` are its two non-session lanes.
     pub(crate) fn command_subject(&self, session_key: &str) -> String {
@@ -90,6 +129,8 @@ impl PeerSession {
             .map_err(|error| crate::AppError::Message(format!("encode command: {error}")))?;
         let wire = self
             .channel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .seal(subject, &plaintext)
             .map_err(|_| crate::AppError::Message("remote_secure_channel_invalid".into()))?;
         let response = tokio::time::timeout(
@@ -106,6 +147,8 @@ impl PeerSession {
             .map_err(|_| crate::AppError::Message("remote_secure_channel_invalid".into()))?;
         let opened = self
             .channel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .open(&context, &response.payload)
             .map_err(|_| crate::AppError::Message("remote_secure_channel_invalid".into()))?;
         let reply: Value = serde_json::from_slice(&opened)
@@ -363,7 +406,7 @@ async fn handshake(
     let mut session = PeerSession {
         pair_id: creds.pair_id.clone(),
         client: client.clone(),
-        channel,
+        channel: std::sync::Arc::new(std::sync::Mutex::new(channel)),
         bridge_instance_id,
         features,
         presence: confirmation.get("presence").cloned().unwrap_or(Value::Null),

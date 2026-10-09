@@ -6,8 +6,9 @@
 //! connected to" — and a single namespace made it easy for the UI to read one
 //! status where it meant the other.
 
-use crate::remote_peer::{runtime, PeerSummary};
+use crate::remote_peer::{runtime, PeerEvent, PeerSummary};
 use serde_json::Value;
+use tauri::Emitter as _;
 
 /// Every paired remote host, connected or not. Never carries credentials.
 #[tauri::command]
@@ -15,10 +16,29 @@ pub async fn remote_peer_list() -> Result<Vec<PeerSummary>, crate::AppError> {
     runtime::list().await
 }
 
+/// The frontend listens for live pushes from a host under this event name.
+pub(crate) const PEER_EVENT: &str = "remote-peer-event";
+
+/// The emitter handed to the runtime: every decrypted push is forwarded to the
+/// webview as-is. Serialising happens in the runtime's `PeerEvent`, so the UI
+/// receives `{desktopId, kind, payload}` and nothing here reinterprets it.
+fn emitter(app: tauri::AppHandle) -> runtime::Emitter {
+    std::sync::Arc::new(move |event: PeerEvent| {
+        if let Err(error) = app.emit(PEER_EVENT, event) {
+            // A closed window is not a connection fault; the next status poll
+            // still sees the host as connected.
+            eprintln!("remote_peer: could not deliver a peer event: {error}");
+        }
+    })
+}
+
 /// Pair from a pasted `futureos://remote/pair` link and connect once.
 #[tauri::command]
-pub async fn remote_peer_pair(invitation: String) -> Result<PeerSummary, crate::AppError> {
-    match runtime::pair(&invitation).await {
+pub async fn remote_peer_pair(
+    app: tauri::AppHandle,
+    invitation: String,
+) -> Result<PeerSummary, crate::AppError> {
+    match runtime::pair_with_emitter(&invitation, Some(emitter(app))).await {
         Ok(peer) => Ok(peer),
         Err(error) => {
             // The UI shows a support code; the real cause goes to stderr where
@@ -30,8 +50,11 @@ pub async fn remote_peer_pair(invitation: String) -> Result<PeerSummary, crate::
 }
 
 #[tauri::command]
-pub async fn remote_peer_connect(desktop_id: String) -> Result<PeerSummary, crate::AppError> {
-    runtime::connect(&desktop_id).await
+pub async fn remote_peer_connect(
+    app: tauri::AppHandle,
+    desktop_id: String,
+) -> Result<PeerSummary, crate::AppError> {
+    runtime::connect_with_emitter(&desktop_id, Some(emitter(app))).await
 }
 
 #[tauri::command]

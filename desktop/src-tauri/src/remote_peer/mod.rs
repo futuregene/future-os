@@ -29,7 +29,7 @@ pub(crate) mod platform;
 pub(crate) mod runtime;
 pub(crate) mod session;
 
-pub use self::runtime::PeerSummary;
+pub use self::runtime::{PeerEvent, PeerSummary};
 
 #[cfg(test)]
 mod tests;
