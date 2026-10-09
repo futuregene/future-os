@@ -255,6 +255,173 @@ pub fn create(
     Ok(workspace)
 }
 
+/// The desktop conversation behind an Agent session: the row a cwd change is
+/// filed under. Only the two columns the filing needs travel, so this stays a
+/// read of the `threads` table rather than a second copy of its shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadRef {
+    pub id: String,
+    pub workspace_id: String,
+}
+
+/// Whether the desktop's `threads` table exists in this database.
+///
+/// The CLI can create `workspaces` in a database the app has never opened
+/// (`future workspace add` before the app ever ran), and the app creates the
+/// rest of its schema at first start — so "the table is not there" is a normal
+/// state meaning "the app owns no conversations yet", not a broken store.
+pub fn threads_table_exists(conn: &Connection) -> Result<bool, Error> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'threads'",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// The live conversation bound to an Agent session, or `None` when the desktop
+/// has never imported it (or has deleted it).
+pub fn find_thread_by_agent_session(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<ThreadRef>, Error> {
+    if !threads_table_exists(conn)? {
+        return Ok(None);
+    }
+    Ok(conn
+        .query_row(
+            "SELECT id, workspace_id FROM threads
+             WHERE agent_session_id = ?1 AND status != 'deleted' LIMIT 1",
+            params![session_id],
+            |row| {
+                Ok(ThreadRef {
+                    id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+/// File a conversation under a workspace.
+pub fn move_thread_to_workspace(
+    conn: &Connection,
+    thread_id: &str,
+    workspace_id: &str,
+) -> Result<(), Error> {
+    conn.execute(
+        "UPDATE threads SET workspace_id = ?1, updated_at = ?2
+         WHERE id = ?3 AND status != 'deleted'",
+        params![workspace_id, now_millis(), thread_id],
+    )?;
+    Ok(())
+}
+
+/// The app-managed chat scratch root: `~/.future/workspaces/chat`. A chat
+/// conversation's own temporary directory lives under it and is named after the
+/// session once the first prompt has run.
+pub fn chat_workspaces_root() -> Result<PathBuf, Error> {
+    Ok(home_dir()?.join(".future").join("workspaces").join("chat"))
+}
+
+/// Whether a cwd is a chat scratch directory (the agent-side spelling of the
+/// app's own scratch root). A tilde spelling counts, as does a Windows one.
+pub fn is_chat_directory(cwd: &str) -> bool {
+    if cwd.is_empty() {
+        return false;
+    }
+    let cwd = cwd.replace('\\', "/");
+    const SUFFIX: &str = "/.future/workspaces/chat/";
+    if cwd.starts_with(&format!("~{SUFFIX}")) {
+        return true;
+    }
+    match home_dir() {
+        Ok(home) => {
+            let home = home.to_string_lossy().replace('\\', "/");
+            let prefix = format!("{}{SUFFIX}", home.trim_end_matches('/'));
+            cwd.starts_with(&prefix)
+        }
+        Err(_) => false,
+    }
+}
+
+/// What filing a session's conversation for a cwd change did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CwdFiling {
+    /// The desktop has never imported this session. There is nothing to file
+    /// yet: the workspace follows the directory when the app imports it.
+    NotImported,
+    /// A chat scratch cwd: the conversation's temporary workspace follows the
+    /// path, as the app does for its own chat conversations.
+    ChatWorkspaceUpdated,
+    /// Filed under a workspace created for the directory.
+    WorkspaceCreated(String),
+    /// Filed under the workspace that already covered the directory.
+    WorkspaceReused(String),
+}
+
+/// File a conversation under the workspace for `cwd`, the rule the desktop app
+/// applies when it sees a cwd change — the same code, so a cwd changed from the
+/// CLI and one changed in the app land identically whether or not the app was
+/// running to notice it.
+///
+/// The directory must already exist: an uncreatable path is `Err`, which is how
+/// the app surfaces it (a toast) and what the CLI reports as a note rather than
+/// failing the cwd change itself. An empty cwd is `Ok(None)`: there is no
+/// directory to file under.
+pub fn file_session_for_cwd(
+    conn: &mut Connection,
+    session_id: &str,
+    cwd: &str,
+    now: i64,
+) -> Result<Option<CwdFiling>, Error> {
+    let cwd = cwd.trim().trim_end_matches(['/', '\\']);
+    if cwd.is_empty() {
+        return Ok(None);
+    }
+    let Some(thread) = find_thread_by_agent_session(conn, session_id)? else {
+        return Ok(Some(CwdFiling::NotImported));
+    };
+
+    if is_chat_directory(cwd) {
+        let scratch = chat_workspaces_root()?
+            .join(&thread.id)
+            .display()
+            .to_string();
+        if scratch != cwd {
+            conn.execute(
+                "UPDATE workspaces SET path = ?1, updated_at = ?2
+                 WHERE path = ?3 AND kind = 'temporary'",
+                params![cwd, now, scratch],
+            )?;
+        }
+        return Ok(Some(CwdFiling::ChatWorkspaceUpdated));
+    }
+
+    // Identity is the canonical directory, not the spelling that arrived: the
+    // same rule `create` applies, so both spellings find one workspace.
+    let path = resolve_directory(cwd, false)?;
+    let name = name_from_path(&path);
+    let filing = match find_user_by_path(conn, &path)? {
+        Some(workspace) => CwdFiling::WorkspaceReused(workspace.id),
+        None => CwdFiling::WorkspaceCreated(find_or_create_user(conn, name, &path, None, now)?.id),
+    };
+    let workspace_id = match &filing {
+        CwdFiling::WorkspaceCreated(id) | CwdFiling::WorkspaceReused(id) => id.clone(),
+        _ => unreachable!("the chat and unimported cases returned above"),
+    };
+    move_thread_to_workspace(conn, &thread.id, &workspace_id)?;
+    Ok(Some(filing))
+}
+
+/// Milliseconds since the epoch, the stamp every row write carries.
+pub fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or_default()
+}
+
 /// The directory a workspace path names, refusing one that is missing or is not
 /// a directory unless `create_directory` says to make it.
 pub fn resolve_directory(path: &str, create_directory: bool) -> Result<PathBuf, Error> {
@@ -558,6 +725,147 @@ mod tests {
                 .to_string()
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A threads table shaped like the desktop's, for the filing tests. Only
+    /// the columns the filing reads and writes are declared.
+    fn add_threads_table(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE threads (
+                 id TEXT PRIMARY KEY,
+                 workspace_id TEXT NOT NULL DEFAULT '',
+                 agent_session_id TEXT,
+                 status TEXT NOT NULL DEFAULT 'active',
+                 updated_at INTEGER NOT NULL DEFAULT 0
+             );",
+        )
+        .expect("create threads");
+    }
+
+    fn bind_thread(conn: &Connection, thread: &str, session: &str) {
+        conn.execute(
+            "INSERT INTO threads (id, workspace_id, agent_session_id, status, updated_at)
+             VALUES (?1, '', ?2, 'active', 0)",
+            params![thread, session],
+        )
+        .expect("bind thread");
+    }
+
+    fn thread_workspace(conn: &Connection, thread: &str) -> String {
+        conn.query_row(
+            "SELECT workspace_id FROM threads WHERE id = ?1",
+            params![thread],
+            |row| row.get(0),
+        )
+        .expect("thread workspace")
+    }
+
+    /// A cwd change files the conversation under the workspace for the
+    /// directory: created the first time, reused afterwards — the same rule the
+    /// desktop app applies when it observes the change itself, so a cwd changed
+    /// while the app was closed lands identically.
+    #[test]
+    fn a_cwd_change_files_the_conversation_under_one_workspace() {
+        let mut conn = test_conn();
+        add_threads_table(&conn);
+        bind_thread(&conn, "thread-1", "sess-1");
+        bind_thread(&conn, "thread-2", "sess-2");
+        let dir = temp_dir("filing");
+        let canonical = dir.canonicalize().expect("canonicalize");
+
+        let filing =
+            file_session_for_cwd(&mut conn, "sess-1", &dir.display().to_string(), 5).expect("file");
+        let Some(CwdFiling::WorkspaceCreated(id)) = filing else {
+            panic!("expected a created workspace, got {filing:?}");
+        };
+        assert_eq!(thread_workspace(&conn, "thread-1"), id);
+        let workspace = get(&conn, &id).expect("get").expect("exists");
+        assert_eq!(workspace.path, canonical.display().to_string());
+        assert_eq!(workspace.name, name_from_path(&canonical));
+        assert_eq!(workspace.kind, "user");
+
+        // A trailing separator is the same directory: reused, not a second row.
+        let alias = format!("{}{}", canonical.display(), std::path::MAIN_SEPARATOR);
+        assert_eq!(
+            file_session_for_cwd(&mut conn, "sess-2", &alias, 6).expect("file"),
+            Some(CwdFiling::WorkspaceReused(id.clone()))
+        );
+        assert_eq!(thread_workspace(&conn, "thread-2"), id);
+        assert_eq!(list(&conn).expect("list").len(), 1);
+
+        // Empty cwd and unimported sessions are answered, not failed: there is
+        // nothing to file, and the app is not left thinking it wrote something.
+        assert_eq!(
+            file_session_for_cwd(&mut conn, "sess-1", "   ", 7).expect("empty"),
+            None
+        );
+        assert_eq!(
+            file_session_for_cwd(&mut conn, "sess-ghost", "/tmp", 8).expect("unimported"),
+            Some(CwdFiling::NotImported)
+        );
+        assert_eq!(thread_workspace(&conn, "thread-1"), id);
+
+        // A database the CLI created before the app ever ran has no `threads`
+        // table at all. That is "no conversations yet", not a broken store: the
+        // filing must answer, not fail — otherwise a cwd change on a machine
+        // where the app never imported anything reports a confusing error.
+        let mut cli_only = test_conn();
+        assert!(!threads_table_exists(&cli_only).expect("probe"));
+        assert_eq!(
+            file_session_for_cwd(&mut cli_only, "sess-1", "/tmp", 10).expect("no app schema"),
+            Some(CwdFiling::NotImported)
+        );
+
+        // A directory that is not there cannot be filed under.
+        let missing = temp_dir("filing-missing").join("not-there");
+        let error = file_session_for_cwd(&mut conn, "sess-1", &missing.display().to_string(), 9)
+            .expect_err("missing directory");
+        assert!(error.to_string().contains("does not exist"), "{error}");
+        assert_eq!(thread_workspace(&conn, "thread-1"), id, "unchanged");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A chat scratch cwd is not a project: the conversation's own temporary
+    /// workspace follows the path (that is what the app does for its chats)
+    /// rather than a new user workspace appearing for the scratch directory.
+    #[test]
+    fn a_chat_directory_moves_the_temporary_workspace_instead() {
+        let mut conn = test_conn();
+        add_threads_table(&conn);
+        let root = chat_workspaces_root().expect("home");
+        conn.execute(
+            "INSERT INTO workspaces (id, name, kind, path, cleanup_status, created_at, updated_at)
+             VALUES ('ws_chat', 'Chat Workspace', 'temporary', ?1, 'active', 1, 1)",
+            params![root.join("thread-chat").display().to_string()],
+        )
+        .expect("seed chat workspace");
+        conn.execute(
+            "INSERT INTO threads (id, workspace_id, agent_session_id, status, updated_at)
+             VALUES ('thread-chat', 'ws_chat', 'sess-chat', 'active', 1)",
+            [],
+        )
+        .expect("seed chat thread");
+
+        let moved = root.join("sess-chat");
+        assert_eq!(
+            file_session_for_cwd(&mut conn, "sess-chat", &moved.display().to_string(), 4)
+                .expect("file"),
+            Some(CwdFiling::ChatWorkspaceUpdated)
+        );
+        let workspace = get(&conn, "ws_chat").expect("get").expect("exists");
+        assert_eq!(workspace.path, moved.display().to_string());
+        assert_eq!(workspace.kind, "temporary");
+        assert_eq!(
+            list(&conn).expect("list").len(),
+            1,
+            "no user workspace for a scratch directory"
+        );
+
+        // A tilde spelling of the same sentinel is recognised too.
+        assert!(is_chat_directory("~/.future/workspaces/chat/sess-chat"));
+        assert!(!is_chat_directory("/tmp/.future/workspaces/chat/sess-chat"));
+        assert!(!is_chat_directory(""));
     }
 
     /// Ids are opaque, but they keep the desktop's shape: prefix, local time,

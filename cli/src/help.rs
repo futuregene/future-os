@@ -231,6 +231,11 @@ instead of creating a second one for the same directory, however the path is
 spelled (~, a symlinked path, a trailing separator) — one directory is always
 one workspace.
 
+Workspaces also appear on their own: `future session set <id> --cwd <dir>` files
+that conversation under the directory's workspace, and the desktop app does the
+same whenever a cwd changes. `future workspace list` is then the place to see
+where conversations are filed.
+
 Examples:
   future workspace list
   future workspace add ~/projects/demo

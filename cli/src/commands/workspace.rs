@@ -10,7 +10,11 @@
 //! The rules — `~` expansion, the directory having to exist, the name defaulting
 //! to the directory's own name, and one directory meaning one workspace however
 //! it is spelled — are `future-app-workspaces`, shared with the desktop backend,
-//! so `future workspace add` and the app's dialog cannot drift apart.
+//! so `future workspace add` and the app's dialog cannot drift apart. The same
+//! crate owns the other way a workspace appears: a session cwd change files that
+//! conversation under the directory's workspace, which is what
+//! `session set --cwd` calls (`file_session_cwd` below) and what the desktop app
+//! does when it observes the change.
 
 use crate::help;
 use crate::output::Output;
@@ -18,7 +22,6 @@ use future_app_workspaces as workspaces;
 use rusqlite::Connection;
 use serde_json::json;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 type Result<T> = std::result::Result<T, String>;
 
@@ -122,8 +125,15 @@ fn add(args: &[String], out: &Output) -> Result<()> {
         workspaces::resolve_directory(&path, false).map_err(|error| error.to_string())?;
     let existing =
         workspaces::find_user_by_path(&conn, &directory).map_err(|error| error.to_string())?;
-    let workspace = workspaces::create(&mut conn, &path, name, None, false, now_millis())
-        .map_err(|error| error.to_string())?;
+    let workspace = workspaces::create(
+        &mut conn,
+        &path,
+        name,
+        None,
+        false,
+        workspaces::now_millis(),
+    )
+    .map_err(|error| error.to_string())?;
     let created = existing.map(|row| row.id) != Some(workspace.id.clone());
 
     if json_flag {
@@ -222,11 +232,101 @@ fn table_exists(conn: &Connection) -> Result<bool> {
     Ok(count > 0)
 }
 
-fn now_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or_default()
+/// File a session's desktop conversation under the workspace for a new cwd —
+/// what the desktop app itself does when it observes a `cwd_changed`, so a cwd
+/// set from the CLI lands the same way with the app closed as with it open.
+///
+/// Never fails the caller: the cwd change is the agent's and has already been
+/// applied, so a store that cannot be written is reported as a note rather than
+/// turned into an error about a change that did happen.
+#[derive(Debug)]
+pub enum SessionFiling {
+    /// No desktop app store on this machine (never run, or no `app.db`): there
+    /// is nothing to file, and nothing worth saying.
+    NoDesktopApp,
+    /// The desktop has never imported this session. The workspace follows the
+    /// directory when it does, so nothing is filed now.
+    NotImported,
+    /// A chat scratch directory: the conversation's temporary workspace follows
+    /// the path, which is what the app does for its own chat conversations.
+    ChatWorkspaceUpdated,
+    /// Filed under the workspace for the directory.
+    Filed {
+        name: String,
+        path: String,
+        created: bool,
+    },
+    /// The directory could not be filed under (usually: it does not exist), or
+    /// the store could not be written.
+    Refused(String),
+}
+
+impl SessionFiling {
+    /// What to tell the user, when saying nothing would leave them guessing.
+    pub fn note(&self) -> Option<String> {
+        match self {
+            SessionFiling::NoDesktopApp | SessionFiling::ChatWorkspaceUpdated => None,
+            SessionFiling::Filed {
+                name,
+                path,
+                created,
+            } => Some(if *created {
+                format!("workspace: created \"{name}\" for {path}")
+            } else {
+                format!("workspace: filed under \"{name}\" ({path})")
+            }),
+            SessionFiling::NotImported => Some(
+                "workspace: the desktop app has not imported this session yet; it will file the \
+                 conversation under this directory when it does"
+                    .to_string(),
+            ),
+            // The cwd change itself succeeded, so a refusal is a note, and the
+            // advice names the case that actually happens: a directory that is
+            // not there yet.
+            SessionFiling::Refused(reason) if reason.contains("does not exist") => Some(format!(
+                "workspace: not filed ({reason}); create the directory, then run \
+                 `future workspace add <path>`"
+            )),
+            SessionFiling::Refused(reason) => Some(format!(
+                "workspace: not filed ({reason}); the desktop app's store could not be \
+                 written"
+            )),
+        }
+    }
+}
+
+/// `future session set --cwd` calls this after the agent accepted the new cwd.
+pub fn file_session_cwd(session_id: &str, cwd: &str) -> SessionFiling {
+    let conn = match open_existing() {
+        Ok(Some(conn)) => conn,
+        // A read that fails is not "there is no desktop app" — but it is still
+        // not worth failing a cwd change over; say what could not be done.
+        Err(error) => return SessionFiling::Refused(error),
+        Ok(None) => return SessionFiling::NoDesktopApp,
+    };
+    let mut conn = conn;
+    match workspaces::file_session_for_cwd(&mut conn, session_id, cwd, workspaces::now_millis()) {
+        Err(error) => SessionFiling::Refused(error.to_string()),
+        Ok(None) => SessionFiling::NoDesktopApp,
+        Ok(Some(workspaces::CwdFiling::NotImported)) => SessionFiling::NotImported,
+        Ok(Some(workspaces::CwdFiling::ChatWorkspaceUpdated)) => {
+            SessionFiling::ChatWorkspaceUpdated
+        }
+        Ok(Some(workspaces::CwdFiling::WorkspaceCreated(id))) => filed(&conn, &id, true),
+        Ok(Some(workspaces::CwdFiling::WorkspaceReused(id))) => filed(&conn, &id, false),
+    }
+}
+
+fn filed(conn: &Connection, workspace_id: &str, created: bool) -> SessionFiling {
+    match workspaces::get(conn, workspace_id) {
+        Ok(Some(workspace)) => SessionFiling::Filed {
+            name: workspace.name,
+            path: workspace.path,
+            created,
+        },
+        Ok(None) => SessionFiling::Refused("the filed workspace disappeared".to_string()),
+        Err(error) => SessionFiling::Refused(error.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -462,6 +562,34 @@ mod tests {
             .unwrap_err()
             .contains("unknown option"));
         assert!(!home.database().exists());
+    }
+
+    /// The session-cwd filing says nothing on a machine that has no desktop app
+    /// store, and says which case it was when there is one: a cwd change must
+    /// not become noisy for someone who never installed the app.
+    #[tokio::test]
+    async fn filing_a_session_cwd_reports_only_what_happened() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let project = home.dir("project");
+
+        // No desktop app: nothing to file, nothing to say.
+        assert!(matches!(
+            file_session_cwd("sess-1", project.to_str().unwrap()),
+            SessionFiling::NoDesktopApp
+        ));
+        assert!(file_session_cwd("sess-1", project.to_str().unwrap())
+            .note()
+            .is_none());
+
+        // A store exists but has never imported the session: the import will
+        // file it later, and the note says so rather than pretending it is done.
+        let (out, _) = Output::memory();
+        add(&args(&[project.to_str().unwrap()]), &out).unwrap();
+        let filing = file_session_cwd("sess-1", project.to_str().unwrap());
+        assert!(matches!(filing, SessionFiling::NotImported), "{filing:?}");
+        let note = filing.note().expect("a note");
+        assert!(note.contains("has not imported"), "{note}");
     }
 
     /// Group dispatch: a bare group prints its help, an unknown subcommand is an
