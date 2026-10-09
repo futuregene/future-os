@@ -34,7 +34,7 @@ import { useRemoteControls as useRemote } from "../remote/RemoteContext";
 import { effectiveRunStatus } from "../remote/sessionStatus";
 import type { RemoteSession } from "../remote/types";
 import { colors, layout, radius, spacing } from "../theme/tokens";
-import { catalogRows, type CatalogRow } from "./sessionTree";
+import { catalogRows, mergedRows as sessionTreeMergedRows, type CatalogRow } from "./sessionTree";
 import { useCollapsedWorkspaces } from "./useCollapsedWorkspaces";
 import { useSessionListScroll } from "./useSessionListScroll";
 import { useTabSwipe, type PageDirection } from "./useTabSwipe";
@@ -78,12 +78,29 @@ export function SessionList({
   active = true,
   onTabChange,
   empty,
+  merged,
+  icons,
+  activeDesktopId = null,
   onMenu,
 }: {
   tab: Tab;
   active?: boolean;
   onTabChange: (tab: Tab) => void;
   empty: ReactNode;
+  /**
+   * When set, the list shows these rows (every desktop's sessions merged)
+   * instead of the active desktop's workspace tree.
+   */
+  merged?: import("../remote/mergeSessions").MergedSessionRow[];
+  /** Per-desktop glyph, so a merged row shows which machine it is on. */
+  icons?: Map<string, string>;
+  /**
+   * The desktop this screen is connected to. A merged row from *another*
+   * desktop gets no actions menu: rename, pin and delete are commands to the
+   * active desktop, and offering them on a row they would address to the wrong
+   * machine is worse than not offering them.
+   */
+  activeDesktopId?: string | null;
   onMenu: (session: RemoteSession) => void;
 }) {
   const remote = useRemote();
@@ -111,8 +128,10 @@ export function SessionList({
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
   const rows = useMemo(
-    () => catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query),
-    [remote.sessions, remote.workspaces, tab, collapsed, expanded, query],
+    () => (merged && merged.length > 0
+      ? sessionTreeMergedRows(merged, query)
+      : catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query)),
+    [remote.sessions, remote.workspaces, merged, tab, collapsed, expanded, query],
   );
   const visibleSessions = rows.flatMap(row => (row.kind === "session" ? [row.session] : []));
   // Pinned sessions are shortcuts promoted above the groups (and, on the
@@ -389,6 +408,15 @@ export function SessionList({
           <Text numberOfLines={1} ellipsizeMode="tail" style={[styles.title, unread && styles.unreadTitle]}>
             {session.title || t("sessions.unnamed")}
           </Text>
+          {/* In the merged list the row carries its machine's glyph. It replaces
+              the desktop's name here for the same reason it does on the desktop
+              app: the row already holds a title and a status, and a full name
+              would push the title out of view. */}
+          {item.desktopId && icons?.get(item.desktopId) ? (
+            <Text accessibilityLabel={item.desktopId} style={styles.sourceIcon}>
+              {icons.get(item.desktopId)}
+            </Text>
+          ) : null}
           {session.pinned && <Pin size={13} color={colors.accent} />}
           {running ? (
             <ActivityIndicator size={14} color={colors.accent} />
@@ -403,7 +431,7 @@ export function SessionList({
             />
           ) : null}
         </Pressable>
-        {!selecting && (
+        {!selecting && (!item.desktopId || item.desktopId === activeDesktopId) && (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t("sessions.actions", {
@@ -615,6 +643,9 @@ export function SessionList({
         style={[styles.page, { transform: [{ translateX: swipe.translateX }] }]}
         {...swipe.panHandlers}
       >
+        {merged && merged.length > 0
+          ? <View />
+          : null}
         <FlatList
           key={query.trim() ? `${listKey}:search` : listKey}
           data={rows}
@@ -783,6 +814,7 @@ const styles = StyleSheet.create({
   },
   checkboxChecked: { backgroundColor: colors.accent, borderColor: colors.accent },
   dot: { width: 7, height: 7, borderRadius: radius.pill },
+  sourceIcon: { fontSize: 13, marginLeft: spacing.xs },
   selectionBar: {
     flex: 1,
     minWidth: 0,

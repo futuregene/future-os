@@ -61,7 +61,9 @@ async function deleteCredentialFields(): Promise<void> {
 async function loadLegacyCredentials(): Promise<RemoteCredentials | null> {
   const commit = await SecureStore.getItemAsync(CREDENTIAL_COMMIT_KEY, secureOptions);
   if (commit === "cleared") return null;
-  if (commit !== null && commit !== "a" && commit !== "b")
+  // A non-string is "absent", like the registry read above: a platform shim
+  // yielding `undefined` must not be read as a corrupted commit marker.
+  if (typeof commit === "string" && commit !== "a" && commit !== "b")
     throw new Error("invalid_credential_commit");
   const entries = await Promise.all(
     Object.entries(CREDENTIAL_KEYS).map(async ([field, key]) => [
@@ -136,7 +138,10 @@ async function writeDesktop(
 
 async function readRegistry(): Promise<DesktopRegistry> {
   const raw = await SecureStore.getItemAsync(DESKTOP_REGISTRY_KEY, secureOptions);
-  if (raw !== null) {
+  // `null` is the documented "missing" value, but a platform shim can also
+  // yield `undefined`. Both mean absent — treating a non-string as parseable is
+  // how a missing registry turns into "corrupt registry" on some devices.
+  if (typeof raw === "string") {
     let parsed: DesktopRegistry;
     try {
       parsed = JSON.parse(raw) as DesktopRegistry;

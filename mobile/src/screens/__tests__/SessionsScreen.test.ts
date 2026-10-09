@@ -1,11 +1,20 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Modal, Platform, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import {
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
 import { ConnectionBadge } from "../../components/ConnectionBadge";
 import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
 import { SessionsScreen } from "../SessionsScreen";
 import { SessionList } from "../SessionList";
+import { DesktopPicker } from "../DesktopPicker";
 import { ActionMenu } from "../../components/ActionMenu";
 import { RenameModal } from "../../features/chat/components/RenameModal";
 import { DisconnectedScreen } from "../DisconnectedScreen";
@@ -15,8 +24,11 @@ import { promptUpgrade } from "../../update/prompt";
 
 let mockDimensions = { width: 320, height: 640, scale: 1, fontScale: 1 };
 const mockRemote = {
-  desktops: [{ pairId: "p1", name: "A very long desktop name" }],
-  credentials: { pairId: "p1" },
+  desktops: [
+    { desktopId: "desktop_1", pairId: "p1", name: "A very long desktop name" },
+    { desktopId: "desktop_2", pairId: "p2" },
+  ],
+  credentials: { pairId: "p1", expectedDesktopId: "desktop_1" },
   workspaces: [] as { id: string; name: string }[],
   connectionPresentation: { level: "connected", titleKey: "connection.connected", hintKey: "connection.offlineHint" },
   desktopOnline: true,
@@ -55,7 +67,7 @@ jest.mock("../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }
 jest.mock("../../update/prompt", () => ({ promptUpgrade: jest.fn() }));
 jest.mock("../../update/update", () => ({ checkForUpdate: jest.fn() }));
 jest.mock("lucide-react-native", () => Object.fromEntries(
-  ["ArrowLeft", "ChevronLeft", "ChevronRight", "ChevronDown", "Folder", "LogOut", "MessageCircle", "Monitor", "Plus", "Pin", "Pencil", "Trash2", "Settings", "Unplug", "X"].map(name => [name, name]),
+  ["ArrowLeft", "ChevronLeft", "ChevronRight", "ChevronDown", "Check", "Folder", "LogOut", "MessageCircle", "Monitor", "Plus", "Pin", "Pencil", "Trash2", "Settings", "Unplug", "X"].map(name => [name, name]),
 ));
 jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",
@@ -76,18 +88,47 @@ beforeEach(() => {
 });
 afterEach(() => act(() => tree.unmount()));
 
+/**
+ * The device header keeps its two guarantees from before the picker became a
+ * dropdown: a real touch target on a small phone, and real gutters so the
+ * selector does not collide with the connection badge beside it.
+ */
 test("device header has real gutters and a non-shrinking touch target on a small phone", () => {
-  const selector = button("desktops.title");
+  const selector = button("desktops.pickerLabel");
   const style = StyleSheet.flatten(selector.props.style({ pressed: false }));
   expect(style.minHeight).toBeGreaterThanOrEqual(44);
   expect(style.minWidth).toBe(0);
-  const header = selector.parent!;
-  expect(StyleSheet.flatten(header.props.style).paddingHorizontal).toBe(16);
+  // The picker renders its own modal alongside the trigger, so the header is
+  // found by walking up to the nearest ancestor that actually defines gutters —
+  // asserting on a fixed number of parents would break the next time the
+  // picker grows a wrapper.
+  let header = selector.parent;
+  while (header && StyleSheet.flatten(header.props?.style)?.paddingHorizontal === undefined) {
+    header = header.parent;
+  }
+  expect(StyleSheet.flatten(header?.props.style).paddingHorizontal).toBe(16);
   const badge = tree.root.findByType(ConnectionBadge);
   expect(badge.findAllByType(Text)).toHaveLength(0);
   expect(badge.props.active).toBe(true);
+  // Opening the picker is the selector's own action now; managing pairings moved
+  // into the picker's list, which is where someone looking for another desktop
+  // will be. Rendering it must not throw (the mocked icon set is the reason a
+  // missing export would show up here rather than in the app).
   act(() => selector.props.onPress());
-  expect(onManageDesktops).toHaveBeenCalledTimes(1);
+  expect(onManageDesktops).not.toHaveBeenCalled();
+  expect(tree.root.findAllByType(DesktopPicker).length).toBe(1);
+});
+
+test("the picker offers every paired desktop plus the merged option", () => {
+  const picker = tree.root.findByType(DesktopPicker);
+  expect(picker.props.desktops.map((desktop: { desktopId: string }) => desktop.desktopId))
+    .toEqual(["desktop_1", "desktop_2"]);
+  // Defaults to the merged list so a user with several pairings sees them all
+  // without having to discover the picker first.
+  expect(picker.props.filter).toEqual({ kind: "all" });
+  act(() => picker.props.onChange({ kind: "desktop", desktopId: "desktop_2" }));
+  expect(tree.root.findByType(DesktopPicker).props.filter)
+    .toEqual({ kind: "desktop", desktopId: "desktop_2" });
 });
 
 test("category switching is delegated to the list toolbar, without a separate tab row", () => {

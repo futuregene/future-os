@@ -52,6 +52,10 @@ export const resources = {
         empty: "No paired desktops yet.",
         rename: "Rename desktop",
         iconLabel: "Icon",
+        pickerLabel: "Desktops",
+        filterAll: "All desktops",
+        filterConnected: "Connected",
+        manage: "Manage paired desktops…",
         icons: {
           desktop: "Desktop",
           laptop: "Laptop",
@@ -941,6 +945,10 @@ export const resources = {
         empty: "尚未配对桌面端。",
         rename: "重命名桌面端",
         iconLabel: "图标",
+        pickerLabel: "桌面选择",
+        filterAll: "全部桌面",
+        filterConnected: "已连接",
+        manage: "管理已配对的桌面…",
         icons: {
           desktop: "台式机",
           laptop: "笔记本",

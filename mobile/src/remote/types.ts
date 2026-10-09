@@ -64,6 +64,13 @@ export interface RemoteSession {
   pinned?: boolean;
   streaming: boolean;
   status?: string;
+  /**
+   * Last activity (unix millis), from the desktop's own
+   * `COALESCE(last_message_at, updated_at, created_at)`. Absent on a desktop
+   * older than the field, in which case the session sorts below dated ones
+   * rather than pretending to be current.
+   */
+  lastMessageAt?: number | null;
 }
 
 export interface RemoteWorkspace {
