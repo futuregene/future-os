@@ -48,6 +48,8 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   desktops: PairedDesktop[];
   switchDesktop(desktopId: string): Promise<void>;
   renameDesktop(desktopId: string, name: string): Promise<void>;
+  /** Set a desktop's local name/icon. Local-only; never leaves this phone. */
+  labelDesktop(desktopId: string, patch: { name?: string; icon?: string }): Promise<void>;
   removeDesktop(desktopId: string): Promise<void>;
   presence: Presence | null;
   desktopOnline: boolean;
@@ -310,6 +312,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     desktops,
     switchDesktop,
     renameDesktop,
+    labelDesktop,
     removeDesktop,
     presence,
     desktopOnline,
@@ -455,6 +458,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       desktops,
       switchDesktop,
       renameDesktop,
+      labelDesktop,
       removeDesktop,
       presence,
       desktopOnline,
@@ -533,6 +537,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       desktops,
       switchDesktop,
       renameDesktop,
+      labelDesktop,
       removeDesktop,
       closeConversation,
       clearError,

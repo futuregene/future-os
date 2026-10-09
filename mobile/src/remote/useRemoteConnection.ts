@@ -23,6 +23,7 @@ import {
   loadCredentials,
   loadPairedDesktops,
   renameDesktop as renameStoredDesktop,
+  labelDesktop as labelStoredDesktop,
   loadPendingRevoke,
   saveCredentials,
   savePendingRevoke,
@@ -724,6 +725,19 @@ export function useRemoteConnection({
     await refreshDesktops();
   }, [refreshDesktops]);
 
+  /**
+   * Set a desktop's local icon (and/or name). Local-only, like the name: it
+   * never reaches the desktop or the platform, so it is stored and returned
+   * without touching the connection.
+   */
+  const labelDesktop = useCallback(async (
+    desktopId: string,
+    patch: { name?: string; icon?: string },
+  ) => {
+    await labelStoredDesktop(desktopId, patch);
+    await refreshDesktops();
+  }, [refreshDesktops]);
+
   const removeDesktop = useCallback(async (desktopId: string) => {
     if (credentials?.expectedDesktopId === desktopId) return unpair();
     const stored = await loadCredentials(desktopId);
@@ -745,6 +759,7 @@ export function useRemoteConnection({
     desktops,
     switchDesktop,
     renameDesktop,
+    labelDesktop,
     removeDesktop,
     presence,
     desktopOnline,
