@@ -7,7 +7,6 @@ import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { TextInput } from "../../components/ui/TextInput";
 import { startWindowDrag } from "../../lib/windowDrag";
-import { PeerIconPicker } from "./PeerIconPicker";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
 import {
   connectRemotePeer,
@@ -17,6 +16,7 @@ import {
   setRemotePeerLabel,
   unpairRemotePeer,
 } from "./remotePeerClient";
+import { RemotePeerSettings } from "./RemotePeerSettings";
 
 /**
  * The client-role screen: the remote desktops *this* machine connects out to.
@@ -41,8 +41,18 @@ export function RemotePeersView({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
-  const [editing, setEditing] = useState<string | null>(null);
+  /**
+   * The host whose settings page is open, if any.
+   *
+   * A separate level rather than an accordion inside the list row: those
+   * settings belong to a different machine, and presenting them inline next to
+   * this machine's own state is how "auto-upgrade skills" becomes ambiguous.
+   */
+  const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [unpairTarget, setUnpairTarget] = useState<RemotePeer | null>(null);
+  const settingsPeer = settingsFor
+    ? peers.find(peer => peer.desktopId === settingsFor)
+    : undefined;
 
   const refresh = useCallback(async () => {
     try {
@@ -122,86 +132,97 @@ export function RemotePeersView({
 
       <div className="min-h-0 flex-1 overflow-y-auto p-8">
         <div className="mx-auto w-full max-w-3xl space-y-6">
-          <p className="text-sm text-ink-muted">{t("description")}</p>
-
-          <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
-            <label className="text-sm font-medium text-ink" htmlFor="peer-invitation">
-              {t("addTitle")}
-            </label>
-            <p className="mt-1 text-xs leading-5 text-ink-muted">{t("addHint")}</p>
-            <div className="mt-3 flex items-center gap-2">
-              <TextInput
-                id="peer-invitation"
-                onChange={event => setInvitation(event.target.value)}
-                placeholder="futureos://remote/pair?…"
-                value={invitation}
-              />
-              <Button
-                disabled={!invitation.trim() || busy !== null}
-                onClick={() => void handlePair()}
-                size="sm"
-                variant="primary"
-              >
-                {busy === "__pair__" ? t("adding") : t("add")}
-              </Button>
-            </div>
-            {/* Replacing the phone pairing on the other machine is a real
-                consequence of this action, so it is stated before, not after. */}
-            <p className="mt-2 text-xs leading-5 text-ink-muted">{t("slotWarning")}</p>
-          </div>
-
-          {error ? <p className="text-xs text-danger">{error}</p> : null}
-          {warning ? <p className="text-xs text-ink-muted">{warning}</p> : null}
-
-          {unpairTarget
+          {settingsPeer
             ? (
-                // `Dialog` rather than `ConfirmDeleteDialog`: the shared confirm
-                // is worded for deletion ("Delete"), and unpairing a desktop is
-                // not deleting anything the user created — the other machine
-                // keeps all of its data.
-                <Dialog
-                  description={t("unpairConfirmDesc", { name: peerBadgeText(unpairTarget, unpairTarget.desktopId) })}
-                  footer={(
-                    <>
-                      <Button onClick={() => setUnpairTarget(null)} variant="ghost">
-                        {t("cancel")}
-                      </Button>
-                      <Button
-                        disabled={busy === unpairTarget.desktopId}
-                        onClick={() => void handleUnpair(unpairTarget)}
-                        variant="danger"
-                      >
-                        {t("unpair")}
-                      </Button>
-                    </>
-                  )}
-                  onClose={() => setUnpairTarget(null)}
-                  open
-                  title={t("unpairConfirmTitle")}
-                >
-                  <span />
-                </Dialog>
+                <RemotePeerSettings
+                  onBack={() => setSettingsFor(null)}
+                  onChanged={() => void refresh()}
+                  onUnpair={() => setUnpairTarget(settingsPeer)}
+                  onUpdateLabel={patch => void run(settingsPeer.desktopId, () => setRemotePeerLabel(settingsPeer.desktopId, patch))}
+                  peer={settingsPeer}
+                />
               )
-            : null}
-
-          {peers.length === 0
-            ? <p className="text-sm text-ink-soft">{t("empty")}</p>
             : (
-                <div className="space-y-2">
-                  {peers.map(peer => (
-                    <PeerRow
-                      busy={busy === peer.desktopId}
-                      editing={editing === peer.desktopId}
-                      key={peer.desktopId}
-                      onDisconnect={() => void run(peer.desktopId, () => disconnectRemotePeer(peer.desktopId))}
-                      onEdit={() => setEditing(editing === peer.desktopId ? null : peer.desktopId)}
-                      onReconnect={() => void run(peer.desktopId, () => connectRemotePeer(peer.desktopId))}
-                      onUnpair={() => setUnpairTarget(peer)}
-                      onUpdateLabel={patch => void run(peer.desktopId, () => setRemotePeerLabel(peer.desktopId, patch))}
-                      peer={peer}
-                    />
-                  ))}
-                </div>
+                <>
+                  <p className="text-sm text-ink-muted">{t("description")}</p>
+
+                  <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
+                    <label className="text-sm font-medium text-ink" htmlFor="peer-invitation">
+                      {t("addTitle")}
+                    </label>
+                    <p className="mt-1 text-xs leading-5 text-ink-muted">{t("addHint")}</p>
+                    <div className="mt-3 flex items-center gap-2">
+                      <TextInput
+                        id="peer-invitation"
+                        onChange={event => setInvitation(event.target.value)}
+                        placeholder="futureos://remote/pair?…"
+                        value={invitation}
+                      />
+                      <Button
+                        disabled={!invitation.trim() || busy !== null}
+                        onClick={() => void handlePair()}
+                        size="sm"
+                        variant="primary"
+                      >
+                        {busy === "__pair__" ? t("adding") : t("add")}
+                      </Button>
+                    </div>
+                    {/* Replacing the phone pairing on the other machine is a real
+                consequence of this action, so it is stated before, not after. */}
+                    <p className="mt-2 text-xs leading-5 text-ink-muted">{t("slotWarning")}</p>
+                  </div>
+
+                  {error ? <p className="text-xs text-danger">{error}</p> : null}
+                  {warning ? <p className="text-xs text-ink-muted">{warning}</p> : null}
+
+                  {unpairTarget
+                    ? (
+                  // `Dialog` rather than `ConfirmDeleteDialog`: the shared confirm
+                  // is worded for deletion ("Delete"), and unpairing a desktop is
+                  // not deleting anything the user created — the other machine
+                  // keeps all of its data.
+                        <Dialog
+                          description={t("unpairConfirmDesc", { name: peerBadgeText(unpairTarget, unpairTarget.desktopId) })}
+                          footer={(
+                            <>
+                              <Button onClick={() => setUnpairTarget(null)} variant="ghost">
+                                {t("cancel")}
+                              </Button>
+                              <Button
+                                disabled={busy === unpairTarget.desktopId}
+                                onClick={() => void handleUnpair(unpairTarget)}
+                                variant="danger"
+                              >
+                                {t("unpair")}
+                              </Button>
+                            </>
+                          )}
+                          onClose={() => setUnpairTarget(null)}
+                          open
+                          title={t("unpairConfirmTitle")}
+                        >
+                          <span />
+                        </Dialog>
+                      )
+                    : null}
+
+                  {peers.length === 0
+                    ? <p className="text-sm text-ink-soft">{t("empty")}</p>
+                    : (
+                        <div className="space-y-2">
+                          {peers.map(peer => (
+                            <PeerRow
+                              busy={busy === peer.desktopId}
+                              key={peer.desktopId}
+                              onDisconnect={() => void run(peer.desktopId, () => disconnectRemotePeer(peer.desktopId))}
+                              onEdit={() => setSettingsFor(peer.desktopId)}
+                              onReconnect={() => void run(peer.desktopId, () => connectRemotePeer(peer.desktopId))}
+                              peer={peer}
+                            />
+                          ))}
+                        </div>
+                      )}
+                </>
               )}
         </div>
       </div>
@@ -224,88 +245,39 @@ function peerStatus(peer: RemotePeer, t: (key: string) => string): { tone: "acce
 
 function PeerRow({
   busy,
-  editing,
   onDisconnect,
   onEdit,
   onReconnect,
-  onUnpair,
-  onUpdateLabel,
   peer,
 }: {
   busy: boolean;
-  editing: boolean;
   onDisconnect: () => void;
   onEdit: () => void;
   onReconnect: () => void;
-  onUnpair: () => void;
-  onUpdateLabel: (patch: { name?: string; icon?: string }) => void;
   peer: RemotePeer;
 }) {
   const { t } = useTranslation("remotePeer");
-  const [name, setName] = useState(peer.name ?? "");
   const status = peerStatus(peer, t);
 
   return (
-    <div className="rounded-lg border border-line-soft p-4">
-      <div className="flex items-center gap-3">
-        <span aria-hidden className="text-lg" data-testid="peer-icon">{iconGlyph(peer.icon)}</span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-medium text-ink">
-              {peerBadgeText(peer, peer.desktopId)}
-            </span>
-            <Badge tone={status.tone}>{status.label}</Badge>
-          </div>
-          <div className="mt-0.5 truncate text-xs text-ink-muted">{peer.desktopId}</div>
-          {peer.error ? <div className="mt-1 text-xs text-danger">{peer.error}</div> : null}
+    <div className="flex items-center gap-3 rounded-lg border border-line-soft p-4">
+      <span aria-hidden className="text-lg" data-testid="peer-icon">{iconGlyph(peer.icon)}</span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="truncate text-sm font-medium text-ink">
+            {peerBadgeText(peer, peer.desktopId)}
+          </span>
+          <Badge tone={status.tone}>{status.label}</Badge>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {peer.connected
-            ? <Button disabled={busy} onClick={onDisconnect} size="sm">{t("disconnect")}</Button>
-            : <Button disabled={busy} onClick={onReconnect} size="sm" variant="primary">{t("connect")}</Button>}
-          <Button disabled={busy} onClick={onEdit} size="sm" variant="ghost">{t("edit")}</Button>
-        </div>
+        <div className="mt-0.5 truncate text-xs text-ink-muted">{peer.desktopId}</div>
+        {peer.error ? <div className="mt-1 text-xs text-danger">{peer.error}</div> : null}
       </div>
-
-      {editing
-        ? (
-            <div className="mt-4 space-y-3 border-t border-line-soft pt-4">
-              <div>
-                <label className="text-xs font-medium text-ink" htmlFor={`peer-name-${peer.desktopId}`}>
-                  {t("nameLabel")}
-                </label>
-                <div className="mt-1 flex items-center gap-2">
-                  <TextInput
-                    id={`peer-name-${peer.desktopId}`}
-                    onChange={event => setName(event.target.value)}
-                    placeholder={t("namePlaceholder")}
-                    value={name}
-                  />
-                  <Button
-                    disabled={busy || name === (peer.name ?? "")}
-                    onClick={() => onUpdateLabel({ name: name.trim() })}
-                    size="sm"
-                  >
-                    {t("save")}
-                  </Button>
-                </div>
-                <p className="mt-1 text-xs text-ink-muted">{t("nameHint")}</p>
-              </div>
-              <div>
-                <div className="text-xs font-medium text-ink">{t("icons.label")}</div>
-                <div className="mt-1">
-                  <PeerIconPicker
-                    onChange={icon => onUpdateLabel({ icon })}
-                    value={peer.icon}
-                  />
-                </div>
-              </div>
-              <div className="flex justify-end">
-                <Button onClick={onUnpair} size="sm" variant="danger">{t("unpair")}</Button>
-              </div>
-            </div>
-          )
-        : null}
+      <div className="flex shrink-0 items-center gap-2">
+        {peer.connected
+          ? <Button disabled={busy} onClick={onDisconnect} size="sm">{t("disconnect")}</Button>
+          : <Button disabled={busy} onClick={onReconnect} size="sm" variant="primary">{t("connect")}</Button>}
+        <Button disabled={busy} onClick={onEdit} size="sm" variant="ghost">{t("edit")}</Button>
+      </div>
     </div>
   );
 }
