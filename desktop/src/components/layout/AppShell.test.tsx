@@ -355,7 +355,21 @@ vi.mock("../../integrations/agent/agentClient", async (importOriginal) => {
 vi.mock("../../integrations/agent/providers", () => ({
   getFutureEnvironment: async () => ({ platformUrl: "https://future.example" }),
 }));
-vi.mock("../../integrations/skills/skillsClient", () => ({ refreshSkills: () => mocks.hooks.refreshSkills?.() }));
+vi.mock("../../integrations/skills/skillsClient", () => ({
+  refreshSkills: () => mocks.hooks.refreshSkills?.(),
+  // The remote conversation's skill recommendation reads this app's own
+  // recommender for a local conversation and the host's for a remote one; this
+  // shell test exercises neither, so the reads answer "nothing to recommend".
+  //
+  // The catalogue subscription is still made (a hook cannot be called
+  // conditionally), so it is defined as the no-op it is when the caller brings
+  // its own catalogue.
+  getSkillCatalogRevision: () => 0,
+  subscribeSkillCatalog: () => () => {},
+  recordSkillReco: async () => {},
+  skillRecoToday: async () => ({ count: 0, skillIds: [], messageHashes: [] }),
+  suggestSkill: async () => null,
+}));
 vi.mock("../../integrations/storage/files", () => ({ openExternalUrl: (url: string) => mocks.hooks.openExternalUrl?.(url) }));
 vi.mock("../../integrations/storage/threadStore", () => ({
   createWorkspace: (input: { createDirectory: boolean; path: string }) => mocks.hooks.createWorkspace?.(input),
@@ -1511,7 +1525,16 @@ describe("app shell collapsed-panel affordances", () => {
       } as never;
     }
 
-    const composer = () => children.remoteComposer as { onCreated?: (id: string) => void; sessionId: string; streaming: boolean };
+    const composer = () => children.remoteComposer as {
+      onCreated?: (id: string) => void;
+      sessionId: string;
+      skillRecommendation?: {
+        card: { name: string; description: string } | null;
+        onEvaluate: (draft: string) => Promise<{ name: string; description: string } | null>;
+        onInstall: (card: { name: string; description: string }) => Promise<boolean>;
+      };
+      streaming: boolean;
+    };
 
     it("opens a remote conversation on the machine that owns it", () => {
       const view = mount(<AppShell />);
@@ -1519,6 +1542,189 @@ describe("app shell collapsed-panel affordances", () => {
 
       expect(children.remoteConversationView).not.toBeNull();
       expect(composer().sessionId).toBe("sess_1");
+      view.unmount();
+    });
+
+    /**
+     * Skill recommendation for a remote conversation goes to *that* host.
+     *
+     * The card installs a skill somewhere, and the budget it spends is a budget
+     * on that machine — so every read and write on this path has to name the
+     * host, not this app's own recommender. The command asserted below is the
+     * paired computer's.
+     */
+    it("asks that host to recommend a skill for a remote conversation", async () => {
+      const types: string[] = [];
+      mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
+        if (command !== "remote_peer_request")
+          return undefined;
+        const type = (args as { command?: { type?: string } })?.command?.type ?? "";
+        types.push(type);
+        if (type === "get_desktop_settings")
+          return { skillRecommend: true };
+        if (type === "list_available_skills") {
+          return {
+            skills: [{
+              id: "pdf-tools",
+              name: "PDF tools",
+              description: "Read PDFs",
+              latestVersion: "1.0.0",
+            }],
+          };
+        }
+        if (type === "list_skills")
+          return { skills: [] };
+        if (type === "skill_reco_today")
+          return { today: { count: 0, skillIds: [], messageHashes: [] } };
+        if (type === "suggest_skill")
+          return { skill: { name: "pdf-tools", description: "Read PDFs" } };
+        return undefined;
+      });
+
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+      await act(async () => {
+        for (let i = 0; i < 8; i += 1)
+          await Promise.resolve();
+      });
+
+      const reco = composer().skillRecommendation!;
+      expect(reco).toBeTruthy();
+      const card = await act(async () =>
+        await reco.onEvaluate("please summarise this long pdf document for me"));
+
+      expect(card).toEqual({ name: "pdf-tools", description: "Read PDFs" });
+      // Both the budget and the recommendation were that machine's.
+      expect(types).toContain("skill_reco_today");
+      expect(types).toContain("suggest_skill");
+      view.unmount();
+    });
+
+    /**
+     * Installing the recommended skill happens on that host, at the version its
+     * catalogue publishes — the recommender names a skill, never a version.
+     */
+    it("installs the recommended skill on that host", async () => {
+      const installs: Array<{ skillId: string; version: string }> = [];
+      mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
+        if (command !== "remote_peer_request")
+          return undefined;
+        const body = (args as { command?: Record<string, unknown> })?.command ?? {};
+        const type = body.type ?? "";
+        if (type === "get_desktop_settings")
+          return { skillRecommend: true };
+        if (type === "list_available_skills") {
+          return {
+            skills: [{
+              id: "pdf-tools",
+              name: "PDF tools",
+              description: "Read PDFs",
+              latestVersion: "1.0.0",
+            }],
+          };
+        }
+        if (type === "list_skills")
+          return { skills: [] };
+        if (type === "skill_reco_today")
+          return { today: { count: 0, skillIds: [], messageHashes: [] } };
+        if (type === "suggest_skill")
+          return { skill: { name: "pdf-tools", description: "Read PDFs" } };
+        if (type === "install_skill")
+          installs.push({ skillId: String(body.skillId), version: String(body.version) });
+        return undefined;
+      });
+
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+      await act(async () => {
+        for (let i = 0; i < 8; i += 1)
+          await Promise.resolve();
+      });
+
+      const reco = composer().skillRecommendation!;
+      const card = await act(async () =>
+        await reco.onEvaluate("please summarise this long pdf document for me"));
+      const installed = await act(async () => await reco.onInstall(card!));
+
+      expect(installed).toBe(true);
+      expect(installs).toEqual([{ skillId: "pdf-tools", version: "1.0.0" }]);
+      view.unmount();
+    });
+
+    /**
+     * A skill the host's catalogue publishes no version for cannot be installed
+     * from here, and saying so keeps the card up rather than sending a message
+     * that names a skill nobody installed.
+     */
+    it("refuses to install a skill the host publishes no version for", async () => {
+      const installs: string[] = [];
+      mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
+        if (command !== "remote_peer_request")
+          return undefined;
+        const type = (args as { command?: { type?: string } })?.command?.type ?? "";
+        if (type === "get_desktop_settings")
+          return { skillRecommend: true };
+        // No `latestVersion`: an installable list that names nothing to install.
+        if (type === "list_available_skills")
+          return { skills: [{ id: "pdf-tools", name: "PDF tools", description: "Read PDFs" }] };
+        if (type === "list_skills")
+          return { skills: [] };
+        if (type === "install_skill")
+          installs.push("pdf-tools");
+        return undefined;
+      });
+
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+      await act(async () => {
+        for (let i = 0; i < 8; i += 1)
+          await Promise.resolve();
+      });
+
+      const installed = await act(async () =>
+        await composer().skillRecommendation!.onInstall({ name: "pdf-tools", description: "d" }));
+
+      expect(installed).toBe(false);
+      expect(installs).toEqual([]);
+      view.unmount();
+    });
+
+    /** A refused install is reported as "not installed", not thrown at the card. */
+    it("reports a refused install as not installed", async () => {
+      mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
+        if (command !== "remote_peer_request")
+          return undefined;
+        const type = (args as { command?: { type?: string } })?.command?.type ?? "";
+        if (type === "get_desktop_settings")
+          return { skillRecommend: true };
+        if (type === "list_available_skills") {
+          return {
+            skills: [{
+              id: "pdf-tools",
+              name: "PDF tools",
+              description: "Read PDFs",
+              latestVersion: "1.0.0",
+            }],
+          };
+        }
+        if (type === "list_skills")
+          return { skills: [] };
+        if (type === "install_skill")
+          throw new Error("skill_not_found");
+        return undefined;
+      });
+
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+      await act(async () => {
+        for (let i = 0; i < 8; i += 1)
+          await Promise.resolve();
+      });
+
+      const installed = await act(async () =>
+        await composer().skillRecommendation!.onInstall({ name: "pdf-tools", description: "d" }));
+
+      expect(installed).toBe(false);
       view.unmount();
     });
 

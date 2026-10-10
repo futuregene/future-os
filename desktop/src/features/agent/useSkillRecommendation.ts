@@ -87,6 +87,19 @@ interface Options {
   sessionStatus: string;
   /** Future balance in credits; recommendation requires a positive balance. */
   balance: number | null;
+  /**
+   * Where the data comes from. Defaults to this app's own recommender, so every
+   * existing caller is unchanged.
+   */
+  source?: SkillRecoSource;
+  /**
+   * A catalogue read to use instead of this app's own.
+   *
+   * A paired computer's catalogue has to be read over the wire, so it arrives
+   * as data from whoever owns that read; when it is given, this app's own
+   * catalogue is not loaded at all.
+   */
+  catalog?: SkillCatalogData;
 }
 
 /** True when the draft already picks at least one skill (`/name` pill). */
@@ -132,6 +145,70 @@ export function shownDescription(
   return zh && zh.trim().length > 0 ? zh : card.description;
 }
 
+/**
+ * Where a recommendation's data comes from.
+ *
+ * This app's own recommender, budget and account gates by default; a paired
+ * computer's when the conversation being evaluated lives there. The trigger
+ * rules stay in this hook either way — the source only answers questions,
+ * because the same policy has to hold for a conversation on another machine and
+ * a second copy of the rules would drift from this one.
+ */
+export interface SkillRecoSource {
+  /**
+   * Whether this source's account gates apply.
+   *
+   * They do for this app: the recommender runs against a signed-in Future
+   * account, and evaluating without one would spend a round trip on an answer
+   * that cannot come. They do not for a paired computer — the account that
+   * matters is *that* machine's, this one cannot read its sign-in state, and the
+   * host already degrades `suggest_skill` to "no recommendation" on its own. So
+   * the hook skips a gate it cannot evaluate rather than pretending to pass it.
+   */
+  accountGated: boolean;
+  /** Today's state: the daily budget and the duplicate checks. */
+  today: () => Promise<SkillRecoToday>;
+  /** One recommendation, or null when that machine will not make one. */
+  suggest: (query: string, candidates: SkillCandidate[]) => Promise<SkillCandidate | null>;
+  /** Record a recommendation that was actually shown. */
+  record: (skillId: string, messageHash: string) => Promise<void>;
+}
+
+/** A catalogue entry: what the candidate set and the card need, and what an install needs. */
+export interface SkillCatalogEntry {
+  id: string;
+  description: string;
+  descriptionZh?: string | null;
+  /**
+   * The version to install. The recommender names a skill but not a version, so
+   * installing the one it suggested means looking it up in the same catalogue
+   * the card came from — and a catalogue that does not publish one cannot be
+   * installed from here.
+   */
+  version?: string | null;
+}
+
+/** A catalogue read: what the source has, and what it could install. */
+export interface SkillCatalogData {
+  installed: { id: string }[];
+  catalogue: SkillCatalogEntry[];
+}
+
+/**
+ * This app's own recommender and budget.
+ *
+ * The calls are wrapped rather than referenced, so importing this module does
+ * not read the whole client: a caller that mocks only the parts it needs (a
+ * shell test, say) is not forced to define functions nothing in its path
+ * reaches.
+ */
+export const localSkillRecoSource: SkillRecoSource = {
+  accountGated: true,
+  today: () => readToday(),
+  suggest: (query, candidates) => suggestSkill(query, candidates),
+  record: (skillId, hash) => recordSkillReco(skillId, hash),
+};
+
 /** The empty day state, used before the first store read resolves. */
 const EMPTY_TODAY: SkillRecoToday = { count: 0, skillIds: [], messageHashes: [] };
 
@@ -156,9 +233,11 @@ async function readToday(): Promise<SkillRecoToday> {
 }
 
 export function useSkillRecommendation({
+  balance,
+  catalog: catalogOverride,
   enabled,
   sessionStatus,
-  balance,
+  source = localSkillRecoSource,
 }: Options): SkillRecommendationControls {
   const { i18n } = useTranslation();
   const build = useBuildInfo();
@@ -167,7 +246,7 @@ export function useSkillRecommendation({
   // Live mirror so evaluate() reads the latest gate values regardless of render
   // timing; a stale closure would otherwise reuse the first render's
   // toggle/balance for the whole session.
-  const gateRef = useCommittedRef({ enabled, sessionStatus, balance });
+  const gateRef = useCommittedRef({ balance, enabled, sessionStatus, source });
 
   const inFlightRef = useRef(false);
   const dailyLimitRef = useCommittedRef(dailyRecommendationLimit(build.data?.isRelease));
@@ -179,9 +258,16 @@ export function useSkillRecommendation({
 
   const loggedIn = sessionStatus === "authenticated" || sessionStatus === "unavailable";
   const hasBalance = balance === null || balance > 0;
-  const active = enabled && loggedIn && hasBalance;
+  // A source whose account this machine cannot see (a paired computer) is not
+  // gated on an account here: the host answers with "no recommendation" if its
+  // own account cannot produce one, which is the same outcome without a guess.
+  const accountOk = !source.accountGated || (loggedIn && hasBalance);
+  const active = enabled && accountOk;
 
-  const catalog = useSkillCatalog(active);
+  // Skipped when the caller brought its own catalogue, so a paired computer's
+  // conversations never read this machine's skills.
+  const localCatalog = useSkillCatalog(active && catalogOverride === undefined);
+  const catalog = catalogOverride ?? localCatalog;
   const candidates = useMemo(() => {
     const installed = new Set(catalog.installed.map(skill => skill.id));
     return catalog.catalogue.filter(skill => !installed.has(skill.id))
@@ -189,7 +275,8 @@ export function useSkillRecommendation({
   }, [catalog]);
   const candidatesRef = useCommittedRef(candidates);
   const zhDescriptionsRef = useCommittedRef(useMemo(
-    () => new Map(catalog.catalogue.map(skill => [skill.id, skill.descriptionZh])),
+    () => new Map(catalog.catalogue.flatMap(skill =>
+      skill.descriptionZh ? [[skill.id, skill.descriptionZh] as const] : [])),
     [catalog],
   ));
   const captureOperation = useOperationLifetime();
@@ -201,11 +288,11 @@ export function useSkillRecommendation({
     const gate = gateRef.current;
     const loggedInNow = gate.sessionStatus === "authenticated" || gate.sessionStatus === "unavailable";
     const hasBalanceNow = gate.balance === null || gate.balance > 0;
+    const accountOkNow = !gate.source.accountGated || (loggedInNow && hasBalanceNow);
     const trimmed = draft.trim();
     if (
       !gate.enabled
-      || !loggedInNow
-      || !hasBalanceNow
+      || !accountOkNow
       || trimmed.length === 0
       || trimmed.length > MAX_QUERY_CHARS
       || new TextEncoder().encode(trimmed).length < MIN_QUERY_BYTES
@@ -221,7 +308,7 @@ export function useSkillRecommendation({
     // spent part of the budget since.
     inFlightRef.current = true;
     const evaluateCurrentDraft = async () => {
-      const today = await readToday();
+      const today = await source.today();
       if (!isCurrent())
         return null;
       // A spent budget stops the calls entirely — no call, no card.
@@ -231,7 +318,7 @@ export function useSkillRecommendation({
       if (today.messageHashes.includes(hash))
         return null;
 
-      const result = await suggestSkill(trimmed, candidatesRef.current).catch(() => null);
+      const result = await source.suggest(trimmed, candidatesRef.current).catch(() => null);
       if (!isCurrent() || !result)
         return null;
       // Same skill twice in one day: skip this recommendation rather than
@@ -249,7 +336,7 @@ export function useSkillRecommendation({
         return null;
       // Record before showing: the card counts towards the daily budget the
       // moment it is displayed, regardless of what the user does with it.
-      await recordSkillReco(result.name, hash).catch(() => {});
+      await source.record(result.name, hash).catch(() => {});
       if (!isCurrent())
         return null;
       const shown = {
@@ -282,7 +369,7 @@ export function useSkillRecommendation({
       clearTimeout(timeout);
       inFlightRef.current = false;
     }
-  }, [candidatesRef, captureOperation, dailyLimitRef, gateRef, languageRef, zhDescriptionsRef]);
+  }, [candidatesRef, captureOperation, dailyLimitRef, gateRef, languageRef, source, zhDescriptionsRef]);
 
   const dismiss = useCallback(() => setRecommendation(null), []);
 
