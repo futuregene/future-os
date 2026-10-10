@@ -9,6 +9,7 @@ import { cn } from "../../lib/cn";
 import { MarkdownContent } from "../markdown/MarkdownContent";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
 import { precedingUserEntryId } from "./useRemoteTimeline";
+import { useRemoteToolTarget } from "./useRemoteToolTarget";
 
 /**
  * A remote conversation: the session's transcript plus a composer that sends to
@@ -25,6 +26,7 @@ export function RemoteConversationView({
   approvalErrors,
   approvalPending,
   compacting,
+  desktopId,
   composer,
   entries,
   error,
@@ -43,10 +45,13 @@ export function RemoteConversationView({
   settings,
   streaming,
   title,
+  sessionId,
 }: {
   approvals: RemoteApproval[];
   approvalErrors: Record<string, string>;
   approvalPending: string | null;
+  /** The host this conversation lives on, for reads that address it. */
+  desktopId: string;
   /** The host reports a compaction in flight for this conversation. */
   compacting: boolean;
   composer: React.ReactNode;
@@ -78,6 +83,8 @@ export function RemoteConversationView({
   onLoadOlder: () => void;
   onRetry: () => void;
   peer: RemotePeer | undefined;
+  /** The conversation's session id on that host. */
+  sessionId: string;
   /** The entry ids the host will accept as a stored record (see the timeline). */
   persistedEntryIds: ReadonlySet<string>;
   streaming: boolean;
@@ -156,12 +163,14 @@ export function RemoteConversationView({
             const forkSource = entry.role === "user" ? null : precedingUserEntryId(entries, entry.id);
             return (
               <EntryRow
+                desktopId={desktopId}
                 entry={entry}
                 forkable={forkSource !== null && persistedEntryIds.has(forkSource)}
                 forkSource={forkSource}
                 key={entry.id}
                 onContinueRun={onContinueRun}
                 onFork={onFork}
+                sessionId={sessionId}
                 streaming={streaming}
               />
             );
@@ -245,19 +254,23 @@ function ApprovalCard({
 }
 
 function EntryRow({
+  desktopId,
   entry,
   forkable,
   forkSource,
   onContinueRun,
   onFork,
+  sessionId,
   streaming,
 }: {
+  desktopId: string;
   entry: RemoteEntry;
   /** False when the turn this reply rests on is not persisted on the host yet. */
   forkable: boolean;
   forkSource: string | null;
   onContinueRun: (runId: string) => void;
   onFork: (sourceEntryId: string, forkable: boolean) => void;
+  sessionId: string;
   streaming: boolean;
 }) {
   const { t } = useTranslation("remotePeer");
@@ -272,6 +285,17 @@ function EntryRow({
     .join("")
     .trim();
   const runError = entry.run?.error ?? null;
+  // A tool row keeps its identity and can lose its arguments: a lean history
+  // page strips a shell call's command, keeping the call id and the run to fetch
+  // it back. Asked for on mount and cached in the module, because a transcript
+  // re-renders on every streaming push.
+  const toolTarget = useRemoteToolTarget({
+    desktopId,
+    enabled: tool !== undefined && typeof entry.runId === "string" && entry.runId !== "",
+    runId: typeof entry.runId === "string" ? entry.runId : "",
+    sessionId,
+    toolCallId: typeof tool?.toolCallId === "string" ? tool.toolCallId : "",
+  });
 
   return (
     <div
@@ -289,7 +313,12 @@ function EntryRow({
         {tool
           ? (
               <div className="mb-1 text-xs text-ink-muted">
-                {t("toolRunning", { name: tool.name ?? "" })}
+                {t("toolRan", { name: tool.name ?? "" })}
+                {/* What it acted on. A shell command or a path is the difference
+                    between "Bash ran" and knowing what it did. */}
+                {toolTarget
+                  ? <div className="mt-0.5 font-mono text-[11px] wrap-break-word text-ink-soft">{toolTarget}</div>
+                  : null}
               </div>
             )
           : null}

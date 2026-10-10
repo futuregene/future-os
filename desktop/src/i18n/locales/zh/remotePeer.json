@@ -119,5 +119,6 @@
   "skillsNoneInstalled": "那台电脑上还没有安装技能。",
   "skillsWorking": "处理中…",
   "skillsInstall": "安装",
-  "skillsRemove": "卸载"
+  "skillsRemove": "卸载",
+  "toolRan": "{{name}} 已执行"
 }

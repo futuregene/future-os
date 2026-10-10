@@ -929,6 +929,7 @@ function ReadyAppShell({
                             approvals={remoteApprovals.approvals}
                             approvalErrors={remoteApprovals.errors}
                             approvalPending={remoteApprovals.pending}
+                            desktopId={activeRemote.desktopId}
                             composer={(
                               <RemoteComposer
                                 desktopId={activeRemote.desktopId}
@@ -968,6 +969,7 @@ function ReadyAppShell({
                             onRetry={() => void remoteTimeline.refresh()}
                             peer={activeRemotePeer}
                             persistedEntryIds={remoteTimeline.persistedEntryIds}
+                            sessionId={activeRemote.sessionId}
                             settings={(<RemoteConversationSettings settings={remoteSettings} />)}
                             streaming={remoteTimeline.streaming}
                             compacting={remoteTimeline.compacting}
