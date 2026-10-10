@@ -289,12 +289,14 @@ fn open_connection(path: &Path) -> Result<Connection> {
             bail!("unsupported pre-release Agent database layout; recreate agent.db");
         }
     }
+    // WAL initialization writes the database header. Configure a fresh file's
+    // pointer-map layout before that first write, without a full VACUUM.
+    configure_incremental_auto_vacuum(&connection)?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "FULL")?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.pragma_update(None, "wal_autocheckpoint", 1_000)?;
     connection.pragma_update(None, "journal_size_limit", 8 * 1024 * 1024)?;
-    configure_incremental_auto_vacuum(&connection)?;
     let tx = connection.transaction()?;
     tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS sessions (
