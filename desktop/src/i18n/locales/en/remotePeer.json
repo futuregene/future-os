@@ -120,5 +120,21 @@
   "skillsWorking": "Working…",
   "skillsInstall": "Install",
   "skillsRemove": "Remove",
-  "toolRan": "{{name}} ran"
+  "toolRan": "{{name}} ran",
+  "approvalSection": "Approval mode",
+  "approvalHint": "The approval mode on that computer. This machine has its own, in Settings; changing one does not change the other.",
+  "approvalTier": "Approval mode",
+  "approvalTierLabel.manual": "Manual",
+  "approvalTierLabel.sandbox": "Sandboxed",
+  "approvalTierLabel.sandboxUnavailable": "Sandboxed (unavailable)",
+  "approvalTierLabel.auto": "Automatic review",
+  "approvalTierLabel.autoUnsupported": "Automatic review (unsupported there)",
+  "approvalTierLabel.off": "Unrestricted",
+  "approvalTierDescription": {
+    "default": "File access follows approval rules; allowlisted read-only commands run automatically, other commands ask. No OS sandbox.",
+    "manual": "File access follows approval rules; allowlisted read-only commands run automatically, other commands ask. No OS sandbox.",
+    "sandbox": "Commands run in that computer's sandbox and ask for approval when needed.",
+    "auto": "Automatically reviews actions with sandbox protection.",
+    "off": "No prompts, no sandbox — everything runs."
+  }
 }

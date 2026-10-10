@@ -660,6 +660,47 @@ export async function uninstallRemoteSkill(
 }
 
 /**
+ * The approval mode that host is running under, and whether its sandbox exists.
+ *
+ * The two arrive together because the second decides which modes make sense: a
+ * host without a sandbox cannot offer `sandbox` or `auto`, and offering them
+ * would only let the user pick something the host would refuse.
+ */
+export async function getRemoteApprovalSettings(
+  desktopId: string,
+): Promise<{ approvalTier: string; sandboxAvailable: boolean }> {
+  const raw = await requestRemotePeer<Record<string, unknown>>(
+    desktopId,
+    { type: "get_settings" },
+    "list",
+  );
+  return {
+    approvalTier: typeof raw?.approvalTier === "string" ? raw.approvalTier : "manual",
+    sandboxAvailable: raw?.sandboxAvailable === true,
+  };
+}
+
+/**
+ * Set that host's approval mode.
+ *
+ * The host answers with the tier it actually settled on, which is why this
+ * returns it rather than echoing the request: `sandbox` on a host whose sandbox
+ * turned out to be missing is answered with `manual`, and a UI that showed what
+ * it asked for would be reporting a mode the host is not in.
+ */
+export async function setRemoteApprovalTier(
+  desktopId: string,
+  tier: string,
+): Promise<string> {
+  const raw = await requestRemotePeer<Record<string, unknown>>(
+    desktopId,
+    { type: "set_approval_tier", tier },
+    "list",
+  );
+  return typeof raw?.approvalTier === "string" ? raw.approvalTier : tier;
+}
+
+/**
  * Run one command on one host. The lane is the session the command addresses
  * (`list` for catalogue reads) — the backend builds the subject, so no subject
  * string is ever assembled in the frontend.
