@@ -940,6 +940,47 @@
           { "shot": "m-qn-jump.png" }
         ]
       },
+      "qn-reply-tail": {
+        "_comment": "按 ↑ 的第一落点从「提问顶部」改成「正在读的回答的最后一段」：滚动离开最新后按 ↑，落点行（浅色带）属于回答而非提问。像素落点在 RNW inverted 下不可靠，只断言语义。",
+        "url": "http://localhost:8099/?multiTurn=1",
+        "steps": [
+          {"wait": 900},
+          {"tap": "稍后再说"},
+          {"wait": 1200},
+          {"tap": "工作区"},
+          {"wait": 1200},
+          {"tapText": "整理两篇文献的结论对比表"},
+          {"wait": 2500},
+          {"scroll": [0, -600]},
+          {"wait": 800},
+          {"eval": "(() => { document.querySelector('[aria-label=\"上一个提问\"]').click(); return 'p1'; })()"},
+          {"wait": 900},
+          {"eval": "(() => { document.querySelector('[aria-label=\"上一个提问\"]').click(); return 'p2'; })()"},
+          {"wait": 900},
+          {"eval": "(() => { const bands = [...document.querySelectorAll('div')].filter(el => getComputedStyle(el).backgroundColor === 'rgb(232, 240, 255)'); const row = bands.filter(el => (el.innerText || '').trim().length > 0)[0]; if (!row) throw new Error('no landed row'); const text = (row.innerText || ''); if (text.includes('把 Dreher 的实验流程画成流程图')) throw new Error('press 2 landed on the question, expected the reply tail'); if (!text.includes('Dreher 2025 的实验流程')) throw new Error('press 2 left the turn being read: ' + text.slice(0, 24)); return { landed2: text.trim().slice(0, 30) }; })()"},
+          {"shot": "m-qn-reply-tail.png"}
+        ]
+      },
+      "qn-page-up": {
+        "_comment": "到已载入历史顶部再按 ↑：先拉出更早的一页对话，然后落在新一页最老的那一轮。用 ?multiTurnOlder=1 让 mock 多一页可拉。",
+        "url": "http://localhost:8099/?multiTurn=1&multiTurnOlder=1",
+        "steps": [
+          {"wait": 900},
+          {"tap": "稍后再说"},
+          {"wait": 1200},
+          {"tap": "工作区"},
+          {"wait": 1200},
+          {"tapText": "整理两篇文献的结论对比表"},
+          {"wait": 2500},
+          {"eval": "(() => { const scrollers = [...document.querySelectorAll('div')].filter(el => el.scrollHeight > el.clientHeight + 10 && el.clientHeight > 400); const scroller = scrollers.sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height)[0]; scroller.scrollTop = scroller.scrollHeight; return 'at the loaded top'; })()"},
+          {"wait": 900},
+          {"eval": "(() => { const up = document.querySelector('[aria-label=\"上一个提问\"]'); if (!up) throw new Error('the question control is not on screen at the loaded top'); if (up.getAttribute('aria-disabled') === 'true') throw new Error('up is disabled at the loaded top although older history exists'); return 'up is offered'; })()"},
+          {"eval": "document.querySelector('[aria-label=\"上一个提问\"]').click()"},
+          {"wait": 1800},
+          {"eval": "(() => { const text = document.body.innerText; if (!text.includes('确认一下工作区里这两篇 PDF')) throw new Error('the older page did not load after pressing up at the top'); return 'older page is on screen'; })()"},
+          {"shot": "m-qn-page-up.png"}
+        ]
+      },
       "qn-align-check": {
         "_comment": "把「内容是怎么对齐的」变成可失败的断言：↑ 之后，落点那一行的顶边距列表视口顶边 12px（±2），且视口里出现的就是正在读的那一轮提问。数字口径是 CSS 像素，和设计稿一致。",
         "url": "http://localhost:8099/?multiTurn=1",

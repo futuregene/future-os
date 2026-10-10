@@ -326,6 +326,50 @@ const MULTI_PROCESS = `## Dreher 2025 的实验流程
 
 export const multiTurnEntries = [
   {
+    id: "m0",
+    kind: "message",
+    role: "user",
+    createdAtMs: now - 60 * minute,
+    runId: "run_m0",
+    blocks: [{
+      kind: "text",
+      text: "我在整理一份多巴胺与风险决策的文献笔记，先帮我把工作区里这两篇文章的引用信息核对一下。",
+    }],
+  },
+  {
+    id: "m0a",
+    kind: "message",
+    role: "assistant",
+    createdAtMs: now - 59 * minute,
+    runId: "run_m0",
+    usage: { inputTokens: 12_010, outputTokens: 640 },
+    run: { status: "completed", durationMs: 41_200 },
+    blocks: [
+      {
+        kind: "reasoning",
+        text: "两篇文献的引用信息在 PDF 首页，先抽出来对齐作者、年份与期刊。",
+      },
+      { kind: "tool_call", toolCallId: "mt_0", name: "read", arguments: { path: "papers/frank-2024.pdf", pages: "1" } },
+      {
+        kind: "text",
+        text: `两篇的引用信息核对无误：
+
+- **Frank, R. 等 (2024)**：*Dopamine promotes exploration under outcome uncertainty*，J. Neuroscience，n = 42，PET/[¹¹C]raclopride；
+- **Dreher, J.-C. 等 (2025)**：*Dopamine increases loss aversion when outcomes are known*，Nature Human Behaviour，n = 68，瞳孔测量 + AMPT 耗竭。
+
+两篇都是健康成年人样本、都报了效应量方向，可以直接进入结论对比。`,
+      },
+    ],
+  },
+  {
+    id: "m0t",
+    kind: "tool",
+    role: "tool",
+    createdAtMs: now - 58.9 * minute,
+    runId: "run_m0",
+    blocks: [{ kind: "tool_result", toolCallId: "mt_0" }],
+  },
+  {
     id: "m1",
     kind: "message",
     role: "user",
@@ -538,6 +582,42 @@ Frank 等报的是**结合潜能与冒险比例之间的 Pearson 相关**，不�
     createdAtMs: now - 4.4 * minute,
     runId: "run_m4",
     blocks: [{ kind: "tool_result", toolCallId: "mt_7" }],
+  },
+];
+
+/**
+ * The page above `?multiTurn=1`'s loaded slice, served when the scenario asks
+ * for older history (`?multiTurnOlder=1`): one older exchange, so a capture
+ * can watch ↑ pull it in and land on it. The ids are the ones
+ * `loadOlderTimeline` resolves with — the oldest is the jump's target.
+ */
+export const multiTurnOlderEntries = [
+  {
+    id: "m_old_q",
+    kind: "message",
+    role: "user",
+    createdAtMs: now - 90 * minute,
+    runId: "run_m0_old",
+    blocks: [{
+      kind: "text",
+      text: "开始整理文献笔记之前，先确认一下工作区里这两篇 PDF 都能正常打开。",
+    }],
+  },
+  {
+    id: "m_old_a",
+    kind: "message",
+    role: "assistant",
+    createdAtMs: now - 89 * minute,
+    runId: "run_m0_old",
+    usage: { inputTokens: 9_860, outputTokens: 420 },
+    run: { status: "completed", durationMs: 33_500 },
+    blocks: [
+      { kind: "tool_call", toolCallId: "mt_old", name: "read", arguments: { path: "papers/frank-2024.pdf", pages: "1" } },
+      {
+        kind: "text",
+        text: `两篇 PDF 都能正常打开：Frank 2024 共 14 页，Dreher 2025 共 11 页，正文与图表都没有加密或扫描件的问题，可以直接引用。`,
+      },
+    ],
   },
 ];
 

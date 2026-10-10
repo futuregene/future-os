@@ -17,19 +17,22 @@ import type {
 import type { TimelineItem } from "../../remote/types";
 import { spacing } from "../../theme/tokens";
 import {
+  EMPTY_LADDER,
   EMPTY_ROWS,
-  nextQuestion,
-  previousQuestion,
+  buildLadder,
+  nextRung,
+  previousRung,
   questionIndices,
   viewportRows,
+  type QuestionRung,
   type ViewportRows,
 } from "./questionNav";
 
 /** The offset `useChatScroll` already treats as "at the latest". */
 const AT_LATEST_THRESHOLD_PX = 32;
 /**
- * The geometry a jump aims at: the landed question sits this far below the
- * viewport's top edge.
+ * The geometry a question jump aims at: the landed row sits this far below
+ * the viewport's top edge.
  *
  * The list is inverted, so `viewPosition: 1` aligns the target's *cell* with
  * that edge — and an inverted cell lays its separator out above its row
@@ -50,17 +53,19 @@ export const JUMP_VIEW_OFFSET = ROW_GAP - QUESTION_TOP_INSET;
 const REALIGN_MS = 320;
 /** Bounded so a target that never enters the render window cannot loop. */
 const MAX_JUMP_ATTEMPTS = 4;
-/** How long the landed question stays marked, so a jump has a visible target. */
+/** How long the landed row stays marked, so a jump has a visible target. */
 const LANDED_MS = 1_400;
 
 const PARTLY_VISIBLE: ViewabilityConfig = { itemVisiblePercentThreshold: 1 };
 const FULLY_VISIBLE: ViewabilityConfig = { itemVisiblePercentThreshold: 100 };
 
 export interface QuestionNavApi {
-  /** View-space index of the ↑ target (the question being read), or null. */
-  previous: number | null;
-  /** View-space index of the ↓ target (the next question down), or null. */
-  next: number | null;
+  /** The ↑ rung (what a press would do), or null. */
+  previous: QuestionRung | null;
+  /** The ↓ rung, or null. */
+  next: QuestionRung | null;
+  /** Whether ↑ has anywhere to go — a rung, or a page of history to pull. */
+  hasPrevious: boolean;
   /** Whether the control has anything to offer. */
   visible: boolean;
   /** Row that just received a jump: marked for a moment so it can be found. */
@@ -87,7 +92,19 @@ function topOf(viewableItems: ViewToken[]): number | null {
 }
 
 /**
- * "↑ previous question / ↓ next question" for a long transcript.
+ * "↑ older / ↓ newer" for a long transcript. Each press walks one rung of the
+ * question ladder: the previous answer's last slice, the previous question,
+ * the end of that question, the next answer's last slice… — so the reader can
+ * stop on the prose at the end of an answer instead of only ever landing on
+ * prompts.
+ *
+ * Every landing is a `scrollToIndex` against the list's own measured frames:
+ * a question aligns its *start* below the viewport's top edge, and a tail
+ * (a reply's last slice, or a question's own end) aligns the start of the row
+ * *below* it the same way. Because the list is a scaleY-1 mirror, that second
+ * alignment leaves the tail's bottom edge flush with the viewport's bottom
+ * edge — the question geometry delivers the tail without any inverted-math
+ * or pixel measuring of its own.
  *
  * The anchor comes from what the list reports as viewable — partly and fully
  * visible rows — rather than from row geometry: a row's `onLayout` `y` is
@@ -102,30 +119,50 @@ export function useQuestionNav({
   items,
   listRef,
   atLatest,
+  hasOlderHistory = false,
+  loadingOlder = false,
+  loadOlder,
+  onReading,
 }: {
   sessionId: string;
   /** The rows the list renders, in view order (newest first). */
   items: readonly TimelineItem[];
   listRef: RefObject<FlatList<TimelineItem> | null>;
   atLatest: boolean;
+  /** More transcript pages exist above the loaded slice (remote contract). */
+  hasOlderHistory?: boolean;
+  /** A page is already being fetched. */
+  loadingOlder?: boolean;
+  /** Ask for the next page up; resolves to the prepended ids, or false. */
+  loadOlder?: () => Promise<false | string[]>;
+  /** Transfer scroll ownership to the reader (useChatScroll's drag signal),
+   *  so a programmatic page-up is not overridden by the follow-the-tail
+   *  behaviour while the fetch is in flight. */
+  onReading?: () => void;
 }): QuestionNavApi {
   const questions = useMemo(() => questionIndices(items), [items]);
+  const ladder = useMemo(() => buildLadder(items, questions), [items, questions]);
   const [nav, setNav] = useState<{
     sessionId: string;
-    previous: number | null;
-    next: number | null;
+    previous: QuestionRung | null;
+    next: QuestionRung | null;
   }>({ sessionId, previous: null, next: null });
   const [landedId, setLandedId] = useState<string | null>(null);
 
   const sessionIdRef = useRef(sessionId);
   const itemsRef = useRef(items);
-  const questionsRef = useRef(questions);
+  const ladderRef = useRef(ladder);
   const atLatestRef = useRef(atLatest);
+  const hasOlderRef = useRef(hasOlderHistory);
+  const loadingOlderRef = useRef(loadingOlder);
+  const loadOlderRef = useRef(loadOlder);
+  const onReadingRef = useRef(onReading);
   const rowsRef = useRef<ViewportRows>(EMPTY_ROWS);
   const partialTopRef = useRef<number | null>(null);
   const fullTopRef = useRef<number | null>(null);
   const offsetRef = useRef(0);
   const jumpRef = useRef<{ index: number; attempts: number } | null>(null);
+  const pendingPageRef = useRef(false);
   const realignTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const landedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -141,12 +178,9 @@ export function useQuestionNav({
     const session = sessionIdRef.current;
     const reading =
       !atLatestRef.current || offsetRef.current > AT_LATEST_THRESHOLD_PX;
-    const previous = reading
-      ? previousQuestion(questionsRef.current, rowsRef.current)
-      : null;
-    const next = reading
-      ? nextQuestion(questionsRef.current, rowsRef.current)
-      : null;
+    const rungs = reading ? ladderRef.current.rungs : EMPTY_LADDER;
+    const previous = previousRung(rungs, rowsRef.current);
+    const next = nextRung(rungs, rowsRef.current);
     setNav(current =>
       current.sessionId === session &&
       current.previous === previous &&
@@ -159,8 +193,12 @@ export function useQuestionNav({
   useEffect(() => {
     sessionIdRef.current = sessionId;
     itemsRef.current = items;
-    questionsRef.current = questions;
+    ladderRef.current = ladder;
     atLatestRef.current = atLatest;
+    hasOlderRef.current = hasOlderHistory;
+    loadingOlderRef.current = loadingOlder;
+    loadOlderRef.current = loadOlder;
+    onReadingRef.current = onReading;
   });
 
   // Another session opens at its tail: whatever the previous transcript had
@@ -170,14 +208,15 @@ export function useQuestionNav({
     partialTopRef.current = null;
     fullTopRef.current = null;
     rowsRef.current = EMPTY_ROWS;
+    pendingPageRef.current = false;
     sync();
   }, [sessionId, sync]);
 
-  // A new question, a page of history or a session switch all change the answer
+  // A new turn, a page of history or a session switch all change the answer
   // without any scroll or viewability event.
   useEffect(() => {
     sync();
-  }, [sync, questions, atLatest, sessionId]);
+  }, [sync, ladder, atLatest, sessionId]);
 
   useEffect(
     () => () => {
@@ -217,6 +256,7 @@ export function useQuestionNav({
     { viewabilityConfig: FULLY_VISIBLE, onViewableItemsChanged: onFullyVisible },
   ]);
 
+  /** Scroll `index` into the question position: start just below the top edge. */
   const align = useCallback(
     (index: number) => {
       listRef.current?.scrollToIndex({
@@ -229,25 +269,134 @@ export function useQuestionNav({
     [listRef],
   );
 
-  const jumpTo = useCallback(
-    (index: number | null) => {
-      if (index === null || listRef.current === null) return;
-      // Mark before scrolling: the row that is about to move is the one the
-      // reader has to find again.
-      setLandedId(itemsRef.current[index]?.id ?? null);
-      if (landedTimerRef.current !== null) clearTimeout(landedTimerRef.current);
-      landedTimerRef.current = setTimeout(() => setLandedId(null), LANDED_MS);
-      if (realignTimerRef.current !== null) clearTimeout(realignTimerRef.current);
-      jumpRef.current = { index, attempts: 0 };
-      align(index);
-      realignTimerRef.current = setTimeout(() => align(index), REALIGN_MS);
+  const markLanded = useCallback((index: number) => {
+    setLandedId(itemsRef.current[index]?.id ?? null);
+    if (landedTimerRef.current !== null) clearTimeout(landedTimerRef.current);
+    landedTimerRef.current = setTimeout(() => setLandedId(null), LANDED_MS);
+  }, []);
+
+  /**
+   * Land on a tail: align the row *below* it as if it were a question. The
+   * scaleY-1 mirror then puts the tail's bottom edge at the viewport's own
+   * bottom edge. The row below is by construction closer to the reader than
+   * the tail — the question below for a reply tail, the reply's own start for
+   * a question end — so it is always measured and the jump never needs
+   * `onScrollToIndexFailed`; and the aligned row plus everything between it
+   * and the tail is already on screen, so no re-issue is needed either.
+   */
+  const alignTail = useCallback(
+    (tail: number, below: number) => {
+      listRef.current?.scrollToIndex({
+        index: below,
+        viewPosition: 1,
+        viewOffset: JUMP_VIEW_OFFSET,
+        animated: false,
+      });
+      // `below` can be the same cell as `tail` (a reply that fills the whole
+      // turn), which aligns its start instead of its end — close enough for a
+      // turn with nothing between the two.
+      void tail;
     },
-    [align, listRef],
+    [listRef],
   );
 
+  /** Where a rung lands, as the row whose start takes the question position. */
+  const rungTarget = useCallback(
+    (rung: QuestionRung): { mark: number; target: number; tail: boolean } => {
+      const lastIndex = ladderRef.current.lastIndex;
+      switch (rung.kind) {
+        case "question":
+          return { mark: rung.question, target: rung.question, tail: false };
+        case "replyTail": {
+          // The row below the tail: the question that ends this turn, or —
+          // at the newest turn — the transcript's own last row.
+          const below = rung.nextQuestion ?? lastIndex;
+          return below >= 0
+            ? { mark: rung.index, target: below, tail: true }
+            : // No row sits below the tail: the question position is the
+              // best the list can offer.
+              { mark: rung.index, target: rung.index, tail: false };
+        }
+        case "questionEnd": {
+          // The row below the question's tail is the reply's start — or, at
+          // the loaded slice's top, the last row there is.
+          const reply = rung.question - 1;
+          const below = rung.tail !== null && rung.tail < rung.question ? rung.tail : reply;
+          return below >= 0
+            ? { mark: rung.question, target: below, tail: true }
+            : { mark: rung.question, target: rung.question, tail: false };
+        }
+      }
+    },
+    [],
+  );
+
+  const jumpTo = useCallback(
+    (rung: QuestionRung | null) => {
+      if (rung === null || listRef.current === null) return;
+      const { mark, target, tail } = rungTarget(rung);
+      // Mark before scrolling: the row that is about to move is the one the
+      // reader has to find again.
+      markLanded(mark);
+      if (realignTimerRef.current !== null) clearTimeout(realignTimerRef.current);
+      if (tail) {
+        // A tail lands through a measured neighbour: exact in one issue.
+        alignTail(mark, target);
+        jumpRef.current = null;
+        return;
+      }
+      jumpRef.current = { index: target, attempts: 0 };
+      align(target);
+      realignTimerRef.current = setTimeout(() => align(target), REALIGN_MS);
+    },
+    [align, alignTail, listRef, markLanded, rungTarget],
+  );
+
+  /**
+   * ↑ from the loaded slice's top: pull the next page of history, then land on
+   * the oldest turn it contains — which is exactly where the reader was
+   * headed. `loadOlder` resolves to the prepended ids, so the oldest of them
+   * is the jump's target without any index math across the prepend.
+   */
+  const pageUp = useCallback(() => {
+    if (pendingPageRef.current || loadingOlderRef.current) return;
+    const request = loadOlderRef.current;
+    if (!request) return;
+    // Keep the reading position through the page: without this the list
+    // follows the tail (offset 0) while the fetch is in flight, and the
+    // landed jump that follows would read as a teleport back to the newest
+    // message instead of one step up the transcript.
+    onReadingRef.current?.();
+    pendingPageRef.current = true;
+    void request()
+      .then(ids => {
+        pendingPageRef.current = false;
+        if (!ids || ids.length === 0) return;
+        const oldest = ids[ids.length - 1]!;
+        const itemsNow = itemsRef.current;
+        const index = itemsNow.findIndex(item => item.id === oldest);
+        if (index < 0) return;
+        markLanded(index);
+        jumpRef.current = { index, attempts: 0 };
+        align(index);
+        if (realignTimerRef.current !== null) clearTimeout(realignTimerRef.current);
+        realignTimerRef.current = setTimeout(() => align(index), REALIGN_MS);
+      })
+      .catch(() => {
+        pendingPageRef.current = false;
+      });
+  }, [align, markLanded]);
+
   const goToPrevious = useCallback(() => {
-    jumpTo(nav.sessionId === sessionId ? nav.previous : null);
-  }, [jumpTo, nav, sessionId]);
+    if (nav.sessionId !== sessionId) return;
+    if (nav.previous !== null) {
+      jumpTo(nav.previous);
+      return;
+    }
+    // The ladder ran out at the loaded slice's top: the next rung lives in
+    // history, and the button's contract is to fetch it rather than stall.
+    if (hasOlderRef.current) pageUp();
+  }, [jumpTo, nav, pageUp, sessionId]);
   const goToNext = useCallback(() => {
     jumpTo(nav.sessionId === sessionId ? nav.next : null);
   }, [jumpTo, nav, sessionId]);
@@ -286,11 +435,17 @@ export function useQuestionNav({
     [sync],
   );
 
-  const current = nav.sessionId === sessionId ? nav : { previous: null, next: null };
+  const inSession = nav.sessionId === sessionId;
+  const current = inSession ? nav : { previous: null, next: null };
+  // ↑ stays alive one step past the loaded ladder when history is known to
+  // continue: the press pages first and lands where the page begins.
+  const hasPrevious =
+    inSession && (current.previous !== null || (hasOlderHistory && !loadingOlder));
   return {
     previous: current.previous,
     next: current.next,
-    visible: current.previous !== null || current.next !== null,
+    hasPrevious,
+    visible: hasPrevious || current.next !== null,
     landedId,
     goToPrevious,
     goToNext,

@@ -46,6 +46,7 @@ import {
   demoUnpricedSessionUsage,
   demoWorkspaces,
   multiTurnEntries,
+  multiTurnOlderEntries,
   sessions,
 } from "./data";
 
@@ -99,6 +100,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const delayedCompaction = new URLSearchParams(window.location.search).get("compactionDelay") === "1";
   const [compactionFinished, setCompactionFinished] = useState(false);
   const scriptedCompaction = compactionFinished || new URLSearchParams(window.location.search).get("compacted") === "1";
+  // `?multiTurnOlder=1` keeps one page of history above the multi-turn
+  // conversation: the question-nav ↑ can then page it in for real.
+  const withOlder = new URLSearchParams(window.location.search).get("multiTurnOlder") === "1";
+  const [olderLoaded, setOlderLoaded] = useState(false);
   const baseTimeline = useMemo(() => {
     // `?compactHistory=1` swaps in the history of a run that compacted
     // mid-turn, so a capture can assert the reply after the divider survives
@@ -109,7 +114,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     const historyEntries = search.get("compactHistory") === "1"
       ? compactResumeEntries
       : search.get("multiTurn") === "1"
-        ? multiTurnEntries
+        ? olderLoaded
+          ? [...multiTurnOlderEntries, ...multiTurnEntries]
+          : multiTurnEntries
         : demoEntries;
     const history = timelineFromEntries(historyEntries as unknown as HistoryEntry[]);
     if (!scriptedCompaction) return history;
@@ -118,7 +125,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       { type: "compaction_started", runId: manualRun, idx: 900, data: JSON.stringify({ operation_id: "cmp_shot", trigger: "manual", phase: "standalone" }) },
       { type: "compaction_committed", runId: manualRun, idx: 901, data: JSON.stringify({ operation_id: "cmp_shot", checkpoint_id: "cp_shot", trigger: "manual", phase: "standalone", tokens_before: 33064, tokens_after: 9250 }) },
     ]);
-  }, [scriptedCompaction]);
+  }, [scriptedCompaction, olderLoaded]);
   const timeline = useMemo(
     () => (selectedSessionId === "" || selectedSessionId === "sess_dopamine_review"
       ? baseTimeline
@@ -180,8 +187,15 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     timelinePending: false,
     timelineSyncStatus: "idle",
     timelineError: null,
-    canLoadOlderTimeline: false,
+    canLoadOlderTimeline: withOlder && !olderLoaded,
     loadingOlderTimeline: false,
+    loadOlderTimeline: async (): Promise<false | string[]> => {
+      if (!withOlder || olderLoaded) return false;
+      setOlderLoaded(true);
+      // Newest first within the page, matching the remote contract: the
+      // oldest id is last, and it is the row the page-up jump lands on.
+      return multiTurnOlderEntries.map(entry => entry.id).reverse();
+    },
     streaming: baseTimeline.streaming,
     compacting: scriptedCompaction ? baseTimeline.compacting === true : new URLSearchParams(window.location.search).get("compacting") === "1",
 
@@ -322,9 +336,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     timelinePending: false,
     timelineSyncStatus: "idle",
     timelineError: null,
-    canLoadOlderTimeline: false,
+    canLoadOlderTimeline: withOlder && !olderLoaded,
     loadingOlderTimeline: false,
-  }), [timeline]);
+  }), [timeline, withOlder, olderLoaded]);
 
   return (
     <ControlsContext.Provider value={value}>
