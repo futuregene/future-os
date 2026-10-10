@@ -3,6 +3,7 @@ import type { RemotePeerEvent } from "./remotePeerClient";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { requestRemotePeer } from "./remotePeerClient";
+import { forgetRemoteToolTargets } from "./remoteToolTarget";
 
 /**
  * One entry in a remote session's history.
@@ -212,6 +213,10 @@ export function useRemoteTimeline(
     if (!enabled || !desktopId || !sessionId)
       return;
     void readPage("history", sessionId, desktopId);
+    // Leaving this conversation drops its fetched tool arguments. They are keyed
+    // by run and call id, which never repeat, so nothing here would ever be read
+    // again — and the cache would otherwise grow for the life of the window.
+    return () => forgetRemoteToolTargets(desktopId, sessionId);
   }, [enabled, desktopId, sessionId, readPage]);
 
   // Live: append this session's events; ignore every other session's.

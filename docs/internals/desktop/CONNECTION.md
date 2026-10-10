@@ -270,10 +270,10 @@ aggregating background Desktops' sessions. Switching sends no unbind command
 and does not revoke other Desktops' credentials; re-pairing the same Desktop
 replaces its own record.
 
-This is "one phone to many Desktops", not "one Desktop to many phones". The
-existing Desktop/platform-side single pending/active pairing, one-time
-invitation, signature handshake, and per-pairId authorization rules are all
-unchanged. future-server was not modified this round; real multi-device
+This is "one phone to many Desktops". The existing Desktop/platform-side single
+pending/active pairing, one-time invitation, signature handshake, and per-pairId
+authorization rules are all unchanged — the Desktop as the *host* still has one
+slot (see 2.2.2). future-server was not modified this round; real multi-device
 platform/Android/iOS integration testing still needs separate verification.
 
 The Desktop display name is set locally by the user (optional, saved with the
@@ -293,6 +293,91 @@ stops and that Desktop's mirrored business state clears, but the local Desktop
 registration is kept. The UI shows a red "Pairing invalid"; only the user's
 explicit "Unpair" deletes the registration — historical operations must not be
 made to look like the system lost information.
+
+### 2.2.2 The Desktop as a client: connecting out (2026-10-10)
+
+**Background.** The sections above describe "a Desktop is connected *to*, by a
+phone". Since 2026-10-10 a Desktop can also be the client of *another* computer,
+so one process can be an endpoint of both directions at once: connected to by
+its own phone (host role) while connected out to several other computers
+(client role). The rail's two entries are merged into one **Remote**, which
+leads with the local/remote distinction and then splits by **direction**. The
+labels name the direction rather than a device role ("Let other devices connect
+here" / "Connect to another computer"): two role-named entries differed by one
+word ("Phone Control" vs "Remote Desktops") and could only be told apart by
+first working out which side you were standing on — and neither side is
+phone-only any more.
+
+**Wiring.** The client reuses the existing invitation/claim/handshake/reply
+subjects. No platform endpoint was added and future-server was not modified. On
+the completed handshake frame (`secure_ready`) the client declares its identity
+(`deviceName`, from `COMPUTERNAME`/`HOSTNAME`, falling back to
+`FutureOS Desktop`; `deviceKind: "desktop"`). **Identity is not a capability**:
+the host uses it to say "a computer is connected", so it is deliberately not a
+`features` entry; an older host ignores both fields and the UI falls back to
+"unknown device".
+
+**Credentials and ownership.** The client's credential book is entirely
+separate from the host's: `~/.future/remote_peers.json` (new; the host side's
+`remote_pairing.json` is unchanged). The two answer opposite questions ("who
+connects to me" / "who do I connect to"), and sharing one file is how a screen
+ends up reading the wrong state. A client may keep several hosts, each with its
+own credentials and connection supervisor. This computer's *own* agent,
+conversations and settings take no part: a remote conversation's facts stay on
+that machine, and no second journal is created here.
+
+**Merging the conversation list.** The shared list (left panel) interleaves this
+machine's conversations with every connected host's by time, each row carrying
+its source icon; the device selector narrows it to one machine. The ordering key
+is the one the local list already used —
+`pinned DESC, COALESCE(last_message_at, updated_at, created_at) DESC` — which is
+why the `state.sessions` snapshot gained an optional `lastMessageAt` (older
+clients ignore it). Ties break on a stable key, or the list would reorder on
+every refresh.
+
+**What a remote conversation cannot do is hidden**, not shown as a dead button:
+this machine's embedded terminal, Review/diff, workspace file tree, and
+Reset/Debug describe local facts, so a remote conversation offers no entry to
+them.
+
+**Capability alignment with mobile.** Every command the phone can use on a
+remote conversation now has a desktop entry point (reading and writing
+conversations; prompt/stop/approval; rename/pin/delete; fork/compact/continue;
+model and thinking level; generated titles; file browsing and upload/download;
+skills; tasks; providers and their keys; workspaces; approval mode; skill
+recommendation). Two differences are **mechanism, not gaps**:
+
+| Mobile | Desktop | Why |
+| --- | --- | --- |
+| `get_events_since` incremental replay | re-reads history when a link returns | both converge on the same complete record; the difference is re-reading rather than replaying, and the desktop hands post-reconnect repair to one history read |
+| `get_prompt_receipt` polling | waits for the send acknowledgement | the desktop's send request itself returns the receipt, so a second poll has nothing to ask |
+
+**Known limitations (current implementation, not design goals).**
+
+- The **host side is still single-slot**: one pending/active pairing per account
+  per Desktop, so a desktop client claiming an invitation **replaces** that
+  host's current phone pairing. The UI says "replaced" rather than "invalid",
+  stopping locally first and compensating the cloud revoke after.
+- On mobile, Desktops other than the active one are still **read-only catalogue
+  observers** (a polling snapshot feeding the merged list); opening one of their
+  rows switches the active connection. Promoting observers to full runtimes is
+  its own project.
+- Device identification needs a host build that reports it; an older host shows
+  "unknown device".
+
+**Where the code lives.** The client role is in
+`desktop/src-tauri/src/remote_peer/` (pairing, credential book, handshake,
+requests, file transfer, connection supervisor) and
+`desktop/src/features/remote-peer/` (UI and client helpers); the host role stays
+in `remote_host/` and `features/remote/`. They deliberately share no namespace,
+so a screen cannot read the wrong state.
+
+**Not yet verified.** The above is covered by unit/integration tests and local
+two-sided checks (including a multi-process, multi-host end-to-end case).
+Long-running reconnection over a real network, concurrent clients on the
+platform side, and mixed mobile/desktop clients connected to one host have not
+been exercised.
+
 
 ### 2.3 Messages, transport, and permissions
 

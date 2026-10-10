@@ -503,3 +503,29 @@ it("closes a subscription that arrives after it unmounted", async () => {
   expect(listeners).toHaveLength(0);
   container.remove();
 });
+
+/**
+ * A refused change says why, where the control is.
+ *
+ * The hook already falls the value back to what the host still has; without the
+ * reason beside it the user watches a setting revert with no stated cause, which
+ * is indistinguishable from the app ignoring their choice. The state being
+ * computed* is not the feature — being on screen is.
+ */
+it("shows why a refused change was refused", async () => {
+  const view = await mountPicker(state({ error: "model_not_available" }));
+
+  expect(view.container.textContent).toContain("model_not_available");
+  // Announced, not merely painted: a silent line is easy to miss next to a
+  // control the user is still looking at.
+  expect(view.container.querySelector("[role='alert']")).not.toBeNull();
+  await view.unmount();
+});
+
+/** Nothing is announced while nothing has gone wrong. */
+it("says nothing when the last change succeeded", async () => {
+  const view = await mountPicker(state({ error: null }));
+
+  expect(view.container.querySelector("[role='alert']")).toBeNull();
+  await view.unmount();
+});

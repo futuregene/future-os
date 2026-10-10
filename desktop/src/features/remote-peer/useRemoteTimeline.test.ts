@@ -28,6 +28,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 const { precedingUserEntryId, useRemoteTimeline } = await import("./useRemoteTimeline");
+const { fetchRemoteToolTarget, forgetRemoteToolTargets } = await import("./remoteToolTarget");
 
 function entry(id: string, role: "user" | "assistant", text: string): SessionEntry {
   return {
@@ -529,5 +530,33 @@ describe("useRemoteTimeline resume", () => {
     await settle();
     expect(requestMock).not.toHaveBeenCalled();
     hook.unmount();
+  });
+});
+
+/**
+ * A conversation's fetched tool arguments are dropped when it is left.
+ *
+ * The cache is keyed by run and call id, which never repeat, so nothing in it
+ * would ever be read again — leaving it in place would grow for the life of the
+ * window. What makes the dropping correct rather than merely tidy is that the
+ * next open re-reads: the assertion is a second request, not a smaller map.
+ */
+describe("tool-argument cache lifetime", () => {
+  it("re-reads a conversation's tool arguments after it was left and reopened", async () => {
+    forgetRemoteToolTargets("desktop_a", "sess_1");
+    requestMock.mockResolvedValue({ name: "shell", arguments: { command: "pwd" } });
+    const call = { desktopId: "desktop_a", runId: "run_1", sessionId: "sess_1", toolCallId: "call_1" };
+
+    await expect(fetchRemoteToolTarget(call)).resolves.toBe("pwd");
+    await expect(fetchRemoteToolTarget(call)).resolves.toBe("pwd");
+    expect(requestMock).toHaveBeenCalledTimes(1);
+
+    // Opening and leaving the conversation is what drops it.
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    hook.unmount();
+
+    await expect(fetchRemoteToolTarget(call)).resolves.toBe("pwd");
+    expect(requestMock).toHaveBeenCalledTimes(3);
   });
 });

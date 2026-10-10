@@ -104,6 +104,9 @@ replies / thinking / tool execution, and handle approval, stop, model, and
 thinking-level switching. Tools always execute locally on the desktop machine;
 the phone only views and controls remotely — see 5.3.
 
+A *desktop* can also be a client of another desktop, in the same Remote entry
+and in the other direction; that role is described in 5.3.
+
 ### 3.6 The system is not just for coding
 
 FutureOS must support coding, but must not be designed only as a code tool.
@@ -583,8 +586,8 @@ The left navigation supports:
 - Models (jumps straight to the models page — see 5.7).
 - Skills (live as a standalone nav entry with installed-count badge and
   first-time guidance — see 4.8).
-- Phone Control (remote control; the entry shows only after signing in to
-  FutureOS — see 5.3).
+- Remote (both directions; the entry is always shown, because connecting out to
+  another computer needs no account — see 5.3).
 - The pinned section (all pinned conversations).
 - Workspace list (the section header carries a collapse toggle and a "new
   workspace" button; each workspace group has its own expand/collapse chevron).
@@ -656,10 +659,16 @@ running, a blue waiting icon; opening or leaving the conversation clears the
 unread dot, and the idle state shows no dot. Unread state lives in the current
 session (sessionStorage) and clears on app restart.
 
-### 5.3 Phone remote control
+### 5.3 Remote: a phone connects here, this Desktop connects out
 
-The phone is the Desktop's remote view and control surface; tools execute on
-the computer locally. Remote capability must be visible and controllable:
+A phone is one of the Desktop's remote view and control surfaces, and since
+2026-10-10 the Desktop is itself that surface for another computer. Both live in
+one Remote entry, split by direction: *let other devices connect here* and
+*connect to another computer*. Tools always execute on the machine that owns the
+conversation, which is why a remote conversation offers no local entry points
+(embedded terminal, Review/diff, workspace file tree).
+
+Remote capability must be visible and controllable:
 closing the Desktop in GUI mode disconnects Remote; standalone `futureos-headless`
 creates no window, runs in the terminal foreground, shows the platform login
 and phone-pairing QR code and link on demand, and Ctrl+C closes the entry.
@@ -669,9 +678,10 @@ when the Desktop exits; existing external Agents are not terminated by it.
 
 The complete product background, interaction rules, network wiring, pairing
 and permissions, architecture plans, self-recovery and sync contracts, support
-codes, and development plans for this feature are maintained in
-[remote connection design](CONNECTION.md); this section does not duplicate
-them.
+codes, and development plans for this feature — including the client role's
+wiring, credentials, merged conversation list and capability alignment with
+mobile — are maintained in [remote connection design](CONNECTION.md); this
+section does not duplicate them.
 
 ### 5.4 Middle conversation area
 

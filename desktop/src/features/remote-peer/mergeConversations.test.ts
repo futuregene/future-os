@@ -6,7 +6,6 @@ import type {
 import { describe, expect, it } from "vitest";
 import {
   compareConversations,
-  hiddenCount,
   localTimestamp,
   mergeConversations,
   rowKey,
@@ -154,16 +153,23 @@ describe("mergeConversations", () => {
   it("omits a host entirely when it has no snapshot", () => {
     const merged = mergeConversations([], [catalog("desktop_a", [])], ALL);
     expect(merged).toEqual([]);
-    expect(hiddenCount([thread({ id: "local" })], [], { kind: "device", desktopId: "desktop_a" }))
-      .toBe(1);
+    // Filtered to that host, its absence is the whole list rather than a stale row.
+    expect(mergeConversations([thread({ id: "local" })], [], { kind: "device", desktopId: "desktop_a" }))
+      .toEqual([]);
   });
 
-  it("reports how many conversations a filter hides", () => {
-    const threads = [thread({ id: "local" })];
-    const catalogs = [catalog("desktop_a", [{ sessionId: "a", title: "a", lastMessageAt: 1 }])];
-    expect(hiddenCount(threads, catalogs, ALL)).toBe(0);
-    expect(hiddenCount(threads, catalogs, { kind: "device", desktopId: null })).toBe(1);
-    expect(hiddenCount(threads, catalogs, { kind: "device", desktopId: "desktop_a" })).toBe(1);
+  /** Filtering to one machine selects exactly that machine's rows. */
+  it("selects one machine's rows when filtered to it", () => {
+    // Explicit timestamps: the local row is the newer one, so "all" must order
+    // it first — the filter decides which rows are candidates, not their order.
+    const threads = [thread({ id: "local", updatedAt: 2_000 })];
+    const catalogs = [catalog("desktop_a", [{ sessionId: "a", title: "a", lastMessageAt: 1_000 }])];
+    const ids = (filter: DeviceFilter) =>
+      mergeConversations(threads, catalogs, filter).map(row => row.id);
+
+    expect(ids(ALL)).toEqual(["local", "a"]);
+    expect(ids({ kind: "device", desktopId: null })).toEqual(["local"]);
+    expect(ids({ kind: "device", desktopId: "desktop_a" })).toEqual(["a"]);
   });
 
   it("uses the host's own coalesce for a local thread with no messages", () => {
