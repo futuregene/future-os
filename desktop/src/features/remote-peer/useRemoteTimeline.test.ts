@@ -27,7 +27,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   },
 }));
 
-const { useRemoteTimeline } = await import("./useRemoteTimeline");
+const { precedingUserEntryId, useRemoteTimeline } = await import("./useRemoteTimeline");
 
 function entry(id: string, role: "user" | "assistant", text: string): SessionEntry {
   return {
@@ -214,5 +214,174 @@ describe("useRemoteTimeline", () => {
     expect(requestMock).not.toHaveBeenCalled();
     expect(hook.current.entries).toEqual([]);
     hook.unmount();
+  });
+});
+
+/**
+ * `streaming` drives the composer's Stop-vs-Send, so a wrong value puts a wrong
+ * affordance in front of the user: "Stop" that stops nothing, or a Send that the
+ * host refuses because it is already answering.
+ */
+describe("useRemoteTimeline run state", () => {
+  // `sessionId` is required: the timeline ignores another session's events, so
+  // an event without one would never reach the reducer and these assertions
+  // would pass without exercising anything.
+  const event = (type: string, data: unknown = {}) => ({
+    sessionId: "sess_1",
+    eventId: `e_${type}`,
+    timestamp: "2026-01-01T00:00:00Z",
+    type,
+    data: JSON.stringify(data),
+  });
+
+  async function openTimeline() {
+    requestMock.mockResolvedValue(page([]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    return hook;
+  }
+
+  it("runs from the first activity frame to the settling one", async () => {
+    const hook = await openTimeline();
+    expect(hook.current.streaming).toBe(false);
+
+    push(event("agent_start"));
+    expect(hook.current.streaming).toBe(true);
+
+    push(event("text_chunk", { text: "hi" }));
+    expect(hook.current.streaming).toBe(true);
+
+    push(event("run_finished"));
+    expect(hook.current.streaming).toBe(false);
+    hook.unmount();
+  });
+
+  /**
+   * The defect this replaced: `!isTerminal(type)` counted *every* unrecognized
+   * type as "a run just started", so a compaction left the conversation looking
+   * busy and the composer offering Stop for a run that did not exist. A type
+   * from another family must leave the run state exactly as it was.
+   */
+  it("does not mistake another family of event for a running agent", async () => {
+    const hook = await openTimeline();
+
+    for (const type of [
+      "compaction_started",
+      "compaction_committed",
+      "compaction_failed",
+      "compaction_unchanged",
+      "settings_changed",
+      "presence",
+      "future_event_this_client_has_never_seen",
+    ]) {
+      push(event(type));
+      expect(hook.current.streaming).toBe(false);
+    }
+    hook.unmount();
+  });
+
+  /** The same, in the other direction: a mid-run compaction does not end the run. */
+  it("keeps a run running when an unrelated event arrives during it", async () => {
+    const hook = await openTimeline();
+
+    push(event("agent_start"));
+    push(event("compaction_started"));
+    expect(hook.current.streaming).toBe(true);
+
+    push(event("compaction_committed"));
+    expect(hook.current.streaming).toBe(true);
+
+    push(event("agent_end"));
+    expect(hook.current.streaming).toBe(false);
+    hook.unmount();
+  });
+});
+
+/**
+ * `persistedEntryIds` is what separates an id the host can resolve in its store
+ * from one that only names a frame on the wire — the difference between a fork
+ * that branches and one that is refused.
+ */
+describe("useRemoteTimeline persisted entry ids", () => {
+  it("counts history entries as persisted and a live push as not", async () => {
+    requestMock.mockResolvedValue(page([entry("e1", "user", "hi")]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    expect([...hook.current.persistedEntryIds]).toEqual(["e1"]);
+
+    push({
+      sessionId: "sess_1",
+      type: "agent_text",
+      // The shape the host actually publishes: a run-scoped frame id, which
+      // names nothing in its store.
+      eventId: "s_1:r_1:1:7",
+      timestamp: "2026-01-01T00:00:00Z",
+      data: JSON.stringify({ text: "live" }),
+    });
+    await settle();
+
+    expect(hook.current.entries.map(item => item.id)).toEqual(["e1", "s_1:r_1:1:7"]);
+    expect(hook.current.persistedEntryIds.has("e1")).toBe(true);
+    expect(hook.current.persistedEntryIds.has("s_1:r_1:1:7")).toBe(false);
+    hook.unmount();
+  });
+
+  it("keeps an older page's ids as well as the newest page's", async () => {
+    requestMock
+      .mockResolvedValueOnce(page([entry("e3", "user", "newest")], { hasMore: true, nextOffset: 42 }))
+      .mockResolvedValueOnce(page([entry("e1", "user", "oldest")], { hasMore: false, nextOffset: 0 }));
+
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    await act(async () => {
+      await hook.current.loadOlder();
+    });
+
+    expect([...hook.current.persistedEntryIds].sort()).toEqual(["e1", "e3"]);
+    hook.unmount();
+  });
+
+  /**
+   * Ids are per conversation. Carrying the previous session's set across would
+   * let a fork address an entry the host stores under a different session.
+   */
+  it("forgets the previous conversation's ids when another is opened", async () => {
+    let session = "sess_1";
+    requestMock.mockResolvedValue(page([entry("e1", "user", "one")]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", session, true));
+    await settle();
+    expect(hook.current.persistedEntryIds.has("e1")).toBe(true);
+
+    requestMock.mockResolvedValue(page([entry("e2", "user", "two")]));
+    session = "sess_2";
+    hook.rerender();
+    await settle();
+
+    expect(hook.current.persistedEntryIds.has("e1")).toBe(false);
+    expect(hook.current.persistedEntryIds.has("e2")).toBe(true);
+    hook.unmount();
+  });
+});
+
+/**
+ * The fork point: a reply is not itself a stored turn, so a fork branches at the
+ * user* entry that produced it — matching the desktop's own Fork button.
+ */
+describe("precedingUserEntryId", () => {
+  const say = (id: string, role: "assistant" | "user") => entry(id, role, id);
+
+  it("returns the user entry that produced the reply", () => {
+    expect(precedingUserEntryId([say("u1", "user"), say("a1", "assistant")], "a1")).toBe("u1");
+  });
+
+  it("skips intervening assistant/tool rows to reach the turn's prompt", () => {
+    const items = [say("u1", "user"), say("t1", "assistant"), say("a1", "assistant")];
+    expect(precedingUserEntryId(items, "a1")).toBe("u1");
+  });
+
+  it("returns null when there is no preceding prompt to branch at", () => {
+    expect(precedingUserEntryId([say("a1", "assistant")], "a1")).toBeNull();
+    expect(precedingUserEntryId([], "a1")).toBeNull();
+    expect(precedingUserEntryId([say("u1", "user")], "missing")).toBeNull();
   });
 });

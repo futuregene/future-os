@@ -88,5 +88,8 @@
   "stop": "停止",
   "stopping": "正在停止…",
   "newConversation": "新建对话",
-  "newConversationHint": "在那台远程桌面上新建。"
+  "newConversationHint": "在那台远程桌面上新建。",
+  "fork": "从这里分支",
+  "forkFailed": "无法分支该会话：{{message}}",
+  "forkNotSaved": "该回复所在的回合还没有保存到那台远程桌面。请重新打开会话后再试。"
 }

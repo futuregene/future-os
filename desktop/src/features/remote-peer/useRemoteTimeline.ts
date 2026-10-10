@@ -28,6 +28,16 @@ export interface RemoteTimeline {
   refresh: () => Promise<void>;
   /** The host has an in-flight run for this session. */
   streaming: boolean;
+  /**
+   * The entry ids that came from the host's own history read — the only ones it
+   * will accept as a persisted entry.
+   *
+   * A live push carries a run-scoped event id (`s:r:1:idx`), which names a frame
+   * on the wire and nothing in the host's store. An action that addresses a
+   * stored record (a fork at a settled turn) must use an id from here, and must
+   * refuse rather than send an event id that happens to look like one.
+   */
+  persistedEntryIds: ReadonlySet<string>;
 }
 
 /**
@@ -36,6 +46,30 @@ export interface RemoteTimeline {
  * host's cursor counts in. Asking in entries would misalign the cursor.
  */
 const HISTORY_PAGE_USER_EXCHANGES = 100;
+
+/**
+ * The events that mean a run is in flight on the host, and the ones that settle
+ * it.
+ *
+ * Enumerated rather than "everything that is not terminal": a type this client
+ * has never seen is not evidence that the host is running or idle, and guessing
+ * either way puts a wrong affordance in the composer.
+ */
+const RUN_ACTIVITY = new Set([
+  "agent_start",
+  "run_started",
+  "text_chunk",
+  "thinking_start",
+  "thinking_delta",
+  "thinking_end",
+  "tool_start",
+  "tool_delta",
+  "toolcall_delta",
+  "tool_end",
+  "tool_result",
+]);
+
+const RUN_SETTLED = new Set(["run_finished", "run_failed", "agent_end"]);
 
 interface EntriesPage {
   entries?: unknown[];
@@ -63,6 +97,7 @@ export function useRemoteTimeline(
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
+  const [persistedEntryIds, setPersistedEntryIds] = useState<ReadonlySet<string>>(() => new Set());
   /** The cursor for the next older page (`nextOffset`), or null at the start. */
   const cursorRef = useRef<number | null>(null);
   /**
@@ -95,6 +130,12 @@ export function useRemoteTimeline(
         return [];
       const parsed = normaliseEntries(page?.entries);
       setEntries(current => (side === "history" ? parsed : [...parsed, ...current]));
+      // History is where persisted ids come from; a page replaces the window
+      // (a `history` read resets to the newest page), so its ids reset with it
+      // and an `older` page only adds.
+      setPersistedEntryIds(side === "history"
+        ? new Set(parsed.map(item => item.id))
+        : current => new Set([...current, ...parsed.map(item => item.id)]));
       const next = typeof page?.nextOffset === "number" ? page.nextOffset : null;
       cursorRef.current = next;
       setHasMore(page?.hasMore === true && next !== null && next > 0);
@@ -136,6 +177,7 @@ export function useRemoteTimeline(
     setHasMore(false);
     setError(null);
     setStreaming(false);
+    setPersistedEntryIds(new Set());
     cursorRef.current = null;
     if (!enabled || !desktopId || !sessionId)
       return;
@@ -157,7 +199,16 @@ export function useRemoteTimeline(
       const type = readString(payload, "type");
       if (!type)
         return;
-      setStreaming(!isTerminal(type));
+      // A run's activity and its settlement are the only things `streaming`
+      // tracks. Any other family of event — a compaction, a settings change —
+      // must leave it alone: the previous `!isTerminal(type)` reading treated
+      // every unrecognized type as "a run just started", so a compaction left
+      // the conversation looking busy (and the composer offering Stop) with no
+      // run to stop.
+      if (RUN_ACTIVITY.has(type))
+        setStreaming(true);
+      else if (RUN_SETTLED.has(type))
+        setStreaming(false);
       const entry = entryFromEvent(payload, type);
       if (!entry)
         return;
@@ -178,8 +229,18 @@ export function useRemoteTimeline(
   }, [enabled, desktopId, sessionId]);
 
   return useMemo(
-    () => ({ entries, loading, loadingOlder, hasMore, error, loadOlder, refresh, streaming }),
-    [entries, loading, loadingOlder, hasMore, error, loadOlder, refresh, streaming],
+    () => ({
+      entries,
+      loading,
+      loadingOlder,
+      hasMore,
+      error,
+      loadOlder,
+      refresh,
+      streaming,
+      persistedEntryIds,
+    }),
+    [entries, loading, loadingOlder, hasMore, error, loadOlder, refresh, streaming, persistedEntryIds],
   );
 }
 
@@ -190,8 +251,26 @@ function readString(value: unknown, key: string): string | null {
   return typeof field === "string" ? field : null;
 }
 
-function isTerminal(type: string): boolean {
-  return type === "run_finished" || type === "agent_end" || type === "run_failed";
+/**
+ * The persisted user entry a fork of `assistantEntryId` would branch at.
+ *
+ * The fork point is the preceding *user* entry — the turn that produced the
+ * reply — never the reply itself, mirroring the desktop's own Fork button. That
+ * entry's `id` is what the projection exposes as the turn's `sourceEntryId`.
+ */
+export function precedingUserEntryId(
+  entries: RemoteEntry[],
+  assistantEntryId: string,
+): string | null {
+  const index = entries.findIndex(item => item.id === assistantEntryId);
+  if (index < 0)
+    return null;
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const previous = entries[i]!;
+    if (previous.role === "user")
+      return previous.id;
+  }
+  return null;
 }
 
 /**

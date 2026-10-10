@@ -69,7 +69,7 @@ const mocks = vi.hoisted(() => ({
   hooks: {} as HookSpies,
   nudgeLeftPanel: undefined as undefined | ReturnType<typeof vi.fn>,
   remotePeers: undefined as undefined | { catalogs?: unknown[]; peers?: unknown[] },
-  invoke: vi.fn(async (_command: string, _args?: unknown) => {}),
+  invoke: vi.fn<(command: string, args?: unknown) => Promise<unknown>>(async () => {}),
   refreshStore: vi.fn(async (_threadId?: string) => {}),
   remoteStatus: { phase: "idle" } as Record<string, unknown>,
   startRemote: vi.fn(async () => {}),
@@ -1583,6 +1583,100 @@ describe("app shell collapsed-panel affordances", () => {
 
       expect(mocks.hooks.refreshRemotePeers).toHaveBeenCalledTimes(1);
       expect(view.container.textContent).not.toContain("Rename conversation");
+      view.unmount();
+    });
+
+    /**
+     * A fork re-reads the host (the child is a new row in its catalogue) and
+     * opens the child from the ids the host chose — never from a guess.
+     */
+    it("forks a remote conversation at a stored turn and opens the child", async () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+      const conversationView = children.remoteConversationView as {
+        onFork: (sourceEntryId: string, forkable: boolean) => void;
+      };
+
+      mocks.invoke.mockResolvedValue({ sessionId: "sess_child", threadId: "thread_child" });
+      await act(async () => {
+        conversationView.onFork("entry_u1", true);
+        for (let i = 0; i < 4; i += 1) await Promise.resolve();
+      });
+
+      expect(mocks.invoke).toHaveBeenCalledWith("remote_peer_request", expect.objectContaining({
+        command: { type: "fork_session", sessionId: "sess_1", sourceEntryId: "entry_u1" },
+        desktopId: "desktop_a",
+      }));
+      expect(mocks.hooks.refreshRemotePeers).toHaveBeenCalled();
+      expect(composer().sessionId).toBe("sess_child");
+      view.unmount();
+    });
+
+    /**
+     * A turn the host has not stored cannot be a fork point. Sending its id
+     * anyway would come back as the host's "fork source could not be loaded",
+     * which describes a bug rather than the situation the user is in.
+     */
+    it("refuses to fork an unstored turn, and says so instead of sending", async () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+
+      await act(async () => {
+        (children.remoteConversationView as { onFork: (id: string, forkable: boolean) => void })
+          .onFork("s_1:r_1:1:7", false);
+        for (let i = 0; i < 4; i += 1) await Promise.resolve();
+      });
+
+      // Specific to the fork command: opening the conversation also talks to
+      // the host (the history read), so a bare "nothing was sent" would be
+      // asserting the wrong thing.
+      const forkCalls = mocks.invoke.mock.calls.filter(([, args]) =>
+        (args as { command?: { type?: string } } | undefined)?.command?.type === "fork_session");
+      expect(forkCalls).toEqual([]);
+      expect(mocks.emit).toHaveBeenCalledWith("toast", expect.objectContaining({ tone: "error" }));
+      view.unmount();
+    });
+
+    it("reports a fork the host refused, and keeps the open conversation", async () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+
+      mocks.invoke.mockRejectedValue(new Error("peer_not_connected"));
+      await act(async () => {
+        (children.remoteConversationView as { onFork: (id: string, forkable: boolean) => void })
+          .onFork("entry_u1", true);
+        for (let i = 0; i < 4; i += 1) await Promise.resolve();
+      });
+
+      expect(mocks.emit).toHaveBeenCalledWith("toast", expect.objectContaining({ tone: "error" }));
+      expect(composer().sessionId).toBe("sess_1");
+      view.unmount();
+    });
+
+    /**
+     * The host's persisted ids have to reach the transcript: it is what decides
+     * whether a given reply can be branched from at all.
+     */
+    it("passes the host's persisted ids through to the transcript", async () => {
+      mocks.invoke.mockImplementation(async (_command: string, args?: unknown) => {
+        const type = (args as { command?: { type?: string } } | undefined)?.command?.type;
+        if (type === "get_session_entries") {
+          return {
+            entries: [{ id: "entry_u1", kind: "message", role: "user", createdAtMs: 1, blocks: [] }],
+            hasMore: false,
+            nextOffset: 0,
+          };
+        }
+        return undefined;
+      });
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+      await act(async () => {
+        for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      });
+
+      const props = children.remoteConversationView as { persistedEntryIds: ReadonlySet<string> };
+      expect([...props.persistedEntryIds]).toEqual(["entry_u1"]);
       view.unmount();
     });
   });

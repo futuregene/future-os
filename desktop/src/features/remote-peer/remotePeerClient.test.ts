@@ -19,6 +19,7 @@ const {
   abortRemoteRun,
   deleteRemoteConversation,
   fetchRemoteSessions,
+  forkRemoteConversation,
   pinRemoteConversation,
   promptRemoteConversation,
   renameRemoteConversation,
@@ -150,6 +151,62 @@ describe("promptRemoteConversation", () => {
     await expect(promptRemoteConversation("desktop_a", "", "hi"))
       .resolves
       .toEqual({ sessionId: "sess_new", threadId: "" });
+  });
+});
+
+describe("forkRemoteConversation", () => {
+  it("branches at the stored turn and answers with the child's ids", async () => {
+    invokeMock.mockResolvedValue({ sessionId: "sess_child", threadId: "thread_child" });
+
+    const child = await forkRemoteConversation("desktop_a", "sess_1", "entry_u1");
+
+    const { args } = lastCall();
+    expect(args).toEqual({
+      desktopId: "desktop_a",
+      command: { type: "fork_session", sessionId: "sess_1", sourceEntryId: "entry_u1" },
+      // Routed on the parent's lane: the fork is a command *to* that
+      // conversation, and the host answers on the same subject.
+      lane: "sess_1",
+    });
+    expect(child).toEqual({ sessionId: "sess_child", threadId: "thread_child" });
+  });
+
+  /**
+   * An empty `sessionId` is the host's signal for "a conversation that does not
+   * exist yet", and a fork always has a parent. Sending one would quietly start
+   * a new conversation instead of branching, so it is never sent.
+   */
+  it("never sends an empty parent or fork point", async () => {
+    invokeMock.mockResolvedValue({ sessionId: "sess_child" });
+
+    await forkRemoteConversation("desktop_a", "sess_1", "entry_u1");
+    const { command } = lastCall().args as { command: Record<string, unknown> };
+    expect(command.sessionId).toBe("sess_1");
+    expect(command.sourceEntryId).toBe("entry_u1");
+    expect(command.sourceEntryId).not.toBe("");
+  });
+
+  /**
+   * Without a session id in the ack the caller cannot open or address the child,
+   * so it is an error rather than a fork that appeared to work.
+   */
+  it("rejects an ack that names no child conversation", async () => {
+    invokeMock.mockResolvedValue({ threadId: "thread_child" });
+    await expect(forkRemoteConversation("desktop_a", "sess_1", "entry_u1"))
+      .rejects
+      .toThrow("remote_fork_without_session_id");
+
+    invokeMock.mockResolvedValue({ sessionId: "" });
+    await expect(forkRemoteConversation("desktop_a", "sess_1", "entry_u1"))
+      .rejects
+      .toThrow("remote_fork_without_session_id");
+  });
+
+  it("tolerates a host that reports no thread id for the child", async () => {
+    invokeMock.mockResolvedValue({ sessionId: "sess_child" });
+    await expect(forkRemoteConversation("desktop_a", "sess_1", "entry_u1"))
+      .resolves
+      .toEqual({ sessionId: "sess_child", threadId: "" });
   });
 });
 
