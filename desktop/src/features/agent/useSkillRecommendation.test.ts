@@ -3,6 +3,7 @@ import { act } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import i18n from "../../i18n";
 import {
+  invalidateSkillCatalog,
   listAvailableSkills,
   listInstalledSkills,
   recordSkillReco,
@@ -22,7 +23,8 @@ import {
   useSkillRecommendation,
 } from "./useSkillRecommendation";
 
-vi.mock("../../integrations/skills/skillsClient", () => ({
+vi.mock("../../integrations/skills/skillsClient", async original => ({
+  ...await original<typeof import("../../integrations/skills/skillsClient")>(),
   // The hook goes through the shared cache, which assembles both lists from the
   // per-call mocks below, so a test still drives the lists it cares about.
   loadSkillCatalog: () => ({
@@ -370,4 +372,45 @@ it("does not publish candidates that arrive after the hook is gone", async () =>
 
   // Nothing threw and nothing was published to the dead hook.
   expect(hook.current.candidates).toEqual([]);
+});
+
+it("refreshes candidates when installed skills change without remounting", async () => {
+  const hook = await renderActive();
+  try {
+    expect(hook.current.candidates.map(skill => skill.name)).toContain("future-web");
+    installed.mockResolvedValue([
+      { id: "future-web", name: "future-web", description: "web", nameZh: null, descriptionZh: null, version: "1.0" },
+      { id: "future-slides", name: "future-slides", description: "slides", nameZh: null, descriptionZh: null, version: "1.0" },
+    ]);
+    await act(async () => invalidateSkillCatalog());
+    expect(hook.current.candidates.map(skill => skill.name)).toEqual(["future-paper"]);
+  }
+  finally {
+    hook.unmount();
+  }
+});
+
+it("bounds the daily-state read and ignores its answer after timeout", async () => {
+  vi.useFakeTimers();
+  let resolveToday!: (state: Awaited<ReturnType<typeof skillRecoToday>>) => void;
+  today.mockReturnValue(new Promise((resolve) => {
+    resolveToday = resolve;
+  }));
+  const hook = await renderActive();
+  try {
+    let pending!: ReturnType<typeof hook.current.evaluate>;
+    await act(async () => {
+      pending = hook.current.evaluate(LONG_ENOUGH);
+      await vi.advanceTimersByTimeAsync(RECOMMEND_TIMEOUT_MS);
+    });
+    expect(await pending).toBeNull();
+    await act(async () => resolveToday({ count: 0, skillIds: [], messageHashes: [] }));
+    expect(suggest).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
+    expect(hook.current.state.recommendation).toBeNull();
+  }
+  finally {
+    hook.unmount();
+    vi.useRealTimers();
+  }
 });

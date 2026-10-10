@@ -1,13 +1,15 @@
 import type { SkillCandidate, SkillRecoToday } from "../../integrations/skills/skillsClient";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  loadSkillCatalog,
   recordSkillReco,
   skillRecoToday,
   suggestSkill,
 } from "../../integrations/skills/skillsClient";
+import { useSkillCatalog } from "../../integrations/skills/useSkillCatalog";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
+import { useCommittedRef } from "../../lib/useCommittedRef";
+import { useOperationLifetime } from "../../lib/useOperationLifetime";
 
 /**
  * Skill recommendation for any user message (not just a conversation's first).
@@ -161,57 +163,41 @@ export function useSkillRecommendation({
   const { i18n } = useTranslation();
   const build = useBuildInfo();
   const [recommendation, setRecommendation] = useState<SkillCandidate | null>(null);
-  const [candidates, setCandidates] = useState<SkillCandidate[]>([]);
+
   // Live mirror so evaluate() reads the latest gate values regardless of render
   // timing; a stale closure would otherwise reuse the first render's
   // toggle/balance for the whole session.
-  const gateRef = useRef({ enabled, sessionStatus, balance });
-  gateRef.current = { enabled, sessionStatus, balance };
-  const candidatesRef = useRef(candidates);
-  candidatesRef.current = candidates;
+  const gateRef = useCommittedRef({ enabled, sessionStatus, balance });
+
   const inFlightRef = useRef(false);
-  const dailyLimitRef = useRef(dailyRecommendationLimit(build.data?.isRelease));
-  dailyLimitRef.current = dailyRecommendationLimit(build.data?.isRelease);
+  const dailyLimitRef = useCommittedRef(dailyRecommendationLimit(build.data?.isRelease));
   // The catalogue's Chinese descriptions, keyed by skill id, and the current
   // language — both read through refs because `evaluate` is created once and
   // must see the latest values (same reason as `gateRef` above).
-  const zhDescriptionsRef = useRef<Map<string, string>>(new Map());
-  const languageRef = useRef(i18n.language);
-  languageRef.current = i18n.language;
+
+  const languageRef = useCommittedRef(i18n.language);
 
   const loggedIn = sessionStatus === "authenticated" || sessionStatus === "unavailable";
   const hasBalance = balance === null || balance > 0;
   const active = enabled && loggedIn && hasBalance;
 
-  // Load the candidate set (catalogue − installed) once the feature is active.
-  // Both lists come from the shared cache, so this costs nothing when the
-  // composer on the same screen has already read them.
-  useEffect(() => {
-    if (!active)
-      return;
-    let cancelled = false;
-    const { installed, catalogue } = loadSkillCatalog();
-    Promise.all([catalogue.catch(() => []), installed.catch(() => [])])
-      .then(([all, mine]) => {
-        if (cancelled)
-          return;
-        const installedIds = new Set(mine.map(s => s.id));
-        setCandidates(
-          all
-            .filter(entry => !installedIds.has(entry.id))
-            .map(entry => ({ name: entry.id, description: entry.description })),
-        );
-        zhDescriptionsRef.current = new Map(
-          all.map(entry => [entry.id, entry.descriptionZh]),
-        );
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [active]);
+  const catalog = useSkillCatalog(active);
+  const candidates = useMemo(() => {
+    const installed = new Set(catalog.installed.map(skill => skill.id));
+    return catalog.catalogue.filter(skill => !installed.has(skill.id))
+      .map(skill => ({ name: skill.id, description: skill.description }));
+  }, [catalog]);
+  const candidatesRef = useCommittedRef(candidates);
+  const zhDescriptionsRef = useCommittedRef(useMemo(
+    () => new Map(catalog.catalogue.map(skill => [skill.id, skill.descriptionZh])),
+    [catalog],
+  ));
+  const captureOperation = useOperationLifetime();
 
   const evaluate = useCallback(async (draft: string): Promise<SkillCandidate | null> => {
+    const lifetimeIsCurrent = captureOperation();
+    let timedOut = false;
+    const isCurrent = () => lifetimeIsCurrent() && !timedOut;
     const gate = gateRef.current;
     const loggedInNow = gate.sessionStatus === "authenticated" || gate.sessionStatus === "unavailable";
     const hasBalanceNow = gate.balance === null || gate.balance > 0;
@@ -233,21 +219,20 @@ export function useSkillRecommendation({
     // Read the day state at submit time rather than caching it at mount: it is a
     // local SQLite read, and a second window (or a previous submission) may have
     // spent part of the budget since.
-    const today = await readToday();
-    // A spent budget stops the calls entirely — no call, no card.
-    if (today.count >= dailyLimitRef.current)
-      return null;
-    const hash = messageHash(trimmed);
-    if (today.messageHashes.includes(hash))
-      return null;
-
     inFlightRef.current = true;
-    try {
-      const result = await Promise.race([
-        suggestSkill(trimmed, candidatesRef.current).catch(() => null),
-        new Promise<null>(resolve => setTimeout(resolve, RECOMMEND_TIMEOUT_MS, null)),
-      ]);
-      if (!result)
+    const evaluateCurrentDraft = async () => {
+      const today = await readToday();
+      if (!isCurrent())
+        return null;
+      // A spent budget stops the calls entirely — no call, no card.
+      if (today.count >= dailyLimitRef.current)
+        return null;
+      const hash = messageHash(trimmed);
+      if (today.messageHashes.includes(hash))
+        return null;
+
+      const result = await suggestSkill(trimmed, candidatesRef.current).catch(() => null);
+      if (!isCurrent() || !result)
         return null;
       // Same skill twice in one day: skip this recommendation rather than
       // showing a duplicate (never fall back to a second-best skill).
@@ -265,6 +250,8 @@ export function useSkillRecommendation({
       // Record before showing: the card counts towards the daily budget the
       // moment it is displayed, regardless of what the user does with it.
       await recordSkillReco(result.name, hash).catch(() => {});
+      if (!isCurrent())
+        return null;
       const shown = {
         ...result,
         description: shownDescription(
@@ -275,11 +262,27 @@ export function useSkillRecommendation({
       };
       setRecommendation(shown);
       return shown;
+    };
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        evaluateCurrentDraft(),
+        new Promise<null>((resolve) => {
+          timeout = setTimeout(() => {
+            timedOut = true;
+            resolve(null);
+          }, RECOMMEND_TIMEOUT_MS);
+        }),
+      ]);
+    }
+    catch {
+      return null;
     }
     finally {
+      clearTimeout(timeout);
       inFlightRef.current = false;
     }
-  }, []);
+  }, [candidatesRef, captureOperation, dailyLimitRef, gateRef, languageRef, zhDescriptionsRef]);
 
   const dismiss = useCallback(() => setRecommendation(null), []);
 

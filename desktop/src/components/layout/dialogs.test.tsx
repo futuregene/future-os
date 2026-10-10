@@ -162,15 +162,11 @@ describe("rename dialog", () => {
 
 describe("confirm delete dialog", () => {
   it("renders the body, the error and the busy label", () => {
-    const view = mount(createElement(ConfirmDeleteDialog, {
-      children: createElement("p", null, "body text"),
-      error: "locked",
-      onClose: () => {},
-      onConfirm: () => {},
-      open: true,
-      submitting: true,
-      title: "Delete Chat",
-    }));
+    const view = mount(
+      <ConfirmDeleteDialog error="locked" onClose={() => {}} onConfirm={() => {}} open submitting title="Delete Chat">
+        <p>body text</p>
+      </ConfirmDeleteDialog>,
+    );
     expect(view.container.textContent).toContain("body text");
     expect(view.container.textContent).toContain("locked");
     const busyDelete = byText(view.container, "Deleting...")!;

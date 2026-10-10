@@ -10,13 +10,10 @@ export const ThinkingBlock = memo(({
   text,
   workspaceId,
   live,
-  inSteps = false,
 }: {
   text: string;
   workspaceId?: string | null;
   live?: boolean;
-  /** Revealed summary children belong to the left-aligned reading column. */
-  inSteps?: boolean;
 }) => {
   const { t } = useTranslation("agent");
   const [expanded, setExpanded] = useState(false);
@@ -27,7 +24,7 @@ export const ThinkingBlock = memo(({
     <div className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted">
       <button
         aria-expanded={expanded}
-        className={cn("flex max-w-full cursor-pointer items-center gap-2 text-left hover:text-ink", !inSteps && !expanded ? "self-end" : "self-start")}
+        className="flex max-w-full cursor-pointer items-center gap-2 self-start text-left hover:text-ink"
         onClick={() => setExpanded(value => !value)}
         type="button"
       >

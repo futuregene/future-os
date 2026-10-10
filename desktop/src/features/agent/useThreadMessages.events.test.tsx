@@ -58,7 +58,7 @@ function history(ids: string[], nextOffset: number, hasMore = true) {
 /**
  * A page whose entries exist but hold no exchange — a session header or a
  * system/meta note. The projection yields no messages from it, which is the
- * shape `loadFromAgent` must report as "loaded, nothing to show" rather than as
+ * shape `loadThreadHistory` must report as "loaded, nothing to show" rather than as
  * a failed or empty read.
  */
 function nonExchangePage(nextOffset: number, hasMore = true) {
@@ -706,14 +706,14 @@ describe("useThreadMessages page guards", () => {
     }));
     let superseded!: Promise<void>;
     await act(async () => {
-      superseded = current.reloadMessagesQuiet("T1", true);
+      superseded = current.reloadThreadHistory("T1", true);
       await Promise.resolve();
     });
     // A second reload takes the tail while the first is still refreshing.
     storage.getLatestRun.mockResolvedValue(null);
     storage.getSessionEntriesPage.mockResolvedValueOnce(history(["newer"], 0, false));
     await act(async () => {
-      await current.reloadMessagesQuiet("T1", true);
+      await current.reloadThreadHistory("T1", true);
     });
     storage.getSessionEntriesPage.mockClear();
     await act(async () => {
@@ -753,9 +753,6 @@ describe("useThreadMessages page guards", () => {
     });
 
     // The caller is handed the empty page so it can keep its reading anchor.
-    // NOTE: the `status === "empty"` guard that would refuse this page can never
-    // fire, because `loadFromAgent` has no producer for that status — finding F5
-    // in docs/testing/desktop-agent.md.
     expect(beforeCommit).toHaveBeenCalledWith([]);
     expect(current.historyError).toBeNull();
     expect(current.messages.map(message => message.content)).toEqual(["u3"]);
@@ -830,7 +827,7 @@ describe("useThreadMessages page guards", () => {
 
     storage.getSessionEntriesPage.mockResolvedValueOnce(history(["recovered"], 0, false));
     await act(async () => {
-      await current.reloadMessagesQuiet("T1", true);
+      await current.reloadThreadHistory("T1", true);
     });
     expect(current.historyError).toBeNull();
     expect(current.messages.map(message => message.content)).toEqual(["recovered"]);
@@ -856,7 +853,7 @@ it("ignores a tail read started by a conversation that was replaced", async () =
   // concurrency: the replacement bumps the source version, so a read captured
   // from the outgoing conversation must not touch the new one.
   await mount({ agentSessionId: "S1" });
-  const staleReload = current.reloadMessagesQuiet;
+  const staleReload = current.reloadThreadHistory;
 
   await mount({ agentSessionId: "S2" });
   storage.getSessionEntriesPage.mockClear();
@@ -872,7 +869,7 @@ it("does not report a failed page read that a replaced conversation superseded",
   //
   // Measured note, because my first comment here claimed the wrong mechanism: the
   // swallow does NOT come from the epoch re-check inside the catch (that arm is
-  // unreachable - see §5). `loadFromAgent` never throws, it catches everything and
+  // unreachable - see §5). `loadThreadHistory` never throws, it catches everything and
   // returns `{ status: "failed" }`, so the rejection resurfaces as a *result* and
   // the post-await check `if (epoch !== historyEpochRef.current) return;` returns
   // before the status is even inspected. This test therefore pins the behaviour
@@ -1057,7 +1054,7 @@ it("restarts the walk when another read replaces the base mid-search", async () 
     await Promise.resolve();
     // …then replace the base under it and hand it the now-stale page.
     storage.getSessionEntriesPage.mockResolvedValueOnce(history(["u3"], 20));
-    await current.reloadMessagesQuiet("T1", true);
+    await current.reloadThreadHistory("T1", true);
     // The second pass of the walk gets a page that does advance the cursor.
     storage.getSessionEntriesPage.mockResolvedValueOnce(history(["u1", "u2"], 0, false));
     resolveOlder(history(["u1"], 0, false));

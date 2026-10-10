@@ -7,11 +7,11 @@ export function matchesSettledRun(status: RunStatus) {
 }
 
 /**
- * Nearest user message at or before `beforeIndex`, scanning backward. Used to
+ * Nearest user message at or before `atOrBeforeIndex`, scanning backward. Used to
  * find the exchange that produced a given assistant reply (retry/continue recovery).
  */
-export function previousUserMessageBefore(messages: AgentMessage[], beforeIndex: number): AgentMessage | null {
-  for (let index = beforeIndex; index >= 0; index -= 1) {
+export function previousUserMessageBefore(messages: AgentMessage[], atOrBeforeIndex: number): AgentMessage | null {
+  for (let index = atOrBeforeIndex; index >= 0; index -= 1) {
     const message = messages[index];
     if (message?.role === "user")
       return message;

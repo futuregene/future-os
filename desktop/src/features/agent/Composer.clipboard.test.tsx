@@ -35,7 +35,8 @@ vi.mock("../../integrations/storage/threadStore", async original => ({
   savePastedFile: h.savePastedFile,
   savePastedImage: h.savePastedImage,
 }));
-vi.mock("../../integrations/skills/skillsClient", () => ({
+vi.mock("../../integrations/skills/skillsClient", async original => ({
+  ...await original<typeof import("../../integrations/skills/skillsClient")>(),
   listAvailableSkills: vi.fn(async () => []),
   listInstalledSkills: vi.fn(async () => []),
   loadSkillCatalog: () => ({ catalogue: Promise.resolve([]), installed: Promise.resolve([]) }),
@@ -279,4 +280,31 @@ it("prefers a clipboard URI list over the file bytes", async () => {
 
   expect(h.savePastedFile).not.toHaveBeenCalled();
   expect(chips().map(chip => chip.getAttribute("aria-label"))).toEqual(["Remove from-list.txt"]);
+});
+
+it("ignores native clipboard paths that finish after switching drafts", async () => {
+  let release!: (paths: string[]) => void;
+  h.readNativeClipboardFilePaths.mockReturnValue(new Promise((resolve) => {
+    release = resolve;
+  }));
+  render({ draftKey: "clipboard-a" });
+  await pasteFiles([pastedFile("a.txt", "text/plain", 1)]);
+  render({ draftKey: "clipboard-b" });
+  await act(async () => release(["/tmp/a.txt"]));
+  expect(chips()).toEqual([]);
+  expect(h.classifyAttachment).not.toHaveBeenCalled();
+});
+
+it("reclaims a copied file that finishes after switching drafts", async () => {
+  let release!: (saved: { path: string }) => void;
+  h.savePastedFile.mockReturnValue(new Promise((resolve) => {
+    release = resolve;
+  }));
+  render({ draftKey: "clipboard-a" });
+  await pasteFiles([pastedFile("a.txt", "text/plain", 1)]);
+  expect(h.savePastedFile).toHaveBeenCalledTimes(1);
+  render({ draftKey: "clipboard-b" });
+  await act(async () => release({ path: "/tmp/stale-a.txt" }));
+  expect(chips()).toEqual([]);
+  expect(h.deleteTempAttachment).toHaveBeenCalledWith("/tmp/stale-a.txt");
 });

@@ -22,8 +22,8 @@ interface UseRunReattachInput {
   // renders the stream itself, so every re-attach path skips.
   sendingRef: MutableRefObject<boolean>;
   setMessages: Dispatch<SetStateAction<AgentMessage[]>>;
-  refreshRecentRun: (threadId: string, workspaceId?: string | null) => Promise<void>;
-  reloadMessagesQuiet: (targetThreadId: string, force?: boolean) => Promise<void>;
+  refreshRecentRun: (threadId: string) => Promise<void>;
+  reloadThreadHistory: (targetThreadId: string, force?: boolean) => Promise<void>;
 }
 
 /**
@@ -45,7 +45,7 @@ export function useRunReattach({
   sendingRef,
   setMessages,
   refreshRecentRun,
-  reloadMessagesQuiet,
+  reloadThreadHistory,
 }: UseRunReattachInput) {
   const prevActiveRunIdRef = useRef<string | null>(null);
 
@@ -84,8 +84,8 @@ export function useRunReattach({
       if (update.resetProjection)
         resetRunProjection(runId);
       if (["completed", "failed", "cancelled"].includes(update.status)) {
-        void refreshRecentRun(threadId, workspaceId);
-        void reloadMessagesQuiet(threadId, true);
+        void refreshRecentRun(threadId);
+        void reloadThreadHistory(threadId, true);
         return;
       }
       liveTick.request();
@@ -98,7 +98,7 @@ export function useRunReattach({
     const selfHeal = setInterval(() => {
       if (cancelled || sendingRef.current)
         return;
-      void refreshRecentRun(threadId, workspaceId);
+      void refreshRecentRun(threadId);
     }, 30_000);
     // Close the registration race: a push that lands between the initial tick's
     // read and `listen` resolving would otherwise be missed until the next push.
@@ -118,7 +118,7 @@ export function useRunReattach({
     activeRunStartedAt,
     loadingThread,
     refreshRecentRun,
-    reloadMessagesQuiet,
+    reloadThreadHistory,
     sendingRef,
     setMessages,
     threadId,
@@ -134,9 +134,9 @@ export function useRunReattach({
     if (previous && !activeRunId && !sendingRef.current && threadId) {
       // Force-reload after streaming stops so persisted history can replace
       // the synthetic bubble instead of preserving the live baseline.
-      void reloadMessagesQuiet(threadId, true);
+      void reloadThreadHistory(threadId, true);
     }
-  }, [activeRunId, reloadMessagesQuiet, sendingRef, threadId]);
+  }, [activeRunId, reloadThreadHistory, sendingRef, threadId]);
 
   // A remote (phone/web) client can drive this thread's session in the
   // background. This view never started that run, and the recent-run poll
@@ -153,12 +153,12 @@ export function useRunReattach({
     const unlisten = listen<string>("remote-activity", (event) => {
       if (cancelled || event.payload !== threadId || sendingRef.current)
         return;
-      void refreshRecentRun(threadId, workspaceId);
-      void reloadMessagesQuiet(threadId);
+      void refreshRecentRun(threadId);
+      void reloadThreadHistory(threadId);
     });
     return () => {
       cancelled = true;
       void unlisten.then(stop => stop());
     };
-  }, [refreshRecentRun, reloadMessagesQuiet, sendingRef, workspaceId, threadId]);
+  }, [refreshRecentRun, reloadThreadHistory, sendingRef, workspaceId, threadId]);
 }

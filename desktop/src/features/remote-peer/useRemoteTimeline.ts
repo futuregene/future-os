@@ -272,7 +272,7 @@ export function useRemoteTimeline(
       cancelled = true;
       dispose?.();
     };
-  }, [enabled, desktopId, sessionId]);
+  }, [enabled, desktopId, sessionId, readPage]);
 
   return useMemo(
     () => ({

@@ -152,7 +152,7 @@ describe("overlayStack", () => {
     document.body.appendChild(container);
     const root = createRoot(container);
     act(() => {
-      root.render(createElement(Overlay, { children: createElement("span", null, "body"), onClose: () => closed.push("x"), open: true }));
+      root.render(<Overlay onClose={() => closed.push("x")} open><span>body</span></Overlay>);
     });
     act(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));

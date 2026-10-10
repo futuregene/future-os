@@ -40,8 +40,8 @@ function setup(options: { thread?: StoredThread | null; activeRunId?: string | n
         calls.messages.push([update]);
       },
       setRecentRun: r => void calls.recentRuns.push(r),
-      refreshRecentRun: async (threadId, workspaceId) => {
-        calls.refreshes.push([threadId, workspaceId]);
+      refreshRecentRun: async (threadId) => {
+        calls.refreshes.push([threadId]);
       },
       onThreadActivity: () => void (calls.activity += 1),
     });
@@ -172,12 +172,27 @@ describe("useSendMessage", () => {
     const { harness, sendingRef, send } = setup();
     const { toasts, off } = collectToasts();
 
-    await expect(send()).rejects.toThrow("attachment too large");
+    await expect(send()).resolves.toBeUndefined();
     expect(toasts).toEqual([{ message: "attachment too large", tone: "error" }]);
     expect(sendingRef().current).toBe(false);
 
     off();
     harness.unmount();
+  });
+
+  it("rejects a delivery failure for the composer so it can restore the draft", async () => {
+    pipeline.mockRejectedValue(new Error("delivery refused"));
+    const { harness, sendingRef, send } = setup();
+    const { toasts, off } = collectToasts();
+    try {
+      await expect(send(() => {})).rejects.toThrow("delivery refused");
+      expect(toasts).toEqual([{ message: "delivery refused", tone: "error" }]);
+      expect(sendingRef().current).toBe(false);
+    }
+    finally {
+      off();
+      harness.unmount();
+    }
   });
 
   it("does not release a lock a newer conversation now owns when an abandoned send settles", async () => {

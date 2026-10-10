@@ -20,7 +20,7 @@ interface UseSendMessageInput {
   sendingRef: MutableRefObject<boolean>;
   setMessages: Dispatch<SetStateAction<AgentMessage[]>>;
   setRecentRun: (run: StoredRun) => void;
-  refreshRecentRun: (threadId: string, workspaceId?: string | null) => Promise<void>;
+  refreshRecentRun: (threadId: string) => Promise<void>;
   onThreadActivity: () => void;
 }
 
@@ -128,7 +128,8 @@ export function useSendMessage({
       // truly unexpected error. Show it verbatim — wrapping it in a "run
       // failed" template would mislabel validation feedback.
       emitFutureEvent("toast", { message: errorMessage(error), tone: "error" });
-      throw error;
+      if (onAccepted)
+        throw error;
     }
     finally {
       // Release the in-flight lock — but only if a newer send/thread switch

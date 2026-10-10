@@ -32,23 +32,21 @@ interface AgentActivityLineProps {
   item: AgentActivityItem;
   workspacePath?: string | null;
   runId?: string | null;
-  /** An expanded mixed-step summary places its child headers in the reading column. */
-  inSteps?: boolean;
 }
 
-export function AgentActivityLine({ item, workspacePath, runId, inSteps }: AgentActivityLineProps) {
+export function AgentActivityLine({ item, workspacePath, runId }: AgentActivityLineProps) {
   if ((item.children?.length ?? 0) > 0)
-    return <AgentActivityGroupLine item={item} workspacePath={workspacePath} runId={runId} inSteps={inSteps} />;
-  return <AgentActivitySingleLine item={item} workspacePath={workspacePath} runId={runId} inSteps={inSteps} />;
+    return <AgentActivityGroupLine item={item} workspacePath={workspacePath} runId={runId} />;
+  return <AgentActivitySingleLine item={item} workspacePath={workspacePath} runId={runId} />;
 }
 
-function AgentActivitySingleLine({ item, workspacePath, runId, inSteps }: AgentActivityLineProps) {
+function AgentActivitySingleLine({ item, workspacePath, runId }: AgentActivityLineProps) {
   const label = labelForActivity(item);
   const failed = item.status === "failed";
   const running = item.status === "running";
   const displayTarget = item.target ? relativizeTarget(item.kind, item.target, workspacePath) : undefined;
-  // Only collapsed standalone steps use the right rail. Revealed rows return
-  // to the reading column; long commands and paths get their own wrapping line.
+  // Headers stay in the reading column; long commands and paths get their
+  // own wrapping line when expanded.
   const [open, setOpen] = useState(false);
   const Chevron = open ? ChevronUp : ChevronDown;
 
@@ -64,7 +62,7 @@ function AgentActivitySingleLine({ item, workspacePath, runId, inSteps }: AgentA
 
   return (
     <div className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted">
-      <div className={cn("flex max-w-full items-center gap-2", !inSteps && !open ? "self-end" : "self-start")}>
+      <div className="flex max-w-full items-center gap-2 self-start">
         {runId || displayTarget
           ? (
               <button
@@ -112,7 +110,7 @@ function AgentActivitySingleLine({ item, workspacePath, runId, inSteps }: AgentA
 // no inline preview, since a truncated command reads as noise. Clicking expands
 // it into every child call as an indented, selectable sub-line. Grouping only
 // happens for completed bursts, so a group is never running or failed.
-function AgentActivityGroupLine({ item, workspacePath, runId, inSteps }: AgentActivityLineProps) {
+function AgentActivityGroupLine({ item, workspacePath, runId }: AgentActivityLineProps) {
   const label = labelForActivity(item);
   const children = item.children ?? [];
   const [open, setOpen] = useState(false);
@@ -124,7 +122,7 @@ function AgentActivityGroupLine({ item, workspacePath, runId, inSteps }: AgentAc
     >
       <button
         type="button"
-        className={cn("flex max-w-full cursor-pointer items-center gap-2 text-left hover:text-ink", !inSteps && !open ? "self-end" : "self-start")}
+        className="flex max-w-full cursor-pointer items-center gap-2 self-start text-left hover:text-ink"
         aria-expanded={open}
         onClick={() => setOpen(v => !v)}
       >
