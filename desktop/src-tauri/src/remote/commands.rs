@@ -89,6 +89,41 @@ pub(super) struct HandshakeState {
 /// command replies. Additive: a client that does not ask never receives one.
 pub(super) const REPLY_GZIP_FEATURE: &str = "reply_gzip_v1";
 
+/// Record what the client said it was.
+///
+/// Both fields are optional on the wire, and a client that sends neither is left
+/// as "unknown" rather than described wrongly: the UI has wording for an
+/// unnamed device, and none for a device it mislabels. An empty declaration
+/// therefore clears a previous one — a client that stops describing itself must
+/// not keep the old description on screen.
+fn record_client_identity(pair_id: &str, command: &IncomingCmd) {
+    // A pairing with no live runtime has nowhere to record this, and the
+    // accessor hands back a throwaway slot for an unknown one. Writing into that
+    // would look like it worked while the status kept saying "unknown", so the
+    // absence is checked here.
+    let Some(slot) = super::SUPERVISOR.client_identity(pair_id) else {
+        return;
+    };
+    *slot.lock().unwrap() = declared_identity(command);
+}
+
+/// What a `secure_ready` declared, normalised.
+///
+/// Pure, so every rule is testable without a running bridge: a name is trimmed,
+/// a blank one means "did not say", and the kind is kept verbatim because it is
+/// opaque to this side — an unknown kind is a rendering question for the UI, not
+/// a reason to discard the name it came with.
+fn declared_identity(command: &IncomingCmd) -> Option<crate::remote::types::ClientIdentity> {
+    let name = command.device_name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(crate::remote::types::ClientIdentity {
+        name: name.to_string(),
+        kind: command.device_kind.trim().to_string(),
+    })
+}
+
 /// Record what a connection declared on `secure_ready`. Every capability is
 /// opt-in, and the declared set is authoritative: a declaration always writes
 /// the flag, so an empty list clears a previous declaration rather than leaving
@@ -257,8 +292,9 @@ pub(super) async fn command_loop_with_ready(
                         // Declared capabilities are per connection: a client that
                         // asks for the coalesced lane gets it, and every other
                         // client keeps the legacy one-event-per-token lane.
-                        if let Some(features) = parsed.as_ref().ok().map(|c| &c.features) {
-                            apply_declared_features(&handshake, &pair_id, features);
+                        if let Ok(command) = parsed.as_ref() {
+                            apply_declared_features(&handshake, &pair_id, &command.features);
+                            record_client_identity(&pair_id, command);
                         }
                         let activate = || {
                             handshake.secure.activate(&security)?;
@@ -5846,5 +5882,91 @@ impl ReplySink for NatsReply<'_> {
         error: Option<String>,
     ) -> futures::future::BoxFuture<'a, ()> {
         Box::pin(async move { reply(self.client, self.msg, success, data, error.as_deref()).await })
+    }
+}
+
+#[cfg(test)]
+mod client_identity_tests {
+    use super::*;
+
+    /// A client that names itself is recorded, with its own kind, and the name
+    /// is trimmed.
+    #[test]
+    fn a_declared_client_is_normalised() {
+        assert_eq!(
+            declared_identity(&IncomingCmd {
+                device_kind: "  desktop  ".into(),
+                device_name: "  FutureOS Desktop (studio-imac)  ".into(),
+                ..Default::default()
+            }),
+            Some(crate::remote::types::ClientIdentity {
+                name: "FutureOS Desktop (studio-imac)".into(),
+                kind: "desktop".into(),
+            })
+        );
+    }
+
+    /// A client that names itself only in whitespace has not named itself — and
+    /// that must clear a previous description rather than keep it on screen.
+    #[test]
+    fn a_blank_name_means_did_not_say() {
+        assert_eq!(
+            declared_identity(&IncomingCmd {
+                device_name: "   ".into(),
+                device_kind: "mobile".into(),
+                ..Default::default()
+            }),
+            None
+        );
+        assert_eq!(declared_identity(&IncomingCmd::default()), None);
+    }
+
+    /// Recording for a pairing with no live runtime is a no-op rather than a
+    /// panic: the accessor has nothing to hand back, and a `secure_ready` that
+    /// arrived for a runtime already being torn down must not take the bridge
+    /// with it.
+    #[test]
+    fn recording_without_a_runtime_does_nothing() {
+        record_client_identity(
+            "pair_with_no_runtime",
+            &IncomingCmd {
+                device_name: "Nowhere".into(),
+                device_kind: "desktop".into(),
+                ..Default::default()
+            },
+        );
+        // Nothing recorded, and nothing to read back: the pairing is unknown.
+        assert!(
+            super::super::SUPERVISOR
+                .client_identity("pair_with_no_runtime")
+                .is_none(),
+            "an unknown pairing has no slot to record into"
+        );
+    }
+
+    /// The kind is optional and opaque: a client from a future version that
+    /// reports one this build has never heard of is still recorded by name, and
+    /// rendering is the UI's question.
+    #[test]
+    fn an_unknown_kind_is_kept_verbatim() {
+        assert_eq!(
+            declared_identity(&IncomingCmd {
+                device_name: "Watch".into(),
+                device_kind: "wearable".into(),
+                ..Default::default()
+            })
+            .map(|client| client.kind),
+            Some("wearable".into())
+        );
+        // And an absent kind is an empty string, not a missing one: the UI reads
+        // a kind it does not know as "a connected device".
+        assert_eq!(
+            declared_identity(&IncomingCmd {
+                device_name: "Something".into(),
+                ..Default::default()
+            })
+            .map(|client| client.kind),
+            Some(String::new())
+        );
     }
 }

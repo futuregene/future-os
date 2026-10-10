@@ -47,5 +47,9 @@
   "statusNetworkUnavailable": "Network unavailable",
   "statusServiceUnavailable": "Service unavailable",
   "statusDeviceUnavailable": "Device unavailable",
-  "connectionHint": "Trying to connect. Check the computer’s network."
+  "connectionHint": "Trying to connect. Check the computer’s network.",
+  "clientKind.desktop": "{{name}} (a computer)",
+  "clientKind.mobile": "{{name}} (a phone)",
+  "clientKind.other": "{{name}}",
+  "clientUnknown": "A connected device"
 }

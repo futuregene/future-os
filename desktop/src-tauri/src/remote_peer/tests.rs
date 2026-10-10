@@ -423,3 +423,45 @@ async fn a_reply_is_bound_to_its_request_and_subject() {
         future_remote_crypto::reply_context("p.pair_1.cmd.list", request).expect("context")
     );
 }
+
+/**
+ * The host learns what connected to it — end to end.
+ *
+ * Through the real handshake, because that is where the declaration travels:
+ * the client sends it on `secure_ready`, the host records it for the pairing,
+ * and its own status reports it back. The wording on the host's screen cannot
+ * say "a computer" until this whole path works, which is the reason the field
+ * exists at all.
+ */
+#[tokio::test]
+async fn the_host_learns_what_connected_to_it() {
+    let _home = HomeGuard::new("peer-e2e-identity");
+    init_store();
+    let platform = MockPlatform::start().await;
+    let nats = FakeNats::start().await;
+    let (pair_id, host_invitation) = start_host(&platform, &nats).await;
+    let paired = claim(&platform, &host_invitation, &pair_id, nats.url()).await;
+
+    // Before any client connects there is nothing to describe, and the host must
+    // not invent one.
+    assert!(
+        crate::remote::status().client.is_none(),
+        "an unconnected host describes no client"
+    );
+
+    super::runtime::connect(&paired.creds.desktop_id)
+        .await
+        .expect("connect");
+
+    let client = crate::remote::status()
+        .client
+        .expect("the host knows what connected");
+    assert_eq!(client.kind, "desktop");
+    assert_eq!(client.name, super::runtime::device_name());
+    assert!(
+        !client.name.trim().is_empty(),
+        "a nameless declaration is the same as none"
+    );
+
+    stop();
+}

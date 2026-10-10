@@ -16,6 +16,7 @@ vi.mock("../../../features/remote/remoteClient", () => ({
 }));
 
 const CONNECTED: RemoteStatus = {
+  client: null,
   phase: "ready",
   reason: null,
   recovery: null,

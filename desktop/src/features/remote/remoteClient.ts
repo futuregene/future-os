@@ -48,6 +48,14 @@ export interface RemoteStatus {
   webLanUrl: string | null;
   /** Non-critical web listener failure; the main Remote link may remain ready. */
   warningCode: "web_bind" | null;
+  /**
+   * Who is connected, as that client described itself on `secure_ready`.
+   *
+   * `null` until a client declares it — an older client never does — so the UI
+   * has to read this as "not said", never as "nothing is connected". It exists
+   * because the connection stopped being phone-only.
+   */
+  client: { name: string; kind: string } | null;
 }
 
 export interface RemoteFailurePresentation {

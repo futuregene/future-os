@@ -697,6 +697,7 @@ mod tests {
     #[test]
     fn invitation_contains_all_mobile_identity_fields_and_is_ready_only() {
         let mut status = remote::RemoteStatus {
+            client: None,
             phase: remote::RemotePhase::Ready,
             reason: None,
             recovery: None,

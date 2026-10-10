@@ -47,5 +47,9 @@
   "statusNetworkUnavailable": "网络异常",
   "statusServiceUnavailable": "服务不可用",
   "statusDeviceUnavailable": "设备暂不可用",
-  "connectionHint": "正在尝试连接，请检查电脑网络。"
+  "connectionHint": "正在尝试连接，请检查电脑网络。",
+  "clientKind.desktop": "{{name}}（电脑）",
+  "clientKind.mobile": "{{name}}（手机）",
+  "clientKind.other": "{{name}}",
+  "clientUnknown": "已连接的设备"
 }

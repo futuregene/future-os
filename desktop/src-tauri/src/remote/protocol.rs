@@ -78,6 +78,10 @@ pub(crate) struct IncomingCmd {
     // create_workspace: the desktop-side directory to register (the phone has
     // no folder picker for the host, so it types the path).
     pub(crate) path: String,
+    // `secure_ready`: what the client says it is. Optional and additive, so an
+    // older client that sends neither is simply "unknown" rather than wrong.
+    pub(crate) device_name: String,
+    pub(crate) device_kind: String,
     // file transfer control + prompt attachment references
     pub(crate) mime_type: String,
     pub(crate) kind: String,
@@ -154,6 +158,8 @@ impl Default for IncomingCmd {
             transfer_size: 0,
             transfer_id: String::new(),
             file_path: String::new(),
+            device_name: String::new(),
+            device_kind: String::new(),
             attachments: Vec::new(),
             protocol_version: 0,
             pair_id: String::new(),

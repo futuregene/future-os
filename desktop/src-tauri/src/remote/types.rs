@@ -66,6 +66,26 @@ pub struct RemoteStatus {
     /// Non-critical local web listener failure. It never changes the main
     /// Remote phase or readiness.
     pub warning_code: Option<String>,
+    /// Who is on the other end, as that client described itself on
+    /// `secure_ready`.
+    ///
+    /// `None` until a client declares it, which an older client never does — so
+    /// the UI has to work without it and must not read "unknown" as "nothing is
+    /// connected". It exists because the connection stopped being phone-only:
+    /// the wording cannot say what the device is unless the device says so.
+    pub client: Option<ClientIdentity>,
+}
+
+/// A client's description of itself, sent on `secure_ready`.
+///
+/// `name` is the device's own name and `kind` is its category. Both are opaque
+/// strings from the client: this side renders them and never branches on them,
+/// so a new kind costs nothing here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientIdentity {
+    pub name: String,
+    pub kind: String,
 }
 
 pub(super) fn retryable_start_status(status: &RemoteStatus) -> bool {
@@ -89,6 +109,7 @@ pub(super) fn runtime_active(status: &RemoteStatus) -> bool {
 
 pub(super) fn empty() -> RemoteStatus {
     RemoteStatus {
+        client: None,
         phase: RemotePhase::Stopped,
         reason: None,
         recovery: None,
