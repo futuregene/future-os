@@ -1079,6 +1079,7 @@ mod tests {
                  id TEXT PRIMARY KEY,
                  workspace_id TEXT,
                  thread_id TEXT,
+                 run_id TEXT,
                  path TEXT,
                  type TEXT,
                  created_at INTEGER NOT NULL,
