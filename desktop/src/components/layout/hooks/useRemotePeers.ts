@@ -31,11 +31,11 @@ export interface RemotePeersState {
  * connected host's session catalogue, and the live event stream that keeps both
  * fresh.
  *
- * Polling rather than a push-only design, for one honest reason: the backend
- * runtime deliberately has no reconnecting supervisor yet, so a host can go
- * from connected to disconnected without a push. A poll is what notices that.
- * Once the supervisor exists this can lean on pushes for the live part and keep
- * the poll as a safety net.
+ * Polling rather than a push-only design, for one honest reason: a host moving
+ * from reachable to unreachable is not something the *host* can tell us — it is
+ * still alive, just not to us. The backend's reconnect supervisor notices and
+ * retries, and now reports a link that came back, but nothing announces the
+ * drop itself, so a poll is what notices that.
  */
 export function useRemotePeers(enabled: boolean): RemotePeersState {
   const [peers, setPeers] = useState<RemotePeer[]>([]);
@@ -118,13 +118,18 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
   }, [enabled]);
 
   /**
-   * Live pushes update the catalogue in place.
+   * Live pushes update the catalogue in place, and a link coming back triggers a
+   * re-read.
    *
    * A session event settles three things the poll would otherwise lag on: that
    * the session exists, that it is streaming, and that it just became the most
    * recent — which is what moves the row. Reordering on *any* event would make
    * the list jump while merely reading an old conversation, so only a
    * session-scoped event counts.
+   *
+   * A `resumed` push is the one thing the in-place update cannot fix: every
+   * event sent while the link was down is gone, and the row it would have moved
+   * is exactly the row that is now stale.
    */
   useEffect(() => {
     if (!enabled)
@@ -133,6 +138,10 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
     let cancelled = false;
     void listen<RemotePeerEvent>("remote-peer-event", (event) => {
       const { desktopId, kind, payload } = event.payload;
+      if (kind === "resumed") {
+        void refresh();
+        return;
+      }
       if (kind !== "event")
         return;
       const sessionId = readString(payload, "sessionId");

@@ -222,6 +222,15 @@ export function useRemoteTimeline(
     let cancelled = false;
     void listen<RemotePeerEvent>("remote-peer-event", (event) => {
       const { desktopId: source, kind, payload } = event.payload;
+      // A link that came back: whatever the host pushed while it was gone is
+      // gone for good (NATS Core is at-most-once), so the transcript is re-read
+      // from the host rather than trusted to have stayed complete. This runs
+      // before the `kind` check below, which only handles session events.
+      if (kind === "resumed") {
+        if (source === desktopId)
+          void readPage("history", sessionId, desktopId);
+        return;
+      }
       if (kind !== "event" || source !== desktopId)
         return;
       if (readString(payload, "sessionId") !== sessionId)

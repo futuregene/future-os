@@ -298,8 +298,7 @@ describe("useRemoteTimeline run state", () => {
 });
 
 /**
- * `persistedEntryIds` is what separates an id the host can resolve in its store
- * from one that only names a frame on the wire — the difference between a fork
+ * `persistedEntryIds` is what separates an id the host can resolve in its store * from one that only names a frame on the wire — the difference between a fork
  * that branches and one that is refused.
  */
 describe("useRemoteTimeline persisted entry ids", () => {
@@ -468,6 +467,67 @@ describe("useRemoteTimeline compaction state", () => {
     hook.rerender();
     await settle();
     expect(hook.current.compacting).toBe(false);
+    hook.unmount();
+  });
+});
+
+/**
+ * A link that comes back is the one thing the live stream cannot repair on its
+ * own: everything the host pushed while it was down is gone (NATS Core is
+ * at-most-once), and the transcript already on screen is exactly what is now
+ * stale.
+ */
+describe("useRemoteTimeline resume", () => {
+  const KIND_RESUMED = "resumed";
+
+  /** A push of the given kind, from the host the timeline is watching. */
+  function pushKind(kind: string, desktopId = "desktop_a"): void {
+    act(() => {
+      listeners.forEach(listener => listener({ payload: { desktopId, kind, payload: {} } }));
+    });
+  }
+
+  it("re-reads the transcript when its host's link comes back", async () => {
+    requestMock.mockResolvedValue(page([entry("e1", "user", "old line")]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    expect(requestMock).toHaveBeenCalledTimes(1);
+
+    // The host answered while the link was down: this is the history the client
+    // would otherwise never show.
+    requestMock.mockResolvedValue(page([
+      entry("e1", "user", "old line"),
+      entry("e2", "assistant", "sent while we were away"),
+    ]));
+    pushKind(KIND_RESUMED);
+    await settle();
+
+    expect(requestMock).toHaveBeenCalledTimes(2);
+    expect(hook.current.entries.map(item => item.id)).toEqual(["e1", "e2"]);
+    hook.unmount();
+  });
+
+  it("ignores another host's resume", async () => {
+    requestMock.mockResolvedValue(page([]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    requestMock.mockClear();
+
+    pushKind(KIND_RESUMED, "desktop_b");
+    await settle();
+
+    // Another machine coming back says nothing about this conversation, and
+    // re-reading on it would turn N hosts into N request storms.
+    expect(requestMock).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
+  it("does not ask a host that is not being watched", async () => {
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", false));
+    await settle();
+    pushKind(KIND_RESUMED);
+    await settle();
+    expect(requestMock).not.toHaveBeenCalled();
     hook.unmount();
   });
 });
