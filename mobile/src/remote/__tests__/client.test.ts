@@ -16,6 +16,9 @@ jest.mock("@nats-io/nats-core", () => ({
 }));
 jest.mock("../natsErrors", () => ({ classifyNatsError: jest.fn(() => "transport") }));
 jest.mock("../pairing", () => ({
+  // The declaration carries the device's own name, so the mock has to answer
+  // one: a missing export here is a TypeError on the handshake path.
+  deviceName: () => "Pixel 8",
   ensureFreshCredentials: jest.fn(),
   refreshCredentials: jest.fn(),
 }));
@@ -554,9 +557,14 @@ describe("RemoteClient connection handoff", () => {
     const declaration = calls[0];
     expect(declaration).toBeDefined();
     expect(declaration?.sessionId).toBe("handshake");
+    // The identity fields ride along: the desktop shows what connected, and it
+    // cannot say "a phone" about anything that never told it so. They are not
+    // capabilities, which is why they are beside `features` rather than in it.
     expect(declaration?.command).toEqual({
       type: "secure_ready",
       features: ["event_coalescing_v1", "reply_gzip_v1", "lean_events_v1"],
+      deviceName: "Pixel 8",
+      deviceKind: "mobile",
     });
     // Each declared capability has to stay truthful for this build, or the
     // declaration must be dropped with it. The lean feed's three requirements

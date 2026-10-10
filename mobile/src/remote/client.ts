@@ -3,7 +3,7 @@ import type { Msg, NatsConnection, Subscription } from "@nats-io/nats-core";
 import { wsconnect, jwtAuthenticator } from "@nats-io/nats-core";
 import { classifyNatsError } from "./natsErrors";
 import { SecureChannel, SecureHandshake, replyContext, type SecureIdentity } from "./secureChannel";
-import { ensureFreshCredentials, refreshCredentials } from "./pairing";
+import { deviceName, ensureFreshCredentials, refreshCredentials } from "./pairing";
 import { jwtExpiry, randomId, encodeBase64Url, decodeBase64Url } from "./codec";
 import { backoffDelayMs, classifyError, transition, type ConnectionState } from "./connectionState";
 import { decodeRemoteJson, decodeRemoteJsonAsync } from "./remoteJson";
@@ -1254,6 +1254,11 @@ export class RemoteClient {
       {
         type: "secure_ready",
         features: ["event_coalescing_v1", "reply_gzip_v1", "lean_events_v1"],
+        // Not a capability: the desktop shows the user what is connected, and it
+        // cannot say "a phone" about something that never told it so. An older
+        // desktop ignores both fields.
+        deviceName: deviceName(),
+        deviceKind: "mobile",
       },
       "handshake",
     );
