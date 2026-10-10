@@ -183,17 +183,3 @@ export function compareConversations(a: MergedConversation, b: MergedConversatio
     return bt - at;
   return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
 }
-
-/**
- * How many conversations the filter hides. Shown next to the selector so
- * "one machine" does not look like "my history disappeared".
- */
-export function hiddenCount(
-  threads: LocalThreadLike[],
-  catalogs: RemoteCatalog[],
-  filter: DeviceFilter,
-): number {
-  const total = mergeConversations(threads, catalogs, { kind: "all" }).length;
-  const shown = mergeConversations(threads, catalogs, filter).length;
-  return total - shown;
-}

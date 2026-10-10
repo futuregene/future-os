@@ -21,6 +21,11 @@ const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as 
  *
  * Disabled while a change is in flight: the host applies one at a time, and a
  * second choice fired at it would be a race the user cannot see.
+ *
+ * A refusal is *shown*, not merely held: the control falls back to what the host
+ * still has, and without the reason beside it the user sees a value snap back
+ * for no stated cause. The message is a shell of one line under the pickers, and
+ * carries the full text in its tooltip because the header has a fixed height.
  */
 export function RemoteConversationSettings({
   settings,
@@ -31,41 +36,54 @@ export function RemoteConversationSettings({
   const busy = settings.saving;
 
   return (
-    <div className="flex shrink-0 items-center gap-2">
-      <Select
-        aria-label={t("modelLabel")}
-        disabled={busy || settings.models.length === 0}
-        onChange={event => void settings.setModel(event.target.value)}
-        size="xs"
-        value={settings.model ?? ""}
-        wrapperClassName="max-w-56"
-      >
-        {/* The host's catalogue can arrive without the current model in it (a
-            model removed there, or one it resolves itself). Keeping that value
-            as an option is what stops the select from silently showing the first
-            entry as if it were selected. */}
-        {settings.model && !settings.models.some(model => remoteModelReference(model) === settings.model)
-          ? <option value={settings.model}>{settings.model}</option>
-          : null}
-        {settings.models.map(model => (
-          <option key={remoteModelReference(model)} value={remoteModelReference(model)}>
-            {model.label ?? model.id}
-            {model.provider ? ` · ${model.provider}` : ""}
-          </option>
-        ))}
-      </Select>
-      <Select
-        aria-label={t("thinkingLevelLabel")}
-        disabled={busy}
-        onChange={event => void settings.setThinkingLevel(event.target.value)}
-        size="xs"
-        value={settings.thinkingLevel ?? "off"}
-        wrapperClassName="w-28"
-      >
-        {THINKING_LEVELS.map(level => (
-          <option key={level} value={level}>{t(`thinkingLevel.${level}`)}</option>
-        ))}
-      </Select>
+    <div className="flex shrink-0 flex-col items-end">
+      <div className="flex shrink-0 items-center gap-2">
+        <Select
+          aria-label={t("modelLabel")}
+          disabled={busy || settings.models.length === 0}
+          onChange={event => void settings.setModel(event.target.value)}
+          size="xs"
+          value={settings.model ?? ""}
+          wrapperClassName="max-w-56"
+        >
+          {/* The host's catalogue can arrive without the current model in it (a
+              model removed there, or one it resolves itself). Keeping that value
+              as an option is what stops the select from silently showing the first
+              entry as if it were selected. */}
+          {settings.model && !settings.models.some(model => remoteModelReference(model) === settings.model)
+            ? <option value={settings.model}>{settings.model}</option>
+            : null}
+          {settings.models.map(model => (
+            <option key={remoteModelReference(model)} value={remoteModelReference(model)}>
+              {model.label ?? model.id}
+              {model.provider ? ` · ${model.provider}` : ""}
+            </option>
+          ))}
+        </Select>
+        <Select
+          aria-label={t("thinkingLevelLabel")}
+          disabled={busy}
+          onChange={event => void settings.setThinkingLevel(event.target.value)}
+          size="xs"
+          value={settings.thinkingLevel ?? "off"}
+          wrapperClassName="w-28"
+        >
+          {THINKING_LEVELS.map(level => (
+            <option key={level} value={level}>{t(`thinkingLevel.${level}`)}</option>
+          ))}
+        </Select>
+      </div>
+      {settings.error
+        ? (
+            <p
+              className="mt-0.5 max-w-72 truncate text-xs text-danger"
+              role="alert"
+              title={t("settingsSaveFailed", { message: settings.error })}
+            >
+              {t("settingsSaveFailed", { message: settings.error })}
+            </p>
+          )
+        : null}
     </div>
   );
 }
