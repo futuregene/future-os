@@ -121,6 +121,52 @@ pub async fn remote_peer_request(
     runtime::request(&desktop_id, command, lane.as_deref().unwrap_or("list")).await
 }
 
+/// Upload a local file to a host, and return the id that references it there.
+///
+/// The id is the whole point: the host keeps the bytes in a staging area, and a
+/// prompt attaches them by id. So this does not write into the other machine's
+/// filesystem — nothing is placed anywhere until the user actually sends it.
+///
+/// The name is taken from the path unless the caller has a better one, because
+/// the host uses it for the attachment's display name and sends it back in the
+/// conversation.
+#[tauri::command]
+pub async fn remote_peer_upload_file(
+    desktop_id: String,
+    name: Option<String>,
+    path: String,
+) -> Result<UploadedAttachment, crate::AppError> {
+    let bytes = std::fs::read(&path)
+        .map_err(|error| crate::AppError::Message(format!("remote_upload_read_failed: {error}")))?;
+    let file_name = name
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::path::Path::new(&path)
+                .file_name()
+                .map(|value| value.to_string_lossy().into_owned())
+        })
+        .ok_or_else(|| crate::AppError::Message("remote_upload_needs_a_name".into()))?;
+    let uploaded = crate::remote_peer::transfer::upload(&desktop_id, &file_name, &bytes).await?;
+    Ok(UploadedAttachment {
+        content_hash: uploaded.content_hash,
+        name: uploaded.name,
+        upload_id: uploaded.upload_id,
+    })
+}
+
+/// A file this machine has handed to a host, as the UI needs it.
+///
+/// `upload_id` is what a prompt attaches; the name and hash come back so the
+/// composer can show what was sent and the same bytes are never sent twice by
+/// accident.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadedAttachment {
+    pub content_hash: String,
+    pub name: String,
+    pub upload_id: String,
+}
+
 /// List one directory inside a session on a host.
 ///
 /// Its own command rather than a `remote_peer_request` call because the answer
@@ -211,6 +257,7 @@ mod tests {
                 remote_peer_workspaces,
                 remote_peer_list_files,
                 remote_peer_download_file,
+                remote_peer_upload_file,
                 remote_peer_request,
             ],
             &[
@@ -238,6 +285,10 @@ mod tests {
                         "variant": "original",
                         "destination": 1,
                     }),
+                ),
+                (
+                    "remote_peer_upload_file",
+                    serde_json::json!({ "desktopId": "d", "name": "n", "path": 1 }),
                 ),
                 (
                     "remote_peer_request",
@@ -517,6 +568,98 @@ mod tests {
         // The name the host chose, which is what the UI reports as saved.
         assert_eq!(name, "report.txt");
         assert_eq!(std::fs::read(&destination).expect("read back"), contents);
+
+        teardown().await;
+    }
+
+    /// The upload command, end to end: a real file, a real host, and the id a
+    /// prompt would attach.
+    #[tokio::test]
+    async fn an_upload_reaches_the_host_and_reports_the_ids_name_and_hash() {
+        let (_home, fx) = start("peer-cmd-upload").await;
+        let desktop_id = fx.paired.creds.desktop_id.clone();
+        let noop: runtime::Emitter = std::sync::Arc::new(|_| {});
+        runtime::connect_with_emitter(&desktop_id, Some(noop))
+            .await
+            .expect("connect");
+
+        let dir = std::env::temp_dir().join("futureos-peer-cmd-upload");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let source = dir.join("report.txt");
+        let contents = b"the report the model should read";
+        std::fs::write(&source, contents).expect("write the file");
+
+        let uploaded =
+            remote_peer_upload_file(desktop_id, None, source.to_string_lossy().into_owned())
+                .await
+                .expect("upload");
+
+        assert_eq!(uploaded.name, "report.txt");
+        assert!(uploaded.upload_id.starts_with("upload_"));
+        let expected = {
+            use sha2::{Digest, Sha256};
+            format!("{:x}", Sha256::digest(contents))
+        };
+        assert_eq!(uploaded.content_hash, expected);
+
+        teardown().await;
+    }
+
+    /// The caller's own name wins, because the host shows it in the conversation.
+    #[tokio::test]
+    async fn an_upload_uses_the_name_the_caller_gave() {
+        let (_home, fx) = start("peer-cmd-upload-name").await;
+        let desktop_id = fx.paired.creds.desktop_id.clone();
+        let noop: runtime::Emitter = std::sync::Arc::new(|_| {});
+        runtime::connect_with_emitter(&desktop_id, Some(noop))
+            .await
+            .expect("connect");
+
+        let dir = std::env::temp_dir().join("futureos-peer-cmd-upload-name");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let source = dir.join("DSC_0042.JPG");
+        std::fs::write(&source, b"pretend jpeg").expect("write");
+
+        let uploaded = remote_peer_upload_file(
+            desktop_id,
+            Some("Holiday photo.jpg".into()),
+            source.to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("upload");
+
+        // The host's display name for it is the one it was given, not the path's.
+        assert_eq!(uploaded.name, "Holiday photo.jpg");
+
+        teardown().await;
+    }
+
+    /// A path that cannot be read fails before anything reaches the host.
+    #[tokio::test]
+    async fn an_upload_of_an_unreadable_file_fails_locally() {
+        let (_home, fx) = start("peer-cmd-upload-missing").await;
+        let desktop_id = fx.paired.creds.desktop_id.clone();
+        let noop: runtime::Emitter = std::sync::Arc::new(|_| {});
+        runtime::connect_with_emitter(&desktop_id, Some(noop))
+            .await
+            .expect("connect");
+
+        let error = remote_peer_upload_file(
+            desktop_id,
+            None,
+            std::env::temp_dir()
+                .join("futureos-peer-cmd-upload-absent")
+                .join("nothing-here.txt")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .await
+        .expect_err("a file that is not there cannot be uploaded");
+
+        assert!(
+            error.to_string().contains("remote_upload_read_failed"),
+            "got: {error}"
+        );
 
         teardown().await;
     }

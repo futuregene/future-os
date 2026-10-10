@@ -213,15 +213,27 @@ export interface RemoteConversationIds {
 /**
  * Send a prompt to a conversation, or start one when `sessionId` is empty —
  * which is the host's own signal to create the thread.
+ *
+ * `attachments` are ids of files already uploaded to that host. They travel as
+ * references rather than as bytes: the bytes are already on the other machine,
+ * and re-sending them would be a second copy that could disagree with the first.
  */
 export async function promptRemoteConversation(
   desktopId: string,
   sessionId: string,
   message: string,
+  attachments: string[] = [],
 ): Promise<RemoteConversationIds> {
   const ack = await requestRemotePeer<Record<string, unknown>>(
     desktopId,
-    { type: "prompt", sessionId, message },
+    {
+      type: "prompt",
+      sessionId,
+      message,
+      ...(attachments.length > 0
+        ? { attachments: attachments.map(uploadId => ({ uploadId })) }
+        : {}),
+    },
     sessionId || "new",
   );
   const created = ack?.sessionId;
@@ -368,6 +380,37 @@ export function downloadRemoteFile(input: {
     name: input.name,
     destination: input.destination,
     ...(input.variant === undefined ? {} : { variant: input.variant }),
+  });
+}
+
+/**
+ * A file this machine has handed to a host, as the composer needs it.
+ *
+ * `uploadId` is what a prompt attaches; `name` is the host's display name for
+ * it, which is what the chip shows.
+ */
+export interface RemoteUpload {
+  uploadId: string;
+  name: string;
+  contentHash: string;
+}
+
+/**
+ * Send a local file to a host, and return the reference a prompt attaches.
+ *
+ * Nothing is written into the other machine's filesystem: the host stages the
+ * bytes and a message claims them, so an upload that is never sent is discarded
+ * on its own.
+ */
+export function uploadRemoteFile(input: {
+  desktopId: string;
+  path: string;
+  name?: string;
+}): Promise<RemoteUpload> {
+  return invokeCommand<RemoteUpload>("remote_peer_upload_file", {
+    desktopId: input.desktopId,
+    path: input.path,
+    ...(input.name === undefined ? {} : { name: input.name }),
   });
 }
 

@@ -845,6 +845,33 @@ fn on_transport_failure(live: &mut Runtime, desktop_id: &str, error: &crate::App
     }
 }
 
+/// Record one chunk of an upload.
+///
+/// The mirror of `pull_chunk`, and simpler because there is nothing to join: the
+/// chunk *is* the request body, and the reply is the host's acknowledgement.
+pub(crate) async fn put_chunk(
+    desktop_id: &str,
+    upload_id: &str,
+    index: u64,
+    bytes: &[u8],
+) -> Result<(), crate::AppError> {
+    let mut live = runtime().lock().await;
+    let Some(session) = live.live.get_mut(desktop_id) else {
+        return Err(crate::AppError::Message("peer_not_connected".into()));
+    };
+    let subject = session.transfer_chunk_subject(upload_id, index);
+    // The session budget, not a transfer one: the host writes this chunk to disk
+    // before it answers, so a short budget here would report a slow disk as a
+    // dead socket.
+    let result = session
+        .request_bytes(&subject, bytes, session::COMMAND_TIMEOUT)
+        .await;
+    if let Err(error) = &result {
+        on_transport_failure(&mut live, desktop_id, error);
+    }
+    result.map(|_| ())
+}
+
 /// Where a chunk pull is requested. Built from the live session so the subject
 /// matches *this* pairing rather than whatever the credential file says.
 pub(crate) async fn transfer_pull_subject(
@@ -881,8 +908,7 @@ pub(crate) async fn forget_chunk(desktop_id: &str, transfer_id: &str, index: u64
         .remove(&(desktop_id.to_string(), transfer_id.to_string(), index));
 }
 
-/// The bytes of one chunk: ask, and join the two halves of the answer.
-///
+/// The bytes of one chunk: ask, and join the two halves of the answer.///
 /// The bytes arrive as a publish on a different subject from the pull's
 /// acknowledgement, so this is the only place the two are brought together —
 /// which is also why the waiter is registered *before* the request: the host

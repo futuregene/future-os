@@ -54,7 +54,7 @@ async fn wait_for(what: &str, mut predicate: impl FnMut() -> bool) {
     }
 }
 
-fn find(peers: &[PeerSummary], desktop_id: &str) -> PeerSummary {
+pub(crate) fn find(peers: &[PeerSummary], desktop_id: &str) -> PeerSummary {
     peers
         .iter()
         .find(|peer| peer.desktop_id == desktop_id)

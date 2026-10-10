@@ -9,7 +9,9 @@
 //! exercised against bytes the host really served rather than a fixture.
 
 use super::runtime;
+use super::runtime_tests::find;
 use super::testing::{fixture, teardown};
+use super::transfer::TransferKind;
 use super::transfer::{self, DownloadInfo};
 use std::sync::Arc;
 
@@ -622,6 +624,355 @@ async fn a_chunk_subject_that_is_not_shaped_like_one_is_dropped() {
     assert_eq!(
         transfer::fetch(&desktop_id, &info).await.expect("fetch"),
         b"real bytes"
+    );
+
+    teardown().await;
+}
+
+// ── upload ──────────────────────────────────────────────────────────────────
+
+/// The whole upload path against a real host: staging record, chunks, completion.
+///
+/// The assertion that matters is the host's own hash. `complete_upload` hashes
+/// the file the host *assembled* from the chunks it received, so a hash equal to
+/// the local one proves every byte arrived and arrived in order — which is
+/// exactly what a chunked upload over an at-most-once transport can get wrong.
+#[tokio::test]
+async fn an_upload_round_trips_through_the_host() {
+    let (_home, fx) = fixture("peer-xfer-upload-round-trip").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect_with_stream(&desktop_id).await;
+
+    let contents = b"a file on its way to the other machine";
+    let uploaded = transfer::upload(&desktop_id, "note.txt", contents)
+        .await
+        .expect("upload");
+
+    assert_eq!(uploaded.name, "note.txt");
+    assert!(
+        uploaded.upload_id.starts_with("upload_"),
+        "got {}",
+        uploaded.upload_id
+    );
+    // The host's hash of what it wrote, against this machine's hash of what it
+    // sent: equal means nothing was lost, duplicated or reordered.
+    let expected = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(contents))
+    };
+    assert_eq!(uploaded.content_hash, expected);
+
+    teardown().await;
+}
+
+/// More than one chunk, so the index arithmetic and the ordered append are real.
+/// The host appends each chunk as it arrives, so an out-of-order write shows up
+/// as a hash mismatch rather than as an error.
+#[tokio::test]
+async fn a_multi_chunk_upload_keeps_its_order() {
+    let (_home, fx) = fixture("peer-xfer-upload-multi-chunk").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect_with_stream(&desktop_id).await;
+
+    let chunk = crate::remote_host::files::CHUNK_BYTES as usize;
+    let contents: Vec<u8> = (0..chunk * 2 + 7)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    let uploaded = transfer::upload(&desktop_id, "chunked.bin", &contents)
+        .await
+        .expect("upload");
+
+    let expected = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(&contents))
+    };
+    assert_eq!(uploaded.content_hash, expected);
+
+    teardown().await;
+}
+
+/// The host enforces its own size limit, and its message is the one that reaches
+/// the user: a second copy of the number here would be a second place for it to
+/// drift.
+#[tokio::test]
+async fn an_oversized_upload_is_refused_by_the_host() {
+    let (_home, fx) = fixture("peer-xfer-upload-too-large").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect_with_stream(&desktop_id).await;
+
+    // Asked directly rather than by allocating the file: the host refuses on the
+    // declared size, before a single chunk travels.
+    let error = transfer::begin_upload_for_test(&desktop_id, "huge.bin", 10 * 1024 * 1024 + 1)
+        .await
+        .expect_err("the host's limit must be enforced");
+
+    assert!(
+        error.to_string().contains("10 MiB"),
+        "the host's own reason must reach the caller, got: {error}"
+    );
+
+    teardown().await;
+}
+
+/**
+ * An upload to a host that was never paired is refused, and says so.
+ *
+ * Not "while disconnected": the command lane reconnects on demand, so a
+ * deliberate disconnect does not make an upload fail — it makes it connect
+ * again. What cannot be recovered from is a host this installation has no
+ * credentials for, which is the case worth pinning.
+ */
+#[tokio::test]
+async fn an_upload_to_an_unpaired_host_is_refused() {
+    let (_home, _fx) = fixture("peer-xfer-upload-unpaired").await;
+
+    let error = transfer::upload("desktop_nobody", "note.txt", b"bytes")
+        .await
+        .expect_err("an unpaired host has nothing to receive this");
+
+    assert!(
+        error.to_string().contains("peer_not_paired"),
+        "got: {error}"
+    );
+}
+
+/// The host's hash is checked against the local bytes, and a disagreement is a
+/// failure rather than a file the user believes arrived intact.
+///
+/// Asserted on the predicate because a real host cannot be made to receive
+/// different bytes than it was sent — which is the point of the check.
+#[test]
+fn a_hash_that_does_not_match_the_bytes_is_refused() {
+    let bytes = b"what we sent";
+    let correct = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(bytes))
+    };
+
+    assert_eq!(
+        transfer::verified_hash_for_test(&correct, bytes, "n.txt").expect("the matching hash"),
+        correct
+    );
+    // Case is not part of the contract: a host may hex either way.
+    assert!(transfer::verified_hash_for_test(&correct.to_uppercase(), bytes, "n.txt").is_ok());
+
+    // A hash of something else: the bytes that arrived are not the bytes sent.
+    let wrong = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(b"something else"))
+    };
+    let error = transfer::verified_hash_for_test(&wrong, bytes, "n.txt")
+        .expect_err("a mismatch must be refused");
+    assert!(
+        error
+            .to_string()
+            .contains("remote_upload_hash_mismatch:n.txt"),
+        "the refusal must name the file, got: {error}"
+    );
+}
+
+/// Which attachment kind the host is told, since it chooses preview and
+/// thumbnail handling from it. A name with no extension has none.
+#[test]
+fn the_attachment_kind_follows_the_extension() {
+    for image in [
+        "photo.JPG",
+        "a.png",
+        "b.webp",
+        "c.heic",
+        "d.tiff",
+        "scan.svg",
+        "e.jpeg",
+    ] {
+        assert_eq!(transfer::upload_kind_for_test(image), "image", "{image}");
+    }
+    for other in [
+        "notes.txt",
+        "archive.tar.gz",
+        // No dot at all: the whole name would otherwise read as an extension.
+        "Makefile",
+        ".gitignore",
+        "data.json",
+        "report.pdf",
+    ] {
+        assert_eq!(transfer::upload_kind_for_test(other), "file", "{other}");
+    }
+}
+
+/**
+ * The id an upload returns is one the host will accept as an attachment.
+ *
+ * This is the seam the feature actually rests on: an upload nobody can reference
+ * is a file that goes nowhere, and every part of it — the staging record, the
+ * completed flag, the name — is the host's to accept or reject. Claiming it here
+ * is exactly what sending a prompt with the file attached does on the host.
+ */
+#[tokio::test]
+async fn an_uploaded_file_can_be_claimed_as_an_attachment() {
+    let (_home, fx) = fixture("peer-xfer-upload-claim").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect_with_stream(&desktop_id).await;
+
+    let contents = b"the bytes the model will read";
+    let uploaded = transfer::upload(&desktop_id, "report.txt", contents)
+        .await
+        .expect("upload");
+
+    let references = vec![crate::remote::protocol::UploadReference {
+        upload_id: uploaded.upload_id.clone(),
+    }];
+    let claimed = crate::remote_host::files::claim_uploads(&references, "thread-from-client")
+        .expect("the host claims what it just received");
+
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].kind, "file");
+    assert_eq!(claimed[0].name, "report.txt");
+    // The bytes the host hands to the conversation are the ones we sent.
+    assert_eq!(
+        std::fs::read(&claimed[0].path).expect("read the claimed copy"),
+        contents
+    );
+
+    teardown().await;
+}
+
+/// A chunk size a host declares must be one this machine can use.
+///
+/// A zero is the case that matters: `chunks(0)` panics, so a hostile or broken
+/// host could otherwise take this client down with one number.
+#[test]
+fn a_zero_chunk_size_is_refused_by_name() {
+    assert_eq!(
+        transfer::usable_chunk_size_for_test(512 * 1024).expect("a normal size"),
+        512 * 1024
+    );
+
+    let error = transfer::usable_chunk_size_for_test(0).expect_err("zero must be refused");
+    assert!(
+        error.to_string().contains("remote_upload_bad_chunk_size"),
+        "got: {error}"
+    );
+}
+
+/// A size larger than this platform can address means "one chunk" rather than a
+/// refusal: that is what `chunks` does with a size past the end, and the host
+/// rejects an oversized chunk with a message about its own limit. Refusing here
+/// instead would be a 32-bit-only arm with no way to exercise it on 64-bit.
+#[test]
+fn an_enormous_chunk_size_becomes_one_chunk() {
+    let chunk = transfer::usable_chunk_size_for_test(u64::MAX).expect("usable");
+    assert_eq!(chunk, usize::MAX);
+    assert_eq!(b"four".chunks(chunk).count(), 1);
+}
+
+/// A chunk write with no connection behind it is refused rather than sent into
+/// the void.
+///
+/// Reached through the runtime directly because the *command* lane reconnects on
+/// demand: this is the path a chunk takes, and it addresses the live map, so a
+/// host that is gone is reported instead of silently reopening a socket
+/// mid-upload.
+#[tokio::test]
+async fn a_chunk_write_without_a_connection_is_refused() {
+    let (_home, fx) = fixture("peer-xfer-put-offline").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect_with_stream(&desktop_id).await;
+    runtime::disconnect(&desktop_id).await;
+
+    let error = runtime::put_chunk(&desktop_id, "upload_1", 0, b"bytes")
+        .await
+        .expect_err("a chunk needs a connection");
+
+    assert!(
+        error.to_string().contains("peer_not_connected"),
+        "got: {error}"
+    );
+
+    teardown().await;
+}
+
+/// A chunk write on a socket that has died is recorded, not merely failed.
+///
+/// The same state machine the command lane uses: a dead socket must not keep
+/// looking connected, and the retry loop has to be running — otherwise an upload
+/// that hits it would simply stop, and the user would see a connection the app
+/// still believed in.
+#[tokio::test]
+async fn a_chunk_write_on_a_dead_socket_is_recorded() {
+    let (_home, fx) = fixture("peer-xfer-put-dead-socket").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect_with_stream(&desktop_id).await;
+
+    // The socket is closed under the connection, which is what a host that
+    // disappeared looks like from here: the entry is still in the map, and the
+    // next write on it fails as a transport fault.
+    runtime::close_socket_for_test(&desktop_id).await;
+
+    let error = runtime::put_chunk(&desktop_id, "upload_1", 0, b"bytes")
+        .await
+        .expect_err("a dead socket cannot carry a chunk");
+    assert!(
+        !error.to_string().is_empty(),
+        "the failure must carry a reason"
+    );
+
+    // The connection is no longer believed in, and something is retrying it.
+    assert!(
+        !find(&runtime::list().await.expect("list"), &desktop_id).connected,
+        "a dead socket must not keep looking connected"
+    );
+
+    teardown().await;
+}
+
+/**
+ * Each direction releases its own record.
+ *
+ * The host keeps a prepared download and a staged upload in separate registries
+ * behind separate commands, so sharing one name would release the wrong one —
+ * and `with_release` is deliberately one body for both paths, which is exactly
+ * why the command has to be chosen per direction rather than fixed.
+ */
+#[test]
+fn each_direction_has_its_own_cancel_command() {
+    assert_eq!(
+        transfer::cancel_command_for_test(TransferKind::Download),
+        "download_cancel"
+    );
+    assert_eq!(
+        transfer::cancel_command_for_test(TransferKind::Upload),
+        "upload_cancel"
+    );
+}
+
+/**
+ * A chunk write on a broker that has gone away is recorded, not merely failed.
+ *
+ * The entry is still in the map, so the write reaches the socket and fails
+ * there — which is the case the command lane already handles and this one has to
+ * handle too: a connection the app still believes in is how an upload appears to
+ * hang instead of failing.
+ */
+#[tokio::test]
+async fn a_chunk_write_on_a_dropped_broker_is_recorded() {
+    let (_home, fx) = fixture("peer-xfer-put-dead-broker").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect_with_stream(&desktop_id).await;
+
+    // Sever every connection and stop accepting, under a live session.
+    fx.nats.kill();
+
+    let error = runtime::put_chunk(&desktop_id, "upload_1", 0, b"bytes")
+        .await
+        .expect_err("a broker that is gone cannot carry a chunk");
+    assert!(
+        !error.to_string().is_empty(),
+        "the failure must carry a reason"
+    );
+
+    assert!(
+        !find(&runtime::list().await.expect("list"), &desktop_id).connected,
+        "a dead socket must not keep looking connected"
     );
 
     teardown().await;
