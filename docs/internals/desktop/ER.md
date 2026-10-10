@@ -1284,3 +1284,23 @@ Old JSONL is read only by the one-time importer with originals kept; corrupt
 sessions are skipped in isolation, and global storage errors block startup.
 Operations, privacy, and backup boundaries are in
 [SQLite migration](../../architecture/sqlite-migration.md).
+
+### Session deletion batches and indexes
+
+`delete_session` retains its single-session response; `delete_sessions` accepts
+1..32 distinct `session_ids` and returns `results` with `sessionId`, `deleted`,
+`error`, `errorCode`, and `errorData` per session. Busy sessions remain retryable.
+Ready sessions are deleted together with import tombstones in one Agent
+transaction; memory eviction and deletion events follow commit, with one bounded
+space-reclamation pass per batch. Desktop drains its durable outbox through one
+client in batches, validates complete outcomes, and commits acknowledgements and
+retry errors together. Concurrent drains coalesce. Local tree deletion uses
+bounded transactions with a savepoint per selected tree.
+
+The transactional, idempotent `v1.2.3-session-delete-indexes` migration also runs
+on fresh installs after required columns exist. It adds indexes for
+`review_snapshots(thread_id)`, `artifacts(run_id)`, `artifacts(thread_id)`,
+`approval_assessments(approval_request_id)`, `threads(parent_session_id)`, the
+exact effective-session expression `COALESCE(NULLIF(TRIM(agent_session_id), ''),
+id)`, and `agent_delete_outbox(requested_at, session_id)`. Ownership uses an
+indexed `EXISTS` for another thread, preserving whitespace and fallback semantics.

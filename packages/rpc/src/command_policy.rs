@@ -67,6 +67,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "cycle_thinking_level",
     "delete_provider",
     "delete_session",
+    "delete_sessions",
     "disable_builtin_tools",
     "disable_tools",
     "export_html",
@@ -224,6 +225,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "cycle_thinking_level"
         | "delete_provider"
         | "delete_session"
+        | "delete_sessions"
         | "disable_builtin_tools"
         | "disable_tools"
         | "export_html"

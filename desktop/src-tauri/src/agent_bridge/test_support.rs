@@ -123,6 +123,13 @@ struct MockAgent;
 /// echoes the requested run id so tests that let the pipeline generate one
 /// still get a consistent acknowledgement.
 fn default_reply_data(cmd: &RpcCommand) -> String {
+    if cmd.r#type == "delete_sessions" {
+        return serde_json::json!({"results": cmd.session_ids.iter().map(|session_id| {
+            serde_json::json!({"sessionId": session_id, "deleted": true,
+                "error": "", "errorCode": "", "errorData": null})
+        }).collect::<Vec<_>>()})
+        .to_string();
+    }
     if cmd.r#type == "prompt" {
         let run_id = if cmd.requested_run_id.is_empty() {
             "mock-run"

@@ -49,8 +49,7 @@ pub use db::{app_images_root, future_dir, get_approval_request, get_run, thread_
 #[cfg(test)]
 pub(crate) use db::close_pool;
 pub use deletions::{
-    acknowledge_agent_session_delete, is_agent_session_tombstoned,
-    note_agent_session_delete_failure, pending_agent_session_deletes,
+    is_agent_session_tombstoned, pending_agent_session_deletes, settle_agent_session_deletes,
 };
 pub use markdown_refs::resolve_markdown_references;
 pub use records::*;
@@ -72,11 +71,12 @@ pub(crate) use runs::{append_run_event, flush_run_event_log_for_test};
 pub use skill_reco::{record_skill_reco, skill_reco_today, SkillRecoToday};
 pub use threads::{
     archive_thread, bind_thread_session_id, create_thread, delete_thread, delete_thread_tree,
-    find_thread_by_agent_session, forget_thread_mirror, get_or_create_thread_for_agent_session,
-    get_recent_thread, get_thread, inherit_thread_asset_root, list_threads, mark_thread_opened,
-    pin_thread, purge_soft_deleted_threads, record_thread_message_activity, rename_thread,
-    restore_thread, sync_thread_parent_session, sync_thread_title, thread_asset_root_id,
-    thread_delete_closure, update_thread_model, update_thread_thinking_level, ThreadRecord,
+    delete_thread_trees, find_thread_by_agent_session, forget_thread_mirror,
+    get_or_create_thread_for_agent_session, get_recent_thread, get_thread,
+    inherit_thread_asset_root, list_threads, mark_thread_opened, pin_thread,
+    purge_soft_deleted_threads, record_thread_message_activity, rename_thread, restore_thread,
+    sync_thread_parent_session, sync_thread_title, thread_asset_root_id, thread_delete_closure,
+    update_thread_model, update_thread_thinking_level, ThreadRecord,
 };
 pub(crate) use util::strip_verbatim_prefix;
 pub use util::{create_id, now_millis, take_catalog_dirty};

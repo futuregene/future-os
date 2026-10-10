@@ -47,6 +47,7 @@ fn sessionless_commands_do_not_require_session_id() {
         "new_session",
         "switch_session",
         "delete_session",
+        "delete_sessions",
         "get_fork_messages",
         "get_commands",
         "refresh_skills",

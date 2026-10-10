@@ -29,7 +29,7 @@ pub use self::approval::{decide_approval, inject_session_rule, reconcile_pending
 pub(crate) use self::client::get_agent_readiness;
 pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
-    connect_agent, delete_session_command, get_available_models_command, get_run_state_command,
+    connect_agent, get_available_models_command, get_run_state_command,
     get_session_entries_before_command, get_session_entries_page_command, get_state_command,
     list_streaming_sessions_command, map_rpc_error, set_default_model_command, set_model_command,
     set_session_name_command, set_thinking_level_command, RpcResponseExt,

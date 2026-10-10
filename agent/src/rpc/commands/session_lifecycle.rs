@@ -165,23 +165,129 @@ pub(crate) fn cmd_delete_session(state: &AppState, cmd: &RpcCommand, id: &str) -
             "No session selected to delete. Choose a session first.",
         );
     }
-    let live = state.sessions.read().get(&cmd.session_id).cloned();
+    let result = delete_sessions(state, std::slice::from_ref(&cmd.session_id))
+        .pop()
+        .expect("single deletion has one outcome");
+    if result.deleted {
+        RpcResponse::ok(id, "delete_session", serde_json::json!({"deleted": true}))
+    } else {
+        RpcResponse::build_fail_code(
+            id,
+            "delete_session",
+            &result.error_code,
+            &result.error,
+            result.error_data,
+        )
+    }
+}
+
+pub(crate) fn cmd_delete_sessions(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
+    use future_rpc::session_deletion::{DeleteSessionsResponse, MAX_DELETE_SESSIONS};
+    let unique: std::collections::HashSet<_> = cmd.session_ids.iter().collect();
+    if cmd.session_ids.is_empty()
+        || cmd.session_ids.len() > MAX_DELETE_SESSIONS
+        || unique.len() != cmd.session_ids.len()
+        || cmd
+            .session_ids
+            .iter()
+            .any(|session| session.trim().is_empty())
+    {
+        return RpcResponse::build_fail(
+            id,
+            "delete_sessions",
+            "Provide 1..32 distinct, non-empty session IDs.",
+        );
+    }
+    RpcResponse::ok(
+        id,
+        "delete_sessions",
+        serde_json::to_value(DeleteSessionsResponse {
+            results: delete_sessions(state, &cmd.session_ids),
+        })
+        .expect("serializable deletion outcomes"),
+    )
+}
+
+fn deletion_failure(
+    session_id: &str,
+    code: &str,
+    error: String,
+    error_data: serde_json::Value,
+) -> future_rpc::session_deletion::DeleteSessionResult {
+    future_rpc::session_deletion::DeleteSessionResult {
+        session_id: session_id.to_owned(),
+        deleted: false,
+        error_code: code.to_owned(),
+        error,
+        error_data,
+    }
+}
+
+/// Fence live writers before deleting; busy sessions retain their durable
+/// outbox intent while the remaining sessions share one transaction/reclaim.
+fn delete_sessions(
+    state: &AppState,
+    session_ids: &[String],
+) -> Vec<future_rpc::session_deletion::DeleteSessionResult> {
+    let mut results = Vec::with_capacity(session_ids.len());
+    let mut ready = Vec::new();
+    for session_id in session_ids {
+        match prepare_session_delete(state, session_id) {
+            Some(error) => results.push(error),
+            None => ready.push(session_id.clone()),
+        }
+    }
+    if ready.is_empty() {
+        return results;
+    }
+    match state.session_manager.delete_many(&ready) {
+        Ok(()) => {
+            for session_id in ready {
+                state.sessions.write().remove(&session_id);
+                // Publish only after the whole database transaction committed.
+                crate::rpc::publish_session_deleted(&session_id);
+                results.push(future_rpc::session_deletion::DeleteSessionResult {
+                    session_id,
+                    deleted: true,
+                    error: String::new(),
+                    error_code: String::new(),
+                    error_data: serde_json::Value::Null,
+                });
+            }
+        }
+        Err(error) => {
+            // Keep fenced sessions in memory when storage fails. A retry must
+            // not hydrate partially deleted state or admit another prompt.
+            for session_id in ready {
+                results.push(deletion_failure(
+                    &session_id,
+                    "delete_failed",
+                    error.to_string(),
+                    serde_json::json!({"session_id": session_id, "retryable": true}),
+                ));
+            }
+        }
+    }
+    results
+}
+
+fn prepare_session_delete(
+    state: &AppState,
+    session_id: &str,
+) -> Option<future_rpc::session_deletion::DeleteSessionResult> {
+    let live = state.sessions.read().get(session_id).cloned();
     if let Some(session) = live {
         if session
             .read()
             .compaction_in_progress
             .load(std::sync::atomic::Ordering::Acquire)
         {
-            return RpcResponse::build_fail_code(
-                id,
-                "delete_session",
+            return Some(deletion_failure(
+                session_id,
                 "session_busy",
-                "session context compaction is in progress",
-                serde_json::json!({
-                    "busy_reason": "compaction",
-                    "retryable": true,
-                }),
-            );
+                "session context compaction is in progress".to_owned(),
+                serde_json::json!({"busy_reason": "compaction", "retryable": true}),
+            ));
         }
         let (active, cancelled_count) = {
             let mut session = session.write();
@@ -202,53 +308,28 @@ pub(crate) fn cmd_delete_session(state: &AppState, cmd: &RpcCommand, id: &str) -
                         | crate::runtime::RunPhase::PersistenceDegraded
                 )
         }) {
-            return RpcResponse::build_fail_code(
-                id,
-                "delete_session",
+            return Some(deletion_failure(
+                session_id,
                 "deleting",
-                "session deletion is waiting for the active run to stop; retry delete_session",
-                serde_json::json!({
-                    "session_id": cmd.session_id,
-                    "active_run_id": active.run_id,
-                    "queued_cancelled": cancelled_count,
-                    "retryable": true,
-                }),
-            );
+                "session deletion is waiting for the active run to stop; retry delete_session"
+                    .to_owned(),
+                serde_json::json!({"session_id": session_id, "active_run_id": active.run_id,
+                    "queued_cancelled": cancelled_count, "retryable": true}),
+            ));
         }
-        // Hard deletion is a close-then-delete barrier. The session write lock
-        // excludes concurrent metadata commands while the ordered transcript
-        // writer drains; closing the event journal then fences late broadcasts
-        // before either filesystem tree is removed.
+        // Closing both ordered writers fences late broadcasts before deletion.
         let session = session.write();
         if let Err(error) = session.persistence.close() {
-            return RpcResponse::build_fail_code(
-                id,
-                "delete_session",
+            return Some(deletion_failure(
+                session_id,
                 "delete_failed",
-                &format!("failed to close session persistence: {error}"),
-                serde_json::json!({"session_id": cmd.session_id, "retryable": true}),
-            );
+                format!("failed to close session persistence: {error}"),
+                serde_json::json!({"session_id": session_id, "retryable": true}),
+            ));
         }
         session.broadcaster.close_journal();
     }
-
-    // The in-memory session is fenced before disk removal. Keep it in the map
-    // if deletion fails so a retry cannot accidentally rehydrate/accept work
-    // against partially deleted state.
-    if let Err(e) = state.session_manager.delete(&cmd.session_id) {
-        return RpcResponse::build_fail_code(
-            id,
-            "delete_session",
-            "delete_failed",
-            &e.to_string(),
-            serde_json::json!({"session_id": cmd.session_id, "retryable": true}),
-        );
-    }
-    state.sessions.write().remove(&cmd.session_id);
-    // Only now: the session is gone from memory and disk, so a client that
-    // reconciles on this announcement can never observe a half-deleted one.
-    crate::rpc::publish_session_deleted(&cmd.session_id);
-    RpcResponse::ok(id, "delete_session", serde_json::json!({"deleted": true}))
+    None
 }
 
 /// Load user entries of a session from disk (fork-point picker).  Reads the

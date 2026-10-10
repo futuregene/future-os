@@ -589,6 +589,10 @@ fn default_answer(
     state: &mut MockAgentState,
 ) -> (bool, String, String) {
     match cmd.r#type.as_str() {
+        "delete_sessions" => ok(json!({"results": cmd.session_ids.iter().map(|session_id| {
+            json!({"sessionId": session_id, "deleted": true,
+                "error": "", "errorCode": "", "errorData": null})
+        }).collect::<Vec<_>>()})),
         // A healthy mock Agent must satisfy the same readiness handshake as a
         // real Agent. Login commands now require this before requesting or
         // persisting a one-time credential.

@@ -280,8 +280,16 @@ pub(super) fn fork_command(
     }
 }
 
-pub fn delete_session_command(session_id: String) -> RpcCommand {
+#[cfg(test)]
+fn delete_session_command(session_id: String) -> RpcCommand {
     base_command("delete_session", session_id)
+}
+
+pub(super) fn delete_sessions_command(session_ids: Vec<String>) -> RpcCommand {
+    RpcCommand {
+        session_ids,
+        ..base_command("delete_sessions", String::new())
+    }
 }
 
 #[cfg(test)]
@@ -498,6 +506,7 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         command: String::new(),
         shell_timeout_ms: 0,
         session_id,
+        session_ids: Vec::new(),
         entry_id: String::new(),
         tool_call_id: None,
         name: String::new(),

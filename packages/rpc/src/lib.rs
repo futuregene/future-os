@@ -14,6 +14,7 @@
 
 pub mod command_policy;
 pub mod home;
+pub mod session_deletion;
 pub mod shell_result;
 pub mod transport;
 
@@ -55,6 +56,17 @@ mod tests {
     #[should_panic(expected = "unexpected payload kind")]
     fn expect_get_state_rejects_other_kinds() {
         expect_get_state(response_payload::Kind::Prompt(PromptAck::default()));
+    }
+
+    #[test]
+    fn batch_session_ids_roundtrip_through_protobuf() {
+        let command = super::proto::RpcCommand {
+            r#type: "delete_sessions".into(),
+            session_ids: vec!["session-a".into(), "session-b".into()],
+            ..Default::default()
+        };
+        let decoded = super::proto::RpcCommand::decode(command.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded.session_ids, command.session_ids);
     }
 
     /// Smoke test: generated types round-trip through the wire encoding.

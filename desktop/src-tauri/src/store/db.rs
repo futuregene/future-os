@@ -12,6 +12,7 @@ use super::runs::{run_from_row, RunRecord};
 use super::schema::{
     ADDED_COLUMNS, ADDED_INDEXES, AGENT_SESSION_BINDING_MIGRATION_VERSION, DROPPED_COLUMNS,
     DROPPED_TABLES, REMOTE_PROMPT_RECEIPT_MIGRATION_VERSION, RENAMED_COLUMNS, SCHEMA,
+    SESSION_DELETE_INDEXES_MIGRATION_VERSION, SESSION_DELETE_INDEXES_SQL,
     UNIQUE_AGENT_SESSION_INDEX, VERSIONED_MIGRATIONS,
 };
 use super::util::now_millis;
@@ -247,6 +248,7 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     for statement in ADDED_INDEXES {
         conn.execute(statement, [])?;
     }
+    apply_session_delete_indexes_migration(conn)?;
     // Drop tables removed from the schema (see DROPPED_TABLES).
     // Disable FK enforcement to allow dropping tables referenced by other tables.
     // Best-effort: a missing table (fresh DB) or FK conflict (stale DB) shouldn't block startup.
@@ -267,6 +269,26 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
                 eprintln!("FutureOS migration: failed to drop {table}.{column}: {error}");
             }
         }
+    }
+    Ok(())
+}
+
+/// Install deletion indexes and record the migration in one transaction.
+fn apply_session_delete_indexes_migration(conn: &Connection) -> Result<(), crate::AppError> {
+    let applied: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
+        [SESSION_DELETE_INDEXES_MIGRATION_VERSION],
+        |row| row.get(0),
+    )?;
+    if !applied {
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute_batch(SESSION_DELETE_INDEXES_SQL)?;
+        tx.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
+            params![SESSION_DELETE_INDEXES_MIGRATION_VERSION, now_millis()],
+        )?;
+        tx.commit()?;
     }
     Ok(())
 }
@@ -555,6 +577,66 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deletion_indexes_upgrade_release_schema_and_serve_cleanup_queries() {
+        for released in [false, true] {
+            let conn = Connection::open_in_memory().unwrap();
+            if released {
+                conn.execute_batch(include_str!("fixtures/v1.2.1.sql"))
+                    .unwrap();
+            }
+            apply_schema(&conn).unwrap();
+            apply_schema(&conn).unwrap();
+            let count: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM schema_migrations WHERE version=?1",
+                    [SESSION_DELETE_INDEXES_MIGRATION_VERSION],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1);
+            for (query, index) in [
+                ("SELECT id FROM review_snapshots WHERE thread_id=?1", "idx_review_snapshots_thread"),
+                ("SELECT id FROM artifacts WHERE run_id=?1", "idx_artifacts_run"),
+                ("SELECT id FROM artifacts WHERE thread_id=?1", "idx_artifacts_thread"),
+                ("SELECT id FROM approval_assessments WHERE approval_request_id=?1", "idx_approval_assessments_request"),
+                ("SELECT id FROM threads WHERE parent_session_id=?1", "idx_threads_parent_session"),
+                ("SELECT EXISTS(SELECT 1 FROM threads WHERE COALESCE(NULLIF(TRIM(agent_session_id), ''), id)=?1 AND id!='self')", "idx_threads_effective_session"),
+            ] {
+                let plans = conn.prepare(&format!("EXPLAIN QUERY PLAN {query}")).unwrap()
+                    .query_map(["synthetic"], |row| row.get::<_, String>(3)).unwrap()
+                    .collect::<Result<Vec<_>, _>>().unwrap();
+                assert!(plans.iter().any(|plan| plan.contains(index)), "{plans:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn deletion_index_migration_rolls_back_and_can_retry() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_schema(&conn).unwrap();
+        conn.execute(
+            "DELETE FROM schema_migrations WHERE version=?1",
+            [SESSION_DELETE_INDEXES_MIGRATION_VERSION],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "DROP INDEX idx_review_snapshots_thread;
+            DROP INDEX idx_artifacts_run; DROP TABLE approval_assessments;",
+        )
+        .unwrap();
+        assert!(apply_session_delete_indexes_migration(&conn).is_err());
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name='idx_review_snapshots_thread'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "failed migration rolls back all new indexes");
+        apply_schema(&conn).unwrap();
+    }
 
     #[test]
     fn apply_schema_on_fresh_db_succeeds() {
@@ -997,6 +1079,7 @@ mod tests {
                  id TEXT PRIMARY KEY,
                  workspace_id TEXT,
                  thread_id TEXT,
+                 run_id TEXT,
                  path TEXT,
                  type TEXT,
                  created_at INTEGER NOT NULL,

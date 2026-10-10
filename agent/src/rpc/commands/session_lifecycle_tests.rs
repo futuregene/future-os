@@ -2200,3 +2200,58 @@ fn clone_reports_a_post_commit_activation_failure_and_keeps_the_committed_child(
     assert_eq!(resumed["data"]["sessionId"].as_str().unwrap(), clone_id);
     assert_eq!(resumed["data"]["created"], false);
 }
+
+#[test]
+fn batch_delete_is_partial_for_busy_sessions_and_validates_before_mutation() {
+    let state = make_app_state();
+    let session = state.get_session("default").unwrap();
+    session
+        .read()
+        .compaction_in_progress
+        .store(true, std::sync::atomic::Ordering::Release);
+    let mut cmd = make_cmd("delete_sessions");
+    cmd.session_ids = vec!["default".into(), "already-absent".into()];
+    let response = parse_response(&handle_command_internal(&state, cmd.clone()));
+    assert_eq!(response["success"], true, "{response}");
+    let results = response["data"]["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(
+        results
+            .iter()
+            .find(|r| r["sessionId"] == "default")
+            .unwrap()["errorCode"],
+        "session_busy"
+    );
+    assert_eq!(
+        results
+            .iter()
+            .find(|r| r["sessionId"] == "already-absent")
+            .unwrap()["deleted"],
+        true
+    );
+    for ids in [
+        vec![],
+        vec!["default".into(), "default".into()],
+        vec![" ".into()],
+        (0..33).map(|i| format!("session-{i}")).collect(),
+    ] {
+        let mut invalid = cmd.clone();
+        invalid.session_ids = ids;
+        assert_eq!(
+            parse_response(&handle_command_internal(&state, invalid))["success"],
+            false
+        );
+        assert!(state.sessions.read().contains_key("default"));
+    }
+    session
+        .read()
+        .compaction_in_progress
+        .store(false, std::sync::atomic::Ordering::Release);
+    let response = parse_response(&handle_command_internal(&state, cmd));
+    assert!(response["data"]["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r["deleted"] == true));
+    assert!(!state.sessions.read().contains_key("default"));
+}
