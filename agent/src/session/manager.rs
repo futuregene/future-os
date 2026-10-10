@@ -33,6 +33,7 @@ pub struct Manager {
     pub dir: PathBuf,
     store: OnceLock<SqliteStore>,
     initialization: parking_lot::Mutex<()>,
+    maintenance: parking_lot::Mutex<Option<super::journal_compaction::JournalMaintenance>>,
     /// Bounded LRU of display projections. Pagination requests for one stable
     /// SQLite revision slice this shared projection instead of loading and
     /// projecting the complete journal again for every page.
@@ -48,6 +49,7 @@ impl Manager {
             dir,
             store: OnceLock::new(),
             initialization: parking_lot::Mutex::new(()),
+            maintenance: parking_lot::Mutex::new(None),
             display_entries_cache: parking_lot::Mutex::new(Vec::new()),
             #[cfg(test)]
             fail_saves_remaining: std::sync::atomic::AtomicU64::new(0),
@@ -81,7 +83,27 @@ impl Manager {
 
     /// Called before serving RPC, while the Agent instance lock is held.
     pub fn initialize(&self) -> Result<()> {
-        self.storage().map(|_| ())
+        self.start_journal_maintenance()
+    }
+
+    fn start_journal_maintenance(&self) -> Result<()> {
+        let mut maintenance = self.maintenance.lock();
+        if maintenance.is_none() {
+            *maintenance = Some(super::journal_compaction::JournalMaintenance::start(
+                self.storage()?.clone(),
+            )?);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn request_journal_compaction(&self, session: &str, run: &str) {
+        if let Err(error) = self.start_journal_maintenance() {
+            tracing::warn!(%error, "could not start journal maintenance");
+            return;
+        }
+        if let Some(maintenance) = self.maintenance.lock().as_ref() {
+            maintenance.request(session, run);
+        }
     }
 
     pub(crate) fn storage(&self) -> Result<&SqliteStore> {

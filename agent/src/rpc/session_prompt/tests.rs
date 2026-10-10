@@ -1763,9 +1763,8 @@ async fn prompt_with_explicit_name_and_provenance_persists_info() {
     assert_eq!(info["source_meta"]["thread"], "t-1");
 }
 
-/// Retention: each run retires the journals of the settled runs that fell out
-/// of the replay window, so a long-lived session cannot accumulate every token
-/// it ever streamed (`agent.db` grew to 8 GB doing exactly that).
+/// Settled runs stay replayable across later prompts, whether maintenance
+/// has published their compact snapshot yet or they still use raw journals.
 #[tokio::test(flavor = "current_thread")]
 async fn later_runs_retire_the_journals_of_settled_older_runs() {
     let provider = ScriptedProvider::new(vec![
@@ -1783,14 +1782,11 @@ async fn later_runs_retire_the_journals_of_settled_older_runs() {
     }
 
     let store = session.session_manager.storage().unwrap();
-    assert!(
-        store.events("s1", &runs[0]).unwrap().is_empty(),
-        "the journal that fell out of the replay window is retired"
-    );
-    for run in &runs[1..] {
+    for run in &runs {
+        let replay = store.replay_page("s1", run, -1, false, None).unwrap();
         assert!(
-            !store.events("s1", run).unwrap().is_empty(),
-            "run {run} is still replayable"
+            replay.known && (replay.snapshot.is_some() || !replay.events.is_empty()),
+            "run {run} stays replayable after compaction"
         );
     }
 }
@@ -2546,6 +2542,27 @@ async fn run_and_take_callbacks(name: &str) -> (crate::rpc::ServerSession, RunCa
     (session, callbacks)
 }
 
+/// Keep the run active while exercising callbacks; a completed compacted
+/// journal is immutable and must reject late run-scoped event appends.
+fn start_and_take_callbacks(
+    name: &str,
+) -> (
+    crate::rpc::ServerSession,
+    RunCallbacksForTest,
+    Arc<tokio::sync::Notify>,
+) {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![Script::Gated(
+        gate.clone(),
+        vec![text_event("wired"), finish_event()],
+    )]);
+    let fixture = run_fixture_with_id(provider, name, &format!("{name}-session"));
+    let mut session = fixture.session;
+    session.prompt("hello", &[], &[], None, None).unwrap();
+    let callbacks = take_run_callbacks(&session.session_id);
+    (session, callbacks, gate)
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn checkpoint_callback_commits_the_checkpoint_durably_and_reports_a_failed_commit() {
     let (session, callbacks) = run_and_take_callbacks("checkpoint-wiring").await;
@@ -2589,7 +2606,8 @@ async fn checkpoint_callback_commits_the_checkpoint_durably_and_reports_a_failed
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn escalation_callback_publishes_a_decidable_sandbox_request_on_the_session_stream() {
-    let (session, callbacks) = run_and_take_callbacks("escalation-wiring").await;
+    let (session, callbacks, gate) = start_and_take_callbacks("escalation-wiring");
+    let provider_gate = gate;
     let session_id = session.session_id.clone();
     let mut rx = session.broadcaster.subscribe();
 
@@ -2656,11 +2674,13 @@ async fn escalation_callback_publishes_a_decidable_sandbox_request_on_the_sessio
         decided["approval_request_id"],
         requested["approval_request_id"]
     );
+    provider_gate.notify_one();
+    wait_for_run_end(&session).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn sandboxed_notifier_broadcasts_tool_sandboxed_for_the_run() {
-    let (session, callbacks) = run_and_take_callbacks("sandboxed-wiring").await;
+    let (session, callbacks, gate) = start_and_take_callbacks("sandboxed-wiring");
     let mut rx = session.broadcaster.subscribe();
 
     (callbacks.on_sandboxed)("printf sandboxed-run");
@@ -2675,4 +2695,6 @@ async fn sandboxed_notifier_broadcasts_tool_sandboxed_for_the_run() {
         serde_json::from_str(&published.expect("tool_sandboxed is published")).unwrap();
     assert_eq!(published["type"], "tool_sandboxed");
     assert_eq!(published["command"], "printf sandboxed-run");
+    gate.notify_one();
+    wait_for_run_end(&session).await;
 }
