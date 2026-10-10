@@ -146,5 +146,17 @@
   "providersChangeKey": "更换密钥",
   "providersManaged": "在那台电脑上登录",
   "providersBaseUrlNeeded": "{{count}} 个模型 · 需要填写 Base URL",
-  "providersRemoveConfirm": "从 {{name}} 上移除这个提供方？"
+  "providersRemoveConfirm": "从 {{name}} 上移除这个提供方？",
+  "workspacesSection": "工作区",
+  "workspacesHint": "这些是那台电脑上的目录。在这里改名、置顶或移除，会话仍在那台电脑上运行。",
+  "workspacesEmpty": "那台电脑上还没有工作区。",
+  "workspacesPin": "置顶",
+  "workspacesUnpin": "取消置顶",
+  "workspacesPathLabel": "目录路径",
+  "workspacesPathPlaceholder": "/Users/you/code/project",
+  "workspacesNameLabel": "名称（可选）",
+  "workspacesAdd": "添加",
+  "workspacesAddHint": "目录必须在那台电脑上已经存在；路径以那台电脑为准。",
+  "workspacesRemove": "移除",
+  "workspacesRemoveConfirm": "从那台电脑移除工作区「{{workspace}}」？它在{{host}}上的会话也会一起删除。"
 }
