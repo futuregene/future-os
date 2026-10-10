@@ -415,6 +415,124 @@ export function uploadRemoteFile(input: {
 }
 
 /**
+ * One model in a host's catalogue.
+ *
+ * `id` is provider-local: the same id can exist under two providers, which is
+ * why a reference (below) is what identifies a choice.
+ */
+export interface RemoteModelInfo {
+  id: string;
+  label?: string;
+  provider?: string;
+  isDefault?: boolean;
+}
+
+/**
+ * The stable reference for a model: `provider/id` where there is a provider.
+ *
+ * Mirrors the phone's rule, and the host's own `qualified_model_id`: a catalogue
+ * id is provider-local even when it happens to contain a slash (there are models
+ * literally named `openrouter/auto`), so the provider is prefixed rather than
+ * inferred from the id.
+ */
+export function remoteModelReference(model: Pick<RemoteModelInfo, "id" | "provider">): string {
+  return model.provider ? `${model.provider}/${model.id}` : model.id;
+}
+
+/** The provider part of a reference, for the host's two-field `set_model`. */
+export function remoteModelProvider(reference: string): string | undefined {
+  const separator = reference.indexOf("/");
+  return separator > 0 ? reference.slice(0, separator) : undefined;
+}
+
+/** The host's model catalogue, as this machine may choose from. */
+export async function listRemoteModels(desktopId: string): Promise<RemoteModelInfo[]> {
+  const raw = await requestRemotePeer<Record<string, unknown>>(
+    desktopId,
+    { type: "list_models" },
+    "list",
+  );
+  const models = Array.isArray(raw?.models) ? raw.models : [];
+  return models.flatMap((entry): RemoteModelInfo[] => {
+    if (typeof entry !== "object" || entry === null)
+      return [];
+    const row = entry as Record<string, unknown>;
+    if (typeof row.id !== "string" || !row.id)
+      return [];
+    return [{
+      id: row.id,
+      ...(typeof row.label === "string" ? { label: row.label } : {}),
+      ...(typeof row.provider === "string" ? { provider: row.provider } : {}),
+      ...(row.isDefault === true ? { isDefault: true } : {}),
+    }];
+  });
+}
+
+/** What a host reports about one of its conversations, as this machine may show it. */
+export interface RemoteConversationSettings {
+  /** The agent's model reference, or `null` when it did not say. */
+  model: string | null;
+  thinkingLevel: string | null;
+}
+
+/**
+ * Read a conversation's model and thinking level.
+ *
+ * Their own read rather than part of the timeline: these are settings the host
+ * owns and can change from its own screen, so they are fetched separately and
+ * refreshed when it says they moved.
+ */
+export async function getRemoteConversationSettings(
+  desktopId: string,
+  sessionId: string,
+): Promise<RemoteConversationSettings> {
+  const raw = await requestRemotePeer<Record<string, unknown>>(
+    desktopId,
+    { type: "get_state", sessionId },
+    sessionId,
+  );
+  return {
+    model: typeof raw?.model === "string" && raw.model ? raw.model : null,
+    thinkingLevel: typeof raw?.thinkingLevel === "string" && raw.thinkingLevel ? raw.thinkingLevel : null,
+  };
+}
+
+/**
+ * Change a conversation's model, on the host that owns it.
+ *
+ * The request carries the reference *and* its provider because the host joins
+ * them itself; sending a bare id would be resolved against whatever provider it
+ * defaulted to, which is how the same id under two providers becomes the wrong
+ * model.
+ */
+export function setRemoteConversationModel(
+  desktopId: string,
+  sessionId: string,
+  reference: string,
+): Promise<unknown> {
+  const provider = remoteModelProvider(reference);
+  return requestRemotePeer(
+    desktopId,
+    {
+      type: "set_model",
+      sessionId,
+      modelId: reference,
+      ...(provider ? { providerId: provider } : {}),
+    },
+    sessionId,
+  );
+}
+
+/** Change a conversation's thinking level, on the host that owns it. */
+export function setRemoteConversationThinkingLevel(
+  desktopId: string,
+  sessionId: string,
+  level: string,
+): Promise<unknown> {
+  return requestRemotePeer(desktopId, { type: "set_thinking_level", sessionId, level }, sessionId);
+}
+
+/**
  * Run one command on one host. The lane is the session the command addresses
  * (`list` for catalogue reads) — the backend builds the subject, so no subject
  * string is ever assembled in the frontend.

@@ -39,6 +39,7 @@ export function RemoteConversationView({
   onRetry,
   peer,
   persistedEntryIds,
+  settings,
   streaming,
   title,
 }: {
@@ -58,6 +59,8 @@ export function RemoteConversationView({
   onDecideApproval: (approval: RemoteApproval, decision: "allow" | "deny") => void;
   /** Open the browser for the files this conversation's host holds for it. */
   onOpenFiles: () => void;
+  /** The conversation's host-owned model and thinking level, if the caller has them. */
+  settings?: React.ReactNode;
   /**
    * Branch the conversation at the turn that produced an assistant reply, and
    * open the child. `forkable` is false when that turn is not persisted on the
@@ -84,6 +87,9 @@ export function RemoteConversationView({
             {t("runsOn", { name: peer ? peerBadgeText(peer, peer.desktopId) : "" })}
           </div>
         </div>
+        {/* The conversation's own settings, beside the controls for it: these act
+            on the host and the picker says so through their labels. */}
+        {settings}
         <Button onClick={onOpenFiles} size="sm" variant="ghost">
           {t("filesTitle")}
         </Button>
