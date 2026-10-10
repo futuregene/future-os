@@ -728,6 +728,17 @@ function ReadyAppShell({
   }
 
   /**
+   * Open one of a paired computer's conversations from its ids.
+   *
+   * The same destination as opening a row, for callers that have the ids rather
+   * than a row — a task run names its conversation by session id.
+   */
+  function openRemoteSession(desktopId: string, sessionId: string) {
+    setActiveRemote({ desktopId, sessionId });
+    setSection("chat");
+  }
+
+  /**
    * Branch a remote conversation at a settled turn and open the child.
    *
    * The host owns the fork; the ack's ids are the only way to know the child, so
@@ -916,6 +927,7 @@ function ReadyAppShell({
                         <RemoteHubView
                           autoConnect={appSettings.autoConnectRemote}
                           leftPanelExpanded={showLeftPanel}
+                          onOpenRemoteSession={openRemoteSession}
                           onRefreshRemote={refreshRemote}
                           onStartConversation={startRemoteConversation}
                           onToggleAutoConnect={value => void changeSettings({ autoConnectRemote: value })}

@@ -29,6 +29,7 @@ import { RemotePeerSettings } from "./RemotePeerSettings";
  * naming, the icon, connection state, and unpairing.
  */
 export function RemoteClientSection({
+  onOpenTasks,
   onStartConversation,
 }: {
   /**
@@ -36,6 +37,11 @@ export function RemoteClientSection({
    * what the user is looking at; this section only knows the machines.
    */
   onStartConversation: (desktopId: string) => void;
+  /**
+   * Open that host's tasks. Handled by the hub rather than here because the
+   * task editor needs the whole column.
+   */
+  onOpenTasks: (peer: RemotePeer) => void;
 }) {
   const { t } = useTranslation("remotePeer");
   const [peers, setPeers] = useState<RemotePeer[]>([]);
@@ -127,6 +133,7 @@ export function RemoteClientSection({
             <RemotePeerSettings
               onBack={() => setSettingsFor(null)}
               onChanged={() => void refresh()}
+              onOpenTasks={() => onOpenTasks(settingsPeer)}
               onUnpair={() => setUnpairTarget(settingsPeer)}
               onUpdateLabel={patch => void run(settingsPeer.desktopId, () => setRemotePeerLabel(settingsPeer.desktopId, patch))}
               peer={settingsPeer}

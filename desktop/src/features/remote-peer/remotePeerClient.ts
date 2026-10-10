@@ -1,3 +1,4 @@
+import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { RemoteCatalog, RemoteSessionRow } from "./mergeConversations";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 
@@ -425,6 +426,13 @@ export interface RemoteModelInfo {
   label?: string;
   provider?: string;
   isDefault?: boolean;
+  /**
+   * Whether the model accepts thinking controls. Carried because the task form
+   * asks it — a model that does not support thinking must not be offered a
+   * thinking level, and "unknown" (`undefined`) is not the same as `false`.
+   */
+  reasoning?: boolean | null;
+  thinkingLevel?: string | null;
 }
 
 /**
@@ -464,8 +472,29 @@ export async function listRemoteModels(desktopId: string): Promise<RemoteModelIn
       ...(typeof row.label === "string" ? { label: row.label } : {}),
       ...(typeof row.provider === "string" ? { provider: row.provider } : {}),
       ...(row.isDefault === true ? { isDefault: true } : {}),
+      ...(typeof row.reasoning === "boolean" || row.reasoning === null ? { reasoning: row.reasoning as boolean | null } : {}),
+      ...(typeof row.thinkingLevel === "string" ? { thinkingLevel: row.thinkingLevel } : {}),
     }];
   });
+}
+
+/**
+ * A host's models as this app's model options.
+ *
+ * The two shapes are the same catalogue in different wrappers: the host sends
+ * the agent's own list, so a shared model id resolves to the same model on
+ * either side. The provider is prefixed rather than inferred, because a
+ * catalogue id may itself contain a slash.
+ */
+export function remoteAgentModelOptions(models: RemoteModelInfo[]): AgentModelOption[] {
+  return models.map(model => ({
+    id: remoteModelReference(model),
+    label: model.label ?? model.id,
+    provider: model.provider ?? "",
+    ...(model.reasoning === undefined ? {} : { reasoning: model.reasoning }),
+    ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
+    ...(model.isDefault === undefined ? {} : { isDefault: model.isDefault }),
+  }));
 }
 
 /** What a host reports about one of its conversations, as this machine may show it. */

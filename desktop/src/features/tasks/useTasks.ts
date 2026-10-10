@@ -1,6 +1,7 @@
+import type { TaskBackend } from "./taskBackend";
 import { useCallback, useEffect, useState } from "react";
-import { invokeCommand } from "../../integrations/tauri/invoke";
 import { useTauriEvent } from "../../lib/useTauriEvent";
+import { localTaskBackend, reconcileDeps } from "./taskBackend";
 
 /** Task rows as the Tauri backend serializes them. */
 export interface TaskRunView {
@@ -83,8 +84,15 @@ export interface TaskRevisionView {
   createdAt: number;
 }
 
-/** Thin client over the task Tauri commands (no local state). */
-export function useTasks() {
+/**
+ * The task list and the actions on it, over whichever backend it was given.
+ *
+ * The backend defaults to this app's own store, so every existing call site
+ * keeps working unchanged; passing another one points the same state machine at
+ * a paired host. `reload` is part of the result so a remote panel can refresh on
+ * that host's pushes instead of this app's.
+ */
+export function useTasks(backend: TaskBackend = localTaskBackend) {
   const [tasks, setTasks] = useState<TaskView[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -92,7 +100,7 @@ export function useTasks() {
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const next = await invokeCommand<TaskView[]>("list_tasks");
+      const next = await backend.list();
       setTasks(next);
       setError(null);
     }
@@ -102,7 +110,7 @@ export function useTasks() {
     finally {
       setLoading(false);
     }
-  }, []);
+  }, [backend]);
 
   useEffect(() => {
     void reload();
@@ -112,57 +120,62 @@ export function useTasks() {
   // produce a conversation; the host already announces both with
   // "threads-updated". Without this the panel kept saying "queued" at a task
   // that had been running for minutes, until the user left and came back.
+  //
+  // Only for this app's own tasks: the event says nothing about a remote host's,
+  // and reloading a remote panel on a local event would show the wrong reason
+  // for the refresh.
   useTauriEvent("threads-updated", () => {
-    void reload();
+    if (backend.kind === "local")
+      void reload();
   });
 
   const createTask = useCallback(async (input: TaskInput) => {
-    const created = await invokeCommand<TaskView>("create_task", { input });
+    const created = await backend.create(input);
     await reload();
     return created;
-  }, [reload]);
+  }, [backend, reload]);
 
   const updateTask = useCallback(async (id: string, input: TaskInput) => {
-    const updated = await invokeCommand<TaskView>("update_task", { id, input });
+    const updated = await backend.update(id, input);
     await reload();
     return updated;
-  }, [reload]);
+  }, [backend, reload]);
 
   const deleteTask = useCallback(async (id: string) => {
-    await invokeCommand<void>("delete_task", { id });
+    await backend.remove(id);
     await reload();
-  }, [reload]);
+  }, [backend, reload]);
 
   const setEnabled = useCallback(async (id: string, enabled: boolean) => {
-    await invokeCommand<TaskView>("set_task_enabled", { id, enabled });
+    await backend.setEnabled(id, enabled);
     await reload();
-  }, [reload]);
+  }, [backend, reload]);
 
   const runNow = useCallback(async (id: string) => {
-    await invokeCommand<TaskView>("run_task_now", { id });
+    await backend.runNow(id);
     await reload();
-  }, [reload]);
+  }, [backend, reload]);
 
   const listRuns = useCallback(
-    (id: string, limit = 20) => invokeCommand<TaskRunView[]>("list_task_runs", { id, limit }),
-    [],
+    (id: string, limit = 20) => backend.listRuns(id, limit),
+    [backend],
   );
 
   const listDeps = useCallback(
-    (id: string) => invokeCommand<TaskDepView[]>("list_task_deps", { id }),
-    [],
+    (id: string) => backend.listDeps(id),
+    [backend],
   );
 
   const setDep = useCallback(
     (id: string, upstreamTaskId: string, on: string) =>
-      invokeCommand<void>("set_task_dep", { id, upstreamTaskId, on }),
-    [],
+      backend.setDep(id, upstreamTaskId, on),
+    [backend],
   );
 
   const removeDep = useCallback(
     (id: string, upstreamTaskId: string) =>
-      invokeCommand<void>("remove_task_dep", { id, upstreamTaskId }),
-    [],
+      backend.removeDep(id, upstreamTaskId),
+    [backend],
   );
 
   /**
@@ -177,33 +190,22 @@ export function useTasks() {
    * not be silently reverted.
    */
   const saveDeps = useCallback(async (id: string, wanted: TaskDepInput[]) => {
-    const current = await invokeCommand<TaskDepView[]>("list_task_deps", { id });
-    const byUpstream = new Map(wanted.map(dep => [dep.upstreamTaskId, dep.on]));
-    for (const dep of current) {
-      const on = byUpstream.get(dep.upstreamTaskId);
-      if (on === undefined)
-        await invokeCommand<void>("remove_task_dep", { id, upstreamTaskId: dep.upstreamTaskId });
-      else if (on !== dep.on)
-        await invokeCommand<void>("set_task_dep", { id, upstreamTaskId: dep.upstreamTaskId, on });
-      byUpstream.delete(dep.upstreamTaskId);
-    }
-    // What is left in the map is new: it was not among the stored edges.
-    for (const [upstreamTaskId, on] of byUpstream)
-      await invokeCommand<void>("set_task_dep", { id, upstreamTaskId, on });
+    await reconcileDeps(backend, id, wanted);
     await reload();
-  }, [reload]);
+  }, [backend, reload]);
 
   const listRevisions = useCallback(
-    (id: string) => invokeCommand<TaskRevisionView[]>("list_task_revisions", { id }),
-    [],
+    (id: string) => backend.listRevisions(id),
+    [backend],
   );
 
   const applyRevision = useCallback(async (id: string, revisionId: string) => {
-    await invokeCommand<TaskView>("apply_task_revision", { id, revisionId });
+    await backend.applyRevision(id, revisionId);
     await reload();
-  }, [reload]);
+  }, [backend, reload]);
 
   return {
+    backend,
     tasks,
     loading,
     error,
