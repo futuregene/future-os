@@ -139,5 +139,12 @@
   },
   "tasksManage": "管理",
   "tasksRunGone": "那次运行的会话已经不在了。",
-  "tasksOnHost": "{{name}} 的任务"
+  "tasksOnHost": "{{name}} 的任务",
+  "providersRemoteSection": "提供方与密钥",
+  "providersRemoteHint": "这些设置属于那台电脑，本机不保存副本。密钥只写入那台电脑，读回来时只显示「已配置 / 未配置」。",
+  "providersKeyOnHost": "密钥只保存在 {{name}} 上，本机不留副本。",
+  "providersChangeKey": "更换密钥",
+  "providersManaged": "在那台电脑上登录",
+  "providersBaseUrlNeeded": "{{count}} 个模型 · 需要填写 Base URL",
+  "providersRemoveConfirm": "从 {{name}} 上移除这个提供方？"
 }
