@@ -1143,6 +1143,8 @@ mod gui {
                 remote_peer_set_label,
                 remote_peer_sessions,
                 remote_peer_workspaces,
+                remote_peer_list_files,
+                remote_peer_download_file,
                 remote_peer_request,
                 terminal_server_info,
                 open_url

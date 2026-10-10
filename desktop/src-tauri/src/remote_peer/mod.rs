@@ -28,6 +28,7 @@ pub(crate) mod link;
 pub(crate) mod platform;
 pub(crate) mod runtime;
 pub(crate) mod session;
+pub(crate) mod transfer;
 
 // Only the GUI command layer consumes these; a headless build (no `gui`
 // feature) has no caller, and an unconditional re-export there is an unused
@@ -43,3 +44,5 @@ pub(crate) mod runtime_tests;
 pub(crate) mod testing;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod transfer_tests;

@@ -46,6 +46,7 @@ const children = vi.hoisted(() => ({
   agentThread: null as unknown,
   appShellDialogs: null as unknown,
   contextPanel: null as unknown,
+  filesDialog: null as unknown,
   newConversation: null as unknown,
   onboardingGate: null as unknown,
   peersView: null as unknown,
@@ -134,6 +135,15 @@ vi.mock("../../features/remote-peer/RemotePeersView", async () => {
     RemotePeersView: (props: unknown) => {
       children.peersView = props;
       return createElement("div", { "data-child": "peers-view" });
+    },
+  };
+});
+vi.mock("../../features/remote-peer/RemoteFilesDialog", async () => {
+  const { createElement } = await import("react");
+  return {
+    RemoteFilesDialog: (props: unknown) => {
+      children.filesDialog = props;
+      return createElement("div", { "data-child": "remote-files" });
     },
   };
 });
@@ -1735,6 +1745,40 @@ describe("app shell collapsed-panel affordances", () => {
         (args as { command?: { type?: string } } | undefined)?.command?.type);
       expect(commands).not.toContain("compact_context");
       expect(mocks.emit).not.toHaveBeenCalledWith("toast", expect.objectContaining({ tone: "error" }));
+      view.unmount();
+    });
+
+    /**
+     * The files browser belongs to one conversation and lists that session: it
+     * is keyed on the open conversation, so switching cannot leave another
+     * one's files on screen under the new title.
+     */
+    it("opens the file browser for the open conversation, and closes it", () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+      const conversationView = children.remoteConversationView as { onOpenFiles: () => void };
+
+      expect(view.container.querySelector("[data-child='remote-files']")).toBeNull();
+      act(() => conversationView.onOpenFiles());
+      expect(view.container.querySelector("[data-child='remote-files']")).not.toBeNull();
+      expect(children.filesDialog).toMatchObject({
+        desktopId: "desktop_a",
+        sessionId: "sess_1",
+      });
+
+      act(() => (children.filesDialog as { onClose: () => void }).onClose());
+      expect(view.container.querySelector("[data-child='remote-files']")).toBeNull();
+      view.unmount();
+    });
+
+    /** A draft has no conversation on the host, so it has no files to browse. */
+    it("offers no file browser for a conversation that does not exist yet", () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onManageDesktops?.());
+      act(() => (children.peersView as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
+      act(() => (children.remoteConversationView as { onOpenFiles: () => void }).onOpenFiles());
+
+      expect(view.container.querySelector("[data-child='remote-files']")).toBeNull();
       view.unmount();
     });
   });
