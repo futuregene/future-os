@@ -146,5 +146,17 @@
   "providersChangeKey": "Change key",
   "providersManaged": "Signed in on that computer",
   "providersBaseUrlNeeded": "{{count}} models · needs a Base URL",
-  "providersRemoveConfirm": "Remove this provider from {{name}}?"
+  "providersRemoveConfirm": "Remove this provider from {{name}}?",
+  "workspacesSection": "Workspaces",
+  "workspacesHint": "These are folders on that computer. Renaming, pinning or removing one happens there; conversations keep running on that machine.",
+  "workspacesEmpty": "That computer has no workspaces yet.",
+  "workspacesPin": "Pin",
+  "workspacesUnpin": "Unpin",
+  "workspacesPathLabel": "Folder path",
+  "workspacesPathPlaceholder": "/Users/you/code/project",
+  "workspacesNameLabel": "Name (optional)",
+  "workspacesAdd": "Add",
+  "workspacesAddHint": "The folder must already exist on that computer; the path is that computer's.",
+  "workspacesRemove": "Remove",
+  "workspacesRemoveConfirm": "Remove the workspace \"{{workspace}}\" from {{host}}? Its conversations there are removed with it."
 }

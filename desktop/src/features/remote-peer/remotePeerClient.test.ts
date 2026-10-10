@@ -19,16 +19,20 @@ const {
   abortRemoteRun,
   compactRemoteConversation,
   continueRemoteRun,
+  createRemoteWorkspace,
   deleteRemoteConversation,
+  deleteRemoteWorkspace,
   downloadRemoteFile,
   fetchRemoteSessions,
   forkRemoteConversation,
+  generateRemoteTitle,
   getRemoteConversationSettings,
   installRemoteSkill,
   listRemoteAvailableSkills,
   listRemoteInstalledSkills,
   listRemoteModels,
   listRemoteSessionFiles,
+  listRemoteWorkspaces,
   localizedSkill,
   pinRemoteConversation,
   promptRemoteConversation,
@@ -37,6 +41,7 @@ const {
   renameRemoteConversation,
   setRemoteConversationModel,
   setRemoteConversationThinkingLevel,
+  setRemoteWorkspacePinned,
   uninstallRemoteSkill,
   uploadRemoteFile,
 } = await import("./remotePeerClient");
@@ -790,5 +795,120 @@ describe("remote skills", () => {
     invokeMock.mockRejectedValue(new Error("skill_not_found"));
     await expect(installRemoteSkill("desktop_a", "ghost", "1")).rejects.toThrow("skill_not_found");
     await expect(uninstallRemoteSkill("desktop_a", "ghost")).rejects.toThrow("skill_not_found");
+  });
+});
+
+describe("generating a title on a host", () => {
+  /** The session is both what is named and what the command routes on. */
+  it("asks the host to name that conversation in the given language", async () => {
+    invokeMock.mockResolvedValue({ title: "  Nightly build  " });
+    await expect(generateRemoteTitle("desktop_a", "sess_1", "zh")).resolves.toBe("Nightly build");
+
+    const { args, command } = lastCall();
+    expect(command).toBe("remote_peer_request");
+    expect(args).toEqual({
+      desktopId: "desktop_a",
+      command: { type: "generate_session_title", sessionId: "sess_1", mode: "zh" },
+      lane: "sess_1",
+    });
+  });
+
+  /**
+   * A title that came back empty is a failure, not a title: saving it would
+   * leave the conversation unnamed, and this app's own generate action treats an
+   * empty answer as an error for the same reason.
+   */
+  it("refuses an empty title rather than returning one", async () => {
+    invokeMock.mockResolvedValue({ title: "   " });
+    await expect(generateRemoteTitle("desktop_a", "sess_1", "en")).rejects.toThrow("empty_title");
+
+    invokeMock.mockResolvedValue({});
+    await expect(generateRemoteTitle("desktop_a", "sess_1", "en")).rejects.toThrow("empty_title");
+  });
+});
+
+describe("a host's workspaces", () => {
+  it("lists them from the host's own snapshot", async () => {
+    invokeMock.mockResolvedValue({
+      workspaces: [{ id: "ws_1", name: "future-os", path: "/code/future-os", pinned: true }],
+    });
+    await expect(listRemoteWorkspaces("desktop_a")).resolves.toEqual([
+      { id: "ws_1", name: "future-os", path: "/code/future-os", pinned: true },
+    ]);
+    expect(lastCall().args).toEqual({ desktopId: "desktop_a" });
+  });
+
+  /**
+   * A workspace with no name falls back to its path — a row has to be labelled
+   * with something the user recognises, and the folder is what they picked.
+   */
+  it("labels an unnamed workspace with its path", async () => {
+    invokeMock.mockResolvedValue({ workspaces: [{ id: "ws_1", path: "/code/x" }] });
+    await expect(listRemoteWorkspaces("desktop_a")).resolves.toEqual([
+      { id: "ws_1", name: "/code/x", path: "/code/x", pinned: false },
+    ]);
+  });
+
+  /** A snapshot that is not a list is empty, not a crash. */
+  it("reads a malformed snapshot as empty", async () => {
+    invokeMock.mockResolvedValue({ workspaces: "nonsense" });
+    await expect(listRemoteWorkspaces("desktop_a")).resolves.toEqual([]);
+
+    invokeMock.mockResolvedValue(undefined);
+    await expect(listRemoteWorkspaces("desktop_a")).resolves.toEqual([]);
+  });
+
+  /** Entries without an id cannot be addressed, so they are dropped. */
+  it("drops entries that cannot be addressed", async () => {
+    invokeMock.mockResolvedValue({
+      workspaces: [null, 42, { name: "no id" }, { id: "" }, { id: "ws_1", path: "/x" }],
+    });
+    await expect(listRemoteWorkspaces("desktop_a")).resolves.toEqual([
+      { id: "ws_1", name: "/x", path: "/x", pinned: false },
+    ]);
+  });
+
+  /**
+   * Registering a workspace sends the host's path as typed.
+   *
+   * The directory has to exist on *that* machine, so this one cannot check it —
+   * the host decides, which is why the path is not validated here.
+   */
+  it("registers a path on the host, trimmed", async () => {
+    invokeMock.mockResolvedValue({ workspace: { id: "ws_9", name: "new", path: "/code/new" } });
+    await expect(createRemoteWorkspace("desktop_a", "  /code/new  ", "  new  ")).resolves.toEqual({
+      id: "ws_9",
+      name: "new",
+      path: "/code/new",
+      pinned: false,
+    });
+
+    expect(lastCall().args).toEqual({
+      desktopId: "desktop_a",
+      command: { type: "create_workspace", path: "/code/new", name: "new" },
+      lane: "list",
+    });
+  });
+
+  /** A host that answers a create with no workspace is reported, not rendered blank. */
+  it("refuses a create that came back without a workspace", async () => {
+    invokeMock.mockResolvedValue({});
+    await expect(createRemoteWorkspace("desktop_a", "/code/new", "")).rejects.toThrow("invalid_workspace_snapshot");
+  });
+
+  it("pins and removes by workspace id", async () => {
+    await setRemoteWorkspacePinned("desktop_a", "ws_1", true);
+    expect(lastCall().args).toEqual({
+      desktopId: "desktop_a",
+      command: { type: "set_workspace_pinned", workspaceId: "ws_1", pinned: true },
+      lane: "list",
+    });
+
+    await deleteRemoteWorkspace("desktop_a", "ws_1");
+    expect(lastCall().args).toEqual({
+      desktopId: "desktop_a",
+      command: { type: "delete_workspace", workspaceId: "ws_1" },
+      lane: "list",
+    });
   });
 });

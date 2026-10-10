@@ -11,6 +11,7 @@ import { iconGlyph, peerBadgeText } from "./peerIcons";
 import { getRemoteApprovalSettings, requestRemotePeer, setRemoteApprovalTier } from "./remotePeerClient";
 import { RemoteProvidersPanel } from "./RemoteProvidersPanel";
 import { RemoteSkillsPanel } from "./RemoteSkillsPanel";
+import { RemoteWorkspacesPanel } from "./RemoteWorkspacesPanel";
 
 /**
  * Settings for *another* machine, mirroring the phone's settings rows.
@@ -250,6 +251,12 @@ export function RemotePeerSettings({
           walking over is worst: a host whose key expired cannot run anything. */}
       {providersSupported
         ? <RemoteProvidersPanel available={available} peer={peer} />
+        : null}
+
+      {/* Workspaces are folders on that machine, so creating, pinning and
+          removing them is done there too. */}
+      {peer.features.includes("workspace_create_v1")
+        ? <RemoteWorkspacesPanel available={available} onChanged={onChanged} peer={peer} />
         : null}
 
       <SettingsSection description={t("settingsHostContentHint")} title={t("settingsHostContent")}>
