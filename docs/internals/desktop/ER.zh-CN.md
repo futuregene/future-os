@@ -216,8 +216,8 @@ Run Event 表示 Run 过程中的结构化事件。
 
 **GUI 存储：`run_events` 表已删除（`DROPPED_TABLES` 在旧库清除）。** Agent SQLite
 仍有自己的 `run_events` 表，为事件恢复真源；GUI 经 `get_events_since` 按游标读取。
-Agent 只保留最新若干个已结束 Run 的日志——更早的在后续 Run 启动时被回收
-（`SqliteStore::prune_settled_runs`），因此游标回放面向近期 Run；会话记录始终完整。
+仅在新运行结束时将完整日志转为持久语义快照，旧游标通过现有 projection 替换恢复。
+运行中、不完整或过大的日志保留原始分页回放；会话正文独立完整保存。
 高频 delta 使用 100 ms / 128 条 / 64 KiB 微批，语义事件、读取和关闭先刷盘。
 没有 GUI JSONL 兼容读取或运行时回退；未提交 delta 的异常退出边界见 §7。
 
@@ -769,7 +769,7 @@ JSON 的保留边界：
 - Entry 的非块内容（如 checkpoint、运行标记）保留 `content_json`；块数组使用 `[]` 标记，重建时从块表读取，不重复保存正文。`session_info` 内容只从 sessions 当前设置重建。
 - Entry metadata 保留扩展、附件引用及精确来源时间字面值，后者用于重复身份核验；查询和公开消息时间使用毫秒。供应商签名、未知块不能当作“无用字段”丢弃。
 - `entry_records` / `block_records` 是普通 SQL VIEW，不占第二份正文存储。它们重建 Agent 内部记录，不是对外 JSONL 兼容接口。
-- 事件 payload 是归一化事件，不是供应商原始网络字节；session/run 身份从列恢复，确定性 event_id 不重复存储。事件与完成正文存在有意的内容重叠，用于断线恢复；本期不清理事件、不改变过期游标协议。
+- 事件 payload 是归一化事件，不是供应商原始网络字节；session/run 身份从列恢复，确定性 event_id 不重复存储。事件与完成正文存在有意的内容重叠，用于断线恢复；已结束且完整的运行可以转为持久快照，过期游标通过现有 projection 替换恢复。
 
 ### 7.3 写入、分页与性能边界
 
@@ -785,7 +785,7 @@ Delta 按 100 ms / 128 条 / 64 KiB 微批写入；非 delta 语义事件、读�
 
 Agent 与 Desktop/Mobile/TUI/CLI 同步发布，不支持新旧 RPC 混搭。现有历史/消息/分叉接口统一使用 `id/kind/role/runId/createdAtMs/blocks/metadata/usage/run`；状态接口集中返回 `usage`、`requestedRun`，列表使用 `updatedAtMs`；缺少父会话用 null。原始实时事件的恢复协议独立保留，不新增旧字段别名或双格式响应。Desktop 内部 Tauri UI 记录仍按其职责映射，不冒充 Agent 公共 RPC。
 
-Agent 当前 `application_id` 为 `0x46555452`，`user_version=4` 只是本库 schema 标识，不是 RPC 版本，也不代表存在需要支持的已发布 v1。`user_version` 2 和 3 是更早的布局；2 只在列形状与当前一致时才被接受，否则启动即拒绝（`agent/src/session/database.rs:285-319`）。开发布局不保留升级链，未知库/不支持布局明确拒绝，绝不自动重建。正式发布后必须维护 schema 迁移；Desktop 已发布的 migrations 继续遵守 §1 的不可修改边界。
+Agent 当前 `application_id` 为 `0x46555452`，`user_version=5` 只是本库 schema 标识，不是 RPC 版本，也不代表存在需要支持的已发布 v1。`user_version` 2 和 3 是更早的布局；2 只在列形状与当前一致时才被接受，否则启动即拒绝（`agent/src/session/database.rs:285-319`）。开发布局不保留升级链，未知库/不支持布局明确拒绝，绝不自动重建。正式发布后必须维护 schema 迁移；Desktop 已发布的 migrations 继续遵守 §1 的不可修改边界。
 
 旧 JSONL 仅由一次性导入器读取、原文件保留；损坏会话隔离跳过，全局存储错误阻止启动。运维、隐私及备份边界见 [SQLite 迁移](../../architecture/sqlite-migration.zh-CN.md)。
 
@@ -794,7 +794,7 @@ Agent 当前 `application_id` 为 `0x46555452`，`user_version=4` 只是本库 s
 `delete_session` 保留单会话响应；`delete_sessions` 接收 1..32 个不同的
 `session_ids`，逐会话返回 `sessionId/deleted/error/errorCode/errorData`。忙碌会话
 继续保留重试意图；可删除会话及导入墓碑在 Agent 同一事务中提交，提交后才移除内存
-会话、发布删除事件，每批统一执行一次有页数预算的空间回收。Desktop 复用客户端
+会话、发布删除事件，每批统一通知后台执行有页数和时间预算的空间回收。Desktop 复用客户端
 分批发送 outbox，验证完整响应后统一提交确认和重试错误；并发队列处理合并。
 本地会话树删除使用有界事务，每个选中会话树通过保存点隔离失败。
 
@@ -805,3 +805,33 @@ Agent 当前 `application_id` 为 `0x46555452`，`user_version=4` 只是本库 s
 `COALESCE(NULLIF(TRIM(agent_session_id), ''), id)` 和
 `agent_delete_outbox(requested_at, session_id)` 的索引。归属查询使用索引化
 `EXISTS` 判断其他线程是否仍引用会话，保留空白字符和线程 ID 回退语义。
+
+
+### 已结束运行的快照与后台回收
+
+Agent schema 5 增加会话所有的 `run_snapshots`，删除会话时级联删除。
+运行中仍以原始日志为准；终态正文和 `agent_end` 都持久化后，后台按每页
+256 条事件构建快照，验证序号连续、epoch 一致，并合并同一流的连续分片。
+思考块、工具身份、替换式分片及语义事件顺序保持正确。构建在数据库工作
+线程之外进行，提交前在 `BEGIN IMMEDIATE` 下重新核验来源水位。
+
+完整快照发布与该运行全部原始记录删除在一个 FULL 同步事务中提交。
+构建、校验、删除或提交失败时完整保留原始日志，不自动重试。提交前崩溃
+保留原日志；提交后读取完整快照。读取快照或原始日志的选择也在同一个
+读事务中完成，避免竞态空窗。历史快照接口直接读取持久快照；旧游标的
+事件回放和订阅返回现有 projection 替换状态。重启恢复快照水位，不再把
+合并后的非连续序号当成原始日志缺口。
+
+有界结束通知队列是唯一整理触发条件。启动和定时维护都不扫描历史运行；
+整理失败、终态不完整、损坏或超过 4 MiB 快照预算的日志继续使用原始
+分页回放，重启或其他运行结束不会触发重试。超过 65,536 条原始事件的
+运行也保留原日志，以限制单次原子删除事务的规模。退出时在分页边界取消构建。
+用量和模型信息保留原序号供费用统计使用；持久序号高水位防止清理后
+SQLite 重用 rowid 导致历史费用顺序变化。未整理的历史对话仍可正常使用。
+
+删除仅通知后台回收已释放空间。空闲数据库任务不删除日志记录，包括
+旧版本已发布快照的冗余原始分片；每次最多尝试 128 个空闲页，并在页
+操作之间检查 10 ms 时间预算。单次 SQLite/系统操作不受该预算硬性限制。
+WAL 截断不等待读锁，未完成则重试。启动和后台均不自动执行全库 VACUUM。
+新库启用增量回收；已有 NONE 模式的库保持原布局，释放的空间由 SQLite
+内部复用。旧程序明确拒绝 schema 5，避免把已整理的历史误判为空日志。

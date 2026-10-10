@@ -312,9 +312,9 @@ Run Events are structured events produced during a Run.
 **GUI storage: the `run_events` table is deleted (`DROPPED_TABLES` clears it in
 old databases).** Agent SQLite still has its own `run_events` table, the event
 recovery source of truth; the GUI reads it by cursor via `get_events_since`.
-The Agent keeps only the newest settled Runs' journals — later Runs retire the
-rest (`SqliteStore::prune_settled_runs`) — so cursor replay is a recent-Run
-facility; the transcript stays the durable record.
+Newly completed journals are compacted into durable semantic snapshots on completion only. Older cursors
+receive the existing replacement projection; raw logs remain for active,
+incomplete or oversize runs. The transcript stays the durable message record.
 High-frequency deltas use 100 ms / 128 entries / 64 KiB micro-batches; semantic
 events, reads, and closes flush first. There is no GUI JSONL compatibility
 read or runtime fallback; the abnormal-exit boundary for uncommitted deltas is
@@ -1270,7 +1270,7 @@ kept independently — no new legacy-field aliases or dual-format responses. The
 Desktop-internal Tauri UI records still map per their duties and do not pass
 for the Agent's public RPC.
 
-The Agent's current `application_id` is `0x46555452`; `user_version=4` is only
+The Agent's current `application_id` is `0x46555452`; `user_version=5` is only
 this database's schema identifier — not an RPC version, and it does not mean a
 published v1 exists that must be supported. `user_version` 2 and 3 are previous
 layouts; 2 is accepted only when its columns match the current shape, otherwise
@@ -1292,7 +1292,7 @@ Operations, privacy, and backup boundaries are in
 `error`, `errorCode`, and `errorData` per session. Busy sessions remain retryable.
 Ready sessions are deleted together with import tombstones in one Agent
 transaction; memory eviction and deletion events follow commit, with one bounded
-space-reclamation pass per batch. Desktop drains its durable outbox through one
+background space-reclamation request per batch. Desktop drains its durable outbox through one
 client in batches, validates complete outcomes, and commits acknowledgements and
 retry errors together. Concurrent drains coalesce. Local tree deletion uses
 bounded transactions with a savepoint per selected tree.
@@ -1304,3 +1304,45 @@ on fresh installs after required columns exist. It adds indexes for
 exact effective-session expression `COALESCE(NULLIF(TRIM(agent_session_id), ''),
 id)`, and `agent_delete_outbox(requested_at, session_id)`. Ownership uses an
 indexed `EXISTS` for another thread, preserving whitespace and fallback semantics.
+
+
+### Settled run snapshots and idle reclamation
+
+Agent schema 5 adds `run_snapshots`, owned by a session with cascading deletion.
+Raw journals remain authoritative while a run is active. After its transcript
+terminal and `agent_end` are durable, maintenance reads 256 events at a time,
+validates a contiguous single-epoch prefix, and coalesces only matching streams.
+Thinking block identity, tool identity, replacement snapshots, semantic ordering,
+usage and error/terminal events are preserved. Construction happens off the SQLite
+worker. The immutable source watermark is rechecked under `BEGIN IMMEDIATE`.
+
+One FULL-synchronous transaction publishes the complete versioned snapshot and
+deletes all raw rows for that run. Any build, validation, deletion or commit
+failure keeps the entire raw journal usable; there is no automatic retry.
+Before commit, a crash leaves the original journal; after commit, readers choose
+the complete snapshot. Snapshot selection and raw reads share a read transaction.
+`get_run_snapshot` reads the saved representation; `get_events_since` and stream
+attachment return a replacement projection for a cursor preceding its watermark,
+and an exhausted known run remains known. Rehydration restores the snapshot
+cursor and projection without assuming contiguous coalesced event indices.
+
+A bounded completion-notification channel is the only compaction trigger. Startup
+and periodic maintenance never scan historical runs. Failed, incomplete, malformed
+or oversize journals retain raw paged replay, including across restarts, and are
+not retried when another run completes. Shutdown cancels construction between
+pages. The persistent snapshot budget is conservatively 4 MiB; runs exceeding 65,536
+raw events are retained to bound the atomic deletion transaction. History pricing
+keeps original `usage`/`model_changed` inputs and their sequence. A durable event
+sequence high water mark prevents SQLite rowid reuse from reordering later pricing
+inputs. Historical conversations remain usable without being compacted.
+
+Deletes request space reclamation instead of waiting for it. Idle SQLite slices
+only reclaim already freed pages and truncate the WAL; they never delete journal
+rows, including redundant raw tails left by previous builds. Each slice attempts
+at most 128 free pages, checking a 10 ms elapsed budget between page operations.
+WAL truncation is non-waiting and retries when readers hold it. The time budget
+does not bound one SQLite/OS operation. No automatic full `VACUUM` runs on startup
+or in the background. New databases enable incremental reclamation; populated
+NONE-mode databases keep their layout and reuse freed space internally. Older
+executables reject schema 5 rather than interpreting snapshots as missing raw
+histories.

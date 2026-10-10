@@ -256,6 +256,7 @@ struct RunState {
     events: Vec<SseEvent>,
     projection_events: Vec<SseEvent>,
     projection_complete: bool,
+    compacted: bool,
 }
 
 #[derive(Default)]
@@ -697,6 +698,7 @@ impl SseBroadcaster {
                 events: Vec::new(),
                 projection_events: Vec::new(),
                 projection_complete: true,
+                compacted: false,
             })),
             truncation_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             lag_count: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -903,16 +905,34 @@ impl SseBroadcaster {
                 );
             }
         }
-        let disk_events = if truncated && self.journal.lock().store.is_some() {
-            Some(
-                self.read_journal(run_id)?
-                    .into_iter()
-                    .filter(|event| event.idx > after_idx)
-                    .collect(),
-            )
+        let disk_page = if truncated && self.journal.lock().store.is_some() {
+            Some(self.read_journal_page(run_id, after_idx, false, None)?)
         } else {
             None
         };
+        if let Some((_, _, Some(snapshot))) = disk_page.as_ref() {
+            return Ok(RunAttachment {
+                receiver,
+                events: Vec::new(),
+                truncated: true,
+                projection: Some(snapshot.clone()),
+            });
+        }
+        if run.compacted && truncated {
+            return Ok(RunAttachment {
+                receiver,
+                events: Vec::new(),
+                truncated: true,
+                projection: Some(RunProjectionSnapshot {
+                    run_id: run.run_id.clone(),
+                    epoch: run.epoch,
+                    run_sequence: run.run_sequence,
+                    cursor: run.idx.saturating_sub(1),
+                    events: run.projection_events.clone(),
+                }),
+            });
+        }
+        let disk_events = disk_page.map(|(_, events, _)| events);
         let events = disk_events.unwrap_or_else(|| {
             run.events
                 .iter()
@@ -1003,20 +1023,33 @@ impl SseBroadcaster {
     }
 
     pub fn start_run_with_sequence(&self, run_id: String, epoch: i64, run_sequence: Option<u64>) {
-        let (recovered, recovery_failed) = match self.read_journal(&run_id) {
-            Ok(events) => (events, false),
-            Err(error) => {
-                self.journal_health
-                    .fail(format!("event journal recovery failed: {error:#}"));
-                (Vec::new(), true)
-            }
-        };
+        let (recovered, snapshot, recovery_failed) =
+            match self.read_journal_page(&run_id, -1, false, None) {
+                Ok((_, events, snapshot)) => (events, snapshot, false),
+                Err(error) => {
+                    self.journal_health
+                        .fail(format!("event journal recovery failed: {error:#}"));
+                    (Vec::new(), None, true)
+                }
+            };
         let mut run = self.run.lock();
         run.run_id = run_id;
         run.epoch = epoch;
         run.run_sequence = run_sequence
             .and_then(|value| i64::try_from(value).ok())
             .unwrap_or(-1);
+        run.compacted = snapshot.is_some();
+        if let Some(snapshot) = snapshot {
+            run.epoch = snapshot.epoch;
+            run.run_sequence = snapshot.run_sequence;
+            run.idx = snapshot.cursor.saturating_add(1);
+            run.events.clear();
+            run.projection_events = snapshot.events;
+            run.projection_complete = true;
+            self.journal_health.clear();
+            self.journal_health.clear_interrupt();
+            return;
+        }
         run.idx = recovered
             .last()
             .map_or(0, |event| event.idx.saturating_add(1));
@@ -1071,12 +1104,30 @@ impl SseBroadcaster {
             // journal remains the canonical history.  GUI/TUI inspectors and
             // reconnect backfill must not lose that history merely because a
             // later run became active.
-            let (known, events) = self.read_journal_page(run_id, since_idx, false, limit)?;
+            let (known, events, snapshot) =
+                self.read_journal_page(run_id, since_idx, false, limit)?;
             if !known {
                 anyhow::bail!("run `{run_id}` is not known by this session");
             }
             let min_idx = events.first().map(|event| event.idx).unwrap_or(0);
-            return Ok((run_id.to_string(), events, min_idx, None));
+            let projection = snapshot.filter(|snapshot| since_idx < snapshot.cursor);
+            return Ok((run_id.to_string(), events, min_idx, projection));
+        }
+        if run.compacted {
+            let projection =
+                (since_idx < run.idx.saturating_sub(1)).then(|| RunProjectionSnapshot {
+                    run_id: run.run_id.clone(),
+                    epoch: run.epoch,
+                    run_sequence: run.run_sequence,
+                    cursor: run.idx.saturating_sub(1),
+                    events: run.projection_events.clone(),
+                });
+            return Ok((
+                run_id.to_string(),
+                Vec::new(),
+                run.idx.saturating_sub(1),
+                projection,
+            ));
         }
         let min_idx = run.events.first().map(|e| e.idx).unwrap_or(0);
         let truncated = since_idx.saturating_add(1) < min_idx;
@@ -1105,11 +1156,16 @@ impl SseBroadcaster {
                 );
             }
         }
-        let disk_events = if truncated && self.journal.lock().store.is_some() {
-            Some(self.read_journal_page(run_id, since_idx, false, limit)?.1)
+        let disk_page = if truncated && self.journal.lock().store.is_some() {
+            Some(self.read_journal_page(run_id, since_idx, false, limit)?)
         } else {
             None
         };
+        if let Some((_, _, Some(snapshot))) = disk_page.as_ref() {
+            let projection = (since_idx < snapshot.cursor).then(|| snapshot.clone());
+            return Ok((run_id.to_string(), Vec::new(), snapshot.cursor, projection));
+        }
+        let disk_events = disk_page.map(|(_, events, _)| events);
         let events = disk_events.unwrap_or_else(|| {
             run.events
                 .iter()
@@ -1157,8 +1213,11 @@ impl SseBroadcaster {
         // Historical reads must not block active broadcasts while decoding or
         // folding a long journal. The DB read itself is transaction-scoped.
         drop(run);
-        let (known, events) = self.read_journal_page(run_id, -1, false, None)?;
+        let (known, events, snapshot) = self.read_journal_page(run_id, -1, false, None)?;
         anyhow::ensure!(known, "run `{run_id}` is not known by this session");
+        if let Some(snapshot) = snapshot {
+            return Ok(snapshot);
+        }
         anyhow::ensure!(
             events
                 .iter()
@@ -1203,7 +1262,14 @@ impl SseBroadcaster {
         since_idx: i64,
         session_scope: bool,
     ) -> anyhow::Result<(bool, Vec<SseEvent>)> {
-        self.read_journal_page(run_id, since_idx, session_scope, None)
+        let (known, events, _) = self.read_journal_page(run_id, since_idx, session_scope, None)?;
+        Ok((known, events))
+    }
+
+    #[cfg(test)]
+    fn read_journal(&self, run_id: &str) -> anyhow::Result<Vec<SseEvent>> {
+        let (_, events, snapshot) = self.read_journal_page(run_id, -1, false, None)?;
+        Ok(snapshot.map_or(events, |s| s.events))
     }
 
     fn read_journal_page(
@@ -1212,30 +1278,26 @@ impl SseBroadcaster {
         since_idx: i64,
         session_scope: bool,
         limit: Option<usize>,
-    ) -> anyhow::Result<(bool, Vec<SseEvent>)> {
+    ) -> anyhow::Result<(bool, Vec<SseEvent>, Option<RunProjectionSnapshot>)> {
         let journal = self.journal.lock();
         let Some(store) = journal.store.as_ref() else {
-            return Ok((false, Vec::new()));
+            return Ok((false, Vec::new(), None));
         };
         journal
             .writer
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("event persistence worker is unavailable"))?
             .flush()?;
-        store.typed_events_page(&journal.session_id, run_id, since_idx, session_scope, limit)
-    }
-
-    fn read_journal(&self, run_id: &str) -> anyhow::Result<Vec<SseEvent>> {
-        let journal = self.journal.lock();
-        let Some(store) = journal.store.as_ref() else {
-            return Ok(Vec::new());
-        };
-        journal
-            .writer
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("event persistence worker is unavailable"))?
-            .flush()?;
-        store.typed_events(&journal.session_id, run_id)
+        let page =
+            store.replay_page(&journal.session_id, run_id, since_idx, session_scope, limit)?;
+        let snapshot = page.snapshot.map(|snapshot| RunProjectionSnapshot {
+            run_id: snapshot.run_id,
+            epoch: snapshot.epoch,
+            run_sequence: snapshot.run_sequence,
+            cursor: snapshot.cursor,
+            events: snapshot.events,
+        });
+        Ok((page.known, page.events, snapshot))
     }
 }
 
@@ -1274,11 +1336,12 @@ pub(super) fn apply_to_projection(projection: &mut Vec<SseEvent>, event: &SseEve
                 serde_json::from_str::<serde_json::Value>(&previous.data),
                 serde_json::from_str::<serde_json::Value>(&event.data),
             ) {
-                let same_tool_stream =
-                    !matches!(event.event_type.as_str(), "toolcall_delta" | "tool_delta")
-                        || ["tool_id", "tc_index"]
-                            .iter()
-                            .all(|key| previous_data.get(key) == next_data.get(key));
+                let same_tool_stream = super::run_snapshot::same_delta_stream(
+                    previous,
+                    event,
+                    &previous_data,
+                    &next_data,
+                );
                 if let (Some(previous_text), Some(next_text)) = (
                     previous_data.get("text").and_then(|value| value.as_str()),
                     next_data.get("text").and_then(|value| value.as_str()),
