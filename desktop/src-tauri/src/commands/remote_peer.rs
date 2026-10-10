@@ -121,6 +121,60 @@ pub async fn remote_peer_request(
     runtime::request(&desktop_id, command, lane.as_deref().unwrap_or("list")).await
 }
 
+/// List one directory inside a session on a host.
+///
+/// Its own command rather than a `remote_peer_request` call because the answer
+/// is a typed listing the UI navigates, and because the session root has to be
+/// addressable — an empty path means "the session's own directory".
+#[tauri::command]
+pub async fn remote_peer_list_files(
+    desktop_id: String,
+    session_id: String,
+    path: Option<String>,
+) -> Result<Value, crate::AppError> {
+    runtime::request(
+        &desktop_id,
+        serde_json::json!({
+            "type": "list_session_files",
+            "sessionId": session_id,
+            "filePath": path.unwrap_or_default(),
+        }),
+        &session_id,
+    )
+    .await
+}
+
+/// Pull a file from a host and write it to a local path.
+///
+/// The destination is chosen by the caller (a native save dialog on the
+/// desktop), so this command never guesses where a file should land. It returns
+/// the name the host gave the file, which is what the UI reports: the host may
+/// rename a preview variant, and telling the user a name the file does not have
+/// would make the saved copy unfindable.
+#[tauri::command]
+pub async fn remote_peer_download_file(
+    desktop_id: String,
+    session_id: String,
+    path: String,
+    name: Option<String>,
+    variant: Option<String>,
+    destination: String,
+) -> Result<String, crate::AppError> {
+    let fetched = crate::remote_peer::transfer::download(
+        &desktop_id,
+        &session_id,
+        &path,
+        name.as_deref(),
+        variant.as_deref().unwrap_or("original"),
+    )
+    .await?;
+    crate::remote_peer::transfer::write_atomically(
+        std::path::Path::new(&destination),
+        &fetched.bytes,
+    )?;
+    Ok(fetched.name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +212,8 @@ mod tests {
                 remote_peer_set_label,
                 remote_peer_sessions,
                 remote_peer_workspaces,
+                remote_peer_list_files,
+                remote_peer_download_file,
                 remote_peer_request,
             ],
             &[
@@ -171,6 +227,21 @@ mod tests {
                 ),
                 ("remote_peer_sessions", serde_json::json!({})),
                 ("remote_peer_workspaces", serde_json::json!({})),
+                (
+                    "remote_peer_list_files",
+                    serde_json::json!({ "desktopId": "d", "sessionId": "s", "path": 1 }),
+                ),
+                (
+                    "remote_peer_download_file",
+                    serde_json::json!({
+                        "desktopId": "d",
+                        "sessionId": "s",
+                        "path": "p",
+                        "name": "n",
+                        "variant": "original",
+                        "destination": 1,
+                    }),
+                ),
                 (
                     "remote_peer_request",
                     serde_json::json!({ "desktopId": "d", "command": {}, "lane": 1 }),
@@ -336,6 +407,120 @@ mod tests {
             .await
             .expect_err("an unpaired host has no catalogue");
         assert!(error.to_string().contains("peer_not_paired"), "{error}");
+        teardown().await;
+    }
+
+    /// The file list command addresses a session and defaults the path to the
+    /// session root, which is the host's own meaning for an empty path.
+    #[tokio::test]
+    async fn list_files_asks_the_host_for_the_session_root() {
+        let (_home, fx) = start("peer-cmd-list-files").await;
+        let desktop_id = fx.paired.creds.desktop_id.clone();
+        let noop: runtime::Emitter = std::sync::Arc::new(|_| {});
+        runtime::connect_with_emitter(&desktop_id, Some(noop))
+            .await
+            .expect("connect");
+
+        // The host has no such session, so the read fails — what is asserted is
+        // that the command forwarded a *well formed* request rather than
+        // refusing one of its own arguments.
+        let error = remote_peer_list_files(desktop_id, "sess_missing".into(), None)
+            .await
+            .expect_err("no such session");
+        assert!(
+            !error.to_string().contains("peer_not_connected"),
+            "the command must reach the host, got: {error}"
+        );
+
+        teardown().await;
+    }
+
+    /// Downloading asks the host for a transfer it never prepared, so it fails —
+    /// and the file must not exist afterwards. The command is the layer that
+    /// decides *where* bytes land, so "nothing was written on failure" is the
+    /// property worth asserting here.
+    #[tokio::test]
+    async fn a_failed_download_writes_nothing() {
+        let (_home, fx) = start("peer-cmd-download-fails").await;
+        let desktop_id = fx.paired.creds.desktop_id.clone();
+        let noop: runtime::Emitter = std::sync::Arc::new(|_| {});
+        runtime::connect_with_emitter(&desktop_id, Some(noop))
+            .await
+            .expect("connect");
+
+        let destination = std::env::temp_dir()
+            .join("futureos-peer-cmd-download")
+            .join("never-written.txt");
+        std::fs::create_dir_all(destination.parent().expect("parent")).expect("create dir");
+        let _ = std::fs::remove_file(&destination);
+
+        let error = remote_peer_download_file(
+            desktop_id,
+            "sess_missing".into(),
+            "/tmp/whatever.txt".into(),
+            Some("whatever.txt".into()),
+            None,
+            destination.to_string_lossy().into_owned(),
+        )
+        .await
+        .expect_err("an unprepared transfer cannot be pulled");
+
+        assert!(!error.to_string().is_empty(), "a reason must be reported");
+        assert!(
+            !destination.exists(),
+            "a download that failed must not leave a file at the destination"
+        );
+
+        teardown().await;
+    }
+
+    /// The happy path through the command, end to end: the client asks a real
+    /// host to prepare a real file, pulls it in chunks, and writes it where the
+    /// caller chose.
+    ///
+    /// An absolute path is what makes this reachable without an agent session:
+    /// the host resolves an absolute path directly (`resolve_local_link`), and
+    /// its policy check only guards credential files. So this exercises the whole
+    /// chain — prepare, the field mapping from the host's declaration, the chunk
+    /// pull, the integrity check and the write — rather than a stand-in for it.
+    #[tokio::test]
+    async fn a_download_reaches_the_chosen_destination() {
+        let (_home, fx) = start("peer-cmd-download-writes").await;
+        let desktop_id = fx.paired.creds.desktop_id.clone();
+        let noop: runtime::Emitter = std::sync::Arc::new(|_| {});
+        runtime::connect_with_emitter(&desktop_id, Some(noop))
+            .await
+            .expect("connect");
+
+        let source_dir = std::env::temp_dir().join("futureos-peer-cmd-download-src");
+        std::fs::create_dir_all(&source_dir).expect("create dir");
+        let source = source_dir.join("report.txt");
+        let contents = b"the report contents";
+        std::fs::write(&source, contents).expect("write the source file");
+
+        let destination = std::env::temp_dir()
+            .join("futureos-peer-cmd-download-dst")
+            .join("saved.txt");
+        std::fs::create_dir_all(destination.parent().expect("parent")).expect("create dir");
+        let _ = std::fs::remove_file(&destination);
+
+        let name = remote_peer_download_file(
+            desktop_id,
+            // The session is only consulted to name a file when the caller does
+            // not supply a name, and an absolute path skips it entirely.
+            "sess_unused".into(),
+            source.to_string_lossy().into_owned(),
+            Some("report.txt".into()),
+            None,
+            destination.to_string_lossy().into_owned(),
+        )
+        .await
+        .expect("download");
+
+        // The name the host chose, which is what the UI reports as saved.
+        assert_eq!(name, "report.txt");
+        assert_eq!(std::fs::read(&destination).expect("read back"), contents);
+
         teardown().await;
     }
 

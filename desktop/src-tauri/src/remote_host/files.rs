@@ -1236,6 +1236,51 @@ pub fn clear_all() {
     clear_preview_cache();
 }
 
+/// Serve a local file as if a `download_prepare` had named it.
+///
+/// The client's pull path needs a host that will really publish chunks, and
+/// reaching one through `download_prepare` would mean standing up an agent
+/// session whose attachment the host is willing to export. That would test the
+/// host's policy, which is already covered in this module; what is new and
+/// worth exercising is the *client's* half — registering the pull, joining the
+/// byte publish to the acknowledgement, and checking the assembled file
+/// against the size and hash the host declared. So the record is created here,
+/// with the same shape and the same serving path a prepared download uses.
+///
+/// Returned as the **wire form** rather than the struct: that is what really
+/// travels, so a test reading it also checks the field names the two sides
+/// agree on.
+#[cfg(test)]
+pub(crate) fn register_download_for_test(path: &Path) -> serde_json::Value {
+    let size = std::fs::metadata(path)
+        .expect("the test file to exist")
+        .len();
+    let content_hash = sha256_file(path).expect("hash the test file");
+    let transfer_id = new_transfer_id("download");
+    DOWNLOADS.lock().unwrap().insert(
+        transfer_id.clone(),
+        DownloadRecord {
+            path: path.to_path_buf(),
+            size,
+            created_at: SystemTime::now(),
+        },
+    );
+    serde_json::to_value(DownloadInfo {
+        transfer_id,
+        name: path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        mime_type: "application/octet-stream".to_string(),
+        size,
+        content_hash,
+        preview_kind: "file".to_string(),
+        variant: "original".to_string(),
+        chunk_bytes: CHUNK_BYTES,
+    })
+    .expect("a declaration always serializes")
+}
+
 pub(crate) fn write_upload_chunk(
     transfer_id: &str,
     index: u64,

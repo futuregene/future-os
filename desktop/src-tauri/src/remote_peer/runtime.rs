@@ -23,6 +23,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::OnceLock;
+use std::time::Duration;
 use tokio::sync::Mutex;
 
 /// What the UI shows for one paired host. Never carries a token or a seed.
@@ -85,6 +86,14 @@ struct Runtime {
     /// The last failure per host. Kept after a disconnect so the list can say
     /// *why* a host is not connected instead of only that it is not.
     errors: HashMap<String, String>,
+    /// One inbox per chunk pull that is in flight, keyed by
+    /// `(desktop, transfer, index)`.
+    ///
+    /// The bytes arrive on a *different* subject from the acknowledgement, so
+    /// the two halves of one pull have to be joined somewhere; this is where.
+    /// Keyed by all three parts because a host serves several downloads with
+    /// different transfer ids, and the same index appears in every one of them.
+    chunks: HashMap<(String, String, u64), tokio::sync::oneshot::Sender<Vec<u8>>>,
 }
 
 /// The retry schedule for a dropped connection, in seconds.
@@ -155,6 +164,9 @@ pub(crate) async fn reset_for_test() {
     }
     live.live.clear();
     live.errors.clear();
+    // A pull in flight has no connection to complete on, so its waiter would
+    // hang until the client's own timeout. Dropping the senders wakes it now.
+    live.chunks.clear();
 }
 
 /// How many hosts are currently connected. Tests assert on counts rather than
@@ -452,10 +464,17 @@ pub(crate) async fn connect_with_emitter(
         if let Some(previous) = live.tasks.remove(desktop_id) {
             previous.abort();
         }
-        if let Some((channel, events, presence, emitter)) = stream {
+        if let Some((channel, events, presence, transfers, emitter)) = stream {
             live.tasks.insert(
                 desktop_id.to_string(),
-                spawn_event_stream(desktop_id.to_string(), channel, events, presence, emitter),
+                spawn_event_stream(
+                    desktop_id.to_string(),
+                    channel,
+                    events,
+                    presence,
+                    transfers,
+                    emitter,
+                ),
             );
         }
         live.live.insert(desktop_id.to_string(), peer_session);
@@ -532,10 +551,11 @@ async fn resume(desktop_id: &str, emitter: Option<Emitter>) -> Result<(), crate:
     connect_with_emitter(desktop_id, emitter).await.map(|_| ())
 }
 
-/// The stream half of a connection: the traffic-key handle and the two
-/// subscriptions the event task drains.
+/// The stream half of a connection: the traffic-key handle plus the
+/// subscriptions the event task drains (events, presence, file-transfer bytes).
 type StreamParts = (
     std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
+    async_nats::Subscriber,
     async_nats::Subscriber,
     async_nats::Subscriber,
     Emitter,
@@ -554,9 +574,13 @@ async fn attach_stream(
     desktop_id: &str,
 ) -> Option<StreamParts> {
     match peer_session.subscribe().await {
-        Ok((events, presence)) => {
-            Some((peer_session.channel_for_stream(), events, presence, emitter))
-        }
+        Ok((events, presence, transfers)) => Some((
+            peer_session.channel_for_stream(),
+            events,
+            presence,
+            transfers,
+            emitter,
+        )),
         Err(error) => {
             eprintln!("remote_peer: could not subscribe for {desktop_id}: {error}");
             None
@@ -564,7 +588,11 @@ async fn attach_stream(
     }
 }
 
-/// Drain the host's event and presence subscriptions into `emitter`.
+/// Drain the host's event, presence and file-transfer subscriptions.
+///
+/// Events and presence are pushed at the UI as `PeerEvent`s. Transfer bytes are
+/// not: they are the other half of a pull the caller is waiting on, so they are
+/// handed to that caller's inbox instead of being broadcast.
 ///
 /// The traffic-key mutex is shared with the command path, so this task and a
 /// concurrent request take the same short lock; neither holds it across an
@@ -580,34 +608,53 @@ fn spawn_event_stream(
     channel: std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
     mut events: async_nats::Subscriber,
     mut presence: async_nats::Subscriber,
+    mut transfers: async_nats::Subscriber,
     emitter: Emitter,
 ) -> crate::runtime::TaskHandle {
     crate::runtime::spawn(async move {
+        /// The decrypted bytes, whatever they are: events are JSON, transfer
+        /// chunks are a slice of a file. Kept as bytes so the chunk path does
+        /// not have to pretend a binary payload is a document.
+        fn open_bytes(
+            channel: &std::sync::Mutex<future_remote_crypto::Channel>,
+            subject: &str,
+            payload: &[u8],
+        ) -> Option<Vec<u8>> {
+            channel
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .open(subject, payload)
+                .ok()
+        }
         fn open(
             channel: &std::sync::Mutex<future_remote_crypto::Channel>,
             subject: &str,
             payload: &[u8],
         ) -> Option<Value> {
-            let opened = channel
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .open(subject, payload)
-                .ok()?;
-            serde_json::from_slice(&opened).ok()
+            serde_json::from_slice(&open_bytes(channel, subject, payload)?).ok()
         }
         loop {
             let next = tokio::select! {
                 message = events.next() => message.map(|message| ("event", message)),
                 message = presence.next() => message.map(|message| ("presence", message)),
+                message = transfers.next() => message.map(|message| ("chunk", message)),
             };
             let Some((kind, message)) = next else {
-                // Both streams ended: the socket is gone. The next status poll
+                // Every stream ended: the socket is gone. The next status poll
                 // and the next command both notice; this task just stops.
                 return;
             };
+            if kind == "chunk" {
+                let Some(bytes) = open_bytes(&channel, &message.subject, &message.payload) else {
+                    // Unauthenticated: a relay can inject one at will, and the
+                    // connection is not at fault, so drop it.
+                    continue;
+                };
+                deliver_chunk(&desktop_id, &message.subject, bytes).await;
+                continue;
+            }
             let Some(payload) = open(&channel, &message.subject, &message.payload) else {
-                // Unauthenticated or unparsable: a relay can inject either at
-                // will and the connection is not at fault, so drop it.
+                // Unparsable or unauthenticated; same reasoning as above.
                 continue;
             };
             emitter(PeerEvent {
@@ -617,6 +664,44 @@ fn spawn_event_stream(
             });
         }
     })
+}
+
+/// Hand one decrypted chunk to whoever is waiting for it.
+///
+/// A chunk nobody is waiting for is dropped rather than queued: the host only
+/// sends bytes in answer to a pull, so an unmatched one is either a duplicate
+/// from a retry or a reply to a pull that already timed out. Buffering it would
+/// keep file bytes in memory for a download the caller has abandoned.
+async fn deliver_chunk(desktop_id: &str, subject: &str, bytes: Vec<u8>) {
+    let Some((transfer_id, index)) = parse_chunk_subject(subject) else {
+        return;
+    };
+    let waiter =
+        runtime()
+            .lock()
+            .await
+            .chunks
+            .remove(&(desktop_id.to_string(), transfer_id, index));
+    if let Some(waiter) = waiter {
+        // A closed receiver means the pull gave up; the bytes are then unwanted.
+        let _ = waiter.send(bytes);
+    }
+}
+
+/// `transfer_id` and chunk index from a `xfer.down` subject.
+///
+/// Returns `None` for anything else, including a subject from another pair:
+/// the host's own layout is `p.{pair}.xfer.down.{transfer}.chunk.{index}`, and a
+/// chunk whose shape does not match that is not something to guess at.
+pub(crate) fn parse_chunk_subject(subject: &str) -> Option<(String, u64)> {
+    let parts: Vec<&str> = subject.split('.').collect();
+    let ["p", _pair, "xfer", "down", transfer_id, "chunk", index] = parts.as_slice() else {
+        return None;
+    };
+    index
+        .parse::<u64>()
+        .ok()
+        .map(|index| ((*transfer_id).to_string(), index))
 }
 
 /// Drop the connection but keep the pairing (the user's "disconnect").
@@ -722,6 +807,118 @@ pub(crate) async fn request(
             // The connection was healthy and then was not: exactly the case
             // automatic recovery is for. An explicit disconnect takes the
             // supervisor with it, so this cannot resurrect a stopped link.
+            if !live.supervisors.contains_key(desktop_id) {
+                let supervisor = spawn_supervisor(desktop_id.to_string(), None);
+                live.supervisors.insert(desktop_id.to_string(), supervisor);
+            }
+        }
+    }
+    result
+}
+
+/// Where a chunk pull is requested. Built from the live session so the subject
+/// matches *this* pairing rather than whatever the credential file says.
+pub(crate) async fn transfer_pull_subject(
+    desktop_id: &str,
+    transfer_id: &str,
+    index: u64,
+) -> Result<String, crate::AppError> {
+    let live = runtime().lock().await;
+    let Some(session) = live.live.get(desktop_id) else {
+        return Err(crate::AppError::Message("peer_not_connected".into()));
+    };
+    Ok(session.transfer_pull_subject(transfer_id, index))
+}
+
+/// Hold a place for the bytes of one chunk.
+pub(crate) async fn register_chunk(
+    desktop_id: &str,
+    transfer_id: &str,
+    index: u64,
+    sender: tokio::sync::oneshot::Sender<Vec<u8>>,
+) {
+    runtime().lock().await.chunks.insert(
+        (desktop_id.to_string(), transfer_id.to_string(), index),
+        sender,
+    );
+}
+
+/// Give up a place for one chunk.
+pub(crate) async fn forget_chunk(desktop_id: &str, transfer_id: &str, index: u64) {
+    runtime()
+        .lock()
+        .await
+        .chunks
+        .remove(&(desktop_id.to_string(), transfer_id.to_string(), index));
+}
+
+/// The bytes of one chunk: ask, and join the two halves of the answer.
+///
+/// The bytes arrive as a publish on a different subject from the pull's
+/// acknowledgement, so this is the only place the two are brought together —
+/// which is also why the waiter is registered *before* the request: the host
+/// publishes the chunk first, and a waiter added afterwards would miss it.
+pub(crate) async fn pull_chunk(
+    desktop_id: &str,
+    transfer_id: &str,
+    index: u64,
+) -> Result<Vec<u8>, crate::AppError> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    register_chunk(desktop_id, transfer_id, index, sender).await;
+    let subject = match transfer_pull_subject(desktop_id, transfer_id, index).await {
+        Ok(subject) => subject,
+        Err(error) => {
+            forget_chunk(desktop_id, transfer_id, index).await;
+            return Err(error);
+        }
+    };
+    if let Err(error) = request_at(desktop_id, json!({}), &subject, CHUNK_PULL_TIMEOUT).await {
+        forget_chunk(desktop_id, transfer_id, index).await;
+        return Err(error);
+    }
+    match tokio::time::timeout(CHUNK_PULL_TIMEOUT, receiver).await {
+        Ok(Ok(bytes)) => Ok(bytes),
+        // The sender was dropped rather than used: the connection went away, or
+        // the runtime was cleared.
+        Ok(Err(_)) => Err(crate::AppError::RemoteTransport(
+            "remote_download_chunk_cancelled".into(),
+        )),
+        Err(_) => {
+            forget_chunk(desktop_id, transfer_id, index).await;
+            Err(crate::AppError::RemoteTransport(
+                "remote_download_chunk_timeout".into(),
+            ))
+        }
+    }
+}
+
+/// The timeout for one chunk pull, matching the phone's own.
+const CHUNK_PULL_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// One command on an explicit subject, for the routes that are not the
+/// session-keyed command lane (file transfer addresses a transfer id).
+pub(crate) async fn request_at(
+    desktop_id: &str,
+    mut command: Value,
+    subject: &str,
+    timeout: Duration,
+) -> Result<Value, crate::AppError> {
+    ensure_connected(desktop_id).await?;
+    if let Some(object) = command.as_object_mut() {
+        object
+            .entry("id")
+            .or_insert_with(|| json!(crate::store::create_id("cmd")));
+    }
+    let mut live = runtime().lock().await;
+    let Some(session) = live.live.get_mut(desktop_id) else {
+        return Err(crate::AppError::Message("peer_not_connected".into()));
+    };
+    let result = session.request(subject, command, timeout).await;
+    if let Err(error) = &result {
+        if matches!(error, crate::AppError::RemoteTransport(_)) {
+            live.errors
+                .insert(desktop_id.to_string(), error.to_string());
+            live.live.remove(desktop_id);
             if !live.supervisors.contains_key(desktop_id) {
                 let supervisor = spawn_supervisor(desktop_id.to_string(), None);
                 live.supervisors.insert(desktop_id.to_string(), supervisor);

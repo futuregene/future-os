@@ -97,17 +97,38 @@ impl PeerSession {
             .map_err(|error| crate::AppError::RemoteTransport(error.to_string()))
     }
 
-    /// Subscribe to the host's event and presence streams.
+    /// Subscribe to the host's event, presence and file-transfer streams.
     ///
-    /// `p.{pair}.evt.>` carries session events and `p.{pair}.presence` the
-    /// host's liveness. Both are decrypted with the same channel as commands,
-    /// so a pushed event is authenticated exactly as strongly as a reply.
+    /// `p.{pair}.evt.>` carries session events, `p.{pair}.presence` the host's
+    /// liveness, and `p.{pair}.xfer.down.>` the file bytes a `pull` produces.
+    /// All three are decrypted with the same channel as commands, so pushed
+    /// bytes are authenticated exactly as strongly as a reply.
+    ///
+    /// The transfer subscription is taken at connect time rather than around a
+    /// download because of the order the host uses: it publishes the chunk
+    /// *before* it acknowledges the pull (so the bytes are observably on the
+    /// wire first). A subscription opened after the pull request would therefore
+    /// race the very publish it is waiting for, and NATS Core does not replay.
     pub(crate) async fn subscribe(
         &self,
-    ) -> Result<(async_nats::Subscriber, async_nats::Subscriber), crate::AppError> {
+    ) -> Result<
+        (
+            async_nats::Subscriber,
+            async_nats::Subscriber,
+            async_nats::Subscriber,
+        ),
+        crate::AppError,
+    > {
         let events = subscribe(&self.client, format!("p.{}.evt.>", self.pair_id)).await?;
         let presence = subscribe(&self.client, format!("p.{}.presence", self.pair_id)).await?;
-        Ok((events, presence))
+        let transfers = subscribe(&self.client, format!("p.{}.xfer.down.>", self.pair_id)).await?;
+        Ok((events, presence, transfers))
+    }
+
+    /// Where a chunk pull is requested: the host's upload lane, since the client
+    /// is pulling *from* it.
+    pub(crate) fn transfer_pull_subject(&self, transfer_id: &str, index: u64) -> String {
+        format!("p.{}.xfer.up.{transfer_id}.pull.{index}", self.pair_id)
     }
 
     /// A command subject for `session_key`: the host routes on the trailing
