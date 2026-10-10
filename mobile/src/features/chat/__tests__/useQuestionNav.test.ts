@@ -20,12 +20,12 @@ const scrollEvent = (y: number): NativeSyntheticEvent<NativeScrollEvent> =>
     },
   }) as NativeSyntheticEvent<NativeScrollEvent>;
 
-// View order: the newest question is index 1, the oldest index 3.
+// View order, newest first: answer 2, question 2, answer 1, question 1.
 const ITEMS = [
-  { id: "answer-2", kind: "message", role: "assistant" },
-  { id: "question-2", kind: "message", role: "user" },
-  { id: "answer-1", kind: "message", role: "assistant" },
-  { id: "question-1", kind: "message", role: "user" },
+  { id: "answer-2", kind: "message", role: "assistant", text: "…" },
+  { id: "question-2", kind: "message", role: "user", text: "…" },
+  { id: "answer-1", kind: "message", role: "assistant", text: "…" },
+  { id: "question-1", kind: "message", role: "user", text: "…" },
 ] as unknown as TimelineItem[];
 
 describe("useQuestionNav", () => {
@@ -42,12 +42,27 @@ describe("useQuestionNav", () => {
     sessionId = "s1",
     atLatest = true,
     items = ITEMS,
+    hasOlderHistory = false,
+    loadingOlder = false,
+    loadOlder,
   }: {
     sessionId?: string;
     atLatest?: boolean;
     items?: TimelineItem[];
+    hasOlderHistory?: boolean;
+    loadingOlder?: boolean;
+    loadOlder?: () => Promise<false | string[]>;
   }): null {
-    result.current = useQuestionNav({ sessionId, items, listRef, atLatest, onTakeOver });
+    result.current = useQuestionNav({
+      sessionId,
+      items,
+      listRef,
+      atLatest,
+      onTakeOver,
+      hasOlderHistory,
+      loadingOlder,
+      loadOlder,
+    });
     return null;
   }
 
@@ -89,26 +104,45 @@ describe("useQuestionNav", () => {
 
   test("offers ↑ from the tail, before the reader has scrolled at all", () => {
     // The viewability report is all a freshly opened conversation gets: the
-    // list is pinned to the tail and no scroll event has been delivered.
+    // list is pinned to the tail and no scroll event has been delivered. ↑
+    // is the reply tail of the turn on screen.
     reportRows(0, null);
     expect(result.current.visible).toBe(true);
-    expect(result.current.previous).toBe(1);
-    // Every newer question is already on screen, so ↓ has nothing to offer.
+    expect(result.current.previous).toEqual({
+      kind: "replyTail",
+      index: 0,
+      nextQuestion: null,
+    });
+    // Every newer rung is already on screen, so ↓ has nothing to offer.
     expect(result.current.next).toBeNull();
   });
 
   test("offers both directions once the reader is inside a turn", () => {
     act(() => result.current.onScroll(scrollEvent(600)));
-    // The top edge is inside the newest answer, which is not fully visible.
+    // The top edge is inside the newest answer, which is not fully visible:
+    // ↑ offers the newest reply's tail first.
     reportRows(0, null);
     expect(result.current.visible).toBe(true);
-    expect(result.current.previous).toBe(1);
+    expect(result.current.previous).toEqual({
+      kind: "replyTail",
+      index: 0,
+      nextQuestion: null,
+    });
     expect(result.current.next).toBeNull();
 
-    // Further up: the top edge is inside the first answer.
+    // Further up: the top edge cuts the first answer, so ↑ offers its tail
+    // and ↓ the newest turn's own question end.
     reportRows(2, null);
-    expect(result.current.previous).toBe(3);
-    expect(result.current.next).toBe(1);
+    expect(result.current.previous).toEqual({
+      kind: "replyTail",
+      index: 2,
+      nextQuestion: 1,
+    });
+    expect(result.current.next).toEqual({
+      kind: "questionEnd",
+      question: 1,
+      tail: 0,
+    });
   });
 
   test("a drag as well as an offset marks the reading position", () => {
@@ -121,26 +155,42 @@ describe("useQuestionNav", () => {
   test("↓ retracts when the reader returns to the tail, ↑ does not", () => {
     act(() => result.current.onScroll(scrollEvent(600)));
     reportRows(2, null);
-    expect(result.current.next).toBe(1);
+    expect(result.current.next).not.toBeNull();
 
     act(() => result.current.onScroll(scrollEvent(0)));
     expect(result.current.next).toBeNull();
-    expect(result.current.previous).toBe(3);
+    expect(result.current.previous).not.toBeNull();
   });
 
-  test("offers nothing when no question is left above the reader", () => {
-    // The oldest question is the topmost row on screen: the ladder runs out.
-    reportRows(3, 3);
-    expect(result.current.visible).toBe(false);
-    expect(result.current.previous).toBeNull();
-  });
-
-  test("↑ aligns the target question's top edge below the viewport's", () => {
-    reportRows(2, null);
+  test("↑ aligns the reply tail's end by landing on the row below it", () => {
+    act(() => {
+      result.current.onScroll(scrollEvent(600));
+    });
+    // Reading at question-2's start, whole: ↑ offers answer-1's tail, which
+    // lands through question-2 — the row below the tail.
+    reportRows(1, 1);
 
     act(() => result.current.goToPrevious());
 
     expect(list.scrollToIndex).toHaveBeenCalledTimes(1);
+    expect(list.scrollToIndex).toHaveBeenCalledWith({
+      index: 1,
+      viewPosition: 1,
+      viewOffset: JUMP_VIEW_OFFSET,
+      animated: false,
+    });
+  });
+
+  test("↑ lands a reply tail by aligning the row below it", () => {
+    act(() => {
+      result.current.onScroll(scrollEvent(600));
+    });
+    // Inside answer-2, cut at the top: the press offers its own tail, which
+    // lands through the transcript's last row.
+    reportRows(0, null);
+
+    act(() => result.current.goToPrevious());
+
     expect(list.scrollToIndex).toHaveBeenCalledWith({
       index: 3,
       viewPosition: 1,
@@ -149,31 +199,41 @@ describe("useQuestionNav", () => {
     });
   });
 
-  test("a jump hands the viewport over, so the tail cannot pull it back", () => {
-    reportRows(2, null);
+  test("a reply tail in a later turn aligns the question below it", () => {
+    act(() => {
+      result.current.onScroll(scrollEvent(600));
+    });
+    // Top edge at question-1, whole: ↓ offers question-1's own end, which
+    // aligns answer-1 — the row below the question's tail.
+    reportRows(3, 3);
 
-    act(() => result.current.goToPrevious());
-    expect(onTakeOver).toHaveBeenCalledTimes(1);
-
-    // Nothing to go to: a disabled direction must not move the reader either.
     act(() => result.current.goToNext());
-    expect(onTakeOver).toHaveBeenCalledTimes(1);
-    expect(list.scrollToIndex).toHaveBeenCalledTimes(1);
+
+    expect(list.scrollToIndex).toHaveBeenCalledWith({
+      index: 1,
+      viewPosition: 1,
+      viewOffset: JUMP_VIEW_OFFSET,
+      animated: false,
+    });
   });
 
-  test("a jump out of the measured window is approximated, then re-issued", async () => {
+  test("a question end lands through its reply's start", () => {
+    act(() => {
+      result.current.onScroll(scrollEvent(600));
+    });
+    // Top edge inside answer-1, cut: ↓ walks to question-2's own end, which
+    // aligns answer-2 — the row below the question's tail.
     reportRows(2, null);
-    act(() => result.current.goToPrevious());
-    list.scrollToIndex.mockClear();
+    expect(result.current.next).toEqual({
+      kind: "questionEnd",
+      question: 1,
+      tail: 0,
+    });
 
-    act(() => result.current.onScrollToIndexFailed({ index: 3, averageItemLength: 80 }));
-    expect(list.scrollToOffset).toHaveBeenCalledWith({ offset: 240, animated: false });
+    act(() => result.current.goToNext());
 
-    // The re-issue waits for the target row to be laid out, so the test waits
-    // for it in real time rather than driving a fake clock.
-    await act(() => new Promise(resolve => setTimeout(resolve, 400)));
     expect(list.scrollToIndex).toHaveBeenCalledWith({
-      index: 3,
+      index: 0,
       viewPosition: 1,
       viewOffset: JUMP_VIEW_OFFSET,
       animated: false,
@@ -181,6 +241,7 @@ describe("useQuestionNav", () => {
   });
 
   test("entering another session drops the offer", () => {
+    act(() => result.current.onScroll(scrollEvent(600)));
     reportRows(2, null);
     expect(result.current.visible).toBe(true);
 
@@ -190,95 +251,72 @@ describe("useQuestionNav", () => {
     expect(result.current.previous).toBeNull();
   });
 
-  test("a viewability report ignores rows the list has not indexed or has scrolled past", () => {
-    act(() => result.current.onScroll(scrollEvent(600)));
-    const [partial] = result.current.viewabilityConfigCallbackPairs;
-    // Native reports both of these: an unmounted cell has no index, and a cell
-    // leaving the window is present-but-not-viewable. Neither may move the
-    // reading position, or the arrows would chase off-screen rows.
+  test("↑ at the loaded top with more history pages first, then jumps", async () => {
+    const loadOlder = jest.fn(async (): Promise<false | string[]> => ["older-2", "older-1"]);
     act(() => {
-      partial?.onViewableItemsChanged?.({
-        viewableItems: [
-          { item: ITEMS[3], key: "3", index: null, isViewable: true } as unknown as ViewToken,
-          { item: ITEMS[1], key: "1", index: 1, isViewable: false },
-          { item: ITEMS[2], key: "2", index: 2, isViewable: true },
-        ],
-        changed: [],
-      });
+      renderer!.update(createElement(Harness, { hasOlderHistory: true, loadOlder }));
+      result.current.onScroll(scrollEvent(600));
     });
-    expect(result.current.previous).toBe(3);
-    expect(result.current.next).toBe(1);
-  });
-
-  test("a viewability report with nothing viewable leaves the position alone", () => {
-    act(() => result.current.onScroll(scrollEvent(600)));
-    const [partial] = result.current.viewabilityConfigCallbackPairs;
-    act(() => {
-      partial?.onViewableItemsChanged?.({ viewableItems: [], changed: [] });
-    });
-    // Nothing was measured, so the ladder is unchanged rather than reset.
-    expect(result.current.visible).toBe(false);
+    // The top edge is at the oldest loaded row: the ladder is exhausted.
+    reportRows(3, null);
     expect(result.current.previous).toBeNull();
+    expect(result.current.hasPrevious).toBe(true);
+
+    act(() => result.current.goToPrevious());
+    expect(loadOlder).toHaveBeenCalledTimes(1);
+    // Paging hands the viewport to the reader first: without it the list
+    // would follow the tail while the fetch is in flight, and the jump would
+    // read as a teleport to the newest message.
+    expect(onTakeOver).toHaveBeenCalledTimes(1);
+    // The page lands the hook's jump on the oldest id it returned, once the
+    // new items are visible. The harness keeps ITEMS, so the id lookup
+    // misses and nothing scrolls — paging itself is what this pins.
+    await act(async () => {});
+    expect(list.scrollToIndex).not.toHaveBeenCalled();
   });
 
-  test("a second jump replaces the pending re-align instead of stacking timers", () => {
-    reportRows(2, null);
-    act(() => result.current.goToPrevious());
-    // A second jump while the first is still re-aligning must clear its timer:
-    // two pending realigns would fight over the same viewport.
-    act(() => result.current.goToPrevious());
-    expect(list.scrollToIndex).toHaveBeenCalledTimes(2);
-    expect(list.scrollToIndex).toHaveBeenLastCalledWith(expect.objectContaining({ index: 3 }));
-    expect(onTakeOver).toHaveBeenCalledTimes(2);
-  });
+  test("↑ stays inert at the loaded top while a page is in flight", () => {
+    act(() => {
+      renderer!.update(
+        createElement(Harness, { hasOlderHistory: true, loadingOlder: true }),
+      );
+      result.current.onScroll(scrollEvent(600));
+    });
+    reportRows(3, null);
+    expect(result.current.hasPrevious).toBe(false);
 
-  test("a failed scroll with no jump in flight is ignored", () => {
-    reportRows(2, null);
-    act(() => result.current.onScrollToIndexFailed({ index: 3, averageItemLength: 80 }));
+    act(() => result.current.goToPrevious());
+    expect(list.scrollToIndex).not.toHaveBeenCalled();
     expect(list.scrollToOffset).not.toHaveBeenCalled();
   });
 
-  test("a failed scroll for a different index than the pending jump is ignored", async () => {
-    reportRows(2, null);
-    act(() => result.current.goToPrevious());
-    list.scrollToOffset.mockClear();
-    // The list retries an older, unrelated index; following it would drag the
-    // reader away from the question they asked for.
-    act(() => result.current.onScrollToIndexFailed({ index: 1, averageItemLength: 80 }));
-    expect(list.scrollToOffset).not.toHaveBeenCalled();
-  });
+  test("a paged ↑ lands on the oldest row the page prepended", async () => {
+    const olderItems = [
+      { id: "older-1", kind: "message", role: "user", text: "…" },
+      ...ITEMS,
+    ] as unknown as TimelineItem[];
+    const loadOlder = jest.fn(async (): Promise<false | string[]> => ["older-1"]);
+    act(() => {
+      renderer!.update(createElement(Harness, { hasOlderHistory: true, loadOlder }));
+      result.current.onScroll(scrollEvent(600));
+    });
+    reportRows(3, null);
 
-  test("a jump re-aligns once after the list settles", async () => {
-    jest.useFakeTimers();
-    try {
-      reportRows(2, null);
-      expect(result.current.previous).toBe(3);
-      list.scrollToIndex.mockClear();
-      act(() => result.current.goToPrevious());
-      expect(list.scrollToIndex).toHaveBeenCalledTimes(1);
-      // The first attempt can land short while the list still measures rows;
-      // one delayed re-align is what puts the question at its resting offset.
-      await act(async () => { jest.advanceTimersByTimeAsync(320); });
-      expect(list.scrollToIndex).toHaveBeenCalledTimes(2);
-      expect(list.scrollToIndex.mock.calls.at(-1)![0]).toMatchObject({ index: 3 });
-      // It is a single correction, not a repeating timer.
-      await act(async () => { jest.advanceTimersByTimeAsync(5_000); });
-      expect(list.scrollToIndex).toHaveBeenCalledTimes(2);
-    } finally { jest.useRealTimers(); }
-  });
-
-  test("the re-align retries are capped so a long jump cannot loop forever", async () => {
-    reportRows(2, null);
     act(() => result.current.goToPrevious());
-    // Each failure re-issues the jump; MAX_JUMP_ATTEMPTS of them are honoured,
-    // and the next is dropped rather than scheduling another timer.
-    for (const attempt of [1, 2, 3, 4, 5, 6]) {
-      act(() => result.current.onScrollToIndexFailed({ index: 3, averageItemLength: 80 }));
-      void attempt;
-    }
-    list.scrollToOffset.mockClear();
-    act(() => result.current.onScrollToIndexFailed({ index: 3, averageItemLength: 80 }));
-    expect(list.scrollToOffset).not.toHaveBeenCalled();
+    // The page commits: the hook sees the new items and lands on the oldest
+    // id the page prepended.
+    act(() => {
+      renderer!.update(
+        createElement(Harness, { hasOlderHistory: true, loadOlder, items: olderItems }),
+      );
+    });
+    await act(async () => {});
+
+    expect(list.scrollToIndex).toHaveBeenCalledWith({
+      index: 0,
+      viewPosition: 1,
+      viewOffset: JUMP_VIEW_OFFSET,
+      animated: false,
+    });
   });
 });
-

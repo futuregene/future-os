@@ -1507,6 +1507,99 @@
           }
         ]
       },
+      "qn-reply-tail": {
+        "_comment": "按 ↑ 的第一落点从「提问顶部」改成「正在读的回答的最后一段」：滚动离开最新后按 ↑，视口里仍然只有当前轮的提问（没有跳到上一轮），且回答收尾的正文（关键设计）在视口内。像素落点在 RNW inverted 下不可靠，只断言语义。",
+        "url": "http://localhost:8099/?multiTurn=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "scroll": [
+              0,
+              -600
+            ]
+          },
+          {
+            "wait": 800
+          },
+          {
+            "eval": "(() => { document.querySelector('[aria-label=\"上一个提问\"]').click(); return 'p1'; })()"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const bubbles = [...document.querySelectorAll('div')].filter(el => getComputedStyle(el).backgroundColor === 'rgb(37, 99, 235)').map(el => { const r = el.getBoundingClientRect(); return { text: (el.innerText || '').trim().slice(0, 20), top: Math.round(r.top) }; }).filter(b => b.top > -50 && b.top < 850); const tail = document.body.innerText.includes('关键设计'); return { bubbles, tail }; })()"
+          }
+        ]
+      },
+      "qn-page-up": {
+        "_comment": "到已载入历史顶部再按 ↑：先拉出更早的一页对话，然后落在新一页最老的那一轮。用 ?multiTurnOlder=1 让 mock 多一页可拉。",
+        "url": "http://localhost:8099/?multiTurn=1&multiTurnOlder=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => { const scrollers = [...document.querySelectorAll('div')].filter(el => el.scrollHeight > el.clientHeight + 10 && el.clientHeight > 400); const scroller = scrollers.sort((a, b) => b.getBoundingClientRect().height - a.getBoundingClientRect().height)[0]; scroller.scrollTop = scroller.scrollHeight; return 'at the loaded top'; })()"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const up = document.querySelector('[aria-label=\"上一个提问\"]'); if (!up) throw new Error('the question control is not on screen at the loaded top'); if (up.getAttribute('aria-disabled') === 'true') throw new Error('up is disabled at the loaded top although older history exists'); return 'up is offered'; })()"
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"上一个提问\"]').click()"
+          },
+          {
+            "wait": 1800
+          },
+          {
+            "eval": "(() => { const text = document.body.innerText; if (!text.includes('确认一下工作区里这两篇 PDF')) throw new Error('the older page did not load after pressing up at the top'); return 'older page is on screen'; })()"
+          },
+          {
+            "shot": "m-qn-page-up.png"
+          }
+        ]
+      },
       "qn-align-check": {
         "_comment": "把「内容是怎么对齐的」变成可失败的断言：↑ 之后，落点那一行的顶边距列表视口顶边 12px（±2），且视口里出现的就是正在读的那一轮提问。定位靠提问气泡本身——用户提问是实心 accent 气泡，行内在它上方没有留白，所以气泡顶边就是行顶边——不再依赖跳转落点的高亮底色（那层底色已去掉）。数字口径是 CSS 像素，和设计稿一致。",
         "url": "http://localhost:8099/?multiTurn=1",

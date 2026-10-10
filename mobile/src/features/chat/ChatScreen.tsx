@@ -337,6 +337,9 @@ export function ChatScreen() {
     listRef,
     atLatest,
     onTakeOver: scroll.onScrollBeginDrag,
+    hasOlderHistory: remote.canLoadOlderTimeline,
+    loadingOlder: remote.loadingOlderTimeline,
+    loadOlder: remote.loadOlderTimeline,
   });
 
   // Skill recommendation (PRD v1.6): the desktop's toggle decides whether the
@@ -737,7 +740,7 @@ export function ChatScreen() {
                 {questionNav.visible && (
                   <QuestionNavControl
                     hasNext={questionNav.next !== null}
-                    hasPrevious={questionNav.previous !== null}
+                    hasPrevious={questionNav.hasPrevious}
                     nextLabel={t("chat.nextQuestion")}
                     onNext={questionNav.goToNext}
                     onPrevious={questionNav.goToPrevious}

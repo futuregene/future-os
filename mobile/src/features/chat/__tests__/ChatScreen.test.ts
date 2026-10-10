@@ -72,7 +72,11 @@ jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",
   useSafeAreaInsets: () => ({ bottom: 0 }),
 }));
-jest.mock("lucide-react-native", () => ({ History: "History" }));
+jest.mock("lucide-react-native", () => ({
+  ArrowDown: "ArrowDown",
+  ArrowUp: "ArrowUp",
+  History: "History",
+}));
 jest.mock("../../../components/TimelineCard", () => ({
   TimelineCard: "TimelineCard",
 }));
