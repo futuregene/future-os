@@ -17,7 +17,6 @@ import {
   PanelLeft,
   Pin,
   Plus,
-  Smartphone,
   Sparkles,
   SquarePen,
 } from "lucide-react";
@@ -45,7 +44,7 @@ import { MergedRows } from "./MergedRows";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, visibleThreadRows } from "./threadTree";
 
-export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote" | "peers" | "settings";
+export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote" | "settings";
 
 interface ActivityRailProps {
   active: ActivitySection;
@@ -153,7 +152,6 @@ export function ActivityRail({
   activeRemoteKey = null,
   futureBalance,
   userEmail,
-  futureSessionStatus,
   communityEdition,
   onRecharge,
   onOpenUpdate,
@@ -166,11 +164,6 @@ export function ActivityRail({
   const pendingApprovalCounts = usePendingApprovalCounts();
   // Shared overlay scrollbar for the conversation list, matching the chat view.
   const listScrollbar = useFloatingScrollbar();
-  // Remote pairing issues its code through the FutureOS service, so it needs a
-  // sign-in. Hide the nav entry while signed out.
-  const showRemote = futureSessionStatus === "authenticated"
-    || futureSessionStatus === "unavailable"
-    || (futureSessionStatus === "checking" && userEmail != null);
   // Connection indicator overlaid on the Remote nav icon: blue when connected,
   // amber while a connection is being attempted, red when remote access is disconnected,
   // and nothing before pairing.
@@ -464,21 +457,28 @@ export function ActivityRail({
                         )
                       : null}
                   </div>
-                  {/* Task sits with the other standing entries, above Phone
-                      control: it is something you set up and keep, while the
-                      phone entry is a link to another device. */}
+                  {/* Task sits with the other standing entries: it is something
+                      you set up and keep, like the remote connection below. */}
                   <NavButton icon={ListChecks} label={t("activityRail.tasks")} active={active === "tasks"} onClick={() => onChange("tasks")} />
-                  {showRemote
-                    ? <NavButton icon={Smartphone} indicator={remoteDot} label={t("activityRail.remote")} active={active === "remote"} onClick={() => onChange("remote")} />
-                    : null}
-                  {/* The other side of the same idea: `remote` is who connects
-                      *to* this machine (a phone), `peers` is the machines this
-                      one connects *out* to. Two entries rather than one with a
-                      direction toggle, because they are reachable from
-                      different states (the phone one needs a sign-in, this one
-                      needs a pasteable link) and a user looking for one should
-                      not have to know the other exists. */}
-                  <NavButton icon={MonitorSmartphone} label={t("activityRail.peers")} active={active === "peers"} onClick={() => onChange("peers")} />
+                  {/* One entry for both directions of remote.
+
+                      They used to be two, and the labels were the problem:
+                      "Phone Control" and "Remote Desktops" are a word apart,
+                      neither says which way the connection goes, and neither is
+                      even accurate now that a *computer* can be either side.
+                      The page inside separates the directions in words.
+
+                      Always shown, unlike the old host-only entry which needed a
+                      FutureOS sign-in: the client half does not, so hiding the
+                      entry hid a feature that was usable. The section that does
+                      need a sign-in says so itself. */}
+                  <NavButton
+                    active={active === "remote"}
+                    icon={MonitorSmartphone}
+                    indicator={remoteDot}
+                    label={t("activityRail.remote")}
+                    onClick={() => onChange("remote")}
+                  />
                 </div>
                 {featureItems.length > 0
                   ? (
@@ -788,21 +788,20 @@ export function ActivityRail({
                   active={active === "tasks"}
                   onClick={() => onChange("tasks")}
                 />
-                {showRemote
-                  ? (
-                      <IconButton
-                        icon={(
-                          <span className="relative inline-flex">
-                            <Smartphone className="size-4" />
-                            {remoteDot}
-                          </span>
-                        )}
-                        label={t("activityRail.remote")}
-                        active={active === "remote"}
-                        onClick={() => onChange("remote")}
-                      />
-                    )
-                  : null}
+                {/* Always shown, and the same for both directions of remote:
+                    the client half needs no sign-in, so gating this on one hid
+                    a feature that was usable. */}
+                <IconButton
+                  icon={(
+                    <span className="relative inline-flex">
+                      <MonitorSmartphone className="size-4" />
+                      {remoteDot}
+                    </span>
+                  )}
+                  label={t("activityRail.remote")}
+                  active={active === "remote"}
+                  onClick={() => onChange("remote")}
+                />
                 <IconButton
                   icon={<Folder className="size-4" />}
                   label={t("activityRail.workspace")}

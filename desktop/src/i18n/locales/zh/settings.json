@@ -58,12 +58,6 @@
     "title": "完成提示音",
     "description": "智能体任务完成时播放提示音并吸引窗口注意力"
   },
-  "remote": {
-    "autoConnect": {
-      "title": "打开软件后自动连接手机",
-      "description": "已配对手机时，每次打开软件自动连接到该设备，你仍可随时手动断开。"
-    }
-  },
   "update": {
     "sectionTitle": "软件更新",
     "title": "检查更新",
@@ -94,7 +88,6 @@
     },
     "tabs": {
       "general": "通用",
-      "remote": "手机遥控",
       "account": "账号",
       "update": "检查更新",
       "about": "关于",

@@ -58,12 +58,6 @@
     "title": "Completion bell",
     "description": "Play a sound and attract the window's attention when an agent finishes"
   },
-  "remote": {
-    "autoConnect": {
-      "title": "Auto-connect phone on launch",
-      "description": "When a phone is already paired, connect to it automatically each time the app opens. You can still disconnect by hand."
-    }
-  },
   "update": {
     "sectionTitle": "Software update",
     "title": "Check for updates",
@@ -94,7 +88,6 @@
     },
     "tabs": {
       "general": "General",
-      "remote": "Phone Control",
       "account": "Account",
       "update": "Check for updates",
       "about": "About",

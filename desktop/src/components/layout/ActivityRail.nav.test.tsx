@@ -98,7 +98,7 @@ function buttonByText(container: HTMLElement, text: string) {
  *  order. Discovered from a deliberate mismatch while writing the guard test
  *  below; the trailing two come from that test's workspace/account fixtures.
  */
-const EXPECTED_NAV_ENTRIES = ["New Chat", "Models", "Skills", "Tasks", "Phone Control", "Remote Desktops", "Alpha", "Aalice"];
+const EXPECTED_NAV_ENTRIES = ["New Chat", "Models", "Skills", "Tasks", "Remote", "Alpha", "Aalice"];
 
 beforeEach(() => {
   localStorage.clear();
@@ -119,7 +119,7 @@ describe("activity rail navigation", () => {
     expect(p.onOpenModels).toHaveBeenCalledTimes(1);
     act(() => buttonByText(view.container, "Skills")!.click());
     expect(p.onChange).toHaveBeenCalledWith("skill");
-    act(() => buttonByText(view.container, "Phone Control")!.click());
+    act(() => buttonByText(view.container, "Remote")!.click());
     expect(p.onChange).toHaveBeenLastCalledWith("remote");
     act(() => buttonByText(view.container, "Tasks")!.click());
     expect(p.onChange).toHaveBeenLastCalledWith("tasks");
@@ -145,9 +145,11 @@ describe("activity rail navigation", () => {
     // render order: the four section entries (each wired to a different handler,
     // which is why they cannot be isolated by "who calls onChange"), then the
     // workspace group header and the account button. The order is part of the
-    // expectation: Tasks sits with the standing entries, above Phone Control,
-    // and Remote Desktops follows Phone Control — the two are the two directions
-    // of the same idea (who connects to me, and who I connect out to).
+    // expectation: Tasks sits with the standing entries, and Remote follows it.
+    // The two directions of remote used to be two entries — labels a word apart
+    // that neither distinguished nor even described accurately; they are one
+    // entry now, and the page inside separates them.
+    // of the same idea, and are now one page that separates them in words.
     // The last two come from this test's own fixtures (workspace "Alpha", email
     // "alice@example.com"), so the expectation is deterministic; a deliberate UI
     // addition updates this line.
@@ -160,9 +162,13 @@ describe("activity rail navigation", () => {
     view.unmount();
   });
 
-  it("hides Phone Control while the account is not authenticated", () => {
+  it("keeps Remote reachable while signed out", () => {
+    // The entry used to be hidden unless signed in, because pairing the *host*
+    // side issues its code through the FutureOS service. But the client half
+    // needs no sign-in at all, so hiding the entry hid a feature that worked —
+    // and the section that does need an account says so itself, inside.
     const view = mount(<ActivityRail {...props([thread("root")], { futureSessionStatus: "signed_out" })} />);
-    expect(buttonByText(view.container, "Phone Control")).toBeUndefined();
+    expect(buttonByText(view.container, "Remote")).toBeTruthy();
     view.unmount();
   });
 
@@ -173,7 +179,7 @@ describe("activity rail navigation", () => {
     expect(p.onNewChat).toHaveBeenCalledWith();
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Models\"]")!.click());
     expect(p.onOpenModels).toHaveBeenCalledTimes(1);
-    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Phone Control\"]")!.click());
+    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Remote\"]")!.click());
     expect(p.onChange).toHaveBeenCalledWith("remote");
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Tasks\"]")!.click());
     expect(p.onChange).toHaveBeenLastCalledWith("tasks");

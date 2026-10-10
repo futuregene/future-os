@@ -1,16 +1,14 @@
-import type { AppSettings } from "../../integrations/storage/appSettings";
 import type { RemoteStatus } from "./remoteClient";
 import { QRCodeSVG } from "qrcode.react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ConfirmDeleteDialog } from "../../components/layout/EntityDialogs";
-import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
+import { Switch } from "../../components/ui/Switch";
 import { openExternalUrl } from "../../integrations/storage/files";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { usePolling } from "../../lib/usePolling";
-import { startWindowDrag } from "../../lib/windowDrag";
 import {
   remoteConnectionPresentation,
   startRemote,
@@ -18,11 +16,15 @@ import {
   unpairRemote,
 } from "./remoteClient";
 
-interface RemoteViewProps {
-  appSettings: AppSettings;
-  leftPanelExpanded: boolean;
-  onChangeSettings: (patch: Partial<AppSettings>) => void;
-  onToggleLeftPanel: () => void;
+/**
+ * "Let other devices connect here" — the host half of the Remote page.
+ *
+ * A section rather than a page: the page shell (title bar, scroll container,
+ * width) belongs to the hub that shows this beside the other direction, and its
+ * heading comes from there too. What is left here is the pairing surface, the
+ * connection state, and the one preference that belongs to *this* direction.
+ */
+export interface RemoteHostSectionProps {
   /**
    * Shared remote bridge status polled at the app level — the same source
    * that feeds the sidebar indicator dot, so they always agree.
@@ -30,6 +32,9 @@ interface RemoteViewProps {
   remoteStatus: RemoteStatus | null;
   /** Refresh the shared status immediately after a user action. */
   onRefreshRemote: () => Promise<void>;
+  /** Whether this machine reconnects its paired devices when the app opens. */
+  autoConnect: boolean;
+  onToggleAutoConnect: (value: boolean) => void;
 }
 
 function formatCountdown(totalSeconds: number): string {
@@ -49,13 +54,14 @@ function formatPairId(pairId: string | null | undefined): string {
   return (pairId.startsWith("pair_") ? pairId.slice(5) : pairId).toUpperCase();
 }
 
-export function RemoteView({
-  leftPanelExpanded,
-  onToggleLeftPanel,
-  remoteStatus,
+export function RemoteHostSection({
+  autoConnect,
   onRefreshRemote,
-}: RemoteViewProps) {
+  onToggleAutoConnect,
+  remoteStatus,
+}: RemoteHostSectionProps) {
   const { t } = useTranslation("remote");
+  const { t: tHub } = useTranslation("remoteHub");
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -166,153 +172,151 @@ export function RemoteView({
   }
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-surface">
-      <header
-        className="flex h-12 shrink-0 select-none items-center justify-between border-b border-line-soft/40 px-4"
-        onMouseDown={startWindowDrag}
-      >
-        <div className="flex min-w-0 flex-1 items-center" data-tauri-drag-region>
-          <LeftPanelTitlebarToggle expanded={leftPanelExpanded} onToggle={onToggleLeftPanel} />
-          <span className="truncate text-sm font-semibold text-ink">{t("title")}</span>
+    <>
+      <div className="space-y-6">
+        {isPaired && !pairingCode
+          ? (
+              <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <Badge tone={connected ? "accent" : connecting ? "warning" : "danger"}>
+                    {t(connectionStatusKey)}
+                  </Badge>
+                  <span className="min-w-0 truncate text-sm text-ink-muted">{formatPairId(remoteStatus?.pairId)}</span>
+                  <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
+                    <Button
+                      disabled={busy}
+                      onClick={() => {
+                        if (presentation?.action === "loginAgain") {
+                          emitFutureEvent("show-onboarding", undefined);
+                          return;
+                        }
+                        void (running && !reconnecting ? handleStop() : handleStart());
+                      }}
+                      size="sm"
+                      variant="secondary"
+                    >
+                      {presentation?.action === "loginAgain"
+                        ? t("loginAgain")
+                        : running && !reconnecting
+                          ? t("disconnect")
+                          : presentation?.action === "pairAgain"
+                            ? t("pairAgain")
+                            : presentation?.action === "retry" || presentation?.action === "checkNetwork" || presentation?.action === "contactSupport"
+                              ? t("reconnect")
+                              : t("connect")}
+                    </Button>
+                    <Button
+                      disabled={busy}
+                      onClick={() => setConfirmOpen(true)}
+                      size="sm"
+                      variant="secondary"
+                    >
+                      {t("unpair")}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )
+          : null}
+
+        {showError
+          ? (
+              <div className="flex items-center gap-3 rounded-md border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger">
+                <span className="min-w-0 flex-1">{errorText}</span>
+              </div>
+            )
+          : null}
+
+        {remoteStatus?.warningCode === "web_bind"
+          ? (
+              <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-ink-soft">
+                {t("warning.webBind", { code: "LC002" })}
+              </div>
+            )
+          : null}
+
+        {pairingCode
+          ? (
+              <div className="space-y-2 rounded-lg border border-line-soft bg-surface-subtle p-4">
+                <div className="flex items-center justify-between">
+                  <span className="flex items-center gap-2 text-sm font-medium text-ink-soft">
+                    {t("pairingCodeLabel")}
+                    {remainingSeconds != null && (
+                      <span className="text-xs font-normal text-ink-muted">
+                        {t("pairingCodeExpiresIn", { time: formatCountdown(remainingSeconds) })}
+                      </span>
+                    )}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Button onClick={() => void copyCode()} size="sm" variant="secondary">
+                      {copied ? t("copied") : t("copy")}
+                    </Button>
+                    <Button disabled={busy} onClick={() => void handleStop()} size="sm" variant="secondary">
+                      {t("cancel")}
+                    </Button>
+                  </div>
+                </div>
+                <div className="flex flex-col items-center gap-2">
+                  {pairingQrValue
+                    ? (
+                        <div className="rounded-lg border border-line bg-surface p-3">
+                          <QRCodeSVG
+                            aria-label={t("pairingQrLabel")}
+                            bgColor="transparent"
+                            className="text-ink-strong"
+                            fgColor="currentColor"
+                            level="M"
+                            role="img"
+                            size={176}
+                            value={pairingQrValue}
+                          />
+                        </div>
+                      )
+                    : null}
+                  <p className="text-center text-xs font-medium text-ink-soft">{t("pairingQrLabel")}</p>
+                  <p className="text-center text-xs text-ink-muted">{t("pairingCodeHint")}</p>
+                </div>
+              </div>
+            )
+          : null}
+
+        {!isPaired && !pairingCode
+          ? (
+              <div className="flex h-9 items-center">
+                {busy
+                  ? <p aria-live="polite" className="text-sm text-ink-muted">{t("preparingPairingHint")}</p>
+                  : (
+                      <Button onClick={() => void handleStart()} variant="primary">
+                        {t("pairAndStart")}
+                      </Button>
+                    )}
+              </div>
+            )
+          : null}
+
+        <div className="flex items-center justify-between gap-3 border-t border-line-soft pt-3">
+          <div className="min-w-0">
+            <div className="text-sm text-ink">{tHub("autoConnectTitle")}</div>
+            <div className="mt-0.5 text-xs text-ink-muted">{tHub("autoConnectDescription")}</div>
+          </div>
+          <Switch
+            checked={autoConnect}
+            label={tHub("autoConnectTitle")}
+            onChange={onToggleAutoConnect}
+          />
         </div>
-      </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-8">
-        <div className="mx-auto w-full max-w-3xl space-y-6">
-          <p className="text-sm text-ink-muted">
-            {t("description")}
-            {" "}
-            <button
-              className="text-accent hover:underline"
-              onClick={() => void openExternalUrl("https://future-os.cn/#download-mobile")}
-              type="button"
-            >
-              {t("downloadMobile")}
-            </button>
-          </p>
-
-          {isPaired && !pairingCode
-            ? (
-                <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <Badge tone={connected ? "accent" : connecting ? "warning" : "danger"}>
-                      {t(connectionStatusKey)}
-                    </Badge>
-                    <span className="min-w-0 truncate text-sm text-ink-muted">{formatPairId(remoteStatus?.pairId)}</span>
-                    <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
-                      <Button
-                        disabled={busy}
-                        onClick={() => {
-                          if (presentation?.action === "loginAgain") {
-                            emitFutureEvent("show-onboarding", undefined);
-                            return;
-                          }
-                          void (running && !reconnecting ? handleStop() : handleStart());
-                        }}
-                        size="sm"
-                        variant="secondary"
-                      >
-                        {presentation?.action === "loginAgain"
-                          ? t("loginAgain")
-                          : running && !reconnecting
-                            ? t("disconnect")
-                            : presentation?.action === "pairAgain"
-                              ? t("pairAgain")
-                              : presentation?.action === "retry" || presentation?.action === "checkNetwork" || presentation?.action === "contactSupport"
-                                ? t("reconnect")
-                                : t("connect")}
-                      </Button>
-                      <Button
-                        disabled={busy}
-                        onClick={() => setConfirmOpen(true)}
-                        size="sm"
-                        variant="secondary"
-                      >
-                        {t("unpair")}
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              )
-            : null}
-
-          {showError
-            ? (
-                <div className="flex items-center gap-3 rounded-md border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger">
-                  <span className="min-w-0 flex-1">{errorText}</span>
-                </div>
-              )
-            : null}
-
-          {remoteStatus?.warningCode === "web_bind"
-            ? (
-                <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-ink-soft">
-                  {t("warning.webBind", { code: "LC002" })}
-                </div>
-              )
-            : null}
-
-          {pairingCode
-            ? (
-                <div className="space-y-2 rounded-lg border border-line-soft bg-surface-subtle p-4">
-                  <div className="flex items-center justify-between">
-                    <span className="flex items-center gap-2 text-sm font-medium text-ink-soft">
-                      {t("pairingCodeLabel")}
-                      {remainingSeconds != null && (
-                        <span className="text-xs font-normal text-ink-muted">
-                          {t("pairingCodeExpiresIn", { time: formatCountdown(remainingSeconds) })}
-                        </span>
-                      )}
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <Button onClick={() => void copyCode()} size="sm" variant="secondary">
-                        {copied ? t("copied") : t("copy")}
-                      </Button>
-                      <Button disabled={busy} onClick={() => void handleStop()} size="sm" variant="secondary">
-                        {t("cancel")}
-                      </Button>
-                    </div>
-                  </div>
-                  <div className="flex flex-col items-center gap-2">
-                    {pairingQrValue
-                      ? (
-                          <div className="rounded-lg border border-line bg-surface p-3">
-                            <QRCodeSVG
-                              aria-label={t("pairingQrLabel")}
-                              bgColor="transparent"
-                              className="text-ink-strong"
-                              fgColor="currentColor"
-                              level="M"
-                              role="img"
-                              size={176}
-                              value={pairingQrValue}
-                            />
-                          </div>
-                        )
-                      : null}
-                    <p className="text-center text-xs font-medium text-ink-soft">{t("pairingQrLabel")}</p>
-                    <p className="text-center text-xs text-ink-muted">{t("pairingCodeHint")}</p>
-                  </div>
-                </div>
-              )
-            : null}
-
-          {!isPaired && !pairingCode
-            ? (
-                <div className="flex h-9 items-center">
-                  {busy
-                    ? <p aria-live="polite" className="text-sm text-ink-muted">{t("preparingPairingHint")}</p>
-                    : (
-                        <Button onClick={() => void handleStart()} variant="primary">
-                          {t("pairAndStart")}
-                        </Button>
-                      )}
-                </div>
-              )
-            : null}
-
-          <p className="text-xs text-ink-muted">{t("note")}</p>
-        </div>
+        <p className="text-xs text-ink-muted">
+          {t("note")}
+          {" "}
+          <button
+            className="text-accent hover:underline"
+            onClick={() => void openExternalUrl("https://future-os.cn/#download-mobile")}
+            type="button"
+          >
+            {t("downloadMobile")}
+          </button>
+        </p>
       </div>
 
       <ConfirmDeleteDialog
@@ -329,6 +333,6 @@ export function RemoteView({
       >
         <p className="text-sm text-ink-soft">{t("pairedAs", { pairId: formatPairId(remoteStatus?.pairId) })}</p>
       </ConfirmDeleteDialog>
-    </section>
+    </>
   );
 }

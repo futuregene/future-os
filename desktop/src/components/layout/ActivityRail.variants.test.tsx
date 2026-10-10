@@ -122,7 +122,7 @@ function byText(container: HTMLElement, label: string) {
 }
 const skillsEntry = (container: HTMLElement) => byText(container, "Skills");
 function remoteEntry(container: HTMLElement, expanded: boolean) {
-  return expanded ? byText(container, "Phone Control") : byLabel(container, "Phone Control");
+  return expanded ? byText(container, "Remote") : byLabel(container, "Remote");
 }
 
 beforeEach(() => {
@@ -204,7 +204,7 @@ describe("activity rail remote indicator", () => {
 
   it("passes the indicator into the collapsed rail's remote entry too", () => {
     const view = mount(<ActivityRail {...props({ expanded: false, remoteIndicator: "connecting" })} />);
-    const remote = byLabel(view.container, "Phone Control")!;
+    const remote = byLabel(view.container, "Remote")!;
     expect(remote.querySelector(".bg-warning")!.className).toContain("animate-pulse");
     view.unmount();
   });
@@ -453,34 +453,33 @@ describe("activity rail thread ordering", () => {
 });
 
 describe("activity rail signed-out variants", () => {
-  it("omits the remote entry from the collapsed rail while signed out", () => {
+  /**
+   * The entry is no longer tied to the account, in either rail width.
+   *
+   * Only the *host* half needs a FutureOS sign-in; the client half does not, and
+   * it is the one a signed-out user is more likely to want. So both widths show
+   * the entry always, and the section inside explains what needs an account.
+   */
+  it("keeps the remote entry in the collapsed rail while signed out", () => {
     const view = mount(<ActivityRail {...props({ expanded: false, futureSessionStatus: "signed_out" })} />);
-    expect(byLabel(view.container, "Phone Control")).toBeNull();
+    expect(byLabel(view.container, "Remote")).not.toBeNull();
     // The other collapsed entries are unaffected.
     expect(byLabel(view.container, "New chat")).not.toBeNull();
     expect(byLabel(view.container, "Chat")).not.toBeNull();
     view.unmount();
   });
 
-  it("shows the remote entry while the account is only temporarily unverifiable", () => {
-    const view = mount(<ActivityRail {...props({ expanded: false, futureSessionStatus: "unavailable" })} />);
-    expect(byLabel(view.container, "Phone Control")).not.toBeNull();
-    view.unmount();
+  it("shows the remote entry regardless of the account state", () => {
+    for (const status of ["checking", "signed_out", "unavailable", "invalid"] as const) {
+      for (const userEmail of ["alice@example.com", null]) {
+        const view = mount(<ActivityRail {...props({ expanded: false, futureSessionStatus: status, userEmail })} />);
+        expect(byLabel(view.container, "Remote"), `${status}/${userEmail}`).not.toBeNull();
+        view.unmount();
+      }
+    }
   });
 
-  it("treats a still-checking account with a known email as signed in", () => {
-    // The pairing code needs a sign-in; a remembered address during the initial
-    // profile check is enough to keep the entry reachable.
-    const withEmail = mount(<ActivityRail {...props({ expanded: false, futureSessionStatus: "checking", userEmail: "alice@example.com" })} />);
-    expect(byLabel(withEmail.container, "Phone Control")).not.toBeNull();
-    withEmail.unmount();
-
-    const withoutEmail = mount(<ActivityRail {...props({ expanded: false, futureSessionStatus: "checking", userEmail: null })} />);
-    expect(byLabel(withoutEmail.container, "Phone Control")).toBeNull();
-    withoutEmail.unmount();
-  });
-
-  it("keeps the expanded remote entry reachable for a checking account with an email", () => {
+  it("keeps the expanded remote entry reachable", () => {
     const view = mount(<ActivityRail {...props({ futureSessionStatus: "checking", userEmail: "alice@example.com" })} />);
     expect(remoteEntry(view.container, true)).toBeTruthy();
     view.unmount();

@@ -37,13 +37,6 @@ vi.mock("./GeneralPage", () => ({
     </div>
   ),
 }));
-vi.mock("./RemotePage", () => ({
-  RemotePage: (props: { autoConnectRemote: boolean; onToggleAutoConnectRemote: (v: boolean) => void }) => (
-    <div data-page="remote" data-auto-connect={String(props.autoConnectRemote)}>
-      <button data-toggle-auto-connect onClick={() => props.onToggleAutoConnectRemote(true)}>auto-connect</button>
-    </div>
-  ),
-}));
 vi.mock("./AccountPage", () => ({
   AccountPage: (props: Record<string, unknown>) => (
     <div
@@ -240,7 +233,6 @@ describe("settingsDialog tab routing", () => {
   });
 
   it.each([
-    ["Phone Control", "remote", "Phone Control"],
     ["Account", "account", "Account"],
     ["Check for updates", "update", "Check for updates"],
     ["About", "about", "About"],
@@ -299,7 +291,7 @@ describe("settingsDialog dev-only environment tab", () => {
     const { container } = mount();
 
     expect(navLabels(container)).not.toContain("Environment");
-    expect(navLabels(container)).toEqual(["General", "Phone Control", "Account", "Check for updates", "About", "Providers", "Models", "Reset"]);
+    expect(navLabels(container)).toEqual(["General", "Account", "Check for updates", "About", "Providers", "Models", "Reset"]);
   });
 
   it("shows the environment tab (and its community-edition section) on a dev build", () => {
@@ -410,7 +402,7 @@ describe("settingsDialog settings wiring", () => {
     ]);
   });
 
-  it("forwards the stored settings into every page", () => {
+  it("forwards the stored settings into the page that shows them", () => {
     const { container } = mount();
 
     const general = container.querySelector("[data-page=general]")!;
@@ -419,21 +411,6 @@ describe("settingsDialog settings wiring", () => {
     expect(general.getAttribute("data-bell")).toBe("false");
     expect(general.getAttribute("data-auto-upgrade")).toBe("true");
     expect(general.getAttribute("data-skill-recommend")).toBe("false");
-
-    act(() => navButton(container, "Phone Control").click());
-    expect(container.querySelector("[data-page=remote]")!.getAttribute("data-auto-connect")).toBe("true");
-  });
-
-  it("maps the Remote toggle to autoConnectRemote", async () => {
-    const onChangeSettings = vi.fn().mockResolvedValue(undefined);
-    const { container } = mount({ onChangeSettings });
-
-    act(() => navButton(container, "Phone Control").click());
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>("[data-toggle-auto-connect]")!.click();
-    });
-
-    expect(onChangeSettings).toHaveBeenCalledExactlyOnceWith({ autoConnectRemote: true });
   });
 
   it("wires the account page to the shared account state and both refresh callbacks", () => {

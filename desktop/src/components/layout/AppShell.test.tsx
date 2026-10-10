@@ -49,10 +49,9 @@ const children = vi.hoisted(() => ({
   filesDialog: null as unknown,
   newConversation: null as unknown,
   onboardingGate: null as unknown,
-  peersView: null as unknown,
   remoteComposer: null as unknown,
   remoteConversationView: null as unknown,
-  remoteView: null as unknown,
+  remoteHub: null as unknown,
   settingsDialog: null as unknown,
   skillsView: null as unknown,
   tasksView: null as unknown,
@@ -99,12 +98,12 @@ vi.mock("../../features/agent/NewConversation", async () => {
     },
   };
 });
-vi.mock("../../features/remote/RemoteView", async () => {
+vi.mock("../../features/remote/RemoteHubView", async () => {
   const { createElement } = await import("react");
   return {
-    RemoteView: (props: unknown) => {
-      children.remoteView = props;
-      return createElement("div", { "data-child": "remote-view" });
+    RemoteHubView: (props: unknown) => {
+      children.remoteHub = props;
+      return createElement("div", { "data-child": "remote-hub" });
     },
   };
 });
@@ -126,15 +125,6 @@ vi.mock("../../features/remote-peer/RemoteComposer", async () => {
     RemoteComposer: (props: unknown) => {
       children.remoteComposer = props;
       return createElement("div", { "data-child": "remote-composer" });
-    },
-  };
-});
-vi.mock("../../features/remote-peer/RemotePeersView", async () => {
-  const { createElement } = await import("react");
-  return {
-    RemotePeersView: (props: unknown) => {
-      children.peersView = props;
-      return createElement("div", { "data-child": "peers-view" });
     },
   };
 });
@@ -813,7 +803,7 @@ describe("app shell layout", () => {
     expect(view.container.querySelector("[data-child=\"context-panel\"]")).toBeNull();
 
     act(() => railButton(view.container, "rail:remote").click());
-    expect(view.container.querySelector("[data-child=\"remote-view\"]")).not.toBeNull();
+    expect(view.container.querySelector("[data-child=\"remote-hub\"]")).not.toBeNull();
     expect(view.container.querySelector("[data-child=\"context-panel\"]")).toBeNull();
 
     // Tasks are their own list + detail view: the context panel beside them
@@ -1241,14 +1231,22 @@ describe("app shell event bridges", () => {
 });
 
 describe("app shell account + remote coordination", () => {
-  it("drops back to chat when the account signs out while on Phone Control", () => {
+  /**
+   * Signing out no longer throws the user off the Remote page.
+   *
+   * It used to, because the whole page needed the FutureOS account. Only the
+   * host* half does — and the client half (the computers this one connects out
+   * to) is exactly what a signed-out user may still be looking at. Dropping them
+   * back to chat would take away a page that still works.
+   */
+  it("stays on the Remote page when the account signs out", () => {
     const view = mount(<AppShell />);
     act(() => railButton(view.container, "rail:remote").click());
     expect(rail().active).toBe("remote");
 
     mocks.store.futureSessionStatus = "signed_out";
     view.rerender(<AppShell />);
-    expect(rail().active).toBe("chat");
+    expect(rail().active).toBe("remote");
     view.unmount();
   });
 
@@ -1456,12 +1454,12 @@ describe("app shell collapsed-panel affordances", () => {
   it("forwards the remote view's settings and refresh callbacks", () => {
     const view = mount(<AppShell />);
     act(() => railButton(view.container, "rail:remote").click());
-    const remote = children.remoteView as {
-      onChangeSettings: (patch: Record<string, unknown>) => void;
+    const remote = children.remoteHub as {
       onRefreshRemote: () => void;
+      onToggleAutoConnect: (value: boolean) => void;
       onToggleLeftPanel: () => void;
     };
-    act(() => remote.onChangeSettings({ autoConnectRemote: true }));
+    act(() => remote.onToggleAutoConnect(true));
     expect(mocks.changeSettings).toHaveBeenCalledWith({ autoConnectRemote: true });
     act(() => remote.onRefreshRemote());
     expect(mocks.hooks.refreshRemote).toHaveBeenCalled();
@@ -1522,9 +1520,9 @@ describe("app shell collapsed-panel affordances", () => {
       const view = mount(<AppShell />);
       // The entry lives on the desktop-management screen.
       act(() => rail().onManageDesktops?.());
-      const peersView = children.peersView as { onStartConversation: (desktopId: string) => void };
+      const hub = children.remoteHub as { onStartConversation: (desktopId: string) => void };
 
-      act(() => peersView.onStartConversation("desktop_a"));
+      act(() => hub.onStartConversation("desktop_a"));
       expect(composer().sessionId).toBe("");
 
       act(() => composer().onCreated?.("sess_new"));
@@ -1734,7 +1732,7 @@ describe("app shell collapsed-panel affordances", () => {
     it("does not ask a host to compact a conversation that does not exist yet", async () => {
       const view = mount(<AppShell />);
       act(() => rail().onManageDesktops?.());
-      act(() => (children.peersView as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
+      act(() => (children.remoteHub as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
 
       await act(async () => {
         (children.remoteConversationView as { onCompact: () => void }).onCompact();
@@ -1775,10 +1773,43 @@ describe("app shell collapsed-panel affordances", () => {
     it("offers no file browser for a conversation that does not exist yet", () => {
       const view = mount(<AppShell />);
       act(() => rail().onManageDesktops?.());
-      act(() => (children.peersView as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
+      act(() => (children.remoteHub as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
       act(() => (children.remoteConversationView as { onOpenFiles: () => void }).onOpenFiles());
 
       expect(view.container.querySelector("[data-child='remote-files']")).toBeNull();
+      view.unmount();
+    });
+
+    /**
+     * The transcript's own callbacks all have to reach the thing that owns the
+     * behaviour: a decision to the approvals, the rest to the timeline. A prop
+     * wired to the wrong collaborator would look right and do nothing.
+     */
+    it("routes the transcript's callbacks to the timeline and the approvals", async () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+      const conversationView = children.remoteConversationView as {
+        onDecideApproval: (approval: unknown, decision: string) => void;
+        onLoadOlder: () => void;
+        onRetry: () => void;
+      };
+      const composer = children.remoteComposer as { onSent: () => void };
+      const before = mocks.invoke.mock.calls.length;
+
+      await act(async () => {
+        conversationView.onRetry();
+        conversationView.onLoadOlder();
+        conversationView.onDecideApproval({ id: "ap_1", sessionId: "sess_1" }, "allow");
+        composer.onSent();
+        for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      });
+
+      const types = mocks.invoke.mock.calls.slice(before).map(([, args]) =>
+        (args as { command?: { type?: string } } | undefined)?.command?.type);
+      // The decision goes to the approvals, which build its command.
+      expect(types).toContain("approval_decision");
+      // And the rest ask the host for the conversation again.
+      expect(types.filter(type => type === "get_session_entries").length).toBeGreaterThan(0);
       view.unmount();
     });
   });
