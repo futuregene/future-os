@@ -49,6 +49,7 @@ vi.mock("../../lib/useIsFullscreen", () => ({ useIsFullscreen: () => false }));
 
 function status(overrides: Partial<RemoteStatus> = {}): RemoteStatus {
   return {
+    client: null,
     agentAvailable: true,
     desktopId: "desk_1",
     desktopPublicKey: "pk",

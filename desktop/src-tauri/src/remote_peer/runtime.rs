@@ -325,7 +325,7 @@ pub(crate) async fn pair_with_emitter(
 /// What the remote host shows in its "a new device paired" state. The platform
 /// stores it verbatim, so it is the only place the host can learn that this
 /// machine (rather than a phone) took the slot.
-fn device_name() -> String {
+pub(crate) fn device_name() -> String {
     device_name_from(
         std::env::var("COMPUTERNAME")
             .or_else(|_| std::env::var("HOSTNAME"))

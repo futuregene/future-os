@@ -37,6 +37,7 @@ vi.mock("../../lib/useIsFullscreen", () => ({
 
 function status(overrides: Partial<RemoteStatus> = {}): RemoteStatus {
   return {
+    client: null,
     agentAvailable: true,
     desktopId: "desk_1",
     desktopPublicKey: "pk",
@@ -435,6 +436,62 @@ describe("remoteHostSection", () => {
 
     await act(async () => toggle.click());
     expect(props.onToggleAutoConnect).toHaveBeenCalledWith(false);
+  });
+
+  /**
+   * The host says what is connected, in the device's own words.
+   *
+   * This is the wording the entry used to get wrong — it was labelled "phone"
+   * when a computer could connect just as well. The kind decides the phrasing,
+   * so a computer reads as one.
+   */
+  it("names the connected client, and what kind of thing it is", async () => {
+    await mount({
+      remoteStatus: status({
+        client: { kind: "desktop", name: "FutureOS Desktop (studio-imac)" },
+        pairId: "pair_1",
+        phase: "ready",
+      }),
+    });
+
+    expect(container.textContent).toContain("FutureOS Desktop (studio-imac) (a computer)");
+  });
+
+  it("names a phone as a phone, and an unknown kind without a noun", async () => {
+    await mount({
+      remoteStatus: status({ client: { kind: "mobile", name: "Pixel 8" }, pairId: "pair_1", phase: "ready" }),
+    });
+    expect(container.textContent).toContain("Pixel 8 (a phone)");
+    act(() => root.unmount());
+    root = createRoot(container);
+
+    // A kind this build has never heard of is still named: dropping the name
+    // because the noun is unfamiliar would be worse than an honest "a device".
+    await mount({
+      remoteStatus: status({ client: { kind: "wearable", name: "Watch" }, pairId: "pair_1", phase: "ready" }),
+    });
+    expect(container.textContent).toContain("Watch");
+    expect(container.textContent).not.toContain("(a computer)");
+  });
+
+  /** A client that never said so is described as unnamed, not mislabelled. */
+  it("does not invent a device for a client that said nothing", async () => {
+    await mount({ remoteStatus: status({ client: null, pairId: "pair_1", phase: "ready" }) });
+
+    expect(container.textContent).toContain("A connected device");
+  });
+
+  /** And nothing is claimed while the link is down, however the client described itself. */
+  it("does not describe a client while it is not connected", async () => {
+    await mount({
+      remoteStatus: status({
+        client: { kind: "desktop", name: "FutureOS Desktop (studio-imac)" },
+        pairId: "pair_1",
+        phase: "stopped",
+      }),
+    });
+
+    expect(container.textContent).not.toContain("studio-imac");
   });
 
   it("warns about a failed web listener without claiming the link is down", async () => {

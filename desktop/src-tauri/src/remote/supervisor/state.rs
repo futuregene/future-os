@@ -108,6 +108,23 @@ impl Supervisor {
             done.store(true, Ordering::Release);
         });
     }
+    /// What the client on `pair_id` said it was.
+    ///
+    /// An unknown pairing gets an empty slot rather than the previous client's
+    /// description: a device that connected before must not be described on a
+    /// pairing it is not part of.
+    pub(in crate::remote) fn client_identity(
+        &self,
+        pair_id: &str,
+    ) -> Option<Arc<Mutex<Option<ClientIdentity>>>> {
+        self.bridge_shared
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|shared| shared.pair_id == pair_id)
+            .map(|shared| shared.client_identity.clone())
+    }
+
     /// The live-lane capabilities declared for `pair_id`. An unknown pairing
     /// gets a fresh, off flag: capability is always per connection, never
     /// inherited from whoever connected before.
@@ -143,6 +160,14 @@ pub(in crate::remote) struct BridgeRuntimeShared {
     pub(in crate::remote) reply_slots: commands::ReplySlots,
     pub(in crate::remote) pairing_confirmed: Arc<AtomicBool>,
     pub(in crate::remote) coalesce_events: Arc<AtomicBool>,
+    /// What the connected client said it was, until a new pairing replaces it.
+    ///
+    /// Spans generations like the fields above, and for the same reason: a
+    /// credential refresh is the *same* device reconnecting, so the UI must not
+    /// blink to "unknown device" every time a JWT is renewed. A re-minted
+    /// invitation does start a new runtime, which is right — a different device
+    /// may claim it.
+    pub(in crate::remote) client_identity: Arc<Mutex<Option<ClientIdentity>>>,
     pub(in crate::remote) bridge_instance_id: String,
     pub(in crate::remote) drop_counters: Arc<DropCounters>,
     pub(in crate::remote) next_generation_id: Arc<AtomicU64>,
@@ -218,6 +243,7 @@ pub(in crate::remote) fn shared_runtime(
         bridge_instance_id: format!("bridge_{}", nkeys::KeyPair::new_user().public_key()),
         drop_counters: Arc::new(DropCounters::new()),
         coalesce_events: Arc::new(AtomicBool::new(false)),
+        client_identity: Arc::new(Mutex::new(None)),
         next_generation_id: Arc::new(AtomicU64::new(1)),
         handshake: Arc::new(Mutex::new(None)),
         invitation,

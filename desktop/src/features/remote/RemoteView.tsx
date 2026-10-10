@@ -181,6 +181,22 @@ export function RemoteHostSection({
                   <Badge tone={connected ? "accent" : connecting ? "warning" : "danger"}>
                     {t(connectionStatusKey)}
                   </Badge>
+                  {/* What is on the other end, when it said so. The wording is
+                      device-neutral without it: the entry used to be labelled
+                      "phone", which stopped being true once a computer could
+                      connect here too. */}
+                  {connected
+                    ? (
+                        <span className="min-w-0 truncate text-sm text-ink">
+                          {remoteStatus?.client
+                            ? t(`clientKind.${remoteStatus.client.kind}`, {
+                                defaultValue: t("clientKind.other"),
+                                name: remoteStatus.client.name,
+                              })
+                            : t("clientUnknown")}
+                        </span>
+                      )
+                    : null}
                   <span className="min-w-0 truncate text-sm text-ink-muted">{formatPairId(remoteStatus?.pairId)}</span>
                   <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
                     <Button

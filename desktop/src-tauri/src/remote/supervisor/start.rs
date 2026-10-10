@@ -165,6 +165,9 @@ pub(in crate::remote) async fn start_generation(
     }
 
     let status = RemoteStatus {
+        // A fresh start has been told nothing yet: the client declares itself on
+        // `secure_ready`, which happens after this.
+        client: None,
         phase: RemotePhase::Ready,
         reason: None,
         recovery: None,

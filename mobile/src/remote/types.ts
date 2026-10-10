@@ -550,6 +550,15 @@ export interface RemoteCommand {
   preferSnapshot?: boolean;
   /** Client capabilities declared on `secure_ready` (additive, opt-in). */
   features?: string[];
+  /**
+   * What this device is, declared on `secure_ready`.
+   *
+   * Beside `features` rather than inside it: a capability is something a client
+   * asks for, and this is something it *is*. The desktop shows it to the user,
+   * which is the only reason it exists — an older desktop ignores both fields.
+   */
+  deviceName?: string;
+  deviceKind?: string;
   replyId?: string;
   replayUntilIdx?: number;
   bridgeInstanceId?: string;

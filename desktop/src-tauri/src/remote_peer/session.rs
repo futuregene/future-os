@@ -522,10 +522,19 @@ async fn handshake(
     // it must still be sent — declaring nothing keeps the protocol readable
     // from the wire and leaves the optimisation flags for a later, measured
     // change.
+    //
+    // It does carry this client's identity, which is not a capability: the host
+    // shows the user what is connected, and it cannot say "a computer" about
+    // something that never told it so. An older host ignores both fields.
     session
         .request(
             &session.command_subject("handshake"),
-            json!({ "type": "secure_ready", "features": [] }),
+            json!({
+                "type": "secure_ready",
+                "features": [],
+                "deviceName": super::runtime::device_name(),
+                "deviceKind": "desktop",
+            }),
             HANDSHAKE_TIMEOUT,
         )
         .await?;
