@@ -139,5 +139,12 @@
   },
   "tasksManage": "Manage",
   "tasksRunGone": "That run's conversation is no longer there.",
-  "tasksOnHost": "Tasks on {{name}}"
+  "tasksOnHost": "Tasks on {{name}}",
+  "providersRemoteSection": "Providers and keys",
+  "providersRemoteHint": "These settings belong to that computer; this machine keeps no copy. A key is written there and only ever read back as set / not set.",
+  "providersKeyOnHost": "The key is stored on {{name}} only; this machine keeps no copy.",
+  "providersChangeKey": "Change key",
+  "providersManaged": "Signed in on that computer",
+  "providersBaseUrlNeeded": "{{count}} models · needs a Base URL",
+  "providersRemoveConfirm": "Remove this provider from {{name}}?"
 }

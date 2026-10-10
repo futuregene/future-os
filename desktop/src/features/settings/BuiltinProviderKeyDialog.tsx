@@ -11,11 +11,20 @@ import { errorMessage } from "../../lib/errors";
 const BASE_URL_PLACEHOLDER = "YOUR_RESOURCE";
 
 export function BuiltinProviderKeyDialog({
+  description,
   onClose,
   onSubmit,
   open,
   provider,
 }: {
+  /**
+   * Overrides the line about where the key is kept.
+   *
+   * The default says "on this machine", which is only true for this app's own
+   * providers: the same dialog is used to set a key on a paired computer, and
+   * there the sentence would name the wrong machine.
+   */
+  description?: string;
   onClose: () => void;
   onSubmit: (payload: { apiKey?: string | null; baseUrl?: string }) => Promise<void>;
   open: boolean;
@@ -84,7 +93,8 @@ export function BuiltinProviderKeyDialog({
       onClose={onClose}
       open={open}
       title={t("providers.keyDialogTitle", { provider: provider?.name ?? "" })}
-      description={requiresBaseUrl ? t("providers.baseUrlDialogDescription") : t("providers.keyDialogDescription")}
+      description={description
+        ?? (requiresBaseUrl ? t("providers.baseUrlDialogDescription") : t("providers.keyDialogDescription"))}
       footer={(
         <>
           {provider?.hasApiKey

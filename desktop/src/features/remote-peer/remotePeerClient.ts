@@ -1,4 +1,5 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
+import type { ProvidersView } from "../../integrations/agent/providers";
 import type { RemoteCatalog, RemoteSessionRow } from "./mergeConversations";
 import { invokeCommand } from "../../integrations/tauri/invoke";
 
@@ -727,6 +728,67 @@ export async function setRemoteApprovalTier(
     "list",
   );
   return typeof raw?.approvalTier === "string" ? raw.approvalTier : tier;
+}
+
+/**
+ * This host's providers, as its own settings page sees them.
+ *
+ * No cache, unlike this app's own provider reads: the two views are different
+ * machines' configurations, and one shared cache would show one machine's
+ * providers under the other's name.
+ */
+export async function listRemoteProviders(desktopId: string): Promise<ProvidersView> {
+  return await requestRemotePeer<ProvidersView>(desktopId, { type: "list_providers" }, "list");
+}
+
+/**
+ * Write one built-in provider's key and/or base URL on that host.
+ *
+ * `updateApiKey` is what distinguishes "leave the key alone" from "set it": the
+ * host treats an absent key as no change, so clearing one has to say so
+ * explicitly with `apiKey: null`.
+ */
+export async function updateRemoteBuiltinProvider(
+  desktopId: string,
+  input: { id: string; baseUrl?: string; apiKey?: string | null; updateApiKey: boolean },
+): Promise<ProvidersView> {
+  return await requestRemotePeer<ProvidersView>(
+    desktopId,
+    { type: "update_builtin_provider", provider: input },
+    "list",
+  );
+}
+
+/** Add or edit one custom provider on that host. */
+export async function upsertRemoteCustomProvider(
+  desktopId: string,
+  input: {
+    id: string;
+    name: string;
+    api: string;
+    baseUrl: string;
+    apiKey?: string | null;
+    models: unknown[];
+    create: boolean;
+  },
+): Promise<ProvidersView> {
+  return await requestRemotePeer<ProvidersView>(
+    desktopId,
+    { type: "upsert_custom_provider", provider: input },
+    "list",
+  );
+}
+
+/** Remove one custom provider from that host. */
+export async function deleteRemoteCustomProvider(
+  desktopId: string,
+  providerId: string,
+): Promise<ProvidersView> {
+  return await requestRemotePeer<ProvidersView>(
+    desktopId,
+    { type: "delete_custom_provider", providerId },
+    "list",
+  );
 }
 
 /**

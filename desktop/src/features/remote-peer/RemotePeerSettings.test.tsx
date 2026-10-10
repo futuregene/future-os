@@ -137,12 +137,12 @@ it("reads the host's own settings and counts", async () => {
 
   expect(request).toHaveBeenCalledWith("desktop_a", { type: "get_desktop_settings" }, "list");
   expect(request).toHaveBeenCalledWith("desktop_a", { type: "list_settings_models" }, "list");
-  expect(request).toHaveBeenCalledWith("desktop_a", { type: "list_providers" }, "list");
-  // Tasks are not counted here: the page that manages them reads them itself,
-  // and a count read on this page would be a second, staler answer.
+  // Providers and tasks are not counted here: both are managed in place, and a
+  // count read on this page would be a second, staler answer.
   expect(request).not.toHaveBeenCalledWith("desktop_a", { type: "list_tasks" }, "list");
+  expect(request).not.toHaveBeenCalledWith("desktop_a", { type: "list_providers" }, "list");
 
-  // Two models, one provider — as the host reported them.
+  // Two models — as the host reported them.
   expect(view.text()).toContain("2");
   await view.unmount();
 });

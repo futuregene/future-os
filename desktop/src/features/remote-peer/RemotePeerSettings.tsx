@@ -9,6 +9,7 @@ import { SettingsList, SettingsRow, SettingsSection, Switch } from "../settings/
 import { PeerIconPicker } from "./PeerIconPicker";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
 import { getRemoteApprovalSettings, requestRemotePeer, setRemoteApprovalTier } from "./remotePeerClient";
+import { RemoteProvidersPanel } from "./RemoteProvidersPanel";
 import { RemoteSkillsPanel } from "./RemoteSkillsPanel";
 
 /**
@@ -45,7 +46,6 @@ export function RemotePeerSettings({
   const [name, setName] = useState(peer.name ?? "");
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
   const [models, setModels] = useState<string[]>([]);
-  const [providers, setProviders] = useState<string[]>([]);
   const [approval, setApproval] = useState<{ approvalTier: string; sandboxAvailable: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -55,6 +55,7 @@ export function RemotePeerSettings({
   // rather than a control that silently does nothing.
   const supportsApprovalTier = peer.features.includes("approval_tier_v1");
   const supportsAutoApproval = peer.features.includes("auto_approval_v1");
+  const providersSupported = peer.features.includes("provider_management_v1");
 
   const load = useCallback(async () => {
     setError(null);
@@ -62,15 +63,13 @@ export function RemotePeerSettings({
       const values = await Promise.all([
         requestRemotePeer<Record<string, unknown>>(peer.desktopId, { type: "get_desktop_settings" }, "list"),
         readList(peer.desktopId, { type: "list_settings_models" }, "models"),
-        readList(peer.desktopId, { type: "list_providers" }, "providers"),
         supportsApprovalTier
           ? getRemoteApprovalSettings(peer.desktopId)
           : Promise.resolve(null),
       ]);
       setSettings(values[0]);
       setModels(values[1]);
-      setProviders(values[2]);
-      setApproval(values[3]);
+      setApproval(values[2]);
     }
     catch (err) {
       // One machine's settings page can fail as a whole (the host went away);
@@ -247,13 +246,16 @@ export function RemotePeerSettings({
           is the errand that makes "go to that machine" unreasonable. */}
       <RemoteSkillsPanel available={available} peer={peer} />
 
+      {/* Providers and their keys are the other such errand, and the one where
+          walking over is worst: a host whose key expired cannot run anything. */}
+      {providersSupported
+        ? <RemoteProvidersPanel available={available} peer={peer} />
+        : null}
+
       <SettingsSection description={t("settingsHostContentHint")} title={t("settingsHostContent")}>
         <SettingsList>
           <SettingsRow description={countOf(models, t("countModels"))} title={t("models")}>
             <span className="text-xs text-ink-muted">{models.length}</span>
-          </SettingsRow>
-          <SettingsRow description={t("providersHint")} title={t("providers")}>
-            <span className="text-xs text-ink-muted">{providers.length}</span>
           </SettingsRow>
           <SettingsRow description={t("tasksHint")} title={t("tasks")}>
             <Button disabled={!available} onClick={onOpenTasks} size="sm" variant="ghost">
