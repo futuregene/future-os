@@ -21,6 +21,11 @@ vi.mock("./remotePeerClient", async (importOriginal) => {
     requestRemotePeer: (...args: Parameters<typeof request>) => request(...args),
   };
 });
+// The *real* helpers are kept (the mock above only replaces the one the page
+// calls directly) so that the parsing is exercised rather than re-implemented
+// here. Their calls land on the Tauri boundary, which is mocked instead.
+const invoke = vi.hoisted(() => vi.fn());
+vi.mock("../../integrations/tauri/invoke", () => ({ invokeCommand: invoke }));
 // The icon picker and the skills panel are their own concerns; both are covered
 // where they live.
 vi.mock("./PeerIconPicker", () => ({ PeerIconPicker: () => <div data-testid="icon-picker" /> }));
@@ -55,6 +60,10 @@ function answerHost(overrides: Partial<Record<string, unknown>> = {}): void {
       return overrides[type];
     if (type === "get_desktop_settings")
       return { autoUpgradeSkills: true, autoTitleFirstTurn: false };
+    if (type === "get_settings")
+      return { approvalTier: "manual", sandboxAvailable: true };
+    if (type === "set_approval_tier")
+      return { approvalTier: "off" };
     if (type === "list_settings_models")
       return { models: ["a", "b"] };
     if (type === "list_providers")
@@ -113,6 +122,8 @@ async function settle(): Promise<void> {
 beforeEach(() => {
   document.body.innerHTML = "";
   request.mockReset();
+  invoke.mockReset();
+  invoke.mockResolvedValue(undefined);
   answerHost();
 });
 
@@ -233,4 +244,148 @@ it("unpairs through the caller", async () => {
 
   expect(view.onUnpair).toHaveBeenCalled();
   await view.unmount();
+});
+
+/**
+ * The other computer's approval mode.
+ *
+ * It reads as its own section because the value belongs to that host: this
+ * machine has an approval mode too, and the two are different answers to the
+ * same question. What is asserted is that the page shows the *host's* mode, that
+ * it writes through, and that the host's answer wins over the request.
+ *
+ * These run through the real client helpers rather than a stubbed one, so the
+ * wire shape below is the shape that actually leaves the app.
+ */
+describe("the host's approval mode", () => {
+  const withApproval = (overrides: Partial<RemotePeer> = {}) =>
+    peer({ features: ["approval_tier_v1", "auto_approval_v1"], ...overrides });
+
+  const select = (container: HTMLElement) => container.querySelector<HTMLSelectElement>("select")!;
+
+  /** The command that reached the backend, whichever helper sent it. */
+  const sent = (type: string) =>
+    invoke.mock.calls
+      .map(([, args]) => args as { command?: Record<string, unknown> })
+      .filter(args => args?.command?.type === type);
+
+  function answerHostApproval(get: unknown, set?: unknown): void {
+    invoke.mockImplementation(async (_cmd, args) => {
+      const type = (args as { command?: { type?: string } })?.command?.type;
+      if (type === "get_settings")
+        return get;
+      if (type === "set_approval_tier")
+        return set;
+      return undefined;
+    });
+  }
+
+  /** A host that does not advertise the command must not be offered the rows. */
+  it("is offered only by a host that serves it", async () => {
+    const view = await mount({ peer: peer({ features: [] }) });
+    expect(select(view.container)).toBeNull();
+    expect(sent("get_settings")).toEqual([]);
+    await view.unmount();
+  });
+
+  it("reads the mode that host is in", async () => {
+    answerHostApproval({ approvalTier: "off", sandboxAvailable: true });
+    const view = await mount({ peer: withApproval() });
+
+    expect(select(view.container).value).toBe("off");
+    expect(sent("get_settings")[0]).toEqual({
+      desktopId: "desktop_a",
+      command: { type: "get_settings" },
+      lane: "list",
+    });
+    await view.unmount();
+  });
+
+  it("writes a change back to that host, and shows what it answered", async () => {
+    answerHostApproval({ approvalTier: "manual", sandboxAvailable: true }, { approvalTier: "auto" });
+    const view = await mount({ peer: withApproval() });
+    expect(select(view.container).value).toBe("manual");
+
+    await act(async () => {
+      select(view.container).value = "auto";
+      select(view.container).dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+
+    expect(sent("set_approval_tier")[0]).toEqual({
+      desktopId: "desktop_a",
+      command: { type: "set_approval_tier", tier: "auto" },
+      lane: "list",
+    });
+    // `auto` is what the host settled on, and so what is shown.
+    expect(select(view.container).value).toBe("auto");
+    await view.unmount();
+  });
+
+  /**
+   * The host may refuse to run in the mode it was asked for — asking for
+   * `sandbox` on a host whose sandbox turned out to be missing is answered with
+   * `manual`. Showing the request would report a mode the host is not in.
+   */
+  it("shows the mode the host settled on, not the one asked for", async () => {
+    answerHostApproval({ approvalTier: "manual", sandboxAvailable: true }, { approvalTier: "manual" });
+    const view = await mount({ peer: withApproval() });
+
+    await act(async () => {
+      select(view.container).value = "sandbox";
+      select(view.container).dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+
+    expect(select(view.container).value).toBe("manual");
+    await view.unmount();
+  });
+
+  /** A host without a sandbox cannot run sandboxed, so those modes are not offered. */
+  it("disables the modes the host cannot run in", async () => {
+    answerHostApproval({ approvalTier: "manual", sandboxAvailable: false });
+    const view = await mount({ peer: withApproval() });
+
+    const options = [...select(view.container).options];
+    const byValue = (value: string) => options.find(option => option.value === value)!;
+    expect(byValue("manual").disabled).toBe(false);
+    expect(byValue("off").disabled).toBe(false);
+    expect(byValue("sandbox").disabled).toBe(true);
+    expect(byValue("auto").disabled).toBe(true);
+    await view.unmount();
+  });
+
+  /** Automatic review needs the host's own capability, not just a sandbox. */
+  it("disables automatic review on a host that does not have it", async () => {
+    answerHostApproval({ approvalTier: "manual", sandboxAvailable: true });
+    const view = await mount({ peer: peer({ features: ["approval_tier_v1"] }) });
+
+    const options = [...select(view.container).options];
+    expect(options.find(option => option.value === "auto")!.disabled).toBe(true);
+    expect(options.find(option => option.value === "sandbox")!.disabled).toBe(false);
+    await view.unmount();
+  });
+
+  /** A refused write is reported, and the shown mode stays whatever the host said. */
+  it("reports a refused write without changing what the host reported", async () => {
+    invoke.mockImplementation(async (_cmd, args) => {
+      const type = (args as { command?: { type?: string } })?.command?.type;
+      if (type === "get_settings")
+        return { approvalTier: "manual", sandboxAvailable: true };
+      if (type === "set_approval_tier")
+        throw new Error("invalid tier");
+      return undefined;
+    });
+    const view = await mount({ peer: withApproval() });
+
+    await act(async () => {
+      select(view.container).value = "off";
+      select(view.container).dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+
+    expect(view.text()).toContain("invalid tier");
+    expect(select(view.container).value).toBe("manual");
+    await view.unmount();
+  });
 });

@@ -120,5 +120,21 @@
   "skillsWorking": "处理中…",
   "skillsInstall": "安装",
   "skillsRemove": "卸载",
-  "toolRan": "{{name}} 已执行"
+  "toolRan": "{{name}} 已执行",
+  "approvalSection": "审批模式",
+  "approvalHint": "那台电脑上的审批模式。本机自己的审批模式在「设置」里，两者互不影响。",
+  "approvalTier": "审批模式",
+  "approvalTierLabel.manual": "手动审批",
+  "approvalTierLabel.sandbox": "沙箱保护",
+  "approvalTierLabel.sandboxUnavailable": "沙箱保护（不可用）",
+  "approvalTierLabel.auto": "自动审批",
+  "approvalTierLabel.autoUnsupported": "自动审批（那台电脑不支持）",
+  "approvalTierLabel.off": "完全放开",
+  "approvalTierDescription": {
+    "default": "文件访问遵循审批规则；只读白名单命令直接放行，其余命令需批准。不启用 OS 沙箱。",
+    "manual": "文件访问遵循审批规则；只读白名单命令直接放行，其余命令需批准。不启用 OS 沙箱。",
+    "sandbox": "命令在那台电脑的沙箱中运行，必要时请求批准。",
+    "auto": "自动判断是否放行，保留沙箱保护。",
+    "off": "全部放开，不再询问，也不启用沙箱。"
+  }
 }

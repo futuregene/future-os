@@ -1,12 +1,14 @@
+import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { RemotePeer } from "./remotePeerClient";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
+import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "../settings/SettingsPrimitives";
 import { PeerIconPicker } from "./PeerIconPicker";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
-import { requestRemotePeer } from "./remotePeerClient";
+import { getRemoteApprovalSettings, requestRemotePeer, setRemoteApprovalTier } from "./remotePeerClient";
 import { RemoteSkillsPanel } from "./RemoteSkillsPanel";
 
 /**
@@ -42,8 +44,15 @@ export function RemotePeerSettings({
   const [models, setModels] = useState<string[]>([]);
   const [providers, setProviders] = useState<string[]>([]);
   const [tasks, setTasks] = useState<string[]>([]);
+  const [approval, setApproval] = useState<{ approvalTier: string; sandboxAvailable: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // The host advertises which commands it serves; the approval rows are only
+  // offered by a host that says it has them, so an older build shows fewer rows
+  // rather than a control that silently does nothing.
+  const supportsApprovalTier = peer.features.includes("approval_tier_v1");
+  const supportsAutoApproval = peer.features.includes("auto_approval_v1");
 
   const load = useCallback(async () => {
     setError(null);
@@ -53,18 +62,22 @@ export function RemotePeerSettings({
         readList(peer.desktopId, { type: "list_settings_models" }, "models"),
         readList(peer.desktopId, { type: "list_providers" }, "providers"),
         readList(peer.desktopId, { type: "list_tasks" }, "tasks"),
+        supportsApprovalTier
+          ? getRemoteApprovalSettings(peer.desktopId)
+          : Promise.resolve(null),
       ]);
       setSettings(values[0]);
       setModels(values[1]);
       setProviders(values[2]);
       setTasks(values[3]);
+      setApproval(values[4]);
     }
     catch (err) {
       // One machine's settings page can fail as a whole (the host went away);
       // that is a page-level error, not a per-row one.
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [peer.desktopId]);
+  }, [peer.desktopId, supportsApprovalTier]);
 
   useEffect(() => {
     void load();
@@ -81,6 +94,25 @@ export function RemotePeerSettings({
       );
       setSettings(next);
       onChanged();
+    }
+    catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    finally {
+      setBusy(false);
+    }
+  }
+
+  async function setApprovalTier(tier: ApprovalTier) {
+    setBusy(true);
+    setError(null);
+    try {
+      // The host answers with the tier it settled on, not the one asked for:
+      // `sandbox` on a host whose sandbox is missing comes back as `manual`.
+      const settled = await setRemoteApprovalTier(peer.desktopId, tier);
+      setApproval(current => current
+        ? { ...current, approvalTier: settled }
+        : { approvalTier: settled, sandboxAvailable: false });
     }
     catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -174,6 +206,42 @@ export function RemotePeerSettings({
           </SettingsRow>
         </SettingsList>
       </SettingsSection>
+
+      {/* The host's approval mode. It sits here rather than in the app's own
+          Settings dialog because it is the *other* machine's mode: this machine
+          has its own, and the two are genuinely different answers. */}
+      {supportsApprovalTier && approval
+        ? (
+            <SettingsSection description={t("approvalHint")} title={t("approvalSection")}>
+              <SettingsList>
+                <SettingsRow
+                  description={t(`approvalTierDescription.${approval.approvalTier}`, {
+                    defaultValue: t("approvalTierDescription.default"),
+                  })}
+                  title={t("approvalTier")}
+                >
+                  <Select
+                    aria-label={t("approvalTier")}
+                    disabled={!available || busy}
+                    onChange={event => void setApprovalTier(event.target.value as ApprovalTier)}
+                    size="sm"
+                    value={approval.approvalTier}
+                    wrapperClassName="w-40"
+                  >
+                    <option value="manual">{t("approvalTierLabel.manual")}</option>
+                    <option disabled={!approval.sandboxAvailable} value="sandbox">
+                      {t(approval.sandboxAvailable ? "approvalTierLabel.sandbox" : "approvalTierLabel.sandboxUnavailable")}
+                    </option>
+                    <option disabled={!approval.sandboxAvailable || !supportsAutoApproval} value="auto">
+                      {t(supportsAutoApproval ? "approvalTierLabel.auto" : "approvalTierLabel.autoUnsupported")}
+                    </option>
+                    <option value="off">{t("approvalTierLabel.off")}</option>
+                  </Select>
+                </SettingsRow>
+              </SettingsList>
+            </SettingsSection>
+          )
+        : null}
 
       {/* Skills are manageable from here rather than summarised: installing one
           is the errand that makes "go to that machine" unreasonable. */}
