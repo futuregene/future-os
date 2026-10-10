@@ -7,6 +7,7 @@ import { SettingsList, SettingsRow, SettingsSection, Switch } from "../settings/
 import { PeerIconPicker } from "./PeerIconPicker";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
 import { requestRemotePeer } from "./remotePeerClient";
+import { RemoteSkillsPanel } from "./RemoteSkillsPanel";
 
 /**
  * Settings for *another* machine, mirroring the phone's settings rows.
@@ -40,7 +41,6 @@ export function RemotePeerSettings({
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
   const [models, setModels] = useState<string[]>([]);
   const [providers, setProviders] = useState<string[]>([]);
-  const [skills, setSkills] = useState<string[]>([]);
   const [tasks, setTasks] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,14 +52,12 @@ export function RemotePeerSettings({
         requestRemotePeer<Record<string, unknown>>(peer.desktopId, { type: "get_desktop_settings" }, "list"),
         readList(peer.desktopId, { type: "list_settings_models" }, "models"),
         readList(peer.desktopId, { type: "list_providers" }, "providers"),
-        readList(peer.desktopId, { type: "list_skills" }, "skills"),
         readList(peer.desktopId, { type: "list_tasks" }, "tasks"),
       ]);
       setSettings(values[0]);
       setModels(values[1]);
       setProviders(values[2]);
-      setSkills(values[3]);
-      setTasks(values[4]);
+      setTasks(values[3]);
     }
     catch (err) {
       // One machine's settings page can fail as a whole (the host went away);
@@ -177,6 +175,10 @@ export function RemotePeerSettings({
         </SettingsList>
       </SettingsSection>
 
+      {/* Skills are manageable from here rather than summarised: installing one
+          is the errand that makes "go to that machine" unreasonable. */}
+      <RemoteSkillsPanel available={available} peer={peer} />
+
       <SettingsSection description={t("settingsHostContentHint")} title={t("settingsHostContent")}>
         <SettingsList>
           <SettingsRow description={countOf(models, t("countModels"))} title={t("models")}>
@@ -184,9 +186,6 @@ export function RemotePeerSettings({
           </SettingsRow>
           <SettingsRow description={t("providersHint")} title={t("providers")}>
             <span className="text-xs text-ink-muted">{providers.length}</span>
-          </SettingsRow>
-          <SettingsRow description={t("skillsHint")} title={t("skills")}>
-            <span className="text-xs text-ink-muted">{skills.length}</span>
           </SettingsRow>
           <SettingsRow description={t("tasksHint")} title={t("tasks")}>
             <span className="text-xs text-ink-muted">{tasks.length}</span>

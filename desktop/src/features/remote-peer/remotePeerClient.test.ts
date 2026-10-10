@@ -24,8 +24,12 @@ const {
   fetchRemoteSessions,
   forkRemoteConversation,
   getRemoteConversationSettings,
+  installRemoteSkill,
+  listRemoteAvailableSkills,
+  listRemoteInstalledSkills,
   listRemoteModels,
   listRemoteSessionFiles,
+  localizedSkill,
   pinRemoteConversation,
   promptRemoteConversation,
   remoteModelProvider,
@@ -33,6 +37,7 @@ const {
   renameRemoteConversation,
   setRemoteConversationModel,
   setRemoteConversationThinkingLevel,
+  uninstallRemoteSkill,
   uploadRemoteFile,
 } = await import("./remotePeerClient");
 
@@ -668,5 +673,122 @@ describe("continueRemoteRun", () => {
     await expect(continueRemoteRun("desktop_a", "sess_1", "run_7"))
       .rejects
       .toThrow("Only a failed run can be continued.");
+  });
+});
+
+describe("localizedSkill", () => {
+  const both = {
+    id: "both",
+    name: "Both",
+    description: "English text",
+    nameZh: "两者",
+    descriptionZh: "中文说明",
+  };
+
+  it("picks the language it was asked for", () => {
+    expect(localizedSkill(both, "zh")).toEqual({ name: "两者", description: "中文说明" });
+    expect(localizedSkill(both, "zh-CN")).toEqual({ name: "两者", description: "中文说明" });
+    expect(localizedSkill(both, "en")).toEqual({ name: "Both", description: "English text" });
+    expect(localizedSkill(both, "en-US")).toEqual({ name: "Both", description: "English text" });
+  });
+
+  /**
+   * A catalogue entry with no translation falls back to the language it has,
+   * rather than to nothing: the user is deciding whether to install it, and a
+   * blank row tells them nothing.
+   */
+  it("falls back rather than going blank", () => {
+    const englishOnly = { id: "e", name: "English only", description: "Only English" };
+    expect(localizedSkill(englishOnly, "zh")).toEqual({
+      name: "English only",
+      description: "Only English",
+    });
+
+    const chineseOnly = { id: "c", name: "", description: "", nameZh: "只有中文", descriptionZh: "说明" };
+    expect(localizedSkill(chineseOnly, "en")).toEqual({ name: "只有中文", description: "说明" });
+  });
+
+  /** A row with neither translation is its id, which is what the host named it. */
+  it("uses the id when there is no name at all", () => {
+    expect(localizedSkill({ id: "bare", name: "", description: "" }, "en")).toEqual({
+      name: "bare",
+      description: "",
+    });
+  });
+});
+
+describe("remote skills", () => {
+  it("reads both lists on the catalogue lane", async () => {
+    invokeMock.mockResolvedValue({
+      skills: [
+        { id: "alpha", name: "Alpha", description: "installed", version: "1.2.0" },
+        { id: "beta", name: "Beta", description: "also installed" },
+      ],
+    });
+
+    const list = await listRemoteInstalledSkills("desktop_a");
+
+    expect(lastCall().args).toEqual({ desktopId: "desktop_a", command: { type: "list_skills" }, lane: "list" });
+    expect(list).toEqual([
+      { id: "alpha", name: "Alpha", description: "installed", version: "1.2.0" },
+      { id: "beta", name: "Beta", description: "also installed" },
+    ]);
+
+    invokeMock.mockResolvedValue({ skills: [{ id: "gamma", name: "Gamma", description: "new", latestVersion: "3.0.0" }] });
+    const catalogue = await listRemoteAvailableSkills("desktop_a");
+    expect(lastCall().args).toEqual({ desktopId: "desktop_a", command: { type: "list_available_skills" }, lane: "list" });
+    expect(catalogue).toEqual([{ id: "gamma", name: "Gamma", description: "new", latestVersion: "3.0.0" }]);
+  });
+
+  /** A row with no usable name is dropped, like every other list here. */
+  it("drops rows that name no skill and tolerates a malformed payload", async () => {
+    invokeMock.mockResolvedValue({ skills: [null, "nope", { name: "orphan" }, { id: "" }, { id: "ok" }] });
+    expect(await listRemoteInstalledSkills("desktop_a")).toEqual([
+      { id: "ok", name: "ok", description: "" },
+    ]);
+
+    invokeMock.mockResolvedValue({});
+    expect(await listRemoteInstalledSkills("desktop_a")).toEqual([]);
+
+    invokeMock.mockResolvedValue(null);
+    expect(await listRemoteAvailableSkills("desktop_a")).toEqual([]);
+  });
+
+  it("installs a named version and removes by id", async () => {
+    invokeMock.mockResolvedValue(undefined);
+    await installRemoteSkill("desktop_a", "gamma", "3.0.0");
+    expect(lastCall().args).toEqual({
+      desktopId: "desktop_a",
+      command: { type: "install_skill", skillId: "gamma", version: "3.0.0" },
+      lane: "list",
+    });
+
+    invokeMock.mockResolvedValue({ removed: true });
+    await expect(uninstallRemoteSkill("desktop_a", "alpha")).resolves.toBe(true);
+    expect(lastCall().args).toEqual({
+      desktopId: "desktop_a",
+      command: { type: "uninstall_skill", skillId: "alpha" },
+      lane: "list",
+    });
+  });
+
+  /**
+   * `removed: false` is not an error: two clients can be looking at the same
+   * list, and the second one asking to remove what the first already removed has
+   * its answer.
+   */
+  it("reads a no-op removal as a plain false", async () => {
+    invokeMock.mockResolvedValue({ removed: false });
+    await expect(uninstallRemoteSkill("desktop_a", "alpha")).resolves.toBe(false);
+
+    // A host that omits the field has not claimed it removed anything.
+    invokeMock.mockResolvedValue({});
+    await expect(uninstallRemoteSkill("desktop_a", "alpha")).resolves.toBe(false);
+  });
+
+  it("propagates a refused install or removal", async () => {
+    invokeMock.mockRejectedValue(new Error("skill_not_found"));
+    await expect(installRemoteSkill("desktop_a", "ghost", "1")).rejects.toThrow("skill_not_found");
+    await expect(uninstallRemoteSkill("desktop_a", "ghost")).rejects.toThrow("skill_not_found");
   });
 });
