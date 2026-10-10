@@ -550,6 +550,116 @@ export function continueRemoteRun(
 }
 
 /**
+ * One skill a host has installed.
+ *
+ * Names are localized on that host's catalogue rather than in the app's own
+ * bundle, so both languages travel and the caller picks.
+ */
+export interface RemoteSkillInfo {
+  id: string;
+  name: string;
+  description: string;
+  nameZh?: string | null;
+  descriptionZh?: string | null;
+  version?: string | null;
+}
+
+/** One skill that host could install. */
+export interface RemoteAvailableSkill {
+  id: string;
+  name: string;
+  description: string;
+  nameZh?: string | null;
+  descriptionZh?: string | null;
+  latestVersion?: string | null;
+}
+
+/**
+ * Pick the name and description for a language.
+ *
+ * A catalogue entry without a translation falls back to the other language
+ * rather than to nothing: the user is deciding whether to install it, and a blank
+ * row tells them nothing. A pure function so both fallbacks are testable without
+ * a host.
+ */
+export function localizedSkill(
+  skill: RemoteSkillInfo | RemoteAvailableSkill,
+  language: string,
+): { name: string; description: string } {
+  const chinese = language.startsWith("zh");
+  const name = chinese ? skill.nameZh || skill.name : skill.name || skill.nameZh;
+  const description = chinese
+    ? skill.descriptionZh || skill.description
+    : skill.description || skill.descriptionZh;
+  return { name: name || skill.id, description: description || "" };
+}
+
+function skillRows(raw: unknown): RemoteSkillInfo[] {
+  const list = Array.isArray((raw as Record<string, unknown> | null)?.skills)
+    ? (raw as { skills: unknown[] }).skills
+    : [];
+  return list.flatMap((entry): RemoteSkillInfo[] => {
+    if (typeof entry !== "object" || entry === null)
+      return [];
+    const row = entry as Record<string, unknown>;
+    if (typeof row.id !== "string" || !row.id)
+      return [];
+    return [{
+      id: row.id,
+      name: typeof row.name === "string" ? row.name : row.id,
+      description: typeof row.description === "string" ? row.description : "",
+      ...(typeof row.nameZh === "string" ? { nameZh: row.nameZh } : {}),
+      ...(typeof row.descriptionZh === "string" ? { descriptionZh: row.descriptionZh } : {}),
+      ...(typeof row.version === "string" ? { version: row.version } : {}),
+      ...(typeof row.latestVersion === "string" ? { latestVersion: row.latestVersion } : {}),
+    }];
+  });
+}
+
+/** The skills that host already has. */
+export async function listRemoteInstalledSkills(desktopId: string): Promise<RemoteSkillInfo[]> {
+  return skillRows(await requestRemotePeer(desktopId, { type: "list_skills" }, "list"));
+}
+
+/** The skills that host could install. */
+export async function listRemoteAvailableSkills(desktopId: string): Promise<RemoteSkillInfo[]> {
+  return skillRows(await requestRemotePeer(desktopId, { type: "list_available_skills" }, "list"));
+}
+
+/**
+ * Install a skill on that host.
+ *
+ * The version is the catalogue's `latestVersion`, which is what the host expects
+ * to resolve; asking for a version it does not publish is refused there.
+ */
+export function installRemoteSkill(
+  desktopId: string,
+  skillId: string,
+  version: string,
+): Promise<unknown> {
+  return requestRemotePeer(desktopId, { type: "install_skill", skillId, version }, "list");
+}
+
+/**
+ * Remove a skill from that host, and report whether anything was.
+ *
+ * The host answers `removed: false` for a skill that was already gone — which is
+ * not an error: two clients can be looking at the same list, and the second one
+ * asking to remove what the first already removed has its answer.
+ */
+export async function uninstallRemoteSkill(
+  desktopId: string,
+  skillId: string,
+): Promise<boolean> {
+  const raw = await requestRemotePeer<Record<string, unknown>>(
+    desktopId,
+    { type: "uninstall_skill", skillId },
+    "list",
+  );
+  return raw?.removed === true;
+}
+
+/**
  * Run one command on one host. The lane is the session the command addresses
  * (`list` for catalogue reads) — the backend builds the subject, so no subject
  * string is ever assembled in the frontend.

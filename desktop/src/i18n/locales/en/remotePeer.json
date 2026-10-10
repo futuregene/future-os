@@ -64,8 +64,8 @@
   "settingAutoTitleHint": "Name a new conversation from its first message.",
   "settingSkillRecommend": "Skill suggestions",
   "settingSkillRecommendHint": "Let that desktop suggest a skill while you type.",
-  "settingAutoConnect": "Phone pairing auto-connect",
-  "settingAutoConnectHint": "Whether that desktop reopens its phone remote control on launch.",
+  "settingAutoConnect": "Auto-connect on launch",
+  "settingAutoConnectHint": "Whether that computer reconnects to its paired devices when it starts.",
   "settingsHostContent": "On that desktop",
   "settingsHostContentHint": "Read-only summary here; manage them on the desktop itself.",
   "countModels": "on that desktop",
@@ -73,7 +73,7 @@
   "providers": "Model providers",
   "providersHint": "API keys and endpoints configured there.",
   "skills": "Skills",
-  "skillsHint": "Installed on that desktop.",
+  "skillsHint": "Installed on that computer.",
   "tasks": "Tasks",
   "tasksHint": "Scheduled and dependent tasks there.",
   "iconSectionHint": "Shown next to its conversations in the list.",
@@ -114,5 +114,10 @@
   "thinkingLevel.xhigh": "Extra high",
   "settingsSaveFailed": "Could not change it: {{message}}",
   "continueRun": "Continue",
-  "continueFailed": "Could not continue the run: {{message}}"
+  "continueFailed": "Could not continue the run: {{message}}",
+  "skillsLoading": "Reading…",
+  "skillsNoneInstalled": "Nothing installed on that computer yet.",
+  "skillsWorking": "Working…",
+  "skillsInstall": "Install",
+  "skillsRemove": "Remove"
 }

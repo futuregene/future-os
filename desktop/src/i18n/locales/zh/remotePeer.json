@@ -64,8 +64,8 @@
   "settingAutoTitleHint": "用第一条消息为新对话命名。",
   "settingSkillRecommend": "技能推荐",
   "settingSkillRecommendHint": "输入时允许那台电脑推荐技能。",
-  "settingAutoConnect": "手机遥控自动连接",
-  "settingAutoConnectHint": "那台电脑启动时是否自动开启手机遥控。",
+  "settingAutoConnect": "已配对设备自动连接",
+  "settingAutoConnectHint": "那台电脑启动后，是否自动连回已配对的设备。",
   "settingsHostContent": "那台电脑上的",
   "settingsHostContentHint": "这里只做只读汇总；请在那台电脑上管理。",
   "countModels": "个模型",
@@ -73,7 +73,7 @@
   "providers": "模型提供方",
   "providersHint": "在那台电脑上配置的密钥与端点。",
   "skills": "技能",
-  "skillsHint": "安装在那台电脑上。",
+  "skillsHint": "在那台电脑上安装的技能。",
   "tasks": "任务",
   "tasksHint": "那台电脑上的定时与依赖任务。",
   "iconSectionHint": "在会话列表里显示在它的会话旁。",
@@ -114,5 +114,10 @@
   "thinkingLevel.xhigh": "极高",
   "settingsSaveFailed": "未能修改：{{message}}",
   "continueRun": "继续",
-  "continueFailed": "无法继续该次运行：{{message}}"
+  "continueFailed": "无法继续该次运行：{{message}}",
+  "skillsLoading": "正在读取…",
+  "skillsNoneInstalled": "那台电脑上还没有安装技能。",
+  "skillsWorking": "处理中…",
+  "skillsInstall": "安装",
+  "skillsRemove": "卸载"
 }
