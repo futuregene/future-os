@@ -15,7 +15,7 @@ import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemoteFilesDialog } from "../../features/remote-peer/RemoteFilesDialog";
-import { compactRemoteConversation, forkRemoteConversation } from "../../features/remote-peer/remotePeerClient";
+import { compactRemoteConversation, continueRemoteRun, forkRemoteConversation } from "../../features/remote-peer/remotePeerClient";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { useRemoteApprovals } from "../../features/remote-peer/useRemoteApprovals";
 import { useRemoteConversationSettings } from "../../features/remote-peer/useRemoteConversationSettings";
@@ -699,6 +699,27 @@ function ReadyAppShell({
     }
   }
 
+  /**
+   * Resume a failed run on a host.
+   *
+   * A continuation re-runs the same turn with what it already had — including any
+   * attachment it carried — which is why nothing is re-sent here. The transcript
+   * is re-read afterwards so the resumed turn appears as it did before.
+   */
+  async function continueRemoteRunOn(desktopId: string, sessionId: string, runId: string) {
+    try {
+      await continueRemoteRun(desktopId, sessionId, runId);
+      await remoteTimeline.refresh();
+      await refreshRemotePeers();
+    }
+    catch (error) {
+      emitFutureEvent("toast", {
+        message: tRemotePeer("continueFailed", { message: errorMessage(error) }),
+        tone: "error",
+      });
+    }
+  }
+
   function openRemoteConversation(conversation: MergedConversation) {
     if (conversation.desktopId === null)
       return;
@@ -933,6 +954,7 @@ function ReadyAppShell({
                             loading={remoteTimeline.loading}
                             loadingOlder={remoteTimeline.loadingOlder}
                             onCompact={() => void compactRemoteConversationOn(activeRemote.desktopId, activeRemote.sessionId)}
+                            onContinueRun={runId => void continueRemoteRunOn(activeRemote.desktopId, activeRemote.sessionId, runId)}
                             onDecideApproval={(approval, decision) => void remoteApprovals.decide(approval, decision)}
                             onFork={(sourceEntryId, forkable) =>
                               void forkRemoteConversationAt(

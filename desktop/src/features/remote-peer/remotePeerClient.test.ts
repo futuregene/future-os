@@ -18,6 +18,7 @@ vi.mock("../../integrations/tauri/invoke", () => ({
 const {
   abortRemoteRun,
   compactRemoteConversation,
+  continueRemoteRun,
   deleteRemoteConversation,
   downloadRemoteFile,
   fetchRemoteSessions,
@@ -645,5 +646,27 @@ describe("setting a remote conversation's model", () => {
     await expect(setRemoteConversationModel("desktop_a", "sess_1", "openai/gpt-5"))
       .rejects
       .toThrow("model_not_available");
+  });
+});
+
+describe("continueRemoteRun", () => {
+  it("names the session and the failed run, on the conversation's lane", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    await continueRemoteRun("desktop_a", "sess_1", "run_7");
+
+    expect(lastCall().args).toEqual({
+      desktopId: "desktop_a",
+      command: { type: "continue_run", sessionId: "sess_1", runId: "run_7" },
+      lane: "sess_1",
+    });
+  });
+
+  /** The host refuses a continuation it cannot justify, and its reason is passed on. */
+  it("propagates a refused continuation", async () => {
+    invokeMock.mockRejectedValue(new Error("Only a failed run can be continued."));
+    await expect(continueRemoteRun("desktop_a", "sess_1", "run_7"))
+      .rejects
+      .toThrow("Only a failed run can be continued.");
   });
 });

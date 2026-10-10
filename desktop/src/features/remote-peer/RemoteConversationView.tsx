@@ -32,6 +32,7 @@ export function RemoteConversationView({
   loading,
   loadingOlder,
   onCompact,
+  onContinueRun,
   onDecideApproval,
   onFork,
   onLoadOlder,
@@ -57,6 +58,13 @@ export function RemoteConversationView({
   /** Ask the host to compact this conversation's context. */
   onCompact: () => void;
   onDecideApproval: (approval: RemoteApproval, decision: "allow" | "deny") => void;
+  /**
+   * Resume a failed run, on the host that stopped it.
+   *
+   * Offered only where `run.error` is set, because that is the host's own
+   * precondition: it refuses to continue anything that did not fail.
+   */
+  onContinueRun: (runId: string) => void;
   /** Open the browser for the files this conversation's host holds for it. */
   onOpenFiles: () => void;
   /** The conversation's host-owned model and thinking level, if the caller has them. */
@@ -152,6 +160,7 @@ export function RemoteConversationView({
                 forkable={forkSource !== null && persistedEntryIds.has(forkSource)}
                 forkSource={forkSource}
                 key={entry.id}
+                onContinueRun={onContinueRun}
                 onFork={onFork}
                 streaming={streaming}
               />
@@ -239,6 +248,7 @@ function EntryRow({
   entry,
   forkable,
   forkSource,
+  onContinueRun,
   onFork,
   streaming,
 }: {
@@ -246,6 +256,7 @@ function EntryRow({
   /** False when the turn this reply rests on is not persisted on the host yet. */
   forkable: boolean;
   forkSource: string | null;
+  onContinueRun: (runId: string) => void;
   onFork: (sourceEntryId: string, forkable: boolean) => void;
   streaming: boolean;
 }) {
@@ -288,7 +299,24 @@ function EntryRow({
               : <MarkdownContent content={text} />)
           : null}
         {runError
-          ? <div className="mt-1 text-xs text-danger">{runError}</div>
+          ? (
+              <div className="mt-1 flex items-center gap-2 text-xs text-danger">
+                <span className="min-w-0 wrap-break-word">{runError}</span>
+                {/* Only when the host named the run: a continuation is addressed
+                    by it, and one it cannot address would be refused. */}
+                {entry.runId && !streaming
+                  ? (
+                      <button
+                        className="shrink-0 rounded px-1.5 py-0.5 font-medium text-accent hover:bg-accent-soft"
+                        onClick={() => onContinueRun(entry.runId!)}
+                        type="button"
+                      >
+                        {t("continueRun")}
+                      </button>
+                    )
+                  : null}
+              </div>
+            )
           : null}
         <div className={isUser ? "mt-1 text-[10px] text-white/70" : "mt-1 text-[10px] text-ink-muted"}>
           {new Date(entry.createdAtMs).toLocaleString()}

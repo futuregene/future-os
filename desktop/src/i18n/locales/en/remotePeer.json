@@ -112,5 +112,7 @@
   "thinkingLevel.medium": "Medium",
   "thinkingLevel.high": "High",
   "thinkingLevel.xhigh": "Extra high",
-  "settingsSaveFailed": "Could not change it: {{message}}"
+  "settingsSaveFailed": "Could not change it: {{message}}",
+  "continueRun": "Continue",
+  "continueFailed": "Could not continue the run: {{message}}"
 }

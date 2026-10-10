@@ -1820,6 +1820,44 @@ describe("app shell collapsed-panel affordances", () => {
     });
 
     /**
+     * A continuation reaches the host that stopped the run, and the transcript
+     * is re-read so the resumed turn appears as it did before.
+     */
+    it("continues a failed remote run on its own host", async () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+      const before = mocks.invoke.mock.calls.length;
+
+      await act(async () => {
+        (children.remoteConversationView as { onContinueRun: (runId: string) => void })
+          .onContinueRun("run_7");
+        for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      });
+
+      const commands = mocks.invoke.mock.calls.slice(before).map(([, args]) =>
+        (args as { command?: { type?: string; runId?: string } } | undefined)?.command);
+      expect(commands).toContainEqual(expect.objectContaining({ type: "continue_run", runId: "run_7" }));
+      expect(commands.filter(command => command?.type === "get_session_entries").length)
+        .toBeGreaterThan(0);
+      view.unmount();
+    });
+
+    it("reports a continuation the host refused", async () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+
+      mocks.invoke.mockRejectedValue(new Error("Only a failed run can be continued."));
+      await act(async () => {
+        (children.remoteConversationView as { onContinueRun: (runId: string) => void })
+          .onContinueRun("run_7");
+        for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      });
+
+      expect(mocks.emit).toHaveBeenCalledWith("toast", expect.objectContaining({ tone: "error" }));
+      view.unmount();
+    });
+
+    /**
      * The transcript's own callbacks all have to reach the thing that owns the
      * behaviour: a decision to the approvals, the rest to the timeline. A prop
      * wired to the wrong collaborator would look right and do nothing.

@@ -533,6 +533,23 @@ export function setRemoteConversationThinkingLevel(
 }
 
 /**
+ * Resume a run that failed, on the host that stopped it.
+ *
+ * Only a *failed* run can be continued — that is the host's own precondition,
+ * and it is why this is offered on a row that reports an error rather than on
+ * any row. Resuming re-runs the same turn with whatever it already had, which is
+ * why it is the right answer to a failure: nothing has to be re-sent, and an
+ * attachment the turn carried is still there.
+ */
+export function continueRemoteRun(
+  desktopId: string,
+  sessionId: string,
+  runId: string,
+): Promise<unknown> {
+  return requestRemotePeer(desktopId, { type: "continue_run", sessionId, runId }, sessionId);
+}
+
+/**
  * Run one command on one host. The lane is the session the command addresses
  * (`list` for catalogue reads) — the backend builds the subject, so no subject
  * string is ever assembled in the frontend.
