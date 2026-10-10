@@ -1342,7 +1342,13 @@ mod tests {
         let (run, upstream) = claim(&store, &t, ClaimReason::Explicit).unwrap();
         script_agent_setup(&mock, "sess_ephemeral");
         // The agent is asked to drop the session once the thread is gone.
-        mock.push_data("delete_session", serde_json::json!({}));
+        mock.push_data(
+            "delete_sessions",
+            serde_json::json!({"results": [{
+                "sessionId": "sess_ephemeral", "deleted": true,
+                "error": "", "errorCode": "", "errorData": null
+            }]}),
+        );
         mock.push_stream(crate::agent_bridge::test_support::StreamScript::Events(
             vec![crate::agent_bridge::test_support::stream_event(
                 "@attach",
@@ -1385,7 +1391,7 @@ mod tests {
             "the conversation is gone from the sidebar"
         );
         assert_eq!(
-            mock.requests_of("delete_session").len(),
+            mock.requests_of("delete_sessions").len(),
             1,
             "the Agent session behind it was dropped too"
         );

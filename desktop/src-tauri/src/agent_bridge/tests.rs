@@ -850,61 +850,115 @@ mod bridge_tests {
         .expect("enqueue");
     }
 
+    fn delete_reply(outcomes: &[(&str, bool, &str)]) -> serde_json::Value {
+        serde_json::json!({"results": outcomes.iter().map(|(session, deleted, error)| {
+            serde_json::json!({"sessionId": session, "deleted": deleted, "error": error,
+                "errorCode": if *deleted { "" } else { "deleting" },
+                "errorData": if *deleted { serde_json::Value::Null }
+                    else { serde_json::json!({"retryable": true}) }})
+        }).collect::<Vec<_>>()})
+    }
+
     #[tokio::test]
     async fn delete_outbox_delivers_acknowledges_and_notes_failures() {
         let home = TestHome::new("bridge-outbox");
         let mock = mock_agent();
-
-        // Nothing pending → no traffic.
         reconcile_delete_outbox().await;
         assert!(mock.requests().is_empty());
 
-        // Successful delivery acknowledges the row.
         enqueue_delete(&home, "sess-del-ok");
-        mock.push("delete_session", Reply::Data("{}".to_string()));
-        reconcile_delete_outbox().await;
-        assert!(
-            !crate::store::is_agent_session_tombstoned("sess-del-ok").expect("query"),
-            "delivered deletion is acknowledged"
-        );
-
-        // "session not found" counts as delivered (idempotent).
         enqueue_delete(&home, "sess-del-gone");
-        mock.push(
-            "delete_session",
-            Reply::Reject("session not found: sess-del-gone".to_string()),
-        );
-        reconcile_delete_outbox().await;
-        assert!(!crate::store::is_agent_session_tombstoned("sess-del-gone").expect("query"));
-
-        // A real rejection is noted, not acknowledged.
         enqueue_delete(&home, "sess-del-busy");
-        mock.push(
-            "delete_session",
-            Reply::Reject("session is running".to_string()),
+        mock.push_data(
+            "delete_sessions",
+            delete_reply(&[
+                ("sess-del-ok", true, ""),
+                ("sess-del-gone", true, ""),
+                ("sess-del-busy", false, "session is running"),
+            ]),
         );
         reconcile_delete_outbox().await;
-        assert!(crate::store::is_agent_session_tombstoned("sess-del-busy").expect("query"));
+        assert!(!crate::store::is_agent_session_tombstoned("sess-del-ok").unwrap());
+        assert!(!crate::store::is_agent_session_tombstoned("sess-del-gone").unwrap());
+        assert!(crate::store::is_agent_session_tombstoned("sess-del-busy").unwrap());
+        assert_eq!(mock.requests_of("delete_sessions").len(), 1);
 
-        // Transport failure is noted too. The still-pending busy row is
-        // retried first (FIFO), so it gets a scripted reply as well.
         enqueue_delete(&home, "sess-del-down");
         mock.push(
-            "delete_session",
-            Reply::Reject("session is running".to_string()),
-        );
-        mock.push(
-            "delete_session",
+            "delete_sessions",
             Reply::Status(tonic::Code::Unavailable, "down"),
         );
         reconcile_delete_outbox().await;
-        assert!(crate::store::is_agent_session_tombstoned("sess-del-down").expect("query"));
-        assert!(crate::store::is_agent_session_tombstoned("sess-del-busy").expect("query"));
-
-        // Store unreadable → silent return.
+        assert!(crate::store::is_agent_session_tombstoned("sess-del-down").unwrap());
+        assert!(crate::store::is_agent_session_tombstoned("sess-del-busy").unwrap());
         let prev = break_home();
         reconcile_delete_outbox().await;
         restore_home(prev);
+    }
+
+    #[tokio::test]
+    async fn delete_outbox_bounds_batches_and_preserves_ambiguous_replies() {
+        let home = TestHome::new("bridge-outbox-batches");
+        let mock = mock_agent();
+        for i in 0..33 {
+            enqueue_delete(&home, &format!("sess-{i}"));
+        }
+        reconcile_delete_outbox().await;
+        let requests = mock.requests_of("delete_sessions");
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].session_ids.len(), 32);
+        assert_eq!(requests[1].session_ids.len(), 1);
+        assert!(crate::store::pending_agent_session_deletes()
+            .unwrap()
+            .is_empty());
+
+        enqueue_delete(&home, "a");
+        enqueue_delete(&home, "b");
+        // Missing, duplicated and unrelated successful outcomes must never
+        // clear either tombstone, even when the response itself says success.
+        for outcomes in [
+            vec![("a", true, "")],
+            vec![("a", true, ""), ("a", true, "")],
+            vec![("a", true, ""), ("foreign", true, "")],
+        ] {
+            mock.push_data("delete_sessions", delete_reply(&outcomes));
+            reconcile_delete_outbox().await;
+            assert!(crate::store::is_agent_session_tombstoned("a").unwrap());
+            assert!(crate::store::is_agent_session_tombstoned("b").unwrap());
+        }
+        mock.push(
+            "delete_sessions",
+            Reply::Reject("storage unavailable".into()),
+        );
+        reconcile_delete_outbox().await;
+        assert_eq!(
+            crate::store::pending_agent_session_deletes().unwrap().len(),
+            2
+        );
+        // Retried deletion is idempotent and eventually clears both rows.
+        reconcile_delete_outbox().await;
+        assert!(crate::store::pending_agent_session_deletes()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn concurrent_delete_outbox_drains_send_only_one_batch() {
+        let home = TestHome::new("bridge-outbox-concurrent");
+        let mock = mock_agent();
+        enqueue_delete(&home, "concurrent-session");
+        let (entered, arrived) = tokio::sync::oneshot::channel();
+        let (reply, data) = tokio::sync::oneshot::channel();
+        mock.push("delete_sessions", Reply::Deferred { entered, data });
+        let first = tokio::spawn(reconcile_delete_outbox());
+        arrived.await.unwrap();
+        reconcile_delete_outbox().await;
+        assert_eq!(mock.requests_of("delete_sessions").len(), 1);
+        reply
+            .send(delete_reply(&[("concurrent-session", true, "")]))
+            .unwrap();
+        first.await.unwrap();
+        assert!(!crate::store::is_agent_session_tombstoned("concurrent-session").unwrap());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -912,7 +966,10 @@ mod bridge_tests {
         let home = TestHome::new("bridge-outbox-worker");
         let mock = mock_agent();
         enqueue_delete(&home, "sess-worker");
-        mock.push("delete_session", Reply::Data("{}".to_string()));
+        mock.push_data(
+            "delete_sessions",
+            delete_reply(&[("sess-worker", true, "")]),
+        );
         std::env::set_var("FUTURE_TEST_OUTBOX_INTERVAL_MS", "20");
 
         spawn_delete_outbox_worker();

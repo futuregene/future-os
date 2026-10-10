@@ -187,17 +187,9 @@ pub async fn batch_delete_threads(
         deleted_count: 0,
         failed: Vec::new(),
     };
-    // A selected child of a selected parent is already removed by the parent's
-    // recursive delete; deleting it again is not a failure.
-    let mut cascaded: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut prepared = Vec::new();
+    let mut stopped = std::collections::HashSet::new();
     for thread_id in &input.thread_ids {
-        if cascaded.contains(thread_id) {
-            // Already removed by an earlier cascade in this batch: the user's
-            // selection is gone, so it counts as deleted rather than as a
-            // failure.
-            result.deleted_count += 1;
-            continue;
-        }
         let targets = match store::thread_delete_closure(thread_id) {
             Ok(targets) => targets,
             Err(error) => {
@@ -205,27 +197,26 @@ pub async fn batch_delete_threads(
                 continue;
             }
         };
-        for target in &targets {
-            close_thread_terminals(&target.id);
-        }
-        let deleted = async {
+        let ready = async {
             for target in &targets {
-                crate::conversations::stop_active_session_before_delete(
-                    crate::conversations::thread_session_id(target),
-                )
-                .await?;
+                close_thread_terminals(&target.id);
+                let session_id = crate::conversations::thread_session_id(target);
+                if !stopped.contains(session_id) {
+                    crate::conversations::stop_active_session_before_delete(session_id).await?;
+                    stopped.insert(session_id.to_owned());
+                }
             }
-            store::delete_thread_tree(thread_id, input.delete_files)
+            Ok::<_, crate::AppError>(())
         }
         .await;
-        match deleted {
-            Ok(_) => {
-                result.deleted_count += 1;
-                cascaded.extend(targets.into_iter().map(|target| target.id));
-            }
+        match ready {
+            Ok(()) => prepared.push(thread_id.clone()),
             Err(error) => result.failed.push(format!("{thread_id}: {error}")),
         }
     }
+    let local = store::delete_thread_trees(&prepared, input.delete_files)?;
+    result.deleted_count += local.deleted_count;
+    result.failed.extend(local.failed);
     crate::agent_bridge::reconcile_delete_outbox().await;
 
     Ok(result)
@@ -809,7 +800,7 @@ mod tests {
         // The agent never acknowledges the delete, so the tombstone row
         // survives and the observer-drop arm runs.
         script_mock_agent(MockScript {
-            transport_fail: ["delete_session".to_string()].into_iter().collect(),
+            transport_fail: ["delete_sessions".to_string()].into_iter().collect(),
             ..Default::default()
         });
         let deleted = delete_thread(store::DeleteThreadInput {
@@ -1027,7 +1018,6 @@ mod tests {
         let thread = make_thread(&_home, Some("sess_del"));
         crate::commands::agent_mock::ensure_mock_agent();
         script_mock_agent(MockScript {
-            data: HashMap::from([("delete_session".to_string(), "{}".to_string())]),
             ..Default::default()
         });
         let deleted = delete_thread(store::DeleteThreadInput {
@@ -1055,13 +1045,10 @@ mod tests {
         .expect("active run");
         let agent = crate::commands::agent_mock::ensure_mock_agent();
         script_mock_agent(MockScript {
-            data: HashMap::from([
-                ("delete_session".to_string(), "{}".to_string()),
-                (
-                    "get_state".to_string(),
-                    crate::agent_bridge::get_state_payload("sess_active_delete", false).to_string(),
-                ),
-            ]),
+            data: HashMap::from([(
+                "get_state".to_string(),
+                crate::agent_bridge::get_state_payload("sess_active_delete", false).to_string(),
+            )]),
             ..Default::default()
         });
         let request_offset = agent.requests().len();
@@ -1085,7 +1072,7 @@ mod tests {
             .unwrap();
         let delete = commands
             .iter()
-            .position(|command| command == "delete_session")
+            .position(|command| command == "delete_sessions")
             .unwrap();
         assert!(abort < delete, "{commands:?}");
         script_mock_agent(MockScript::default());
@@ -1117,7 +1104,6 @@ mod tests {
         store::sync_thread_parent_session("sess_gui_child", "sess_gui_parent").expect("lineage");
         crate::commands::agent_mock::ensure_mock_agent();
         script_mock_agent(MockScript {
-            data: HashMap::from([("delete_session".to_string(), "{}".to_string())]),
             ..Default::default()
         });
 
@@ -1143,7 +1129,6 @@ mod tests {
             .expect("lineage");
         crate::commands::agent_mock::ensure_mock_agent();
         script_mock_agent(MockScript {
-            data: HashMap::from([("delete_session".to_string(), "{}".to_string())]),
             ..Default::default()
         });
 

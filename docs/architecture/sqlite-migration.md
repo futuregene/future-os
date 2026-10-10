@@ -78,3 +78,13 @@ recovery, tool isolation, paging ranges, event cursors, and queue failures.
 Real-machine verification covers cold open, first reply, scroll-up, tool
 details, compaction, anomalies, restart, and reconnect; unit tests do not
 substitute for cross-platform and WebView acceptance.
+
+## Batched session deletion
+
+`delete_sessions` accepts up to 32 distinct session IDs; `delete_session` remains
+compatible and uses the same close-before-delete barrier. Ready sessions and
+import tombstones commit together, while busy sessions return retryable outcomes.
+Reclamation runs once per batch (up to 4096 pages), rather than once per session.
+This is a page budget, not a latency guarantee; large freelists can remain for
+later deletes or startup compaction. Desktop uses bounded local transactions and
+one Agent client, with durable per-session acknowledgement/retry handling.

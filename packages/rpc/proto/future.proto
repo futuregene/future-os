@@ -134,6 +134,10 @@ message RpcCommand {
   // caller can tell that older sessions were left unsearched.
   optional int64 max_sessions = 147;
 
+  // delete_sessions: 1..32 distinct session IDs, with per-session outcomes.
+  // The single-session delete_session command remains supported.
+  repeated string session_ids = 148;
+
   // Session name (set by /name command).  Used with set_session_name, and
   // accepted by new_session as the initial human-readable session title.
   string name = 93;
