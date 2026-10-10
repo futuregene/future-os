@@ -112,5 +112,7 @@
   "thinkingLevel.medium": "中",
   "thinkingLevel.high": "高",
   "thinkingLevel.xhigh": "极高",
-  "settingsSaveFailed": "未能修改：{{message}}"
+  "settingsSaveFailed": "未能修改：{{message}}",
+  "continueRun": "继续",
+  "continueFailed": "无法继续该次运行：{{message}}"
 }

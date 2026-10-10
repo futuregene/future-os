@@ -26,6 +26,15 @@ function entry(id: string, role: "assistant" | "user", text: string): SessionEnt
   };
 }
 
+/** A reply whose run failed, which is the only state a host will continue from. */
+function failedEntry(id: string, runId: string | null): SessionEntry {
+  return {
+    ...entry(id, "assistant", "half an answer"),
+    runId,
+    run: { status: "failed", error: "the provider dropped the connection" },
+  };
+}
+
 const peer = {
   agentAvailable: true,
   bridgeInstanceId: "bridge_1",
@@ -42,12 +51,14 @@ async function mount(props: {
   compacting?: boolean;
   entries: SessionEntry[];
   onCompact?: () => void;
+  onContinueRun?: (runId: string) => void;
   onFork?: (sourceEntryId: string, forkable: boolean) => void;
   persistedEntryIds?: string[];
   streaming?: boolean;
 }) {
   const onFork = props.onFork ?? vi.fn();
   const onCompact = props.onCompact ?? vi.fn();
+  const onContinueRun = props.onContinueRun ?? vi.fn();
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -65,6 +76,7 @@ async function mount(props: {
         loading={false}
         loadingOlder={false}
         onCompact={onCompact}
+        onContinueRun={onContinueRun}
         onDecideApproval={() => {}}
         onFork={onFork}
         onLoadOlder={() => {}}
@@ -80,11 +92,14 @@ async function mount(props: {
   return {
     container,
     onCompact,
+    onContinueRun,
     // Revealed on hover in the product, but always mounted so it is reachable
     // by keyboard — which is also what makes it addressable here.
     forkButtons: () => [...container.querySelectorAll<HTMLButtonElement>("button[aria-label='Branch from here']")],
     compactButton: () => [...container.querySelectorAll<HTMLButtonElement>("button")]
       .find(node => node.textContent === "Compact context"),
+    continueButton: () => [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(node => node.textContent === "Continue"),
     unmount: async () => {
       await act(async () => root.unmount());
       container.remove();
@@ -287,5 +302,62 @@ it("reveals the fork control on hover and keeps it mounted when not hovering", a
   });
   expect(view.forkButtons()).toHaveLength(1);
   expect(view.forkButtons()[0]!.className).toContain("opacity-0");
+  await view.unmount();
+});
+
+// ── continuing a failed run ─────────────────────────────────────────────────
+
+/**
+ * A failed run offers a way on.
+ *
+ * The host will only continue a run that *failed*, which is why the control is
+ * tied to the error rather than to the reply: anything else it would refuse.
+ */
+it("offers to continue a failed run, and reports it", async () => {
+  const onContinueRun = vi.fn();
+  const view = await mount({
+    entries: [entry("u1", "user", "hello"), failedEntry("a1", "run_7")],
+    onContinueRun,
+  });
+
+  const button = view.continueButton();
+  expect(button).toBeTruthy();
+  await act(async () => button!.click());
+
+  expect(onContinueRun).toHaveBeenCalledWith("run_7");
+  await view.unmount();
+});
+
+/** Nothing to continue when the host named no run. */
+it("offers no continuation when the failed reply names no run", async () => {
+  const view = await mount({
+    entries: [entry("u1", "user", "hello"), failedEntry("a1", null)],
+  });
+
+  // The error is still shown: the user learns why, without a control the host
+  // would refuse.
+  expect(view.container.textContent).toContain("the provider dropped the connection");
+  expect(view.continueButton()).toBeUndefined();
+  await view.unmount();
+});
+
+/** A reply that did not fail gets no continuation, because none is valid. */
+it("offers no continuation for a reply that succeeded", async () => {
+  const view = await mount({
+    entries: [entry("u1", "user", "hello"), entry("a1", "assistant", "fine")],
+  });
+
+  expect(view.continueButton()).toBeUndefined();
+  await view.unmount();
+});
+
+/** While the host is working there is nothing to resume, and a second run is refused. */
+it("hides the continuation while the host is running", async () => {
+  const view = await mount({
+    entries: [entry("u1", "user", "hello"), failedEntry("a1", "run_7")],
+    streaming: true,
+  });
+
+  expect(view.continueButton()).toBeUndefined();
   await view.unmount();
 });
