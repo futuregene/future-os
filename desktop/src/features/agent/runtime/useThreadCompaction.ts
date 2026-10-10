@@ -14,7 +14,10 @@ interface TerminalCompactionEvent {
 }
 
 function cancelledWait() {
-  return new DOMException("Compaction wait cancelled", "AbortError");
+  // DOMException does not inherit from Error in every WebView/test runtime.
+  const error = new Error("Compaction wait cancelled");
+  error.name = "AbortError";
+  return error;
 }
 
 /** Own the request, terminal event, timeout and cancellation as one operation. */
