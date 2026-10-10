@@ -221,19 +221,23 @@ async fn pull_chunk(
     transfer_id: &str,
     index: u64,
 ) -> Result<Vec<u8>, crate::AppError> {
-    let mut last: Option<crate::AppError> = None;
+    // The *first* transport failure, kept because it is the cause. A dropped
+    // connection makes every later attempt report "not connected", and reporting
+    // that symptom instead of "the request timed out" sends a support session
+    // looking at pairing when the fault was the network.
+    let mut first: Option<crate::AppError> = None;
     for _ in 0..CHUNK_ATTEMPTS {
         match super::runtime::pull_chunk(desktop_id, transfer_id, index).await {
             Ok(bytes) => return Ok(bytes),
             Err(error) => {
                 if !retryable(&error) {
-                    return Err(error);
+                    return Err(first.unwrap_or(error));
                 }
-                last = Some(error);
+                first.get_or_insert(error);
             }
         }
     }
-    Err(last.unwrap_or_else(|| crate::AppError::Message("remote_download_chunk_failed".into())))
+    Err(first.unwrap_or_else(|| crate::AppError::Message("remote_download_chunk_failed".into())))
 }
 
 /// Write a downloaded file to a path the caller chose, atomically.

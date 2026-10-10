@@ -901,7 +901,15 @@ pub(crate) async fn pull_chunk(
             return Err(error);
         }
     };
-    if let Err(error) = request_at(desktop_id, json!({}), &subject, chunk_pull_timeout()).await {
+    // The *request* keeps a real budget, and it is not the one above. It makes
+    // the host read the chunk off disk, publish it and flush — so a short budget
+    // here fails the command, which the transport layer reads as a dead socket:
+    // the connection is dropped and the retry reports `peer_not_connected`, i.e.
+    // a slow disk on a busy machine looks exactly like a network fault. The
+    // shortened test budget applies only to waiting for the bytes, which the
+    // host has already published by the time it acknowledges.
+    if let Err(error) = request_at(desktop_id, json!({}), &subject, session::COMMAND_TIMEOUT).await
+    {
         forget_chunk(desktop_id, transfer_id, index).await;
         return Err(error);
     }
@@ -928,7 +936,7 @@ pub(crate) async fn pull_chunk(
 /// never arrived. The *shape* being exercised is the real one either way.
 fn chunk_pull_timeout() -> Duration {
     #[cfg(test)]
-    const TIMEOUT: Duration = Duration::from_millis(50);
+    const TIMEOUT: Duration = Duration::from_millis(500);
     #[cfg(not(test))]
     const TIMEOUT: Duration = Duration::from_secs(15);
     TIMEOUT
