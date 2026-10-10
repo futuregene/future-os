@@ -31,6 +31,8 @@ mod run_control_tests;
 mod session_lifecycle_tests;
 #[cfg(test)]
 mod settings_tests;
+#[cfg(test)]
+mod skills_tests;
 
 use super::{AppState, RpcCommand, RpcResponse};
 
@@ -47,6 +49,9 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
 
     if cmd_type == "get_agent_info" {
         return providers::get_agent_info_response(state, id);
+    }
+    if cmd_type == "get_agent_readiness" {
+        return providers::get_agent_readiness_response(state, id);
     }
     if cmd_type == "list_models" {
         return providers::list_models_response(
@@ -103,6 +108,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "new_session" => return session_lifecycle::cmd_new_session(state, &cmd, id),
         "switch_session" => return session_lifecycle::cmd_switch_session(state, &cmd, id),
         "delete_session" => return session_lifecycle::cmd_delete_session(state, &cmd, id),
+        "delete_sessions" => return session_lifecycle::cmd_delete_sessions(state, &cmd, id),
         "get_fork_messages" => return session_lifecycle::cmd_get_fork_messages(state, &cmd, id),
         "get_commands" => return session_lifecycle::cmd_get_commands(id),
         "list_installed_skills"
@@ -126,56 +132,71 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
     }
 
     // ── Session-scoped commands: resolve the target session or fail.
-    if matches!(cmd_type.as_str(), "list_tool_calls" | "get_tool_output") {
+    if matches!(
+        cmd_type.as_str(),
+        "list_tool_calls" | "get_tool_output" | "get_tool_call_args"
+    ) {
+        // `get_tool_call_args` is the lean client's way back to a shell call's
+        // arguments, which its history page deliberately omitted.
+        let call_scoped = matches!(cmd_type.as_str(), "get_tool_output" | "get_tool_call_args");
         if cmd.session_id.is_empty()
             || cmd.run_id.is_empty()
-            || (cmd_type == "get_tool_output"
-                && cmd.tool_call_id.as_deref().is_none_or(str::is_empty))
+            || (call_scoped && cmd.tool_call_id.as_deref().is_none_or(str::is_empty))
         {
             return RpcResponse::build_fail(
                 id,
                 cmd_type,
-                "sessionId, runId and (for output) toolCallId are required",
+                "sessionId, runId and (for call-scoped reads) toolCallId are required",
             );
         }
-        let result = if cmd_type == "list_tool_calls" {
-            state.session_manager.tool_page(
+        let result = match cmd_type.as_str() {
+            "list_tool_calls" => state.session_manager.tool_page(
                 &cmd.session_id,
                 &cmd.run_id,
                 cmd.offset.unwrap_or(0),
                 cmd.limit.unwrap_or(100),
-            )
-        } else {
-            state.session_manager.tool_output(
+            ),
+            "get_tool_call_args" => state.session_manager.tool_call_args(
                 &cmd.session_id,
                 &cmd.run_id,
                 cmd.tool_call_id.as_deref().unwrap_or(""),
-            )
+            ),
+            _ => state.session_manager.tool_output(
+                &cmd.session_id,
+                &cmd.run_id,
+                cmd.tool_call_id.as_deref().unwrap_or(""),
+            ),
         };
         return match result {
             Ok(data) => RpcResponse::ok(id, cmd_type, data),
             Err(error) => RpcResponse::build_fail(id, cmd_type, &error.to_string()),
         };
     }
-    // History recall reads only the specified persisted session, without
-    // instantiating a model runtime or waiting for a compaction/run lease.
+    // History recall reads only persisted sessions, without instantiating a
+    // model runtime or waiting for a compaction/run lease. The cross-session
+    // variant takes no session_id: it scans the most recently updated ones.
     if matches!(
         cmd_type.as_str(),
-        "search_session_history" | "get_session_history_entry"
+        "search_session_history" | "search_all_session_history" | "get_session_history_entry"
     ) {
-        let result = if cmd_type == "search_session_history" {
-            state.session_manager.search_history(
+        let result = match cmd_type.as_str() {
+            "search_session_history" => state.session_manager.search_history(
                 &cmd.session_id,
                 &cmd.message,
                 cmd.limit.unwrap_or(5),
-            )
-        } else {
-            state.session_manager.read_history_entry(
+            ),
+            "search_all_session_history" => state.session_manager.search_history_all(
+                &cmd.message,
+                cmd.limit.unwrap_or(5),
+                cmd.max_sessions
+                    .unwrap_or(crate::session::HISTORY_DEFAULT_SESSIONS),
+            ),
+            _ => state.session_manager.read_history_entry(
                 &cmd.session_id,
                 &cmd.entry_id,
                 cmd.offset.unwrap_or(0),
                 cmd.limit.unwrap_or(crate::session::HISTORY_DEFAULT_BYTES),
-            )
+            ),
         };
         return match result {
             Ok(data) => RpcResponse::ok(id, cmd_type, data),

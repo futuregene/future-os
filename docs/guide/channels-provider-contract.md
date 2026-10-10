@@ -191,9 +191,9 @@ New provider code is expected to be covered per line, not merely by a summary
 percentage:
 
 ```bash
-bash scripts/chan-cov.sh                     # whole crate: report + uncovered lines
-bash scripts/chan-cov.sh --check channels/src/providers/my-channel.rs
-python3 scripts/chan-missed.py providers/my-channel   # line numbers for one file
+bash scripts/measure/chan-cov.sh                     # whole crate: report + uncovered lines
+bash scripts/measure/chan-cov.sh --check channels/src/providers/my-channel.rs
+python3 scripts/measure/chan-missed.py providers/my-channel   # line numbers for one file
 ```
 
 `--check` judges only the files you list, so a peer's in-flight file cannot fail

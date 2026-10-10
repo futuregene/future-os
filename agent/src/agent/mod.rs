@@ -93,6 +93,8 @@ pub struct Loop {
     /// Enabled explicitly on the run snapshot when shell access is permitted.
     pub parallel_tools: bool,
     pub(crate) interrupt_flag: Arc<AtomicBool>,
+    pub(crate) tool_review_annotations:
+        Arc<Mutex<std::collections::HashMap<String, serde_json::Value>>>,
     pub context_manager: Option<crate::compaction::ContextManager>,
     pub active_checkpoint: Arc<Mutex<Option<crate::compaction::ContextCheckpoint>>>,
     pub cumulative_input_tokens: Arc<std::sync::atomic::AtomicI64>,
@@ -141,6 +143,7 @@ impl Loop {
             session_id: String::new(),
             parallel_tools: false,
             interrupt_flag: Arc::new(AtomicBool::new(false)),
+            tool_review_annotations: Arc::new(Mutex::new(std::collections::HashMap::new())),
             context_manager: None,
             active_checkpoint: Arc::new(Mutex::new(None)),
             cumulative_input_tokens: Arc::new(std::sync::atomic::AtomicI64::new(0)),
@@ -281,9 +284,18 @@ impl Loop {
                 arguments: tc.function.arguments.clone(),
             });
 
-            let (result, err_str, tool_name) =
-                Self::execute_one_tool_impl_static(tc, tools, config).await;
+            let ((result, err_str, tool_name), mut shell_result) =
+                crate::tools::shell::capture(Self::execute_one_tool_impl_static(tc, tools, config))
+                    .await;
             let duration = start.elapsed().as_millis() as u64;
+            // Finalization hooks can fail after a successful process. Preserve
+            // that process's exit code while keeping live/history verdicts equal.
+            if let (Some(facts), Some(error)) = (&mut shell_result, &err_str) {
+                if !facts.is_error {
+                    facts.note = Some(error.chars().take(512).collect());
+                }
+                facts.is_error = true;
+            }
 
             if self.verbose {
                 let tag = if tool_name == "read" && result.contains("SKILL.md") {
@@ -305,8 +317,20 @@ impl Loop {
             // Broadcast tool_end — with structured semantics (exit code,
             // soft-fail, target path) so consumers don't re-parse the output
             // prose.
-            let semantics =
-                crate::tools::tool_end_semantics(&tool_name, &tc.function.arguments, &result);
+            let mut semantics = if shell_result.is_some() {
+                crate::tools::ToolEndSemantics::default()
+            } else {
+                crate::tools::tool_end_semantics(&tool_name, &tc.function.arguments, &result)
+            };
+            if let Some(facts) = &shell_result {
+                semantics.exit_code = facts.exit_code;
+                semantics.is_soft_fail = facts.is_soft_fail.then_some(true);
+            }
+            semantics.shell_result = shell_result.clone();
+            // Record the real outcome: failed calls carry `is_error: true` so
+            // the phone can render the failure and the model is told the
+            // truth. See `tools::outcome_is_error` for the single verdict.
+            let is_error = crate::tools::outcome_is_error(err_str.as_deref(), &semantics);
             on_event(RunEvent::ToolExecutionFinished {
                 id: tc.id.clone(),
                 name: tool_name.clone(),
@@ -315,19 +339,39 @@ impl Loop {
                 exit_code: semantics.exit_code,
                 is_soft_fail: semantics.is_soft_fail,
                 target_path: semantics.target_path,
+                shell_result: shell_result.clone(),
             });
 
             let tool_args_str = match &tc.function.arguments {
                 serde_json::Value::String(s) => s.clone(),
                 other => serde_json::to_string(other).unwrap_or_default(),
             };
-            let tool_msg = self.new_tool_result(
+            let mut tool_msg = self.new_tool_result(
                 &tc.id,
                 &tc.function.name,
                 &tool_args_str,
                 &result,
                 err_str.as_deref(),
+                is_error,
             );
+            if let Some(shell_result) = shell_result {
+                tool_msg
+                    .metadata
+                    .get_or_insert_with(serde_json::Map::new)
+                    .insert(
+                        "shell_result".into(),
+                        serde_json::to_value(shell_result).unwrap_or_default(),
+                    );
+            }
+            if let Some(annotation) = self.tool_review_annotations.lock().remove(&tc.id) {
+                tool_msg
+                    .metadata
+                    .get_or_insert_with(serde_json::Map::new)
+                    .insert(
+                        "context_annotations".into(),
+                        serde_json::json!([annotation]),
+                    );
+            }
             messages.push(tool_msg);
             if let Some(ref cb) = on_tool_result {
                 cb(messages.last_mut().unwrap());
@@ -346,12 +390,16 @@ impl Loop {
                     serde_json::Value::String(s) => s.clone(),
                     other => serde_json::to_string(other).unwrap_or_default(),
                 };
+                // A skipped call is a cancellation, not a tool failure: keep
+                // the synthesized result out of the error verdict (`false`),
+                // exactly as before this recorded real outcomes.
                 messages.push(self.new_tool_result(
                     &tc.id,
                     &tc.function.name,
                     &tool_args_str,
                     &cancelled,
                     Some(&cancelled),
+                    false,
                 ));
             }
         }
@@ -365,22 +413,7 @@ impl Loop {
         let tool_name = tc.function.name.clone();
         let tool_id = tc.id.clone();
 
-        // Stage 1: BeforeToolCall hook
-        if let Some(ref hook) = config.before_tool_call {
-            if let Some(result_val) = hook(&tool_name, &tool_id, &tc.function.arguments) {
-                if result_val.is_error {
-                    return (
-                        result_val.result.clone(),
-                        Some(result_val.result),
-                        tool_name,
-                    );
-                } else {
-                    return (result_val.result.clone(), None, tool_name);
-                }
-            }
-        }
-
-        // Stage 2: PrepareToolCall hook
+        // Normalize and prepare before approval so it sees executable arguments.
         let raw_args = tc.function.arguments.clone();
         let normalized_args = match &raw_args {
             serde_json::Value::String(s) => {
@@ -394,6 +427,30 @@ impl Loop {
             normalized_args
         };
 
+        if tool_name == "shell" {
+            if let Err(error) = crate::tools::shell::validate(&effective_args) {
+                let message = error.to_string();
+                return (message.clone(), Some(message), tool_name);
+            }
+        }
+        // Approval and other pre-execution gates receive the prepared action.
+        if let Some(hook) = config.before_tool_call.as_ref() {
+            if let Some(result_val) = hook(&tool_name, &tool_id, &effective_args) {
+                if tool_name == "shell" {
+                    crate::tools::shell::record_gated(&effective_args, &result_val.result);
+                }
+                if result_val.is_error {
+                    return (
+                        result_val.result.clone(),
+                        Some(result_val.result),
+                        tool_name,
+                    );
+                } else {
+                    return (result_val.result.clone(), None, tool_name);
+                }
+            }
+        }
+
         // Execute the tool
         let start = Instant::now();
         let mut result: Result<String> = Err(anyhow!(
@@ -403,7 +460,11 @@ impl Loop {
         ));
         for tool in tools {
             if tool.def.function.name == tool_name {
-                result = (tool.handler)(effective_args.clone()).await;
+                result = crate::tools::with_tool_call_id(
+                    tool_id.clone(),
+                    (tool.handler)(effective_args.clone()),
+                )
+                .await;
                 break;
             }
         }
@@ -496,6 +557,7 @@ impl Loop {
         tool_args: &str,
         result: &str,
         err: Option<&str>,
+        is_error: bool,
     ) -> AgentMessage {
         let text = if let Some(e) = err {
             format!("Error: {}", e)
@@ -519,7 +581,7 @@ impl Loop {
             content: vec![ContentBlock::tool_result(
                 call_id.to_string(),
                 &capped,
-                false,
+                is_error,
             )],
             name: tool_name.to_string(),
             tool_args: tool_args.to_string(),
@@ -570,6 +632,77 @@ mod tests {
         Loop::new(std::sync::Arc::new(MockProvider), "test-model")
     }
 
+    /// `error_message` is the single place where a truncation reason becomes a
+    /// stable, client-visible code (the UI and the orchestration layer branch on
+    /// it), so every documented reason has to keep its code and an unknown one
+    /// must fall back *without* losing the raw reason a human needs.
+    #[test]
+    fn stream_truncation_error_message_maps_every_reason_to_a_stable_code() {
+        let cases = [
+            ("upstream_disconnected", "UPSTREAM_DISCONNECTED"),
+            ("request_timeout", "RESPONSE_TIMEOUT"),
+            ("idle_timeout", "RESPONSE_TIMEOUT"),
+            ("finish_length", "OUTPUT_LIMIT"),
+            ("finish_content_filter", "MODEL_CONTENT_FILTER"),
+            ("finish_error", "MODEL_RESPONSE_ERROR"),
+            ("model_response_error", "MODEL_RESPONSE_ERROR"),
+            ("model_paused", "MODEL_PAUSED"),
+            ("provider_cancelled", "PROVIDER_CANCELLED"),
+            // `eof_no_terminal` is documented in the doc comment and produced by
+            // the stream layer; it must not be mistaken for a known finish reason
+            // and must still be classified as unconfirmed.
+            ("eof_no_terminal", "RESPONSE_UNCONFIRMED"),
+            ("a_reason_from_a_future_provider", "RESPONSE_UNCONFIRMED"),
+        ];
+        for (detected_by, code) in cases {
+            let truncation = StreamTruncation {
+                turns_so_far: 3,
+                output_len: 42,
+                tool_calls_so_far: 1,
+                detected_by: detected_by.to_string(),
+            };
+            assert_eq!(
+                truncation.error_message(),
+                format!("[{code}] {detected_by}"),
+                "reason {detected_by} must keep code {code}"
+            );
+        }
+    }
+
+    /// This struct is persisted with a finished run, so its wire shape is
+    /// history: a round trip must reproduce it exactly and a record written by an
+    /// older build (same field names, no extra keys) must still load.
+    #[test]
+    fn stream_truncation_survives_serialization_round_trips_and_legacy_payloads() {
+        let truncation = StreamTruncation {
+            turns_so_far: 2,
+            output_len: 17,
+            tool_calls_so_far: 0,
+            detected_by: "finish_length".to_string(),
+        };
+        let json = serde_json::to_value(&truncation).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "turns_so_far": 2,
+                "output_len": 17,
+                "tool_calls_so_far": 0,
+                "detected_by": "finish_length",
+            })
+        );
+        let restored: StreamTruncation = serde_json::from_value(json).unwrap();
+        assert_eq!(restored, truncation);
+        // A record written before a later field was added must still decode.
+        let legacy: StreamTruncation = serde_json::from_value(serde_json::json!({
+            "turns_so_far": 0,
+            "output_len": 0,
+            "tool_calls_so_far": 0,
+            "detected_by": "idle_timeout",
+        }))
+        .unwrap();
+        assert_eq!(legacy.error_message(), "[RESPONSE_TIMEOUT] idle_timeout");
+    }
+
     #[test]
     fn loop_interrupt_and_clear() {
         let loop_ = make_loop();
@@ -589,25 +722,43 @@ mod tests {
     #[test]
     fn loop_new_tool_result_normal() {
         let loop_ = make_loop();
-        let msg = loop_.new_tool_result("call_1", "shell", "{\"cmd\": \"ls\"}", "output", None);
+        let msg = loop_.new_tool_result(
+            "call_1",
+            "shell",
+            "{\"cmd\": \"ls\"}",
+            "output",
+            None,
+            false,
+        );
         assert_eq!(msg.role, "tool");
         assert_eq!(msg.tool_call_id(), "call_1");
         assert_eq!(msg.text(), "output");
+        assert!(!tool_result_is_error(&msg));
+    }
+
+    /// The `tool_result` block's `is_error` flag as it will be persisted and
+    /// sent to providers: present-and-true only for recorded failures.
+    fn tool_result_is_error(message: &AgentMessage) -> bool {
+        message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolResult { is_error: true, .. }))
     }
 
     #[test]
     fn loop_new_tool_result_with_error() {
         let loop_ = make_loop();
-        let msg = loop_.new_tool_result("call_1", "shell", "{}", "", Some("file not found"));
+        let msg = loop_.new_tool_result("call_1", "shell", "{}", "", Some("file not found"), true);
         assert!(msg.text().contains("Error"));
         assert!(msg.text().contains("file not found"));
+        assert!(tool_result_is_error(&msg));
     }
 
     #[test]
     fn loop_new_tool_result_truncates_long_output() {
         let loop_ = make_loop();
         let long = "x".repeat(200_000);
-        let msg = loop_.new_tool_result("call_1", "shell", "{}", &long, None);
+        let msg = loop_.new_tool_result("call_1", "shell", "{}", &long, None, false);
         assert!(msg.text().len() <= 110_000);
         assert!(msg.text().contains("truncated"));
     }
@@ -708,7 +859,7 @@ mod tests {
             call_type: "function".to_string(),
             function: crate::types::ToolCallFn {
                 name: "shell".to_string(),
-                arguments: serde_json::json!({}),
+                arguments: serde_json::json!({"command":"echo permitted input"}),
             },
         };
         let (result, err, _) = Loop::execute_one_tool_impl_static(&tc, &[], &config).await;
@@ -732,7 +883,7 @@ mod tests {
             call_type: "function".to_string(),
             function: crate::types::ToolCallFn {
                 name: "shell".to_string(),
-                arguments: serde_json::json!({}),
+                arguments: serde_json::json!({"command":"echo permitted input"}),
             },
         };
         let (result, err, _) = Loop::execute_one_tool_impl_static(&tc, &[], &config).await;
@@ -779,6 +930,34 @@ mod tests {
         };
         let (_, err, _) = Loop::execute_one_tool_impl_static(&tc, &[], &config).await;
         assert!(err.is_some());
+    }
+
+    #[tokio::test]
+    async fn approval_hook_receives_prepared_arguments_and_blocks_the_handler() {
+        let config = crate::types::AgentConfig {
+            prepare_tool_call: Some(Arc::new(|_, args| {
+                let mut args = args.clone();
+                args["command"] = serde_json::json!("prepared");
+                args
+            })),
+            before_tool_call: Some(Arc::new(|_, _, args| {
+                assert_eq!(args["command"], "prepared");
+                Some(crate::types::ToolCallResult {
+                    result: "blocked".into(),
+                    is_error: true,
+                })
+            })),
+            ..Default::default()
+        };
+        let call = cov_tool_call(
+            "tool",
+            "shell",
+            serde_json::json!(r#"{"command":"original"}"#),
+        );
+        let (result, error, _) =
+            Loop::execute_one_tool_impl_static(&call, &[cov_tool("shell", true)], &config).await;
+        assert_eq!(result, "blocked");
+        assert!(error.is_some());
     }
 
     #[tokio::test]
@@ -1013,5 +1192,73 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert!(messages[0].text().contains("cancelled"));
         assert!(messages[1].text().contains("cancelled"));
+    }
+    #[tokio::test]
+    async fn finalization_error_keeps_process_facts_and_live_persisted_verdicts_equal() {
+        let mut loop_ = make_loop();
+        loop_.tools = vec![crate::tools::shell_tool()];
+        loop_.config.finalize_tool_call = Some(Arc::new(|_, result, _| {
+            (result, Some(anyhow!("finalization failed")))
+        }));
+        let dir = tempfile::tempdir().unwrap();
+        let call = cov_tool_call("shell", "shell", serde_json::json!({"command":"echo done"}));
+        let events = Mutex::new(Vec::new());
+        let mut messages = Vec::new();
+        crate::tools::with_workspace_scope(
+            dir.path().to_string_lossy().into_owned(),
+            "all".into(),
+            loop_.execute_tools_sequential(
+                0,
+                &[call],
+                &mut messages,
+                &|event| events.lock().push(event),
+                &None,
+            ),
+        )
+        .await;
+        let persisted = messages[0]
+            .metadata
+            .as_ref()
+            .unwrap()
+            .get("shell_result")
+            .unwrap();
+        assert_eq!(persisted["exit_code"], 0);
+        assert_eq!(persisted["is_error"], true);
+        assert_eq!(persisted["note"], "finalization failed");
+        assert!(tool_result_is_error(&messages[0]));
+        let events = events.lock();
+        let facts = events
+            .iter()
+            .find_map(|event| match event {
+                RunEvent::ToolExecutionFinished { shell_result, .. } => shell_result.as_ref(),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(serde_json::to_value(facts).unwrap(), *persisted);
+    }
+}
+
+#[cfg(test)]
+mod shell_validation_tests {
+    use super::*;
+    #[tokio::test]
+    async fn invalid_command_is_rejected_before_any_approval_or_handler() {
+        let config = crate::types::AgentConfig {
+            before_tool_call: Some(Arc::new(|_, _, _| {
+                panic!("Invalid command must never reach approval")
+            })),
+            ..Default::default()
+        };
+        let call = crate::types::ToolCall {
+            id: "invalid".into(),
+            call_type: "function".into(),
+            function: crate::types::ToolCallFn {
+                name: "shell".into(),
+                arguments: serde_json::json!({"command":""}),
+            },
+        };
+        let (_, error, _) =
+            Loop::execute_one_tool_impl_static(&call, &[crate::tools::shell_tool()], &config).await;
+        assert!(error.unwrap().contains("nonempty"));
     }
 }

@@ -114,6 +114,11 @@ static SKILLS_CACHE: std::sync::RwLock<Option<(std::time::Instant, Vec<Skill>)>>
 /// Serialises cache refreshes so only one thread does the I/O work.
 static REFRESH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(test)]
+pub(crate) fn hold_refresh_lock_for_test() -> std::sync::MutexGuard<'static, ()> {
+    REFRESH_LOCK.lock().unwrap()
+}
+
 /// Returns a cached skills list, refreshing when older than
 /// SKILLS_CACHE_TTL_SECS. Fast path is lock-free for concurrent readers;
 /// slow path serialises file I/O with a dedicated refresh mutex so multiple
@@ -160,7 +165,7 @@ fn parse_skill(skill_md: &Path) -> Result<Skill> {
     let description = extract_description(&content);
     let name_zh = extract_frontmatter_field(&content, "name_zh");
     let description_zh = extract_frontmatter_field(&content, "description_zh");
-    let version = extract_frontmatter_field(&content, "version");
+    let version = extract_package_version(&content);
     // Normalize to forward slashes so the path survives transport through
     // the system prompt without backslash escape-sequence corruption
     // (e.g. \f, \a interpreted by the model on non-Windows hosts).
@@ -256,6 +261,68 @@ fn extract_yaml_value(line: &str, key: &str) -> Option<String> {
 
 fn extract_description(content: &str) -> String {
     extract_frontmatter_field(content, "description").unwrap_or_default()
+}
+
+/// Returns the declared package version, preferring the top-level field.
+///
+/// Some third-party skills put their version in `metadata.version`. That is a
+/// compatibility fallback only: a valid top-level `version` remains
+/// authoritative, including when it does not match the requested version.
+pub(super) fn extract_package_version(content: &str) -> Option<String> {
+    extract_frontmatter_field(content, "version")
+        .filter(|version| valid_package_version(version))
+        .or_else(|| {
+            extract_metadata_version(content).filter(|version| valid_package_version(version))
+        })
+}
+
+fn valid_package_version(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && !value.contains("..")
+        && !value.ends_with('.')
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'.' | b'_' | b'-'))
+}
+
+fn extract_metadata_version(content: &str) -> Option<String> {
+    let frontmatter = frontmatter(content)?;
+    let lines: Vec<&str> = frontmatter.lines().collect();
+
+    for (index, line) in lines.iter().enumerate() {
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let metadata = match extract_yaml_value(line.trim(), "metadata") {
+            Some(metadata) => metadata,
+            None => continue,
+        };
+
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&metadata) {
+            return value
+                .get("version")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+        }
+
+        if metadata.is_empty() {
+            let metadata_indent = leading_spaces(line);
+            for nested in &lines[index + 1..] {
+                if nested.trim().is_empty() {
+                    continue;
+                }
+                if leading_spaces(nested) <= metadata_indent {
+                    break;
+                }
+                if let Some(version) = extract_yaml_value(nested.trim(), "version") {
+                    return Some(version);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 fn extract_frontmatter_field(content: &str, key: &str) -> Option<String> {
@@ -552,6 +619,70 @@ version: "1.0.0"
     #[test]
     fn frontmatter_no_separator_returns_none() {
         assert!(frontmatter("no frontmatter here").is_none());
+    }
+
+    /// A skill file without frontmatter is still a skill: the name falls back to
+    /// the install directory (so the desktop's delete-by-name targets the right
+    /// folder) and the invocation policy is "not disabled" rather than an error.
+    #[test]
+    fn a_skill_without_frontmatter_is_named_by_its_directory_and_stays_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let entry = skill_dir.join("SKILL.md");
+        std::fs::write(&entry, "# Just a body\n\nNo frontmatter at all.\n").unwrap();
+        let skill = parse_skill(&entry).unwrap();
+        assert_eq!(skill.name, "my-skill");
+        assert!(!skill.disable_model_invocation);
+        assert!(!skill.location.contains('\\'), "{}", skill.location);
+    }
+
+    /// A block-style `metadata:` map is scanned only while it stays indented:
+    /// blank lines inside it are skipped, and the first line that dedents ends
+    /// the block — so a nested `version` is found, a top-level one is not.
+    #[test]
+    fn metadata_block_scan_skips_blanks_and_stops_at_the_first_dedent() {
+        assert_eq!(
+            extract_metadata_version("---\nmetadata:\n\n  version: 2.1\nname: x\n---\n"),
+            Some("2.1".to_string()),
+            "a blank line inside the block is skipped"
+        );
+        assert_eq!(
+            extract_metadata_version("---\nmetadata:\n\nversion: 9\n---\n"),
+            None,
+            "the scan stops at the first line that dedents out of the block"
+        );
+        // The block can also simply run out of lines: a nested note with no
+        // version at all is a miss, and the scan must finish rather than fall
+        // through into the next key.
+        assert_eq!(
+            extract_metadata_version("---\nmetadata:\n\n  note: nothing\n---\n"),
+            None,
+            "a block that ends without a nested version is a miss, not a panic"
+        );
+    }
+
+    /// A `metadata:` value that is neither empty nor JSON is a plain scalar,
+    /// and a scalar has no nested map to scan: `metadata: classic` cannot
+    /// declare a version, and an indented `version:` under it is not one. The
+    /// top-level `version` field stays authoritative next to it.
+    #[test]
+    fn a_scalar_metadata_value_is_not_scanned_for_a_nested_version() {
+        assert_eq!(
+            extract_metadata_version("---\nmetadata: classic\n  version: 9.9.9\n---\n"),
+            None,
+            "a non-empty scalar metadata value has no nested map to scan"
+        );
+        assert_eq!(
+            extract_package_version("---\nmetadata: classic\nname: x\n---\n"),
+            None,
+            "a scalar metadata value declares no version"
+        );
+        assert_eq!(
+            extract_package_version("---\nmetadata: classic\nversion: 3.4.5\n---\n"),
+            Some("3.4.5".to_string()),
+            "a top-level version beside a scalar metadata value still wins"
+        );
     }
 
     #[test]

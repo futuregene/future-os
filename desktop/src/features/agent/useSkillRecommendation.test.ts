@@ -3,6 +3,7 @@ import { act } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import i18n from "../../i18n";
 import {
+  invalidateSkillCatalog,
   listAvailableSkills,
   listInstalledSkills,
   recordSkillReco,
@@ -12,15 +13,18 @@ import {
 import { renderHook } from "../../test/renderHook";
 import {
   DAILY_RECOMMENDATION_LIMIT,
+  dailyRecommendationLimit,
   MAX_QUERY_CHARS,
   messageHash,
   MIN_QUERY_BYTES,
   RECOMMEND_TIMEOUT_MS,
   shownDescription,
+  TEST_DAILY_RECOMMENDATION_LIMIT,
   useSkillRecommendation,
 } from "./useSkillRecommendation";
 
-vi.mock("../../integrations/skills/skillsClient", () => ({
+vi.mock("../../integrations/skills/skillsClient", async original => ({
+  ...await original<typeof import("../../integrations/skills/skillsClient")>(),
   // The hook goes through the shared cache, which assembles both lists from the
   // per-call mocks below, so a test still drives the lists it cares about.
   loadSkillCatalog: () => ({
@@ -32,6 +36,11 @@ vi.mock("../../integrations/skills/skillsClient", () => ({
   suggestSkill: vi.fn(),
   skillRecoToday: vi.fn(),
   recordSkillReco: vi.fn(),
+}));
+
+let buildInfo: { isRelease: boolean } | null = { isRelease: true };
+vi.mock("../../integrations/tauri/useBuildInfo", () => ({
+  useBuildInfo: () => ({ data: buildInfo }),
 }));
 
 const available = vi.mocked(listAvailableSkills);
@@ -57,6 +66,7 @@ function catalogueEntry(id: string, descriptionZh = "") {
 }
 
 beforeEach(() => {
+  buildInfo = { isRelease: true };
   available.mockResolvedValue([
     catalogueEntry("future-web"),
     catalogueEntry("future-paper"),
@@ -212,6 +222,18 @@ it("still calls the recommender below the daily budget", async () => {
   expect((await act(() => hook.current.evaluate(LONG_ENOUGH)))?.name).toBe("future-web");
 });
 
+it("uses a 1000-card budget in test builds while releases stay at three", async () => {
+  expect(dailyRecommendationLimit(true)).toBe(DAILY_RECOMMENDATION_LIMIT);
+  expect(dailyRecommendationLimit(null)).toBe(DAILY_RECOMMENDATION_LIMIT);
+  expect(dailyRecommendationLimit(false)).toBe(TEST_DAILY_RECOMMENDATION_LIMIT);
+
+  buildInfo = { isRelease: false };
+  today.mockResolvedValue({ count: DAILY_RECOMMENDATION_LIMIT, skillIds: [], messageHashes: [] });
+  suggest.mockResolvedValue({ name: "future-web", description: "web" });
+  const hook = await renderActive();
+  expect((await act(() => hook.current.evaluate(LONG_ENOUGH)))?.name).toBe("future-web");
+});
+
 it("skips a skill already recommended today without recording a second time", async () => {
   today.mockResolvedValue({ count: 1, skillIds: ["future-web"], messageHashes: ["other-hash"] });
   suggest.mockResolvedValue({ name: "future-web", description: "web" });
@@ -286,4 +308,109 @@ it("shows the English description when there is no Chinese one (or the UI is Eng
   expect(shownDescription(card, "zh", new Map())).toBe(card.description);
   // An English UI ignores whatever the catalogue carries.
   expect(shownDescription(card, "en", zh)).toBe("search the web");
+});
+
+it("recommends normally when today's state cannot be read", async () => {
+  // error-path: the daily-budget read is a local command that an older backend (or
+  // a transport that resolves an unknown command to null) can fail outright. That
+  // must behave as "no data yet" rather than throwing at submit time - the budget
+  // can then only be under-counted, which fails towards recommending.
+  today.mockRejectedValue(new Error("no such command"));
+  suggest.mockResolvedValue({ name: "future-web", description: "web" });
+  const hook = await renderActive();
+
+  const reco = await act(() => hook.current.evaluate(LONG_ENOUGH));
+
+  expect(reco?.name).toBe("future-web");
+  expect(suggest).toHaveBeenCalledTimes(1);
+});
+
+it("treats an unusable today payload as an empty day", async () => {
+  // boundary: the command resolving to a non-object (or to a shape missing the
+  // counters) must fall back per field rather than reaching into it. A count that
+  // is not a number cannot be compared against the budget, and the two lists are
+  // consumed with `.includes`/`.map`.
+  today.mockResolvedValue({ count: "many", skillIds: "nope", messageHashes: null } as never);
+  suggest.mockResolvedValue({ name: "future-web", description: "web" });
+  const hook = await renderActive();
+
+  const reco = await act(() => hook.current.evaluate(LONG_ENOUGH));
+
+  expect(reco?.name).toBe("future-web");
+  expect(suggest).toHaveBeenCalledTimes(1);
+});
+
+it("loads no candidates when the catalogue read fails", async () => {
+  // error-path: both catalogue lists come from the shared cache and each can
+  // reject independently. A failed read must leave the candidate set empty
+  // (so `evaluate` short-circuits) rather than rejecting the effect.
+  available.mockRejectedValue(new Error("catalogue down"));
+  installed.mockRejectedValue(new Error("installed down"));
+  const hook = await renderActive();
+
+  expect(hook.current.candidates).toEqual([]);
+  expect(await act(() => hook.current.evaluate(LONG_ENOUGH))).toBeNull();
+});
+
+it("does not publish candidates that arrive after the hook is gone", async () => {
+  // concurrency: the catalogue read is async, so the view can unmount first (a
+  // fast thread switch). The settling list must not be written into an unmounted
+  // hook - and the cleanup is what marks the read cancelled.
+  let resolveCatalogue!: (value: unknown) => void;
+  available.mockReturnValue(new Promise((resolve) => {
+    resolveCatalogue = resolve;
+  }) as never);
+  const hook = renderHook(() => useSkillRecommendation(baseOptions()));
+  await act(async () => {});
+  expect(hook.current.candidates).toEqual([]);
+
+  hook.unmount();
+  await act(async () => {
+    resolveCatalogue([catalogueEntry("future-web")]);
+    await Promise.resolve();
+  });
+
+  // Nothing threw and nothing was published to the dead hook.
+  expect(hook.current.candidates).toEqual([]);
+});
+
+it("refreshes candidates when installed skills change without remounting", async () => {
+  const hook = await renderActive();
+  try {
+    expect(hook.current.candidates.map(skill => skill.name)).toContain("future-web");
+    installed.mockResolvedValue([
+      { id: "future-web", name: "future-web", description: "web", nameZh: null, descriptionZh: null, version: "1.0" },
+      { id: "future-slides", name: "future-slides", description: "slides", nameZh: null, descriptionZh: null, version: "1.0" },
+    ]);
+    await act(async () => invalidateSkillCatalog());
+    expect(hook.current.candidates.map(skill => skill.name)).toEqual(["future-paper"]);
+  }
+  finally {
+    hook.unmount();
+  }
+});
+
+it("bounds the daily-state read and ignores its answer after timeout", async () => {
+  vi.useFakeTimers();
+  let resolveToday!: (state: Awaited<ReturnType<typeof skillRecoToday>>) => void;
+  today.mockReturnValue(new Promise((resolve) => {
+    resolveToday = resolve;
+  }));
+  const hook = await renderActive();
+  try {
+    let pending!: ReturnType<typeof hook.current.evaluate>;
+    await act(async () => {
+      pending = hook.current.evaluate(LONG_ENOUGH);
+      await vi.advanceTimersByTimeAsync(RECOMMEND_TIMEOUT_MS);
+    });
+    expect(await pending).toBeNull();
+    await act(async () => resolveToday({ count: 0, skillIds: [], messageHashes: [] }));
+    expect(suggest).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
+    expect(hook.current.state.recommendation).toBeNull();
+  }
+  finally {
+    hook.unmount();
+    vi.useRealTimers();
+  }
 });

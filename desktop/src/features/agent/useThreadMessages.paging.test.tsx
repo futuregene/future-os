@@ -130,7 +130,7 @@ describe("on-demand history", () => {
     expect(current.messages[0]?.content).toBe("old");
     expect(current.historyError).toBe("replacement unavailable");
     page.mockResolvedValueOnce(history([], 0, false));
-    await act(async () => current.reloadMessagesQuiet("synthetic", true));
+    await act(async () => current.reloadThreadHistory("synthetic", true));
     expect(current.messages).toEqual([]);
     expect(current.loadingThread).toBe(false);
     expect(current.historyError).toBeNull();
@@ -191,11 +191,11 @@ describe("on-demand history", () => {
     }));
     let older!: Promise<void>;
     await act(async () => {
-      older = current.reloadMessagesQuiet("synthetic", true);
+      older = current.reloadThreadHistory("synthetic", true);
     });
     page.mockResolvedValueOnce(history(["newest"], 0, false));
     await act(async () => {
-      await current.reloadMessagesQuiet("synthetic", true);
+      await current.reloadThreadHistory("synthetic", true);
     });
     await act(async () => {
       resolve(history(["stale"], 0, false));
@@ -204,7 +204,7 @@ describe("on-demand history", () => {
     expect(current.messages[0]?.content).toBe("newest");
     page.mockRejectedValueOnce(new Error("synthetic failure"));
     await act(async () => {
-      await current.reloadMessagesQuiet("synthetic");
+      await current.reloadThreadHistory("synthetic");
     });
     expect(current.messages[0]?.content).toBe("newest");
     expect(current.historyError).toBe("synthetic failure");
@@ -232,7 +232,7 @@ describe("on-demand history", () => {
     });
     page.mockResolvedValueOnce(history(["replacement"], 0, false));
     await act(async () => {
-      await current.reloadMessagesQuiet("synthetic");
+      await current.reloadThreadHistory("synthetic");
       resolve(history(["obsolete"], 10));
       await older;
     });
@@ -320,7 +320,7 @@ describe("on-demand history", () => {
     expect(current.hasOlderHistory).toBe(false);
     page.mockResolvedValueOnce(history(["u3", "u4", "u5"], 20));
     await act(async () => {
-      await current.reloadMessagesQuiet("synthetic");
+      await current.reloadThreadHistory("synthetic");
     });
     expect(current.messages.map(message => message.content)).toEqual([
       "u1",

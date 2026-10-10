@@ -30,7 +30,7 @@ Three steps take you from download to your first answer:
 
 ## Learn more
 
-- [[Settings]] — sign in to FutureGene, add your own provider, and choose which models appear.
+- [[Settings]] — sign in to the built-in **Future** provider, add your own provider, and choose which models appear.
 - [[Skills]] — browse, install, and use the built-in capability packs.
 - [[CLI (future)|CLI]] — an optional command-line tool for scripting and automation.
 - [[FAQ]] — common questions and troubleshooting.

@@ -4,9 +4,16 @@ import { Text, TextInput } from "react-native";
 import { Button } from "../../../components/Button";
 import { SettingsLink, SettingsSection } from "../SettingsPrimitives";
 import { SettingsScreen } from "../SettingsScreen";
+import { ActionMenu } from "../../../components/ActionMenu";
 import type { ProvidersView } from "../../../remote/types";
 
 let providers: ProvidersView;
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(yes => { resolve = yes; });
+  return { promise, resolve };
+}
 
 const mockRemote = {
   credentials: { pairId: "pair", expectedDesktopId: "desktop" },
@@ -43,6 +50,9 @@ jest.mock("lucide-react-native", () => ({
   ChevronRight: "ChevronRight",
   ChevronDown: "ChevronDown",
   Trash2: "Trash2",
+  // ActionMenu (the API-type picker and the delete confirmation) needs these.
+  Search: "Search",
+  X: "X",
 }));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 jest.mock("react-i18next", () => ({
@@ -156,6 +166,52 @@ test("writes a built-in key atomically and returns to the list", async () => {
   expect(mockRemote.listProviders).toHaveBeenCalledTimes(2);
 });
 
+test("a second built-in key save cannot overlap the write already in flight", async () => {
+  await openProviders();
+  await act(async () => link("DeepSeek").props.onPress());
+  await type("desktopSettings.apiKey", "sk-live");
+  const write = deferred<ProvidersView>();
+  mockRemote.updateBuiltinProvider.mockReturnValueOnce(write.promise);
+  await act(async () => { button("desktopSettings.save").props.onPress(); await Promise.resolve(); });
+  expect(mockRemote.updateBuiltinProvider).toHaveBeenCalledTimes(1);
+  // The button is disabled while busy, but a tap already in the pipe must not
+  // start a second write of the same key while the first is unresolved.
+  await act(async () => button("desktopSettings.save").props.onPress());
+  expect(mockRemote.updateBuiltinProvider).toHaveBeenCalledTimes(1);
+  await act(async () => { write.resolve(providers); await Promise.resolve(); });
+  // The page only pops once the write lands.
+  expect(mockRemote.updateBuiltinProvider).toHaveBeenCalledTimes(1);
+});
+
+test("a refused key write shows the desktop's own reason and does not pop the page", async () => {
+  await openProviders();
+  await act(async () => link("DeepSeek").props.onPress());
+  // A non-Error rejection still has to reach the user as text: the desktop can
+  // reject with a bare string.
+  mockRemote.updateBuiltinProvider.mockRejectedValueOnce("catalog rejected the key");
+  await type("desktopSettings.apiKey", "sk-bad");
+  await act(async () => { button("desktopSettings.save").props.onPress(); await Promise.resolve(); });
+  expect(rendered()).toContain("catalog rejected the key");
+  // A failed write must not report success, so the page stays put: the key
+  // field is still the visible surface rather than the provider list.
+  expect(input("desktopSettings.apiKey")).toBeDefined();
+  expect(link("DeepSeek")).toBeUndefined();
+  // A second attempt is allowed once the failure has been reported.
+  await act(async () => { button("desktopSettings.save").props.onPress(); await Promise.resolve(); });
+  expect(mockRemote.updateBuiltinProvider).toHaveBeenCalledTimes(2);
+});
+
+test("a failed provider read offers a retry that re-reads the desktop", async () => {
+  mockRemote.listProviders.mockRejectedValueOnce(new Error("offline"));
+  await openProviders();
+  expect(rendered()).toContain("desktopSettings.loadFailed");
+  mockRemote.listProviders.mockClear();
+  await act(async () => { button("common.retry").props.onPress(); await Promise.resolve(); });
+  expect(mockRemote.listProviders).toHaveBeenCalledTimes(1);
+  expect(rendered()).not.toContain("desktopSettings.loadFailed");
+  expect(link("DeepSeek")).toBeDefined();
+});
+
 test("clears a stored key and refuses an empty key where one is required", async () => {
   await openProviders();
   await act(async () => link("DeepSeek").props.onPress());
@@ -247,6 +303,163 @@ test("editing a model rejects limits and prices the desktop would refuse", async
   await act(async () => button("desktopSettings.save").props.onPress());
   expect(rendered()).toContain("desktopSettings.modelPriceInvalid");
   expect(mockRemote.upsertCustomProvider).not.toHaveBeenCalled();
+});
+
+test("the new-provider form refuses each shape the desktop would reject", async () => {
+  await openProviders();
+  await act(async () => button("desktopSettings.addProvider").props.onPress());
+  // No id at all, then an id outside the desktop's 2..40 character window.
+  await act(async () => button("desktopSettings.save").props.onPress());
+  expect(rendered()).toContain("desktopSettings.providerIdRequired");
+  await type("desktopSettings.providerId", "a");
+  await act(async () => button("desktopSettings.save").props.onPress());
+  expect(rendered()).toContain("desktopSettings.providerIdLength");
+  // A syntactically valid id with an address the desktop cannot parse.
+  await type("desktopSettings.providerId", "newco");
+  await type("desktopSettings.baseUrl", "not-a-url");
+  await act(async () => button("desktopSettings.save").props.onPress());
+  expect(rendered()).toContain("desktopSettings.baseUrlInvalid");
+  expect(mockRemote.upsertCustomProvider).not.toHaveBeenCalled();
+  // A model with no id, then two models sharing one id.
+  await type("desktopSettings.baseUrl", "https://api.newco.example.com/v1");
+  await act(async () => pressable("desktopSettings.addModel").props.onPress());
+  await act(async () => button("desktopSettings.save").props.onPress());
+  expect(rendered()).toContain("desktopSettings.modelIdRequired");
+  await type("desktopSettings.modelId", "shared");
+  await act(async () => pressable("desktopSettings.addModel").props.onPress());
+  await type("desktopSettings.modelId", "shared");
+  await act(async () => button("desktopSettings.save").props.onPress());
+  expect(rendered()).toContain("desktopSettings.modelIdDuplicate");
+  // Give the second model a distinct id but limits the desktop would refuse.
+  await type("desktopSettings.modelId", "other");
+  await type("desktopSettings.modelContextWindow", "0");
+  await act(async () => button("desktopSettings.save").props.onPress());
+  expect(rendered()).toContain("desktopSettings.modelLimitsInvalid");
+  expect(mockRemote.upsertCustomProvider).not.toHaveBeenCalled();
+});
+
+test("the model editor writes every field and can drop a model again", async () => {
+  await openProviders();
+  await act(async () => link("Acme Gateway").props.onPress());
+  // The stored provider's model starts collapsed; opening it is what makes the
+  // fields reachable at all.
+  expect(input("desktopSettings.modelName")).toBeUndefined();
+  await act(async () => pressable("Acme Large").props.onPress());
+  await type("desktopSettings.modelName", "Acme Large v2");
+  await type("desktopSettings.modelContextWindow", "200000");
+  await type("desktopSettings.modelMaxTokens", "8192");
+  const capability = (label: string) =>
+    tree.root.findAll(node => node.props.label === label && typeof node.props.onChange === "function")[0]!;
+  await act(async () => capability("desktopSettings.modelSupportsImages").props.onChange(true));
+  await act(async () => capability("desktopSettings.modelReasoning").props.onChange(true));
+  await act(async () => { button("desktopSettings.save").props.onPress(); await Promise.resolve(); });
+  expect(mockRemote.upsertCustomProvider).toHaveBeenCalledWith(expect.objectContaining({
+    id: "acme",
+    create: false,
+    models: [expect.objectContaining({
+      id: "acme-large",
+      name: "Acme Large v2",
+      contextWindow: 200000,
+      maxTokens: 8192,
+      supportsImages: true,
+      reasoning: true,
+    })],
+  }));
+});
+
+test("adding a model then removing it leaves the provider as it was", async () => {
+  await openProviders();
+  await act(async () => link("Acme Gateway").props.onPress());
+  await act(async () => pressable("desktopSettings.addModel").props.onPress());
+  await type("desktopSettings.modelId", "scratch");
+  expect(pressable("scratch")).toBeDefined();
+  await type("desktopSettings.modelContextWindow", "8192");
+  await type("desktopSettings.modelMaxTokens", "8192");
+  await act(async () => button("desktopSettings.removeModel").props.onPress());
+  expect(pressable("scratch")).toBeUndefined();
+  // With the scratch model gone the stored one is all that is submitted, so an
+  // abandoned draft cannot leak into the saved provider.
+  await act(async () => { button("desktopSettings.save").props.onPress(); await Promise.resolve(); });
+  expect(mockRemote.upsertCustomProvider).toHaveBeenCalledWith(expect.objectContaining({
+    models: [expect.objectContaining({ id: "acme-large" })],
+  }));
+});
+
+test("the API-type menu writes the chosen protocol and closes", async () => {
+  await openProviders();
+  await act(async () => button("desktopSettings.addProvider").props.onPress());
+  await act(async () => pressable("desktopSettings.apiType").props.onPress());
+  const menu = tree.root.findByType(ActionMenu);
+  expect(menu.props.visible).toBe(true);
+  const chosen = menu.props.actions[1].label as string;
+  await act(async () => menu.props.actions[1].onPress());
+  await act(async () => menu.props.onClose());
+  expect(tree.root.findByType(ActionMenu).props.visible).toBe(false);
+  // The row now shows the chosen protocol, so the menu wrote through to state.
+  const row = tree.root.findAll(node =>
+    node.props.accessibilityLabel === "desktopSettings.apiType"
+    && node.props.accessibilityRole === "button")[0]!;
+  expect(row.findAllByType(Text).map(node => node.props.children)).toContain(chosen);
+});
+
+test("deleting a provider is a two-step action that can be backed out of", async () => {
+  await openProviders();
+  await act(async () => link("Acme Gateway").props.onPress());
+  await act(async () => button("desktopSettings.deleteProvider").props.onPress());
+  expect(rendered()).toContain("desktopSettings.deleteProviderConfirm: Acme Gateway");
+  await act(async () => button("chat.cancel").props.onPress());
+  expect(mockRemote.deleteCustomProvider).not.toHaveBeenCalled();
+  // Backing out arms nothing: the next tap only re-opens the confirmation.
+  await act(async () => button("desktopSettings.deleteProvider").props.onPress());
+  expect(rendered()).toContain("desktopSettings.deleteProviderConfirm: Acme Gateway");
+  expect(mockRemote.deleteCustomProvider).not.toHaveBeenCalled();
+  await act(async () => { button("desktopSettings.deleteProvider").props.onPress(); await Promise.resolve(); });
+  expect(mockRemote.deleteCustomProvider).toHaveBeenCalledWith("acme");
+});
+
+test("a second delete cannot overlap the removal already in flight", async () => {
+  await openProviders();
+  await act(async () => link("Acme Gateway").props.onPress());
+  const removal = deferred<ProvidersView>();
+  mockRemote.deleteCustomProvider.mockReturnValueOnce(removal.promise);
+  await act(async () => button("desktopSettings.deleteProvider").props.onPress());
+  await act(async () => { button("desktopSettings.deleteProvider").props.onPress(); await Promise.resolve(); });
+  expect(mockRemote.deleteCustomProvider).toHaveBeenCalledTimes(1);
+  // A tap that still reaches the confirm action while the removal is unresolved
+  // must not ask the desktop to delete the same provider twice.
+  await act(async () => { button("desktopSettings.deleteProvider").props.onPress(); await Promise.resolve(); });
+  expect(mockRemote.deleteCustomProvider).toHaveBeenCalledTimes(1);
+  await act(async () => { removal.resolve(providers); await Promise.resolve(); });
+});
+
+test("a refused save or delete shows the desktop's own reason and stays on the page", async () => {
+  await openProviders();
+  await act(async () => link("Acme Gateway").props.onPress());
+  mockRemote.upsertCustomProvider.mockRejectedValueOnce("catalog says no");
+  await act(async () => { button("desktopSettings.save").props.onPress(); await Promise.resolve(); });
+  expect(rendered()).toContain("catalog says no");
+  // A refused save must not pop the page: its own fields are still on screen,
+  // and the provider list (the level underneath) is not.
+  expect(input("desktopSettings.providerId")).toBeDefined();
+  expect(link("Acme Gateway")).toBeUndefined();
+  mockRemote.deleteCustomProvider.mockRejectedValueOnce(new Error("provider still referenced"));
+  await act(async () => button("desktopSettings.deleteProvider").props.onPress());
+  await act(async () => { button("desktopSettings.deleteProvider").props.onPress(); await Promise.resolve(); });
+  expect(rendered()).toContain("provider still referenced");
+});
+
+test("a second save cannot overlap the write already in flight", async () => {
+  await openProviders();
+  await act(async () => link("Acme Gateway").props.onPress());
+  const write = deferred<ProvidersView>();
+  mockRemote.upsertCustomProvider.mockReturnValueOnce(write.promise);
+  await act(async () => { button("desktopSettings.save").props.onPress(); await Promise.resolve(); });
+  expect(mockRemote.upsertCustomProvider).toHaveBeenCalledTimes(1);
+  // The save button is disabled while busy; a tap that still reaches the
+  // handler must not enqueue a second write of the same provider.
+  await act(async () => button("desktopSettings.save").props.onPress());
+  expect(mockRemote.upsertCustomProvider).toHaveBeenCalledTimes(1);
+  await act(async () => { write.resolve(providers); await Promise.resolve(); });
 });
 
 test("an older desktop hides the provider pages and an offline one disables them", async () => {

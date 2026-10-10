@@ -11,15 +11,16 @@ import type {
   StoredThread,
 } from "../../integrations/storage/threadStore";
 import type { ComposerSendPayload } from "./Composer";
+import type { SessionMentionOption } from "./sessionMention";
 import { ArrowDown, History } from "lucide-react";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
-import { compactThreadContext } from "../../integrations/agent/agentClient";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { forkThread } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
+import { useCommittedRef } from "../../lib/useCommittedRef";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { installRecommendedSkill } from "../skills/installRecommendedSkill";
 import { ApprovalPrompt } from "./ApprovalPrompt";
@@ -30,6 +31,7 @@ import {
 } from "./buildContinuePrompt";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
+import { useThreadCompaction } from "./runtime/useThreadCompaction";
 import { ThreadHeader } from "./ThreadHeader";
 import { ThreadSearch } from "./ThreadSearch";
 import { useAgentThreadState } from "./useAgentThreadState";
@@ -39,11 +41,12 @@ import { useSkillRecommendation } from "./useSkillRecommendation";
 
 /** How many user exchanges one loaded page renders. */
 const PAGE_USER_EXCHANGES = 10;
-const COMPACTION_TERMINAL_TIMEOUT_MS = 30 * 60 * 1000;
 
 interface AgentThreadProps {
   thread: StoredThread | null;
   workspacePath?: string | null;
+  /** Conversations offered by the composer's `#` menu (see `sessionMentionOptions`). */
+  sessionMentions?: SessionMentionOption[];
   agentConnection: AgentConnectionState;
   leftPanelExpanded: boolean;
   loadingStore: boolean;
@@ -89,6 +92,7 @@ interface AgentThreadProps {
 export function AgentThread({
   thread,
   workspacePath,
+  sessionMentions,
   agentConnection,
   leftPanelExpanded,
   loadingStore,
@@ -146,20 +150,14 @@ export function AgentThread({
   // array changes identity on every streaming push, and listing it as a dep
   // recreated the callbacks each push, defeating MessageBlock's memo for the
   // whole visible window (and re-subscribing the recover-run effect).
-  const messagesRef = useRef(messages);
-  messagesRef.current = messages;
+  const messagesRef = useCommittedRef(messages);
   // One idempotency key belongs to one user intent, not permanently to a fork
   // point. Keep it across failed retries, then release it after success so the
   // user may deliberately create another branch from the same message later.
   const pendingForkRequestsRef = useRef(new Map<string, string>());
   const searchRootRef = useRef<HTMLDivElement>(null);
   const { composerRef, composerHeight } = useComposerInset();
-  const compactionWaitCleanupRef = useRef<(() => void) | null>(null);
-
-  useEffect(
-    () => () => compactionWaitCleanupRef.current?.(),
-    [thread?.id, thread?.agentSessionId],
-  );
+  const handleCompactContext = useThreadCompaction(thread);
 
   const {
     scrollRef,
@@ -200,13 +198,13 @@ export function AgentThread({
   // The streaming bubble always belongs to the trailing turn (after the last
   // user message), so scan backwards only until the first user message instead
   // of the whole list — this runs on every streaming push.
-  let isSending = false;
+  let isReplyStreaming = false;
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]!;
     if (message.role === "user")
       break;
     if (message.role === "assistant" && message.status === "streaming") {
-      isSending = true;
+      isReplyStreaming = true;
       break;
     }
   }
@@ -236,7 +234,7 @@ export function AgentThread({
       const summary = await loadRunResumeSummary(runId);
       void handleSend({
         attachments: [],
-        content: buildContinuePrompt({ runId, summary }),
+        content: buildContinuePrompt({ summary }),
       });
     },
     [handleSend],
@@ -262,7 +260,7 @@ export function AgentThread({
         content: source.content,
       });
     },
-    [handleSend],
+    [handleSend, messagesRef],
   );
 
   useEffect(
@@ -322,7 +320,7 @@ export function AgentThread({
         });
       }
     },
-    [thread, onForked, t],
+    [messagesRef, thread, onForked, t],
   );
 
   // Stable wrappers for the memoized Composer: inline arrows here would be
@@ -350,124 +348,12 @@ export function AgentThread({
     (card: { name: string; description: string }) => installRecommendedSkill(card.name),
     [],
   );
-  const handleCompactContext = useCallback(async () => {
-    if (!thread)
-      return;
-    interface TerminalCompactionEvent {
-      eventType:
-        "compaction_committed" | "compaction_failed" | "compaction_unchanged";
-      payload: Record<string, unknown>;
-    }
-    let expectedOperationId: string | undefined;
-    let bufferedTerminal: TerminalCompactionEvent | undefined;
-    let resolveTerminal: ((event: TerminalCompactionEvent) => void) | undefined;
-    let rejectTerminal: ((error: Error) => void) | undefined;
-    const terminalPromise = new Promise<TerminalCompactionEvent>(
-      (resolve, reject) => {
-        resolveTerminal = resolve;
-        rejectTerminal = reject;
-      },
-    );
-    const handleAgentEvent = (event: Event) => {
-      const detail = (event as CustomEvent).detail as
-        | {
-          threadId?: string;
-          sessionId?: string;
-          eventType?: string;
-          payload?: Record<string, unknown>;
-        }
-        | undefined;
-      if (
-        !detail
-        || detail.threadId !== thread.id
-        || detail.sessionId !== thread.agentSessionId
-        || !detail.payload
-        || ![
-          "compaction_committed",
-          "compaction_failed",
-          "compaction_unchanged",
-        ].includes(detail.eventType ?? "")
-      ) {
-        return;
-      }
-      const operationId
-        = typeof detail.payload.operation_id === "string"
-          ? detail.payload.operation_id
-          : undefined;
-      const terminal = detail as TerminalCompactionEvent;
-      if (!expectedOperationId) {
-        bufferedTerminal = terminal;
-      }
-      else if (operationId === expectedOperationId) {
-        resolveTerminal?.(terminal);
-      }
-    };
-    window.addEventListener("future:agent-event", handleAgentEvent);
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    let cancelWait: () => void;
-    const cleanup = () => {
-      window.removeEventListener("future:agent-event", handleAgentEvent);
-      if (timeoutId)
-        clearTimeout(timeoutId);
-      if (compactionWaitCleanupRef.current === cancelWait)
-        compactionWaitCleanupRef.current = null;
-    };
-    cancelWait = () => {
-      cleanup();
-      const error = new Error("compaction wait cancelled");
-      error.name = "AbortError";
-      rejectTerminal?.(error);
-    };
-    compactionWaitCleanupRef.current?.();
-    compactionWaitCleanupRef.current = cancelWait;
-    try {
-      const result = await compactThreadContext(thread.id);
-      expectedOperationId = result.operationId;
-      const bufferedOperationId
-        = typeof bufferedTerminal?.payload.operation_id === "string"
-          ? bufferedTerminal.payload.operation_id
-          : undefined;
-      if (bufferedTerminal && bufferedOperationId === expectedOperationId)
-        resolveTerminal?.(bufferedTerminal);
-      const timeoutPromise = new Promise<never>((_resolve, reject) => {
-        timeoutId = setTimeout(
-          () => reject(new Error(t("composer.compactionWaitTimedOut"))),
-          COMPACTION_TERMINAL_TIMEOUT_MS,
-        );
-      });
-      const terminal = await Promise.race([terminalPromise, timeoutPromise]);
-      if (terminal.eventType === "compaction_failed") {
-        const message
-          = typeof terminal.payload.error === "string"
-            ? terminal.payload.error
-            : t("failure.unknown");
-        throw new Error(message);
-      }
-      if (terminal.eventType === "compaction_unchanged") {
-        emitFutureEvent("toast", {
-          message: t(
-            terminal.payload.already_compacted
-              ? "composer.compactionNoNewContent"
-              : "composer.compactionNotNeeded",
-          ),
-          tone: "info",
-        });
-      }
-    }
-    catch (error) {
-      if (error instanceof Error && error.name === "AbortError")
-        return;
-      emitFutureEvent("toast", {
-        message: t("composer.compactionRequestFailed", {
-          message: errorMessage(error),
-        }),
-        tone: "error",
-      });
-    }
-    finally {
-      cleanup();
-    }
-  }, [thread, t]);
+  const skillRecommendation = useMemo(() => ({
+    card: recommendation.state.recommendation,
+    onEvaluate: recommendation.evaluate,
+    onInstall: installRecommended,
+    onDismiss: recommendation.dismiss,
+  }), [recommendation.state.recommendation, recommendation.evaluate, recommendation.dismiss, installRecommended]);
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
@@ -618,8 +504,9 @@ export function AgentThread({
               thinkingLevel={thinkingLevel}
               onThinkingLevelChange={onThinkingLevelChange}
               approvalTier={approvalTier}
+              futureSessionStatus={futureSessionStatus}
               onChangeApprovalTier={onChangeApprovalTier}
-              sending={isSending}
+              sending={isReplyStreaming}
               onAbort={handleComposerAbort}
               onCompactContext={
                 thread?.agentSessionId ? handleCompactContext : undefined
@@ -627,13 +514,9 @@ export function AgentThread({
               compactionInProgress={agentState?.isCompacting ?? false}
               onSend={handleComposerSend}
               workspaceId={thread?.workspaceId}
+              sessionMentions={sessionMentions}
               draftKey={thread?.id}
-              skillRecommendation={{
-                card: recommendation.state.recommendation,
-                onEvaluate: recommendation.evaluate,
-                onInstall: installRecommended,
-                onDismiss: recommendation.dismiss,
-              }}
+              skillRecommendation={skillRecommendation}
             />
           </div>
         </div>

@@ -164,9 +164,16 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
         },
         "set_approval_tier" => {
-            let tier = if cmd.tier == "sandbox" {
+            let requested_tier =
+                if cmd.tier == "auto" && crate::future_login::future_api_key().is_err() {
+                    "sandbox"
+                } else {
+                    &cmd.tier
+                };
+            let tier = if requested_tier == "sandbox" || requested_tier == "auto" {
                 match product_sandbox_available().await {
-                    Ok(true) => cmd.tier.clone(),
+                    Ok(true) => requested_tier.to_string(),
+                    Ok(false) if requested_tier == "auto" => requested_tier.to_string(),
                     Ok(false) => "manual".to_string(),
                     Err(error) => {
                         reply(sink, false, Value::Null, Some(&error.to_string())).await;
@@ -174,7 +181,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     }
                 }
             } else {
-                cmd.tier.clone()
+                requested_tier.to_string()
             };
             match crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
                 approval_tier: Some(tier),
@@ -267,6 +274,11 @@ async fn reply_settings(
 ) {
     match result {
         Ok(settings) => {
+            // Every field `SettingsPatch` accepts must be echoed back here: the
+            // phone renders the snapshot this reply returns, so a writable field
+            // left out of the reply reads as absent and the phone's toggle
+            // silently snaps back to its default (issue: skill recommendation
+            // could not be turned off from the phone).
             reply(
                 sink,
                 true,
@@ -274,6 +286,7 @@ async fn reply_settings(
                     "autoUpgradeSkills": settings.auto_upgrade_skills,
                     "autoTitleFirstTurn": settings.auto_title_first_turn,
                     "autoConnectRemote": settings.auto_connect_remote,
+                    "skillRecommend": settings.skill_recommend,
                     "hiddenModels": settings.hidden_models,
                 }),
                 None,
@@ -303,6 +316,9 @@ async fn product_sandbox_available() -> Result<bool, crate::AppError> {
 
 #[cfg(test)]
 mod tests {
+    // The mock agent is process-global: the tests that script it hold its lock
+    // across the awaits that consume the script, exactly as the bridge tests do.
+    #![allow(clippy::await_holding_lock)]
     use super::{parse_candidates, parse_settings_patch};
     use serde_json::json;
 
@@ -347,5 +363,93 @@ mod tests {
         // Absent means "leave it alone", not "set it to false".
         let untouched = parse_settings_patch(json!({})).expect("parses");
         assert_eq!(untouched.skill_recommend, None);
+    }
+
+    /// A store that cannot be read is reported as a failure with the store's
+    /// own reason. The phone's settings screen must not render defaults as if
+    /// they were the user's saved settings: a silently-empty answer is how a
+    /// toggle appears to flip itself back.
+    #[tokio::test]
+    async fn an_unreadable_store_is_reported_not_defaulted() {
+        use crate::remote::protocol::IncomingCmd;
+        use crate::remote::test_support::{
+            ensure_mock_agent, mock_agent_lock, HomeGuard, RecordingSink,
+        };
+
+        // A fresh HOME with no store: every `crate::store::` read fails, which
+        // is the state the phone can reach before the desktop's store is ready.
+        let _home = HomeGuard::new("business-settings-unreadable");
+        let _lock = mock_agent_lock();
+        ensure_mock_agent();
+
+        for cmd_type in ["skill_reco_today", "list_models"] {
+            let sink = RecordingSink::default();
+            let cmd = IncomingCmd {
+                cmd_type: cmd_type.to_string(),
+                ..Default::default()
+            };
+            super::execute(&cmd, &sink).await;
+            let (success, _data, error) = sink.last();
+            assert!(
+                !success,
+                "{cmd_type} must not answer from a store it could not read"
+            );
+            let error = error.expect("a failed reply carries the reason");
+            assert!(
+                error.contains("no such table"),
+                "{cmd_type} must report the store fault, got {error:?}"
+            );
+        }
+    }
+
+    /// A catalogue without a `models` array is answered as it stands. The
+    /// handler must not invent an `allModelsHidden` flag for a list it never saw
+    /// — that flag drives a "everything is hidden, check Settings" notice on the
+    /// phone, and reporting it for a missing list would be a lie about a setting
+    /// the user never touched.
+    #[tokio::test]
+    async fn a_catalogue_without_a_models_array_is_not_reported_as_all_hidden() {
+        use crate::remote::protocol::IncomingCmd;
+        use crate::remote::test_support::{
+            ensure_mock_agent, init_store, mock_agent_lock, HomeGuard, RecordingSink,
+        };
+        let _home = HomeGuard::new("business-settings-no-models");
+        init_store();
+        let _lock = mock_agent_lock();
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        agent.script("list_models", true, json!({ "builtinProviders": {} }), "");
+
+        let sink = RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "list_models".to_string(),
+            ..Default::default()
+        };
+        super::execute(&cmd, &sink).await;
+        let (success, data, error) = sink.last();
+        assert!(success, "got: {error:?}");
+        assert!(
+            data.get("models").is_none(),
+            "the reply is what the agent said: {data}"
+        );
+        assert!(
+            data.get("allModelsHidden").is_none(),
+            "no model list, no visibility verdict: {data}"
+        );
+    }
+
+    /// The handler serves a closed set of settings/skill commands. A name the
+    /// dispatcher routes elsewhere reaching it is a routing bug and must panic
+    /// rather than reply with a plausible-looking failure.
+    #[tokio::test]
+    #[should_panic(expected = "handler received")]
+    async fn a_command_from_another_family_is_not_answered() {
+        use crate::remote::protocol::IncomingCmd;
+        let sink = crate::remote::test_support::RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "get_messages".into(),
+            ..Default::default()
+        };
+        super::execute(&cmd, &sink).await;
     }
 }

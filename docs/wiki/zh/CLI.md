@@ -53,7 +53,7 @@ future init
 
 安装所有内置技能。在 macOS 和 Linux 上,还会把 `future`(若存在,连同 `future-agent`)链接到 `~/.future/bin/`,并提示 PATH 配置。
 
-### `config` —— 配置模型提供商
+### `config` —— 配置模型提供商，以及读写全局设置
 
 ```bash
 future config
@@ -65,6 +65,20 @@ future config
 - 自定义：依次填写提供商 ID、API 协议、Base URL、API key、模型 ID、上下文窗口等信息。API key 输入时不会回显。
 
 配置写入 `~/.future/agent/models.json` 和 `~/.future/agent/auth.json`。如果 agent 正在运行，会通过 RPC 写入并立即刷新模型列表；否则在 agent 下次启动时生效。
+
+同一组命令也用于读写 agent 的全局设置（不带子命令时仍是上面的交互流程）：
+
+```bash
+future config get                                   # 生效中的设置（含默认值）
+future config get defaultPermissionLevel            # 单个值，便于脚本使用
+future config set defaultPermissionLevel workspace  # 改一个键
+future config set compaction.reserve_tokens 8192
+```
+
+`future config get --help` 列出全部可设置的键与取值。写入前先校验：取值非法或键名未知时
+`settings.json` 保持原样。读写都不需要 agent 在运行；改动在下一个新会话
+（`defaultModel`、`defaultPermissionLevel`）或下次 agent 启动时
+（`compaction.*`、`retry.*`、`maxTurns`）生效。完整说明见[自我认知](../../guide/self-inspection.zh-CN.md)。
 
 ### `auth` —— 登录与登出
 
@@ -81,6 +95,21 @@ future auth logout      # 登出
 future account profile  # 邮箱、用户 ID、验证状态、创建日期
 future account balance  # 余额(--json 输出机器可读结果)
 ```
+
+两条命令都免费。它们是 CLI 中唯一会离机的读取：通过网络访问 Future 平台，需要
+先 `future auth login`。API key 由 CLI 自己读取，无需手动传入——而余额偏低应当
+转达给用户，不是去创建充值订单的理由。
+
+### `version` —— 这是哪个构建
+
+```bash
+future version            # 与 `future --version` 输出相同
+future version --json     # 版本、commit、脏标记、目标平台、构建配置
+```
+
+`--json` 会报出版本串承载不了的信息：`gitCommit`（该二进制构建自哪个完整对象名）、
+`gitDirty`、`buildTarget`、`buildProfile`。发布版与协同构建的版本串里**完全没有**
+commit，因此这是判断「正在运行的二进制是不是我正在读的那份代码」的唯一方式。
 
 ### `run` —— 发一次性 prompt 并打印回答
 
@@ -99,9 +128,13 @@ future run "介绍一下这个项目"
 | `--session <id>` | 连接指定 ID 的已有会话。 |
 | `--fork <entry-id>` | 从当前会话的某个条目分叉出新会话。 |
 | `--permission <level>` | `all`（新会话默认，不受限）、`workspace`（审批门控访问）、`none`（拒绝所有工具调用）。这不是 OS 沙箱选择器，见 [[审批与沙箱|Sandbox]]。 |
+| `--tools`、`-t <names>` | 用逗号分隔要启用的工具名（如 `read,shell`）；`--no-tools` / `--no-builtin-tools` 可禁用工具。 |
 | `--steer` | 中断当前会话正在运行的任务；不传时，新 prompt 排在忙碌任务之后。 |
+| `--system-prompt`、`--append-system-prompt` | 替换或追加系统提示词。 |
 | `--cwd <dir>` | 设置工作目录。 |
 | `--mode json` | 以 JSON 而非文本打印回答。 |
+| `--verbose` | 把进度与工具调用写到 stderr。 |
+| `--grpc-addr <addr>` | 显式指定 Agent 的 TCP 地址（默认每用户本地 IPC；也可用 `FUTURE_AGENT_GRPC_ADDR`）。 |
 | `--no-session` | 本次不保存为会话。 |
 
 示例:
@@ -109,8 +142,10 @@ future run "介绍一下这个项目"
 ```bash
 future run --model sonnet:high "审查这些改动"
 future run @README.md "总结这个文件"
-echo "一些文本" | future run "把这段文本整理一下"
+future run --tools read,shell "读一下 README 并列出文件"
 ```
+
+完整选项见 `future run --help`。
 
 ### `skills` —— 管理能力包
 
@@ -173,19 +208,56 @@ future loop status        # loop 控制面：goal/todo/gate
 future session list
 future session set <id> [--parent <id>] [--title <name>] [--cwd <dir>]
                         [--model <id>] [--thinking <level>]
-future session info <id>
+future session info <id> [--json]
+future session status <id> [--json]     # 实时状态：权限、沙箱、上下文、run
+future session transcript --help # 筛选并分窗查看单个会话的记录
+future session history --help   # 搜索并读取原始历史
+future session compact --help   # 请求手动压缩上下文
 future session rename <id> <name>
+future session new [--cwd <dir>] [--name <text>]
+future session forks <id>                # 该会话可分叉的轮次
+future session fork <id> --entry <id>
+future session clone <id>
+future session title <id> [--apply]      # 生成标题（一次模型调用）
+future session export <id> [--out <path>]
+future session abort <id>                # 停掉活动 run 并清空队列
+future session cancel <id> --run <run-id>
+future session approvals <id>
+future session approve <id> <request-id> [--allow <glob>]
+future session reject <id> <request-id>
 future session delete <id>
 ```
+
+`session info` 读的是落盘 journal（对话包含什么、累计花了多少）；`session status` 读的是
+运行中的 agent（这个会话**现在**怎么配置：生效中的工具权限、沙箱档、上下文占用、已加载的
+上下文文件与技能、活动与排队 run、待审批项）。只有后者能回答「这个会话的设置与全局默认
+不同」这类问题。`session set` 写两组——随会话落盘的（`--model`、`--thinking`、`--cwd`、
+`--title`、`--parent`）与作用于运行中的（`--tools`、`--no-tools`、`--no-builtin-tools`、
+`--system-prompt`、`--append-system-prompt`、`--permission`、`--sandbox`、
+`--context-files`、`--auto-compact`、`--auto-retry`）——后者可用 `session status` 读回。
+`abort`/`cancel`/`approve`/`reject` 是 TUI `/stop`、`/cancel`、`/approve` 的 CLI 对应物，
+因此在脚本里发起的 run 也能从脚本里停掉。
+
+`future session history search --all --query "<关键词>"` 跨会话检索，因此「我们以前是否
+处理过这件事」不必先知道是哪个会话。它扫描最近更新的 `--sessions` 个会话（默认 50），
+并返回 `scannedSessions` 与 `truncated`，所以只覆盖了一部分历史时是可见的，而不是被
+悄悄当成「从未讨论过」。详见[自我认知](../../guide/self-inspection.zh-CN.md)。
+
+`future session transcript --session <id>` 面向「处理」整段对话而非「找到」某一段：
+`--select` 选择切片（user、assistant、thinking、tool-call、tool-result、session、compaction），
+`--tool` 只看单个工具，`--input` / `--output` 取工具的输入或输出，`--paths` 只抽其中提到的
+文件路径，`--cursor` / `--limit` / `--max-bytes` 用于分窗翻页；`--counts` 是了解陌生会话的
+低成本第一步。`session info` 与 `transcript` 都支持 `--json`。
 
 `set` 修改**已有**会话的这些设置（只改传了的参数，其余不动，`--parent ""` 表示解除父会话）。
 `--parent` 只记录会话谱系，不复制父会话历史（那是 `fork` 的行为），且父会话必须是已存在的会话。
 
-标题与 cwd 在会话已有记录（即已经跑过一次）时立即写入；全新会话则在首次运行时一并落盘。模型与思考
+已有记录的会话，其标题与 cwd 会立即写入；从未运行过的新会话则在首次运行时一并落盘。模型与思考
 等级属于运行快照，随下一次运行写入记录。`future run` 启动时会用自己的 `--cwd`（默认当前目录）覆盖会话 cwd，
 所以这里设的 cwd 只保持到下一次运行为止。
 
-会话数据保存在 `~/.future/agent/sessions/`。
+会话数据存放在 Agent 的 SQLite 数据库 `~/.future/agent/agent.db`；`~/.future/agent/sessions/` 仅作为旧版
+JSONL 数据的导入来源保留。
 
 ### `doctor` —— 环境诊断
 

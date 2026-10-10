@@ -67,7 +67,7 @@ async function deviceId(): Promise<string> {
   return created;
 }
 
-function deviceName(): string {
+export function deviceName(): string {
   return Device.modelName ?? `${Platform.OS} device`;
 }
 

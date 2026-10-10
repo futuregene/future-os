@@ -23,6 +23,7 @@ import {
   loadCredentials,
   loadPairedDesktops,
   renameDesktop as renameStoredDesktop,
+  labelDesktop as labelStoredDesktop,
   loadPendingRevoke,
   saveCredentials,
   savePendingRevoke,
@@ -31,6 +32,7 @@ import type {
   ConnectionPhase,
   PairedDesktop,
   SnapshotVersion,
+  CatalogRevisions,
   Presence,
   RemoteCredentials,
   RemoteSession,
@@ -58,6 +60,11 @@ interface RemoteConnectionOptions {
   refreshSessions(): Promise<void>;
   refreshSettings(): Promise<void>;
   refreshWorkspaces(): Promise<void>;
+  /**
+   * Presence carries the desktop's catalog revisions; a newer one than this
+   * client applied means a pushed snapshot was lost.
+   */
+  noteCatalogRevisions?(version: CatalogRevisions | undefined): void;
   closeConversation(): void;
   resetConversation(): void;
   resetCatalog(): void;
@@ -79,6 +86,7 @@ export function useRemoteConnection({
   refreshSessions,
   refreshSettings,
   refreshWorkspaces,
+  noteCatalogRevisions,
   closeConversation,
   resetConversation,
   resetCatalog,
@@ -300,6 +308,9 @@ export function useRemoteConnection({
           latestPresenceRef.current = nextPresence;
           setPresence(nextPresence);
           if (connectionReadyRef.current) {
+            // Only past the ready barrier: a pull issued against a
+            // half-built connection would race the handshake it depends on.
+            noteCatalogRevisions?.(nextPresence.catalogVersion);
             updateDesktopOnline(nextPresence, lastPresenceReceiptRef.current);
           } else {
             setDesktopOnline(false);
@@ -382,6 +393,7 @@ export function useRemoteConnection({
       closeConversation,
       credentialsRef,
       handleEvent,
+      noteCatalogRevisions,
       reconcileSession,
       recordError,
       recoverState,
@@ -713,6 +725,19 @@ export function useRemoteConnection({
     await refreshDesktops();
   }, [refreshDesktops]);
 
+  /**
+   * Set a desktop's local icon (and/or name). Local-only, like the name: it
+   * never reaches the desktop or the platform, so it is stored and returned
+   * without touching the connection.
+   */
+  const labelDesktop = useCallback(async (
+    desktopId: string,
+    patch: { name?: string; icon?: string },
+  ) => {
+    await labelStoredDesktop(desktopId, patch);
+    await refreshDesktops();
+  }, [refreshDesktops]);
+
   const removeDesktop = useCallback(async (desktopId: string) => {
     if (credentials?.expectedDesktopId === desktopId) return unpair();
     const stored = await loadCredentials(desktopId);
@@ -734,6 +759,7 @@ export function useRemoteConnection({
     desktops,
     switchDesktop,
     renameDesktop,
+    labelDesktop,
     removeDesktop,
     presence,
     desktopOnline,

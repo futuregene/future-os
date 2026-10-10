@@ -60,6 +60,30 @@ describe("collapsed workspaces", () => {
     ]);
   });
 
+  test("a storage read that fails still hydrates, so the list is usable and later writes persist", async () => {
+    // A throwing read (locked device, corrupt native store) must not leave the
+    // hook un-hydrated: that would silently disable persistence for the session.
+    mockedAsync.getItem.mockRejectedValueOnce(new Error("storage unavailable"));
+    const { result, renderer } = mount();
+    await settle();
+    expect(result.current.collapsed.size).toBe(0);
+    act(() => result.current.toggleWorkspaceCollapsed("ws-a"));
+    await settle();
+    expect(JSON.parse(mockData.get(STORAGE_KEY)!)).toEqual(["ws-a"]);
+    act(() => renderer.unmount());
+  });
+
+  test("a storage write that fails does not surface as an unhandled rejection", async () => {
+    mockedAsync.setItem.mockRejectedValueOnce(new Error("disk full"));
+    const { result, renderer } = mount();
+    await settle();
+    act(() => result.current.toggleWorkspaceCollapsed("ws-a"));
+    await settle();
+    // The in-memory fold still applies even though the write failed.
+    expect([...result.current.collapsed]).toEqual(["ws-a"]);
+    act(() => renderer.unmount());
+  });
+
   test("restores what a previous launch wrote", async () => {
     mockData.set(STORAGE_KEY, JSON.stringify(["ws-a"]));
     const { result, renderer } = mount();

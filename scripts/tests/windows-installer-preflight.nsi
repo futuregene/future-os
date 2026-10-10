@@ -7,6 +7,7 @@ Var UpdateMode
 Var FailAfterCopy
 Var FailHealth
 !define MAINBINARYNAME "futureos"
+!define FUTUREOS_TEST_DIAGNOSTICS
 !include "..\..\desktop\src-tauri\windows\installer-hooks.nsh"
 Name "FutureOS preflight regression"
 OutFile "${TEST_OUTFILE}"

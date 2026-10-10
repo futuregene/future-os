@@ -144,6 +144,22 @@ impl Settings {
     pub fn retry_enabled(&self) -> bool {
         self.retry.as_ref().and_then(|r| r.enabled).unwrap_or(true)
     }
+    /// Retry budget per request. Mirrors the serde default so a caller that
+    /// needs the *effective* value never has to restate the number.
+    pub fn retry_max_retries(&self) -> i32 {
+        self.retry.as_ref().map_or(3, |r| r.max_retries)
+    }
+    /// Base backoff delay in milliseconds, effective value.
+    pub fn retry_base_delay_ms(&self) -> i32 {
+        self.retry.as_ref().map_or(2000, |r| r.base_delay_ms)
+    }
+    /// Provider-level maximum retry delay, when configured.
+    pub fn provider_max_retry_delay_ms(&self) -> Option<i32> {
+        self.retry
+            .as_ref()
+            .and_then(|r| r.provider.as_ref())
+            .and_then(|p| p.max_retry_delay_ms)
+    }
 
     pub fn save(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(self).context("serialize settings")?;

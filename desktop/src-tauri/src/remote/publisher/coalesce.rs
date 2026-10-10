@@ -315,6 +315,17 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
+    /// The event id the agent would have assigned this event
+    /// (`agent/src/rpc/protocol.rs`: `{session}:{run}:{epoch}:{idx}`).
+    ///
+    /// These measurements used to pass an empty string, which understated every
+    /// body by the id's ~96 bytes and made `eventId` look like a free field to
+    /// drop. It is one of the lane's largest single keys, so the harness has to
+    /// build it the way production does or the envelope numbers are fiction.
+    fn agent_event_id(session: &str, run: &str, epoch: i64, idx: i64) -> String {
+        format!("{session}:{run}:{epoch}:{idx}")
+    }
+
     fn body(kind: &str, data: Value, idx: i64) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "schemaVersion": 2,
@@ -573,10 +584,10 @@ mod tests {
         coalescer.flush(&mut out);
         assert_eq!(out.len(), 2, "the burst splits into budget-sized groups");
         for published in &out {
+            let merged_bytes = published.payload.len();
             assert!(
-                published.payload.len() <= super::super::MAX_EVENT_BYTES,
-                "merged event of {} bytes exceeds the publish budget",
-                published.payload.len()
+                merged_bytes <= super::super::MAX_EVENT_BYTES,
+                "merged event of {merged_bytes} bytes exceeds the publish budget"
             );
         }
         assert!(
@@ -585,6 +596,44 @@ mod tests {
         );
         let merged: String = out.iter().map(text_of).collect();
         assert_eq!(merged, fragment.repeat(4), "no text may be lost");
+    }
+
+    /// The window is the only knob the real-journal measurement turns, so it has
+    /// to be the thing that decides a merge. Two fragments of one stream merge
+    /// inside the window and are published separately once it has passed; a
+    /// coalescer that read the default instead of its override would merge both.
+    #[test]
+    fn the_window_override_is_what_decides_a_merge() {
+        let base = Instant::now();
+        let two = |coalescer: &mut Coalescer, gap: Duration| {
+            let mut out = Vec::new();
+            coalescer.offer(
+                event("text_chunk", serde_json::json!({"text": "a"}), 0),
+                base,
+                &mut out,
+            );
+            coalescer.offer(
+                event("text_chunk", serde_json::json!({"text": "b"}), 1),
+                base + gap,
+                &mut out,
+            );
+            coalescer.flush(&mut out);
+            out
+        };
+
+        let mut wide = Coalescer::with_window(Duration::from_secs(5));
+        assert_eq!(wide.window(), Duration::from_secs(5));
+        assert_eq!(two(&mut wide, Duration::from_millis(10)).len(), 1);
+
+        let mut narrow = Coalescer::with_window(Duration::from_millis(1));
+        assert_eq!(narrow.window(), Duration::from_millis(1));
+        let split = two(&mut narrow, Duration::from_millis(10));
+        assert_eq!(split.len(), 2, "past the window each fragment stands alone");
+        assert_eq!(split.iter().map(text_of).collect::<String>(), "ab");
+
+        // Production never overrides the window: the default is the real one.
+        let default = Coalescer::default();
+        assert_eq!(default.window(), COALESCE_WINDOW);
     }
 
     /// A provider that resends the accumulated arguments mid-stream makes the
@@ -841,7 +890,7 @@ mod tests {
         assert_eq!(idx_of(out.last().unwrap()), (total - 1) as i64);
     }
 
-    /// Real-traffic measurement, driven by `scripts/measure-live-lane.py`.
+    /// Real-traffic measurement, driven by `scripts/measure/measure-live-lane.py`.
     ///
     /// Feeds one run's real journal through this real coalescer using the
     /// event's own timestamps as the clock, and reports what the phone would
@@ -850,7 +899,7 @@ mod tests {
     /// one published event, and the published index range must cover the whole
     /// run with the newest event last.
     #[test]
-    #[ignore = "driven by scripts/measure-live-lane.py with a real journal"]
+    #[ignore = "driven by scripts/measure/measure-live-lane.py with a real journal"]
     fn measure_real_journal() {
         let path = std::env::var("SYNC_MEASURE_JOURNAL").expect("SYNC_MEASURE_JOURNAL");
         let session = std::env::var("SYNC_MEASURE_SESSION").expect("SYNC_MEASURE_SESSION");
@@ -887,7 +936,7 @@ mod tests {
                 &run,
                 idx,
                 raw["epoch"].as_i64().unwrap_or(0),
-                "",
+                &agent_event_id(&session, &run, raw["epoch"].as_i64().unwrap_or(0), idx),
                 raw["timestamp"].as_str().unwrap_or_default(),
                 raw["session_idx"].as_i64().unwrap_or(-1),
                 raw["run_sequence"].as_i64().unwrap_or(0),
@@ -974,5 +1023,232 @@ mod tests {
                 "ratio": today_bytes as f64 / coalesced_bytes.max(1) as f64,
             })
         );
+    }
+
+    /// The same measurement for the lean lane, over the same real journal and
+    /// through the same shipping code: every event is first rewritten by
+    /// [`crate::remote_host::lean::lean_event_data`], exactly as
+    /// `remote::publisher::publish_event` rewrites it, and then coalesced.
+    ///
+    /// Run it through `scripts/measure/measure-live-lane.py`, which supplies the three
+    /// environment variables.
+    ///
+    /// Unlike the full-lane measurement it cannot assert "every source event is
+    /// accounted for" — dropping content is the point. It asserts what must stay
+    /// true instead: nothing of a dropped type reaches the lane, and the newest
+    /// source index is still published, so a client's dedup cursor still reaches
+    /// the end of the run.
+    #[test]
+    #[ignore = "measurement: needs SYNC_MEASURE_JOURNAL/SESSION/RUN"]
+    fn measure_real_journal_lean() {
+        use crate::remote_host::lean::lean_event_data;
+        let path = std::env::var("SYNC_MEASURE_JOURNAL").expect("SYNC_MEASURE_JOURNAL");
+        let session = std::env::var("SYNC_MEASURE_SESSION").expect("SYNC_MEASURE_SESSION");
+        let run = std::env::var("SYNC_MEASURE_RUN").expect("SYNC_MEASURE_RUN");
+        let journal = std::fs::read_to_string(path).expect("journal readable");
+        let base = Instant::now();
+        let mut first_stamp: Option<i64> = None;
+        let window = std::env::var("SYNC_MEASURE_WINDOW_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(Duration::from_millis)
+            .unwrap_or(COALESCE_WINDOW);
+        let mut coalescer = Coalescer::with_window(window);
+        let mut published = Vec::new();
+        let mut full_bytes = 0usize;
+        let mut lean_bytes = 0usize;
+        let mut lean_data_bytes = 0usize;
+        // Per-type totals, so a report can say which event types still carry the
+        // lane rather than only how big it is.
+        let mut full_by_type: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut lean_by_type: std::collections::BTreeMap<String, usize> = Default::default();
+        let mut events = 0usize;
+        let mut delivered = 0usize;
+        let mut last_idx = i64::MIN;
+
+        for line in journal.lines().filter(|line| !line.trim().is_empty()) {
+            let raw: Value = serde_json::from_str(line).expect("journal line");
+            let event_type = raw["event_type"].as_str().unwrap_or_default();
+            let data = raw["data"].as_str().unwrap_or("{}");
+            let idx = raw["idx"].as_i64().unwrap_or(0);
+            events += 1;
+            last_idx = last_idx.max(idx);
+            let full_body = serde_json::to_vec(&super::super::build_event_body(
+                &session,
+                event_type,
+                data,
+                &run,
+                idx,
+                raw["epoch"].as_i64().unwrap_or(0),
+                &agent_event_id(&session, &run, raw["epoch"].as_i64().unwrap_or(0), idx),
+                raw["timestamp"].as_str().unwrap_or_default(),
+                raw["session_idx"].as_i64().unwrap_or(-1),
+                raw["run_sequence"].as_i64().unwrap_or(0),
+            ))
+            .expect("body serializes");
+            *full_by_type.entry(event_type.to_string()).or_default() += full_body.len();
+            full_bytes += full_body.len();
+
+            let Some(lean) = lean_event_data(event_type, data) else {
+                continue;
+            };
+            delivered += 1;
+            let mut payload = super::super::build_event_body(
+                &session,
+                event_type,
+                &lean,
+                &run,
+                idx,
+                raw["epoch"].as_i64().unwrap_or(0),
+                &agent_event_id(&session, &run, raw["epoch"].as_i64().unwrap_or(0), idx),
+                raw["timestamp"].as_str().unwrap_or_default(),
+                raw["session_idx"].as_i64().unwrap_or(-1),
+                raw["run_sequence"].as_i64().unwrap_or(0),
+            );
+            // The payload trim alone, before the envelope goes: this is what the
+            // lane cost before the envelope was trimmed, so the report can show
+            // the two separately.
+            lean_data_bytes += serde_json::to_vec(&payload).expect("body serializes").len();
+            // Then the envelope, exactly as `publish_event` trims it.
+            crate::remote_host::lean::lean_event_body(&mut payload);
+            let lean_body = serde_json::to_vec(&payload).expect("body serializes");
+            *lean_by_type.entry(event_type.to_string()).or_default() += lean_body.len();
+            lean_bytes += lean_body.len();
+            let stamp = raw["timestamp"]
+                .as_str()
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.timestamp_millis())
+                .unwrap_or(idx * 100);
+            let first = *first_stamp.get_or_insert(stamp);
+            let now = base + Duration::from_millis((stamp - first).max(0) as u64);
+            coalescer.offer(
+                EventPublish {
+                    subject: format!("p.pair.evt.{session}"),
+                    payload: serde_json::to_vec(&payload).expect("body serializes"),
+                    status_subject: None,
+                },
+                now,
+                &mut published,
+            );
+        }
+        coalescer.flush(&mut published);
+
+        let mut coalesced_bytes = 0usize;
+        let mut newest_idx = i64::MIN;
+        let mut published_by_type: std::collections::BTreeMap<String, usize> = Default::default();
+        for event in &published {
+            coalesced_bytes += event.payload.len();
+            let body: Value = serde_json::from_slice(&event.payload).expect("published body");
+            let event_type = body["type"].as_str().unwrap_or_default();
+            *published_by_type.entry(event_type.to_string()).or_default() += event.payload.len();
+            assert!(
+                lean_event_data(event_type, "{}").is_some(),
+                "{event_type} streams content the lean lane must not carry"
+            );
+            newest_idx = newest_idx.max(body["idx"].as_i64().unwrap_or(0));
+        }
+        assert_eq!(
+            newest_idx, last_idx,
+            "the newest index must still be published, or the client's cursor stalls"
+        );
+        println!(
+            "LEAN_LANE {}",
+            serde_json::json!({
+                "events": events,
+                "delivered": delivered,
+                "fullBytes": full_bytes,
+                "leanBytes": lean_bytes,
+                "leanDataBytes": lean_data_bytes,
+                "fullByType": full_by_type,
+                "leanByType": lean_by_type,
+                "publishedByType": published_by_type,
+                "published": published.len(),
+                "coalescedBytes": coalesced_bytes,
+                "windowMs": window.as_millis(),
+                "reduction": 1.0 - (lean_bytes as f64 / full_bytes.max(1) as f64),
+            })
+        );
+    }
+
+    /// The two harnesses above are `#[ignore]`d because the measurement wants a
+    /// real recorded journal. That left the accounting the measurement trusts
+    /// unreachable from `cargo test`, which is exactly the code a wrong number
+    /// would come from. Drive both over a synthetic journal of the shape
+    /// `scripts/measure/measure-live-lane.py` writes, so their invariants are checked on
+    /// every run: every source event is accounted for exactly once, no character
+    /// is lost or duplicated, the newest index still reaches the lane, and the
+    /// coalesced lane is smaller than today's. The journal deliberately mixes a
+    /// non-fragment event, a dropped-in-lean event, and CJK text across the
+    /// fragment mergeto-boundary (`MAX_MERGED_FRAGMENTS`).
+    #[test]
+    fn the_measurement_harnesses_hold_over_a_synthetic_journal() {
+        let mut journal = String::new();
+        let mut line = |event_type: &str, data: Value, idx: i64| {
+            journal.push_str(
+                &serde_json::json!({
+                    "event_type": event_type,
+                    "data": data.to_string(),
+                    "idx": idx,
+                    "epoch": 1,
+                    // A real journal's own timestamps are the clock; keep them
+                    // monotonic and inside the window so the merge is decided
+                    // by contiguity rather than by a wall clock.
+                    "timestamp": format!(
+                        "2026-09-26T02:00:{:02}.{:03}+00:00",
+                        idx / 1000,
+                        idx % 1000
+                    ),
+                    "session_idx": -1,
+                    "run_sequence": 1,
+                })
+                .to_string(),
+            );
+            journal.push('\n');
+        };
+        line("agent_start", serde_json::json!({}), 0);
+        // Dropped by the lean lane, and its text must not reach the feed.
+        line("thinking_delta", serde_json::json!({"text": "思考中"}), 1);
+        for idx in 2..=(MAX_MERGED_FRAGMENTS as i64 + 2) {
+            line(
+                "text_chunk",
+                serde_json::json!({"text": format!("中文{idx} ")}),
+                idx,
+            );
+        }
+        line(
+            "agent_end",
+            serde_json::json!({}),
+            MAX_MERGED_FRAGMENTS as i64 + 3,
+        );
+
+        let path = std::env::temp_dir().join(crate::remote::test_support::unique(
+            "coalesce-journal.jsonl",
+        ));
+        std::fs::write(&path, &journal).unwrap();
+        let names = [
+            "SYNC_MEASURE_JOURNAL",
+            "SYNC_MEASURE_SESSION",
+            "SYNC_MEASURE_RUN",
+            "SYNC_MEASURE_WINDOW_MS",
+        ];
+        let previous: Vec<(&str, Option<String>)> = names
+            .iter()
+            .map(|name| (*name, std::env::var(name).ok()))
+            .collect();
+        std::env::set_var("SYNC_MEASURE_JOURNAL", &path);
+        std::env::set_var("SYNC_MEASURE_SESSION", "session-measure");
+        std::env::set_var("SYNC_MEASURE_RUN", "run-measure");
+        std::env::set_var("SYNC_MEASURE_WINDOW_MS", "60000");
+
+        measure_real_journal();
+        measure_real_journal_lean();
+
+        for (name, value) in previous {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+        std::fs::remove_file(&path).ok();
     }
 }

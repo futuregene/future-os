@@ -85,19 +85,25 @@ Bridge 使用**钉钉 Stream Mode**——无需公网回调 URL。它通过 WebS
 > **升级提示：** 已配置的钉钉桥需要填写 `sender_allowlist` 才会接收 prompt——
 > 仅加入群聊并不获得操作 agent 的授权。
 
+> 钉钉与飞书也接受 `providers.dingtalk` / `providers.feishu` 块；两种写法同时存在时以
+> `providers.<id>` 为准。完整字段参考见[渠道配置指南](../../guide/channels-config.zh-CN.md)。
+
 ---
 
 ## 启动 Bridge
 
-已安装发布版可直接运行 `future channel`。新渠道会话默认权限为 `all`，不会主动开启桌面沙箱策略；请严格限制可操作机器人的用户。
+```bash
+future channel
+```
+
+Bridge 是**独立服务**——桌面应用不管理它。需要钉钉桥接时运行 `future channel`。从源码检出也可以直接构建运行：
 
 ```bash
-# 构建并运行 Channel Bridge
 cargo build -p future-channel --release
 ./target/release/future-channel
 ```
 
-Bridge 是**独立服务**——桌面应用不管理它。需要钉钉桥接时，用 `future channel` 或直接运行 `future-channel` 二进制（或通过 `make run-channels`）。
+（或 `make run-channels`）。新渠道会话默认权限为 `all`，不会主动开启桌面沙箱策略；请严格限制可操作机器人的用户。
 
 Bridge 启动时加载 `~/.future/channels/config.json`。如果文件不存在，会自动创建模板并退出——编辑模板后重新启动即可。
 
@@ -148,7 +154,7 @@ Bridge 启动时加载 `~/.future/channels/config.json`。如果文件不存在�
 
 ### 机器人不回复
 
-1. 检查 Bridge 是否运行：`future-channel` 进程应存在（macOS/Linux 用 `ps aux | grep future-channel`，Windows 用任务管理器）
+1. 先运行 `future channel status`（Bridge 未运行时也可用），再检查 `future channel`（或 `future-channel`）进程是否存在（macOS/Linux 用 `ps aux | grep future`，Windows 用任务管理器）
 2. 检查 `config.json` 中 `dingtalk.enabled` 是否为 `true`
 3. 确认 `client_id` 和 `client_secret` 正确无误。
 4. 查看 Bridge 日志中的 Stream Mode 连接错误。

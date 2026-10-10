@@ -262,6 +262,31 @@ pub(crate) async fn query_tools(
     Ok(future_rpc::decode::response_data(&response))
 }
 
+/// Fetch one tool call's stored arguments from the Agent.
+///
+/// The lean history page (a phone that declared `lean_events_v1`) drops a shell
+/// call's `arguments` whole — it is the page's most expensive payload no phone
+/// surface reads — and the phone asks for it back here when the row is opened.
+/// Identity-scoped by session AND run so an id repeated elsewhere cannot answer.
+pub async fn get_tool_call_args(
+    session_id: String,
+    run_id: String,
+    tool_call_id: String,
+) -> Result<serde_json::Value, crate::AppError> {
+    let mut client = connect_agent().await?;
+    let response = client
+        .execute_command(future_rpc::proto::RpcCommand {
+            run_id,
+            tool_call_id: Some(tool_call_id),
+            ..base_command("get_tool_call_args", session_id)
+        })
+        .await
+        .map_err(|error| format!("get_tool_call_args failed: {error}"))?
+        .into_inner()
+        .ok_or_rpc_error("get_tool_call_args rejected")?;
+    Ok(future_rpc::decode::response_data(&response))
+}
+
 /// Fetch one backward, user-exchange-bounded history page from the Agent. This
 /// keeps remote mobile paging end-to-end: the desktop no longer downloads the
 /// complete Agent history again for every NATS page and then slices it locally.
@@ -518,10 +543,22 @@ pub(crate) async fn provision_agent_session(
     model_id: Option<String>,
     thinking_level: Option<String>,
 ) -> Result<String, crate::AppError> {
+    provision_agent_session_with_policy(thread_id, model_id, thinking_level, "workspace", None)
+        .await
+}
+
+/// Provision an agent session with an explicit permission level and sandbox
+/// tier. Used by tasks (full permission, no approval prompts) — the default
+/// `provision_agent_session` keeps the GUI's workspace-level default.
+pub async fn provision_agent_session_with_policy(
+    thread_id: &str,
+    model_id: Option<String>,
+    thinking_level: Option<String>,
+    permission_level: &str,
+    sandbox_tier: Option<&str>,
+) -> Result<String, crate::AppError> {
     let cwd = workspace_path_for_thread(thread_id)?;
     let mut client = connect_agent().await?;
-    // Empty stored id → the agent generates a real session id, seeded with the
-    // caller's model / thinking selections (matches the GUI new-chat draft).
     let ensured = ensure_agent_session(
         &mut client,
         "",
@@ -532,8 +569,11 @@ pub(crate) async fn provision_agent_session(
     .await?;
     let session_id = ensured.session_id;
     crate::store::bind_thread_session_id(thread_id, &session_id)?;
-    set_agent_permission_level(&mut client, &session_id, "workspace").await?;
-    set_agent_sandbox_policy(&mut client, &session_id, thread_id).await?;
+    set_agent_permission_level(&mut client, &session_id, permission_level).await?;
+    match sandbox_tier {
+        Some(tier) => set_agent_sandbox_policy_tier(&mut client, &session_id, tier).await?,
+        None => set_agent_sandbox_policy(&mut client, &session_id, thread_id).await?,
+    }
     Ok(session_id)
 }
 

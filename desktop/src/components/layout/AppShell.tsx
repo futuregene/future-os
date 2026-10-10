@@ -1,17 +1,34 @@
+import type { DeviceFilter, MergedConversation, RemoteCatalog } from "../../features/remote-peer/mergeConversations";
 import type { SettingsTab } from "../../features/settings/SettingsDialog";
 import type { FutureAuthState, ProvidersView } from "../../integrations/agent/providers";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { ContextTab } from "./ContextPanel";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { saveComposerDraft } from "../../features/agent/composerDraft";
 import { NewConversation } from "../../features/agent/NewConversation";
+import { sessionMentionOptions } from "../../features/agent/sessionMention";
+import { useSkillRecommendation } from "../../features/agent/useSkillRecommendation";
+import { peerBadgeText } from "../../features/remote-peer/peerIcons";
+import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
+import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
+import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
+import { RemoteFilesDialog } from "../../features/remote-peer/RemoteFilesDialog";
+import { compactRemoteConversation, continueRemoteRun, forkRemoteConversation, installRemoteSkill } from "../../features/remote-peer/remotePeerClient";
+import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
+import { remoteSkillRecoSource } from "../../features/remote-peer/remoteSkillRecoSource";
+import { useRemoteApprovals } from "../../features/remote-peer/useRemoteApprovals";
+import { useRemoteConversationSettings } from "../../features/remote-peer/useRemoteConversationSettings";
+import { useRemoteSkillCatalog } from "../../features/remote-peer/useRemoteSkillCatalog";
+import { useRemoteSkillRecommend } from "../../features/remote-peer/useRemoteSkillRecommend";
+import { useRemoteTimeline } from "../../features/remote-peer/useRemoteTimeline";
 import { startRemote, stopRemote } from "../../features/remote/remoteClient";
-import { RemoteView } from "../../features/remote/RemoteView";
+import { RemoteHubView } from "../../features/remote/RemoteHubView";
 import { SettingsDialog } from "../../features/settings/SettingsDialog";
 import { SkillsView } from "../../features/skills/SkillsView";
+import { TasksView } from "../../features/tasks/TasksView";
 import { terminalTarget } from "../../features/terminal/panelTarget";
 import { TerminalPanel } from "../../features/terminal/TerminalPanel";
 import { TerminalToggleButton } from "../../features/terminal/TerminalToggleButton";
@@ -29,6 +46,7 @@ import {
   restoreThread,
 } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
+import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { useTauriEvent } from "../../lib/useTauriEvent";
 import { ToastHost } from "../ui/ToastHost";
@@ -49,6 +67,7 @@ import { useHasProviders } from "./hooks/useHasProviders";
 import { useLeftPanelWidth } from "./hooks/useLeftPanelWidth";
 import { useModelSelection } from "./hooks/useModelSelection";
 import { useNewConversation } from "./hooks/useNewConversation";
+import { useRemotePeers } from "./hooks/useRemotePeers";
 import { useRemoteStatus } from "./hooks/useRemoteStatus";
 import { useRightPanelWidth } from "./hooks/useRightPanelWidth";
 import { useThreadDialogs } from "./hooks/useThreadDialogs";
@@ -66,6 +85,24 @@ interface WorkspaceCreateRequest {
   name?: string | null;
   path: string;
   createDirectory: boolean;
+}
+
+/**
+ * A remote session's title, from the catalogue the rows are built from.
+ *
+ * Falls back to the session id rather than to an empty header: a conversation
+ * the catalogue has not caught up with yet is still *open*, and a blank title
+ * would read as a broken view instead of a pending read.
+ */
+function titleOfRemote(
+  catalogs: RemoteCatalog[],
+  target: { desktopId: string; sessionId: string },
+): string {
+  return catalogs
+    .find(catalog => catalog.desktopId === target.desktopId)
+    ?.sessions
+    .find(session => session.sessionId === target.sessionId)
+    ?.title ?? target.sessionId;
 }
 
 export function AppShell() {
@@ -92,8 +129,30 @@ function ReadyAppShell({
   initialProviders: ProvidersView;
 }) {
   const { t } = useTranslation("layout");
+  // The remote peer's own namespace: its strings describe another machine, and
+  // folding them into `layout` would put them where no other remote string is.
+  const { t: tRemotePeer } = useTranslation("remotePeer");
   const [section, setSection] = useState<ActivitySection>("chat");
   const [centerMode, setCenterMode] = useState<"thread" | "new-chat">("thread");
+  /**
+   * Which machines the conversation list shows. Kept at the shell rather than
+   * in the rail so the choice survives the rail remounting when the sidebar
+   * collapses.
+   */
+  const [deviceFilter, setDeviceFilter] = useState<DeviceFilter>({ kind: "all" });
+  /**
+   * The remote conversation on screen, if any.
+   *
+   * Its own state rather than a third `centerMode`: the two are different kinds
+   * of thing (a local thread id vs a `(desktopId, sessionId)` pair), and the
+   * new-chat flows only know how to leave the thread view — giving them a mode
+   * they never set is how a stale remote view reappears.
+   */
+  const [activeRemote, setActiveRemote] = useState<{ desktopId: string; sessionId: string } | null>(null);
+  /** The remote conversation whose rename dialog is open, if any. */
+  const [remoteRename, setRemoteRename] = useState<MergedConversation | null>(null);
+  /** Whether the open remote conversation's file browser is showing. */
+  const [remoteFilesOpen, setRemoteFilesOpen] = useState(false);
   const [leftExpanded, setLeftExpanded] = useState(true);
   const [leftOverlayOpen, setLeftOverlayOpen] = useState(false);
   const [rightExpanded, setRightExpanded] = useState(false);
@@ -111,9 +170,6 @@ function ReadyAppShell({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
 
-  const { appSettings, changeSettings } = useAppSettings();
-  useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
-  useAgentDoneBell(appSettings.bellOnComplete);
   const { hasUpdate, cachedStatus, markSeen: markUpdateSeen } = useUpdateChecker();
   // Drives the onboarding gate below. Kept with the other top-level hooks so
   // the early returns further down stay after every hook call (rules of hooks).
@@ -125,6 +181,13 @@ function ReadyAppShell({
     refreshBalance: refreshFutureBalance,
     status: futureSessionStatus,
   } = useFutureAccount(initialAuth);
+  const { appSettings, changeSettings } = useAppSettings(futureSessionStatus);
+  // Remote desktops (client role). Enabled for the whole session: the merged
+  // conversation list is the chat section's own list, so a peer appearing must
+  // update it without the user having visited the Remote Desktops screen first.
+  const { peers: remotePeers, catalogs: remoteCatalogs, refresh: refreshRemotePeers } = useRemotePeers(true);
+  useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
+  useAgentDoneBell(appSettings.bellOnComplete);
   const { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initPending } = useHasProviders(futureSessionStatus, initialProviders);
 
   const windowWidth = useWindowWidth();
@@ -186,6 +249,24 @@ function ReadyAppShell({
     }
   }, [activeThread?.id, activeThread?.agentSessionId]);
 
+  // Conversations the composer's `#` menu offers: the rail's order, minus the
+  // conversation being composed in (referencing yourself would be a no-op). On
+  // the new-chat screen nothing is being composed *in* — the thread does not
+  // exist until the first message is sent — so nothing is excluded there.
+  // `activeThread` is only the conversation the user came from, and excluding it
+  // would hide the very conversation a first message most often references:
+  // opening a fresh chat to ask about what you were just doing found "no
+  // matches" for the one title you could be sure of. The id is still dropped on
+  // a real thread, where the composer does have a conversation of its own.
+  const sessionMentions = useMemo(
+    () => sessionMentionOptions(
+      threads,
+      workspaces,
+      centerMode === "new-chat" ? null : activeThread?.agentSessionId,
+    ),
+    [centerMode, threads, workspaces, activeThread?.agentSessionId],
+  );
+
   // Refresh the store when the agent session's cwd changes (e.g. TUI /cwd),
   // so the thread moves to the correct workspace in the sidebar.
   useEffect(() => {
@@ -236,16 +317,10 @@ function ReadyAppShell({
   });
 
   // Poll the remote bridge status (for the sidebar indicator dot) at the app
-  // level. Returns { status, indicator, refresh } — RemoteView reads `status`
+  // level. Returns { status, indicator, refresh } — the Remote page reads
+  // `status` and the rail reads `indicator`, from this one source.
   // directly so its blue dot always matches the sidebar indicator.
   const { status: remoteStatus, indicator: remoteIndicator, refresh: refreshRemote } = useRemoteStatus(true);
-  // Remote needs a FutureOS sign-in (its pairing code comes from the service);
-  // if the user signs out while on it, drop back to the chat section.
-  useEffect(() => {
-    if ((futureSessionStatus === "signed_out" || futureSessionStatus === "invalid") && section === "remote") {
-      setSection("chat");
-    }
-  }, [futureSessionStatus, section]);
 
   // Remote credential renewal can be the first place a revoked account key is
   // observed. Recheck the account through the same authoritative profile path.
@@ -382,6 +457,10 @@ function ReadyAppShell({
     = centerMode === "new-chat"
       || section === "skill"
       || section === "remote"
+      // Tasks are their own two-pane view (list + detail); the context panel
+      // beside them would describe whichever conversation happened to be active
+      // before, which is not what the tasks view is about.
+      || section === "tasks"
       || !rightPanelAvailable;
 
   // The terminal belongs to a conversation: it is offered only while a real
@@ -460,6 +539,22 @@ function ReadyAppShell({
     setActiveThreadId(thread.id);
     setCenterMode("thread");
     setNewChatWorkspaceId(null);
+  }
+
+  /// Open the conversation a task run produced (from the Tasks panel).
+  function handleOpenTaskThread(threadId: string) {
+    const thread = threads.find(candidate => candidate.id === threadId);
+    if (thread) {
+      handleSelectThread(thread);
+      return;
+    }
+    // A run's conversation may not be in the local list yet (it was created by
+    // the tick loop); refresh the catalog and open it by id.
+    setSection("chat");
+    setActiveThreadId(threadId);
+    setCenterMode("thread");
+    setNewChatWorkspaceId(null);
+    void refreshStore();
   }
 
   function handleSelectWorkspace(_workspace: StoredWorkspace, workspaceThreads: StoredThread[]) {
@@ -565,9 +660,210 @@ function ReadyAppShell({
     setLeftOverlayOpen(open);
   }
 
+  const remoteTimeline = useRemoteTimeline(
+    activeRemote?.desktopId ?? null,
+    activeRemote?.sessionId ?? null,
+    activeRemote !== null,
+  );
+  const remoteApprovals = useRemoteApprovals(
+    activeRemote?.desktopId ?? null,
+    activeRemote?.sessionId ?? null,
+  );
+  // The conversation's model and thinking level, which the *host* owns.
+  const remoteSettings = useRemoteConversationSettings(
+    activeRemote?.desktopId ?? null,
+    activeRemote?.sessionId ?? null,
+    activeRemote !== null && activeRemote.sessionId !== "",
+  );
+
+  /**
+   * Skill recommendation for a remote conversation, from that host.
+   *
+   * The same hook this app's own composer uses, with the data pointed at the
+   * host and the catalogue read from there — so the trigger rules are the ones
+   * that were tuned, not a second set written for this path.
+   *
+   * `sessionStatus: "unavailable"` / `balance: null` is this hook's own way of
+   * saying "the account state is not knowable here": it is the paired
+   * computer's account that matters, this machine cannot read it, and the host
+   * answers "no recommendation" when its own account cannot produce one.
+   */
+  const remoteSkillRecommend = useRemoteSkillRecommend(activeRemote?.desktopId ?? "");
+  const remoteCatalog = useRemoteSkillCatalog(
+    activeRemote?.desktopId ?? "",
+    remoteSkillRecommend,
+  );
+  const remoteSkillSource = useMemo(
+    () => remoteSkillRecoSource(activeRemote?.desktopId ?? ""),
+    [activeRemote?.desktopId],
+  );
+  const remoteSkillReco = useSkillRecommendation({
+    balance: null,
+    catalog: remoteCatalog,
+    enabled: remoteSkillRecommend,
+    sessionStatus: "unavailable",
+    source: remoteSkillSource,
+  });
+  /**
+   * The card's install, on the machine the card is about.
+   *
+   * The recommender names a skill but never a version, so the version comes
+   * from that host's own catalogue — and a catalogue that does not publish one
+   * cannot be installed from here.
+   */
+  const installRecommended = useCallback((card: { name: string }) => {
+    const desktopId = activeRemote?.desktopId;
+    const version = desktopId
+      ? remoteCatalog.catalogue.find(entry => entry.id === card.name)?.version
+      : undefined;
+    if (!desktopId || !version)
+      return Promise.resolve(false);
+    return installRemoteSkill(desktopId, card.name, version)
+      .then(() => {
+        // The card was chosen from a candidate set that no longer exists once it
+        // is installed, so the catalogue is re-read.
+        remoteCatalog.reload();
+        return true;
+      })
+      .catch(() => {
+        // The card stays up and the draft is not sent: the message was written
+        // for a skill that is not there.
+        return false;
+      });
+  }, [activeRemote, remoteCatalog]);
+  const remoteSkillRecommendation = useMemo(() => ({
+    card: remoteSkillReco.state.recommendation,
+    onDismiss: remoteSkillReco.dismiss,
+    onEvaluate: remoteSkillReco.evaluate,
+    onInstall: installRecommended,
+  }), [
+    remoteSkillReco.state.recommendation,
+    remoteSkillReco.dismiss,
+    remoteSkillReco.evaluate,
+    installRecommended,
+  ]);
+  const activeRemotePeer = activeRemote
+    ? remotePeers.find(peer => peer.desktopId === activeRemote.desktopId)
+    : undefined;
+
+  /**
+   * Ask a host to compact a conversation's context.
+   *
+   * Resolving here means the host *accepted* it. What follows — commit, failure,
+   * or nothing to do — arrives as the host's own events, which is why the
+   * transcript is re-read afterwards: the checkpoint that comes out of a
+   * committed compaction is content, and waiting for a later open to show it
+   * would make the action look like it did nothing.
+   */
+  async function compactRemoteConversationOn(desktopId: string, sessionId: string) {
+    if (!sessionId)
+      return;
+    try {
+      await compactRemoteConversation(desktopId, sessionId);
+      await remoteTimeline.refresh();
+    }
+    catch (error) {
+      emitFutureEvent("toast", {
+        message: tRemotePeer("compactFailed", { message: errorMessage(error) }),
+        tone: "error",
+      });
+    }
+  }
+
+  /**
+   * Resume a failed run on a host.
+   *
+   * A continuation re-runs the same turn with what it already had — including any
+   * attachment it carried — which is why nothing is re-sent here. The transcript
+   * is re-read afterwards so the resumed turn appears as it did before.
+   */
+  async function continueRemoteRunOn(desktopId: string, sessionId: string, runId: string) {
+    try {
+      await continueRemoteRun(desktopId, sessionId, runId);
+      await remoteTimeline.refresh();
+      await refreshRemotePeers();
+    }
+    catch (error) {
+      emitFutureEvent("toast", {
+        message: tRemotePeer("continueFailed", { message: errorMessage(error) }),
+        tone: "error",
+      });
+    }
+  }
+
+  function openRemoteConversation(conversation: MergedConversation) {
+    if (conversation.desktopId === null)
+      return;
+    setActiveRemote({ desktopId: conversation.desktopId, sessionId: conversation.id });
+    setSection("chat");
+  }
+
+  /**
+   * Open one of a paired computer's conversations from its ids.
+   *
+   * The same destination as opening a row, for callers that have the ids rather
+   * than a row — a task run names its conversation by session id.
+   */
+  function openRemoteSession(desktopId: string, sessionId: string) {
+    setActiveRemote({ desktopId, sessionId });
+    setSection("chat");
+  }
+
+  /**
+   * Branch a remote conversation at a settled turn and open the child.
+   *
+   * The host owns the fork; the ack's ids are the only way to know the child, so
+   * the child is opened from them (not guessed). `forkable` is false when the
+   * turn is not persisted on that host yet — reported instead of sent, because
+   * the host would resolve the id against its store and refuse, and its refusal
+   * ("Fork source thread could not be loaded") describes a bug rather than the
+   * situation the user is in.
+   */
+  async function forkRemoteConversationAt(desktopId: string, sessionId: string, sourceEntryId: string, forkable: boolean) {
+    if (!forkable) {
+      emitFutureEvent("toast", { message: tRemotePeer("forkNotSaved"), tone: "error" });
+      return;
+    }
+    try {
+      const child = await forkRemoteConversation(desktopId, sessionId, sourceEntryId);
+      await refreshRemotePeers();
+      setActiveRemote({ desktopId, sessionId: child.sessionId });
+    }
+    catch (error) {
+      emitFutureEvent("toast", {
+        message: tRemotePeer("forkFailed", { message: errorMessage(error) }),
+        tone: "error",
+      });
+    }
+  }
+
+  /**
+   * A conversation that does not exist yet on a host.
+   *
+   * The empty session id *is* the request: the host creates the thread and
+   * answers with the ids it chose. A draft is therefore not an error state to
+   * guard against — it is the only way to start a conversation remotely, since
+   * the client cannot mint a host-side session id.
+   */
+  function startRemoteConversation(desktopId: string) {
+    setActiveRemote({ desktopId, sessionId: "" });
+    setSection("chat");
+  }
+
   const activityRailProps = {
     active: section,
     activeThreadId,
+    remotePeers,
+    remoteCatalogs,
+    deviceFilter,
+    onChangeDeviceFilter: setDeviceFilter,
+    onOpenRemoteConversation: openRemoteConversation,
+    onRenameRemoteConversation: setRemoteRename,
+    onRemoteConversationsChanged: () => void refreshRemotePeers(),
+    onManageDesktops: () => handleSectionChange("remote"),
+    activeRemoteKey: activeRemote
+      ? `${activeRemote.desktopId}::${activeRemote.sessionId}`
+      : null,
     hasUpdate,
     threads,
     threadRunStatuses,
@@ -679,6 +975,7 @@ function ReadyAppShell({
                     onDismissSkillGuide={() => void changeSettings({ skillGuideDismissed: true })}
                     workspaces={userWorkspaces}
                     skillRecommend={appSettings.skillRecommend}
+                    sessionMentions={sessionMentions}
                     futureSessionStatus={futureSessionStatus}
                     futureBalance={futureBalance}
                   />
@@ -687,56 +984,129 @@ function ReadyAppShell({
                 ? (
                     <SkillsView leftPanelExpanded={showLeftPanel} onToggleLeftPanel={handleToggleLeftPanel} onStartCoachConversation={handleStartCoachConversation} onTrySkill={handleTrySkill} />
                   )
-                : section === "remote"
+                : section === "tasks"
                   ? (
-                      <RemoteView appSettings={appSettings} leftPanelExpanded={showLeftPanel} onChangeSettings={patch => void changeSettings(patch)} onToggleLeftPanel={handleToggleLeftPanel} remoteStatus={remoteStatus} onRefreshRemote={refreshRemote} />
+                      <TasksView
+                        leftPanelExpanded={showLeftPanel}
+                        modelOptions={visibleModelOptions}
+                        onOpenThread={handleOpenTaskThread}
+                        onToggleLeftPanel={handleToggleLeftPanel}
+                      />
                     )
-                  : storeError
+                  : section === "remote"
                     ? (
-                        <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
-                          {t("appShell.storeInitFailed")}
-                          {storeError}
-                        </div>
-                      )
-                    : (
-                        <AgentThread
-                          // One instance per conversation: switching threads
-                          // remounts, so a conversation's messages, listeners and
-                          // in-flight writes can never bleed into another.
-                          key={activeThread?.id ?? "__none"}
-                          activeApproval={activeApproval}
-                          agentConnection={agentConnection}
-                          approvalTier={appSettings.approvalTier}
-                          loadingStore={loadingStore}
-                          modelId={activeThreadModelId}
-                          modelOptions={visibleModelOptions}
-                          onModelChange={changeModel}
-                          onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
-                          thinkingLevel={activeThinkingLevel}
-                          onThinkingLevelChange={changeThinkingLevel}
-                          pendingPrompt={pendingPrompt}
-                          thread={activeThread}
-                          workspacePath={activeWorkspace?.path ?? null}
-                          onApprovalDecision={handleApprovalDecision}
+                        <RemoteHubView
+                          autoConnect={appSettings.autoConnectRemote}
                           leftPanelExpanded={showLeftPanel}
-                          onRetryAgentConnection={() => void refreshAgentModels()}
-                          onOpenAccount={handleOpenAccount}
-                          onOpenModels={handleOpenModels}
-                          onOpenProviders={handleOpenProviders}
+                          onOpenRemoteSession={openRemoteSession}
+                          onRefreshRemote={refreshRemote}
+                          onStartConversation={startRemoteConversation}
+                          onToggleAutoConnect={value => void changeSettings({ autoConnectRemote: value })}
                           onToggleLeftPanel={handleToggleLeftPanel}
-                          skillRecommend={appSettings.skillRecommend}
-                          futureSessionStatus={futureSessionStatus}
-                          futureBalance={futureBalance}
-                          headerAction={terminalHeaderAction}
-                          onPromptConsumed={consumePendingPrompt}
-                          onForked={(forkedThreadId: string) => {
-                            void refreshStore(forkedThreadId);
-                          }}
-                          onThreadActivity={() => {
-                            void refreshStore(activeThread?.id ?? undefined);
-                          }}
+                          remoteStatus={remoteStatus}
                         />
-                      )}
+                      )
+                    : section === "chat" && activeRemote
+                      ? (
+                          <RemoteConversationView
+                            approvals={remoteApprovals.approvals}
+                            approvalErrors={remoteApprovals.errors}
+                            approvalPending={remoteApprovals.pending}
+                            desktopId={activeRemote.desktopId}
+                            composer={(
+                              <RemoteComposer
+                                desktopId={activeRemote.desktopId}
+                                onCreated={(createdSessionId) => {
+                                  // Adopt the conversation the host just made, so
+                                  // the next prompt goes to it by name instead
+                                  // of creating a second one.
+                                  setActiveRemote({ desktopId: activeRemote.desktopId, sessionId: createdSessionId });
+                                  void refreshRemotePeers();
+                                }}
+                                onSent={() => {
+                                  void remoteTimeline.refresh();
+                                  void refreshRemotePeers();
+                                }}
+                                peer={activeRemotePeer}
+                                sessionId={activeRemote.sessionId}
+                                skillRecommendation={remoteSkillRecommendation}
+                                streaming={remoteTimeline.streaming}
+                              />
+                            )}
+                            entries={remoteTimeline.entries}
+                            error={remoteTimeline.error}
+                            hasMore={remoteTimeline.hasMore}
+                            loading={remoteTimeline.loading}
+                            loadingOlder={remoteTimeline.loadingOlder}
+                            onCompact={() => void compactRemoteConversationOn(activeRemote.desktopId, activeRemote.sessionId)}
+                            onContinueRun={runId => void continueRemoteRunOn(activeRemote.desktopId, activeRemote.sessionId, runId)}
+                            onDecideApproval={(approval, decision) => void remoteApprovals.decide(approval, decision)}
+                            onFork={(sourceEntryId, forkable) =>
+                              void forkRemoteConversationAt(
+                                activeRemote.desktopId,
+                                activeRemote.sessionId,
+                                sourceEntryId,
+                                forkable,
+                              )}
+                            onLoadOlder={() => void remoteTimeline.loadOlder()}
+                            onOpenFiles={() => setRemoteFilesOpen(true)}
+                            onRetry={() => void remoteTimeline.refresh()}
+                            peer={activeRemotePeer}
+                            persistedEntryIds={remoteTimeline.persistedEntryIds}
+                            sessionId={activeRemote.sessionId}
+                            settings={(<RemoteConversationSettings settings={remoteSettings} />)}
+                            streaming={remoteTimeline.streaming}
+                            compacting={remoteTimeline.compacting}
+                            title={titleOfRemote(remoteCatalogs, activeRemote)}
+                          />
+                        )
+                      : storeError
+                        ? (
+                            <div className="flex h-full items-center justify-center p-8 text-sm text-ink-soft">
+                              {t("appShell.storeInitFailed")}
+                              {storeError}
+                            </div>
+                          )
+                        : (
+                            <AgentThread
+                              // One instance per conversation: switching threads
+                              // remounts, so a conversation's messages, listeners and
+                              // in-flight writes can never bleed into another.
+                              key={activeThread?.id ?? "__none"}
+                              activeApproval={activeApproval}
+                              agentConnection={agentConnection}
+                              approvalTier={appSettings.approvalTier}
+                              loadingStore={loadingStore}
+                              modelId={activeThreadModelId}
+                              modelOptions={visibleModelOptions}
+                              onModelChange={changeModel}
+                              onChangeApprovalTier={value => void changeSettings({ approvalTier: value })}
+                              thinkingLevel={activeThinkingLevel}
+                              onThinkingLevelChange={changeThinkingLevel}
+                              pendingPrompt={pendingPrompt}
+                              thread={activeThread}
+                              sessionMentions={sessionMentions}
+                              workspacePath={activeWorkspace?.path ?? null}
+                              onApprovalDecision={handleApprovalDecision}
+                              leftPanelExpanded={showLeftPanel}
+                              onRetryAgentConnection={() => void refreshAgentModels()}
+                              onOpenAccount={handleOpenAccount}
+                              onOpenModels={handleOpenModels}
+                              onOpenProviders={handleOpenProviders}
+                              onToggleLeftPanel={handleToggleLeftPanel}
+                              skillRecommend={appSettings.skillRecommend}
+                              futureSessionStatus={futureSessionStatus}
+                              futureBalance={futureBalance}
+                              headerAction={terminalHeaderAction}
+                              onPromptConsumed={consumePendingPrompt}
+                              onForked={(forkedThreadId: string) => {
+                                void refreshStore(forkedThreadId);
+                              }}
+                              onThreadActivity={() => {
+                                void refreshStore(activeThread?.id ?? undefined);
+                              }}
+                            />
+                          )}
           </main>
           {/* Views without thread context hide the right panel entirely, including
           the collapsed expand affordance. */}
@@ -793,6 +1163,29 @@ function ReadyAppShell({
         onConfirmDeleteWorkspace={() => void confirmWorkspaceDelete()}
         onConfirmRenameWorkspace={() => void confirmWorkspaceRename()}
       />
+      {remoteRename
+        ? (
+            <RemoteRenameDialog
+              conversation={remoteRename}
+              onClose={() => setRemoteRename(null)}
+              onRenamed={() => void refreshRemotePeers()}
+            />
+          )
+        : null}
+      {/* Keyed on the conversation so switching to another one closes the
+          browser: the listing belongs to a session, and keeping it open across
+          a switch would show one conversation's files under another's title. */}
+      {remoteFilesOpen && activeRemote && activeRemote.sessionId
+        ? (
+            <RemoteFilesDialog
+              desktopId={activeRemote.desktopId}
+              key={`${activeRemote.desktopId}::${activeRemote.sessionId}`}
+              onClose={() => setRemoteFilesOpen(false)}
+              peerName={activeRemotePeer ? peerBadgeText(activeRemotePeer, activeRemotePeer.desktopId) : ""}
+              sessionId={activeRemote.sessionId}
+            />
+          )
+        : null}
       <SettingsDialog
         appSettings={appSettings}
         cachedUpdateStatus={cachedStatus}

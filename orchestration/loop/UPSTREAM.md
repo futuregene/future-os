@@ -1,5 +1,7 @@
 # Upstream: LoopX
 
+> ([中文](UPSTREAM.zh-CN.md))
+
 The `future-loop` crate (in `orchestration/loop/`) contains code translated,
 ported, and structurally adapted from **LoopX**, a control plane for
 long-running AI agent work.
@@ -47,7 +49,7 @@ additions, including:
 - the Rust-native implementation itself (type system, storage,
   concurrency, cross-platform support including Windows);
 - the gRPC executor bridge to the FutureOS agent and the typed-RPC wire
-  contract (`future-rpc` dual-written payloads);
+  contract (`future-rpc` typed payloads);
 - the unified `future loop` CLI and integration with the FutureOS TUI,
   desktop app, and skills;
 - features with no upstream counterpart (canary smoke, automation

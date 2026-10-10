@@ -209,10 +209,11 @@ already have had side effects; re-check results before re-running.
 The model prompt defaults to trying inside the sandbox first, not requesting on
 guesses; approval is requested only when execution results show a necessary
 operation was blocked by the sandbox, retrying only the blocked operation where
-possible. Necessary operations must keep the real failure status and error
-output — never hide failures with `|| true`, forced success, or swallowed
-output; clearly ignorable failures may be tolerated but are not treated as
-success. This is a prompt constraint, not a new execution gate: an overall exit
+possible. Guidance requires preserving errors needed to assess necessary
+operations and interpreting the actual process status with output and intended
+effects. Expected errors may be tolerated but do not establish success; the
+model chooses command structure and error-handling syntax. This is a prompt
+constraint, not a new execution gate: an overall exit
 code of 0 still does not trigger passive approval, and no new permission-error
 hint after successful exits was added.
 
@@ -255,12 +256,10 @@ three tables and `approval_config.rs` were cleaned up on 2026-07-05.
 
 ## 5. Progress, decisions, and follow-up plans
 
-2026-07-04 v2 R1/R2/R3 complete: file rules, read up-front approval, Seatbelt
-compilation, sensitive guards, GUI saving and same-turn injection. Historical
-results: R1 Agent 55 lib + 10 rules + 9 smoke; R2 GUI/frontend 39; R3 Agent 58
-lib + 9 smoke, GUI 72, frontend 39, lint/check-desktop pass. The early v1's
-Agent 67, GUI 69, frontend 39, smoke 9 are only the old architecture baseline,
-not the current total test count.
+v2 file rules, read up-front approval, Seatbelt compilation, sensitive guards,
+GUI saving and same-turn injection are implemented. Historical per-round test
+counts from the v1/v2 work are neither the current total nor a current
+acceptance pass, so they are not reproduced here.
 
 Retained decisions: V1–V9 (2026-07) established pure path rules, open network,
 per-lane fallback, file source of truth, three tiers, and project allows; V10's
@@ -333,3 +332,128 @@ diffs, superseded designs, and the original long acceptance tables can be found
 in git history; the current four documents keep the effective contract, key
 trade-offs, and evidence indexes, and no longer maintain old drafts in
 parallel.
+
+## Single-command shell results (2026-10-09)
+
+The shell input retains `command`; there is no `steps` protocol or host command
+splitting. The model chooses whether to use one script or multiple tool calls.
+Execute dependent calls in order and inspect each result. Scripts depending on
+shared `cd`, variables, functions or
+control flow remain one command. Each call starts a fresh host shell in the
+project workspace with the existing inherited environment and PATH/PWD overrides;
+changes in a previous process do not carry into the next call. Shell semantics
+are preserved: no global `set -e` or pipeline changes are injected.
+
+A complex script exposes only its whole process exit status. An earlier failure
+may be masked by a successful final command. A later nonzero query does not
+prove a previous action failed. Exit 0 means normal process termination, not
+completion of the user's task. Model guidance requires interpreting output and
+checking partial effects before requesting a retry. The host does not claim to
+observe operations inside Node/Python programs or to guarantee exactly-once
+execution. Output keywords alone do not override a successful process exit or
+trigger automatic escalation.
+
+The host captures `ShellResult` before generating model text. It contains the
+command, cwd, total duration, status, nullable exit code, existing normal-query
+verdict, approval outcome, note and ordered execution attempts. Attempts retain
+actual status, nullable exit code, duration, merged output, truncation and
+escalation flags. The original sandboxed attempt remains available after an
+approved retry. `exited`, `launch_failed`, `execution_failed`, `timed_out`,
+`cancelled` and `not_started` distinguish process outcomes and approval stops.
+No missing exit code is replaced with zero; stdout markers cannot replace
+process status. Bare grep/test-style exit 1 keeps the existing normal-query
+semantics, while its actual code remains visible.
+
+Approval review and platform restrictions remain unchanged: Jev's three numeric
+Choice questions, matrix, confidence thresholds, four sourced evidence classes,
+investigation budgets, cancellation, context validity and Linux helper checks
+still apply. A retry approves the actual command, with a failure tail bounded
+to 2,000 bytes. Approval permits execution; it does not prove replay is safe.
+Automatic retry can repeat effects already completed within the command. If
+replay is unsafe, the model must submit only remaining necessary operations as
+a new call. Neither prior independent calls nor future calls are replayed or
+approved by that retry. Network behavior remains unchanged.
+
+Inputs are bounded to 65,536 command bytes and 131,072 serialized bytes.
+The command execution budget is 1–600 seconds (default 120), starting at the
+shell handler and shared with post-execution approval waits and retries.
+Pre-execution approval uses the existing lifecycle before this budget begins.
+No retry process starts after the remaining budget is exhausted. Original and
+retry attempts each reserve up to 250,000 output bytes; streams drain through
+bounded buffers. Serialized facts are capped at 1 MiB, reducing retained output
+when JSON escaping requires it. Model text reserves at most 60,000 bytes for
+output and retains status outside that budget, below the transcript's existing
+100K-byte cap. Timeout and cancellation preserve captured partial output.
+
+`tool_end.shell_result` crosses typed RPC and is stored in the canonical SQLite
+tool-message metadata. Tool inspection, history, run replay and remote lean
+transport retain the same facts. Desktop and mobile thread views consume host
+verdicts while retaining their existing tool rows, grouping and summaries. The
+run inspector also retains its existing presentation; no new execution or
+retry detail widgets are added. Structured process facts remain available to
+the host and model and do not prove the outcome of the user's task.
+Old records without facts keep their existing display; attempt history is never
+invented. Legacy `command` calls remain compatible; unsupported `steps` input
+is rejected before approval or execution.
+
+The default prompt separates `Tool Execution`, `Approval Feedback` and `User
+Communication` into Markdown templates under `agent/src/prompt/`. Per-tool
+rules are appended only to execution; additional caller guidelines follow the
+three behavior sections. Project context and append overrides keep their
+later position, and a custom prompt still replaces the default identity and
+behavior sections. Jev's review questions remain a separate prompt.
+
+The default identity describes a task assistant in FutureOS rather than a
+coding-only role. Communication leads with the result, adapts depth to the
+request, uses plain language, and includes technical details only when useful
+for the answer, evidence or a decision. Simple actions usually need a brief
+confirmation and the relevant result or file link; longer work gets meaningful
+progress updates and a self-contained final answer. Routine verification is
+summarized, without a required code walkthrough, warning checklist or extra
+approval question.
+
+This borrows global communication and task-completion principles from the full
+local Codex `gpt-6.1-sol` instruction template in
+`codex-rs/models-manager/models.json` at `e974aad3b1` (2026-10-08). That template
+scales explanation to the request; it does not specifically ban code examples
+or require modification and verification to be separate commands. FutureOS
+keeps its own tools, file-link format, memory limits and approval policy rather
+than importing Codex's app channels or permission model. Prompt wording may
+influence verbosity, but source comparison alone does not establish its cause.
+
+Execution rules preserve earlier user authorization within the same task and
+scope, respect later restrictions, and require concrete preparation before a
+necessary user decision. Approval feedback cannot grant new user authorization.
+After denial, changing tools, interpreters or wrappers to achieve the same
+rejected effect is prohibited; a genuinely narrower permitted alternative must
+still pass normal checks. Shell guidance is split into short rules under
+`agent/src/tools/shell/guidance.rs`. It leaves execution-unit organization and
+diagnostic status printing to the model, while requiring interpretation of
+the actual process status, output and intended effects.
+Known file contents prefer `read` when available, without banning shell reads.
+Platform hints describe the shell wrapper's syntax and actual version limits;
+they do not prohibit running programs or scripts with their own syntax.
+The RPC prompt builder no longer adds a conflicting blanket prohibition on
+shell file writes. Ordinary file changes prefer write/edit; an explicitly
+requested script or command-line method uses shell under the existing checks.
+Later user instructions can supply new authorization for fresh review, but do
+not bypass policy or revive an old approval.
+
+Execution metadata is internal diagnostic information. Routine approval and
+retry recovery are handled through tools without narrating them. Successful
+recovery is reported as the task result, without recounting the recovered
+failure, sandbox restriction or approval process. An approved tool result does
+not establish that the user personally confirmed it. User replies
+report the task outcome and useful verification; exit codes, shell mechanics
+and approval traces are explained only for requested debugging or an unresolved
+blocker/decision. Failures, partial completion, uncertainty and meaningful side
+effects must still be reported in plain language. Model text retains original/
+retry evidence but does not repeat generic exit-zero and successful approval
+caveats on every call; approval notes remain in structured audit records.
+These are model guidance rules, not a deterministic filter on generated replies.
+
+Regression tests cover independent action/verification calls, unchanged complex
+script semantics, stdout status spoofing, nullable exit codes, timeout,
+cancellation, bounded output, approval denial/context expiry, partial retry
+side effects and typed/persisted/lean/live/replay results. Tests are compiled
+locally, with execution and native cross-platform validation left to CI.

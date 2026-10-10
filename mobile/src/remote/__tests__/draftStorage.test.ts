@@ -115,6 +115,49 @@ describe("session draft storage", () => {
     expect(mockedAsync.setItem).not.toHaveBeenCalled();
   });
 
+  test("a draft's conversation references round-trip with it", async () => {
+    // The token in the text carries no id, so a draft that lost this map would
+    // send `#title` as plain text and the reference would stop working.
+    const refs = { "#Fix the flaky test": { sessionId: "sess-1", title: "Fix the flaky test" } };
+    await saveSessionDraft("s1", { text: "ask #Fix the flaky test", attachments: [], refs });
+    mockedAsync.getItem.mockResolvedValueOnce(
+      JSON.stringify({ version: 1, text: "ask #Fix the flaky test", attachments: [], refs }),
+    );
+    expect(await loadSessionDraft("s1")).toEqual({
+      version: 1, text: "ask #Fix the flaky test", attachments: [], refs,
+    });
+  });
+
+  test("a draft written before references existed reads without a map", async () => {
+    mockedAsync.getItem.mockResolvedValueOnce(
+      JSON.stringify({ version: 1, text: "plain", attachments: [] }),
+    );
+    expect(await loadSessionDraft("s1")).toEqual({ version: 1, text: "plain", attachments: [] });
+  });
+
+  test("malformed reference entries are dropped, not half-restored", async () => {
+    // An entry that is not the shape we wrote could only make the send expand
+    // the wrong conversation; the rest of the draft is still usable.
+    mockedAsync.getItem.mockResolvedValueOnce(JSON.stringify({
+      version: 1,
+      text: "#A #B #C #D #E",
+      attachments: [],
+      refs: {
+        "#A": { sessionId: "sess-a", title: "A" },
+        "#B": { sessionId: "", title: "B" },
+        "#C": { title: "C" },
+        "no-hash": { sessionId: "sess-d", title: "D" },
+        "#E": "sess-e",
+      },
+    }));
+    expect(await loadSessionDraft("s1")).toEqual({
+      version: 1,
+      text: "#A #B #C #D #E",
+      attachments: [],
+      refs: { "#A": { sessionId: "sess-a", title: "A" } },
+    });
+  });
+
   test("stale-version draft is discarded", async () => {
     mockedAsync.getItem.mockResolvedValueOnce(
       JSON.stringify({ version: 999, text: "old", attachments: [] }),
@@ -133,6 +176,30 @@ describe("session draft storage", () => {
     await clearSessionDraft("");
     expect(mockedAsync.removeItem).not.toHaveBeenCalled();
     expect(await loadSessionDraft("")).toBeNull();
+  });
+
+  test("scheduling and a match-clear for no session are no-ops", async () => {
+    jest.useFakeTimers();
+    try {
+      scheduleSessionDraft("", { text: "typed", attachments: [] });
+      await clearSessionDraftIfMatches("", { text: "typed", attachments: [] });
+      await jest.advanceTimersByTimeAsync(2_000);
+      // The composer's new-conversation slot has its own key; an empty id must
+      // not be written under a shared one or resurrected by a timer.
+      expect(mockedAsync.setItem).not.toHaveBeenCalled();
+      expect(mockedAsync.removeItem).not.toHaveBeenCalled();
+    } finally { jest.useRealTimers(); }
+  });
+
+  test("a stored draft with no text and no usable attachment reads as absent", async () => {
+    // Exactly what a draft whose only attachment was pruned looks like: the
+    // record is still on disk but there is nothing left to restore, and
+    // handing the composer a whitespace draft would show an empty edit box as
+    // if the user had typed something.
+    mockedAsync.getItem.mockResolvedValueOnce(
+      JSON.stringify({ version: 1, text: "   ", attachments: [] }),
+    );
+    expect(await loadSessionDraft("s1")).toBeNull();
   });
 
   test("attachments whose backing file was pruned are dropped", async () => {

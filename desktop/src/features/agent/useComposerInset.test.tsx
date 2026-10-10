@@ -2,6 +2,7 @@
 import { act, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { renderHook } from "../../test/renderHook";
 import { useComposerInset } from "./useComposerInset";
 import { useStickyAutoScroll } from "./useStickyAutoScroll";
 
@@ -143,5 +144,28 @@ describe("floating composer inset", () => {
     expect(h.disconnect).toHaveBeenCalled();
     h.resize(400);
     expect(h.spacer.style.height).toBe("260px");
+  });
+
+  it("stays inert when the composer ref was never attached to an element", () => {
+    // boundary: the hook returns the ref for the caller to attach, so a caller
+    // that renders before the element (or drops it) runs the layout effect with a
+    // null ref. It must no-op rather than observe null, and must not construct a
+    // ResizeObserver for nothing.
+    const constructed: unknown[] = [];
+    vi.stubGlobal("ResizeObserver", class {
+      constructor() {
+        constructed.push(this);
+      }
+
+      observe() {}
+      disconnect() {}
+    });
+    const hook = renderHook(() => useComposerInset());
+
+    expect(hook.current.composerRef.current).toBeNull();
+    expect(hook.current.composerHeight).toBe(0);
+    expect(constructed).toHaveLength(0);
+
+    hook.unmount();
   });
 });

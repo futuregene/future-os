@@ -195,6 +195,29 @@ fn get_agent_info_returns_version() {
 }
 
 #[test]
+fn readiness_does_not_wait_for_skill_discovery() {
+    let state = make_app_state();
+    let refresh_lock = crate::skills::hold_refresh_lock_for_test();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        sender
+            .send(handle_command_internal(
+                &state,
+                make_cmd("get_agent_readiness"),
+            ))
+            .unwrap();
+    });
+    let result = receiver.recv_timeout(std::time::Duration::from_secs(2));
+    drop(refresh_lock);
+    worker.join().unwrap();
+    let response = parse_response(&result.expect("readiness blocked on skills refresh"));
+    assert_eq!(response["success"], true);
+    assert_eq!(response["data"]["version"], crate::utils::VERSION);
+    assert_eq!(response["data"]["agentInstanceId"], "agent-test-instance");
+    assert!(response["data"].get("skillsCount").is_none());
+}
+
+#[test]
 fn refresh_skills_returns_skill_list() {
     let state = make_app_state();
     let cmd = make_cmd("refresh_skills");
@@ -783,4 +806,53 @@ fn get_commands_lists_discovered_skills() {
         "{names:?} not sorted"
     );
     crate::skills::invalidate_skills_cache();
+}
+
+/// The handler's JSON is read back by `future_rpc::encode` into
+/// `SuggestSkillPayload`. If the two disagree, the encoder returns `None`
+/// (`serde_json::from_value(...).ok()?`), the response carries no typed payload,
+/// and the desktop's `.catch(() => null)` turns that into "no recommendation" —
+/// while the agent still logs a successful recommendation. A silent wire
+/// regression, which is why the handler now serializes the shared type (the
+/// compiler catches a rename) and why this checks the boundary anyway.
+#[test]
+fn suggest_skill_response_encodes_into_the_typed_payload() {
+    let _home = TestHome::new();
+    let mut cmd = make_cmd("suggest_skill");
+    cmd.suggest_query = "帮我上网查一下今天的新闻".to_string();
+    cmd.suggest_candidates = vec![crate::skill_reco::SkillCandidate {
+        name: "future-web".to_string(),
+        description: "Search the public web".to_string(),
+    }];
+    // No credential in a test home, so this takes the "signed out" path and
+    // answers without touching the network: `skill` must still be present, as
+    // null. The field name is what the encoder reads, and it is the same on
+    // both paths.
+    let resp = parse_response(&handle_command_internal(&make_app_state(), cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    // `handle_command_internal` returns the handler's JSON with `data` as an
+    // object; the gRPC layer's encoder is what turns it into the typed payload
+    // and leaves `data` empty on the wire.
+    let data = resp["data"].clone();
+    assert!(data.is_object(), "the handler must write an object: {data}");
+    assert!(
+        data.get("skill").is_some(),
+        "skill key must be present: {data}"
+    );
+    assert!(
+        data["skill"].is_null(),
+        "an unanswered call is null: {data}"
+    );
+
+    let payload = future_rpc::encode::response_payload("suggest_skill", &data)
+        .expect("the handler's JSON must encode into the typed payload");
+    match payload.kind {
+        Some(future_rpc::proto::response_payload::Kind::SuggestSkill(result)) => {
+            assert!(
+                result.skill.is_none(),
+                "no recommendation decodes as no skill"
+            );
+        }
+        other => panic!("expected a SuggestSkill payload, got {other:?}"),
+    }
 }

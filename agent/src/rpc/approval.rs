@@ -1,3 +1,13 @@
+mod escalation;
+mod shape;
+use escalation::{
+    escalation_save_suggestion, extract_blocked_paths_raw, extract_denial_paths, shorten_home,
+};
+use shape::{
+    approval_shape, command_summary, normalize_requested_action, shell_auto_allow,
+    shell_command_shape, windows_capability_shape,
+};
+
 use parking_lot::Mutex;
 use std::{
     collections::HashMap,
@@ -7,12 +17,14 @@ use std::{
 
 use super::{SseBroadcaster, SseEvent};
 use crate::sandbox::rules::{Decision, Op};
-use crate::sandbox::windows_request::{AdditionalPermissions, PreparedWritePermissions};
+use crate::sandbox::windows_request::AdditionalPermissions;
 use crate::sandbox::{paths, EscalationDecision, EscalationRequest, ResolvedSandbox};
 
 #[derive(Clone, Default)]
 pub struct ApprovalGate {
     pending: Arc<Mutex<HashMap<String, PendingApproval>>>,
+    pub(crate) generation: Arc<std::sync::atomic::AtomicU64>,
+    review: Option<crate::approval_review::RunApprovalReviewer>,
 }
 
 #[derive(Debug, Clone)]
@@ -38,15 +50,61 @@ struct PendingApproval {
     tx: mpsc::Sender<ApprovalDecision>,
 }
 
-/// Outcome of a blocking user decision (shared by tool approvals and
+/// Outcome of an approval decision (shared by tool approvals and
 /// sandbox escalations).
-enum AskOutcome {
+enum ApprovalOutcome {
     Approved(String),
     Rejected(String),
     Cancelled(String),
 }
 
 impl ApprovalGate {
+    pub(crate) fn observe_review_message(&self, message: &crate::types::AgentMessage) {
+        if let Some(context) = &self.review {
+            context.observe_message(message);
+        }
+    }
+    pub(crate) fn for_run(
+        &self,
+        user_request: String,
+        history: &[crate::types::AgentMessage],
+        current_source_id: &str,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+        annotations: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    ) -> Self {
+        self.with_model_reviewer(
+            crate::approval_review::RunApprovalReviewer::new(
+                user_request,
+                cancelled,
+                self.generation.clone(),
+                annotations,
+            )
+            .with_evidence_snapshot(history)
+            .with_current_source(current_source_id),
+        )
+    }
+
+    pub(crate) fn with_model_reviewer(
+        &self,
+        context: crate::approval_review::RunApprovalReviewer,
+    ) -> Self {
+        Self {
+            review: Some(context),
+            ..self.clone()
+        }
+    }
+    fn rejection_actor(&self) -> &str {
+        if self.review.is_some() {
+            "the automatic reviewer"
+        } else {
+            "the user"
+        }
+    }
+    pub(crate) fn invalidate(&self) {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn request(
         &self,
@@ -107,7 +165,7 @@ impl ApprovalGate {
                 return None;
             }
             let shape = shell_command_shape(command, sandbox);
-            let outcome = self.ask_user(
+            let outcome = self.resolve_approval(
                 broadcaster,
                 session_id,
                 tool_id,
@@ -115,16 +173,31 @@ impl ApprovalGate {
                 &shape,
                 normalize_requested_action(arguments),
             );
+            crate::tools::shell::record_gate_outcome(match &outcome {
+                ApprovalOutcome::Approved(_) => "approved",
+                ApprovalOutcome::Rejected(_) => "denied",
+                ApprovalOutcome::Cancelled(_)
+                    if self.review.as_ref().is_some_and(|context| {
+                        context.invalidated().is_some_and(|verdict| {
+                            verdict.status == crate::approval_review::ReviewStatus::StaleRequest
+                        })
+                    }) =>
+                {
+                    "context_invalidated"
+                }
+                ApprovalOutcome::Cancelled(_) => "cancelled",
+            });
             return match outcome {
-                AskOutcome::Approved(_) => None,
-                AskOutcome::Cancelled(_) => Some(crate::types::ToolCallResult {
+                ApprovalOutcome::Approved(_) => None,
+                ApprovalOutcome::Cancelled(_) => Some(crate::types::ToolCallResult {
                     result: "Tool call `shell` was cancelled because the approval request ended."
                         .to_string(),
                     is_error: true,
                 }),
-                AskOutcome::Rejected(note) => Some(crate::types::ToolCallResult {
+                ApprovalOutcome::Rejected(note) => Some(crate::types::ToolCallResult {
                     result: format!(
-                        "Tool call `shell` was rejected by the user{}.",
+                        "Tool call `shell` was rejected by {}{}.",
+                        self.rejection_actor(),
                         if note.is_empty() {
                             String::new()
                         } else {
@@ -162,7 +235,7 @@ impl ApprovalGate {
             }),
             Decision::Ask => {
                 let shape = approval_shape(tool_name, &path, op, arguments, sandbox);
-                let outcome = self.ask_user(
+                let outcome = self.resolve_approval(
                     broadcaster,
                     session_id,
                     tool_id,
@@ -171,22 +244,23 @@ impl ApprovalGate {
                     normalize_requested_action(arguments),
                 );
                 match outcome {
-                    AskOutcome::Approved(_) => {
+                    ApprovalOutcome::Approved(_) => {
                         if op == Op::Write {
                             crate::tools::approve_outside_path(&path.to_string_lossy());
                         }
                         None
                     }
-                    AskOutcome::Cancelled(_) => Some(crate::types::ToolCallResult {
+                    ApprovalOutcome::Cancelled(_) => Some(crate::types::ToolCallResult {
                         result: format!(
                             "Tool call `{tool_name}` was cancelled because the approval request ended."
                         ),
                         is_error: true,
                     }),
-                    AskOutcome::Rejected(note) => Some(crate::types::ToolCallResult {
+                    ApprovalOutcome::Rejected(note) => Some(crate::types::ToolCallResult {
                         result: format!(
-                            "Tool call `{}` was rejected by the user{}.",
+                            "Tool call `{}` was rejected by {}{}.",
                             tool_name,
+                            self.rejection_actor(),
                             if note.is_empty() {
                                 String::new()
                             } else {
@@ -240,15 +314,30 @@ impl ApprovalGate {
         }
 
         let shape = windows_capability_shape(command, &prepared, sandbox);
-        match self.ask_user(
+        let outcome = self.resolve_approval(
             broadcaster,
             session_id,
             tool_id,
             "shell",
             &shape,
             normalize_requested_action(arguments),
-        ) {
-            AskOutcome::Approved(request_id) => {
+        );
+        crate::tools::shell::record_gate_outcome(match &outcome {
+            ApprovalOutcome::Approved(_) => "approved",
+            ApprovalOutcome::Rejected(_) => "denied",
+            ApprovalOutcome::Cancelled(_)
+                if self.review.as_ref().is_some_and(|context| {
+                    context.invalidated().is_some_and(|verdict| {
+                        verdict.status == crate::approval_review::ReviewStatus::StaleRequest
+                    })
+                }) =>
+            {
+                "context_invalidated"
+            }
+            ApprovalOutcome::Cancelled(_) => "cancelled",
+        });
+        match outcome {
+            ApprovalOutcome::Approved(request_id) => {
                 let Some(receipt) = prepared.approved_receipt(request_id) else {
                     return Some(crate::types::ToolCallResult {
                         result: "Tool call `shell` approval did not match a capability request."
@@ -259,14 +348,15 @@ impl ApprovalGate {
                 crate::tools::approve_windows_capability(receipt);
                 None
             }
-            AskOutcome::Cancelled(_) => Some(crate::types::ToolCallResult {
+            ApprovalOutcome::Cancelled(_) => Some(crate::types::ToolCallResult {
                 result: "Tool call `shell` was cancelled because the approval request ended."
                     .to_string(),
                 is_error: true,
             }),
-            AskOutcome::Rejected(note) => Some(crate::types::ToolCallResult {
+            ApprovalOutcome::Rejected(note) => Some(crate::types::ToolCallResult {
                 result: format!(
-                    "Tool call `shell` was rejected by the user{}.",
+                    "Tool call `shell` was rejected by {}{}.",
+                    self.rejection_actor(),
                     if note.is_empty() {
                         String::new()
                     } else {
@@ -307,6 +397,7 @@ impl ApprovalGate {
             "command": request.command,
             "justification": request.justification,
             "blocked_paths": blocked_paths,
+            "diagnostic_paths": raw_blocked,
             "scope": {
                 "cwd": sandbox.workspace.to_string_lossy(),
                 "inside_workspace": true,
@@ -333,17 +424,26 @@ impl ApprovalGate {
             "failure_summary": request.failure_summary,
         });
 
-        match self.ask_user(
+        match self.resolve_approval(
             broadcaster,
             session_id,
-            "",
+            &crate::tools::current_tool_call_id(),
             "shell",
             &shape,
             requested_action,
         ) {
-            AskOutcome::Approved(_) => EscalationDecision::Approved,
-            AskOutcome::Rejected(note) => EscalationDecision::Denied(note),
-            AskOutcome::Cancelled(note) => EscalationDecision::Denied(if note.is_empty() {
+            ApprovalOutcome::Approved(_) => EscalationDecision::Approved,
+            ApprovalOutcome::Rejected(note) => EscalationDecision::Denied(note),
+            ApprovalOutcome::Cancelled(note)
+                if self.review.as_ref().is_some_and(|context| {
+                    context.invalidated().is_some_and(|verdict| {
+                        verdict.status == crate::approval_review::ReviewStatus::StaleRequest
+                    })
+                }) =>
+            {
+                EscalationDecision::ContextInvalidated(note)
+            }
+            ApprovalOutcome::Cancelled(note) => EscalationDecision::Cancelled(if note.is_empty() {
                 "approval request ended".to_string()
             } else {
                 note
@@ -351,8 +451,8 @@ impl ApprovalGate {
         }
     }
 
-    /// Broadcast an approval request and block until a decision arrives.
-    fn ask_user(
+    /// Review automatically, or broadcast a human request and wait for a decision.
+    fn resolve_approval(
         &self,
         broadcaster: &SseBroadcaster,
         session_id: &str,
@@ -360,7 +460,59 @@ impl ApprovalGate {
         tool_name: &str,
         shape: &ApprovalShape,
         requested_action: serde_json::Value,
-    ) -> AskOutcome {
+    ) -> ApprovalOutcome {
+        if let Some(context) = &self.review {
+            let cwd = shape
+                .sandbox_boundary
+                .get("cwd")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let action = crate::approval_review::prepare_review_action(
+                tool_name,
+                tool_id,
+                &requested_action,
+                &shape.action,
+                &shape.sandbox_boundary,
+                cwd,
+            );
+            let outcome = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current()
+                    .block_on(context.review_action(action, &requested_action))
+            });
+            let approved = outcome.verdict.approved();
+            let status = outcome.verdict.status;
+            let request_id = outcome.approval_request_id;
+            let event = outcome.event;
+            broadcaster.broadcast(SseEvent::new("approval_assessment", event));
+            // Journal persistence is synchronous. No action may use an approval
+            // whose audit failed, or whose context changed while recording it.
+            if let Some(invalid) = context.invalidated() {
+                context.block_execution(
+                    tool_id,
+                    invalid.status,
+                    invalid.error_code.as_deref().unwrap_or("context_changed"),
+                );
+                return ApprovalOutcome::Cancelled("automatic review context ended".into());
+            }
+            if broadcaster.persistence_error().is_some() {
+                context.block_execution(
+                    tool_id,
+                    crate::approval_review::ReviewStatus::ReviewError,
+                    "audit_unavailable",
+                );
+                return ApprovalOutcome::Rejected("automatic review audit unavailable".into());
+            }
+            return if approved {
+                ApprovalOutcome::Approved(request_id)
+            } else if status == crate::approval_review::ReviewStatus::Cancelled {
+                ApprovalOutcome::Cancelled("automatic review cancelled".into())
+            } else {
+                ApprovalOutcome::Rejected(format!(
+                    "automatic review: {}; choose a safer action or ask the user for help",
+                    status.as_str()
+                ))
+            };
+        }
         let request_id = format!("approval_{}", crate::utils::generate_entry_id());
         let (tx, rx) = mpsc::channel::<ApprovalDecision>();
         let payload = serde_json::json!({
@@ -395,20 +547,20 @@ impl ApprovalGate {
             Ok(decision) if decision.approved => (
                 "approved",
                 decision.note.clone(),
-                AskOutcome::Approved(request_id.clone()),
+                ApprovalOutcome::Approved(request_id.clone()),
             ),
             Ok(decision) if decision.status == ApprovalDecisionStatus::Cancelled => {
                 let note = decision.note.clone();
-                ("cancelled", note.clone(), AskOutcome::Cancelled(note))
+                ("cancelled", note.clone(), ApprovalOutcome::Cancelled(note))
             }
             Ok(decision) => {
                 let note = decision.note.clone();
-                ("rejected", note.clone(), AskOutcome::Rejected(note))
+                ("rejected", note.clone(), ApprovalOutcome::Rejected(note))
             }
             Err(_) => {
                 self.pending.lock().remove(&request_id);
                 let note = "Approval request was cancelled because the session ended.".to_string();
-                ("cancelled", note.clone(), AskOutcome::Cancelled(note))
+                ("cancelled", note.clone(), ApprovalOutcome::Cancelled(note))
             }
         };
         broadcaster.broadcast(SseEvent::new(
@@ -536,2098 +688,5 @@ pub(super) struct ApprovalShape {
     pub save_suggestion: Option<serde_json::Value>,
 }
 
-fn windows_capability_shape(
-    command: &str,
-    prepared: &PreparedWritePermissions,
-    sandbox: &ResolvedSandbox,
-) -> ApprovalShape {
-    let approval = prepared
-        .approval
-        .as_ref()
-        .expect("shape is only built for targets that require approval");
-    let paths = approval
-        .targets
-        .iter()
-        .map(|target| target.path.clone())
-        .collect::<Vec<_>>();
-    let title = if let [target] = approval.targets.as_slice() {
-        match target.scope {
-            crate::sandbox::windows_request::WriteScope::File => {
-                format!("Allow FutureOS to modify {}?", target.path)
-            }
-            crate::sandbox::windows_request::WriteScope::Subtree => {
-                format!("Allow FutureOS to manage files in {}?", target.path)
-            }
-        }
-    } else {
-        format!(
-            "Allow FutureOS to manage files in these {} locations?",
-            approval.targets.len()
-        )
-    };
-    let save_suggestion = if approval
-        .targets
-        .iter()
-        .any(|target| sandbox.is_secret_path(Path::new(&target.path)))
-    {
-        None
-    } else {
-        Some(serde_json::json!({
-            "rules": approval.targets.iter().map(|target| serde_json::json!({
-                "path": target.path,
-                "access": "write"
-            })).collect::<Vec<_>>()
-        }))
-    };
-
-    ApprovalShape {
-        kind: "windows_write_capability",
-        risk_level: "medium",
-        title,
-        summary: if approval.targets.len() == 1 {
-            "FutureOS needs write access to this location for the current command.".to_string()
-        } else {
-            "FutureOS needs write access to all of these locations for the current command."
-                .to_string()
-        },
-        action: serde_json::json!({
-            "tool": "shell",
-            "category": "windows_write_capability",
-            "behavior": approval.behavior,
-            "targets": approval.targets,
-            "paths": paths,
-            // Existing clients already render this in a collapsed command
-            // disclosure. It is never used to construct the trusted title.
-            "command": command,
-            "scope": {
-                "cwd": sandbox.workspace.to_string_lossy(),
-                "inside_workspace": false,
-                "estimated_blast_radius": "medium"
-            }
-        }),
-        sandbox_boundary: sandbox.boundary_json(Some("additional_write_capability"), false),
-        save_suggestion,
-    }
-}
-
-/// Shape the approval card for a file access that resolved to `Ask`. `path` is
-/// the resolved absolute target; `op` its read/write nature.
-fn approval_shape(
-    tool_name: &str,
-    path: &Path,
-    op: Op,
-    arguments: &serde_json::Value,
-    sandbox: &ResolvedSandbox,
-) -> ApprovalShape {
-    let path_str = path.to_string_lossy().to_string();
-    let inside = paths::path_within(path, &sandbox.workspace);
-    let (kind, category, title, summary, verb) = match op {
-        Op::Read => (
-            "file_read",
-            "file_read",
-            "Approve file read",
-            "Agent wants to read a protected file.",
-            "Read",
-        ),
-        Op::Write if inside => (
-            "file_write",
-            if tool_name == "edit" {
-                "file_edit"
-            } else {
-                "file_write"
-            },
-            "Approve file write",
-            "Agent wants to modify a protected file.",
-            "Modify",
-        ),
-        Op::Write => (
-            "outside_workspace_write",
-            if tool_name == "edit" {
-                "file_edit"
-            } else {
-                "file_write"
-            },
-            "Approve outside-workspace write",
-            "Agent wants to modify a file outside the workspace.",
-            "Modify",
-        ),
-    };
-    let writes = if op == Op::Write {
-        serde_json::json!([{ "path": path_str, "preview": argument_write_preview(arguments) }])
-    } else {
-        serde_json::json!([])
-    };
-    let action = serde_json::json!({
-        "tool": tool_name,
-        "category": category,
-        "summary": format!("{verb} {path_str}"),
-        "paths": [path_str.clone()],
-        "writes": writes,
-        "scope": {
-            "cwd": sandbox.workspace.to_string_lossy(),
-            "inside_workspace": inside,
-            "estimated_blast_radius": "medium"
-        }
-    });
-    let violation = if op == Op::Read {
-        "protected_read"
-    } else if inside {
-        "protected_write"
-    } else {
-        "outside_workspace_write"
-    };
-    // Secret files are "allow once" only — never persistently allowed
-    // (Plan A). Suppress the save suggestion so the GUI hides the "allow in
-    // this workspace" button; only deny / allow-once remain.
-    let save_suggestion = if sandbox.is_secret_path(path) {
-        None
-    } else {
-        path_save_suggestion(path, op, &sandbox.workspace)
-    };
-    ApprovalShape {
-        kind,
-        risk_level: "medium",
-        title: title.to_string(),
-        summary: summary.to_string(),
-        action,
-        sandbox_boundary: sandbox.boundary_json(Some(violation), false),
-        save_suggestion,
-    }
-}
-
-/// Suggested rule (v2 file format) for "allow in this workspace": everything in
-/// the target's parent directory, scoped to the same read/write op. Paths
-/// inside the workspace are made **relative** (portable, git-friendly); outside
-/// paths stay absolute.
-fn path_save_suggestion(path: &Path, op: Op, workspace: &Path) -> Option<serde_json::Value> {
-    let parent = path.parent()?;
-    let glob = match parent.strip_prefix(workspace) {
-        Ok(rel) if rel.as_os_str().is_empty() => "*".to_string(),
-        Ok(rel) => format!("{}/*", rel.to_string_lossy()),
-        Err(_) => format!("{}/*", parent.to_string_lossy()),
-    };
-    Some(serde_json::json!({
-        "path": glob,
-        "access": match op { Op::Read => "read", Op::Write => "write" },
-        "action": "allow",
-    }))
-}
-
-/// Manual-tier exemptions are deliberately limited to literal introspection.
-/// A program basename does not prove safety: env executes programs, git and
-/// text utilities have write/exec options, and even read-only commands can read
-/// secrets. Do not try to infer paths from shell syntax; file reads should use
-/// the path-aware read tool or ask for approval. OS-wrapped shells and explicit
-/// full-permission sessions retain their existing policy.
-fn shell_auto_allow(command: &str) -> bool {
-    // pwd is a shell builtin (PowerShell's built-in Get-Location alias), not
-    // a PATH lookup. Even plain `ls` can resolve to a workspace-planted binary.
-    command.trim() == "pwd"
-}
-
-/// Approval card for a shell command that isn't auto-allowed (Manual tier).
-fn shell_command_shape(command: &str, sandbox: &ResolvedSandbox) -> ApprovalShape {
-    ApprovalShape {
-        kind: "shell_command",
-        risk_level: "medium",
-        title: "Approve shell command".to_string(),
-        summary: "Agent wants to run a shell command.".to_string(),
-        action: serde_json::json!({
-            "tool": "shell",
-            "category": "shell_command",
-            "summary": command_summary(command),
-            "command": command,
-            "scope": {
-                "cwd": sandbox.workspace.to_string_lossy(),
-                "inside_workspace": true,
-                "estimated_blast_radius": "medium"
-            }
-        }),
-        sandbox_boundary: sandbox.boundary_json(Some("shell_command"), false),
-        // shell approvals are one-time only — v2 rules are path-based, not command-based.
-        save_suggestion: None,
-    }
-}
-
-fn command_summary(command: &str) -> String {
-    let trimmed = command.trim();
-    if trimmed.len() <= 200 {
-        trimmed.to_string()
-    } else {
-        let mut head: String = trimmed.chars().take(200).collect();
-        head.push('\u{2026}');
-        head
-    }
-}
-
-/// Best-effort paths mentioned by denial diagnostics, not an inventory of all
-/// files the command accesses. Linux EACCES/EROFS are included for approval
-/// display only; this parser must never decide whether to retry unsandboxed.
-fn extract_blocked_paths_raw(stderr: &str) -> Vec<String> {
-    extract_denial_paths(stderr, true)
-}
-
-fn extract_denial_paths(stderr: &str, include_linux_diagnostics: bool) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for line in stderr.lines() {
-        let path = if line.contains("Operation not permitted") {
-            quoted_path(line).or_else(|| absolute_path_token(line))
-        } else if include_linux_diagnostics {
-            linux_diagnostic_path(line)
-        } else {
-            None
-        };
-        let Some(raw) = path else {
-            continue;
-        };
-        if !out.contains(&raw) {
-            out.push(raw);
-        }
-        if out.len() >= 5 {
-            break;
-        }
-    }
-    out
-}
-
-/// Common coreutils/shell diagnostics: quoted targets (including spaces), or
-/// `program: [line N:] /absolute/target: error`. Do not report `/bin/bash`
-/// instead of the target, resolve relative names against an assumed cwd, or
-/// treat URLs as filesystem paths. Localized/arbitrary program output remains
-/// best-effort and may yield no target.
-fn linux_diagnostic_path(line: &str) -> Option<String> {
-    let prefix = [
-        "Permission denied",
-        "Read-only file system",
-        "Device or resource busy",
-    ]
-    .iter()
-    .filter_map(|error| line.find(error))
-    .min()
-    .map(|index| &line[..index])?;
-    for (open, close) in [('\'', '\''), ('"', '"'), ('‘', '’')] {
-        let mut rest = prefix;
-        while let Some((_, after_open)) = rest.split_once(open) {
-            let Some((target, after_close)) = after_open.split_once(close) else {
-                break;
-            };
-            if target.starts_with('/') {
-                return Some(target.to_string());
-            }
-            rest = after_close;
-        }
-    }
-    let target = prefix.trim().strip_suffix(':')?.trim();
-    let target = target.rsplit(": ").next()?.trim();
-    target.starts_with('/').then(|| target.to_string())
-}
-
-/// Shorten `$HOME` to `~` for display.
-fn shorten_home(path: &str) -> String {
-    if let Some(home) = crate::utils::home_dir_opt() {
-        if let Ok(rest) = std::path::Path::new(path).strip_prefix(home) {
-            // Windows renders the tail with `\`; the shortened form is card
-            // text and a saved-rule path, and tilde expansion accepts either
-            // separator, so it is normalized to `/` for stable rules.
-            #[cfg(windows)]
-            let rest = rest.to_string_lossy().replace('\\', "/");
-            #[cfg(not(windows))]
-            let rest = rest.to_string_lossy().into_owned();
-            return if rest.is_empty() {
-                "~".to_string()
-            } else {
-                format!("~/{rest}")
-            };
-        }
-    }
-    path.to_string()
-}
-
-/// Card-friendly blocked paths (`$HOME` → `~`), for display only.
 #[cfg(test)]
-fn extract_blocked_paths(stderr: &str) -> Vec<String> {
-    extract_blocked_paths_raw(stderr)
-        .iter()
-        .map(|p| shorten_home(p))
-        .collect()
-}
-
-/// "Allow in this workspace/chat" suggestion for an escalation: the parent
-/// directory of the (first) blocked path. Returns `None` when any blocked path
-/// is a secret (secrets stay one-time-only) or none is known — so the card
-/// shows only "allow once" for those. Access is `write`: reads of non-secrets
-/// are open, so a non-secret denial is a write.
-fn escalation_save_suggestion(
-    raw_paths: &[String],
-    sandbox: &ResolvedSandbox,
-) -> Option<serde_json::Value> {
-    if raw_paths.is_empty() {
-        return None;
-    }
-    if raw_paths
-        .iter()
-        .any(|p| sandbox.is_secret_path(Path::new(p)))
-    {
-        return None;
-    }
-    let parent = Path::new(&raw_paths[0]).parent()?;
-    let glob = match parent.strip_prefix(&sandbox.workspace) {
-        Ok(rel) if rel.as_os_str().is_empty() => "*".to_string(),
-        Ok(rel) => format!("{}/*", rel.to_string_lossy()),
-        // Outside the workspace: keep it portable with `~` when under home.
-        Err(_) => format!("{}/*", shorten_home(&parent.to_string_lossy())),
-    };
-    Some(serde_json::json!({
-        "path": glob,
-        "access": "write",
-        "action": "allow",
-    }))
-}
-
-/// First `'…'` or `"…"` span that looks like a path (contains `/`).
-fn quoted_path(line: &str) -> Option<String> {
-    for quote in ['\'', '"'] {
-        let mut parts = line.split(quote);
-        // parts alternate outside/inside the quote; index 1, 3, … are inside.
-        parts.next();
-        while let Some(inside) = parts.next() {
-            if inside.contains('/') {
-                return Some(inside.to_string());
-            }
-            parts.next(); // skip the following outside span
-        }
-    }
-    None
-}
-
-/// First whitespace token that is an absolute path, trimming trailing `:`/`,`.
-fn absolute_path_token(line: &str) -> Option<String> {
-    line.split_whitespace()
-        .map(|tok| tok.trim_end_matches([':', ',']))
-        .find(|tok| tok.starts_with('/') && tok.len() > 1)
-        .map(str::to_string)
-}
-
-fn argument_write_preview(arguments: &serde_json::Value) -> Option<String> {
-    let normalized = match arguments {
-        serde_json::Value::String(raw) => serde_json::from_str(raw)
-            .ok()
-            .or_else(|| repair_partial_json_object(raw)),
-        _ => Some(arguments.clone()),
-    }?;
-    for key in ["content", "newText", "text"] {
-        if let Some(value) = normalized.get(key).and_then(|v| v.as_str()) {
-            let mut head: String = value.chars().take(200).collect();
-            if value.chars().count() > 200 {
-                head.push('\u{2026}');
-            }
-            return Some(head);
-        }
-    }
-    None
-}
-
-fn normalize_requested_action(arguments: &serde_json::Value) -> serde_json::Value {
-    match arguments {
-        serde_json::Value::String(raw) => serde_json::from_str(raw)
-            .ok()
-            .or_else(|| repair_partial_json_object(raw))
-            .unwrap_or_else(|| arguments.clone()),
-        _ => arguments.clone(),
-    }
-}
-
-fn repair_partial_json_object(raw: &str) -> Option<serde_json::Value> {
-    let trimmed = raw.trim();
-    if !trimmed.starts_with('{') {
-        return None;
-    }
-
-    let mut repaired = trimmed.to_string();
-    if has_unclosed_string(&repaired) {
-        repaired.push('"');
-    }
-
-    let open_braces = repaired.chars().filter(|c| *c == '{').count();
-    let close_braces = repaired.chars().filter(|c| *c == '}').count();
-    if open_braces > close_braces {
-        for _ in 0..(open_braces - close_braces) {
-            repaired.push('}');
-        }
-    }
-
-    serde_json::from_str(&repaired).ok()
-}
-
-fn has_unclosed_string(value: &str) -> bool {
-    let mut in_string = false;
-    let mut escaped = false;
-    for ch in value.chars() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match ch {
-            '\\' if in_string => escaped = true,
-            '"' => in_string = !in_string,
-            _ => {}
-        }
-    }
-    in_string
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::sandbox::SandboxPolicy;
-
-    #[test]
-    fn shell_whitelist_allows_only_literal_introspection() {
-        assert!(!shell_auto_allow("ls -la"));
-        assert!(shell_auto_allow("pwd"));
-        for command in [
-            "cat README.md",
-            "git status",
-            "git log --oneline",
-            "grep -rn foo src | head -20",
-            "/tmp/ls",
-            "find . -name '*.rs'",
-            "env sh evil.sh",
-            "cat ~/.ssh/id_rsa",
-            "cat /etc/shadow",
-            "cat $SECRET",
-            "head ../keys/key.pem",
-            "git branch -D main",
-            "git tag -d v1",
-            "git remote add evil url",
-            "git reflog expire --all",
-            "sort -o out in",
-            "uniq in out",
-            "find . -fls out",
-            "date -s 2020-01-01",
-            "hostname evil",
-            "yes",
-            "seq 999999999",
-        ] {
-            assert!(!shell_auto_allow(command), "must ask: {command}");
-        }
-    }
-
-    #[test]
-    fn shell_whitelist_asks_for_writes_and_chains() {
-        assert!(!shell_auto_allow("rm -rf build"));
-        assert!(!shell_auto_allow("echo hi > file.txt")); // redirect
-        assert!(!shell_auto_allow("git commit -m x")); // mutating subcommand
-        assert!(!shell_auto_allow("ls && rm x")); // chain
-        assert!(!shell_auto_allow("cat $(whoami)")); // substitution
-        assert!(!shell_auto_allow("find . -delete")); // find mutation
-        assert!(!shell_auto_allow("grep foo x | rm y")); // pipe to non-read-only
-        assert!(!shell_auto_allow("npm install")); // unknown program
-        assert!(!shell_auto_allow(""));
-    }
-
-    #[test]
-    fn shell_whitelist_does_not_exempt_powershell_file_reads() {
-        assert!(!shell_auto_allow("Get-ChildItem"));
-        assert!(!shell_auto_allow("get-content foo.txt"));
-        assert!(!shell_auto_allow(
-            "Get-Content $env:USERPROFILE/.ssh/id_rsa"
-        ));
-        assert!(!shell_auto_allow("Select-String -Pattern foo bar.txt"));
-        assert!(!shell_auto_allow(
-            "Get-ChildItem -Recurse | Select-String foo"
-        ));
-        assert!(!shell_auto_allow(
-            r"C:\Windows\System32\findstr.exe foo bar.txt"
-        ));
-    }
-
-    #[test]
-    fn shell_whitelist_asks_for_powershell_writes_and_blocks() {
-        assert!(!shell_auto_allow("Remove-Item x")); // mutating cmdlet
-        assert!(!shell_auto_allow("Set-Content foo.txt 'x'")); // writes
-        assert!(!shell_auto_allow("Get-Content x > out.txt")); // redirect
-        assert!(!shell_auto_allow("Get-ChildItem; Remove-Item x")); // chain
-        assert!(!shell_auto_allow("Where-Object { $_.Length -gt 0 }")); // script block
-        assert!(!shell_auto_allow("Invoke-Expression 'rm x'")); // arbitrary exec
-    }
-
-    #[test]
-    fn extract_blocked_paths_from_gpg_denial() {
-        let stderr = "\
-[exit code: 128]
-error: gpg failed to sign the data:
-gpg: failed to create temporary file '/Users/x/.gnupg/.#lk0x001.host.9334': Operation not permitted
-gpg: 密钥区块资源 '/Users/x/.gnupg/pubring.kbx': Operation not permitted
-[GNUPG:] ERROR add_keyblock_resource 33587307";
-        let paths = extract_blocked_paths(stderr);
-        assert_eq!(
-            paths,
-            vec![
-                "/Users/x/.gnupg/.#lk0x001.host.9334".to_string(),
-                "/Users/x/.gnupg/pubring.kbx".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn escalation_suggests_parent_for_nonsecret_but_not_secret() {
-        let _home_guard = crate::test_support::home_env_lock();
-        let ws = temp_ws("escalation-sug");
-        let sandbox = ResolvedSandbox::resolve(
-            &SandboxPolicy {
-                tier: crate::sandbox::SandboxTier::Manual,
-            },
-            &ws,
-        );
-        let home = dirs::home_dir().unwrap();
-
-        // Non-secret outside-workspace write → suggest the parent dir (~ form).
-        let desktop = home.join("Desktop/note.txt");
-        let sug = escalation_save_suggestion(&[desktop.to_string_lossy().into_owned()], &sandbox)
-            .expect("non-secret blocked path should be persistable");
-        assert_eq!(sug["path"], "~/Desktop/*");
-        assert_eq!(sug["access"], "write");
-
-        // A secret blocked path (~/.gnupg) → no persistence (one-time only).
-        let gnupg = home.join(".gnupg/pubring.kbx");
-        assert!(
-            escalation_save_suggestion(&[gnupg.to_string_lossy().into_owned()], &sandbox).is_none()
-        );
-        // Mixed (one secret) → still none.
-        assert!(escalation_save_suggestion(
-            &[
-                desktop.to_string_lossy().into_owned(),
-                gnupg.to_string_lossy().into_owned()
-            ],
-            &sandbox
-        )
-        .is_none());
-        // No known paths → none.
-        assert!(escalation_save_suggestion(&[], &sandbox).is_none());
-    }
-
-    #[test]
-    fn extract_blocked_paths_unquoted_and_deduped() {
-        let stderr = "touch: /etc/hosts: Operation not permitted\n\
-                      touch: /etc/hosts: Operation not permitted";
-        assert_eq!(
-            extract_blocked_paths(stderr),
-            vec!["/etc/hosts".to_string()]
-        );
-        // Non-denial lines are ignored.
-        assert!(extract_blocked_paths("error[E0308]: mismatched types").is_empty());
-    }
-
-    #[test]
-    fn extract_blocked_paths_linux_diagnostics() {
-        let stderr = "cat: /home/ace/.aws/config: Permission denied\n\
-            touch: cannot touch '/etc/test file': Read-only file system\n\
-            mkdir: cannot create directory ‘/opt/new dir’: Permission denied\n\
-            /bin/bash: line 1: /etc/shell target: Read-only file system\n\
-            cat: \"/home/ace/.ssh/config\": Permission denied\n\
-            cat: /home/ace/.aws/config: Permission denied";
-        assert_eq!(
-            extract_blocked_paths_raw(stderr),
-            vec![
-                "/home/ace/.aws/config",
-                "/etc/test file",
-                "/opt/new dir",
-                "/etc/shell target",
-                "/home/ace/.ssh/config",
-            ]
-        );
-        // Display improvements do not broaden persistent write-rule suggestions.
-        assert!(extract_denial_paths(stderr, false).is_empty());
-    }
-
-    #[test]
-    fn extract_blocked_paths_linux_ignores_unknown_targets_and_other_failures() {
-        for line in [
-            "cat: config: Permission denied",
-            "cat: '../config': Permission denied",
-            "curl: https://example.com/private: Permission denied",
-            "sandbox: Permission denied",
-            "cat: /tmp/missing: No such file or directory",
-            "future-linux-sandbox-helper: mount source is unavailable: /home/ace/.aws: No such file or directory (os error 2)",
-        ] {
-            assert!(extract_blocked_paths_raw(line).is_empty(), "{line}");
-        }
-    }
-
-    #[test]
-    fn extract_blocked_paths_mixed_errors_deduplicate_and_preserve_suggestion_scope() {
-        let stderr = "touch: /etc/one: Operation not permitted\n\
-            touch: /etc/one: Read-only file system\n\
-            cat: /etc/two: Permission denied\n\
-            touch: /etc/three: Operation not permitted";
-        assert_eq!(
-            extract_blocked_paths_raw(stderr),
-            vec!["/etc/one", "/etc/two", "/etc/three"]
-        );
-        assert_eq!(
-            extract_denial_paths(stderr, false),
-            vec!["/etc/one", "/etc/three"]
-        );
-    }
-
-    fn temp_ws(name: &str) -> String {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("futureos-approval-{name}-{stamp}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.to_string_lossy().to_string()
-    }
-
-    fn enabled(ws: &str) -> ResolvedSandbox {
-        ResolvedSandbox::resolve(
-            &SandboxPolicy {
-                tier: crate::sandbox::SandboxTier::Manual,
-            },
-            ws,
-        )
-    }
-
-    /// A path outside the workspace and temp (never created).
-    fn outside(name: &str) -> String {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        dirs::home_dir()
-            .unwrap()
-            .join(format!("futureos-approval-outside-{name}-{stamp}.txt"))
-            .to_string_lossy()
-            .to_string()
-    }
-
-    #[test]
-    fn disabled_session_never_prompts() {
-        let ws = temp_ws("disabled");
-        let sandbox = ResolvedSandbox::disabled(&ws);
-        let gate = ApprovalGate::default();
-        let b = SseBroadcaster::new();
-        let args = serde_json::json!({ "path": outside("d"), "content": "x" });
-        assert!(gate
-            .request(&b, "s", &ws, "write", "t", &args, &sandbox)
-            .is_none());
-    }
-
-    #[test]
-    fn shell_read_only_auto_allowed_in_manual() {
-        // Manual tier: read-only whitelist commands run without a prompt.
-        let ws = temp_ws("shell-ro");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let b = SseBroadcaster::new();
-        let args = serde_json::json!({ "command": "pwd" });
-        assert!(gate
-            .request(&b, "s", &ws, "shell", "t", &args, &sandbox)
-            .is_none());
-    }
-
-    #[test]
-    fn shell_never_gated_when_disabled() {
-        // Off tier: no approval at all, even for a dangerous command.
-        let ws = temp_ws("shell-off");
-        let sandbox = ResolvedSandbox::disabled(&ws);
-        let gate = ApprovalGate::default();
-        let b = SseBroadcaster::new();
-        let args = serde_json::json!({ "command": "rm -rf /" });
-        assert!(gate
-            .request(&b, "s", &ws, "shell", "t", &args, &sandbox)
-            .is_none());
-    }
-
-    #[test]
-    fn write_inside_workspace_auto_allowed() {
-        let ws = temp_ws("inside");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let b = SseBroadcaster::new();
-        let args = serde_json::json!({ "path": format!("{ws}/src/main.rs"), "content": "x" });
-        assert!(gate
-            .request(&b, "s", &ws, "write", "t", &args, &sandbox)
-            .is_none());
-    }
-
-    #[test]
-    fn rule_file_write_is_denied_without_prompt() {
-        let ws = temp_ws("rulefile");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let b = SseBroadcaster::new();
-        let args = serde_json::json!({
-            "path": format!("{ws}/.future/approval_rule.json"),
-            "content": "{}"
-        });
-        let result = gate
-            .request(&b, "s", &ws, "write", "t", &args, &sandbox)
-            .expect("rule-file write must be denied");
-        assert!(result.is_error);
-        assert!(result.result.contains("denied by an approval rule"));
-    }
-
-    #[test]
-    fn read_of_ordinary_file_auto_allowed() {
-        let ws = temp_ws("read-ok");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let b = SseBroadcaster::new();
-        let args = serde_json::json!({ "path": format!("{ws}/src/lib.rs") });
-        assert!(gate
-            .request(&b, "s", &ws, "read", "t", &args, &sandbox)
-            .is_none());
-    }
-
-    #[test]
-    fn shape_for_write_is_structured() {
-        let ws = temp_ws("shape");
-        let sandbox = enabled(&ws);
-        // Use the canonicalized workspace so the suggestion is workspace-relative.
-        let path = sandbox.workspace.join("sub/out.txt");
-        let args = serde_json::json!({ "path": path.to_string_lossy(), "content": "hello" });
-        let shape = approval_shape("write", &path, Op::Write, &args, &sandbox);
-        assert_eq!(shape.action["tool"], "write");
-        assert_eq!(shape.action["category"], "file_write");
-        assert_eq!(shape.action["writes"][0]["preview"], "hello");
-        let sug = shape.save_suggestion.unwrap();
-        assert_eq!(sug["access"], "write");
-        assert_eq!(sug["action"], "allow");
-        // Inside the workspace → relative glob.
-        assert_eq!(sug["path"], "sub/*");
-    }
-
-    #[test]
-    fn shape_for_secret_read_suppresses_suggestion() {
-        // $HOME must stay stable between sandbox resolution and the assertion
-        // path build (TestHome in rpc::commands redirects it process-wide).
-        let _home_guard = crate::test_support::home_env_lock();
-        // A secret file (~/.ssh) has no "allow in this workspace" — allow-once only.
-        let ws = temp_ws("shape-secret");
-        let sandbox = enabled(&ws);
-        let path = dirs::home_dir().unwrap().join(".ssh/id_rsa");
-        let args = serde_json::json!({ "path": path.to_string_lossy() });
-        let shape = approval_shape("read", &path, Op::Read, &args, &sandbox);
-        assert_eq!(shape.kind, "file_read");
-        assert!(shape.save_suggestion.is_none());
-    }
-
-    #[test]
-    fn shape_for_nonsecret_read_has_suggestion() {
-        let ws = temp_ws("shape-read");
-        let sandbox = enabled(&ws);
-        let path = sandbox.workspace.join("docs/readme.md");
-        let args = serde_json::json!({ "path": path.to_string_lossy() });
-        let shape = approval_shape("read", &path, Op::Read, &args, &sandbox);
-        assert_eq!(shape.save_suggestion.unwrap()["access"], "read");
-    }
-
-    #[test]
-    fn decide_rejects_wrong_session_but_accepts_owning_session() {
-        use std::sync::mpsc;
-        let gate = ApprovalGate::default();
-        let (tx, rx) = mpsc::channel();
-        gate.pending.lock().insert(
-            "req1".to_string(),
-            PendingApproval {
-                session_id: "sessA".to_string(),
-                payload: serde_json::json!({"approval_request_id": "req1"}),
-                tx,
-            },
-        );
-        let decision = ApprovalDecision {
-            approved: true,
-            note: String::new(),
-            status: ApprovalDecisionStatus::Approved,
-        };
-        // A different session cannot approve this request (auth I1 exception);
-        // the pending request must remain so the owning session still can.
-        assert!(gate.decide("req1", "sessB", decision.clone()).is_err());
-        assert!(gate.pending.lock().contains_key("req1"));
-        // The owning session's decision goes through and is delivered.
-        assert!(gate.decide("req1", "sessA", decision).is_ok());
-        assert!(!gate.pending.lock().contains_key("req1"));
-        assert_eq!(
-            rx.try_recv().unwrap().status,
-            ApprovalDecisionStatus::Approved
-        );
-    }
-
-    // ─── shell_auto_allow ──────────────────────────────────────────────────
-
-    #[test]
-    fn shell_auto_allow_requires_approval_for_arbitrary_reads() {
-        assert!(!shell_auto_allow("ls -la"));
-        assert!(!shell_auto_allow("cat file.txt"));
-        assert!(!shell_auto_allow("grep pattern file.txt"));
-        assert!(!shell_auto_allow("head -5 file.txt"));
-        assert!(!shell_auto_allow("git log"));
-        assert!(!shell_auto_allow("git diff"));
-        assert!(!shell_auto_allow("find . -name '*.rs'"));
-    }
-
-    #[test]
-    fn shell_auto_allow_rejects_writes() {
-        assert!(!shell_auto_allow("echo hello > file.txt"));
-        assert!(!shell_auto_allow("rm file.txt"));
-        assert!(!shell_auto_allow("touch file.txt"));
-        assert!(!shell_auto_allow("mkdir newdir"));
-        assert!(!shell_auto_allow("mv a b"));
-    }
-
-    #[test]
-    fn shell_auto_allow_rejects_chains() {
-        assert!(!shell_auto_allow("ls && rm file"));
-        assert!(!shell_auto_allow("ls; rm file"));
-        assert!(!shell_auto_allow("ls | tee output.txt"));
-        assert!(!shell_auto_allow("echo `whoami`"));
-        assert!(!shell_auto_allow("echo $(date)"));
-    }
-
-    #[test]
-    fn shell_auto_allow_rejects_pipes_with_writes() {
-        assert!(!shell_auto_allow("ls | tee output.txt"));
-    }
-
-    #[test]
-    fn shell_auto_allow_requires_approval_for_pipes() {
-        assert!(!shell_auto_allow("ls | grep file"));
-        assert!(!shell_auto_allow("cat file | head -10"));
-    }
-
-    #[test]
-    fn shell_auto_allow_empty_command() {
-        assert!(!shell_auto_allow(""));
-        assert!(!shell_auto_allow("   "));
-    }
-
-    // ─── command_summary ───────────────────────────────────────────────────
-
-    #[test]
-    fn command_summary_short() {
-        assert_eq!(command_summary("ls -la"), "ls -la");
-    }
-
-    #[test]
-    fn command_summary_truncates_long() {
-        let long = "a".repeat(300);
-        let summary = command_summary(&long);
-        // 200 chars + 3-byte ellipsis
-        assert!(summary.len() <= 203);
-        assert!(summary.ends_with('\u{2026}'));
-    }
-
-    // ─── extract_blocked_paths_raw ─────────────────────────────────────────
-
-    #[test]
-    fn extract_blocked_paths_raw_quoted() {
-        let stderr = "touch: /etc/test.txt: Operation not permitted";
-        let paths = extract_blocked_paths_raw(stderr);
-        assert_eq!(paths, vec!["/etc/test.txt"]);
-    }
-
-    #[test]
-    fn extract_blocked_paths_raw_multiple() {
-        let stderr = "touch: /etc/a.txt: Operation not permitted\ntouch: /etc/b.txt: Operation not permitted";
-        let paths = extract_blocked_paths_raw(stderr);
-        assert_eq!(paths.len(), 2);
-    }
-
-    #[test]
-    fn extract_blocked_paths_raw_no_match() {
-        let stderr = "some other error";
-        assert!(extract_blocked_paths_raw(stderr).is_empty());
-    }
-
-    #[test]
-    fn busy_mount_absolute_target_is_display_only() {
-        assert_eq!(
-            extract_blocked_paths_raw("rm: cannot remove '/work/.env': Device or resource busy"),
-            vec!["/work/.env"]
-        );
-        assert!(
-            extract_blocked_paths_raw("rm: cannot remove '.env': Device or resource busy")
-                .is_empty()
-        );
-    }
-
-    // ─── shorten_home ──────────────────────────────────────────────────────
-
-    #[test]
-    fn shorten_home_replaces_home() {
-        let _home_guard = crate::test_support::home_env_lock();
-        let home = dirs::home_dir().unwrap().to_string_lossy().to_string();
-        let path = format!("{}/some/file.txt", home);
-        assert_eq!(shorten_home(&path), "~/some/file.txt");
-    }
-
-    #[test]
-    fn shorten_home_outside_home() {
-        let home = crate::utils::home_dir();
-        let sibling = format!("{}-sibling/file", home.display());
-        assert_eq!(shorten_home(&sibling), sibling);
-        assert_eq!(shorten_home("/etc/hosts"), "/etc/hosts");
-    }
-
-    // ─── quoted_path ───────────────────────────────────────────────────────
-
-    #[test]
-    fn quoted_path_finds_path() {
-        assert_eq!(
-            quoted_path("touch: '/etc/test.txt': Operation not permitted"),
-            Some("/etc/test.txt".to_string())
-        );
-    }
-
-    #[test]
-    fn decide_unknown_request_errors() {
-        let gate = ApprovalGate::default();
-        let decision = ApprovalDecision {
-            approved: false,
-            note: String::new(),
-            status: ApprovalDecisionStatus::Rejected,
-        };
-        assert!(gate.decide("nope", "sessA", decision).is_err());
-    }
-
-    #[test]
-    fn pending_for_session_returns_only_owning_sessions_payloads() {
-        let gate = ApprovalGate::default();
-        let _rx_a1 = gate.insert_pending_for_test("req-a1", "sessA");
-        let _rx_a2 = gate.insert_pending_for_test("req-a2", "sessA");
-        let _rx_b1 = gate.insert_pending_for_test("req-b1", "sessB");
-
-        let mut ids = gate
-            .pending_for_session("sessA")
-            .iter()
-            .filter_map(|p| p["approval_request_id"].as_str().map(str::to_string))
-            .collect::<Vec<_>>();
-        ids.sort();
-        assert_eq!(ids, vec!["req-a1", "req-a2"]);
-        assert_eq!(gate.pending_for_session("sessB").len(), 1);
-        assert!(gate.pending_for_session("sessC").is_empty());
-
-        // A decided (removed) request no longer shows up as pending.
-        let decision = ApprovalDecision {
-            approved: true,
-            note: String::new(),
-            status: ApprovalDecisionStatus::Approved,
-        };
-        assert!(gate.decide("req-a1", "sessA", decision).is_ok());
-        assert_eq!(gate.pending_for_session("sessA").len(), 1);
-    }
-
-    #[test]
-    fn quoted_path_no_path() {
-        assert_eq!(quoted_path("no path here"), None);
-    }
-
-    // ─── absolute_path_token ───────────────────────────────────────────────
-
-    #[test]
-    fn absolute_path_token_finds() {
-        assert_eq!(
-            absolute_path_token("touch: /etc/test.txt: Operation not permitted"),
-            Some("/etc/test.txt".to_string())
-        );
-    }
-
-    #[test]
-    fn absolute_path_token_trims_colon() {
-        assert_eq!(
-            absolute_path_token("error: /path/to/file: something"),
-            Some("/path/to/file".to_string())
-        );
-    }
-
-    #[test]
-    fn absolute_path_token_none() {
-        assert_eq!(absolute_path_token("no paths here"), None);
-    }
-
-    // ─── argument_write_preview ────────────────────────────────────────────
-
-    #[test]
-    fn argument_write_preview_finds_content() {
-        let args = serde_json::json!({"content": "file content here"});
-        assert_eq!(
-            argument_write_preview(&args),
-            Some("file content here".to_string())
-        );
-    }
-
-    #[test]
-    fn argument_write_preview_finds_new_text() {
-        let args = serde_json::json!({"newText": "replacement"});
-        assert_eq!(
-            argument_write_preview(&args),
-            Some("replacement".to_string())
-        );
-    }
-
-    #[test]
-    fn argument_write_preview_truncates() {
-        let long = "a".repeat(300);
-        let args = serde_json::json!({"content": long});
-        let preview = argument_write_preview(&args).unwrap();
-        // 200 chars + 3-byte ellipsis
-        assert!(preview.len() <= 203);
-    }
-
-    #[test]
-    fn argument_write_preview_no_content() {
-        let args = serde_json::json!({"path": "/tmp/file"});
-        assert_eq!(argument_write_preview(&args), None);
-    }
-
-    #[test]
-    fn argument_write_preview_string_json() {
-        let args = serde_json::json!("{\"content\": \"string content\"}");
-        assert_eq!(
-            argument_write_preview(&args),
-            Some("string content".to_string())
-        );
-    }
-
-    // ─── normalize_requested_action ────────────────────────────────────────
-
-    #[test]
-    fn normalize_requested_action_parses_json_string() {
-        let args = serde_json::json!("{\"path\": \"/tmp/file.txt\"}");
-        let result = normalize_requested_action(&args);
-        assert_eq!(result["path"], "/tmp/file.txt");
-    }
-
-    #[test]
-    fn normalize_requested_action_non_string() {
-        let args = serde_json::json!({"path": "/tmp/file.txt"});
-        let result = normalize_requested_action(&args);
-        assert_eq!(result["path"], "/tmp/file.txt");
-    }
-
-    // ─── repair_partial_json_object ────────────────────────────────────────
-
-    #[test]
-    fn repair_partial_json_object_missing_brace() {
-        let raw = r#"{"path": "/tmp/file.txt""#;
-        let repaired = repair_partial_json_object(raw);
-        assert!(repaired.is_some());
-        assert_eq!(repaired.unwrap()["path"], "/tmp/file.txt");
-    }
-
-    #[test]
-    fn repair_partial_json_object_unclosed_string() {
-        let raw = r#"{"path": "/tmp/file"#;
-        let repaired = repair_partial_json_object(raw);
-        assert!(repaired.is_some());
-    }
-
-    #[test]
-    fn repair_partial_json_object_not_object() {
-        assert!(repair_partial_json_object("[1,2,3]").is_none());
-    }
-
-    #[test]
-    fn repair_partial_json_object_valid() {
-        let raw = r#"{"path": "/tmp/file.txt"}"#;
-        let repaired = repair_partial_json_object(raw);
-        assert!(repaired.is_some());
-    }
-
-    // ─── has_unclosed_string ───────────────────────────────────────────────
-
-    #[test]
-    fn has_unclosed_string_true() {
-        assert!(has_unclosed_string(r#"{"key": "unclosed"#));
-    }
-
-    #[test]
-    fn has_unclosed_string_false() {
-        assert!(!has_unclosed_string(r#"{"key": "closed"}"#));
-        assert!(!has_unclosed_string("no strings"));
-    }
-
-    #[test]
-    fn has_unclosed_string_escaped_quotes() {
-        assert!(!has_unclosed_string(r#"{"key": "with \"escape\""}"#));
-    }
-
-    // ─── escalation_save_suggestion ────────────────────────────────────────
-
-    #[test]
-    fn escalation_save_suggestion_workspace_parent() {
-        let ws = temp_ws("esc-save");
-        let sandbox = enabled(&ws);
-        let blocked = format!("{}/subdir/file.txt", ws);
-        let suggestion = escalation_save_suggestion(&[blocked], &sandbox);
-        assert!(suggestion.is_some());
-        let s = suggestion.unwrap();
-        assert_eq!(s["access"], "write");
-        assert_eq!(s["action"], "allow");
-    }
-
-    #[test]
-    fn escalation_save_suggestion_empty_paths() {
-        let ws = temp_ws("esc-empty");
-        let sandbox = enabled(&ws);
-        assert!(escalation_save_suggestion(&[], &sandbox).is_none());
-    }
-
-    #[test]
-    fn escalation_save_suggestion_secret_returns_none() {
-        let _home_guard = crate::test_support::home_env_lock();
-        let ws = temp_ws("esc-secret");
-        let sandbox = enabled(&ws);
-        let home = dirs::home_dir().unwrap().to_string_lossy().to_string();
-        let secret_path = format!("{home}/.ssh/id_rsa");
-        assert!(escalation_save_suggestion(&[secret_path], &sandbox).is_none());
-    }
-
-    // ─── path_save_suggestion ──────────────────────────────────────────────
-
-    #[test]
-    fn path_save_suggestion_inside_workspace() {
-        let ws = temp_ws("save-sugg");
-        let sandbox = enabled(&ws);
-        let path = sandbox.workspace.join("docs/readme.md");
-        let suggestion = path_save_suggestion(&path, Op::Read, &sandbox.workspace);
-        assert!(suggestion.is_some());
-    }
-
-    #[test]
-    fn path_save_suggestion_outside_workspace() {
-        let ws = temp_ws("save-outside");
-        let sandbox = enabled(&ws);
-        let outside = dirs::home_dir().unwrap().join("outside.txt");
-        let suggestion = path_save_suggestion(&outside, Op::Write, &sandbox.workspace);
-        // Should still generate a suggestion (with ~ for home)
-        let _ = suggestion;
-    }
-
-    // ─── shell_command_shape ───────────────────────────────────────────────
-
-    #[test]
-    fn shell_command_shape_structure() {
-        let ws = temp_ws("shell-shape");
-        let sandbox = enabled(&ws);
-        let shape = shell_command_shape("ls -la", &sandbox);
-        assert_eq!(shape.kind, "shell_command");
-        assert_eq!(shape.risk_level, "medium");
-        assert!(shape.save_suggestion.is_none());
-        assert_eq!(shape.action["command"], "ls -la");
-    }
-
-    // ─── interactive approval flows (decider thread + blocking ask) ────────
-
-    /// Poll the gate until the request appears, then deliver the decision.
-    /// Returns whether the request showed up (a never-taken `panic!` arm would
-    /// itself be an uncoverable line, so the outcome is asserted by callers).
-    fn spawn_decider(
-        gate: &ApprovalGate,
-        session_id: &str,
-        decision: ApprovalDecision,
-    ) -> std::thread::JoinHandle<bool> {
-        let gate = gate.clone();
-        let session_id = session_id.to_string();
-        std::thread::spawn(move || poll_and_decide(&gate, &session_id, decision, 2000))
-    }
-
-    fn poll_and_decide(
-        gate: &ApprovalGate,
-        session_id: &str,
-        decision: ApprovalDecision,
-        max_polls: u32,
-    ) -> bool {
-        for _ in 0..max_polls {
-            let pending = gate.pending_for_session(session_id);
-            if let Some(first) = pending.first() {
-                let request_id = first["approval_request_id"].as_str().unwrap().to_string();
-                let _ = gate.decide(&request_id, session_id, decision);
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        false
-    }
-
-    fn approved() -> ApprovalDecision {
-        ApprovalDecision {
-            approved: true,
-            note: String::new(),
-            status: ApprovalDecisionStatus::Approved,
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn request_shell_read_only_auto_allows() {
-        let ws = temp_ws("shell-ro");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let broadcaster = SseBroadcaster::new();
-        let result = gate.request(
-            &broadcaster,
-            "s1",
-            &ws,
-            "shell",
-            "t1",
-            &serde_json::json!({"command": "pwd"}),
-            &sandbox,
-        );
-        assert!(result.is_none(), "read-only shell bypasses the prompt");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn request_shell_ask_approved() {
-        let ws = temp_ws("shell-ask");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let broadcaster = SseBroadcaster::new();
-        let decider = spawn_decider(&gate, "s1", approved());
-        let result = gate.request(
-            &broadcaster,
-            "s1",
-            &ws,
-            "shell",
-            "t1",
-            &serde_json::json!({"command": "rm -rf /tmp/some-build-dir"}),
-            &sandbox,
-        );
-        assert!(decider.join().unwrap(), "approval request never appeared");
-        assert!(result.is_none(), "approved shell runs");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn request_shell_ask_rejected_with_note() {
-        let ws = temp_ws("shell-rej");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let broadcaster = SseBroadcaster::new();
-        let decider = spawn_decider(
-            &gate,
-            "s1",
-            ApprovalDecision {
-                approved: false,
-                note: "too dangerous".to_string(),
-                status: ApprovalDecisionStatus::Rejected,
-            },
-        );
-        let result = gate.request(
-            &broadcaster,
-            "s1",
-            &ws,
-            "shell",
-            "t1",
-            &serde_json::json!({"command": "rm -rf /tmp/some-build-dir"}),
-            &sandbox,
-        );
-        assert!(decider.join().unwrap(), "approval request never appeared");
-        let denial = result.expect("rejection returns a tool result");
-        assert!(denial.is_error);
-        assert!(denial
-            .result
-            .contains("rejected by the user: too dangerous"));
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn request_shell_ask_cancelled() {
-        let ws = temp_ws("shell-cancel");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let broadcaster = SseBroadcaster::new();
-        let decider = spawn_decider(
-            &gate,
-            "s1",
-            ApprovalDecision {
-                approved: false,
-                note: String::new(),
-                status: ApprovalDecisionStatus::Cancelled,
-            },
-        );
-        let result = gate.request(
-            &broadcaster,
-            "s1",
-            &ws,
-            "shell",
-            "t1",
-            &serde_json::json!({"command": "rm -rf /tmp/some-build-dir"}),
-            &sandbox,
-        );
-        assert!(decider.join().unwrap(), "approval request never appeared");
-        let cancellation = result.expect("cancel returns a tool result");
-        assert!(cancellation.is_error);
-        assert!(cancellation.result.contains("cancelled"));
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn request_write_outside_workspace_ask_approved() {
-        let _home_guard = crate::test_support::home_env_lock();
-        let ws = temp_ws("write-approve");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let broadcaster = SseBroadcaster::new();
-        let outside = dirs::home_dir()
-            .unwrap()
-            .join(format!("futureos-approval-{}.txt", std::process::id()));
-        let decider = spawn_decider(&gate, "s1", approved());
-        let result = gate.request(
-            &broadcaster,
-            "s1",
-            &ws,
-            "write",
-            "t1",
-            &serde_json::json!({"path": outside.to_string_lossy(), "content": "x"}),
-            &sandbox,
-        );
-        assert!(decider.join().unwrap(), "approval request never appeared");
-        assert!(result.is_none(), "approved write proceeds");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn request_write_outside_workspace_rejected() {
-        let _home_guard = crate::test_support::home_env_lock();
-        let ws = temp_ws("write-reject");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let broadcaster = SseBroadcaster::new();
-        let outside = dirs::home_dir()
-            .unwrap()
-            .join(format!("futureos-approval-rej-{}.txt", std::process::id()));
-        let decider = spawn_decider(
-            &gate,
-            "s1",
-            ApprovalDecision {
-                approved: false,
-                note: String::new(),
-                status: ApprovalDecisionStatus::Rejected,
-            },
-        );
-        let result = gate.request(
-            &broadcaster,
-            "s1",
-            &ws,
-            "write",
-            "t1",
-            &serde_json::json!({"path": outside.to_string_lossy(), "content": "x"}),
-            &sandbox,
-        );
-        assert!(decider.join().unwrap(), "approval request never appeared");
-        let denial = result.expect("rejection returns a tool result");
-        assert!(denial.is_error);
-        assert!(denial.result.contains("rejected by the user."));
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn request_read_of_secret_asks_and_is_rejected() {
-        let _home_guard = crate::test_support::home_env_lock();
-        let ws = temp_ws("read-secret");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let broadcaster = SseBroadcaster::new();
-        let secret = dirs::home_dir().unwrap().join(".ssh/id_rsa");
-        // Secrets are Ask (never auto-allowed); the user rejects.
-        let decider = spawn_decider(
-            &gate,
-            "s1",
-            ApprovalDecision {
-                approved: false,
-                note: String::new(),
-                status: ApprovalDecisionStatus::Rejected,
-            },
-        );
-        let result = gate.request(
-            &broadcaster,
-            "s1",
-            &ws,
-            "read",
-            "t1",
-            &serde_json::json!({"path": secret.to_string_lossy()}),
-            &sandbox,
-        );
-        assert!(decider.join().unwrap(), "approval request never appeared");
-        let denial = result.expect("rejection returns a tool result");
-        assert!(denial.is_error);
-        assert!(denial.result.contains("rejected"));
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn request_non_file_tool_and_missing_path_pass_through() {
-        let ws = temp_ws("passthrough");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let broadcaster = SseBroadcaster::new();
-        // Unknown tool names are not gated.
-        assert!(gate
-            .request(
-                &broadcaster,
-                "s1",
-                &ws,
-                "web_search",
-                "t1",
-                &serde_json::json!({"query": "x"}),
-                &sandbox,
-            )
-            .is_none());
-        // A file tool without a path argument cannot be evaluated → pass.
-        assert!(gate
-            .request(
-                &broadcaster,
-                "s1",
-                &ws,
-                "write",
-                "t2",
-                &serde_json::json!({"content": "no path"}),
-                &sandbox,
-            )
-            .is_none());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn request_escalation_approved_and_denied() {
-        let ws = temp_ws("escalation");
-        let sandbox = enabled(&ws);
-        let broadcaster = SseBroadcaster::new();
-
-        let gate = ApprovalGate::default();
-        let decider = spawn_decider(&gate, "s1", approved());
-        let decision = gate.request_escalation(
-            &broadcaster,
-            "s1",
-            &crate::sandbox::EscalationRequest {
-                trigger: crate::sandbox::EscalationTrigger::SandboxFailure,
-                command: "touch /System/x".to_string(),
-                justification: "need it".to_string(),
-                failure_summary: "touch: /System/x: Operation not permitted".to_string(),
-            },
-            &sandbox,
-        );
-        assert!(decider.join().unwrap(), "approval request never appeared");
-        assert!(matches!(
-            decision,
-            crate::sandbox::EscalationDecision::Approved
-        ));
-
-        let gate = ApprovalGate::default();
-        let decider = spawn_decider(
-            &gate,
-            "s1",
-            ApprovalDecision {
-                approved: false,
-                note: "stay sandboxed".to_string(),
-                status: ApprovalDecisionStatus::Rejected,
-            },
-        );
-        let decision = gate.request_escalation(
-            &broadcaster,
-            "s1",
-            &crate::sandbox::EscalationRequest {
-                trigger: crate::sandbox::EscalationTrigger::ModelRequest,
-                command: "touch /System/x".to_string(),
-                justification: "need it".to_string(),
-                failure_summary: String::new(),
-            },
-            &sandbox,
-        );
-        assert!(decider.join().unwrap(), "approval request never appeared");
-        match decision {
-            crate::sandbox::EscalationDecision::Denied(note) => {
-                assert_eq!(note, "stay sandboxed")
-            }
-            crate::sandbox::EscalationDecision::Approved => panic!("must be denied"),
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancel_session_ends_pending_request() {
-        let ws = temp_ws("cancel-pending");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let broadcaster = SseBroadcaster::new();
-        let requester_gate = gate.clone();
-        let requester_ws = ws.clone();
-        let requester = std::thread::spawn(move || {
-            requester_gate.request(
-                &broadcaster,
-                "s1",
-                &requester_ws,
-                "shell",
-                "t1",
-                &serde_json::json!({"command": "rm -rf /tmp/some-build-dir"}),
-                &sandbox,
-            )
-        });
-        // Wait for the request to land, then cancel the whole session.
-        for _ in 0..500 {
-            if !gate.pending_for_session("s1").is_empty() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        let cancelled = gate.cancel_session("s1", "session closed");
-        assert_eq!(cancelled, 1);
-        let result = requester.join().unwrap();
-        let cancellation = result.expect("cancel produces a tool result");
-        assert!(cancellation.is_error);
-        assert!(cancellation.result.contains("cancelled"));
-        assert!(gate.pending_for_session("s1").is_empty());
-    }
-
-    #[test]
-    fn poll_and_decide_times_out_when_no_request_appears() {
-        // The give-up path: no request ever lands for the session.
-        let gate = ApprovalGate::default();
-        assert!(!poll_and_decide(&gate, "nobody", approved(), 2));
-    }
-
-    #[test]
-    fn decide_on_unknown_or_consumed_request_fails() {
-        let gate = ApprovalGate::default();
-        let _rx = gate.insert_pending_for_test("ap-once", "s1");
-        gate.decide("ap-once", "s1", approved()).unwrap();
-        // The entry was consumed — a second decision fails.
-        let again = gate.decide("ap-once", "s1", approved());
-        assert!(again.unwrap_err().contains("not pending"));
-    }
-
-    // ─── coverage batch 14: residual decision arms ─────────────────────────
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn request_shell_passes_through_when_sandbox_wraps_shell() {
-        let ws = temp_ws("shell-wrapped");
-        let mut sandbox = ResolvedSandbox::resolve(
-            &SandboxPolicy {
-                tier: crate::sandbox::SandboxTier::Sandbox,
-            },
-            &ws,
-        );
-        // Force availability so the wrap check is platform-independent.
-        sandbox.set_backend_available_for_test(true);
-        let gate = ApprovalGate::default();
-        let broadcaster = SseBroadcaster::new();
-        // A command that would ASK under the manual tier runs ungated here:
-        // the Seatbelt boundary is the enforcement point instead.
-        let result = gate.request(
-            &broadcaster,
-            "s1",
-            &ws,
-            "shell",
-            "t1",
-            &serde_json::json!({"command": "rm -rf /tmp/some-build-dir"}),
-            &sandbox,
-        );
-        assert!(result.is_none(), "wrapped shell never pre-asks");
-        assert!(gate.pending_for_session("s1").is_empty());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn request_shell_ask_rejected_without_note() {
-        let ws = temp_ws("shell-rej-plain");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let broadcaster = SseBroadcaster::new();
-        let decider = spawn_decider(
-            &gate,
-            "s1",
-            ApprovalDecision {
-                approved: false,
-                note: String::new(),
-                status: ApprovalDecisionStatus::Rejected,
-            },
-        );
-        let result = gate.request(
-            &broadcaster,
-            "s1",
-            &ws,
-            "shell",
-            "t1",
-            &serde_json::json!({"command": "rm -rf /tmp/some-build-dir"}),
-            &sandbox,
-        );
-        assert!(decider.join().unwrap(), "approval request never appeared");
-        let denial = result.expect("rejection returns a tool result");
-        assert!(denial.result.contains("rejected by the user."));
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn request_file_tool_cancelled_and_rejected_with_note() {
-        let _home_guard = crate::test_support::home_env_lock();
-        let ws = temp_ws("file-cancel");
-        let sandbox = enabled(&ws);
-        let broadcaster = SseBroadcaster::new();
-        let outside = dirs::home_dir()
-            .unwrap()
-            .join(format!("futureos-approval-fc-{}.txt", std::process::id()));
-        let args = serde_json::json!({"path": outside.to_string_lossy(), "content": "x"});
-
-        // Cancelled: the approval card went away without a decision.
-        let gate = ApprovalGate::default();
-        let decider = spawn_decider(
-            &gate,
-            "s1",
-            ApprovalDecision {
-                approved: false,
-                note: String::new(),
-                status: ApprovalDecisionStatus::Cancelled,
-            },
-        );
-        let result = gate.request(&broadcaster, "s1", &ws, "write", "t1", &args, &sandbox);
-        assert!(decider.join().unwrap(), "approval request never appeared");
-        let cancel = result.expect("cancel returns a tool result");
-        assert!(cancel.result.contains("approval request ended"));
-
-        // Rejected with a note: the note is appended after a colon.
-        let gate = ApprovalGate::default();
-        let decider = spawn_decider(
-            &gate,
-            "s1",
-            ApprovalDecision {
-                approved: false,
-                note: "not today".to_string(),
-                status: ApprovalDecisionStatus::Rejected,
-            },
-        );
-        let result = gate.request(&broadcaster, "s1", &ws, "write", "t2", &args, &sandbox);
-        assert!(decider.join().unwrap(), "approval request never appeared");
-        let denial = result.expect("rejection returns a tool result");
-        assert!(denial.result.contains("rejected by the user: not today."));
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn request_escalation_cancelled_variants() {
-        let ws = temp_ws("esc-cancel");
-        let sandbox = enabled(&ws);
-        let broadcaster = SseBroadcaster::new();
-        let request = crate::sandbox::EscalationRequest {
-            trigger: crate::sandbox::EscalationTrigger::ModelRequest,
-            command: "touch /System/x".to_string(),
-            justification: String::new(),
-            failure_summary: String::new(),
-        };
-
-        // Empty note → the generic "approval request ended" denial reason.
-        let gate = ApprovalGate::default();
-        let decider = spawn_decider(
-            &gate,
-            "s1",
-            ApprovalDecision {
-                approved: false,
-                note: String::new(),
-                status: ApprovalDecisionStatus::Cancelled,
-            },
-        );
-        let decision = gate.request_escalation(&broadcaster, "s1", &request, &sandbox);
-        assert!(decider.join().unwrap(), "approval request never appeared");
-        assert!(matches!(
-            decision,
-            crate::sandbox::EscalationDecision::Denied(ref note) if note == "approval request ended"
-        ));
-
-        // Non-empty note → the note is the denial reason.
-        let gate = ApprovalGate::default();
-        let decider = spawn_decider(
-            &gate,
-            "s1",
-            ApprovalDecision {
-                approved: false,
-                note: "window closed".to_string(),
-                status: ApprovalDecisionStatus::Cancelled,
-            },
-        );
-        let decision = gate.request_escalation(&broadcaster, "s1", &request, &sandbox);
-        assert!(decider.join().unwrap(), "approval request never appeared");
-        assert!(matches!(
-            decision,
-            crate::sandbox::EscalationDecision::Denied(ref note) if note == "window closed"
-        ));
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn ask_user_sender_drop_reads_as_session_end() {
-        // The session-torn-down arm: the pending entry (and its sender) is
-        // dropped without a decision, so the blocked receiver errors.
-        let ws = temp_ws("ask-drop");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let broadcaster = SseBroadcaster::new();
-        let requester_gate = gate.clone();
-        let requester = std::thread::spawn(move || {
-            requester_gate.request(
-                &broadcaster,
-                "s1",
-                &ws,
-                "shell",
-                "t1",
-                &serde_json::json!({"command": "rm -rf /tmp/some-build-dir"}),
-                &sandbox,
-            )
-        });
-        let mut request_id = String::new();
-        for _ in 0..2000 {
-            let pending = gate.pending_for_session("s1");
-            if let Some(first) = pending.first() {
-                request_id = first["approval_request_id"].as_str().unwrap().to_string();
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(!request_id.is_empty(), "approval request never appeared");
-        // Dropping the entry drops the sender — the waiter observes Err.
-        let removed = gate.pending.lock().remove(&request_id);
-        assert!(removed.is_some());
-        drop(removed);
-        let result = requester.join().unwrap();
-        // The dropped sender surfaced as a cancellation (the shell path uses
-        // the generic cancel message; the "session ended" note is broadcast).
-        let cancel = result.expect("drop produces a cancel tool result");
-        assert!(cancel.result.contains("cancelled"));
-        assert!(gate.pending_for_session("s1").is_empty());
-    }
-
-    #[test]
-    fn approval_shape_edit_tool_variants() {
-        let _home_guard = crate::test_support::home_env_lock();
-        let ws = temp_ws("shape-edit");
-        let sandbox = enabled(&ws);
-        // Canonicalize: the resolved workspace is canonical (macOS symlinks
-        // /var → /private/var), so raw temp paths would compare as outside.
-        let inside =
-            crate::sandbox::paths::canonicalize_lenient(&Path::new(&ws).join("src/main.rs"));
-        let shape = approval_shape(
-            "edit",
-            &inside,
-            Op::Write,
-            &serde_json::json!({"path": inside}),
-            &sandbox,
-        );
-        assert_eq!(shape.kind, "file_write");
-        assert_eq!(shape.action["category"], "file_edit");
-        let outside = dirs::home_dir()
-            .unwrap()
-            .join("futureos-shape-edit-out.txt");
-        let shape = approval_shape(
-            "edit",
-            &outside,
-            Op::Write,
-            &serde_json::json!({"path": outside}),
-            &sandbox,
-        );
-        assert_eq!(shape.kind, "outside_workspace_write");
-        assert_eq!(shape.action["category"], "file_edit");
-    }
-
-    #[test]
-    fn extract_blocked_paths_skips_pathless_lines_and_caps_at_five() {
-        // A denial line with no quoted/absolute token is skipped…
-        let mut stderr = String::from("sandbox: deny(1) file-write: Operation not permitted\n");
-        // …and the extractor stops after five paths.
-        for i in 0..7 {
-            stderr.push_str(&format!(
-                "gpg: cannot open '/dev/null/path{i}': Operation not permitted\n"
-            ));
-        }
-        let paths = extract_blocked_paths(&stderr);
-        assert_eq!(paths.len(), 5);
-        assert_eq!(paths[0], "/dev/null/path0");
-        assert_eq!(paths[4], "/dev/null/path4");
-    }
-
-    #[test]
-    fn escalation_save_suggestion_workspace_root_and_subdir() {
-        let ws = temp_ws("esc-glob");
-        let sandbox = enabled(&ws);
-        // Blocked path directly at the workspace root → bare "*". Paths are
-        // canonicalized to match the resolved (symlink-free) workspace.
-        let root_file =
-            crate::sandbox::paths::canonicalize_lenient(&Path::new(&ws).join("note.txt"));
-        let sug = escalation_save_suggestion(&[root_file.to_string_lossy().into_owned()], &sandbox)
-            .expect("workspace-root path is persistable");
-        assert_eq!(sug["path"], "*");
-        // Blocked path in a workspace subdir → "sub/*".
-        let sub_file =
-            crate::sandbox::paths::canonicalize_lenient(&Path::new(&ws).join("build/out.bin"));
-        let sug = escalation_save_suggestion(&[sub_file.to_string_lossy().into_owned()], &sandbox)
-            .expect("workspace subdir path is persistable");
-        assert_eq!(sug["path"], "build/*");
-    }
-
-    #[test]
-    fn quoted_path_skips_non_path_spans() {
-        // First quoted span has no '/', so the scan skips ahead (and its
-        // following outside span) to the next quoted span.
-        assert_eq!(
-            quoted_path("cmd 'not a path' then '/real/path'"),
-            Some("/real/path".to_string())
-        );
-    }
-
-    #[test]
-    fn argument_write_preview_unrepairable_string_returns_none() {
-        // A string argument that is neither valid JSON nor repairable.
-        assert!(argument_write_preview(&serde_json::json!("{not json at all")).is_none());
-    }
-
-    #[test]
-    fn windows_capability_shape_uses_behavior_and_target_not_model_reason() {
-        use crate::sandbox::windows_request::{
-            ApprovalTarget, CapabilityApprovalSemantics, FrozenWriteTarget, WriteScope,
-        };
-
-        let ws = temp_ws("windows-capability-shape");
-        let sandbox = enabled(&ws);
-        let target = Path::new(&ws).join("release");
-        std::fs::create_dir_all(&target).unwrap();
-        let target = target.canonicalize().unwrap();
-        let prepared = PreparedWritePermissions {
-            command_hash: "hash-is-internal".to_string(),
-            targets: vec![FrozenWriteTarget {
-                normalized_path: target.clone(),
-                scope: WriteScope::Subtree,
-                untrusted_reason: "MODEL CONTROLLED TITLE".to_string(),
-                decision: Decision::Ask,
-            }],
-            approval: Some(CapabilityApprovalSemantics {
-                behavior: "manage_files",
-                targets: vec![ApprovalTarget {
-                    path: target.to_string_lossy().into_owned(),
-                    scope: WriteScope::Subtree,
-                }],
-            }),
-        };
-
-        let shape = windows_capability_shape("build-release", &prepared, &sandbox);
-        assert_eq!(shape.kind, "windows_write_capability");
-        assert!(shape.title.contains(&target.to_string_lossy().to_string()));
-        assert!(!shape.title.contains("MODEL CONTROLLED"));
-        assert_eq!(shape.action["behavior"], "manage_files");
-        assert_eq!(shape.action["targets"].as_array().unwrap().len(), 1);
-        assert_eq!(shape.action["command"], "build-release");
-        let action = shape.action.to_string();
-        assert!(!action.contains("hash-is-internal"));
-        assert!(!action.contains("MODEL CONTROLLED"));
-        let suggestion = shape.save_suggestion.unwrap();
-        assert_eq!(suggestion["rules"].as_array().unwrap().len(), 1);
-        assert_eq!(
-            suggestion["rules"][0]["path"],
-            target.to_string_lossy().as_ref()
-        );
-    }
-
-    #[test]
-    fn additional_permissions_fail_closed_when_windows_backend_is_inactive() {
-        let ws = temp_ws("windows-capability-inactive");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let broadcaster = SseBroadcaster::new();
-        let result = gate.request(
-            &broadcaster,
-            "session",
-            &ws,
-            "shell",
-            "tool",
-            &serde_json::json!({
-                "command": "build-release",
-                "additional_permissions": {
-                    "write": [{
-                        "path": ws,
-                        "scope": "subtree",
-                        "reason": "build output"
-                    }]
-                }
-            }),
-            &sandbox,
-        );
-        let result = result.expect("inactive backend must reject before execution");
-        assert!(result.is_error);
-        assert!(result.result.contains("backend is not active"));
-    }
-
-    #[test]
-    fn additional_permissions_empty_write_falls_through_to_manual_shell() {
-        // An empty write list must NOT enter the Windows-capability path — it
-        // falls through to the normal manual-tier shell approval.
-        let ws = temp_ws("windows-capability-empty");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let broadcaster = SseBroadcaster::new();
-        let result = gate.request(
-            &broadcaster,
-            "session",
-            &ws,
-            "shell",
-            "tool",
-            &serde_json::json!({
-                "command": "pwd",
-                "additional_permissions": {"write": []}
-            }),
-            &sandbox,
-        );
-        // pwd is a literal builtin → auto-allowed without a prompt.
-        assert!(result.is_none());
-        let result = gate.request(
-            &broadcaster,
-            "session",
-            &ws,
-            "shell",
-            "tool",
-            &serde_json::json!({"command":"pwd", "additional_permissions":null}),
-            &sandbox,
-        );
-        assert!(
-            result.is_none(),
-            "null optional permissions must behave like absence"
-        );
-    }
-
-    #[test]
-    fn additional_permissions_invalid_shape_is_rejected() {
-        // The additional_permissions field must deserialize into the
-        // AdditionalPermissions struct; a malformed payload fails fast with a
-        // tool result instead of falling through to a plain command approval.
-        let ws = temp_ws("windows-capability-invalid");
-        let sandbox = enabled(&ws);
-        let gate = ApprovalGate::default();
-        let broadcaster = SseBroadcaster::new();
-        let result = gate.request(
-            &broadcaster,
-            "session",
-            &ws,
-            "shell",
-            "tool",
-            &serde_json::json!({
-                "command": "build-release",
-                "additional_permissions": {
-                    "write": "not-an-array"
-                }
-            }),
-            &sandbox,
-        );
-        let result = result.expect("invalid additional_permissions is rejected");
-        assert!(result.is_error);
-        assert!(result.result.contains("invalid additional_permissions"));
-    }
-
-    #[test]
-    fn windows_capability_shape_file_scope_title() {
-        use crate::sandbox::windows_request::{
-            ApprovalTarget, CapabilityApprovalSemantics, FrozenWriteTarget, WriteScope,
-        };
-
-        let ws = temp_ws("windows-capability-file");
-        let sandbox = enabled(&ws);
-        let file = Path::new(&ws).join("notes.txt");
-        std::fs::write(&file, "x").unwrap();
-        let file = file.canonicalize().unwrap();
-        let prepared = PreparedWritePermissions {
-            command_hash: "hash".to_string(),
-            targets: vec![FrozenWriteTarget {
-                normalized_path: file.clone(),
-                scope: WriteScope::File,
-                untrusted_reason: "unused".to_string(),
-                decision: Decision::Ask,
-            }],
-            approval: Some(CapabilityApprovalSemantics {
-                behavior: "modify_file",
-                targets: vec![ApprovalTarget {
-                    path: file.to_string_lossy().into_owned(),
-                    scope: WriteScope::File,
-                }],
-            }),
-        };
-
-        let shape = windows_capability_shape("edit-notes", &prepared, &sandbox);
-        // File scope uses the "modify" verb (not "manage files in").
-        assert!(shape.title.contains("modify"), "title: {}", shape.title);
-        assert_eq!(
-            shape.summary,
-            "FutureOS needs write access to this location for the current command."
-        );
-        assert!(shape.save_suggestion.is_some());
-    }
-
-    #[test]
-    fn windows_capability_shape_multi_target_title_and_summary() {
-        use crate::sandbox::windows_request::{
-            ApprovalTarget, CapabilityApprovalSemantics, FrozenWriteTarget, WriteScope,
-        };
-
-        let ws = temp_ws("windows-capability-multi");
-        let sandbox = enabled(&ws);
-        let a = Path::new(&ws).join("release");
-        let b = Path::new(&ws).join("cache");
-        std::fs::create_dir_all(&a).unwrap();
-        std::fs::create_dir_all(&b).unwrap();
-        let a = a.canonicalize().unwrap();
-        let b = b.canonicalize().unwrap();
-        let approval_targets = vec![
-            ApprovalTarget {
-                path: a.to_string_lossy().into_owned(),
-                scope: WriteScope::Subtree,
-            },
-            ApprovalTarget {
-                path: b.to_string_lossy().into_owned(),
-                scope: WriteScope::Subtree,
-            },
-        ];
-        let prepared = PreparedWritePermissions {
-            command_hash: "hash".to_string(),
-            targets: approval_targets
-                .iter()
-                .map(|t| FrozenWriteTarget {
-                    normalized_path: Path::new(&t.path).to_path_buf(),
-                    scope: t.scope,
-                    untrusted_reason: "unused".to_string(),
-                    decision: Decision::Ask,
-                })
-                .collect(),
-            approval: Some(CapabilityApprovalSemantics {
-                behavior: "manage_files",
-                targets: approval_targets,
-            }),
-        };
-
-        let shape = windows_capability_shape("build-release", &prepared, &sandbox);
-        assert!(
-            shape.title.contains("2 locations"),
-            "title: {}",
-            shape.title
-        );
-        assert_eq!(
-            shape.summary,
-            "FutureOS needs write access to all of these locations for the current command."
-        );
-    }
-
-    #[test]
-    fn windows_capability_shape_secret_target_suppresses_suggestion() {
-        use crate::sandbox::windows_request::{
-            ApprovalTarget, CapabilityApprovalSemantics, FrozenWriteTarget, WriteScope,
-        };
-
-        let _home_guard = crate::test_support::home_env_lock();
-        let ws = temp_ws("windows-capability-secret");
-        let sandbox = enabled(&ws);
-        // A secret path (~/.ssh) must suppress the persistable-rule suggestion.
-        let secret = dirs::home_dir().unwrap().join(".ssh/id_rsa");
-        let prepared = PreparedWritePermissions {
-            command_hash: "hash".to_string(),
-            targets: vec![FrozenWriteTarget {
-                normalized_path: secret.clone(),
-                scope: WriteScope::File,
-                untrusted_reason: "unused".to_string(),
-                decision: Decision::Ask,
-            }],
-            approval: Some(CapabilityApprovalSemantics {
-                behavior: "modify_file",
-                targets: vec![ApprovalTarget {
-                    path: secret.to_string_lossy().into_owned(),
-                    scope: WriteScope::File,
-                }],
-            }),
-        };
-
-        let shape = windows_capability_shape("touch-secret", &prepared, &sandbox);
-        assert!(shape.save_suggestion.is_none());
-    }
-}
+mod tests;

@@ -166,10 +166,40 @@ mod tests {
 
     #[test]
     fn discovery_runs_platform_candidates() {
-        // Environment-dependent: returns Some when a browser is installed
-        // (dev machines), None on bare CI images. Either way the platform
-        // candidate-scan code path executes.
-        let _ = find_browser(None);
+        // Environment-dependent: a hit when a browser is installed (dev
+        // machines), a miss on a bare CI image. Either way the platform
+        // candidate scan runs — and a hit has to be a *real executable file*
+        // whose inferred kind matches the path it was found at.
+        if let Some(found) = find_browser(None) {
+            assert!(
+                std::path::Path::new(&found.executable_path).is_file(),
+                "a discovered browser must be a file: {}",
+                found.executable_path
+            );
+            assert_eq!(found.kind, infer_kind(&found.executable_path));
+        }
+    }
+
+    /// The Windows candidate list is built entirely from the environment
+    /// (`LOCALAPPDATA` / `PROGRAMFILES` / `PROGRAMFILES(X86)`), so removing
+    /// those roots makes the scan miss on *any* Windows host — including one
+    /// with Chrome installed. That is how the no-candidate arm is covered
+    /// without depending on what this machine happens to have.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_discovery_misses_when_the_program_files_roots_are_unset() {
+        let _guard = crate::test_env::lock_env().await;
+        let _env = crate::test_env::EnvGuard::remove(&[
+            "LOCALAPPDATA",
+            "PROGRAMFILES",
+            "PROGRAMFILES(X86)",
+        ]);
+        assert!(
+            find_browser(None).is_none(),
+            "no root to derive a candidate from"
+        );
+        // The explicit-path arm is untouched by the environment.
+        assert!(find_browser(Some("/tmp/custom-chrome")).is_some());
     }
 
     #[test]
@@ -182,5 +212,72 @@ mod tests {
         let found = first_existing(&[("chrome", "/no/such/bin"), ("chromium", &present)]);
         assert_eq!(found.map(|b| b.kind), Some("chromium"));
         assert!(first_existing(&[("chrome", "/no/such/bin")]).is_none());
+    }
+
+    /// The Windows candidate scan is driven by three environment roots, so the
+    /// total-miss arm (`None`) is deterministic instead of depending on
+    /// whether the machine happens to have Chrome or Edge: pointing all three
+    /// at an empty directory leaves no candidate on disk. `LOCALAPPDATA` is
+    /// consulted first, then `PROGRAMFILES` (Chrome, then Edge), then
+    /// `PROGRAMFILES(X86)` — a hit at the Chrome-in-`PROGRAMFILES` position is
+    /// asserted too, which pins the ordering.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_scan_order_and_total_miss() {
+        let _guard = crate::test_env::lock_env().await;
+        let root = tempfile::tempdir().expect("tempdir");
+        let empty = root.path().join("empty");
+        std::fs::create_dir_all(&empty).expect("mkdir");
+        let _env = crate::test_env::EnvGuard::set(&[
+            ("LOCALAPPDATA", empty.as_os_str().to_owned()),
+            ("PROGRAMFILES", empty.as_os_str().to_owned()),
+            ("PROGRAMFILES(X86)", empty.as_os_str().to_owned()),
+        ]);
+        assert!(
+            find_windows_browser().is_none(),
+            "no candidate under the redirected roots means no browser"
+        );
+        assert!(find_browser(None).is_none());
+
+        // Only `LOCALAPPDATA` holds a Chrome: the first candidate wins.
+        let local = root.path().join("local");
+        let chrome_dir = local.join("Google").join("Chrome").join("Application");
+        std::fs::create_dir_all(&chrome_dir).expect("mkdir chrome");
+        std::fs::write(chrome_dir.join("chrome.exe"), "MZ").expect("write chrome.exe");
+        let _env =
+            crate::test_env::EnvGuard::set(&[("LOCALAPPDATA", local.as_os_str().to_owned())]);
+        let found = find_windows_browser().expect("the per-user Chrome is found");
+        assert_eq!(found.kind, "chrome");
+        assert_eq!(
+            found.executable_path,
+            chrome_dir
+                .join("chrome.exe")
+                .to_str()
+                .expect("utf8")
+                .to_string()
+        );
+
+        // An Edge-only machine: the search must skip the three Chrome
+        // candidates and land on the `PROGRAMFILES(X86)` Edge one.
+        let local_empty = root.path().join("local-empty");
+        std::fs::create_dir_all(&local_empty).expect("mkdir");
+        let x86 = root.path().join("x86");
+        let edge_dir = x86.join("Microsoft").join("Edge").join("Application");
+        std::fs::create_dir_all(&edge_dir).expect("mkdir edge");
+        std::fs::write(edge_dir.join("msedge.exe"), "MZ").expect("write msedge.exe");
+        let _env = crate::test_env::EnvGuard::set(&[
+            ("LOCALAPPDATA", local_empty.as_os_str().to_owned()),
+            ("PROGRAMFILES(X86)", x86.as_os_str().to_owned()),
+        ]);
+        let found = find_windows_browser().expect("the per-machine Edge is found");
+        assert_eq!(found.kind, "edge");
+        assert_eq!(
+            found.executable_path,
+            edge_dir
+                .join("msedge.exe")
+                .to_str()
+                .expect("utf8")
+                .to_string()
+        );
     }
 }

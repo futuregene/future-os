@@ -78,12 +78,12 @@ Configure under the same Apple Developer team:
    that overrides every target. The IPA export's `provisioningProfiles`
    dictionary must contain profiles for both bundle IDs.
 5. You can first decode both profiles with `security cms -D -i <profile>`, then
-   run `python3 scripts/validate-ios-share-profiles.py <host.plist>
+   run `python3 scripts/tests/validate-ios-share-profiles.py <host.plist>
    <share.plist>` to check App IDs, team, validity, distribution type, and App
    Group.
 
-**The CI/release workflow is not modified in this pass.** The existing workflow
-has no opt-in set, keeps producing builds without the extension/App Group, and
+**The default CI/release workflow does not build the extension.** It has no
+opt-in set, keeps producing builds without the extension/App Group, and
 file save/open still work. Adding a secret alone does not enable the
 extension; distributing it later needs separate signing workflow
 configuration. This is Apple-backend configuration that merging code alone
@@ -95,20 +95,20 @@ TestFlight".
 - `npm run check` (in `mobile/`): types, lint, Jest; covering standalone file
   operations, legacy-bundle fallback, presenting UIKit only after the download
   dialog really closes, and cancel/failure paths.
-- `python3 scripts/test-mobile-ios-share.py`: the real Swift inbox's atomic
+- `python3 scripts/tests/test-mobile-ios-share.py`: the real Swift inbox's atomic
   consumption, failure retry, byte limits, Unicode, corrupt manifests, path
   escape, directory/symlink rejection, and queue capacity.
 - After explicitly enabling the extension and prebuilding, run
-  `node scripts/test-mobile-ios-project.cjs`: verifies the generated project's
+  `node scripts/tests/test-mobile-ios-project.cjs`: verifies the generated project's
   sources, embedding relationships, entitlements, repeated runs, version sync,
   and per-target signing settings.
 - On macOS with Xcode/iOS SDK, after installing Pods in `mobile/ios/`:
   `xcodebuild -workspace FutureOS.xcworkspace -scheme FutureOS -configuration
   Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator'
   CODE_SIGNING_ALLOWED=NO build`. This compiles the App, both native modules,
-  and the enabled extension without Apple keys. This machine only has Command
-  Line Tools, so the full UIKit/App compilation was not executed; existing CI
-  does not include this native compile check.
+  and the enabled extension without Apple keys. The full UIKit/App
+  compilation was not executed locally, and existing CI does not include this
+  native compile check.
 
 Real-device acceptance still needed: Safari links, selected text, single/multi
 photos, PDF/Chinese filenames from the Files app; save then pair when unpaired;

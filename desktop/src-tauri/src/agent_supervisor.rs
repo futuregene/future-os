@@ -349,8 +349,13 @@ fn is_current_generation(active_generation: Option<u64>, event_generation: u64) 
 /// ignored because Agent and Desktop use independent Cargo target caches.
 pub async fn agent_status() -> AgentStatus {
     let desktop_version = crate::build_info::VERSION.to_string();
-    match crate::agent_bridge::get_agent_info().await {
-        Ok(info) => status_from_version(info.version, desktop_version),
+    match crate::agent_bridge::get_agent_readiness().await {
+        Ok(Some(info)) => status_from_version(info.version, desktop_version),
+        Ok(None) => AgentStatus {
+            phase: "incompatible".to_string(),
+            desktop_version,
+            agent_version: None,
+        },
         Err(_) => status_from_lifecycle(AGENT_LIFECYCLE.lock().unwrap().clone(), desktop_version),
     }
 }

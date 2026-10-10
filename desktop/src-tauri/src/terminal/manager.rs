@@ -201,6 +201,20 @@ impl Manager {
         Ok(self.session(id)?.info())
     }
 
+    /// The session behind an id, for tests that must sequence an exit.
+    ///
+    /// `Manager` deliberately learns about exits lazily (see `note_exit`), so
+    /// nothing in its public surface reports one; the transport tests need the
+    /// *exited* state to exist in the registry to exercise the pump's
+    /// exited-before-attach and mid-stream-exit branches, and on this host the
+    /// only way to produce it is to call the same `Session::on_eof` that
+    /// `close()` and the reader thread call. Test-only, and it exposes no
+    /// behaviour the manager itself does not already have.
+    #[cfg(test)]
+    pub(crate) fn session_for_test(&self, id: &str) -> Option<Arc<super::session::Session>> {
+        self.registry.lock().unwrap().sessions.get(id).cloned()
+    }
+
     pub fn update(
         &self,
         id: &str,
@@ -337,32 +351,67 @@ impl Manager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
+    use crate::terminal::test_support;
 
     fn manager_with_shell() -> Manager {
         Manager::new()
     }
 
-    fn create(manager: &Manager, thread: &str, script: &str) -> Info {
+    fn create_with_command(
+        manager: &Manager,
+        thread: &str,
+        command: (PathBuf, Vec<String>),
+    ) -> Info {
+        let (program, args) = command;
         manager
             .create_with(
                 thread.to_string(),
                 Some("Terminal".to_string()),
-                PathBuf::from("/bin/sh"),
-                vec!["-c".to_string(), script.to_string()],
-                std::env::temp_dir(),
+                program,
+                args,
+                test_support::working_dir(),
                 80,
                 24,
             )
             .expect("create session")
     }
 
-    #[cfg(unix)]
+    /// A conversation tab running a live, silent child.
+    fn create(manager: &Manager, thread: &str) -> Info {
+        create_with_command(manager, thread, test_support::idle_command())
+    }
+
+    /// A conversation tab whose child exits immediately with `code`.
+    fn create_exiting(manager: &Manager, thread: &str, code: i32) -> Info {
+        create_with_command(manager, thread, test_support::exit_command(code))
+    }
+
+    /// Note an exit through the session's own state machine.
+    ///
+    /// `Manager` learns about exits lazily, from `Session::is_running()` — which
+    /// is why `prune_exited`/retention are testable without the manager owning
+    /// any exit callback. On this host the ConPTY master never closes, so the
+    /// reader thread's EOF never arrives and a session can only be marked exited
+    /// by driving `Session::on_eof` (the function the reader *and* `close()`
+    /// both call). `on_eof` polls `PtySession::try_wait` itself for up to
+    /// `EXIT_WAIT`, so a child that really exits is recorded with its real code.
+    fn note_exit_now(manager: &Manager, info: &Info) {
+        let session = manager.session(&info.id).expect("session");
+        // Reap first, then drive the exit: `on_eof` records whatever `try_wait`
+        // reports, so calling it before the process is gone would record `None`
+        // for a session that really exited with a code.
+        assert!(
+            session.wait_for_child_exit(Duration::from_secs(30)),
+            "the fixture child never exited; the retention assertions below would be vacuous"
+        );
+        session.on_eof();
+    }
+
     #[test]
     fn lists_only_the_requested_conversation() {
         let manager = manager_with_shell();
-        let a = create(&manager, "thread-a", "sleep 30");
-        let b = create(&manager, "thread-b", "sleep 30");
+        let a = create(&manager, "thread-a");
+        let b = create(&manager, "thread-b");
         let listed = manager.list(Some("thread-a"));
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, a.id);
@@ -371,13 +420,13 @@ mod tests {
         manager.shutdown_all(Duration::from_millis(200));
     }
 
-    #[cfg(unix)]
     #[test]
     fn removing_a_session_kills_it_and_forgets_it() {
         let manager = manager_with_shell();
-        let info = create(&manager, "thread-a", "sleep 30");
-        assert!(
-            manager.get(&info.id).expect("exists").status == super::super::session::Status::Running
+        let info = create(&manager, "thread-a");
+        assert_eq!(
+            manager.get(&info.id).expect("exists").status,
+            super::super::session::Status::Running
         );
         manager.remove(&info.id).expect("remove");
         let error = manager.get(&info.id).expect_err("gone");
@@ -385,51 +434,40 @@ mod tests {
         assert_eq!(error.code(), "TERMINAL_NOT_FOUND");
     }
 
-    #[cfg(unix)]
     #[test]
     fn closing_a_conversation_closes_its_terminals_only() {
         let manager = manager_with_shell();
-        let a = create(&manager, "thread-a", "sleep 30");
-        let b = create(&manager, "thread-b", "sleep 30");
+        let a = create(&manager, "thread-a");
+        let b = create(&manager, "thread-b");
         manager.close_thread("thread-a");
         assert!(manager.get(&a.id).is_err());
         assert!(manager.get(&b.id).is_ok());
         manager.shutdown_all(Duration::from_millis(200));
     }
 
-    #[cfg(unix)]
     #[test]
     fn exited_sessions_stay_listed_until_evicted() {
         let manager = manager_with_shell();
-        let info = create(&manager, "thread-a", "exit 4");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while manager.get(&info.id).expect("exists").status
-            == super::super::session::Status::Running
-            && Instant::now() < deadline
-        {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        let info = create_exiting(&manager, "thread-a", 4);
+        note_exit_now(&manager, &info);
         let listed = manager.list(Some("thread-a"));
         assert_eq!(listed.len(), 1, "an exited tab is still observable");
         assert_eq!(listed[0].exit_code, Some(4));
     }
 
-    #[cfg(unix)]
     #[test]
     fn the_exited_retention_limit_is_enforced() {
         let manager = manager_with_shell();
-        let mut ids = Vec::new();
+        let mut infos = Vec::new();
         for index in 0..(EXITED_LIMIT + 3) {
             // One conversation each: the per-conversation cap is a separate
             // limit and must not mask the retention behaviour under test.
-            let info = create(&manager, &format!("thread-{index}"), "exit 0");
-            ids.push(info.id);
+            let info = create_exiting(&manager, &format!("thread-{index}"), 0);
+            note_exit_now(&manager, &info);
+            infos.push(info);
         }
-        // Wait for all of them to exit, then let the manager prune.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while manager.running_count() > 0 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        // Every session has really exited, so the manager can prune.
+        assert_eq!(manager.running_count(), 0, "no session may still run");
         manager.prune_exited();
         let listed = manager.list(None);
         assert!(
@@ -437,29 +475,206 @@ mod tests {
             "retention must be bounded, got {}",
             listed.len()
         );
+        assert_eq!(
+            listed.len(),
+            EXITED_LIMIT,
+            "exactly the retention limit survives"
+        );
+        let addressable = infos
+            .iter()
+            .filter(|info| manager.get(&info.id).is_ok())
+            .count();
+        assert_eq!(addressable, EXITED_LIMIT);
     }
 
-    #[cfg(unix)]
+    /// A running session is never evicted by retention bookkeeping, even when
+    /// it is the oldest entry in the exit order.
+    #[test]
+    fn retention_never_evicts_a_running_session() {
+        let manager = manager_with_shell();
+        let running = create(&manager, "thread-running");
+        let mut exited = Vec::new();
+        for index in 0..(EXITED_LIMIT + 2) {
+            let info = create_exiting(&manager, &format!("thread-exit-{index}"), 0);
+            note_exit_now(&manager, &info);
+            exited.push(info);
+        }
+        assert_eq!(
+            manager.running_count(),
+            1,
+            "only the live tab may still be running"
+        );
+        // `list` prunes; the live tab must survive it.
+        let listed = manager.list(None);
+        assert!(listed.iter().any(|info| info.id == running.id));
+        assert!(manager.get(&running.id).is_ok());
+        manager.shutdown_all(Duration::from_millis(200));
+    }
+
     #[test]
     fn per_conversation_capacity_is_enforced() {
         let manager = manager_with_shell();
         let mut created = Vec::new();
         for _ in 0..MAX_SESSIONS_PER_THREAD {
-            created.push(create(&manager, "thread-a", "sleep 30"));
+            created.push(create(&manager, "thread-a"));
         }
+        let (program, args) = test_support::idle_command();
         let error = manager
             .create_with(
                 "thread-a".to_string(),
                 None,
-                PathBuf::from("/bin/sh"),
-                vec!["-c".to_string(), "sleep 30".to_string()],
-                std::env::temp_dir(),
+                program,
+                args,
+                test_support::working_dir(),
                 80,
                 24,
             )
             .expect_err("capacity");
         assert_eq!(error.code(), "CAPACITY_EXCEEDED");
         assert_eq!(error.status(), 429);
+        assert_eq!(
+            error.message(),
+            format!(
+                "CAPACITY_EXCEEDED: at most {MAX_SESSIONS_PER_THREAD} terminals per conversation"
+            )
+        );
         manager.shutdown_all(Duration::from_millis(200));
+    }
+
+    /// The global cap is a separate limit from the per-conversation one.
+    #[test]
+    fn global_capacity_is_enforced_across_conversations() {
+        let manager = manager_with_shell();
+        for index in 0..MAX_SESSIONS {
+            create(
+                &manager,
+                &format!("thread-{}", index / MAX_SESSIONS_PER_THREAD),
+            );
+        }
+        let (program, args) = test_support::idle_command();
+        let error = manager
+            .create_with(
+                "thread-overflow".to_string(),
+                None,
+                program,
+                args,
+                test_support::working_dir(),
+                80,
+                24,
+            )
+            .expect_err("global capacity");
+        assert_eq!(error.code(), "CAPACITY_EXCEEDED");
+        assert_eq!(error.status(), 429);
+        assert_eq!(
+            error.message(),
+            format!("CAPACITY_EXCEEDED: at most {MAX_SESSIONS} terminals can be open at once")
+        );
+        manager.shutdown_all(Duration::from_millis(200));
+    }
+
+    /// Create/update/get/list/attach errors all carry a stable code, a wire
+    /// status and a message that names the conversation.
+    #[test]
+    fn update_and_get_report_a_missing_session() {
+        let manager = manager_with_shell();
+        let error = manager
+            .update("ghost", Some("t".into()), Some((80, 24)))
+            .expect_err("missing session");
+        assert_eq!(error.code(), "TERMINAL_NOT_FOUND");
+        assert_eq!(error.status(), 404);
+        assert!(error.message().contains("ghost"));
+        assert!(manager.attach("ghost", None).is_err());
+        assert!(manager.list(None).is_empty());
+    }
+
+    /// `create`'s two error arms: an unresolved conversation, and a program the
+    /// PTY cannot spawn.
+    #[test]
+    fn create_reports_store_and_spawn_failures() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("terminal_manager_create");
+        crate::store::initialize_app_store().expect("init store");
+        let manager = manager_with_shell();
+        let error = manager
+            .create(CreateRequest {
+                thread_id: "ghost-thread".to_string(),
+                title: None,
+                cols: 80,
+                rows: 24,
+            })
+            .expect_err("unknown conversation");
+        assert_eq!(error.code(), "THREAD_NOT_FOUND");
+
+        let missing = std::env::temp_dir().join("futureos-no-such-program-xyz");
+        let error = manager
+            .create_with(
+                "ghost-thread".to_string(),
+                None,
+                missing,
+                Vec::new(),
+                test_support::working_dir(),
+                80,
+                24,
+            )
+            .expect_err("spawn must fail");
+        assert_eq!(error.code(), "SPAWN_FAILED");
+        assert!(!error.message().is_empty());
+    }
+
+    /// `create_with` clamps a hostile terminal size instead of handing the PTY
+    /// a zero-column window.
+    #[test]
+    fn created_sessions_clamp_their_size() {
+        let manager = manager_with_shell();
+        let (program, args) = test_support::idle_command();
+        let info = manager
+            .create_with(
+                "thread-clamp".to_string(),
+                None,
+                program,
+                args,
+                test_support::working_dir(),
+                0,
+                u16::MAX,
+            )
+            .expect("create");
+        assert_eq!((info.cols, info.rows), (1, 1000));
+        assert_eq!(info.title, "Terminal", "a default title is applied");
+        manager.shutdown_all(Duration::from_millis(200));
+    }
+
+    /// `update` reaches a live session (retitle + resize) and reports the new
+    /// state.
+    #[test]
+    fn update_retitles_and_resizes_a_live_session() {
+        let manager = manager_with_shell();
+        let info = create(&manager, "thread-update");
+        let updated = manager
+            .update(&info.id, Some("  Logs  ".into()), Some((132, 43)))
+            .expect("update");
+        assert_eq!(updated.title, "Logs");
+        assert_eq!((updated.cols, updated.rows), (132, 43));
+        manager.shutdown_all(Duration::from_millis(200));
+    }
+
+    #[test]
+    fn attach_returns_the_replay_and_detaches_cleanly() {
+        let manager = manager_with_shell();
+        let info = create(&manager, "thread-attach");
+        let mut attachment = manager.attach(&info.id, Some(-1)).expect("attach");
+        assert!(attachment.replay.is_empty());
+        attachment.detach();
+        manager.shutdown_all(Duration::from_millis(200));
+    }
+
+    /// `shutdown_all` ends every session *and* empties the registry, so a later
+    /// list cannot resurrect a tab.
+    #[test]
+    fn shutdown_all_clears_the_registry() {
+        let manager = manager_with_shell();
+        create(&manager, "thread-a");
+        create(&manager, "thread-b");
+        manager.shutdown_all(Duration::from_millis(300));
+        assert!(manager.list(None).is_empty());
+        assert_eq!(manager.running_count(), 0);
     }
 }

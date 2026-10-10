@@ -14,6 +14,8 @@
 
 pub mod command_policy;
 pub mod home;
+pub mod session_deletion;
+pub mod shell_result;
 pub mod transport;
 
 pub mod proto {
@@ -54,6 +56,17 @@ mod tests {
     #[should_panic(expected = "unexpected payload kind")]
     fn expect_get_state_rejects_other_kinds() {
         expect_get_state(response_payload::Kind::Prompt(PromptAck::default()));
+    }
+
+    #[test]
+    fn batch_session_ids_roundtrip_through_protobuf() {
+        let command = super::proto::RpcCommand {
+            r#type: "delete_sessions".into(),
+            session_ids: vec!["session-a".into(), "session-b".into()],
+            ..Default::default()
+        };
+        let decoded = super::proto::RpcCommand::decode(command.encode_to_vec().as_slice()).unwrap();
+        assert_eq!(decoded.session_ids, command.session_ids);
     }
 
     /// Smoke test: generated types round-trip through the wire encoding.
@@ -136,5 +149,29 @@ mod tests {
         };
         let decoded = StreamEvent::decode(event.encode_to_vec().as_slice()).unwrap();
         assert_eq!(event, decoded);
+    }
+}
+
+#[cfg(test)]
+mod automatic_approval_wire_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn typed_assessment_round_trips_without_json_fallback() {
+        let value = json!({"assessment_id":"a","approval_request_id":"a","tool_call_id":"t","reviewer":"model","status":"approved","reported":{"risk":"low","authorization":"high","reason_code":"routine_bounded_action"},"effective":{"risk":"low","authorization":"high"},"confidence":{"risk":0.95,"authorization":0.96,"reason_code":0.99},"probabilities":{"risk":{"low":0.95}},"model":"jev","provider_request_id":"provider","error_code":null,"action":{"command":"pwd"},"action_digest":"sha256:fixture","input_context":{"source_ids":["user-entry"],"budget":{"estimated_state_tokens":600}},"attempt":1,"prompt_version":1,"reason_catalog_version":1,"policy_version":1,"duration_ms":50});
+        let payload = encode::event_payload("approval_assessment", &value.to_string())
+            .expect("typed payload");
+        let event = proto::StreamEvent {
+            r#type: "approval_assessment".into(),
+            payload: Some(payload),
+            ..Default::default()
+        };
+        let decoded = decode::event_data(&event);
+        assert_eq!(decoded["action"], value["action"]);
+        assert_eq!(decoded["confidence"], value["confidence"]);
+        assert_eq!(decoded["reported"], value["reported"]);
+        assert_eq!(decoded["status"], "approved");
+        assert_eq!(decoded["action_digest"], value["action_digest"]);
+        assert_eq!(decoded["input_context"], value["input_context"]);
     }
 }

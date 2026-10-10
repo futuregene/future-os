@@ -66,3 +66,22 @@ test("requires usable desktop, distinguishes missing presence from explicit shut
     connectionPresentation({ phase: "ready", desktopOnline: false, desktopDisconnected: true }),
   ).toMatchObject({ level: "disconnected", customerState: "disconnected" });
 });
+
+test.each([
+  // A desktop that answers but cannot serve its history is a device problem.
+  ["agent offline", "connection.deviceUnavailable"],
+  ["agent is unavailable", "connection.deviceUnavailable"],
+  // Credentials and capacity have their own titles; both are retryable states a
+  // user can act on.
+  ["401", "connection.pairingExpired"],
+  ["503", "connection.serviceUnavailable"],
+  // A missing/forbidden resource and an unclassifiable failure share the
+  // generic "connection failed" title, which is all the phone can honestly say.
+  ["404", "connection.connectionFailed"],
+  ["sqlite row decode exploded", "connection.connectionFailed"],
+])("a failed phone titled %s reads as %s", (error, titleKey) => {
+  const shown = connectionPresentation({ phase: "failed", desktopOnline: true, error });
+  expect(shown.titleKey).toBe(titleKey);
+  expect(shown.hintKey).toBe("connection.failedHint");
+  expect(shown.level).toBe("disconnected");
+});

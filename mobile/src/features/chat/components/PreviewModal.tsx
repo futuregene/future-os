@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Download, Ellipsis, ExternalLink, Share2, X } from "lucide-react-native";
+import { ChevronLeft, Download, Ellipsis, ExternalLink, Share2, X } from "lucide-react-native";
 import {
   ActivityIndicator,
   FlatList,
@@ -12,10 +12,10 @@ import {
   View,
 } from "react-native";
 import type { TFunction } from "i18next";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { useSafeAreaInsets, type EdgeInsets } from "react-native-safe-area-context";
 import { CodeTokens } from "../../../components/CodeTokens";
 import { codePreviewRows, codeRowText } from "../../../components/codePreviewRows";
-import { codeLanguageForFile, codeTokenRows, highlightCode } from "../../../components/codeHighlight";
+import { codeLanguageForFile, codeStyleForFile, codeTokenRows, highlightCode } from "../../../components/codeHighlight";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { JsonPreview } from "../../../components/JsonPreview";
 import type { HistoryAttachment } from "../../../remote/types";
@@ -24,34 +24,187 @@ import type { PreviewState } from "../useFileDownload";
 import type { ActiveDownload, FileOperation } from "../utils";
 import { ZoomableImage } from "./ZoomableImage";
 
+/**
+ * Identity for one layer of the preview stack. A changed key remounts the
+ * layer, so it has to distinguish two documents, and two visits to the same
+ * document (going A → B → A must not reuse B's layer, and the A underneath must
+ * keep its own). Layers below the top stay mounted precisely so that their
+ * scroll position survives; that only works while their key is stable.
+ */
+export function previewLayerKey(previews: PreviewState[], index: number): string {
+  const path = previews[index]?.attachment.path ?? "";
+  let visit = 0;
+  for (let i = 0; i <= index; i += 1) {
+    if (previews[i]?.attachment.path === path) visit += 1;
+  }
+  return `${path}#${visit}`;
+}
+
+/**
+ * Insets for the reader's own surface, read from the app's `SafeAreaProvider`
+ * context rather than from a `SafeAreaView`.
+ *
+ * The reader covers the status bar on purpose (`statusBarTranslucent` below): the
+ * system keeps drawing its status bar over the top of the window, so the header
+ * has to be pushed back out of the bar's reach. A `SafeAreaView` cannot do that
+ * here — a Modal is its own native window, so nothing inside it is a native
+ * descendant of the app's provider, which is the only thing a `SafeAreaView`
+ * resolves insets through. It therefore applied nothing: the header sat at the
+ * top of the screen, and the status bar's hit area swallowed the taps aimed at
+ * its buttons (measured on the reporting device: the header occupied rows
+ * 0–60dp, its buttons' 44-point hit boxes rows 8–52dp, inside the bar). The
+ * context insets describe the window the app is drawn in, which is where that
+ * status bar is.
+ *
+ * Only the top edge is ours: `statusBarTranslucent` extends the reader under the
+ * status bar alone, while the other edges stay laid out by the window (and the
+ * reader's body is full-bleed by design).
+ *
+ * iOS takes nothing: its reader is a `pageSheet`, which the system already
+ * places below the status bar, so the context's window inset for the top edge
+ * would only open a gap above the header.
+ *
+ * This padding only moves the document if it lands on an ancestor that lays its
+ * children out *normally*: Yoga positions an `absoluteFill` child from its
+ * parent's border edge and sizes it to the border box, so a parent's padding
+ * never reaches one (verified against Yoga 3.2.1: an absolute child of a box
+ * padded by 30 kept `top = 0` and its full height). The layers are exactly such
+ * children, which is why they hang off `previewStack` — a `flex: 1` child that
+ * the padding does move — rather than off this padded box directly.
+ */
+export function previewSurfaceInsets(insets: EdgeInsets) {
+  if (Platform.OS !== "android") return null;
+  return { paddingTop: insets.top };
+}
+
 export function PreviewModal({
-  preview,
+  previews,
   activeDownload,
   closePreview,
+  popPreview,
   dismissPreviewThen,
   downloadOriginal,
   flushPendingPreviewAction,
+  openLinkedFile,
   t,
 }: {
-  preview: PreviewState | null;
+  previews: PreviewState[];
   activeDownload: ActiveDownload | null;
   closePreview: () => void;
+  popPreview: () => void;
   dismissPreviewThen: (action: () => void) => void;
   downloadOriginal: (attachment: HistoryAttachment, operation?: FileOperation) => Promise<void>;
   flushPendingPreviewAction: () => void;
+  openLinkedFile: (path: string) => Promise<void>;
   t: TFunction;
 }) {
-  const [menuFor, setMenuFor] = useState<PreviewState | null>(null);
+  const top = previews.length - 1;
+  const insets = useSafeAreaInsets();
+  // The expanded menu is owned here rather than inside the layer that opened
+  // it: every event that has to close it (a download, the stack changing, the
+  // reader being dismissed natively) lands on this component, and none of them
+  // reaches into a layer. Recording the stack it was opened against is what
+  // makes "the documents changed" mean the same thing it did before the stack.
+  const [menu, setMenu] = useState<{ key: string; stack: PreviewState[] } | null>(null);
+  if (menu && (menu.stack !== previews || activeDownload !== null)) setMenu(null);
+  const closeMenu = () => setMenu(null);
+  return (
+    <Modal
+      animationType="slide"
+      // `onDismiss` is iOS-only; it is the handoff point for an action that
+      // needed this surface gone before it could be presented.
+      onDismiss={() => {
+        closeMenu();
+        flushPendingPreviewAction();
+      }}
+      // Android's hardware back closes the menu first, then leaves one document
+      // at a time, and closes the reader at the outermost one.
+      onRequestClose={() => {
+        if (menu) closeMenu();
+        else if (previews.length > 1) popPreview();
+        else closePreview();
+      }}
+      presentationStyle="pageSheet"
+      // Draw the content under the status bar deliberately, rather than
+      // depending on how the system happens to lay this window out: that is
+      // where it already sits on the reporting device, and the surface then
+      // insets itself back out of the bar (see `previewSurfaceInsets`).
+      statusBarTranslucent
+      visible={previews.length > 0}
+    >
+      <View style={[styles.previewSafe, previewSurfaceInsets(insets)]} testID="preview-surface">
+        <View style={styles.previewStack} testID="preview-stack">
+          {previews.map((preview, index) => {
+            const key = previewLayerKey(previews, index);
+            return (
+              <PreviewLayer
+                key={key}
+                active={index === top}
+                busy={activeDownload !== null}
+                canGoBack={index === top && index > 0}
+                closePreview={closePreview}
+                closeMenu={closeMenu}
+                dismissPreviewThen={dismissPreviewThen}
+                downloadOriginal={downloadOriginal}
+                menuOpen={menu?.key === key}
+                onLinkedFile={openLinkedFile}
+                openMenu={() => setMenu({ key, stack: previews })}
+                popPreview={popPreview}
+                preview={preview}
+                t={t}
+              />
+            );
+          })}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+/** One document of the stack: header, body, and its own overflow menu. A layer
+ * under the top one stays mounted and untouched, which is what makes going back
+ * return to the same place in the same document. */
+function PreviewLayer({
+  preview,
+  active,
+  busy,
+  canGoBack,
+  closePreview,
+  closeMenu,
+  downloadOriginal,
+  dismissPreviewThen,
+  menuOpen,
+  onLinkedFile,
+  openMenu,
+  popPreview,
+  t,
+}: {
+  preview: PreviewState;
+  active: boolean;
+  busy: boolean;
+  canGoBack: boolean;
+  closePreview: () => void;
+  closeMenu: () => void;
+  downloadOriginal: (attachment: HistoryAttachment, operation?: FileOperation) => Promise<void>;
+  dismissPreviewThen: (action: () => void) => void;
+  menuOpen: boolean;
+  onLinkedFile: (path: string) => Promise<void>;
+  openMenu: () => void;
+  popPreview: () => void;
+  t: TFunction;
+}) {
   const [headerHeight, setHeaderHeight] = useState(60);
   // Highlight here rather than in `useFileDownload`: the plain-text route serves
   // both code files and prose (`.txt`, `.log`), so only the file name knows
   // whether this is source. Tokenizing is bounded — `highlightCode` refuses
   // oversized files and grammars it does not ship — and the fallback is the
-  // untouched source, never mangled text. Recognized code keeps the monospace
-  // metrics even when it is too large to color.
-  const fileName = preview?.attachment.name ?? "";
-  const previewText = preview?.text;
+  // untouched source, never mangled text. Monospace comes from the file name
+  // alone (`codeStyleForFile`), so a code file Prism has no grammar for still
+  // gets the metrics that make its columns line up.
+  const fileName = preview.attachment.name ?? "";
+  const previewText = preview.text;
   const language = useMemo(() => codeLanguageForFile(fileName), [fileName]);
+  const codeStyle = useMemo(() => codeStyleForFile(fileName), [fileName]);
   const tokens = useMemo(
     () => (previewText === undefined ? null : highlightCode(previewText, language ?? undefined)),
     [language, previewText],
@@ -65,17 +218,17 @@ export function PreviewModal({
   // without their collapse, since a preview is meant to be read in full.
   const rows = useMemo(() => codePreviewRows(previewText ?? ""), [previewText]);
   const rowTokens = useMemo(() => codeTokenRows(tokens, rows), [tokens, rows]);
-  // Do not carry an expanded menu into a new preview or an active download.
-  if (menuFor && (menuFor !== preview || activeDownload !== null)) setMenuFor(null);
-  const menuOpen = menuFor !== null && menuFor === preview && activeDownload === null;
+  // A layer that got covered lost its menu with its focus: it belonged to the
+  // document the reader was looking at.
+  const shown = menuOpen && active;
   const close = () => {
-    setMenuFor(null);
+    closeMenu();
     closePreview();
   };
   const selectAction = (operation: FileOperation) => {
-    if (!preview || activeDownload !== null) return;
+    if (busy) return;
     const attachment = preview.attachment;
-    setMenuFor(null);
+    closeMenu();
     dismissPreviewThen(() => {
       if (operation === "save") void downloadOriginal(attachment);
       else void downloadOriginal(attachment, operation);
@@ -83,117 +236,135 @@ export function PreviewModal({
   };
 
   return (
-    <Modal
-      animationType="slide"
-      onDismiss={() => { setMenuFor(null); flushPendingPreviewAction(); }}
-      onRequestClose={() => { if (menuOpen) setMenuFor(null); else close(); }}
-      presentationStyle="pageSheet"
-      visible={preview !== null}
+    <View
+      accessibilityElementsHidden={!active}
+      importantForAccessibility={active ? "auto" : "no-hide-descendants"}
+      pointerEvents={active ? "auto" : "none"}
+      style={styles.previewLayer}
+      testID="preview-layer"
     >
-      <SafeAreaView style={styles.previewSafe}>
-        <View style={styles.previewBody}>
+      <View style={styles.previewBody}>
+        <View
+          style={styles.previewBody}
+          accessibilityElementsHidden={shown}
+          importantForAccessibility={shown ? "no-hide-descendants" : "auto"}
+        >
           <View
-            style={styles.previewBody}
-            accessibilityElementsHidden={menuOpen}
-            importantForAccessibility={menuOpen ? "no-hide-descendants" : "auto"}
+            style={styles.previewHeader}
+            onLayout={event => {
+              if (active) setHeaderHeight(event.nativeEvent.layout.height);
+            }}
           >
-            <View style={styles.previewHeader} onLayout={event => setHeaderHeight(event.nativeEvent.layout.height)}>
-              <Text numberOfLines={1} style={styles.previewTitle}>
-                {preview?.info.name}
-              </Text>
+            {canGoBack ? (
               <Pressable
-                accessibilityLabel={t("common.more")}
+                accessibilityLabel={t("common.back")}
                 accessibilityRole="button"
-                accessibilityState={{ expanded: menuOpen, disabled: activeDownload !== null, busy: activeDownload !== null }}
-                style={({ pressed }) => [styles.iconButton, pressed && styles.pressed, activeDownload !== null && styles.disabled]}
-                disabled={activeDownload !== null}
-                onPress={() => setMenuFor(preview)}
+                onPress={popPreview}
+                style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
               >
-                {activeDownload !== null ? (
-                  <ActivityIndicator color={colors.ink} size="small" />
-                ) : (
-                  <Ellipsis color={colors.ink} size={21} />
-                )}
+                <ChevronLeft color={colors.ink} size={22} />
               </Pressable>
-              <Pressable accessibilityRole="button" accessibilityLabel={t("common.close")} onPress={close} style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}>
-                <X color={colors.ink} size={22} />
-              </Pressable>
-            </View>
-            {preview?.info.previewKind === "image" ? (
-              // Pinch to zoom / drag to pan: a phone-sized preview of a screenshot is
-              // unreadable without it.
-              <ZoomableImage key={preview.uri} accessibilityLabel={preview.info.name} uri={preview.uri} />
-            ) : preview?.info.previewKind === "markdown" ? (
-              <View style={styles.previewDocument}>
-                {!!preview?.truncated && (
-                  <View style={styles.previewNotice}>
-                    <Text style={styles.previewTruncated}>{t("attachment.markdownTruncated")}</Text>
-                  </View>
-                )}
-                <MarkdownText mode="file-preview" imageBasePath={preview?.attachment.path} text={preview?.markdown ?? ""} />
-              </View>
-            ) : preview?.info.previewKind === "json" ? (
-              <JsonPreview
-                invalidMessage={detail => t("attachment.jsonInvalid", { detail })}
-                sourceTruncated={!!preview.truncated}
-                text={preview.text ?? ""}
-                tooComplexMessage={t("attachment.jsonTooComplex")}
-                truncatedMessage={t("attachment.jsonTruncated")}
-              />
-            ) : (
-              <FlatList
-                contentContainerStyle={styles.previewMarkdown}
-                data={rows}
-                initialNumToRender={12}
-                keyExtractor={(_row, index) => String(index)}
-                ListHeaderComponent={preview?.truncated
-                  ? <Text style={styles.previewTruncated}>{t("attachment.textTruncated")}</Text>
-                  : null}
-                maxToRenderPerBatch={12}
-                renderItem={({ item, index }) => (
-                  <Text selectable style={language ? styles.previewCode : styles.previewText}>
-                    <CodeTokens fallback={codeRowText(item.text)} tokens={rowTokens[index] ?? null} />
-                  </Text>
-                )}
-                windowSize={5}
-              />
-            )}
+            ) : null}
+            <Text numberOfLines={1} style={styles.previewTitle}>
+              {preview.info.name}
+            </Text>
+            <Pressable
+              accessibilityLabel={t("common.more")}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: shown, disabled: busy, busy }}
+              style={({ pressed }) => [styles.iconButton, pressed && styles.pressed, busy && styles.disabled]}
+              disabled={busy}
+              onPress={openMenu}
+            >
+              {busy ? (
+                <ActivityIndicator color={colors.ink} size="small" />
+              ) : (
+                <Ellipsis color={colors.ink} size={21} />
+              )}
+            </Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={t("common.close")} onPress={close} style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}>
+              <X color={colors.ink} size={22} />
+            </Pressable>
           </View>
-          {menuOpen && (
-            // Stay inside the preview's native Modal. A second Modal would compete
-            // with the preview-to-system-share/open presentation handoff on iOS.
-            <View style={[styles.menuOverlay, { paddingTop: headerHeight + spacing.xs }]}>
-              <Pressable
-                accessible={false}
-                testID="preview-menu-backdrop"
-                style={StyleSheet.absoluteFill}
-                onPress={() => setMenuFor(null)}
+          {preview.info.previewKind === "image" ? (
+            // Pinch to zoom / drag to pan: a phone-sized preview of a screenshot is
+            // unreadable without it.
+            <ZoomableImage key={preview.uri} accessibilityLabel={preview.info.name} uri={preview.uri} />
+          ) : preview.info.previewKind === "markdown" ? (
+            <View style={styles.previewDocument}>
+              {!!preview.truncated && (
+                <View style={styles.previewNotice}>
+                  <Text style={styles.previewTruncated}>{t("attachment.markdownTruncated")}</Text>
+                </View>
+              )}
+              <MarkdownText
+                imageBasePath={preview.attachment.path}
+                mode="file-preview"
+                onOpenFile={path => void onLinkedFile(path)}
+                text={preview.markdown ?? ""}
               />
-              <View accessibilityViewIsModal onAccessibilityEscape={() => setMenuFor(null)} style={styles.menu}>
-                <ScrollView bounces={false} contentContainerStyle={styles.menuContent}>
-                  {([
-                    { operation: "share", Icon: Share2 },
-                    { operation: "open", Icon: ExternalLink },
-                    { operation: "save", Icon: Download },
-                  ] as const).map(({ operation, Icon }) => (
-                    <Pressable
-                      key={operation}
-                      accessibilityRole="button"
-                      accessibilityLabel={t(`attachment.${operation}`)}
-                      onPress={() => selectAction(operation)}
-                      style={({ pressed }) => [styles.menuAction, pressed && styles.pressed]}
-                    >
-                      <Icon color={colors.ink} size={20} />
-                      <Text style={styles.menuLabel}>{t(`attachment.${operation}`)}</Text>
-                    </Pressable>
-                  ))}
-                </ScrollView>
-              </View>
             </View>
+          ) : preview.info.previewKind === "json" ? (
+            <JsonPreview
+              invalidMessage={detail => t("attachment.jsonInvalid", { detail })}
+              sourceTruncated={!!preview.truncated}
+              text={preview.text ?? ""}
+              tooComplexMessage={t("attachment.jsonTooComplex")}
+              truncatedMessage={t("attachment.jsonTruncated")}
+            />
+          ) : (
+            <FlatList
+              contentContainerStyle={styles.previewMarkdown}
+              data={rows}
+              initialNumToRender={12}
+              keyExtractor={(_row, index) => String(index)}
+              ListHeaderComponent={preview.truncated
+                ? <Text style={styles.previewTruncated}>{t("attachment.textTruncated")}</Text>
+                : null}
+              maxToRenderPerBatch={12}
+              renderItem={({ item, index }) => (
+                <Text selectable style={codeStyle ? styles.previewCode : styles.previewText}>
+                  <CodeTokens fallback={codeRowText(item.text)} tokens={rowTokens[index] ?? null} />
+                </Text>
+              )}
+              windowSize={5}
+            />
           )}
         </View>
-      </SafeAreaView>
-    </Modal>
+        {shown && (
+          // Stay inside the preview's native Modal. A second Modal would compete
+          // with the preview-to-system-share/open presentation handoff on iOS.
+          <View style={[styles.menuOverlay, { paddingTop: headerHeight + spacing.xs }]}>
+            <Pressable
+              accessible={false}
+              testID="preview-menu-backdrop"
+              style={StyleSheet.absoluteFill}
+              onPress={closeMenu}
+            />
+            <View accessibilityViewIsModal onAccessibilityEscape={closeMenu} style={styles.menu}>
+              <ScrollView bounces={false} contentContainerStyle={styles.menuContent}>
+                {([
+                  { operation: "share", Icon: Share2 },
+                  { operation: "open", Icon: ExternalLink },
+                  { operation: "save", Icon: Download },
+                ] as const).map(({ operation, Icon }) => (
+                  <Pressable
+                    key={operation}
+                    accessibilityRole="button"
+                    accessibilityLabel={t(`attachment.${operation}`)}
+                    onPress={() => selectAction(operation)}
+                    style={({ pressed }) => [styles.menuAction, pressed && styles.pressed]}
+                  >
+                    <Icon color={colors.ink} size={20} />
+                    <Text style={styles.menuLabel}>{t(`attachment.${operation}`)}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </View>
+          </View>
+        )}
+      </View>
+    </View>
   );
 }
 
@@ -202,6 +373,16 @@ const monospace = Platform.select({ ios: "Menlo", default: "monospace" });
 
 const styles = StyleSheet.create({
   previewSafe: { flex: 1, backgroundColor: colors.surface },
+  // The padded box's only child, and a normal flex child on purpose: the padding
+  // above moves this box and therefore everything the layers draw (see
+  // `previewSurfaceInsets`).
+  previewStack: { flex: 1, minHeight: 0 },
+  // A layer fills the reader so the layers below stay laid out, and therefore
+  // keep their scroll offsets. Later siblings paint on top — which only hides
+  // them because every layer paints the surface color: the text of the document
+  // underneath is transparent, so without this the two documents' lines and
+  // headers draw over each other.
+  previewLayer: { ...StyleSheet.absoluteFill, backgroundColor: colors.surface },
   previewBody: { flex: 1, minHeight: 0 },
   previewHeader: {
     minHeight: 60,

@@ -1,6 +1,7 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useCallback, useRef, useState } from "react";
 import type { RemoteClient } from "./client";
+import { randomId } from "./codec";
 import {
   cachedPreviewForAttachment,
   downloadPrepared,
@@ -10,6 +11,7 @@ import {
 } from "./files";
 import type { SyncEngine } from "./syncEngine";
 import { requestReadPage } from "./readPages";
+import { asToolKind, normalizeArgs, targetFromArgs } from "@future-os/thread-projection";
 import { loadLastModel, loadLastThinking, saveLastModel, saveLastThinking } from "./storage";
 import { markApprovalDecision } from "./timeline";
 import { modelProviderFromReference, modelReference } from "./types";
@@ -62,6 +64,8 @@ interface ConversationControllerOptions {
   recordError(error: unknown): void;
   removeSession(sessionId: string, threadId: string): Promise<boolean>;
   removeWorkspace(workspaceId: string): Promise<boolean>;
+  /** Re-read the session catalogue so a just-forked child is selectable. */
+  refreshSessions(): Promise<void>;
   closeConversation(): void;
 }
 
@@ -82,6 +86,7 @@ export function useConversationController({
   recordError,
   removeSession,
   removeWorkspace,
+  refreshSessions,
   closeConversation,
 }: ConversationControllerOptions) {
   const [modelId, setModelId] = useState("");
@@ -91,6 +96,19 @@ export function useConversationController({
   const [sessionUsage, setSessionUsage] = useState<RemoteSessionUsage | null>(null);
   const [openingSession, setOpeningSession] = useState(false);
   const settingsRevision = useRef(0);
+  /**
+   * Targets already fetched for lean history rows, keyed by
+   * `session\u0000run\u0000call`. One conversation's worth of user-opened rows,
+   * so it is bounded by taps rather than by history size.
+   */
+  const toolTargetsRef = useRef(new Map<string, string | null>());
+  /**
+   * One idempotency key belongs to one fork intent (a parent session + source
+   * entry), not permanently to that point: it survives failed retries so a
+   * lost reply cannot create a second child, then is released on success so the
+   * user may deliberately branch from the same message again later.
+   */
+  const pendingForkRequestsRef = useRef(new Map<string, string>());
 
   const applySessionSettings = useCallback((sessionId: string, state: Pick<RemoteSessionState, "model" | "thinkingLevel" | "usage">) => {
     if (!sessionId || sessionId !== selectedRef.current) return;
@@ -248,6 +266,37 @@ export function useConversationController({
       };
     });
   }, [clientRef, conversationEpochRef]);
+
+  /**
+   * Fetch the display target of one tool call whose arguments a lean history
+   * page omitted, and remember it for the rest of this conversation.
+   *
+   * The page carries the call's identity but not its arguments, so the row asks
+   * for them when the user opens it. A hit is answered from the cache — a
+   * remounted row (the list virtualizes) must not re-ask for the same command —
+   * and a call whose arguments yield no target is remembered as such, so a tap
+   * on a miss cannot turn into a request per render. Keyed by session too: the
+   * same call id in another conversation must never answer here.
+   */
+  const resolveToolCallTarget = useCallback(async (toolCallId: string, runId: string) => {
+    const client = clientRef.current;
+    const sessionId = selectedRef.current;
+    if (!client || !sessionId) throw new Error("not_connected");
+    const key = `${sessionId}\u0000${runId}\u0000${toolCallId}`;
+    const cached = toolTargetsRef.current.get(key);
+    if (cached !== undefined) return cached;
+    const response = await client.requestRetry<{
+      toolCallId?: string;
+      name?: string;
+      arguments?: unknown;
+    }>({ type: "get_tool_call_args", sessionId, runId, toolCallId }, sessionId);
+    const target = targetFromArgs(
+      asToolKind(response.data?.name ?? ""),
+      normalizeArgs(response.data?.arguments ?? null),
+    );
+    toolTargetsRef.current.set(key, target ?? null);
+    return target ?? null;
+  }, [clientRef, selectedRef]);
 
   const listSessionFiles = useCallback(async (path = "") => {
     const client = clientRef.current;
@@ -408,6 +457,50 @@ export function useConversationController({
     [closeConversation, removeWorkspace],
   );
 
+  /**
+   * Fork the open conversation through the settled turn started by a persisted
+   * user entry, then open the child. The Desktop owns the fork (same path as
+   * its own Fork button) and answers the new session + thread; a stable request
+   * id makes a retry converge on the same child instead of branching twice.
+   */
+  const forkConversation = useCallback(
+    async (sourceEntryId: string) => {
+      const client = clientRef.current;
+      const parentSessionId = selectedRef.current;
+      if (!client || !parentSessionId) throw new Error("not_connected");
+      const source = sourceEntryId.trim();
+      if (!source) throw new Error("fork_source_missing");
+      const intentKey = `${parentSessionId}:${source}`;
+      let requestId = pendingForkRequestsRef.current.get(intentKey);
+      if (!requestId) {
+        requestId = `mobile-fork:${randomId("fork")}`;
+        pendingForkRequestsRef.current.set(intentKey, requestId);
+      }
+      const response = await client.request<{ sessionId?: string; threadId?: string }>(
+        {
+          type: "fork_session",
+          id: requestId,
+          sessionId: parentSessionId,
+          sourceEntryId: source,
+        },
+        parentSessionId,
+        60_000,
+      );
+      const forkedSessionId = response.data?.sessionId?.trim();
+      if (!forkedSessionId) throw new Error("fork_missing_session");
+      pendingForkRequestsRef.current.delete(intentKey);
+      // The child is a Desktop store row; pull the catalogue so the session is
+      // selectable (and titled) before the transcript opens onto it.
+      await refreshSessions();
+      // Only navigate while this phone is still reading the parent; a fork that
+      // resolved after the user moved on must not yank them elsewhere.
+      if (clientRef.current === client && selectedRef.current === parentSessionId) {
+        await selectSession(forkedSessionId);
+      }
+    },
+    [clientRef, refreshSessions, selectSession, selectedRef],
+  );
+
   const decideApproval = useCallback(
     async (id: string, decision: "approved" | "rejected") => {
       const client = clientRef.current;
@@ -437,6 +530,7 @@ export function useConversationController({
     newConversation,
     listSessionFiles,
     listSkills,
+    resolveToolCallTarget,
     prepareAttachment,
     cachedAttachment,
     downloadAttachment,
@@ -447,6 +541,7 @@ export function useConversationController({
     setApprovalTier,
     deleteSession,
     deleteWorkspace,
+    forkConversation,
     decideApproval,
   };
 }

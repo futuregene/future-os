@@ -158,7 +158,11 @@ pub async fn flush(store: &mut Store, goal_id: &str, client: &mut AgentClient) -
     if let Some((id, message)) = pending {
         tokio::time::timeout(
             Duration::from_secs(10),
-            client.prompt(&session, &message, &format!("loop-batch:{id}")),
+            // Coalescing, not plain enqueue: the orchestrator is the one session
+            // here whose queue is a stream of state syncs. While it is busy with
+            // a run, the batches arriving behind it fold into ONE next run
+            // instead of each starting (and usually being superseded) on its own.
+            client.prompt_coalescing(&session, &message, &format!("loop-batch:{id}")),
         )
         .await??;
         store.append(Event::SupervisorBatchDelivered {

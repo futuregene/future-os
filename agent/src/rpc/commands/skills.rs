@@ -29,6 +29,6 @@ pub(super) fn handle(state: &AppState, cmd: &RpcCommand) -> String {
     })();
     match result {
         Ok(value) => RpcResponse::ok(&cmd.id, &cmd.cmd_type, value),
-        Err(error) => RpcResponse::build_fail(&cmd.id, &cmd.cmd_type, &error.to_string()),
+        Err(error) => RpcResponse::build_fail(&cmd.id, &cmd.cmd_type, &format!("{error:#}")),
     }
 }

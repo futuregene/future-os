@@ -325,3 +325,43 @@ mod tests {
             .unwrap();
     }
 }
+
+/// The legacy shapes the relational encoder must absorb: a value that is not an
+/// entry at all, the older "Error:"-prefixed tool text, and an explicitly empty
+/// block array (which differs from absent content).
+#[cfg(test)]
+mod canonical_paths {
+    use super::*;
+    use crate::session::sqlite_store::SqliteStore;
+    use serde_json::json;
+
+    #[test]
+    fn a_non_entry_value_is_passed_through_unchanged() {
+        assert_eq!(canonical_entry(json!(7)), json!(7));
+    }
+
+    #[test]
+    fn error_prefixed_tool_text_becomes_an_error_result_block() {
+        let canonical = canonical_entry(json!({
+            "id":"t","type":"tool","role":"tool","timestamp":"2026-01-01T00:00:00Z",
+            "content":"Error: synthetic failure"
+        }));
+        let blocks = canonical["content"].as_array().unwrap();
+        assert_eq!(blocks[0]["type"], "tool_result");
+        assert_eq!(blocks[0]["is_error"], true);
+    }
+
+    #[test]
+    fn an_explicitly_empty_block_array_survives_a_storage_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+        store
+            .replace(
+                "s",
+                vec![json!({"id":"e","type":"assistant","role":"assistant",
+                    "timestamp":"2026-01-01T00:00:00Z","content":[]})],
+            )
+            .unwrap();
+        assert_eq!(store.entries("s").unwrap()[0]["content"], json!([]));
+    }
+}

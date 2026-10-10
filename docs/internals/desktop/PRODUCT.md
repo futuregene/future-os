@@ -119,8 +119,9 @@ directory, a data-analysis directory, a writing directory, or a temporary
 directory FutureOS auto-creates.
 
 A Workspace can hold multiple child conversations. Deleting a workspace
-conversation only deletes the conversation itself, never the workspace
-directory or files inside it.
+conversation deletes that conversation together with its descendant
+conversations (the delete is recursive), but never the workspace directory or
+files inside it.
 
 The Workspace itself supports rename and delete (the operation menu on the
 workspace group header in the left navigation). Workspace deletion is a **soft
@@ -226,7 +227,14 @@ differences, and acceptance: [macOS](SANDBOX/MACOS.md),
   this conversation/workspace temporary rules → rule files
   (`${WS}/.future/approval_rule.json`, `~/.future/approval_rule.json`) →
   fallback (reads open, writes limited to workspace/temp).
-- **Three approval tiers** (input-box dropdown / settings page switch, global):
+- **Four approval modes** (input-box dropdown / settings page switch, global):
+  - **Automatic review** (opt-in, requires a working OS sandbox): preserve sandbox
+    enforcement and let Jev classify only rule-level Ask requests. FutureOS makes
+    the final decision using risk, authorization, reason and confidence. Errors,
+    uncertainty, cancelled or stale requests deny execution. Results appear in
+    Runs details; automatic reviews never enter the interactive pending queue.
+    An unavailable sandbox uses manual review while retaining the automatic setting.
+    See [Automatic approval](AUTO_APPROVAL.md).
   - **Manual approval** (opt-in, all platforms): read/write/edit prompt per
     rules; shell read-only commands (`ls/cat/grep/git status` etc.) run without
     asking, other commands show a confirmation card; no OS sandbox enabled.
@@ -292,9 +300,12 @@ differences, and acceptance: [macOS](SANDBOX/MACOS.md),
 - Approval offers three per-scenario semantics: **not allowed / allow this once
   / always allow in this project** (exact wording can keep evolving). "Always
   allow in this project" saves the same behavior and target expressed on the
-  card as a workspace allow rule and applies it this turn immediately;
-  sensitive files, macOS/Linux whole-command escalation, and
-  non-persistable requests do not offer this option.
+  card as a workspace allow rule and applies it this turn immediately. It is
+  not offered for sensitive files or when no trusted target/rule can be
+  generated; a macOS/Linux whole-command escalation offers it only when the
+  failure diagnostics yield a non-secret blocked path, and what it then
+  persists is that path's write rule — never "always run this command outside
+  the sandbox".
 - Multi-target approvals list every target, at most 8, decided as a whole
   group; when no trusted behavior/target can be generated or payload parsing
   fails, fail closed — no approve button.
@@ -437,7 +448,7 @@ markdown, documents, and tables.
 
 A Skill is a capability unit the Agent can use, coming from the **official
 platform catalog**, not stored in the repo. Users can browse, install, and
-uninstall skills on the Skills page; after installation, `/技能名` triggers
+uninstall skills on the Skills page; after installation, `/skill-name` triggers
 them in the conversation input box.
 
 Skill operations run on the host-local Agent SkillManager, including requests
@@ -458,8 +469,9 @@ Run; the summary request is the operation's only model communication. Manual
 compaction skips the automatic threshold and uses the complete recent-turn tail
 of at most 15K tokens; short conversations get a summary of the whole thing,
 with no duplicate copy of the original kept. A successful checkpoint records
-`trigger: manual` and shows the user's own choice via the "you manually
-compacted this conversation's context" divider; failure also reports in place.
+`trigger: manual` and shows the user's own choice via the "You compacted this
+conversation's context" divider (with its token delta when known); failure
+also reports in place.
 
 The `/` menu searches by Chinese or English name and description. When filtered
 results contain both context tools and Skills, context tools stay pinned on
@@ -470,12 +482,16 @@ Skill keeps inserting the original `/skill-name` pill, sent with the next user
 message.
 
 **Launch and onboarding**: Skills is live as a standalone left-nav entry. New
-users entering for the first time see a skills onboarding banner on the new
-conversation page ("Start learning" auto-starts one conversation with the
-getting-started guidance; "Got it" collapses it); the left-nav Skills entry
-shows an installed-count badge and a one-time guide bubble ("N common skills
-installed" / "No skills installed yet"), and the Skills page offers guidance
-text with a "Try it" prefill.
+users entering for the first time see the "5-Minute Skill Onboarding" banner
+under the new-conversation composer (the "Skill Tutorial" button auto-starts
+one conversation with the getting-started guidance; the corner × — aria
+"Dismiss tutorial entry" — collapses it); the left-nav Skills entry shows an
+installed-count badge and a one-time guide bubble ("N common skills installed
+for you" / "No skills installed yet", dismissed with "Got it"), and the Skills
+page offers a "How to use skills" guide ("Teach me to use skills" starts the
+same coach conversation, "User manual" opens the platform manual) while each
+installed skill's "Try it" button prefills `/skill-name` in the new-chat
+composer.
 
 ### 4.9 Attachment
 
@@ -522,7 +538,9 @@ invalid, explicitly show "file moved or deleted".
 
 Mobile attachments transfer in shards over the NATS relay: validated by
 original size on selection first (single file 10 MiB, single message total
-20 MiB, at most 10 attachments / 4 images); images with a longest edge over
+20 MiB, at most 10 attachments, images included — a message may be filled with
+up to 10 images and the backend accepts the same number); images with a longest
+edge over
 1600px are downsampled to 1600px on the phone, not rejected. JPEG/BMP are
 encoded as JPEG quality 65 on the phone before upload, HEIC/HEIF are input-only
 and also converted to JPEG 65, PNG/WebP/GIF stay as originals, SVG is an
@@ -562,16 +580,19 @@ flicker or switch tabs frequently.
 The left navigation supports:
 
 - New Chat.
-- Skill (live as a standalone nav entry with installed-count badge and
+- Models (jumps straight to the models page — see 5.7).
+- Skills (live as a standalone nav entry with installed-count badge and
   first-time guidance — see 4.8).
-- Remote (phone remote control; the entry shows only after signing in to
+- Phone Control (remote control; the entry shows only after signing in to
   FutureOS — see 5.3).
 - The pinned section (all pinned conversations).
-- Workspace list.
-- Child conversations under workspaces.
-- Chat list.
-- Settings.
-- Expand, collapse, and archive display.
+- Workspace list (the section header carries a collapse toggle and a "new
+  workspace" button; each workspace group has its own expand/collapse chevron).
+- Child conversations under workspaces (rows carry the + / − tree toggle).
+- Chat list (section header: collapse toggle and the batch-selection menu).
+- Settings (bottom account footer; inside the account menu when signed in).
+- Every list section and workspace group expands/collapses; the rail lists only
+  active conversations, so archived threads do not appear here (see 4.2).
 
 Pinning is **global**: every pinned conversation — whether belonging to a
 workspace or an ordinary Chat — is gathered in the top "Pinned" section;
@@ -589,8 +610,10 @@ sessions use the same relations. Child conversations group with their root even
 when their working directories differ; pinned children enter the pinned section
 independently and keep their own subtree. Missing, archived, or deleted parents
 do not hide surviving children; deeper historical levels are flattened into the
-third level, with no Agent relations deleted or rewritten. Batch select-all
-includes collapsed children in the current group; delete does not auto-cascade.
+third level, with no Agent relations deleted or rewritten. Deleting a
+conversation is recursive: its descendants go with it (a pinned child included —
+the pin moves it in the sidebar, not in the lineage). Batch select-all
+includes collapsed children in the current group.
 A pinned conversation belongs to the pinned section rather than to any group,
 so it is never part of a batch: it carries no checkbox and select-all (in a
 workspace group or in Chat) skips it on both desktop and mobile.
@@ -743,9 +766,9 @@ message area. Mixed-result ordering and divider rules in 4.8.
 Besides the model and thinking-level pickers, the input area offers an
 **approval mode** quick-switch dropdown; it is the same global selection as the
 settings "General" page's approval mode. macOS shows "Manual approval / Sandbox
-protection / Fully open"; Windows shows "Manual approval / Write protection /
-Fully open" after the host probe passes; Linux shows "Manual approval / Sandbox
-protection / Fully open" after the Bubblewrap host probe passes.
+protection / Automatic review / Fully open"; Windows shows "Manual approval / Write protection /
+Automatic review / Fully open" after the host probe passes; Linux shows "Manual approval / Sandbox
+protection / Automatic review / Fully open" after the Bubblewrap host probe passes.
 
 Each message has a **copy button** below it that copies its plain-text content.
 The user-message copy button appears on hover; the assistant's copy button and
@@ -805,7 +828,7 @@ GUI colors uniformly use the **semantic tokens** defined in
 `desktop/tailwind.config.js` (neutral/surface, accent/interaction, the status
 triple, diff, shadows) — no raw Tailwind named colors written in components.
 Status badges uniformly use the `<Badge tone>` component; colors
-distinguishing **sibling categories** (event categories, error subtypes) are an
+distinguishing **sibling categories** (run error subtypes) are an
 intentional exception.
 
 The color list, usage quick reference, and anti-patterns are in
@@ -819,9 +842,9 @@ below New Chat jumps straight to the models page) has three pages:
 
 - **General**: UI language switch (中文 / English, default Chinese, saved
   locally); **approval mode** by platform (macOS: Manual approval / Sandbox
-  protection / Fully open; Windows with host probe passed: Manual approval /
-  Write protection / Fully open; Linux with Bubblewrap host probe passed:
-  Manual approval / Sandbox protection / Fully open — on failure show the
+  protection / Automatic review / Fully open; Windows with host probe passed: Manual approval /
+  Write protection / Automatic review / Fully open; Linux with Bubblewrap host probe passed:
+  Manual approval / Sandbox protection / Automatic review / Fully open — on failure show the
   stable diagnostic code and apt/dnf install hints and keep Manual approval;
   default Fully open `off`, falling back to Manual approval only when sandbox
   is clearly unavailable); **Generate a title after the first answer**
@@ -936,7 +959,8 @@ A typical flow:
 
 1. The user opens FutureOS.
 2. The user creates a Chat or picks a Workspace conversation.
-3. The GUI creates Thread, Message, and Run.
+3. The GUI creates the Thread and a Run, and hands the user message to the
+   Agent.
 4. The GUI calls `future-agent` over gRPC.
 5. The Agent streams LLM output.
 6. The Agent executes `read`, `shell`, `edit`, `write` per model output.
@@ -948,7 +972,9 @@ A typical flow:
 9. The GUI shows text increments, background-program status, tool-activity
    summaries, and end states.
 10. After the Run completes, the assistant message, run events, tool calls,
-    tool outputs, and approval records are persisted.
+    and tool outputs are persisted by the Agent (Agent SQLite + session JSONL
+    — the single source of truth, §4.3–4.7); the GUI keeps its Run projection
+    and the approval records.
 
 Agent tool execution defaults to the current session cwd as the workspace
 boundary. Ordinary Chats use the system-created temporary workspace; Workspace

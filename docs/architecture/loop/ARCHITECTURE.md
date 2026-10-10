@@ -110,8 +110,9 @@ for new guidance, where the task remains resumable.
 2. Prepare an immutable `SupervisorBatchPrepared`: target session, note keys,
    bounded message, UUID. A batch contains at most 32 notes and points to full
    ledger evidence. The watchdog coalesces notes arriving between ticks.
-3. Push with `enqueue_if_busy`, never interrupting the supervisor. A retry uses
-   exactly the same request key AND message, including after an ambiguous reply.
+3. Push with `enqueue_coalescing`, never interrupting the supervisor. Batches
+   queue while it is busy and fold into ONE next turn; a retry uses exactly the
+   same request key AND message, including after an ambiguous reply.
 4. Record `SupervisorBatchDelivered` only after remote acceptance. This receipt
    means accepted by the agent queue, not that the supervisor acted on it.
 

@@ -112,13 +112,15 @@ impl SkillManager {
     /// A file lock covers both Agent RPC and one-shot CLI processes. Operations
     /// also hold it while publishing their refreshed discovery snapshot.
     fn locked<T>(&self, action: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
-        fs::create_dir_all(&self.agent_dir)?;
+        fs::create_dir_all(&self.agent_dir).context("create Agent state directory")?;
         let lock = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(false)
-            .open(self.agent_dir.join(".skills.lock"))?;
-        lock.lock_exclusive()?;
+            .open(self.agent_dir.join(".skills.lock"))
+            .context("open skill installation lock")?;
+        lock.lock_exclusive()
+            .context("acquire skill installation lock")?;
         let mut db = registry::open_registry(&self.db_path())?;
         let result = action(&mut db);
         let _ = lock.unlock();
@@ -216,13 +218,17 @@ impl SkillManager {
         validate_component(id)?;
         validate_component(version)?;
         self.locked(|db| {
-            self.recover(db)?;
-            self.reconcile(db)?;
+            self.recover(db)
+                .context("recover pending skill operation")?;
+            self.reconcile(db)
+                .context("scan installed skills before install")?;
             if let Err(error) = self.install_locked(db, id, version) {
-                self.recover(db)?;
+                self.recover(db)
+                    .context("recover failed skill installation")?;
                 return Err(error);
             }
-            self.reconcile(db)?;
+            self.reconcile(db)
+                .context("scan installed skills after install")?;
             super::invalidate_skills_cache();
             Ok(())
         })
@@ -333,13 +339,16 @@ impl SkillManager {
     }
 
     fn install_locked(&self, db: &mut Connection, id: &str, version: &str) -> Result<()> {
-        let bytes = self.download(id, version)?;
+        let bytes = self
+            .download(id, version)
+            .context("download skill archive")?;
         let package_sha256 = format!("{:x}", Sha256::digest(&bytes));
         let staging = tempfile::Builder::new()
             .prefix(".skill-install-")
-            .tempdir_in(&self.agent_dir)?;
+            .tempdir_in(&self.agent_dir)
+            .context("create skill staging directory")?;
         let candidate = staging.path().join("candidate");
-        fs::create_dir(&candidate)?;
+        fs::create_dir(&candidate).context("create skill staging candidate")?;
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes))?;
         let mut extracted_bytes = 0u64;
         if archive.len() > 4096 {
@@ -361,12 +370,14 @@ impl SkillManager {
                 bail!("skill archive exceeds 256 MiB uncompressed");
             }
         }
-        archive.extract(&candidate)?;
-        flatten(&candidate)?;
+        archive
+            .extract(&candidate)
+            .context("extract skill archive")?;
+        flatten(&candidate).context("flatten skill archive")?;
         let content = fs::read_to_string(candidate.join("SKILL.md"))
             .context("skill archive has no SKILL.md")?;
         let actual_id = super::extract_frontmatter_field(&content, "name");
-        let actual_version = super::extract_frontmatter_field(&content, "version");
+        let actual_version = super::extract_package_version(&content);
         if actual_id.as_deref() != Some(id) || actual_version.as_deref() != Some(version) {
             bail!("skill package identity/version differs from requested {id}@{version}");
         }
@@ -375,12 +386,15 @@ impl SkillManager {
             version: version.to_owned(),
             package_sha256,
         };
-        let mut file = File::create(candidate.join(RECEIPT))?;
+        let mut file = File::create(candidate.join(RECEIPT)).context("create skill receipt")?;
         serde_json::to_writer(&mut file, &receipt)?;
-        file.sync_all()?;
+        file.sync_all().context("sync skill receipt")?;
+        // Windows cannot rename the candidate directory while this child file
+        // is still open without delete sharing.
+        drop(file);
 
         let app = self.app_dir();
-        fs::create_dir_all(&app)?;
+        fs::create_dir_all(&app).context("create installed skills directory")?;
         let dest = app.join(id);
         let backup = self.agent_dir.join(format!(".skill-{id}.previous"));
         db.execute(
@@ -389,17 +403,18 @@ impl SkillManager {
             params![id,version,now_ms()],
         )?;
         if backup.exists() {
-            fs::remove_dir_all(&backup)?;
+            fs::remove_dir_all(&backup).context("remove previous skill backup")?;
         }
         if dest.exists() {
-            fs::rename(&dest, &backup)?;
+            fs::rename(&dest, &backup).context("back up existing skill")?;
         }
         if let Err(error) = fs::rename(&candidate, &dest) {
             if backup.exists() {
-                fs::rename(&backup, &dest)?;
+                fs::rename(&backup, &dest)
+                    .context("restore existing skill after install failure")?;
             }
             db.execute("DELETE FROM skill_operations WHERE name=?1", [id])?;
-            return Err(error.into());
+            return Err(error).context("publish staged skill");
         }
         let finalize = db
             .execute(
@@ -411,10 +426,11 @@ impl SkillManager {
             .and_then(|_| self.finish_install(db, &receipt, &dest));
         if let Err(error) = finalize {
             if dest.exists() {
-                fs::remove_dir_all(&dest)?;
+                fs::remove_dir_all(&dest).context("remove failed skill installation")?;
             }
             if backup.exists() {
-                fs::rename(&backup, &dest)?;
+                fs::rename(&backup, &dest)
+                    .context("restore existing skill after finalization failure")?;
             }
             let _ = db.execute("DELETE FROM skill_operations WHERE name=?1", [id]);
             return Err(error);
@@ -488,6 +504,9 @@ impl SkillManager {
     }
 
     fn reconcile(&self, db: &mut Connection) -> Result<()> {
+        // Stored at the end, so the next `reconcile_once` can tell whether the
+        // tree scanned here is still the one on disk.
+        let fingerprint = self.skills_fingerprint();
         let previous = {
             let mut statement = db.prepare("SELECT location,source FROM skill_installations")?;
             let rows = statement
@@ -527,7 +546,7 @@ impl SkillManager {
                 let content = fs::read_to_string(md)?;
                 let id = super::extract_frontmatter_field(&content, "name")
                     .unwrap_or_else(|| entry.file_name().to_string_lossy().into_owned());
-                let declared = super::extract_frontmatter_field(&content, "version");
+                let declared = super::extract_package_version(&content);
                 let receipt = read_receipt(path)
                     .filter(|r| r.id == id && Some(&r.version) == declared.as_ref());
                 let prior_managed = previous
@@ -557,33 +576,73 @@ impl SkillManager {
             }
         }
         tx.execute(
-            "INSERT INTO skills_meta(key,value) VALUES('reconciled','1')
-             ON CONFLICT(key) DO UPDATE SET value='1'",
-            [],
+            "INSERT INTO skills_meta(key,value) VALUES('reconciled',?1)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![fingerprint],
         )?;
         tx.commit()?;
         Ok(())
     }
 
-    /// Reconcile at most once per database.
+    /// Reconcile only when the skill directories on disk changed since the last
+    /// pass.
     ///
     /// Reconciling rewrites `skill_installations` wholesale, which made a
     /// read-only RPC ("list the skills") a writer of the session database —
     /// the contention behind "session persistence ... database is locked".
     /// It is still needed to adopt skill directories that exist on disk with no
-    /// registry row (the v3 → v4 upgrade, or a directory placed by hand), so it
-    /// runs once, and afterwards only on the mutating operations, where its cost
-    /// is invisible next to the install itself.
+    /// registry row (the v3 → v4 upgrade, or a directory placed by hand), so the
+    /// marker records a [`Self::skills_fingerprint`] rather than a bare `1`: a
+    /// skill added, removed or edited outside the manager is adopted by the next
+    /// read, while an unchanged tree stays read-only. A marker written by an
+    /// older build holds `1`, which simply mismatches once and re-reconciles.
     fn reconcile_once(&self, db: &mut Connection) -> Result<()> {
-        let already: bool = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM skills_meta WHERE key='reconciled')",
-            [],
-            |row| row.get(0),
-        )?;
-        if already {
+        let recorded: Option<String> = db
+            .query_row(
+                "SELECT value FROM skills_meta WHERE key='reconciled'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if recorded.as_deref() == Some(self.skills_fingerprint().as_str()) {
             return Ok(());
         }
         self.reconcile(db)
+    }
+
+    /// A cheap snapshot of the skill trees under both scopes: the newest mtime
+    /// seen anywhere, plus how many skills exist. The scope roots are included
+    /// so that a removal counts even when nothing else changed.
+    ///
+    /// Only change *detection* needs to be conservative here — `reconcile`
+    /// re-reads everything — so a pair of counters that agree only when the tree
+    /// is unchanged is enough, and far cheaper than the wholesale rewrite it
+    /// guards. This stats each skill directory and its manifest; `list_installed`
+    /// already reads every one of those manifests on the same call.
+    fn skills_fingerprint(&self) -> String {
+        let mut newest = 0u128;
+        let mut count = 0usize;
+        for root in [self.global_dir.clone(), self.app_dir()] {
+            newest = newest.max(mtime_nanos(&root));
+            let Ok(entries) = fs::read_dir(&root) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                // Reconciling scans the same shape: one level down, and only
+                // directories carrying a manifest.
+                if !path.is_dir() {
+                    continue;
+                }
+                let manifest = path.join("SKILL.md");
+                if !manifest.is_file() {
+                    continue;
+                }
+                count += 1;
+                newest = newest.max(mtime_nanos(&path)).max(mtime_nanos(&manifest));
+            }
+        }
+        format!("{newest}-{count}")
     }
 
     fn download(&self, id: &str, version: &str) -> Result<Vec<u8>> {
@@ -611,6 +670,18 @@ impl SkillManager {
 
 fn read_receipt(dir: &Path) -> Option<Receipt> {
     serde_json::from_slice(&fs::read(dir.join(RECEIPT)).ok()?).ok()
+}
+
+/// Modification time in nanoseconds, or 0 when the path is missing or predates
+/// the epoch. Used only to detect that a skill tree changed, never to order or
+/// version anything.
+fn mtime_nanos(path: &Path) -> u128 {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|delta| delta.as_nanos())
+        .unwrap_or(0)
 }
 
 fn flatten(dir: &Path) -> Result<()> {
@@ -698,6 +769,21 @@ mod tests {
         cursor.into_inner()
     }
 
+    fn package_with_frontmatter(frontmatter: &str) -> Vec<u8> {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut archive = zip::ZipWriter::new(&mut cursor);
+            archive
+                .start_file("SKILL.md", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            archive
+                .write_all(format!("---\n{frontmatter}---\n# Skill\n").as_bytes())
+                .unwrap();
+            archive.finish().unwrap();
+        }
+        cursor.into_inner()
+    }
+
     fn server(catalogue: &str, bytes: Vec<u8>, requests: usize) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
@@ -764,6 +850,33 @@ mod tests {
             .query_row("SELECT count(*) FROM skills", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn install_accepts_metadata_version_when_top_level_version_is_missing_or_invalid() {
+        for frontmatter in [
+            "name: aeon\nmetadata: {\"version\": \"1.0\"}\n",
+            "name: aeon\nversion: \"\"\nmetadata:\n  version: 1.0\n",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let url = server("{}", package_with_frontmatter(frontmatter), 1);
+            let manager = manager(root.path(), url);
+            manager.install("aeon", "1.0").unwrap();
+        }
+    }
+
+    #[test]
+    fn install_does_not_fall_back_when_top_level_version_is_valid_but_mismatched() {
+        let root = tempfile::tempdir().unwrap();
+        let url = server(
+            "{}",
+            package_with_frontmatter(
+                "name: aeon\nversion: 2.0\nmetadata: {\"version\": \"1.0\"}\n",
+            ),
+            1,
+        );
+        let manager = manager(root.path(), url);
+        assert!(manager.install("aeon", "1.0").is_err());
     }
 
     #[test]
@@ -987,6 +1100,753 @@ mod tests {
         assert!(!newer("1.2.0", "1.2.0"));
         assert!(!newer("1.2", "1.1.0"));
         assert!(!newer("1.2.0", "1.1"));
+    }
+
+    // ── Catalogue-driven sync: what each entry is classified as ────────────
+
+    /// One pass over the catalogue has four outcomes and the operator has to be
+    /// able to tell them apart: installed, upgraded, skipped (nothing to do),
+    /// failed (with the reason). A catalogue entry with no usable version is
+    /// *skipped*, an entry whose id/version could never be a directory name is
+    /// *failed*, and `install_missing_builtins` never upgrades.
+    #[test]
+    fn sync_classifies_skipped_failed_and_never_upgrades_on_explicit_bootstrap() {
+        let root = tempfile::tempdir().unwrap();
+        let catalog = r#"{"skills":[
+            {"id":"future-no-version","latest_version":null,"builtin":true},
+            {"id":"future-empty-version","latest_version":"","builtin":true},
+            {"id":"bad id","latest_version":"1.0.0","builtin":true},
+            {"id":"future-bad-version","latest_version":"1.0.0..1","builtin":true},
+            {"id":"future-older","latest_version":"1.0.0","builtin":true},
+            {"id":"future-new","latest_version":"2.0.0","builtin":true}
+        ]}"#;
+        let url = platform(catalog, Download::Bytes(package("future-new", "2.0.0")));
+        let manager = manager(root.path(), url);
+        // An older managed install must not be touched by the explicit
+        // bootstrap path, and must not be re-installed either.
+        let dest = manager.app_dir().join("future-older");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(
+            dest.join("SKILL.md"),
+            "---\nname: future-older\nversion: 0.9.0\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            dest.join(RECEIPT),
+            serde_json::to_vec(&Receipt {
+                id: "future-older".into(),
+                version: "0.9.0".into(),
+                package_sha256: "digest".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        manager.list_installed().unwrap();
+
+        let result = manager.install_missing_builtins().unwrap();
+        assert_eq!(result.installed, vec!["future-new".to_string()]);
+        assert!(result.upgraded.is_empty(), "{result:?}");
+        for skipped in ["future-no-version", "future-empty-version", "future-older"] {
+            assert!(
+                result.skipped.contains(&skipped.to_string()),
+                "{skipped} was not skipped: {result:?}"
+            );
+        }
+        assert_eq!(result.failed.len(), 2, "{result:?}");
+        assert!(
+            result
+                .failed
+                .iter()
+                .all(|reason| reason.ends_with(": invalid catalog id/version")),
+            "the failure must name the entry and the reason: {:?}",
+            result.failed
+        );
+        assert!(result
+            .failed
+            .iter()
+            .any(|reason| reason.starts_with("bad id")));
+    }
+
+    /// An install that fails in the middle of a sync is reported against the
+    /// entry that caused it, and the recovery pass leaves no pending operation
+    /// behind — the next sync has to behave as if the attempt never happened.
+    #[test]
+    fn a_failed_install_mid_sync_is_reported_and_leaves_no_pending_operation() {
+        let root = tempfile::tempdir().unwrap();
+        let catalog =
+            r#"{"skills":[{"id":"future-gone","latest_version":"1.0.0","builtin":true}]}"#;
+        let url = platform(catalog, Download::Status("404 Not Found"));
+        let manager = manager(root.path(), url);
+        let result = manager.sync(true).unwrap();
+        assert!(result.installed.is_empty());
+        assert_eq!(result.failed.len(), 1, "{result:?}");
+        assert!(
+            result.failed[0].starts_with("future-gone: "),
+            "the failure must name the entry: {:?}",
+            result.failed
+        );
+        assert!(
+            manager.list_installed().unwrap().is_empty(),
+            "a failed download must not be recorded as installed"
+        );
+        let db = registry::open_registry(&manager.db_path()).unwrap();
+        let pending: i64 = db
+            .query_row("SELECT count(*) FROM skill_operations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(pending, 0, "recovery must clear the pending operation");
+    }
+
+    // ── Archive validation: what a hostile package cannot do ───────────────
+
+    #[test]
+    fn an_archive_with_an_unsafe_path_is_refused() {
+        let bytes = archive_with(|archive| {
+            archive
+                .start_file(
+                    "../escape/SKILL.md",
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+            archive
+                .write_all(b"---\nname: future-x\nversion: 1.0.0\n---\n")
+                .unwrap();
+        });
+        install_rejects(bytes, "skill archive has an unsafe path");
+    }
+
+    #[test]
+    fn an_archive_with_a_symlink_entry_is_refused() {
+        let mut bytes = archive_with(|archive| {
+            archive
+                .start_file("SKILL.md", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            archive
+                .write_all(b"---\nname: future-x\nversion: 1.0.0\n---\n")
+                .unwrap();
+        });
+        // The zip writer records a DOS creator, so a reader would never look at
+        // the external attributes. Patch the central directory to what a Unix
+        // `zip -y` writes: host 3 (Unix) and mode 0120777 (a symbolic link).
+        patch_u16(&mut bytes, b"PK\x01\x02", 4, 0x031e);
+        patch_u32(&mut bytes, b"PK\x01\x02", 38, 0o120777 << 16);
+        install_rejects(bytes, "symbolic link");
+    }
+
+    /// The entry-count and uncompressed-size caps are what stop a zip bomb from
+    /// filling the disk before the identity check ever runs.
+    #[test]
+    fn an_archive_with_too_many_entries_is_refused() {
+        let bytes = archive_with(|archive| {
+            for index in 0..4097 {
+                archive
+                    .start_file(
+                        format!("entry-{index}"),
+                        zip::write::SimpleFileOptions::default(),
+                    )
+                    .unwrap();
+            }
+        });
+        install_rejects(bytes, "too many entries");
+    }
+
+    /// The uncompressed-size guard reads the size the archive *declares*, so a
+    /// bomb that lies about its expansion is refused before anything is written
+    /// to disk. The sizes are patched in both the local header and the central
+    /// directory, because either is a valid source for that declared size.
+    #[test]
+    fn an_archive_that_declares_more_than_the_extraction_limit_is_refused() {
+        let mut bytes = package("future-x", "1.0.0");
+        let declared = (MAX_EXTRACTED_BYTES + 1) as u32;
+        patch_u32(&mut bytes, b"PK\x03\x04", 22, declared);
+        patch_u32(&mut bytes, b"PK\x01\x02", 24, declared);
+        install_rejects(bytes, "exceeds 256 MiB uncompressed");
+    }
+
+    #[test]
+    fn an_archive_without_skill_md_is_refused() {
+        let bytes = archive_with(|archive| {
+            archive
+                .start_file("readme.txt", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(b"nothing here").unwrap();
+        });
+        install_rejects(bytes, "no SKILL.md");
+    }
+
+    /// A single wrapping directory is normal for a release archive, so it is
+    /// unwrapped; two top-level directories are ambiguous and are left alone
+    /// (which then fails the SKILL.md check rather than picking one at random).
+    #[test]
+    fn a_single_wrapping_directory_is_unwrapped_but_two_are_not() {
+        let root = tempfile::tempdir().unwrap();
+        let wrapped = archive_with(|archive| {
+            archive
+                .start_file(
+                    "future-x/SKILL.md",
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+            archive
+                .write_all(b"---\nname: future-x\nversion: 1.0.0\n---\n")
+                .unwrap();
+            archive
+                .start_file(
+                    "future-x/reference.md",
+                    zip::write::SimpleFileOptions::default(),
+                )
+                .unwrap();
+            archive.write_all(b"docs").unwrap();
+        });
+        let dir = root.path().join("wrapped");
+        extract(&wrapped, &dir);
+        flatten(&dir).unwrap();
+        // The nested files moved up with SKILL.md, and the wrapper is gone.
+        assert!(dir.join("SKILL.md").is_file());
+        assert!(dir.join("reference.md").is_file());
+        assert!(!dir.join("future-x").exists());
+
+        let ambiguous = archive_with(|archive| {
+            for name in ["one/readme.md", "two/readme.md"] {
+                archive
+                    .start_file(name, zip::write::SimpleFileOptions::default())
+                    .unwrap();
+                archive.write_all(b"docs").unwrap();
+            }
+        });
+        let dir = root.path().join("ambiguous");
+        extract(&ambiguous, &dir);
+        flatten(&dir).unwrap();
+        assert!(
+            dir.join("one").is_dir() && dir.join("two").is_dir(),
+            "an ambiguous layout is left exactly as it was"
+        );
+        assert!(
+            !dir.join("SKILL.md").exists(),
+            "nothing is moved, so the SKILL.md check fails cleanly instead of \
+             guessing which directory was meant"
+        );
+    }
+
+    /// A leftover `.skill-<id>.previous` from an interrupted replacement is
+    /// cleaned up before the new version is published, so the stale copy cannot
+    /// shadow the install or accumulate on disk.
+    #[test]
+    fn a_stale_backup_directory_is_cleaned_up_before_publishing() {
+        let root = tempfile::tempdir().unwrap();
+        let url = platform("{}", Download::Bytes(package("future-x", "1.0.0")));
+        let manager = manager(root.path(), url);
+        let backup = manager.agent_dir.join(".skill-future-x.previous");
+        fs::create_dir_all(backup.join("stale")).unwrap();
+        fs::write(backup.join("stale/SKILL.md"), "---\nname: future-x\n---\n").unwrap();
+        manager.install("future-x", "1.0.0").unwrap();
+        assert!(manager.app_dir().join("future-x/SKILL.md").is_file());
+        assert!(
+            !backup.exists(),
+            "the previous attempt's directory must not be left behind"
+        );
+    }
+
+    /// A failure while the receipt is being committed must not leave a
+    /// half-published skill behind: the previous install comes back, and the
+    /// pending operation is cleared so the next attempt starts clean.
+    #[test]
+    fn a_finalization_failure_restores_the_previous_install() {
+        let root = tempfile::tempdir().unwrap();
+        let first = server("{}", package("future-x", "1.0.0"), 1);
+        let installed = manager(root.path(), first);
+        installed.install("future-x", "1.0.0").unwrap();
+
+        // Force `finish_install`'s first statement to fail: the phase update is
+        // the last thing that can go wrong before the registry is rewritten.
+        let db = registry::open_registry(&installed.db_path()).unwrap();
+        db.execute_batch(
+            "CREATE TRIGGER refuse_replaced BEFORE UPDATE ON skill_operations
+             WHEN NEW.phase='replaced' BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+        )
+        .unwrap();
+        drop(db);
+
+        let second = server("{}", package("future-x", "2.0.0"), 1);
+        let replaced = manager(root.path(), second);
+        let error = replaced.install("future-x", "2.0.0").unwrap_err();
+        assert!(
+            format!("{error:#}").contains("injected"),
+            "the injected failure must surface: {error:#}"
+        );
+
+        // The published v1.0.0 directory is back, and nothing is left pending.
+        let published = installed.list_installed().unwrap();
+        assert_eq!(published.len(), 1, "{published:?}");
+        assert_eq!(published[0].version.as_deref(), Some("1.0.0"));
+        assert!(!installed
+            .agent_dir
+            .join(".skill-future-x.previous")
+            .exists());
+        let db = registry::open_registry(&installed.db_path()).unwrap();
+        let pending: i64 = db
+            .query_row("SELECT count(*) FROM skill_operations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(pending, 0);
+    }
+
+    /// An uninstall removes the directory *and* reports that it did, which is
+    /// what the CLI prints; a tombstone is kept so a sync cannot resurrect it.
+    #[test]
+    fn uninstall_removes_the_directory_and_reports_it() {
+        let root = tempfile::tempdir().unwrap();
+        let url = server("{}", package("future-x", "1.0.0"), 1);
+        let manager = manager(root.path(), url);
+        manager.install("future-x", "1.0.0").unwrap();
+        assert!(manager.app_dir().join("future-x").is_dir());
+        assert!(
+            manager.uninstall("future-x").unwrap(),
+            "a directory was removed"
+        );
+        assert!(!manager.app_dir().join("future-x").exists());
+        assert!(
+            !manager.uninstall("future-x").unwrap(),
+            "a second uninstall removes nothing"
+        );
+        assert!(manager.list_installed().unwrap().is_empty());
+    }
+
+    /// Recovery has two outcomes for an interrupted install: finish it when the
+    /// staged directory and its receipt agree, otherwise put the backup back.
+    #[test]
+    fn recovery_clears_the_backup_of_a_completed_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(root.path(), "http://localhost".into());
+        let dest = manager.app_dir().join("future-x");
+        fs::create_dir_all(&dest).unwrap();
+        fs::write(
+            dest.join("SKILL.md"),
+            "---\nname: future-x\nversion: 2.0.0\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            dest.join(RECEIPT),
+            serde_json::to_vec(&Receipt {
+                id: "future-x".into(),
+                version: "2.0.0".into(),
+                package_sha256: "digest".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        // The replaced install is still sitting in the backup slot.
+        let backup = manager.agent_dir.join(".skill-future-x.previous");
+        fs::create_dir_all(backup.join("stale")).unwrap();
+        fs::write(backup.join("SKILL.md"), "---\nname: future-x\n---\n").unwrap();
+        manager
+            .locked(|db| {
+                db.execute("INSERT INTO skill_operations(name,kind,version,phase,started_at_ms) VALUES('future-x','install','2.0.0','replaced',1)", [])?;
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(
+            manager.list_installed().unwrap()[0].version.as_deref(),
+            Some("2.0.0")
+        );
+        assert!(
+            !backup.exists(),
+            "the replaced install is dead once the new one is committed"
+        );
+        assert!(dest.join("SKILL.md").is_file());
+    }
+
+    #[test]
+    fn recovery_restores_the_backup_when_the_staged_install_never_landed() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(root.path(), "http://localhost".into());
+        let dest = manager.app_dir().join("future-x");
+        // The backup holds the only good copy: the staged directory is gone (or
+        // was never a complete install).
+        let backup = manager.agent_dir.join(".skill-future-x.previous");
+        fs::create_dir_all(&backup).unwrap();
+        fs::write(
+            backup.join("SKILL.md"),
+            "---\nname: future-x\nversion: 1.0.0\n---\n",
+        )
+        .unwrap();
+        let stale = dest.join("leftover");
+        fs::create_dir_all(&stale).unwrap();
+        manager
+            .locked(|db| {
+                db.execute("INSERT INTO skill_operations(name,kind,version,phase,started_at_ms) VALUES('future-x','install','2.0.0','prepared',1)", [])?;
+                Ok(())
+            })
+            .unwrap();
+
+        let installed = manager.list_installed().unwrap();
+        assert_eq!(installed.len(), 1, "{installed:?}");
+        assert_eq!(installed[0].version.as_deref(), Some("1.0.0"));
+        assert!(dest.join("SKILL.md").is_file());
+        assert!(!stale.exists(), "the half-written directory is discarded");
+        assert!(!backup.exists());
+    }
+
+    /// Reconciliation adopts what is on disk and ignores everything that is not
+    /// a skill directory, so a stray file or a directory without a SKILL.md
+    /// cannot become an "installed skill".
+    #[test]
+    fn reconciliation_ignores_files_and_directories_without_a_skill_md() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(root.path(), "http://localhost".into());
+        let app = manager.app_dir();
+        fs::create_dir_all(&app).unwrap();
+        fs::write(app.join("loose-file.md"), b"not a skill").unwrap();
+        fs::create_dir_all(app.join("no-manifest")).unwrap();
+        let listed = manager.list_installed().unwrap();
+        assert!(listed.is_empty(), "{listed:?}");
+    }
+
+    /// A skill directory placed after the first read — by a user, by an editor,
+    /// or by the agent following a skill-authoring workflow — must be adopted by
+    /// the *next* read, with no mutating call and no manual step.
+    ///
+    /// Regression: the marker was a bare `1`, so `reconcile_once` never ran
+    /// again and the new directory never reached `skill_installations`. The agent
+    /// could use the skill while every client listed none, which reads as "the
+    /// skill does not exist" with no error anywhere.
+    #[test]
+    fn a_skill_placed_after_the_first_read_is_adopted_by_the_next_one() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(root.path(), "http://localhost".into());
+        // First read reconciles the empty tree and records its fingerprint.
+        assert!(manager.list_installed().unwrap().is_empty());
+
+        let placed = manager.app_dir().join("handmade");
+        fs::create_dir_all(&placed).unwrap();
+        fs::write(
+            placed.join("SKILL.md"),
+            "---\nname: handmade\ndescription: placed by hand\n---\n",
+        )
+        .unwrap();
+
+        let listed = manager.list_installed().unwrap();
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].id, "handmade");
+        assert_eq!(listed[0].source, "external");
+    }
+
+    /// The same skill can exist in both scopes; the app install wins and the
+    /// duplicate row is dropped rather than listed twice.
+    #[test]
+    fn an_app_install_shadows_the_global_install_of_the_same_skill() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = manager(root.path(), "http://localhost".into());
+        for (dir, version) in [
+            (manager.app_dir(), "2.0.0"),
+            (manager.global_dir.clone(), "1.0.0"),
+        ] {
+            // Reconciliation scans one level down: the skill is a directory
+            // under the scope root that contains a SKILL.md.
+            fs::create_dir_all(dir.join("future-x")).unwrap();
+            fs::write(
+                dir.join("future-x/SKILL.md"),
+                format!("---\nname: future-x\nversion: {version}\n---\n"),
+            )
+            .unwrap();
+        }
+        let listed = manager.list_installed().unwrap();
+        assert_eq!(listed.len(), 1, "one row per skill id: {listed:?}");
+        assert_eq!(listed[0].scope, "app");
+        assert_eq!(listed[0].version.as_deref(), Some("2.0.0"));
+    }
+
+    // ── Download limits ──
+
+    /// A download over the cap is refused. The declared length is enough on its
+    /// own — nothing is read from a body the gateway already said is too big.
+    #[test]
+    fn a_download_with_an_oversized_declared_length_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let url = platform(
+            "{}",
+            Download::Stream {
+                declared: Some(MAX_DOWNLOAD_BYTES + 1),
+                streamed: 0,
+            },
+        );
+        let manager = manager(root.path(), url);
+        let error = manager.install("future-x", "1.0.0").unwrap_err();
+        assert!(
+            format!("{error:#}").contains("skill download exceeds 64 MiB"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    /// A body with no declared length is still capped while it is read, so a
+    /// gateway that streams forever cannot exhaust memory either.
+    #[test]
+    fn a_download_that_streams_past_the_cap_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let url = platform(
+            "{}",
+            Download::Stream {
+                declared: None,
+                streamed: MAX_DOWNLOAD_BYTES + 1,
+            },
+        );
+        let manager = manager(root.path(), url);
+        let error = manager.install("future-x", "1.0.0").unwrap_err();
+        assert!(
+            format!("{error:#}").contains("skill download exceeds 64 MiB"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    // ── Harness ────────────────────────────────────────────────────────────
+
+    /// What the package endpoint should do for one test.
+    enum Download {
+        /// Serve these package bytes.
+        Bytes(Vec<u8>),
+        /// Answer with this status instead of a package.
+        Status(&'static str),
+        /// Declare `declared` (when given) and then stream `streamed` bytes.
+        Stream {
+            declared: Option<u64>,
+            streamed: u64,
+        },
+    }
+
+    /// Both platform endpoints, in one server that keeps answering until the
+    /// test ends: the catalogue is served by path, everything else is the
+    /// package download.
+    fn platform(catalogue: &str, download: Download) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let catalogue = catalogue.as_bytes().to_vec();
+        std::thread::spawn(move || loop {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            serve_connection(stream, &catalogue, &download);
+        });
+        address
+    }
+
+    /// Answer one client: the catalogue for a catalogue request, `download` for
+    /// everything else. A client that cannot be read is dropped without a reply,
+    /// which must not end the server.
+    ///
+    /// Generic over the connection so the two "this client is gone" failures the
+    /// loop swallows can be driven by a connection that fails on demand instead
+    /// of by trying to race a real socket into erroring.
+    fn serve_connection(mut stream: impl Read + Write, catalogue: &[u8], download: &Download) {
+        let mut request = [0u8; 4096];
+        let count = match stream.read(&mut request) {
+            Ok(count) => count,
+            // Nothing to answer: the peer went away before it said anything.
+            Err(_) => return,
+        };
+        if String::from_utf8_lossy(&request[..count]).contains("/client/v1/skills ") {
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                catalogue.len()
+            );
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(catalogue);
+            return;
+        }
+        match download {
+            Download::Bytes(bytes) => {
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(bytes);
+            }
+            Download::Status(status) => {
+                let body = b"gone";
+                let header = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(body);
+            }
+            Download::Stream { declared, streamed } => {
+                // No declared length means the client reads until the socket
+                // closes, which is how a chunked body looks to reqwest.
+                let length = match declared {
+                    Some(length) => format!("Content-Length: {length}\r\n"),
+                    None => String::new(),
+                };
+                let _ = stream.write_all(
+                    format!("HTTP/1.1 200 OK\r\n{length}Connection: close\r\n\r\n").as_bytes(),
+                );
+                let chunk = vec![b'z'; 1 << 20];
+                let mut left = *streamed;
+                while left > 0 {
+                    let take = left.min(chunk.len() as u64) as usize;
+                    if stream.write_all(&chunk[..take]).is_err() {
+                        break;
+                    }
+                    left -= take as u64;
+                }
+            }
+        }
+    }
+
+    /// A connection that fails on demand, for the two "the client is gone"
+    /// failures `serve_connection` has to swallow: a request that cannot be
+    /// read, and a body write that dies mid-stream. `writes` records every write
+    /// attempt, which is what the tests assert on.
+    struct FailingConnection {
+        unreadable: bool,
+        writes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Read for FailingConnection {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.unreadable {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "client went away",
+                ));
+            }
+            let request = b"GET /package HTTP/1.1\r\n\r\n";
+            let take = request.len().min(buf.len());
+            buf[..take].copy_from_slice(&request[..take]);
+            Ok(take)
+        }
+    }
+
+    impl Write for FailingConnection {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let attempt = self
+                .writes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if attempt == 0 {
+                return Ok(buf.len());
+            }
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "client went away",
+            ))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A client whose request cannot be read is dropped without an answer — and,
+    /// because this is one connection of a server loop, without ending the
+    /// server. The write counter is the assertion: an unread request must not
+    /// produce a single write attempt.
+    #[test]
+    fn a_client_whose_request_cannot_be_read_is_dropped_without_an_answer() {
+        let mut connection = FailingConnection {
+            unreadable: true,
+            writes: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+        serve_connection(&mut connection, b"{}", &Download::Bytes(Vec::new()));
+        assert_eq!(
+            connection.writes.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a request that could not be read must not be answered"
+        );
+    }
+
+    /// A client that goes away while the body is being streamed ends the pump:
+    /// the failed write breaks the loop, so the harness does not keep pushing
+    /// chunks into a dead socket. The write counter separates "broke out" (the
+    /// header write, then one failed body write) from "kept going" (one write
+    /// per remaining chunk).
+    #[test]
+    fn a_write_failure_mid_body_stops_the_stream_pump() {
+        let writes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        serve_connection(
+            &mut FailingConnection {
+                unreadable: false,
+                writes: writes.clone(),
+            },
+            b"[]",
+            &Download::Stream {
+                declared: None,
+                streamed: 8 * 1024 * 1024,
+            },
+        );
+        assert_eq!(
+            writes.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "the header write plus exactly one failed body write"
+        );
+    }
+
+    /// Run the install pipeline against `bytes` and assert it is refused with
+    /// `needle` in the reason, and that nothing was recorded.
+    fn install_rejects(bytes: Vec<u8>, needle: &str) {
+        let root = tempfile::tempdir().unwrap();
+        let url = platform("{}", Download::Bytes(bytes));
+        let manager = manager(root.path(), url);
+        let error = manager.install("future-x", "1.0.0").unwrap_err();
+        assert!(
+            format!("{error:#}").contains(needle),
+            "expected {needle:?} in: {error:#}"
+        );
+        assert!(
+            manager.list_installed().unwrap().is_empty(),
+            "a refused archive must not be recorded"
+        );
+    }
+
+    /// Build a zip with `write`, for the archive-shape tests that are not about
+    /// the package identity.
+    fn archive_with(
+        write: impl FnOnce(&mut zip::ZipWriter<&mut std::io::Cursor<Vec<u8>>>),
+    ) -> Vec<u8> {
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        {
+            let mut archive = zip::ZipWriter::new(&mut cursor);
+            write(&mut archive);
+            archive.finish().unwrap();
+        }
+        cursor.into_inner()
+    }
+
+    /// Overwrite a 32-bit little-endian field of every record carrying
+    /// `signature`, `offset` bytes into that record.
+    fn patch_u32(bytes: &mut [u8], signature: &[u8; 4], offset: usize, value: u32) {
+        let mut index = 0;
+        while let Some(found) = bytes[index..]
+            .windows(4)
+            .position(|window| window == signature)
+        {
+            let at = index + found + offset;
+            bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+            index = at + 4;
+        }
+    }
+
+    /// Overwrite a 16-bit little-endian field of every record carrying
+    /// `signature`, `offset` bytes into that record.
+    fn patch_u16(bytes: &mut [u8], signature: &[u8; 4], offset: usize, value: u16) {
+        let mut index = 0;
+        while let Some(found) = bytes[index..]
+            .windows(4)
+            .position(|window| window == signature)
+        {
+            let at = index + found + offset;
+            bytes[at..at + 2].copy_from_slice(&value.to_le_bytes());
+            index = at + 2;
+        }
+    }
+
+    fn extract(bytes: &[u8], into: &Path) {
+        fs::create_dir_all(into).unwrap();
+        zip::ZipArchive::new(std::io::Cursor::new(bytes))
+            .unwrap()
+            .extract(into)
+            .unwrap();
     }
 }
 

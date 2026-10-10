@@ -4,7 +4,7 @@
 
 ## 1. 技术方案与实现
 
-`agent/src/sandbox/seatbelt.rs` 将 RuleSet 编译为 SBPL，`PreparedShell` 启动 `/usr/bin/sandbox-exec -p <profile> bash -c <command>`。没有 Linux 的 mount helper，也不修改宿主 ACL。
+`agent/src/sandbox/seatbelt.rs` 将 RuleSet 编译为 SBPL，`PreparedShell` 以与未加沙盒时相同的选定 Unix shell 启动 `/usr/bin/sandbox-exec -p <profile> <shell> -c <command>`（`$SHELL` 为 bash/zsh 时用它，否则取 PATH 上第一个 bash/zsh，再退到 `sh`）。没有 Linux 的 mount helper，也不修改宿主 ACL。
 
 - profile 从 `(deny default)` 开始，允许 fork/exec/process-info、same-sandbox signal、pseudo-tty、sysctl-read、mach-lookup、ipc-posix、file-ioctl 等开发工具所需操作；这些系统接口当前较宽，不宣称最小权限 syscall 沙盒。
 - 默认 `(allow file-read*)`；写开放 workspace、`temp_roots()` 与 `/dev/null`、`/dev/zero`、stdout/stderr、`/dev/fd/*`、tty、dtracehelper 等伪设备。
@@ -21,15 +21,22 @@ Agent 的 Unix 进程组终止逻辑处理 timeout/abort。native read/write/edi
 
 主动 `escalated: true` + justification 或失败文本匹配后，经 `EscalationRequester` 回到 RPC 审批。批准后当前整命令不再包 Seatbelt，只有一次，不持久改档、不生成精确路径授权。完整标题、路径展示限制见 [COMMON §4](COMMON.zh-CN.md#4-审批协议与界面)。
 
-目前拒绝判断包含 `Operation not permitted` / `sandbox-exec` 文本启发式，网络错误不作为拒绝依据。无法可靠证明内核拒绝的确切路径或命令此前未产生副作用，因此不得承诺无误报/安全自动重放。规则文件 hard deny 也不覆盖用户批准后的裸命令。
+失败检测对 `operation not permitted` / `sandbox-exec` 不区分 ASCII 大小写，
+并识别 Node 的结构化 `Error: EPERM:` 或 `code: 'EPERM'`；必须是非零退出。
+命中后在当前工具调用内请求审批，通过后重跑，无需主模型再次调用。网络错误和普通
+文件不存在错误不触发该路径。工具结果摘要复用相同权限诊断，路径提及仍是非可信背景，
+不当作已确认目标。macOS shell schema 不暴露 Windows 专用 `additional_permissions`，
+收到不支持的参数时仍由原有 backend 校验拒绝。
+
+无法可靠证明内核拒绝的确切路径或命令此前未产生副作用，因此不得承诺无误报/安全自动重放。规则文件 hard deny 也不覆盖用户批准后的裸命令。
 
 源码 `sandbox/mod.rs` 当前 macOS availability 是 `/usr/bin/sandbox-exec` 的存在检查，**不是 Linux/Windows 那样的真实生产能力 probe**。不可用走公共 manual 行为。`sandbox-exec` deprecated 风险已接受；未来系统兼容性需持续原生复验。
 
 ## 3. 开发进度与验收
 
-R1（2026-07-04）规则/Seatbelt/native read 审批、R2 GUI 文件持久化、R3 守卫与当轮注入已完成。原有 profile 转义、路径处理、进程组终止和 smoke 框架复用；旧网络拒绝测试改为开放预期。
+规则/Seatbelt/native read 审批、GUI 文件持久化、守卫与当轮注入均已实现。原有 profile 转义、路径处理、进程组终止和 smoke 框架复用；旧网络拒绝测试改为开放预期。
 
-历史 R3：Agent 58 lib、Seatbelt 9 smoke、GUI 72、前端 39 通过，lint/check-desktop 通过；不是本次整理重跑结果。`auth.json` 后来暂移出 override，因此旧“auth 拒读 PASS”不再代表当前能力。
+`auth.json` 已暂移出 override（见 COMMON §3.1），因此旧的“auth 拒读 PASS”记录不再代表当前能力。
 
 在候选提交的 macOS 真机执行（测试需显式运行 ignored，不能把跳过当通过）：
 
@@ -39,7 +46,7 @@ cargo test -p future-agent --test sandbox_smoke -- --ignored --test-threads=1 --
 
 保留完整 commit、OS/架构、日志。必查：workspace/temp 写允许、外部写失败、已有及新建 secret 读写拒绝、规则文件直接写及 rename 拒绝、symlink 指向 workspace 外不能借路径别名绕过、Unicode/转义路径、cargo/git/python、网络开放、timeout/abort 后代清理。额外检查主动/被动标题、拒绝不重跑、允许一次不改变后续保护、原生敏感读取无持久允许。
 
-本次文档整理未运行 macOS smoke；当前新增 Linux 私有报告不等于 macOS 也有可信错误通道。
+macOS 没有与 Linux 对等的私有完成报告通道；不要把 Linux 的报告语义套用到 macOS。
 
 ## 4. 差异、缺口与后续计划
 

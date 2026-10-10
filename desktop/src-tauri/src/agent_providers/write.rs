@@ -360,6 +360,51 @@ pub(super) fn provider_upsert_message(
     }
 }
 
+/// The model-entry keys the local writer owns. Any other key already present on
+/// a same-id entry (`compat`, `hide`, `supportedParameters`, a legacy `limit`,
+/// …) is preserved across an edit — mirroring the agent's
+/// `apply_provider_upsert`, which the production RPC path uses.
+#[cfg(test)]
+const MANAGED_MODEL_FIELDS: [&str; 7] = [
+    "id",
+    "name",
+    "modalities",
+    "contextWindow",
+    "maxTokens",
+    "reasoning",
+    "cost",
+];
+
+/// Merge each kept model's unmanaged fields from the entry that already carried
+/// its id, so an edit does not silently strip model-level `compat` (e.g. Qwen's
+/// `thinkingFormat`). A renamed or added model has no match and starts clean.
+#[cfg(test)]
+fn preserve_unmanaged_model_fields(models: &mut [Value], existing: Option<&[Value]>) {
+    let Some(existing) = existing else {
+        return;
+    };
+    for model in models.iter_mut() {
+        let Some(entry) = model.as_object_mut() else {
+            continue;
+        };
+        let Some(id) = entry.get("id").and_then(Value::as_str).map(str::to_string) else {
+            continue;
+        };
+        let Some(previous) = existing
+            .iter()
+            .find(|previous| previous.get("id").and_then(Value::as_str) == Some(id.as_str()))
+            .and_then(Value::as_object)
+        else {
+            continue;
+        };
+        for (key, value) in previous {
+            if !MANAGED_MODEL_FIELDS.contains(&key.as_str()) {
+                entry.insert(key.clone(), value.clone());
+            }
+        }
+    }
+}
+
 /// Local fallback: locked models.json read-modify-write (with the file-state
 /// uniqueness checks) plus the auth.json key write, mirroring the agent's
 /// `upsert_provider_files` ordering and rollback — transactionally, so a failure
@@ -414,16 +459,21 @@ fn apply_upsert_local(validated: &ValidatedCustomProvider) -> Result<(), AppErro
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
+        let mut models = model_json_values(&validated.models);
+        preserve_unmanaged_model_fields(
+            &mut models,
+            provider
+                .get("models")
+                .and_then(Value::as_array)
+                .map(Vec::as_slice),
+        );
         provider.insert("name".to_string(), Value::String(validated.name.clone()));
         provider.insert("api".to_string(), Value::String(validated.api.clone()));
         provider.insert(
             "baseUrl".to_string(),
             Value::String(validated.base_url.clone()),
         );
-        provider.insert(
-            "models".to_string(),
-            Value::Array(model_json_values(&validated.models)),
-        );
+        provider.insert("models".to_string(), Value::Array(models));
         providers.insert(validated.id.clone(), Value::Object(provider));
 
         // Persist models.json, then auth.json. A failed models write leaves

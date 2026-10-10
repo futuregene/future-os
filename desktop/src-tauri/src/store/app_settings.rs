@@ -1,80 +1,18 @@
-use rusqlite::{params, Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
+//! Desktop app settings: the desktop-specific half of the settings document.
+//!
+//! The schema itself — the settable keys, their defaults, value validation and
+//! the row helpers — lives in the `future-app-settings` crate, shared with
+//! `future desktop settings` in the CLI so the two writers cannot drift apart.
+//! This module owns what is desktop-only: the connection pool, the device
+//! identity, and the change notifications published after a commit.
+
+use rusqlite::Connection;
 
 use super::db::*;
-use super::util::*;
+use super::util::now_millis;
+use future_app_settings::KEY_DEVICE_ID;
 
-/// Desktop-app preferences stored locally in the GUI database. These are
-/// distinct from the agent's own configuration (models/providers/auth).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppSettings {
-    /// Approval tier: `"off"` (fully open, default), `"manual"` (ask), or
-    /// `"sandbox"` (the available OS sandbox wraps shell commands; tools ask).
-    pub approval_tier: String,
-    /// Model identifiers (`provider/id`) hidden from the model picker.
-    pub hidden_models: Vec<String>,
-    /// Silently upgrade installed skills to their latest catalogue version on
-    /// app open (and immediately when toggled on). On by default.
-    pub auto_upgrade_skills: bool,
-    /// Auto-connect the single paired remote device on app launch. Off by
-    /// default. Remote control is a dev-only feature, so this is only consulted
-    /// on non-release builds (see the startup auto-connect in `lib.rs`).
-    pub auto_connect_remote: bool,
-    /// The user closed the skill-onboarding banner on the new-conversation
-    /// screen. Off by default (the banner shows until dismissed).
-    pub skill_guide_dismissed: bool,
-    /// The user acknowledged the Skills nav-entry intro bubble (去看看 /
-    /// 知道了 / click-outside). Off by default; once set, the bubble and its
-    /// blue dot never show again (until app data is wiped).
-    pub skill_intro_dismissed: bool,
-    /// Play a completion bell + request window attention when an agent run
-    /// finishes. On by default.
-    pub bell_on_complete: bool,
-    /// Generate and save a title after the first successful answer, without compaction.
-    /// On by default; later turns never trigger this preference.
-    pub auto_title_first_turn: bool,
-    /// UI language mirrored for title generation when the webview is suspended.
-    pub title_language: String,
-    /// Use the community-edition UI: Future is configured like another
-    /// built-in provider and account/billing details stay out of the footer.
-    pub community_edition: bool,
-    /// Recommend at most one uninstalled skill when the user sends a message
-    /// (PRD v1.6 §3). **On by default**; the user can turn it off in Settings.
-    pub skill_recommend: bool,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateAppSettingsInput {
-    pub approval_tier: Option<String>,
-    pub hidden_models: Option<Vec<String>>,
-    pub auto_upgrade_skills: Option<bool>,
-    pub auto_connect_remote: Option<bool>,
-    pub skill_guide_dismissed: Option<bool>,
-    pub skill_intro_dismissed: Option<bool>,
-    pub bell_on_complete: Option<bool>,
-    #[serde(alias = "autoCompactFirstTurn")]
-    pub auto_title_first_turn: Option<bool>,
-    pub title_language: Option<String>,
-    pub community_edition: Option<bool>,
-    pub skill_recommend: Option<bool>,
-}
-
-const KEY_APPROVAL_TIER: &str = "approval_tier";
-const KEY_HIDDEN_MODELS: &str = "hidden_models";
-const KEY_AUTO_UPGRADE_SKILLS: &str = "auto_upgrade_skills";
-const KEY_AUTO_CONNECT_REMOTE: &str = "auto_connect_remote";
-const KEY_SKILL_GUIDE_DISMISSED: &str = "skill_guide_dismissed";
-const KEY_SKILL_INTRO_DISMISSED: &str = "skill_intro_dismissed";
-const KEY_BELL_ON_COMPLETE: &str = "bell_on_complete";
-// Retain the original stored key so existing opt-ins survive the behavior fix.
-// This preference now generates titles only; it never requests compaction.
-const KEY_AUTO_TITLE_FIRST_TURN: &str = "auto_compact_first_turn";
-const KEY_TITLE_LANGUAGE: &str = "title_language";
-const KEY_COMMUNITY_EDITION: &str = "community_edition";
-const KEY_SKILL_RECOMMEND: &str = "skill_recommend";
-const KEY_DEVICE_ID: &str = "device_id";
+pub use future_app_settings::{AppSettings, UpdateAppSettingsInput};
 
 /// Atomically install the Desktop-wide device identity. The caller supplies a
 /// legacy or freshly generated candidate, but SQLite decides the winner when
@@ -88,28 +26,22 @@ pub fn get_or_create_device_id(candidate: &str) -> Result<String, crate::AppErro
     // Device identity is needed by early control-plane paths (including remote
     // pairing tests and reconnects), so do not require the full application
     // schema initializer to have won the startup race first.
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS app_settings (
-             key TEXT PRIMARY KEY,
-             value TEXT NOT NULL,
-             updated_at INTEGER NOT NULL
-         )",
-    )?;
+    future_app_settings::ensure_table(&conn)?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    if let Some(existing) = read_value(&tx, KEY_DEVICE_ID)?
+    if let Some(existing) = future_app_settings::read_value(&tx, KEY_DEVICE_ID)?
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
     {
         tx.commit()?;
         return Ok(existing);
     }
-    write_value(&tx, KEY_DEVICE_ID, candidate, now_millis())?;
+    future_app_settings::write_value(&tx, KEY_DEVICE_ID, candidate, now_millis())?;
     tx.commit()?;
     Ok(candidate.to_string())
 }
 
 pub(super) fn read_device_id(conn: &Connection) -> Result<Option<String>, crate::AppError> {
-    read_value(conn, KEY_DEVICE_ID)
+    Ok(future_app_settings::read_value(conn, KEY_DEVICE_ID)?)
 }
 
 pub(super) fn restore_device_id(
@@ -117,82 +49,30 @@ pub(super) fn restore_device_id(
     device_id: Option<&str>,
 ) -> Result<(), crate::AppError> {
     if let Some(device_id) = device_id {
-        write_value(conn, KEY_DEVICE_ID, device_id, now_millis())?;
+        future_app_settings::write_value(conn, KEY_DEVICE_ID, device_id, now_millis())?;
     }
     Ok(())
 }
 
 pub fn get_app_settings() -> Result<AppSettings, crate::AppError> {
     let conn = connect()?;
-    read_app_settings(&conn)
+    Ok(future_app_settings::read(&conn)?)
 }
 
-pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings, crate::AppError> {
+pub fn update_app_settings(
+    mut input: UpdateAppSettingsInput,
+) -> Result<AppSettings, crate::AppError> {
+    if input.approval_tier.as_deref() == Some("auto")
+        && crate::future_login::future_api_key().is_err()
+    {
+        input.approval_tier = Some("sandbox".to_string());
+    }
     let mut conn = connect()?;
     let tx = conn.transaction()?;
     let now = now_millis();
     let model_visibility_changed = input.hidden_models.is_some();
 
-    if let Some(approval_tier) = input.approval_tier {
-        let tier = normalize_tier(&approval_tier);
-        write_value(&tx, KEY_APPROVAL_TIER, &tier, now)?;
-    }
-    if let Some(hidden_models) = input.hidden_models {
-        let json = serde_json::to_string(&hidden_models)?;
-        write_value(&tx, KEY_HIDDEN_MODELS, &json, now)?;
-    }
-    if let Some(auto_upgrade_skills) = input.auto_upgrade_skills {
-        let value = if auto_upgrade_skills { "true" } else { "false" };
-        write_value(&tx, KEY_AUTO_UPGRADE_SKILLS, value, now)?;
-    }
-    if let Some(auto_connect_remote) = input.auto_connect_remote {
-        let value = if auto_connect_remote { "true" } else { "false" };
-        write_value(&tx, KEY_AUTO_CONNECT_REMOTE, value, now)?;
-    }
-    if let Some(skill_guide_dismissed) = input.skill_guide_dismissed {
-        let value = if skill_guide_dismissed {
-            "true"
-        } else {
-            "false"
-        };
-        write_value(&tx, KEY_SKILL_GUIDE_DISMISSED, value, now)?;
-    }
-    if let Some(skill_intro_dismissed) = input.skill_intro_dismissed {
-        let value = if skill_intro_dismissed {
-            "true"
-        } else {
-            "false"
-        };
-        write_value(&tx, KEY_SKILL_INTRO_DISMISSED, value, now)?;
-    }
-    if let Some(bell_on_complete) = input.bell_on_complete {
-        let value = if bell_on_complete { "true" } else { "false" };
-        write_value(&tx, KEY_BELL_ON_COMPLETE, value, now)?;
-    }
-    if let Some(enabled) = input.auto_title_first_turn {
-        write_value(
-            &tx,
-            KEY_AUTO_TITLE_FIRST_TURN,
-            if enabled { "true" } else { "false" },
-            now,
-        )?;
-    }
-    if let Some(language) = input.title_language {
-        if !matches!(language.as_str(), "en" | "zh") {
-            return Err("Unsupported title language".into());
-        }
-        write_value(&tx, KEY_TITLE_LANGUAGE, &language, now)?;
-    }
-    if let Some(community_edition) = input.community_edition {
-        let value = if community_edition { "true" } else { "false" };
-        write_value(&tx, KEY_COMMUNITY_EDITION, value, now)?;
-    }
-    if let Some(skill_recommend) = input.skill_recommend {
-        let value = if skill_recommend { "true" } else { "false" };
-        write_value(&tx, KEY_SKILL_RECOMMEND, value, now)?;
-    }
-
-    let settings = read_app_settings(&tx)?;
+    let settings = future_app_settings::apply(&tx, &input, now)?;
     tx.commit()?;
     crate::agent_events::publish_invalidation("app_settings_changed");
     // Notify paired clients only after commit: their next model read must see
@@ -214,89 +94,15 @@ pub fn update_app_settings(input: UpdateAppSettingsInput) -> Result<AppSettings,
     Ok(settings)
 }
 
-fn read_app_settings(conn: &Connection) -> Result<AppSettings, crate::AppError> {
-    let approval_tier = read_value(conn, KEY_APPROVAL_TIER)?
-        .map(|value| normalize_tier(&value))
-        .unwrap_or_else(|| "off".to_string());
-    let hidden_models = read_value(conn, KEY_HIDDEN_MODELS)?
-        .and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
-        .unwrap_or_default();
-    let auto_upgrade_skills = read_value(conn, KEY_AUTO_UPGRADE_SKILLS)?
-        .map(|value| value == "true")
-        .unwrap_or(true); // On by default — keeps skills current without manual intervention.
-    let auto_connect_remote = read_value(conn, KEY_AUTO_CONNECT_REMOTE)?
-        .map(|value| value == "true")
-        .unwrap_or(false); // Off by default — remote auto-connect is opt-in.
-    let skill_guide_dismissed = read_value(conn, KEY_SKILL_GUIDE_DISMISSED)?
-        .map(|value| value == "true")
-        .unwrap_or(false); // Off by default — the banner shows until dismissed.
-    let skill_intro_dismissed = read_value(conn, KEY_SKILL_INTRO_DISMISSED)?
-        .map(|value| value == "true")
-        .unwrap_or(false); // Off by default — the bubble shows once until dismissed.
-    let bell_on_complete = read_value(conn, KEY_BELL_ON_COMPLETE)?
-        .map(|value| value == "true")
-        .unwrap_or(true); // On by default — a finished run should get noticed.
-    let auto_title_first_turn = read_value(conn, KEY_AUTO_TITLE_FIRST_TURN)?
-        .map(|value| value == "true")
-        .unwrap_or(true);
-    let title_language = read_value(conn, KEY_TITLE_LANGUAGE)?
-        .filter(|value| matches!(value.as_str(), "en" | "zh"))
-        .unwrap_or_else(|| "en".to_string());
-    let community_edition = read_value(conn, KEY_COMMUNITY_EDITION)?
-        .map(|value| value == "true")
-        .unwrap_or(false);
-    let skill_recommend = read_value(conn, KEY_SKILL_RECOMMEND)?
-        .map(|value| value == "true")
-        .unwrap_or(true); // On by default (PRD v1.6 §3); the Settings toggle opts out.
-    Ok(AppSettings {
-        approval_tier,
-        hidden_models,
-        auto_upgrade_skills,
-        auto_connect_remote,
-        skill_guide_dismissed,
-        skill_intro_dismissed,
-        bell_on_complete,
-        auto_title_first_turn,
-        title_language,
-        community_edition,
-        skill_recommend,
-    })
-}
-
-/// Clamp a tier string to the known set; anything unknown falls back to the
-/// default `"off"`.
-fn normalize_tier(value: &str) -> String {
-    match value {
-        "off" | "sandbox" | "manual" => value.to_string(),
-        _ => "off".to_string(),
-    }
-}
-
-fn read_value(conn: &Connection, key: &str) -> Result<Option<String>, crate::AppError> {
-    conn.query_row(
-        "SELECT value FROM app_settings WHERE key = ?1",
-        params![key],
-        |row| row.get(0),
-    )
-    .optional()
-    .map_err(crate::AppError::from)
-}
-
-/// Upsert one settings row. Hoisted so the call site stays a single line —
-/// rustfmt's multi-line `)?;` layout strands the `?` error edge on its own
-/// (uncoverable) line.
-const UPSERT_SQL: &str = "INSERT INTO app_settings (key, value, updated_at) VALUES (?1, ?2, ?3)
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at";
-
-fn write_value(conn: &Connection, key: &str, value: &str, now: i64) -> Result<(), crate::AppError> {
-    conn.execute(UPSERT_SQL, params![key, value, now])?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::store::db::test_support::{guarded_conn, memory_conn};
+    use future_app_settings::{
+        read as read_settings, write_value, KEY_APPROVAL_TIER, KEY_AUTO_CONNECT_REMOTE,
+        KEY_AUTO_TITLE_FIRST_TURN, KEY_AUTO_UPGRADE_SKILLS, KEY_BELL_ON_COMPLETE,
+        KEY_COMMUNITY_EDITION, KEY_HIDDEN_MODELS,
+    };
 
     fn full_input() -> UpdateAppSettingsInput {
         UpdateAppSettingsInput {
@@ -349,7 +155,7 @@ mod tests {
             let updated = update_app_settings(input).expect("update settings");
             assert!(!updated.bell_on_complete);
             assert_eq!(
-                read_value(&conn, "show_thinking").expect("legacy key"),
+                future_app_settings::read_value(&conn, "show_thinking").expect("legacy key"),
                 Some(value.to_string()),
                 "the retired key must not be written"
             );
@@ -399,16 +205,7 @@ mod tests {
         drop(conn);
         let updated = update_app_settings(UpdateAppSettingsInput {
             approval_tier: Some("permissive".to_string()),
-            hidden_models: None,
-            auto_upgrade_skills: None,
-            auto_connect_remote: None,
-            skill_guide_dismissed: None,
-            skill_intro_dismissed: None,
-            bell_on_complete: None,
-            auto_title_first_turn: None,
-            title_language: None,
-            community_edition: None,
-            skill_recommend: None,
+            ..Default::default()
         })
         .expect("update");
         assert_eq!(updated.approval_tier, "off");
@@ -439,7 +236,7 @@ mod tests {
         for enabled in [false, true] {
             write_value(
                 &conn,
-                "auto_compact_first_turn",
+                KEY_AUTO_TITLE_FIRST_TURN,
                 if enabled { "true" } else { "false" },
                 1,
             )
@@ -495,7 +292,7 @@ mod tests {
         write_value(&conn, KEY_BELL_ON_COMPLETE, "yes", 1).expect("write bell");
         write_value(&conn, KEY_COMMUNITY_EDITION, "true", 1).expect("write community edition");
 
-        let settings = read_app_settings(&conn).expect("read");
+        let settings = read_settings(&conn).expect("read");
         assert_eq!(settings.approval_tier, "off");
         assert!(settings.hidden_models.is_empty());
         assert!(!settings.auto_upgrade_skills);
@@ -508,20 +305,7 @@ mod tests {
     fn update_with_all_fields_absent_is_a_noop() {
         let (_home, conn) = guarded_conn("settings_noop");
         drop(conn);
-        let settings = update_app_settings(UpdateAppSettingsInput {
-            approval_tier: None,
-            hidden_models: None,
-            auto_upgrade_skills: None,
-            auto_connect_remote: None,
-            skill_guide_dismissed: None,
-            skill_intro_dismissed: None,
-            bell_on_complete: None,
-            auto_title_first_turn: None,
-            title_language: None,
-            community_edition: None,
-            skill_recommend: None,
-        })
-        .expect("noop update");
+        let settings = update_app_settings(UpdateAppSettingsInput::default()).expect("noop update");
         assert_eq!(settings.approval_tier, "off", "defaults survive a noop");
     }
 
@@ -530,17 +314,9 @@ mod tests {
         let (_home, conn) = guarded_conn("settings_dismissed_false");
         drop(conn);
         let updated = update_app_settings(UpdateAppSettingsInput {
-            approval_tier: None,
-            hidden_models: None,
-            auto_upgrade_skills: None,
-            auto_connect_remote: None,
             skill_guide_dismissed: Some(false),
             skill_intro_dismissed: Some(false),
-            bell_on_complete: None,
-            auto_title_first_turn: None,
-            title_language: None,
-            community_edition: None,
-            skill_recommend: None,
+            ..Default::default()
         })
         .expect("update");
         assert!(!updated.skill_guide_dismissed);
@@ -548,10 +324,56 @@ mod tests {
     }
 
     #[test]
-    fn normalize_tier_keeps_known_values() {
-        for tier in ["off", "sandbox", "manual"] {
-            assert_eq!(normalize_tier(tier), tier);
-        }
-        assert_eq!(normalize_tier("anything-else"), "off");
+    fn auto_title_first_turn_round_trips_and_unknown_languages_are_refused() {
+        let (_home, conn) = guarded_conn("settings_title_language");
+        drop(conn);
+
+        let settings = update_app_settings(UpdateAppSettingsInput {
+            auto_title_first_turn: Some(false),
+            ..Default::default()
+        })
+        .expect("write auto-title preference");
+        assert!(!settings.auto_title_first_turn);
+        assert!(!get_app_settings().expect("read back").auto_title_first_turn);
+
+        // Only the languages the model prompt itself supports may be stored;
+        // anything else would silently fall back to a mixed-language title.
+        let error = update_app_settings(UpdateAppSettingsInput {
+            title_language: Some("fr".to_string()),
+            ..Default::default()
+        })
+        .expect_err("an unsupported title language must be refused")
+        .to_string();
+        assert!(error.contains("Unsupported title language"), "{error}");
+        assert_eq!(get_app_settings().expect("read back").title_language, "en");
+    }
+
+    #[test]
+    fn a_refused_language_rolls_back_earlier_fields() {
+        let (_home, conn) = guarded_conn("settings_rollback");
+        drop(conn);
+        // The same transaction wraps every field, so a rejected language must
+        // undo a bell change written earlier in the same update.
+        assert!(update_app_settings(UpdateAppSettingsInput {
+            bell_on_complete: Some(false),
+            skill_intro_dismissed: Some(true),
+            title_language: Some("fr".to_string()),
+            ..Default::default()
+        })
+        .is_err());
+        let settings = get_app_settings().expect("read back");
+        assert!(settings.bell_on_complete, "the bell write must roll back");
+        assert!(
+            !settings.skill_intro_dismissed,
+            "the dismissed flag must roll back too"
+        );
+        assert_eq!(settings.title_language, "en");
+    }
+
+    #[test]
+    fn the_stored_title_language_key_is_the_legacy_row_name() {
+        // The API name is autoTitleFirstTurn, but the stored row keeps its
+        // original name so existing installations keep their opt-in.
+        assert_eq!(KEY_AUTO_TITLE_FIRST_TURN, "auto_compact_first_turn");
     }
 }

@@ -106,8 +106,10 @@ at a time. Enabling a channel this build cannot run is reported as
 | `max_image_mb` | `10` | Maximum downloaded attachment size in MiB (images and files); enforced while reading the response, even without Content-Length. |
 | `typing_indicator` | `false` | Show a typing indicator. |
 
-> Per-group overrides are possible at runtime (e.g. disable a specific chat);
-> the config file above only sets the defaults.
+> Per-chat overrides (e.g. disabling one specific group) exist only as an
+> internal API (`PolicyEngine::set_override`, wrapped by
+> `Bridge::set_chat_override`); nothing operator-facing calls it, so the config
+> file above is the only entry point and it only sets the defaults.
 
 ### `dingtalk`
 

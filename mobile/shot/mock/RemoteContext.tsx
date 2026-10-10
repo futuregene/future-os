@@ -30,6 +30,7 @@ import type {
 import { createContext, useContext, useMemo, useState } from "react";
 import { connectionPresentation as buildConnectionPresentation } from "../../src/remote/connectionPresentation";
 import { applyStreamEvents, timelineFromEntries } from "../../src/remote/projection";
+import { leanRenderMode, leanRenderTimeline, leanTargetForToolCall } from "./leanRender";
 import {
   compactResumeEntries,
   demoCredentials,
@@ -43,6 +44,11 @@ import {
   demoRefreshedSessionUsage,
   demoSessionUsage,
   demoSkills,
+  demoTaskDeps,
+  demoTaskDetail,
+  demoTaskRevisions,
+  demoTaskRuns,
+  demoTasks,
   demoUnpricedSessionUsage,
   demoWorkspaces,
   multiTurnEntries,
@@ -88,6 +94,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     autoUpgradeSkills: true,
     autoTitleFirstTurn: true,
     autoConnectRemote: false,
+    // The desktop always reports this one; omitting it would make the harness
+    // exercise the phone's older-desktop fallback instead of the real path.
+    skillRecommend: true,
     hiddenModels: [],
   });
 
@@ -104,6 +113,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // conversation: the question-nav ↑ can then page it in for real.
   const withOlder = new URLSearchParams(window.location.search).get("multiTurnOlder") === "1";
   const [olderLoaded, setOlderLoaded] = useState(false);
+  // `?leanRender=<mode>` renders a lean (or, for the control, full) lane slice
+  // instead of the demo conversation — see shot/mock/leanRender.ts.
+  const renderMode = leanRenderMode(window.location.search);
   const baseTimeline = useMemo(() => {
     // `?compactHistory=1` swaps in the history of a run that compacted
     // mid-turn, so a capture can assert the reply after the divider survives
@@ -111,6 +123,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // a several-turn conversation, which is what the controls that jump between
     // questions need in order to have somewhere to jump.
     const search = new URLSearchParams(window.location.search);
+    const renderFixture = leanRenderTimeline(renderMode);
+    if (renderFixture) return renderFixture;
     const historyEntries = search.get("compactHistory") === "1"
       ? compactResumeEntries
       : search.get("multiTurn") === "1"
@@ -125,7 +139,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       { type: "compaction_started", runId: manualRun, idx: 900, data: JSON.stringify({ operation_id: "cmp_shot", trigger: "manual", phase: "standalone" }) },
       { type: "compaction_committed", runId: manualRun, idx: 901, data: JSON.stringify({ operation_id: "cmp_shot", checkpoint_id: "cp_shot", trigger: "manual", phase: "standalone", tokens_before: 33064, tokens_after: 9250 }) },
     ]);
-  }, [scriptedCompaction, olderLoaded]);
+  }, [scriptedCompaction, renderMode, olderLoaded]);
   const timeline = useMemo(
     () => (selectedSessionId === "" || selectedSessionId === "sess_dopamine_review"
       ? baseTimeline
@@ -219,6 +233,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       "provider_management_v1",
       "workspace_pinning_v1",
       "compaction_v1",
+      "fork_v1",
+      "tasks_v1",
+      // What the shipping client declares (src/remote/client.ts); the lean
+      // fixtures are the feed a desktop serves a client that asked for it.
+      "lean_events_v1",
     ]),
 
     // Actions the harness drives for real
@@ -238,6 +257,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setDraft(false);
       setSelectedSessionId("");
     },
+    // A lean history row with no target fetches its command on open: the app
+    // goes through the bridge (`get_tool_call_args`), the harness answers from
+    // the full-feed fixture with the shipping target derivation.
+    resolveToolCallTarget: async (toolCallId: string) => leanTargetForToolCall(toolCallId),
     switchDesktop: async (id: string) => setDesktopId(id),
     setSessionPinned: async (sessionId: string, _threadId: string, pinned: boolean) =>
       setSessionPins(current => ({ ...current, [sessionId]: pinned })),
@@ -277,6 +300,19 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setProviders(current => ({ ...current, custom: current.custom.filter(item => item.id !== providerId) }));
       return providers;
     },
+    // Tasks: the phone manages the paired desktop's tasks (list rows carry no
+    // prompt body, matching the wire contract; the detail does).
+    listTasks: async () => demoTasks,
+    getTask: async () => demoTaskDetail,
+    listTaskRuns: async () => demoTaskRuns,
+    listTaskDeps: async () => demoTaskDeps,
+    listTaskRevisions: async () => demoTaskRevisions,
+    createTask: async () => demoTaskDetail,
+    updateTask: async () => demoTaskDetail,
+    deleteTask: async () => undefined,
+    setTaskEnabled: async () => demoTaskDetail,
+    runTask: async () => demoTaskDetail,
+    applyTaskRevision: async () => demoTaskDetail,
     listInstalledSkills: async (): Promise<InstalledSkill[]> => demoInstalledSkills,
     listAvailableSkills: async (): Promise<AvailableSkill[]> => demoAvailableSkills,
     installSkill: async () => undefined,
@@ -304,6 +340,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     downloadAttachment: async () => ({ uri: "http://127.0.0.1:7392/effect-size.png" }) as any,
 
     rename: async () => undefined,
+    // Fork is a Desktop write; the harness only needs the affordance to exist.
+    forkConversation: async () => undefined,
     generateTitle: async () => "多巴胺与风险决策：任务不确定性下的效应方向",
     // Manual compaction: the harness shows the request being accepted, then
     // reports the outcome the divider cannot (here: nothing to compact).

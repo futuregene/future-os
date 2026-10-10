@@ -1,7 +1,6 @@
 {
   "agentUnavailable": "Trying to connect. If this continues, restart FutureOS.",
-  "title": "Phone Remote Control",
-  "description": "Let a phone remotely take over this machine's session (tools still run locally). Once enabled, local conversations are mirrored to the phone, and the phone can drive the same session.",
+  "description": "Let a phone, tablet, or another computer use this machine's conversations remotely (tools still run here). Once enabled, local conversations are mirrored to the connected devices, and they can drive the same session.",
   "downloadMobile": "Download mobile app",
   "connect": "Connect",
   "pairAgain": "Pair again",
@@ -15,16 +14,16 @@
   "reconnectingAs": "Reconnecting…",
   "unpair": "Unpair",
   "unpairConfirmTitle": "Unpair this device?",
-  "unpairConfirmDesc": "This phone will no longer control this computer. Scan a new code if you want to pair it again.",
+  "unpairConfirmDesc": "This device will no longer control this computer. Pair it again if you want it back.",
   "cancel": "Cancel",
   "pairingCodeLabel": "Pairing code",
   "pairingQrLabel": "Scan with FutureOS Mobile",
-  "pairingCodeHint": "Scan the QR code with the FutureOS mobile app within 5 minutes. The code can only be used once.",
+  "pairingCodeHint": "Scan the QR code with the mobile app (it can only be used once). On another computer, copy the pairing code above and paste it into Remote → Connect to another computer.",
   "pairingCodeExpiresIn": "expires in {{time}}",
   "copy": "Copy",
   "copied": "Copied",
   "copyFailed": "Copy failed — copy the code manually.",
-  "note": "Phone control requires this computer to stay on and online.",
+  "note": "Remote connections need this computer to stay on and online.",
   "failure": {
     "network": "Network unavailable. Check your connection and try again later. ({{code}})",
     "pairing": "Pairing expired. Pair this device again. ({{code}})",
@@ -48,5 +47,9 @@
   "statusNetworkUnavailable": "Network unavailable",
   "statusServiceUnavailable": "Service unavailable",
   "statusDeviceUnavailable": "Device unavailable",
-  "connectionHint": "Trying to connect. Check the computer’s network."
+  "connectionHint": "Trying to connect. Check the computer’s network.",
+  "clientKind.desktop": "{{name}} (a computer)",
+  "clientKind.mobile": "{{name}} (a phone)",
+  "clientKind.other": "{{name}}",
+  "clientUnknown": "A connected device"
 }

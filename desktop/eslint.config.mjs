@@ -28,6 +28,14 @@ export default antfu(
   },
   tailwindcss.configs.recommended,
   {
+    files: ["src/features/agent/**/*.{ts,tsx}"],
+    ignores: ["**/*.test.{ts,tsx}"],
+    rules: {
+      "react/refs": "error",
+      "react/exhaustive-deps": "error",
+    },
+  },
+  {
     // v4 moved per-rule options into shared settings: `callees` → `functions`
     // (class strings are composed via `cn`), `config` → `cssConfigPath`.
     // These are global (not scoped to `src/**`): the plugin loads the project's

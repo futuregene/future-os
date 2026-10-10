@@ -37,7 +37,7 @@ export interface SendPipelineDeps {
   thinkingLevel: string;
   setMessages: Dispatch<SetStateAction<AgentMessage[]>>;
   setRecentRun: (run: StoredRun) => void;
-  refreshRecentRun: (threadId: string, workspaceId?: string | null) => Promise<void>;
+  refreshRecentRun: (threadId: string) => Promise<void>;
   onThreadActivity: () => void;
   onAccepted?: () => void;
   // True while this send still owns the foreground view. A newer send or a
@@ -257,7 +257,7 @@ export async function runSendPipeline(
         await updateRunStatusSafe(run.id, "failed", interruptedMessage);
       }
       if (isCurrentSend()) {
-        await refreshRecentRun(thread.id, thread.workspaceId);
+        await refreshRecentRun(thread.id);
       }
       const storedAssistantMessage = clientMessageRecord(
         run.id,
@@ -289,7 +289,7 @@ export async function runSendPipeline(
       await updateRunStatusSafe(run.id, "completed");
     }
     if (isCurrentSend()) {
-      await refreshRecentRun(thread.id, thread.workspaceId);
+      await refreshRecentRun(thread.id);
     }
     const storedAssistantMessage = clientMessageRecord(
       run.id,
@@ -357,7 +357,7 @@ export async function runSendPipeline(
         await updateRunStatusSafe(run.id, "failed", message);
       }
       if (isCurrentSend()) {
-        await refreshRecentRun(thread.id, thread.workspaceId);
+        await refreshRecentRun(thread.id);
       }
     }
     const failureContent = buildAgentFailureContent(message);

@@ -101,8 +101,9 @@
 | `max_image_mb` | `10` | 下载附件（图片和文件）的大小上限（MiB）；读取响应时逐块检查，无 Content-Length 时同样有效。 |
 | `typing_indicator` | `false` | 显示输入中指示。 |
 
-> 运行时可以对单个群做覆盖（例如禁用某个特定群）；上面的配置文件只设置
-> 默认值。
+> 按会话（例如禁用某个特定群）的覆盖只存在于内部 API（`PolicyEngine::set_override`，
+> 由 `Bridge::set_chat_override` 包装）；没有任何面向运维的入口调用它，因此上面的
+> 配置文件是唯一入口，且只设置默认值。
 
 ### `dingtalk`
 

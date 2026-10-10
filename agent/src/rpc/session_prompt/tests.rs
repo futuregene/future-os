@@ -114,6 +114,7 @@ async fn loop_workspace_scope_blocks_unapproved_absolute_write_from_model_tool_c
     let mut sandbox = crate::sandbox::ResolvedSandbox::resolve(
         &crate::sandbox::SandboxPolicy {
             tier: crate::sandbox::SandboxTier::Manual,
+            model_reviewer: false,
         },
         workspace.to_string_lossy().as_ref(),
     );
@@ -417,13 +418,20 @@ struct RunFixture {
 }
 
 fn run_fixture(provider: Arc<dyn LLMProvider>, name: &str) -> RunFixture {
+    run_fixture_with_id(provider, name, "s1")
+}
+
+/// The same fixture with a caller-chosen session id. Tests that need to find
+/// their own run's wiring (e.g. the captured run callbacks) use a unique id so
+/// they cannot consume a parallel test's capture.
+fn run_fixture_with_id(provider: Arc<dyn LLMProvider>, name: &str, session_id: &str) -> RunFixture {
     let dir = test_path(name);
     let workspace = dir.join("ws");
     std::fs::create_dir_all(&workspace).unwrap();
     let manager = Arc::new(crate::session::Manager::new(dir.join("sessions")));
     let agent_loop = Loop::new(provider, "mock").with_tools(coding_tools());
     let session = crate::rpc::ServerSession::new_with_queue_budget(
-        "s1".to_string(),
+        session_id.to_string(),
         Arc::new(tokio::sync::RwLock::new(agent_loop)),
         manager,
         workspace.to_string_lossy().as_ref(),
@@ -435,6 +443,16 @@ fn run_fixture(provider: Arc<dyn LLMProvider>, name: &str) -> RunFixture {
     RunFixture { workspace, session }
 }
 
+/// Remove the run wiring `prompt_internal` captured for `session_id`.
+fn take_run_callbacks(session_id: &str) -> RunCallbacksForTest {
+    // The wiring is installed by the run's own `prompt_internal` call, so this
+    // is reached only after a run for this id started.
+    RUN_CALLBACKS_FOR_TEST
+        .lock()
+        .remove(session_id)
+        .expect("the run captured its callbacks")
+}
+
 impl RunFixture {
     fn workspace(&self) -> &PathBuf {
         &self.workspace
@@ -443,7 +461,11 @@ impl RunFixture {
 
 async fn wait_for_run_end(session: &crate::rpc::ServerSession) {
     use std::sync::atomic::Ordering;
-    for _ in 0..500 {
+    // A liveness wait, not a speed claim: the assertion is "the run finishes".
+    // The bound is generous because an instrumented parallel run of the whole
+    // crate is several times slower than a single-test run, and a tight bound
+    // flaked (observed "run did not finish within 5s" at 5s under llvm-cov).
+    for _ in 0..3000 {
         let active = session.runtime.snapshot().is_some();
         let streaming = session.is_streaming.load(Ordering::Relaxed);
         if !active && !streaming {
@@ -451,7 +473,7 @@ async fn wait_for_run_end(session: &crate::rpc::ServerSession) {
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    panic!("run did not finish within 5s");
+    panic!("run did not finish within 30s");
 }
 
 fn text_turn(text: &str) -> Script {
@@ -1057,6 +1079,305 @@ async fn queued_follow_ups_keep_independent_runs() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn coalescing_follow_ups_fold_into_one_run_in_queue_order() {
+    let provider = ScriptedProvider::new(vec![
+        Script::Stall(vec![text_event("stalled")]),
+        text_turn("merged answer"),
+    ]);
+    let fixture = run_fixture(provider, "coalesce-follow-ups");
+    let mut session = fixture.session;
+
+    let first = session.prompt("first", &[], &[], None, None).unwrap();
+    for _ in 0..200 {
+        if session.runtime.snapshot().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let a = session
+        .enqueue_prompt(
+            "second question",
+            &[],
+            &[],
+            None,
+            "req-2",
+            crate::runtime::BusyPolicy::EnqueueCoalescing,
+        )
+        .unwrap();
+    let b = session
+        .enqueue_prompt(
+            "third question",
+            &[],
+            &[],
+            None,
+            "req-3",
+            crate::runtime::BusyPolicy::EnqueueCoalescing,
+        )
+        .unwrap();
+    assert_eq!(a.accepted_state, crate::runtime::RunAcceptedState::Queued);
+    assert_eq!(b.accepted_state, crate::runtime::RunAcceptedState::Queued);
+    assert_eq!(session.scheduler.queued().len(), 2);
+
+    // Interrupt the stalled run so its queued work can drain.
+    session.abort_run(Some(&first.run_id)).unwrap();
+    for _ in 0..500 {
+        if session.runtime.snapshot().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(session.runtime.snapshot().is_none());
+
+    let started = session.start_next_scheduled().unwrap();
+    assert_eq!(
+        started.accepted_state,
+        crate::runtime::RunAcceptedState::Running
+    );
+    // One run absorbed both follow-ups: nothing is left queued behind it.
+    assert_eq!(started.run_id, a.run_id);
+    assert!(session.scheduler.queued().is_empty());
+
+    let user_texts: Vec<String> = session
+        .messages
+        .read()
+        .iter()
+        .filter(|m| m.role == "user")
+        .map(|m| m.text())
+        .collect();
+    // The questions arrive as ONE user message, in queue order — never as two
+    // separate messages, and never reordered.
+    assert!(
+        user_texts
+            .iter()
+            .any(|t| t == "second question\n\nthird question"),
+        "folded user message not found in {user_texts:?}"
+    );
+    assert!(!user_texts.iter().any(|t| t == "second question"));
+    assert!(!user_texts.iter().any(|t| t == "third question"));
+
+    // The folded submission never runs, so its client learns it was merged
+    // rather than watching a queued run that never starts.
+    let merged: Vec<String> = session
+        .scheduler
+        .recent_terminal_acks()
+        .into_iter()
+        .filter(|ack| ack.reason == "merged")
+        .map(|ack| ack.run_id)
+        .collect();
+    assert_eq!(merged, vec![b.run_id.clone()]);
+
+    // The fold is recorded on the accepted message (history + journal audit).
+    let coalesced = session
+        .messages
+        .read()
+        .iter()
+        .find(|m| m.text() == "second question\n\nthird question")
+        .and_then(|m| m.metadata.clone())
+        .and_then(|metadata| metadata.get("coalesced_run_ids").cloned())
+        .expect("coalesced_run_ids metadata");
+    assert_eq!(coalesced, serde_json::json!([b.run_id.clone()]));
+
+    session.abort_run(Some(&started.run_id)).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn coalescing_uses_the_last_folded_requests_execution_settings() {
+    // The user's LATEST instruction decides how the combined turn runs: the
+    // front request's own execution settings must not be reused for it.
+    let provider = ScriptedProvider::new(vec![
+        Script::Stall(vec![text_event("stalled")]),
+        text_turn("merged answer"),
+    ]);
+    let fixture = run_fixture(provider, "coalesce-last-settings");
+    let valid_workspace = fixture.workspace().clone();
+    let mut session = fixture.session;
+
+    let first = session.prompt("first", &[], &[], None, None).unwrap();
+    for _ in 0..200 {
+        if session.runtime.snapshot().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let not_a_directory = valid_workspace.join("not-a-directory");
+    std::fs::write(&not_a_directory, b"x").unwrap();
+    // The front request is accepted with a cwd that cannot be a workspace, so a
+    // run that reused its settings could not start at all.
+    session.set_cwd(not_a_directory.to_string_lossy().as_ref());
+    session
+        .enqueue_prompt(
+            "front",
+            &[],
+            &[],
+            None,
+            "req-2",
+            crate::runtime::BusyPolicy::EnqueueCoalescing,
+        )
+        .unwrap();
+    session.set_cwd(valid_workspace.to_string_lossy().as_ref());
+    session
+        .enqueue_prompt(
+            "last",
+            &[],
+            &[],
+            None,
+            "req-3",
+            crate::runtime::BusyPolicy::EnqueueCoalescing,
+        )
+        .unwrap();
+
+    session.abort_run(Some(&first.run_id)).unwrap();
+    for _ in 0..500 {
+        if session.runtime.snapshot().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let started = session.start_next_scheduled().unwrap();
+    assert_eq!(
+        started.accepted_state,
+        crate::runtime::RunAcceptedState::Running
+    );
+    session.abort_run(Some(&started.run_id)).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn coalescing_stops_at_a_request_that_did_not_opt_in() {
+    let provider = ScriptedProvider::new(vec![
+        Script::Stall(vec![text_event("stalled")]),
+        Script::Stall(vec![text_event("second")]),
+    ]);
+    let fixture = run_fixture(provider, "coalesce-mixed-policies");
+    let mut session = fixture.session;
+
+    let first = session.prompt("first", &[], &[], None, None).unwrap();
+    for _ in 0..200 {
+        if session.runtime.snapshot().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    session
+        .enqueue_prompt(
+            "folded question",
+            &[],
+            &[],
+            None,
+            "req-2",
+            crate::runtime::BusyPolicy::EnqueueCoalescing,
+        )
+        .unwrap();
+    // A caller that streams its own run keeps its own run: it is never folded
+    // into another submission's answer.
+    let independent = session
+        .enqueue_prompt(
+            "independent question",
+            &[],
+            &[],
+            None,
+            "req-3",
+            crate::runtime::BusyPolicy::EnqueueIfBusy,
+        )
+        .unwrap();
+
+    session.abort_run(Some(&first.run_id)).unwrap();
+    for _ in 0..500 {
+        if session.runtime.snapshot().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let started = session.start_next_scheduled().unwrap();
+    let user_texts: Vec<String> = session
+        .messages
+        .read()
+        .iter()
+        .filter(|m| m.role == "user")
+        .map(|m| m.text())
+        .collect();
+    assert!(user_texts.iter().any(|t| t == "folded question"));
+    assert!(!user_texts.iter().any(|t| t == "independent question"));
+    // The non-coalescing request still owns its own queued run.
+    let queued = session.scheduler.queued();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].run_id, independent.run_id);
+
+    session.abort_run(Some(&started.run_id)).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn coalescing_joins_model_context_sidecars_in_order() {
+    let provider = ScriptedProvider::new(vec![
+        Script::Stall(vec![text_event("stalled")]),
+        text_turn("merged answer"),
+    ]);
+    let fixture = run_fixture(provider, "coalesce-model-context");
+    let mut session = fixture.session;
+
+    let first = session.prompt("first", &[], &[], None, None).unwrap();
+    for _ in 0..200 {
+        if session.runtime.snapshot().is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+
+    let ctx2 = "context-two".to_string();
+    let ctx3 = "context-three".to_string();
+    for (text, context, request) in [
+        ("second question", &ctx2, "req-2"),
+        ("third question", &ctx3, "req-3"),
+    ] {
+        session
+            .enqueue_prompt_with_model_context(
+                PromptText::new(text, context),
+                &[],
+                &[],
+                None,
+                request,
+                crate::runtime::BusyPolicy::EnqueueCoalescing,
+            )
+            .unwrap();
+    }
+
+    session.abort_run(Some(&first.run_id)).unwrap();
+    for _ in 0..500 {
+        if session.runtime.snapshot().is_none() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let started = session.start_next_scheduled().unwrap();
+    let user_messages: Vec<crate::types::AgentMessage> = session
+        .messages
+        .read()
+        .iter()
+        .filter(|m| m.role == "user")
+        .cloned()
+        .collect();
+    // Both the visible text and the non-display sidecar fold in the same order.
+    let folded = user_messages
+        .iter()
+        .find(|m| m.display_text() == "second question\n\nthird question")
+        .expect("folded user message");
+    let text = folded.text();
+    assert!(text.contains("context-two"), "{text}");
+    assert!(text.contains("context-three"), "{text}");
+    assert!(
+        text.find("context-two") < text.find("context-three"),
+        "sidecars keep queue order: {text}"
+    );
+
+    session.abort_run(Some(&started.run_id)).unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn queued_follow_ups_keep_model_context_sidecars_independent() {
     let provider = ScriptedProvider::new(vec![
         Script::Stall(vec![text_event("stalled")]),
@@ -1211,6 +1532,7 @@ async fn run_sandbox_denial_escalates_through_session_wiring() {
     let mut session = fixture.session;
     session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
         tier: crate::sandbox::SandboxTier::Sandbox,
+        model_reviewer: false,
     });
     if !crate::sandbox::platform_sandbox_available() {
         return;
@@ -1321,6 +1643,7 @@ async fn enqueue_with_sandbox_policy_parses_tier() {
     let mut session = fixture.session;
     session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
         tier: crate::sandbox::SandboxTier::Manual,
+        model_reviewer: false,
     });
     let ack = session
         .enqueue_prompt(
@@ -1438,6 +1761,34 @@ async fn prompt_with_explicit_name_and_provenance_persists_info() {
         .unwrap();
     assert_eq!(info["created_by"], "gui");
     assert_eq!(info["source_meta"]["thread"], "t-1");
+}
+
+/// Settled runs stay replayable across later prompts, whether maintenance
+/// has published their compact snapshot yet or they still use raw journals.
+#[tokio::test(flavor = "current_thread")]
+async fn later_runs_retire_the_journals_of_settled_older_runs() {
+    let provider = ScriptedProvider::new(vec![
+        text_turn("one"),
+        text_turn("two"),
+        text_turn("three"),
+        text_turn("four"),
+    ]);
+    let fixture = run_fixture(provider, "retention");
+    let mut session = fixture.session;
+    let mut runs = Vec::new();
+    for prompt in ["1", "2", "3", "4"] {
+        runs.push(session.prompt(prompt, &[], &[], None, None).unwrap().run_id);
+        wait_for_run_end(&session).await;
+    }
+
+    let store = session.session_manager.storage().unwrap();
+    for run in &runs {
+        let replay = store.replay_page("s1", run, -1, false, None).unwrap();
+        assert!(
+            replay.known && (replay.snapshot.is_some() || !replay.events.is_empty()),
+            "run {run} stays replayable after compaction"
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1649,6 +2000,7 @@ async fn prompt_workspace_permission_routes_through_approval_gate() {
     session.set_permission_level("workspace");
     session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
         tier: crate::sandbox::SandboxTier::Manual,
+        model_reviewer: false,
     });
     // The outside path is past the sandbox boundary → the gate asks; the
     // decider approves, so the write proceeds.
@@ -2146,4 +2498,203 @@ fn rewrite_snapshot_reinserts_compaction_checkpoints() {
         .entries
         .iter()
         .any(|e| e.entry_type == ENTRY_TYPE_COMPACTION && e.id == legacy_cp.id));
+}
+
+// ── run callbacks: the wiring `prompt_internal` installs ───────────────────
+
+/// A checkpoint the size of the ones the compaction path produces: the same
+/// shape `checkpoint_to_entry` consumes.
+fn test_checkpoint(entry_id: &str, checkpoint_id: &str) -> crate::compaction::ContextCheckpoint {
+    crate::compaction::ContextCheckpoint {
+        entry_id: entry_id.to_string(),
+        checkpoint_id: checkpoint_id.to_string(),
+        covered_from_entry_id: None,
+        cutoff_entry_id: None,
+        summary: vec![crate::types::ContentBlock::Text {
+            text: "handoff summary".to_string(),
+        }],
+        protected_entry_ids: vec![],
+        tokens_before: 1000,
+        tokens_after: 100,
+        trigger: crate::compaction::CompactionTrigger::Automatic,
+        phase: Some(crate::compaction::CompactionPhase::PreTurn),
+        algorithm_version: "test-v1".to_string(),
+        summary_outcome: None,
+        model: "mock".to_string(),
+        context_window: 64_000,
+        created_at: chrono::Utc::now(),
+    }
+}
+
+/// Start a run, wait for it, and hand back the wiring it captured. The run
+/// itself is what builds the closures, so this is the production path.
+async fn run_and_take_callbacks(name: &str) -> (crate::rpc::ServerSession, RunCallbacksForTest) {
+    let session_id = format!("{name}-session");
+    let fixture = run_fixture_with_id(
+        ScriptedProvider::new(vec![text_turn("wired")]),
+        name,
+        &session_id,
+    );
+    let mut session = fixture.session;
+    session.prompt("hello", &[], &[], None, None).unwrap();
+    wait_for_run_end(&session).await;
+    let callbacks = take_run_callbacks(&session.session_id);
+    (session, callbacks)
+}
+
+/// Keep the run active while exercising callbacks; a completed compacted
+/// journal is immutable and must reject late run-scoped event appends.
+fn start_and_take_callbacks(
+    name: &str,
+) -> (
+    crate::rpc::ServerSession,
+    RunCallbacksForTest,
+    Arc<tokio::sync::Notify>,
+) {
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let provider = ScriptedProvider::new(vec![Script::Gated(
+        gate.clone(),
+        vec![text_event("wired"), finish_event()],
+    )]);
+    let fixture = run_fixture_with_id(provider, name, &format!("{name}-session"));
+    let mut session = fixture.session;
+    session.prompt("hello", &[], &[], None, None).unwrap();
+    let callbacks = take_run_callbacks(&session.session_id);
+    (session, callbacks, gate)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn checkpoint_callback_commits_the_checkpoint_durably_and_reports_a_failed_commit() {
+    let (session, callbacks) = run_and_take_callbacks("checkpoint-wiring").await;
+    let checkpoint = test_checkpoint("wiring-cp-entry", "wiring-cp");
+
+    (callbacks.on_checkpoint)(&checkpoint).expect("the checkpoint commits");
+    // The effect, not the line: the checkpoint is a durable journal entry that
+    // a reloaded session sees, with the checkpoint's own identity in its body.
+    let reloaded = session.session_manager.load(&session.session_id).unwrap();
+    let committed = reloaded
+        .entries
+        .iter()
+        .find(|entry| entry.id == "wiring-cp-entry")
+        .expect("the committed checkpoint is in the journal");
+    assert_eq!(committed.entry_type, crate::session::ENTRY_TYPE_COMPACTION);
+    let content = committed.content.as_ref().expect("checkpoint body");
+    assert_eq!(content["checkpoint_id"], "wiring-cp");
+    assert_eq!(content["summary"][0]["text"], "handoff summary");
+
+    // A commit that cannot land must be reported to the run, which treats it as
+    // a run failure — never swallowed.
+    session.persistence.close().unwrap();
+    let error = (callbacks.on_checkpoint)(&checkpoint)
+        .expect_err("a failed checkpoint commit must be reported");
+    assert!(
+        error.to_string().contains("closed") || error.to_string().contains("unavailable"),
+        "{error}"
+    );
+    // The failed commit wrote nothing: the journal still holds exactly one
+    // checkpoint entry.
+    let after = session.session_manager.load(&session.session_id).unwrap();
+    assert_eq!(
+        after
+            .entries
+            .iter()
+            .filter(|entry| entry.entry_type == crate::session::ENTRY_TYPE_COMPACTION)
+            .count(),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn escalation_callback_publishes_a_decidable_sandbox_request_on_the_session_stream() {
+    let (session, callbacks, gate) = start_and_take_callbacks("escalation-wiring");
+    let provider_gate = gate;
+    let session_id = session.session_id.clone();
+    let mut rx = session.broadcaster.subscribe();
+
+    // The decision arrives from the user's side of the same gate the session
+    // owns, exactly as the GUI would answer it.
+    let gate = session.approval_gate.clone();
+    let decider_session = session_id.clone();
+    let decider = std::thread::spawn(move || {
+        for _ in 0..2000 {
+            if let Some(first) = gate.pending_for_session(&decider_session).first() {
+                let request_id = first["approval_request_id"].as_str().unwrap().to_string();
+                let kind = first["kind"].as_str().unwrap().to_string();
+                let _ = gate.decide(
+                    &request_id,
+                    &decider_session,
+                    crate::rpc::ApprovalDecision {
+                        approved: true,
+                        note: String::new(),
+                        status: crate::rpc::ApprovalDecisionStatus::Approved,
+                    },
+                );
+                return kind;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("escalation request never appeared");
+    });
+
+    let decision = (callbacks.escalation)(&crate::sandbox::EscalationRequest {
+        trigger: crate::sandbox::EscalationTrigger::SandboxFailure,
+        command: "touch outside-workspace".to_string(),
+        justification: "the sandbox blocked it".to_string(),
+        failure_summary: "touch: outside-workspace: Operation not permitted".to_string(),
+    });
+    assert!(matches!(
+        decision,
+        crate::sandbox::EscalationDecision::Approved
+    ));
+    assert_eq!(decider.join().unwrap(), "sandbox_escalation");
+
+    // Both halves of the exchange reached this session's stream, so the GUI can
+    // render the prompt and then clear it.
+    let mut requested = None;
+    let mut decided = None;
+    while let Ok(event) = rx.try_recv() {
+        match event.event_type.as_str() {
+            "approval_request" => requested = Some(event.data.clone()),
+            "approval_decision" => decided = Some(event.data.clone()),
+            _ => continue,
+        }
+    }
+    let requested: serde_json::Value =
+        serde_json::from_str(&requested.expect("the escalation request is published")).unwrap();
+    assert_eq!(requested["session_id"], session_id);
+    assert_eq!(requested["kind"], "sandbox_escalation");
+    assert_eq!(
+        requested["requested_action"]["command"],
+        "touch outside-workspace"
+    );
+    let decided: serde_json::Value =
+        serde_json::from_str(&decided.expect("the decision is published")).unwrap();
+    assert_eq!(decided["status"], "approved");
+    assert_eq!(
+        decided["approval_request_id"],
+        requested["approval_request_id"]
+    );
+    provider_gate.notify_one();
+    wait_for_run_end(&session).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn sandboxed_notifier_broadcasts_tool_sandboxed_for_the_run() {
+    let (session, callbacks, gate) = start_and_take_callbacks("sandboxed-wiring");
+    let mut rx = session.broadcaster.subscribe();
+
+    (callbacks.on_sandboxed)("printf sandboxed-run");
+
+    let mut published = None;
+    while let Ok(event) = rx.try_recv() {
+        if event.event_type == "tool_sandboxed" {
+            published = Some(event.data.clone());
+        }
+    }
+    let published: serde_json::Value =
+        serde_json::from_str(&published.expect("tool_sandboxed is published")).unwrap();
+    assert_eq!(published["type"], "tool_sandboxed");
+    assert_eq!(published["command"], "printf sandboxed-run");
+    gate.notify_one();
+    wait_for_run_end(&session).await;
 }

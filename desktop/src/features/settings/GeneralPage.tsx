@@ -3,6 +3,7 @@ import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import { useTranslation } from "react-i18next";
 import { Select } from "../../components/ui/Select";
 import { getLanguage, LANGUAGE_LABELS, setLanguage, SUPPORTED_LANGUAGES } from "../../i18n";
+import { automaticApprovalAvailable, effectiveApprovalTier } from "../../integrations/agent/automaticApproval";
 import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
 import { isLinux, isWindows } from "../../lib/platform";
 import { linuxUnavailableReasonKey } from "./linuxSandboxStatus";
@@ -10,6 +11,7 @@ import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPr
 
 export function GeneralPage({
   approvalTier,
+  futureSessionStatus = "checking",
   onChangeApprovalTier,
   autoUpgradeSkills,
   onToggleAutoUpgradeSkills,
@@ -21,6 +23,7 @@ export function GeneralPage({
   onToggleAutoTitleFirstTurn,
 }: {
   approvalTier: ApprovalTier;
+  futureSessionStatus?: string;
   onChangeApprovalTier: (value: ApprovalTier) => void;
   autoUpgradeSkills: boolean;
   onToggleAutoUpgradeSkills: (value: boolean) => void;
@@ -33,6 +36,8 @@ export function GeneralPage({
 }) {
   const { t } = useTranslation("settings");
   const sandboxAvailability = useSandboxAvailability();
+  const autoAvailable = automaticApprovalAvailable(futureSessionStatus);
+  const visibleApprovalTier = effectiveApprovalTier(approvalTier, futureSessionStatus);
 
   return (
     <SettingsSection>
@@ -57,16 +62,16 @@ export function GeneralPage({
         <SettingsRow
           title={t("approvalTier.title")}
           description={t(
-            approvalTier === "sandbox" && isWindows
+            visibleApprovalTier === "sandbox" && isWindows
               ? "approvalTier.description.sandboxWindows"
-              : approvalTier === "sandbox" && isLinux
+              : visibleApprovalTier === "sandbox" && isLinux
                 ? "approvalTier.description.sandboxLinux"
-                : `approvalTier.description.${approvalTier}`,
+                : `approvalTier.description.${visibleApprovalTier}`,
           )}
         >
           <Select
             size="sm"
-            value={approvalTier}
+            value={visibleApprovalTier}
             wrapperClassName="w-40"
             onChange={e => onChangeApprovalTier(e.target.value as ApprovalTier)}
           >
@@ -78,9 +83,15 @@ export function GeneralPage({
                   ? "approvalTier.sandboxUnavailable"
                   : "approvalTier.sandboxChecking")}
             </option>
+            <option disabled={!sandboxAvailability.available || !autoAvailable} value="auto">
+              {t(autoAvailable ? "approvalTier.auto" : futureSessionStatus === "checking" ? "approvalTier.autoChecking" : "approvalTier.autoSignInRequired")}
+            </option>
             <option value="off">{t("approvalTier.off")}</option>
           </Select>
         </SettingsRow>
+        {visibleApprovalTier === "auto" && sandboxAvailability.resolved && !sandboxAvailability.available
+          ? <SettingsRow title={t("approvalTier.auto")} description={t("approvalTier.autoUnavailable")} />
+          : null}
         {isLinux && sandboxAvailability.resolved && !sandboxAvailability.available
           ? (
               <SettingsRow

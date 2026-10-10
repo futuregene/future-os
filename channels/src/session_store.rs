@@ -168,9 +168,54 @@ impl SessionStore {
         let mut pending = tempfile::NamedTempFile::new_in(parent)?;
         serde_json::to_writer_pretty(pending.as_file_mut(), &store)?;
         pending.as_file().sync_all()?;
-        pending.persist(&self.path)?;
+        persist_with_retry(pending, &self.path)?;
         Ok(())
     }
+}
+
+/// How many times a transient failure to replace the session file is retried.
+///
+/// On Windows the publish is `MoveFileEx`, which fails with `ACCESS_DENIED`
+/// while another handle on the destination is open — a concurrent reader, an
+/// indexer, a scanner. The write has already succeeded at that point, so giving
+/// up on the first refusal silently drops the mapping from disk while the
+/// in-memory copy keeps it (`set_session_id` can only log), and the next restart
+/// loses the session. Verified: `concurrent_saves_always_publish_complete_json_
+/// and_retain_all_mappings` failed 5 of 40 runs before this retry, each time
+/// with `failed to persist temporary file: 拒绝访问。 (os error 5)`.
+const PERSIST_RETRIES: u32 = 20;
+/// Delay between those retries (worst case: 100 ms before the error is reported).
+const PERSIST_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// Publish `pending` at `path`, retrying the transient "destination busy" kind.
+fn persist_with_retry(mut pending: tempfile::NamedTempFile, path: &std::path::Path) -> Result<()> {
+    let mut remaining = PERSIST_RETRIES;
+    loop {
+        match pending.persist(path) {
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                if remaining == 0 || !replace_is_transient(&error.error) {
+                    return Err(error.error.into());
+                }
+                remaining -= 1;
+                pending = error.file;
+                std::thread::sleep(PERSIST_RETRY_DELAY);
+            }
+        }
+    }
+}
+
+/// True for the replace failures a second attempt can clear: the destination is
+/// busy (Windows `ACCESS_DENIED` / `SHARING_VIOLATION`) or the call was
+/// interrupted. A wrong path or a real permission problem keeps its kind and is
+/// reported at once.
+fn replace_is_transient(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied
+            | std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::Interrupted
+    )
 }
 
 #[cfg(test)]
@@ -313,6 +358,28 @@ mod tests {
         let reloaded = SessionStore::new(path);
         assert_eq!(reloaded.data.read().len(), 81);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_replace_that_cannot_publish_is_reported_not_swallowed() {
+        // The write succeeds (the temp file goes in the same parent) but the
+        // replace cannot: the destination is an existing directory. The failure
+        // must surface from `save_to_disk` rather than look like a publish, and
+        // the in-memory mapping must survive it. This is the deterministic
+        // stand-in for the Windows ACCESS_DENIED the retry above absorbs — on
+        // Windows it takes the retry-then-give-up path, on unix the
+        // non-transient one.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+        std::fs::write(&path, r#"{"sessions":[]}"#).unwrap();
+        let store = SessionStore::new(path.clone());
+        store.set_session_id("chat", None, "session");
+        assert_eq!(store.get("chat", None).as_deref(), Some("session"));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(store.save_to_disk().is_err());
+        assert_eq!(store.get("chat", None).as_deref(), Some("session"));
+        assert!(path.is_dir());
     }
 
     #[test]

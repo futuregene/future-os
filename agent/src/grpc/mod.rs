@@ -176,6 +176,7 @@ const BACKGROUND_COMMANDS: &[&str] = &[
     "get_commands",
     "get_session_entries",
     "get_state",
+    "get_tool_call_args",
     "get_tool_output",
     "list_models",
     "list_providers",
@@ -196,11 +197,11 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
         request: tonic::Request<proto::RpcCommand>,
     ) -> Result<tonic::Response<proto::RpcResponse>, tonic::Status> {
         let cmd = request.into_inner();
-        if cmd
-            .sandbox_policy
-            .as_ref()
-            .is_some_and(|policy| !matches!(policy.tier.as_str(), "off" | "manual" | "sandbox"))
-        {
+        if cmd.sandbox_policy.as_ref().is_some_and(|policy| {
+            !matches!(policy.tier.as_str(), "off" | "manual" | "sandbox")
+                || !matches!(policy.reviewer.as_str(), "" | "user" | "model")
+                || (policy.reviewer == "model" && policy.tier != "sandbox")
+        }) {
             return Err(tonic::Status::invalid_argument(
                 "sandbox tier must be off, manual, or sandbox",
             ));
@@ -309,11 +310,13 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             command: cmd.command,
             shell_timeout_ms: cmd.shell_timeout_ms,
             session_id: cmd.session_id,
+            session_ids: cmd.session_ids,
             entry_id: cmd.entry_id,
             tool_call_id: cmd.tool_call_id,
             offset: cmd.offset,
             limit: cmd.limit,
             before: cmd.before,
+            max_sessions: cmd.max_sessions,
             name: cmd.name,
             system_prompt: cmd.system_prompt,
             tools: cmd.tools,
@@ -331,6 +334,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
                 .sandbox_policy
                 .map(|policy| crate::sandbox::SandboxPolicy {
                     tier: crate::sandbox::SandboxTier::parse(&policy.tier),
+                    model_reviewer: policy.reviewer == "model",
                 }),
             auth_update: cmd
                 .auth_update
@@ -807,6 +811,7 @@ mod tests {
             ],
             sandbox_policy: Some(proto::SandboxPolicy {
                 tier: "manual".to_string(),
+                reviewer: String::new(),
             }),
             auth_update: Some(proto::AuthUpdate {
                 provider: "custom".to_string(),
@@ -1256,11 +1261,41 @@ mod tests {
             let cmd = proto::RpcCommand {
                 r#type: "set_sandbox_policy".into(),
                 session_id: "default".into(),
-                sandbox_policy: Some(proto::SandboxPolicy { tier: tier.into() }),
+                sandbox_policy: Some(proto::SandboxPolicy {
+                    tier: tier.into(),
+                    reviewer: String::new(),
+                }),
                 ..Default::default()
             };
             let error = service
                 .execute_command(tonic::Request::new(cmd))
+                .await
+                .unwrap_err();
+            assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_automatic_reviewer_policy_is_rejected_at_wire_boundary() {
+        let service = FutureAgentService {
+            state: grpc_app_state(false),
+        };
+        for (tier, reviewer) in [
+            ("off", "model"),
+            ("manual", "model"),
+            ("sandbox", "unknown"),
+        ] {
+            let command = proto::RpcCommand {
+                r#type: "set_sandbox_policy".into(),
+                session_id: "default".into(),
+                sandbox_policy: Some(proto::SandboxPolicy {
+                    tier: tier.into(),
+                    reviewer: reviewer.into(),
+                }),
+                ..Default::default()
+            };
+            let error = service
+                .execute_command(tonic::Request::new(command))
                 .await
                 .unwrap_err();
             assert_eq!(error.code(), tonic::Code::InvalidArgument);

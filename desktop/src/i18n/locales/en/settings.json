@@ -15,7 +15,8 @@
       "sandbox": "Commands run in the macOS sandbox and ask for approval when needed.",
       "sandboxWindows": "Commands run with Windows write protection and ask for approval when needed.",
       "sandboxLinux": "Commands run in the Linux sandbox and ask for approval when needed.",
-      "off": "No prompts, no sandbox — everything runs."
+      "off": "No prompts, no sandbox — everything runs.",
+      "auto": "Automatically reviews actions with sandbox protection."
     },
     "fallbackNotice": "Sandbox protection is unavailable (diagnostic: {{code}}). Switched to Manual mode: approved or allowlisted commands run without an OS sandbox.",
     "linuxUnavailable": {
@@ -35,7 +36,11 @@
         "probeTransportError": "FutureOS could not contact the Agent to check the Linux sandbox. Try again later or restart FutureOS. ({{code}})",
         "unknown": "The Linux sandbox is unavailable. Run future doctor for details, fix the issue, then restart FutureOS. ({{code}})"
       }
-    }
+    },
+    "auto": "Automatic review",
+    "autoUnavailable": "The sandbox is unavailable on this host. Requests use manual review; the automatic setting is retained.",
+    "autoSignInRequired": "Automatic review (sign-in required)",
+    "autoChecking": "Automatic review (checking sign-in)"
   },
   "autoUpgradeSkills": {
     "title": "Auto-upgrade skills",
@@ -52,12 +57,6 @@
   "bellOnComplete": {
     "title": "Completion bell",
     "description": "Play a sound and attract the window's attention when an agent finishes"
-  },
-  "remote": {
-    "autoConnect": {
-      "title": "Auto-connect phone on launch",
-      "description": "When a phone is already paired, connect to it automatically each time the app opens. You can still disconnect by hand."
-    }
   },
   "update": {
     "sectionTitle": "Software update",
@@ -89,7 +88,6 @@
     },
     "tabs": {
       "general": "General",
-      "remote": "Phone Control",
       "account": "Account",
       "update": "Check for updates",
       "about": "About",
@@ -280,6 +278,13 @@
     "website": "Website",
     "websiteLabel": "www.future-os.cn",
     "openSource": "Open source",
-    "builtWith": "Built with open-source software, including {{projects}}"
+    "builtWith": "Built with open-source software, including {{projects}}",
+    "follow": "Official account",
+    "followDescription": "Follow {{name}} on WeChat for release notes, feature guides and research tips.",
+    "followHint": "Scan the QR code with WeChat, or search for “{{name}}” in WeChat.",
+    "followQrAlt": "WeChat QR code for the {{name}} official account",
+    "followCopyName": "Copy account name",
+    "followCopied": "Copied",
+    "followReadArticle": "Read an article"
   }
 }

@@ -26,7 +26,7 @@ pub(super) fn fold_events(events: Vec<SseEvent>) -> Vec<SseEvent> {
 /// The equality is checked, never assumed. A tool whose fragments were
 /// truncated, rewritten, or never followed by an execution start keeps its
 /// deltas, so an interrupted tool call still shows what it had.
-pub(super) fn strip_repeated_tool_arguments(events: Vec<SseEvent>) -> Vec<SseEvent> {
+pub(crate) fn strip_repeated_tool_arguments(events: Vec<SseEvent>) -> Vec<SseEvent> {
     let mut tools_with_arguments = Vec::new();
     for event in &events {
         if event.event_type != "tool_start" {
@@ -67,7 +67,18 @@ pub(super) fn strip_repeated_tool_arguments(events: Vec<SseEvent>) -> Vec<SseEve
             let Ok(data) = serde_json::from_str::<serde_json::Value>(&event.data) else {
                 return true;
             };
-            !tool_id_of(&data).is_some_and(|tool| repeated.iter().any(|known| known == tool))
+            // Unknown per-fragment metadata may not exist on tool_start.
+            // Preserve it even when the argument text itself is duplicated.
+            let plain = data.as_object().is_some_and(|object| {
+                object.keys().all(|key| {
+                    matches!(
+                        key.as_str(),
+                        "type" | "text" | "tool_id" | "tool_call_id" | "tc_index" | "snapshot"
+                    )
+                })
+            });
+            !plain
+                || !tool_id_of(&data).is_some_and(|tool| repeated.iter().any(|known| known == tool))
         })
         .collect()
 }
@@ -116,37 +127,77 @@ fn tool_id_of(data: &serde_json::Value) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
-fn coalesce_deltas(events: Vec<SseEvent>) -> Vec<SseEvent> {
-    let mut output = Vec::new();
-    let mut pending: Option<(SseEvent, Value, bool)> = None;
-    let flush = |pending: &mut Option<(SseEvent, Value, bool)>, output: &mut Vec<SseEvent>| {
-        if let Some((mut event, data, merged)) = pending.take() {
+/// Persisted and live projections must agree on block/tool identity and on
+/// replacement snapshots. A replacement is never concatenated with a delta.
+pub(crate) fn same_delta_stream(
+    previous: &SseEvent,
+    next: &SseEvent,
+    a: &Value,
+    b: &Value,
+) -> bool {
+    previous.run_id == next.run_id
+        && previous.epoch == next.epoch
+        && previous.event_type == next.event_type
+        && b.get("snapshot").and_then(Value::as_bool) != Some(true)
+        && a.as_object().zip(b.as_object()).is_some_and(|(a, b)| {
+            a.iter()
+                .filter(|(k, _)| k.as_str() != "text")
+                .eq(b.iter().filter(|(k, _)| k.as_str() != "text"))
+        })
+}
+
+/// Incremental fold, so maintenance can read bounded pages without holding a
+/// write transaction or materializing the complete raw token journal.
+#[derive(Default)]
+pub(crate) struct DeltaFolder {
+    output: Vec<SseEvent>,
+    pending: Option<(SseEvent, Value, bool)>,
+    bytes: usize,
+    bounded_segments: bool,
+}
+
+impl DeltaFolder {
+    pub(crate) fn bounded() -> Self {
+        Self {
+            bounded_segments: true,
+            ..Self::default()
+        }
+    }
+
+    fn flush(&mut self) {
+        if let Some((mut event, data, merged)) = self.pending.take() {
             if merged {
-                event.data = serde_json::to_string(&data).expect("JSON value");
+                event.data = data.to_string();
             }
-            output.push(event);
+            self.bytes += event.data.len() + 512;
+            self.output.push(event);
         }
-    };
-    for event in events {
-        // Raw provider deltas duplicate the on_text-derived text_chunk stream.
+    }
+
+    pub(crate) fn estimated_bytes(&self) -> usize {
+        self.bytes
+            + self.pending.as_ref().map_or(0, |(event, data, _)| {
+                event.data.len() + data["text"].as_str().map_or(0, |s| s.len() * 6) + 512
+            })
+    }
+
+    pub(crate) fn push(&mut self, event: SseEvent) {
         if event.event_type == "text_delta" {
-            continue;
+            return;
         }
-        let coalescible = matches!(
+        let data = matches!(
             event.event_type.as_str(),
             "text_chunk" | "thinking_delta" | "toolcall_delta" | "tool_delta"
-        );
-        let data = coalescible
-            .then(|| serde_json::from_str::<Value>(&event.data).ok())
-            .flatten();
+        )
+        .then(|| serde_json::from_str::<Value>(&event.data).ok())
+        .flatten();
         if let Some(next) = data.filter(|data| data.get("text").is_some_and(Value::is_string)) {
-            if let Some((previous, previous_data, merged)) = pending.as_mut() {
-                let same_stream = previous.event_type == event.event_type
-                    && (!matches!(event.event_type.as_str(), "toolcall_delta" | "tool_delta")
-                        || ["tool_id", "tc_index"]
-                            .iter()
-                            .all(|key| previous_data.get(key) == next.get(key)));
-                if same_stream {
+            if let Some((previous, previous_data, merged)) = self.pending.as_mut() {
+                let combined_size = previous_data["text"].as_str().map_or(0, str::len)
+                    + next["text"].as_str().map_or(0, str::len);
+                if same_delta_stream(previous, &event, previous_data, &next)
+                    && (!self.bounded_segments || combined_size <= 64 * 1024)
+                {
                     let Value::String(text) = &mut previous_data["text"] else {
                         unreachable!()
                     };
@@ -155,19 +206,32 @@ fn coalesce_deltas(events: Vec<SseEvent>) -> Vec<SseEvent> {
                     previous.event_id = event.event_id;
                     previous.timestamp = event.timestamp;
                     previous.run_sequence = event.run_sequence;
+                    previous.session_idx = event.session_idx;
                     *merged = true;
-                    continue;
+                    return;
                 }
             }
-            flush(&mut pending, &mut output);
-            pending = Some((event, next, false));
+            self.flush();
+            self.pending = Some((event, next, false));
         } else {
-            flush(&mut pending, &mut output);
-            output.push(event);
+            self.flush();
+            self.bytes += event.data.len() + 512;
+            self.output.push(event);
         }
     }
-    flush(&mut pending, &mut output);
-    output
+
+    pub(crate) fn finish(mut self) -> Vec<SseEvent> {
+        self.flush();
+        self.output
+    }
+}
+
+fn coalesce_deltas(events: Vec<SseEvent>) -> Vec<SseEvent> {
+    let mut folder = DeltaFolder::default();
+    for event in events {
+        folder.push(event);
+    }
+    folder.finish()
 }
 
 #[cfg(test)]
@@ -175,6 +239,26 @@ mod tests {
     use super::*;
     use crate::rpc::{protocol::apply_to_projection, SseBroadcaster};
     use serde_json::json;
+
+    /// A `tool_start` only carries arguments when the payload is present and
+    /// non-empty; every other shape means "no arguments yet".
+    #[test]
+    fn tool_start_arguments_are_only_significant_when_present_and_non_empty() {
+        for (data, expected) in [
+            (json!({}), false),
+            (json!({"tool_args": null}), false),
+            (json!({"tool_args": {}}), false),
+            (json!({"tool_args": []}), false),
+            (json!({"tool_args": ""}), false),
+            (json!({"tool_args": {"path": "a"}}), true),
+            (json!({"tool_args": [1]}), true),
+            (json!({"tool_args": "{}"}), true),
+            // A non-JSON scalar still counts as supplied arguments.
+            (json!({"tool_args": 7}), true),
+        ] {
+            assert_eq!(carries_arguments(&data), expected, "for {data}");
+        }
+    }
 
     fn event(kind: &str, idx: i64, data: Value) -> SseEvent {
         SseEvent {

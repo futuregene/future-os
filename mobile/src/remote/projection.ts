@@ -83,6 +83,7 @@ export function messageToItems(message: AgentMessage): TimelineItem[] {
         kind: "message",
         role: "user",
         text,
+        ...(message.sourceEntryId ? { sourceEntryId: message.sourceEntryId } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
       },
     ];
@@ -449,6 +450,7 @@ function applyEvent(state: TimelineState, event: StreamEvent, batch?: {
         role: "user",
         text,
         runId: canonical?.runId ?? (event.runId || undefined),
+        ...(canonical?.sourceEntryId ? { sourceEntryId: canonical.sourceEntryId } : {}),
         ...(canonical?.attachments?.length
           ? { attachments: canonical.attachments.map(toHistoryAttachment) }
           : {}),
@@ -895,11 +897,14 @@ function segmentToTimeline(segment: MessageSegment): TimelineSegment {
           name: activity.kind,
           complete: activity.status !== "running",
           status: activity.status,
+          shellResult: activity.shellResult,
           ...(activity.detail ? { detail: activity.detail } : {}),
           ...(activity.count != null && activity.count > 1 ? { count: activity.count } : {}),
           ...(activity.children?.length
             ? { children: activity.children.map(activityToToolRow) }
             : {}),
+          ...(activity.toolCallId ? { toolCallId: activity.toolCallId } : {}),
+          ...(activity.runId ? { runId: activity.runId } : {}),
         },
       };
     }
@@ -922,7 +927,10 @@ function activityToToolRow(activity: AgentActivityItem): TimelineToolRow {
     name: activity.kind,
     complete: activity.status !== "running",
     status: activity.status,
+    shellResult: activity.shellResult,
     ...(activity.detail ? { detail: activity.detail } : {}),
+    ...(activity.toolCallId ? { toolCallId: activity.toolCallId } : {}),
+    ...(activity.runId ? { runId: activity.runId } : {}),
   };
 }
 

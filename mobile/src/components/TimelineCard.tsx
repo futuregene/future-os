@@ -7,6 +7,7 @@ import {
   CircleAlert,
   Copy,
   FileText,
+  GitBranch,
   Paperclip,
   Pencil,
   TerminalSquare,
@@ -43,13 +44,26 @@ import { chatTypography, colors, radius, spacing } from "../theme/tokens";
 import { Button } from "./Button";
 import { approvalDecisionDisabled } from "./approvalState";
 
-interface TimelineCardProps {
+/**
+ * Fetch one tool call's display target after the fact. A lean history page
+ * omits a shell call's arguments (the command is the page's largest unread
+ * payload), so a row with no target asks for it when it is opened. Implemented
+ * by the screen — the row itself stays free of transport.
+ */
+export type ToolTargetResolver = (toolCallId: string, runId: string) => Promise<string | null>;
+
+export interface TimelineCardProps {
   item: TimelineItem;
   isLatestAssistant?: boolean;
   onOpenAttachment?(attachment: HistoryAttachment): void;
   onOpenFile?(path: string): void;
+  /** Opens the conversation a `#` reference in a sent message points at. */
+  onOpenSession?(sessionId: string): void;
   onRetry?(item: TimelineItem): void;
   onContinue?(item: TimelineItem): void;
+  /** Fork the conversation at this reply's turn (desktop Fork parity). */
+  onFork?(item: TimelineItem): void;
+  onResolveToolTarget?: ToolTargetResolver;
 }
 
 // Same shape as the desktop footer (desktop/src/lib/date.ts formatDuration): "5s"
@@ -462,15 +476,49 @@ function StatusDivider({ label, failed = false }: { label: string; failed?: bool
  * Below, the target gets the full width, wraps instead of being clipped, and
  * carries the header's own indent so it reads as that row's detail.
  */
-function ToolRow({ tool, opened }: { tool: TimelineToolRow; opened: boolean }) {
+function ToolRow({
+  tool,
+  opened,
+  resolveTarget,
+}: {
+  tool: TimelineToolRow;
+  opened: boolean;
+  resolveTarget?: ToolTargetResolver;
+}) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  // A command the page omitted, fetched when the row is opened. Kept for this
+  // row's lifetime, so collapsing and re-opening never asks again.
+  const [fetchedTarget, setFetchedTarget] = useState<string | null>(null);
+  const [fetching, setFetching] = useState(false);
   const open = opened || expanded;
   const kind = toolKind(tool.name);
   const failed = tool.status === "failed";
-  const detail = tool.detail?.trim() ? toolDetail(kind, tool.detail.trim()) : null;
+  const rawDetail = tool.detail ?? fetchedTarget ?? undefined;
+  const detail = rawDetail?.trim() ? toolDetail(kind, rawDetail.trim()) : null;
   const children = tool.children && tool.children.length > 0 ? tool.children : null;
-  const expandable = Boolean(detail || children);
+  // A row the page carried without a target can ask for it back — but only
+  // with the call's identity, which is what a lean page still carries.
+  const fetchable =
+    !detail && !children && Boolean(tool.toolCallId && tool.runId && resolveTarget);
+  const expandable = Boolean(detail || children || fetchable);
+  const reveal = () => {
+    if (!fetchable || fetching) return;
+    setFetching(true);
+    // The fetch is a convenience, never a dependency: a failure (offline, or a
+    // desktop that predates this command) leaves the row exactly as it was and
+    // must not surface as an unhandled rejection.
+    Promise.resolve()
+      .then(() => resolveTarget!(tool.toolCallId!, tool.runId!))
+      .then(target => {
+        if (target && target.trim()) {
+          setFetchedTarget(target);
+          setExpanded(true);
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => setFetching(false));
+  };
   const label = failed
     ? failedToolLabel(t, kind)
     : tool.count != null && tool.count > 1
@@ -483,9 +531,16 @@ function ToolRow({ tool, opened }: { tool: TimelineToolRow; opened: boolean }) {
     <View style={[styles.inlineTool, !open && styles.railBlock]}>
       <Pressable
         accessibilityRole="button"
+        accessibilityState={{ expanded }}
         disabled={!expandable}
         hitSlop={expandable ? ROW_HIT_SLOP : undefined}
-        onPress={() => setExpanded(value => !value)}
+        onPress={() => {
+          // A row with something to show opens and closes as before; a row
+          // that only has a target to fetch triggers the fetch (it opens when
+          // the target arrives, so a failed fetch leaves it untouched).
+          if (detail || children) setExpanded(value => !value);
+          else reveal();
+        }}
         style={[styles.toolHeader, !open && styles.railRow]}
       >
         <ToolGlyph failed={failed} kind={kind} />
@@ -508,23 +563,75 @@ function ToolRow({ tool, opened }: { tool: TimelineToolRow; opened: boolean }) {
       ) : null}
       {expanded && children ? (
         <View style={styles.inlineToolChildren}>
-          {children.map((child, index) => {
-            const childKind = toolKind(child.name);
-            return (
-              <Text
-                key={`${child.name}:${child.detail ?? ""}:${index}`}
-                selectable
-                style={styles.inlineToolChild}
-              >
-                {child.detail
-                  ? toolDetail(childKind, child.detail)
-                  : toolLabel(t, childKind, child.complete)}
-              </Text>
-            );
-          })}
+          {children.map((child, index) => (
+            <ToolChildRow
+              key={`${child.name}:${child.detail ?? ""}:${index}`}
+              child={child}
+              resolveTarget={resolveTarget}
+            />
+          ))}
         </View>
       ) : null}
     </View>
+  );
+}
+
+/**
+ * One call inside an expanded burst, e.g. a command under "运行 2 次".
+ *
+ * A lean history page carries no shell `arguments`, so a burst's children are
+ * labels — and the group row has no call identity of its own, so opening it
+ * could never reveal what ran. Each child that still has its identity therefore
+ * fetches its own command, the same way a single tool row does: one tap, one
+ * command, and only for the calls the reader actually opens.
+ */
+function ToolChildRow({
+  child,
+  resolveTarget,
+}: {
+  child: TimelineToolRow;
+  resolveTarget?: ToolTargetResolver;
+}) {
+  const { t } = useTranslation();
+  const [fetchedTarget, setFetchedTarget] = useState<string | null>(null);
+  const [fetching, setFetching] = useState(false);
+  const kind = toolKind(child.name);
+  const rawDetail = child.detail ?? fetchedTarget ?? undefined;
+  const detail = rawDetail?.trim() ? toolDetail(kind, rawDetail.trim()) : null;
+  const fetchable = !detail && Boolean(child.toolCallId && child.runId && resolveTarget);
+  const label = toolLabel(t, kind, child.complete);
+  if (!fetchable) {
+    return (
+      <Text selectable style={styles.inlineToolChild}>
+        {detail ?? label}
+      </Text>
+    );
+  }
+  return (
+    <Pressable
+      accessibilityRole="button"
+      disabled={fetching}
+      hitSlop={ROW_HIT_SLOP}
+      onPress={() => {
+        if (fetching) return;
+        setFetching(true);
+        // A convenience, never a dependency: a failure leaves the line as it
+        // was rather than surfacing an unhandled rejection.
+        Promise.resolve()
+          .then(() => resolveTarget!(child.toolCallId!, child.runId!))
+          .then(target => {
+            if (target && target.trim()) setFetchedTarget(target);
+          })
+          .catch(() => undefined)
+          .finally(() => setFetching(false));
+      }}
+      style={styles.inlineToolChildRow}
+    >
+      <Text selectable style={styles.inlineToolChild}>
+        {detail ?? label}
+      </Text>
+      {detail ? null : <ChevronDown color={colors.inkMuted} size={12} />}
+    </Pressable>
   );
 }
 
@@ -548,25 +655,43 @@ function ThinkingRow({ text, streaming, opened }: {
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  // A lean feed carries no body at all: the row is then a status label, not a
+  // disclosure. A chevron that opens an empty box promises content that never
+  // arrives, so a bodyless row must not read as expandable.
+  //
+  // `opened` is the layout (a row inside a run sits on the open rail); the body
+  // is the reader's own expansion. Only the disclosure affordance is gated on
+  // having something to disclose — the two must not be conflated.
+  const hasBody = text.trim().length > 0;
   const open = opened || expanded;
-  return (
-    <View style={[styles.inlineThinking, !open && styles.railThinking]}>
-      <Pressable
-        accessibilityRole="button"
-        hitSlop={ROW_HIT_SLOP}
-        onPress={() => setExpanded(value => !value)}
-        style={[styles.inlineThinkingHeader, !open && styles.railRow]}
-      >
-        <Brain color={colors.inkMuted} size={14} />
-        <Text style={styles.inlineThinkingLabel}>
-          {t(streaming ? "chat.thinking" : "chat.thoughtCompleted")}
-        </Text>
-        {expanded ? (
+  const header = (
+    <>
+      <Brain color={colors.inkMuted} size={14} />
+      <Text style={styles.inlineThinkingLabel}>
+        {t(streaming ? "chat.thinking" : "chat.thoughtCompleted")}
+      </Text>
+      {hasBody &&
+        (expanded ? (
           <ChevronUp color={colors.inkMuted} size={14} />
         ) : (
           <ChevronDown color={colors.inkMuted} size={14} />
-        )}
-      </Pressable>
+        ))}
+    </>
+  );
+  return (
+    <View style={[styles.inlineThinking, !open && styles.railThinking]}>
+      {hasBody ? (
+        <Pressable
+          accessibilityRole="button"
+          hitSlop={ROW_HIT_SLOP}
+          onPress={() => setExpanded(value => !value)}
+          style={[styles.inlineThinkingHeader, !open && styles.railRow]}
+        >
+          {header}
+        </Pressable>
+      ) : (
+        <View style={[styles.inlineThinkingHeader, !open && styles.railRow]}>{header}</View>
+      )}
       {expanded && <Text style={styles.inlineThinkingText}>{text}</Text>}
     </View>
   );
@@ -668,10 +793,18 @@ function buildReplyBlocks(segments: TimelineSegment[], streaming?: boolean): Rep
  * summary paints these as a glyph per part, so the caller renders the icon and
  * the localized wording is spent on the accessibility label — an "×5" next to a
  * glyph reads instantly, and five words of it do not fit on a phone line.
+ *
+ * A run counts work, not rows: one of its slices may itself be a folded burst of
+ * same-kind calls (the projection's own collapse), and that slice stands for
+ * every call behind it — its `count`, the same number its row prints when the
+ * run is opened. Counting rows instead made the badge contradict the list it
+ * reveals: "运行 2 次" + 已写入 + 已运行 read ×3 over four calls.
  */
 function stepRunCounts(segments: StepSegment[]): { kind: StepRunKind; count: number }[] {
   const counts: Record<StepRunKind, number> = { tool: 0, thinking: 0 };
-  for (const segment of segments) counts[stepRunKind(segment)] += 1;
+  for (const segment of segments) {
+    counts[stepRunKind(segment)] += segment.kind === "tool" ? segment.tool.count ?? 1 : 1;
+  }
   return STEP_RUN_ORDER
     .filter(kind => counts[kind] > 0)
     .map(kind => ({ kind, count: counts[kind] }));
@@ -713,7 +846,13 @@ function stepRunSummary(
  * it is the only way into the run behind it, and a target the size of the text
  * is not enough on a phone.
  */
-function StepRunBlock({ segments }: { segments: StepSegment[] }) {
+function StepRunBlock({
+  segments,
+  onResolveToolTarget,
+}: {
+  segments: StepSegment[];
+  onResolveToolTarget?: ToolTargetResolver;
+}) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const counts = stepRunCounts(segments);
@@ -763,7 +902,12 @@ function StepRunBlock({ segments }: { segments: StepSegment[] }) {
               // slice after it, so none of them is still streaming.
               <ThinkingRow key={segment.id} opened text={segment.text} />
             ) : (
-              <ToolRow key={segment.id} opened tool={segment.tool} />
+              <ToolRow
+                key={segment.id}
+                opened
+                tool={segment.tool}
+                resolveTarget={onResolveToolTarget}
+              />
             ),
           )}
         </View>
@@ -777,10 +921,12 @@ function SegmentBlock({
   segment,
   streaming,
   onOpenFile,
+  onResolveToolTarget,
 }: {
   segment: TimelineSegment;
   streaming?: boolean;
   onOpenFile?(path: string): void;
+  onResolveToolTarget?: ToolTargetResolver;
 }) {
   if (segment.kind === "text") {
     return <MarkdownText text={segment.text} onOpenFile={onOpenFile} streaming={streaming} />;
@@ -789,7 +935,7 @@ function SegmentBlock({
     return <ThinkingRow opened={false} streaming={streaming} text={segment.text} />;
   }
   if (segment.kind === "tool") {
-    return <ToolRow opened={false} tool={segment.tool} />;
+    return <ToolRow opened={false} tool={segment.tool} resolveTarget={onResolveToolTarget} />;
   }
   // compaction
   return (
@@ -810,11 +956,30 @@ function SegmentBlock({
  * and tappable (file mentions open like assistant file links, external links in
  * the browser).
  */
-function UserMessageText({ text, onOpenFile }: { text: string; onOpenFile?(path: string): void }) {
+function UserMessageText({ text, onOpenFile, onOpenSession }: {
+  text: string;
+  onOpenFile?(path: string): void;
+  /** Opens the conversation a `#` reference points at (see the composer menu). */
+  onOpenSession?(sessionId: string): void;
+}) {
   const { t } = useTranslation();
   return (
     <Text selectable style={[styles.messageText, styles.userText]}>
       {splitUserTextSegments(text).map(segment => {
+        if (segment.kind === "session") {
+          // A reference to another conversation: the `#` marker is what tells it
+          // apart from a file mention at a glance. Tapping switches to it.
+          return (
+            <Text
+              accessibilityRole="link"
+              key={segment.key}
+              onPress={onOpenSession && segment.href ? () => onOpenSession(segment.href!) : undefined}
+              style={styles.userMention}
+            >
+              {`#${segment.text}`}
+            </Text>
+          );
+        }
         if (segment.kind === "mention") {
           return (
             <Text
@@ -852,8 +1017,11 @@ function TimelineCardView({
   isLatestAssistant,
   onOpenAttachment,
   onOpenFile,
+  onOpenSession,
   onRetry,
   onContinue,
+  onFork,
+  onResolveToolTarget,
 }: TimelineCardProps) {
   const { t, i18n } = useTranslation();
   const { copied, copy } = useCopyState();
@@ -891,13 +1059,18 @@ function TimelineCardView({
             <View style={styles.segmentList}>
               {buildReplyBlocks(item.segments, item.streaming).map(block =>
                 block.kind === "steps" ? (
-                  <StepRunBlock key={block.segments[0]!.id} segments={block.segments} />
+                  <StepRunBlock
+                    key={block.segments[0]!.id}
+                    segments={block.segments}
+                    onResolveToolTarget={onResolveToolTarget}
+                  />
                 ) : (
                   <SegmentBlock
                     key={block.segment.id}
                     segment={block.segment}
                     streaming={item.streaming && block.segment === item.segments?.at(-1)}
                     onOpenFile={onOpenFile}
+                    onResolveToolTarget={onResolveToolTarget}
                   />
                 ),
               )}
@@ -966,6 +1139,17 @@ function TimelineCardView({
                   )}
                 </Pressable>
               ) : null}
+              {onFork ? (
+                <Pressable
+                  accessibilityLabel={t("chat.fork")}
+                  accessibilityRole="button"
+                  hitSlop={8}
+                  onPress={() => onFork(item)}
+                  style={styles.copyButton}
+                >
+                  <GitBranch color={colors.inkMuted} size={15} />
+                </Pressable>
+              ) : null}
               <Text style={styles.messageDuration}>
                 {footerStats || (item.stopped ? t("chat.responseStopped") : item.failed || item.truncated ? t("common.error") : t("chat.responseCompleted"))}
               </Text>
@@ -978,7 +1162,7 @@ function TimelineCardView({
       <View style={styles.userBlock}>
         {item.text.trim().length > 0 && (
           <View style={[styles.message, styles.userMessage]}>
-            <UserMessageText onOpenFile={onOpenFile} text={item.text} />
+            <UserMessageText onOpenFile={onOpenFile} onOpenSession={onOpenSession} text={item.text} />
           </View>
         )}
         {item.attachments && item.attachments.length > 0 && (
@@ -1126,6 +1310,15 @@ const styles = StyleSheet.create({
     gap: 2,
     marginTop: 2,
     paddingLeft: spacing.md + spacing.sm,
+  },
+  // A burst child that can still fetch its command sits its glyph beside the
+  // line, so the row reads as tappable without moving the text off the other
+  // children's left edge.
+  inlineToolChildRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    alignSelf: "flex-start",
   },
   // The collapsed summary hugs the right edge, out of the prose's eye line. Its
   // gap is tighter than a tool row's: the counts are one cluster, and 8px on each

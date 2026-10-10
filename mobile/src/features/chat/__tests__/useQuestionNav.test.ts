@@ -36,6 +36,7 @@ describe("useQuestionNav", () => {
     scrollToOffset: jest.fn(),
   };
   const listRef = { current: list as unknown as FlatList<TimelineItem> };
+  const onTakeOver = jest.fn();
 
   function Harness({
     sessionId = "s1",
@@ -44,7 +45,6 @@ describe("useQuestionNav", () => {
     hasOlderHistory = false,
     loadingOlder = false,
     loadOlder,
-    onReading,
   }: {
     sessionId?: string;
     atLatest?: boolean;
@@ -52,17 +52,16 @@ describe("useQuestionNav", () => {
     hasOlderHistory?: boolean;
     loadingOlder?: boolean;
     loadOlder?: () => Promise<false | string[]>;
-    onReading?: () => void;
   }): null {
     result.current = useQuestionNav({
       sessionId,
       items,
       listRef,
       atLatest,
+      onTakeOver,
       hasOlderHistory,
       loadingOlder,
       loadOlder,
-      onReading,
     });
     return null;
   }
@@ -91,6 +90,7 @@ describe("useQuestionNav", () => {
   beforeEach(() => {
     list.scrollToIndex.mockClear();
     list.scrollToOffset.mockClear();
+    onTakeOver.mockClear();
     result = { current: undefined as never };
     act(() => {
       renderer = create(createElement(Harness));
@@ -102,11 +102,18 @@ describe("useQuestionNav", () => {
     renderer = null;
   });
 
-  test("offers nothing while the tail is on screen", () => {
-    act(() => result.current.onScroll(scrollEvent(0)));
-    reportRows(0, 0);
-    expect(result.current.visible).toBe(false);
-    expect(result.current.previous).toBeNull();
+  test("offers ↑ from the tail, before the reader has scrolled at all", () => {
+    // The viewability report is all a freshly opened conversation gets: the
+    // list is pinned to the tail and no scroll event has been delivered. ↑
+    // is the reply tail of the turn on screen.
+    reportRows(0, null);
+    expect(result.current.visible).toBe(true);
+    expect(result.current.previous).toEqual({
+      kind: "replyTail",
+      index: 0,
+      nextQuestion: null,
+    });
+    // Every newer rung is already on screen, so ↓ has nothing to offer.
     expect(result.current.next).toBeNull();
   });
 
@@ -145,13 +152,14 @@ describe("useQuestionNav", () => {
     expect(result.current.visible).toBe(true);
   });
 
-  test("retracts the offer when the reader returns to the tail", () => {
+  test("↓ retracts when the reader returns to the tail, ↑ does not", () => {
     act(() => result.current.onScroll(scrollEvent(600)));
     reportRows(2, null);
-    expect(result.current.visible).toBe(true);
+    expect(result.current.next).not.toBeNull();
 
     act(() => result.current.onScroll(scrollEvent(0)));
-    expect(result.current.visible).toBe(false);
+    expect(result.current.next).toBeNull();
+    expect(result.current.previous).not.toBeNull();
   });
 
   test("↑ aligns the reply tail's end by landing on the row below it", () => {
@@ -171,8 +179,6 @@ describe("useQuestionNav", () => {
       viewOffset: JUMP_VIEW_OFFSET,
       animated: false,
     });
-    // The landed row is the tail's message, marked for the reader to find.
-    expect(result.current.landedId).toBe("answer-1");
   });
 
   test("↑ lands a reply tail by aligning the row below it", () => {
@@ -191,7 +197,6 @@ describe("useQuestionNav", () => {
       viewOffset: JUMP_VIEW_OFFSET,
       animated: false,
     });
-    expect(result.current.landedId).toBe("answer-2");
   });
 
   test("a reply tail in a later turn aligns the question below it", () => {
@@ -210,7 +215,6 @@ describe("useQuestionNav", () => {
       viewOffset: JUMP_VIEW_OFFSET,
       animated: false,
     });
-    expect(result.current.landedId).toBe("answer-1");
   });
 
   test("a question end lands through its reply's start", () => {
@@ -234,7 +238,6 @@ describe("useQuestionNav", () => {
       viewOffset: JUMP_VIEW_OFFSET,
       animated: false,
     });
-    expect(result.current.landedId).toBe("question-2");
   });
 
   test("entering another session drops the offer", () => {
@@ -250,9 +253,8 @@ describe("useQuestionNav", () => {
 
   test("↑ at the loaded top with more history pages first, then jumps", async () => {
     const loadOlder = jest.fn(async (): Promise<false | string[]> => ["older-2", "older-1"]);
-    const onReading = jest.fn();
     act(() => {
-      renderer!.update(createElement(Harness, { hasOlderHistory: true, loadOlder, onReading }));
+      renderer!.update(createElement(Harness, { hasOlderHistory: true, loadOlder }));
       result.current.onScroll(scrollEvent(600));
     });
     // The top edge is at the oldest loaded row: the ladder is exhausted.
@@ -262,10 +264,10 @@ describe("useQuestionNav", () => {
 
     act(() => result.current.goToPrevious());
     expect(loadOlder).toHaveBeenCalledTimes(1);
-    // Paging hands the scroll anchor to the reader first: without it the
-    // list would follow the tail while the fetch is in flight, and the jump
-    // would read as a teleport to the newest message.
-    expect(onReading).toHaveBeenCalledTimes(1);
+    // Paging hands the viewport to the reader first: without it the list
+    // would follow the tail while the fetch is in flight, and the jump would
+    // read as a teleport to the newest message.
+    expect(onTakeOver).toHaveBeenCalledTimes(1);
     // The page lands the hook's jump on the oldest id it returned, once the
     // new items are visible. The harness keeps ITEMS, so the id lookup
     // misses and nothing scrolls — paging itself is what this pins.
@@ -316,6 +318,5 @@ describe("useQuestionNav", () => {
       viewOffset: JUMP_VIEW_OFFSET,
       animated: false,
     });
-    expect(result.current.landedId).toBe("older-1");
   });
 });

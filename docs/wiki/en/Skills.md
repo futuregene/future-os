@@ -23,7 +23,7 @@ The catalogue is updated over time, so the exact list you see may differ from th
 
 | Skill | What it does |
 |---|---|
-| **Account** | Your FutureOS account: profile, credit balance, and recharge. |
+| **Account** | Your FutureOS account: profile and credit balance. |
 | **Browser** | Drives a local web browser: open pages, click, type, and screenshot. |
 | **Database lookup** | Queries public databases (PubChem, UniProt, Ensembl, PDB, NCBI, and more) for reproducible lookups. |
 | **Deep research** | End-to-end research: gathers and cross-checks many sources, writes a cited report. |
@@ -31,11 +31,11 @@ The catalogue is updated over time, so the exact list you see may differ from th
 | **Experimental design** | Designs experiments and research protocols before data collection. |
 | **Image** | Generates, edits, and analyzes images — including reading text in an image. |
 | **Loop** | Turns long-running goals into durable, verifiable plans — objectives, todos, gates, monitors, and validated completion (`/future-loop`). |
-| **Paper** | Finds papers (PubMed / ArXiv / DOI) and retrieves full text. |
+| **Paper** | Finds papers by PubMed / DOI and retrieves full text. |
 | **Peer review** | Structured manuscript/grant review with a checklist-based evaluation. |
 | **Scientific writing** | Writes scientific manuscripts in full paragraphs (IMRAD structure, citations). |
 | **Skill creator** | Helps you build a new custom skill. |
-| **Slides** | Creates presentation slides from a Markdown report. |
+| **Slides** | Turns a report or outline into slide images (PNG, optional PDF). |
 | **Software install** | Installs or updates lightweight software and command-line tools. |
 | **Web** | Searches the public web and reads full pages. |
 

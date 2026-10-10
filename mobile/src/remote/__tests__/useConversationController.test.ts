@@ -87,6 +87,7 @@ interface MountOpts {
   request?: jest.Mock;
   removeSession?: jest.Mock;
   removeWorkspace?: jest.Mock;
+  refreshSessions?: jest.Mock;
   closeConversation?: jest.Mock;
 }
 
@@ -119,6 +120,7 @@ async function mountController(opts: MountOpts = {}) {
   const recordError = jest.fn();
   const removeSession = opts.removeSession ?? jest.fn(async () => true);
   const removeWorkspace = opts.removeWorkspace ?? jest.fn(async () => true);
+  const refreshSessions = opts.refreshSessions ?? jest.fn(async () => {});
   const closeConversation = opts.closeConversation ?? jest.fn();
   const result: { current: ControllerResult | null } = { current: null };
   let renderer!: ReactTestRenderer;
@@ -141,6 +143,7 @@ async function mountController(opts: MountOpts = {}) {
       recordError,
       removeSession,
       removeWorkspace,
+      refreshSessions,
       closeConversation,
     });
     return null;
@@ -170,6 +173,7 @@ async function mountController(opts: MountOpts = {}) {
     prepareTimelineOpen,
     recordError,
     removeSession,
+    refreshSessions,
     closeConversation,
   };
 }
@@ -212,6 +216,16 @@ describe("installed skills", () => {
       await rejected;
       act(() => h.renderer.unmount());
     }
+  });
+
+  it("refuses to ask a disconnected desktop for the skill list", async () => {
+    const h = await mountController({ client: null });
+    // The skills page stays reachable while the pairing is down (its list is
+    // cached), so the call has to fail with its own named error instead of
+    // dereferencing a null client.
+    await expect(h.result.current!.listSkills()).rejects.toThrow("skills_not_connected");
+    expect(h.request).not.toHaveBeenCalled();
+    act(() => h.renderer.unmount());
   });
 
   it("does not mistake a malformed response for an empty skill list", async () => {
@@ -350,6 +364,24 @@ describe("navigation races", () => {
 });
 
 describe("desktop session setting synchronization", () => {
+  test("only the two settings notifications change model or thinking level", async () => {
+    const h = await mountController({ selected: "s1" });
+    await act(async () => {
+      // A frame that is not a settings notification must not be parsed as one:
+      // an agent_end payload carrying `model` would otherwise silently retarget
+      // the composer to another model.
+      current(h).handleSessionSettingsEvent({ type: "agent_end", data: '{"model":"p/rogue"}' }, "s1");
+      // …and a payload that is not an object (a bare number, a bare string) has
+      // no field to read, so it is ignored before any `in` check runs.
+      current(h).handleSessionSettingsEvent({ type: "model_changed", data: "123" }, "s1");
+      current(h).handleSessionSettingsEvent({ type: "thinking_level_changed", data: '"high"' }, "s1");
+    });
+    expect(current(h).modelId).not.toBe("p/rogue");
+    expect(current(h).thinkingLevel).not.toBe("high");
+    expect(h.request).not.toHaveBeenCalled();
+    act(() => h.renderer.unmount());
+  });
+
   test("live model/thinking changes update only the active conversation, without sending commands back", async () => {
     const h = await mountController({ selected: "s1" });
     await act(async () => {
@@ -543,6 +575,73 @@ describe("selectSession", () => {
   });
 });
 
+describe("forkConversation", () => {
+  it("forks the open conversation at the entry, then opens the child", async () => {
+    const request: jest.Mock = jest.fn(async () => ({ data: { sessionId: "child-1", threadId: "t-1" } }));
+    const h = await mountController({
+      selected: "parent-1",
+      request,
+      engine: fakeEngine(),
+    });
+    await act(async () => {
+      await current(h).forkConversation("entry-1");
+    });
+    const command = request.mock.calls[0][0] as { type: string; id: string; sessionId: string; sourceEntryId: string };
+    expect(command.type).toBe("fork_session");
+    expect(command.sessionId).toBe("parent-1");
+    expect(command.sourceEntryId).toBe("entry-1");
+    expect(command.id).toMatch(/^mobile-fork:/);
+    expect(request.mock.calls[0][1]).toBe("parent-1");
+    // The child is a store row the catalogue has not pulled yet.
+    expect(h.refreshSessions).toHaveBeenCalledTimes(1);
+    expect(h.setSelectedSessionId).toHaveBeenCalledWith("child-1");
+  });
+
+  it("reuses one request id across a failed retry so a lost reply cannot branch twice", async () => {
+    const request: jest.Mock = jest
+      .fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce({ data: { sessionId: "child-1", threadId: "t-1" } });
+    const h = await mountController({ selected: "parent-1", request });
+    await act(async () => {
+      await expect(current(h).forkConversation("entry-1")).rejects.toThrow("offline");
+    });
+    await act(async () => {
+      await current(h).forkConversation("entry-1");
+    });
+    const first = request.mock.calls[0][0] as { id: string };
+    const second = request.mock.calls[1][0] as { id: string };
+    expect(second.id).toBe(first.id);
+  });
+
+  it("leaves the conversation put when the desktop refuses the fork", async () => {
+    const request = jest.fn(async () => {
+      throw new Error("Fork did not return a session.");
+    });
+    const h = await mountController({ selected: "parent-1", request });
+    await act(async () => {
+      await expect(current(h).forkConversation("entry-1")).rejects.toThrow(
+        "Fork did not return a session.",
+      );
+    });
+    expect(h.refreshSessions).not.toHaveBeenCalled();
+    expect(h.setSelectedSessionId).not.toHaveBeenCalled();
+  });
+
+  it("refuses a fork with no source entry or no open conversation", async () => {
+    const h = await mountController({ selected: "parent-1" });
+    await act(async () => {
+      await expect(current(h).forkConversation("  ")).rejects.toThrow("fork_source_missing");
+    });
+    expect(h.request).not.toHaveBeenCalled();
+
+    const closed = await mountController({ selected: "" });
+    await act(async () => {
+      await expect(current(closed).forkConversation("entry-1")).rejects.toThrow("not_connected");
+    });
+  });
+});
+
 describe("newConversation", () => {
   it("reuses the last model when it still exists", async () => {
     mockedLoadLastModel.mockResolvedValue("openai/gpt-4");
@@ -637,6 +736,28 @@ describe("attachment helpers", () => {
     await expect(pending).rejects.toThrow("transfer_cancelled");
     expect(mockedRememberPrepared).not.toHaveBeenCalled();
     expect(h.request).toHaveBeenCalledWith({ type: "download_cancel", transferId: downloadInfo.transferId }, "transfer");
+    act(() => h.renderer.unmount());
+  });
+
+  it("a failed best-effort cancel does not replace the cancellation error", async () => {
+    const deferredInfo = deferred<DownloadInfo>();
+    mockedPrepareDownload.mockReturnValueOnce(deferredInfo.promise);
+    // The conversation moved on, and the desktop is unreachable again, so the
+    // cancel RPC itself fails.
+    const h = await mountController({
+      selected: "s1",
+      request: jest.fn(async () => { throw new Error("socket closed"); }),
+    });
+    const pending = current(h).prepareAttachment(historyAttachment);
+    h.selectedRef.current = "s2";
+    deferredInfo.resolve(downloadInfo);
+    // The caller must see the cancellation it caused, not the transport failure
+    // of a cleanup nobody is waiting for.
+    await expect(pending).rejects.toThrow("transfer_cancelled");
+    expect(h.request).toHaveBeenCalledWith(
+      { type: "download_cancel", transferId: downloadInfo.transferId },
+      "transfer",
+    );
     act(() => h.renderer.unmount());
   });
 
@@ -823,6 +944,28 @@ describe("command dispatchers", () => {
     expect(closeConversation).not.toHaveBeenCalled();
   });
 
+  it("deleteWorkspace closes the conversation the deletion just removed", async () => {
+    // Deleting a workspace takes every thread inside it, so a conversation the
+    // user is reading can be gone with it: the open thread must not stay on a
+    // session the desktop no longer serves.
+    const closeConversation = jest.fn();
+    const h = await mountController({ closeConversation });
+    await act(async () => {
+      await current(h).deleteWorkspace("w1");
+    });
+    expect(closeConversation).toHaveBeenCalled();
+  });
+
+  it("deleteWorkspace keeps the open conversation when the desktop refused", async () => {
+    const closeConversation = jest.fn();
+    const removeWorkspace = jest.fn(async () => false);
+    const h = await mountController({ closeConversation, removeWorkspace });
+    await act(async () => {
+      await current(h).deleteWorkspace("w1");
+    });
+    expect(closeConversation).not.toHaveBeenCalled();
+  });
+
   it("decideApproval is a no-op without a client or session", async () => {
     const h = await mountController({ client: null });
     await act(async () => {
@@ -842,5 +985,69 @@ describe("command dispatchers", () => {
     );
     const engine = h.syncEngineRef.current as unknown as { mutate: jest.Mock };
     expect(engine.mutate).toHaveBeenCalledWith("s1", expect.any(Function));
+  });
+});
+
+/**
+ * The lean history lane drops a shell call's arguments from the page, so the
+ * row fetches them by identity when the user opens it. The controller owns the
+ * one-fetch-per-call cache: the list virtualizes, and a remounted row must not
+ * turn a scroll into another request.
+ */
+describe("lean tool-argument fetch", () => {
+  const argsCalls = (requestRetry: jest.Mock) =>
+    requestRetry.mock.calls.filter(([command]: [{ type: string }]) =>
+      command.type === "get_tool_call_args");
+
+  it("fetches a call once and serves the cache to a remounted row", async () => {
+    const requestRetry = jest.fn(async () => ({
+      data: { toolCallId: "c1", name: "shell", arguments: { command: "ls -la", timeout: 30 } },
+    }));
+    const h = await mountController({ selected: "session-a", requestRetry });
+    await expect(current(h).resolveToolCallTarget("c1", "run-1")).resolves.toBe("ls -la");
+    expect(argsCalls(requestRetry)).toEqual([[
+      { type: "get_tool_call_args", sessionId: "session-a", runId: "run-1", toolCallId: "c1" },
+      "session-a",
+    ]]);
+    // The row mounted, unmounted and came back: no second request.
+    await expect(current(h).resolveToolCallTarget("c1", "run-1")).resolves.toBe("ls -la");
+    expect(argsCalls(requestRetry)).toHaveLength(1);
+    act(() => h.renderer.unmount());
+  });
+
+  it("never serves one conversation's call to another", async () => {
+    const requestRetry = jest.fn(async () => ({
+      data: { name: "shell", arguments: { command: "pwd" } },
+    }));
+    const h = await mountController({ selected: "session-a", requestRetry });
+    await expect(current(h).resolveToolCallTarget("c1", "run-1")).resolves.toBe("pwd");
+    h.selectedRef.current = "session-b";
+    requestRetry.mockResolvedValueOnce({ data: { name: "shell", arguments: { command: "whoami" } } });
+    await expect(current(h).resolveToolCallTarget("c1", "run-1")).resolves.toBe("whoami");
+    expect(argsCalls(requestRetry)).toHaveLength(2);
+    expect(argsCalls(requestRetry)[1]![0]).toMatchObject({ sessionId: "session-b" });
+    act(() => h.renderer.unmount());
+  });
+
+  it("remembers a call whose arguments yield no target instead of re-asking", async () => {
+    const requestRetry = jest.fn(async () => ({
+      data: { toolCallId: "c1", name: "read", arguments: null },
+    }));
+    const h = await mountController({ selected: "session-a", requestRetry });
+    await expect(current(h).resolveToolCallTarget("c1", "run-1")).resolves.toBeNull();
+    await expect(current(h).resolveToolCallTarget("c1", "run-1")).resolves.toBeNull();
+    expect(argsCalls(requestRetry)).toHaveLength(1);
+    act(() => h.renderer.unmount());
+  });
+
+  it("rejects when the desktop has no such route, so the row can stay as it was", async () => {
+    const requestRetry = jest.fn(async () => {
+      throw new Error("Unsupported command: get_tool_call_args");
+    });
+    const h = await mountController({ selected: "session-a", requestRetry });
+    await expect(current(h).resolveToolCallTarget("c1", "run-1")).rejects.toThrow(
+      "Unsupported command",
+    );
+    act(() => h.renderer.unmount());
   });
 });

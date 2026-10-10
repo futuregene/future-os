@@ -13,6 +13,7 @@
 // A missing stamp (fresh clone, deleted node_modules) always reinstalls.
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -41,11 +42,29 @@ function manifests() {
 }
 
 const installedAt = existsSync(stamp) ? statSync(stamp).mtimeMs : Number.NaN;
+// npm workspaces normally hoist Expo to the root.  A leftover
+// mobile/node_modules directory is therefore not evidence that the mobile app
+// can resolve its SDK.  Check resolution from the app itself so a deleted or
+// incomplete hoisted install is repaired instead of making `npx expo` download
+// a temporary CLI that cannot load the project's Expo SDK.
+const mobileRequire = createRequire(join(root, "mobile", "package.json"));
+const expoMissing = (() => {
+  try {
+    mobileRequire.resolve("expo/package.json");
+    return false;
+  }
+  catch {
+    return true;
+  }
+})();
 const stale = !existsSync(stamp)
-  || manifests().some(path => statSync(join(root, path)).mtimeMs > installedAt);
+  || manifests().some(path => statSync(join(root, path)).mtimeMs > installedAt)
+  || expoMissing;
 
 if (stale) {
-  console.log("  npm install (workspace manifests changed)");
+  console.log(expoMissing
+    ? "  npm install (mobile Expo SDK is missing)"
+    : "  npm install (workspace manifests changed)");
   // npm is npm.cmd on Windows, which cannot be spawned directly (Node rejects
   // .cmd/.bat without a shell) — but `shell: true` cannot be combined with
   // arguments without a deprecation warning, so go through cmd.exe explicitly.

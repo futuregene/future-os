@@ -3,6 +3,7 @@ import { Badge } from "../../components/ui/Badge";
 import { openExternalUrl } from "../../integrations/storage/files";
 import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
+import { WechatFollowCard } from "./WechatFollowCard";
 
 const APP_NAME = "FutureOS";
 const HOMEPAGE_URL = "https://www.future-os.cn";
@@ -52,6 +53,8 @@ export function AboutPage() {
           </SettingsRow>
         </SettingsList>
       </SettingsSection>
+
+      <WechatFollowCard />
 
       <SettingsSection title={t("about.openSource")}>
         <p className="text-sm leading-6 text-ink-soft">

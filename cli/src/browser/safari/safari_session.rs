@@ -294,6 +294,9 @@ impl BrowserSession for SafariSession {
                     title,
                     url,
                     active: *handle == current_handle,
+                    // WebDriver's current handle *is* the visible window, so here
+                    // the two agree by definition.
+                    visible: *handle == current_handle,
                 });
             }
 

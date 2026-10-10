@@ -9,6 +9,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  RefreshControl,
   StyleSheet,
   Text,
   View,
@@ -49,6 +50,14 @@ import { COMPOSER_FADE_CLEARANCE, showToast } from "./utils";
 import { newestFirst } from "./timelineListModel";
 
 const SYNC_NOTICE_MIN_MS = 750;
+
+type SyncNoticeState = "syncing" | "retrying" | "waitingNetwork";
+
+const SYNC_NOTICE_KEYS: Record<SyncNoticeState, string> = {
+  syncing: "chat.syncingLatest",
+  retrying: "chat.syncRetrying",
+  waitingNetwork: "chat.syncWaitingNetwork",
+};
 
 function useMinimumVisible(active: boolean, minimumMs: number, key: string) {
   const [presentation, setPresentation] = useState({ key, visible: active });
@@ -157,12 +166,15 @@ export function ChatScreen() {
   const supportsImages = activeModel
     ? activeModel.supportsImages !== false
     : true;
+  // Forking is a Desktop-hosted operation; an older host that does not
+  // advertise it leaves the affordance hidden rather than failing on tap.
+  const forkSupported = remote.capabilities.has("fork_v1");
 
-  const { message, setMessage, attachments, setAttachments } = useComposerDraft(
+  const { message, setMessage, attachments, setAttachments, sessionRefs, rememberSessionRef } = useComposerDraft(
     remote,
     t,
   );
-  const { openAttachmentMenu, attachmentMenu } = useAttachmentPicker(
+  const { openAttachmentMenu, attachmentMenu, albumPicker } = useAttachmentPicker(
     attachments,
     setAttachments,
     t,
@@ -172,7 +184,7 @@ export function ChatScreen() {
   const openTimelineAttachment = fileDownload.openAttachment;
   const openTimelineFile = fileDownload.openFileLink;
   const compactContext = useCompactContext(remote, t);
-  const { send, retryMessage, continueMessage } = useSendMessage(
+  const { send, retryMessage, continueMessage, forkMessage } = useSendMessage(
     remote,
     t,
     message,
@@ -180,6 +192,7 @@ export function ChatScreen() {
     setMessage,
     setAttachments,
     setTransferProgress,
+    sessionRefs,
     compactContext.pending,
   );
 
@@ -227,16 +240,73 @@ export function ChatScreen() {
     !remote.draft &&
     (remote.busy || remote.timelinePending) &&
     timelineItems.length === 0;
-  const syncNoticeActive =
+  // Pull-to-refresh rebuilds the visible window from durable history — the
+  // manual escape hatch when the automatic sync left the conversation wrong.
+  // Its spinner belongs to the pull, not to the lane: an automatic sync already
+  // says so in the notice above the transcript, and spinning here as well would
+  // report the same wait twice, at the one spot a finger has to be able to tell
+  // apart (the inverted list draws the indicator at the visual bottom).
+  const laneAtWork =
     !remote.draft &&
-    timelineItems.length > 0 &&
-    (remote.timelineSyncStatus === "syncing" ||
-      remote.timelineSyncStatus === "retrying");
+    !remote.timelinePending &&
+    !remote.timelineError &&
+    remote.timelineSyncStatus !== "idle";
+  const [refreshingByPull, setRefreshingByPull] = useState(false);
+  // The pull is over when the lane it restarted settles; `laneAtWork` is that
+  // lane's own signal, so a pull that restarts nothing (offline, no session)
+  // cannot leave the spinner up.
+  useEffect(() => {
+    if (!laneAtWork) {
+      // The flag is owned by a signal that lives outside React, and retracting
+      // it one commit after the lane settles is what this effect is for.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setRefreshingByPull(false);
+    }
+  }, [laneAtWork]);
+  const pullRefreshActive = refreshingByPull && laneAtWork;
+  const pullRefresh = useCallback(() => {
+    // `reloadTimeline` runs the lane's restart synchronously, so the status is
+    // already "syncing" in the render this state update rides in — the spinner
+    // is up by the time the finger leaves and the effect above leaves it alone.
+    setRefreshingByPull(true);
+    remote.reloadTimeline();
+  }, [remote]);
+
+  // One place decides which wait the notice reports, so the gate below reads the
+  // same decision the wording does.
+  const syncNoticeState: SyncNoticeState | null =
+    remote.timelineSyncStatus === "syncing" ||
+    remote.timelineSyncStatus === "retrying"
+      ? remote.desktopOnline
+        ? remote.timelineSyncStatus
+        : "waitingNetwork"
+      : null;
+  // A pull restarts the very lane the notice reports, so its native spinner at
+  // the visual bottom and the notice above the transcript come up together and
+  // say the same sentence twice. The pull wins that overlap: the finger is still
+  // there. The two richer states stay, because the spinner cannot say them.
+  const pullOwnsTheWait = pullRefreshActive && syncNoticeState === "syncing";
+  // Live generation reports its own progress: the transcript grows with the
+  // run's streaming row while the lane backfills. A reconcile behind live
+  // output is routine traffic — the engine heals every gap from the journal
+  // while the run streams — so the pill would announce a wait the reader is
+  // already watching, for a state that needs no action. The two richer states
+  // stay for the same reason as under a pull: the streaming text cannot say
+  // "retrying" or "waiting for the connection".
+  const liveOutputOwnsTheWait =
+    controls.streaming && syncNoticeState === "syncing";
   const showSyncNotice = useMinimumVisible(
-    syncNoticeActive,
+    !remote.draft &&
+      timelineItems.length > 0 &&
+      syncNoticeState !== null &&
+      !pullOwnsTheWait &&
+      !liveOutputOwnsTheWait,
     SYNC_NOTICE_MIN_MS,
     conversationKey,
   );
+  // The pill outlives its status by the minimum-visible window, and that tail
+  // has no status of its own: it goes on saying the plain one.
+  const noticeState: SyncNoticeState = syncNoticeState ?? "syncing";
 
   const decideApproval = useCallback(
     async (id: string, decision: "approved" | "rejected") => {
@@ -258,17 +328,18 @@ export function ChatScreen() {
     transcriptItems.length,
   );
   const { listRef, atLatest, scrollToLatest, onScroll } = scroll;
-  // Jumping between questions is offered by the same reading state that offers
-  // "back to latest": neither is useful while the tail is on screen.
+  // A jump leaves the tail behind, and `useChatScroll` owns that handover: it
+  // is what keeps the list from pinning the viewport back to the bottom on the
+  // next streaming commit.
   const questionNav = useQuestionNav({
     sessionId: remote.selectedSessionId,
     items: invertedTranscriptItems,
     listRef,
     atLatest,
+    onTakeOver: scroll.onScrollBeginDrag,
     hasOlderHistory: remote.canLoadOlderTimeline,
     loadingOlder: remote.loadingOlderTimeline,
     loadOlder: remote.loadOlderTimeline,
-    onReading: scroll.onScrollBeginDrag,
   });
 
   // Skill recommendation (PRD v1.6): the desktop's toggle decides whether the
@@ -286,12 +357,20 @@ export function ChatScreen() {
     i18n.language,
   );
   const { suggestion: skillSuggestion } = skillRecommendation;
+  //「忽略并发送」: send what the user typed, unchanged. Also the path a plain
+  // send takes while the card is up — the send button stays live there, so
+  // swallowing the press (or only toasting) reads as a dead button.
+  const dismissSuggestedSkill = useCallback(() => {
+    skillRecommendation.dismiss();
+    scrollToLatest();
+    void send();
+  }, [scrollToLatest, send, skillRecommendation]);
   const sendFromComposer = useCallback(async () => {
     if (!message.trim() && attachments.length === 0) return;
-    // A suggestion on screen owns the draft: the message goes out only when the
-    // user installs the skill or dismisses the card.
+    // A suggestion on screen holds the draft: pressing send is the second half
+    // of the card's "send without it" pair, so it dismisses and sends.
     if (skillSuggestion) {
-      showToast(t("chat.skillSuggestionPending"));
+      dismissSuggestedSkill();
       return;
     }
     // Ask before sending, and hold the draft if there is a suggestion. Every
@@ -299,7 +378,7 @@ export function ChatScreen() {
     if (await skillRecommendation.evaluate(message)) return;
     scrollToLatest();
     await send();
-  }, [attachments.length, message, scrollToLatest, send, skillRecommendation, skillSuggestion, t]);
+  }, [attachments.length, dismissSuggestedSkill, message, scrollToLatest, send, skillRecommendation, skillSuggestion]);
 
   //「安装并使用」: install, then send the held draft with the skill appended.
   const installSuggestedSkill = useCallback(async () => {
@@ -323,12 +402,6 @@ export function ChatScreen() {
     }
   }, [installingSkill, scrollToLatest, send, setMessage, skillRecommendation, t]);
 
-  //「忽略并发送」: send what the user typed, unchanged.
-  const dismissSuggestedSkill = useCallback(() => {
-    skillRecommendation.dismiss();
-    scrollToLatest();
-    void send();
-  }, [scrollToLatest, send, skillRecommendation]);
   const {
     showLoadOlderHint,
     pagingActive,
@@ -369,6 +442,8 @@ export function ChatScreen() {
     openFile: openTimelineFile,
     retry: retryMessage,
     continue: continueMessage,
+    fork: forkMessage,
+    resolveToolTarget: remote.resolveToolCallTarget,
   });
   useEffect(() => {
     timelineActionsRef.current = {
@@ -376,8 +451,17 @@ export function ChatScreen() {
       openFile: openTimelineFile,
       retry: retryMessage,
       continue: continueMessage,
+      fork: forkMessage,
+      resolveToolTarget: remote.resolveToolCallTarget,
     };
-  }, [continueMessage, openTimelineAttachment, openTimelineFile, retryMessage]);
+  }, [
+    continueMessage,
+    forkMessage,
+    openTimelineAttachment,
+    openTimelineFile,
+    remote.resolveToolCallTarget,
+    retryMessage,
+  ]);
   const handleTimelineAttachment = useCallback(
     (attachment: Parameters<typeof openTimelineAttachment>[0]) =>
       void timelineActionsRef.current.openAttachment(attachment),
@@ -387,6 +471,12 @@ export function ChatScreen() {
     (path: string) => void timelineActionsRef.current.openFile(path),
     [],
   );
+  // Tapping a `#` reference in a sent message opens that conversation, the same
+  // way picking one from the composer menu referenced it.
+  const handleTimelineSession = useCallback(
+    (sessionId: string) => void controls.selectSession(sessionId),
+    [controls],
+  );
   const handleTimelineRetry = useCallback(
     (item: TimelineItem) => timelineActionsRef.current.retry(item),
     [],
@@ -395,31 +485,43 @@ export function ChatScreen() {
     (item: TimelineItem) => timelineActionsRef.current.continue(item),
     [],
   );
+  const handleTimelineFork = useCallback(
+    (item: TimelineItem) => timelineActionsRef.current.fork(item),
+    [],
+  );
+  const handleResolveToolTarget = useCallback(
+    (toolCallId: string, runId: string) =>
+      timelineActionsRef.current.resolveToolTarget(toolCallId, runId),
+    [],
+  );
 
   const renderTimelineItem = useCallback(
     ({ item }: { item: TimelineItem }) => (
-      <View
-        onLayout={onRowLayout}
-        style={item.id === questionNav.landedId ? styles.landedRow : undefined}
-      >
+      <View onLayout={onRowLayout}>
         <TimelineCard
           item={item}
           isLatestAssistant={item.id === latestAssistantId}
           onOpenAttachment={handleTimelineAttachment}
           onOpenFile={handleTimelineFile}
+          onOpenSession={handleTimelineSession}
           onRetry={handleTimelineRetry}
           onContinue={handleTimelineContinue}
+          onFork={forkSupported ? handleTimelineFork : undefined}
+          onResolveToolTarget={handleResolveToolTarget}
         />
       </View>
     ),
     [
+      forkSupported,
+      handleResolveToolTarget,
       handleTimelineAttachment,
       handleTimelineContinue,
       handleTimelineFile,
+      handleTimelineFork,
       handleTimelineRetry,
+      handleTimelineSession,
       latestAssistantId,
       onRowLayout,
-      questionNav.landedId,
     ],
   );
 
@@ -467,6 +569,7 @@ export function ChatScreen() {
     <MarkdownImageLoaderContext value={markdownImageLoader}>
       <SafeAreaView style={styles.safe}>
         {attachmentMenu}
+        {albumPicker}
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : undefined}
           style={styles.keyboard}
@@ -543,6 +646,16 @@ export function ChatScreen() {
                   inverted
                   key={remote.selectedSessionId || "draft"}
                   keyExtractor={(item) => item.id}
+                  refreshControl={
+                    <RefreshControl
+                      colors={[colors.accent]}
+                      enabled={!remote.draft && remote.desktopOnline}
+                      onRefresh={pullRefresh}
+                      progressViewOffset={spacing.lg}
+                      refreshing={pullRefreshActive}
+                      tintColor={colors.accent}
+                    />
+                  }
                   ListHeaderComponent={
                     invertedTranscriptItems.length > 0
                       ? TimelineFlexSpacer
@@ -658,17 +771,11 @@ export function ChatScreen() {
                       ]}
                       accessibilityLiveRegion="polite"
                     >
-                      {remote.desktopOnline && (
+                      {noticeState !== "waitingNetwork" && (
                         <ActivityIndicator color={colors.accent} size="small" />
                       )}
                       <Text style={styles.syncNoticeText}>
-                        {t(
-                          !remote.desktopOnline
-                            ? "chat.syncWaitingNetwork"
-                            : remote.timelineSyncStatus === "retrying"
-                              ? "chat.syncRetrying"
-                              : "chat.syncingLatest",
-                        )}
+                        {t(SYNC_NOTICE_KEYS[noticeState])}
                       </Text>
                     </View>
                   )}
@@ -679,6 +786,8 @@ export function ChatScreen() {
                 keyboardHeight={keyboardHeight}
                 message={message}
                 setMessage={setMessage}
+                sessionRefs={sessionRefs}
+                rememberSessionRef={rememberSessionRef}
                 attachments={attachments}
                 setAttachments={setAttachments}
                 supportsImages={supportsImages}
@@ -750,12 +859,14 @@ export function ChatScreen() {
           />
 
           <PreviewModal
-            preview={fileDownload.preview}
             activeDownload={fileDownload.activeDownload}
             closePreview={fileDownload.closePreview}
             dismissPreviewThen={fileDownload.dismissPreviewThen}
             downloadOriginal={fileDownload.downloadOriginal}
             flushPendingPreviewAction={fileDownload.flushPendingPreviewAction}
+            openLinkedFile={fileDownload.openLinkedFile}
+            popPreview={fileDownload.popPreview}
+            previews={fileDownload.previews}
             t={t}
           />
 
@@ -853,14 +964,6 @@ const styles = StyleSheet.create({
   // The question control sits above the composer's edge, clear of the message
   // column and of the load-older/sync notices that own the viewport's top.
   questionNav: { right: layout.gutter, bottom: spacing.lg },
-  // A jump marks where it landed. The row band cancels its own inset so the
-  // messages do not shift while it is up.
-  landedRow: {
-    marginHorizontal: -spacing.sm,
-    paddingHorizontal: spacing.sm,
-    borderRadius: radius.md,
-    backgroundColor: colors.accentSoft,
-  },
   loadOlder: { top: spacing.sm },
   syncNoticeBelowHistory: { top: spacing.sm + layout.touchTarget + spacing.sm },
   transferTrack: {

@@ -61,6 +61,9 @@ pub fn status() -> RemoteStatus {
                 (None, None)
             };
             RemoteStatus {
+                client: SUPERVISOR
+                    .client_identity(&s.pair_id)
+                    .and_then(|slot| slot.lock().unwrap().clone()),
                 phase: if terminal_service_error {
                     RemotePhase::Failed
                 } else if SUPERVISOR.credential_refreshing.load(Ordering::Acquire) {

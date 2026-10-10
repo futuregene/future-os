@@ -9,14 +9,16 @@ import {
 import { colors, layout, spacing } from "../../../theme/tokens";
 
 /**
- * "↑ previous question / ↓ next question" for a transcript that has scrolled
- * away from the tail.
+ * "↑ previous question / ↓ next question" for a long transcript.
  *
  * Two round buttons stacked on the right edge (the chosen of four options on the
  * style sheet): at 44px each they are the platform's minimum touch target, and
  * stacking keeps them clear of the reading column instead of covering a line of
- * it. A direction with nothing to go to stays in place and inert, so the pair
- * does not move under the thumb as the reader scrolls.
+ * it. ↑ is offered without having scrolled first — a conversation opens at its
+ * tail, and going back one turn is the first thing a reader of a long answer
+ * wants — while ↓ waits until the tail is off screen, since at the tail there is
+ * nothing newer below. A direction with nothing to go to stays in place and
+ * inert, so the pair does not move under the thumb as the reader scrolls.
  */
 export function QuestionNavControl({
   previousLabel,

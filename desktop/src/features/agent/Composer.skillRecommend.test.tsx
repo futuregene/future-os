@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import type { SkillRecommendationProp } from "./Composer";
-import { act } from "react";
+import type { SkillRecommendationCard, SkillRecommendationProp } from "./Composer";
+import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { Composer } from "./Composer";
+import { clearComposerDraft } from "./composerDraft";
 
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
@@ -36,6 +37,46 @@ async function mount(host: HTMLElement, skillRecommendation: SkillRecommendation
   await act(async () => root.render(<Composer onSend={onSend} modelOptions={[]} skillRecommendation={skillRecommendation} />));
 }
 
+/**
+ * Mounts with a parent that owns the card, the way the real screens do: the
+ * card appears only once `onEvaluate` has returned one and disappears on
+ * dismiss. A prop with the card baked in would model a state the app never
+ * reaches first (the recommendation always arrives after a submit).
+ */
+async function mountCardOwner(
+  host: HTMLElement,
+  evaluate: (draft: string) => Promise<SkillRecommendationCard | null>,
+  onSend: (payload: { content: string }) => void | Promise<void>,
+) {
+  const onInstall = vi.fn(async () => true);
+  const onDismiss = vi.fn();
+  function Harness() {
+    const [card, setCard] = useState<SkillRecommendationCard | null>(null);
+    return (
+      <Composer
+        onSend={onSend}
+        modelOptions={[]}
+        skillRecommendation={{
+          card,
+          onEvaluate: async (draft) => {
+            const next = await evaluate(draft);
+            setCard(next);
+            return next;
+          },
+          onInstall,
+          onDismiss: () => {
+            onDismiss();
+            setCard(null);
+          },
+        }}
+      />
+    );
+  }
+  const root = createRoot(host);
+  await act(async () => root.render(<Harness />));
+  return { onInstall, onDismiss };
+}
+
 function typeInto(host: HTMLElement, text: string) {
   const editor = host.querySelector<HTMLElement>("[role=textbox]")!;
   act(() => {
@@ -47,6 +88,10 @@ function typeInto(host: HTMLElement, text: string) {
 
 function submit(host: HTMLElement) {
   return act(async () => host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+}
+
+function buttonSaying(host: HTMLElement, label: string) {
+  return Array.from(host.querySelectorAll("button")).find(b => b.textContent?.includes(label))!;
 }
 
 /** The content of the first recorded send, narrowed for assertions. */
@@ -94,19 +139,30 @@ it("sends when the recommender errors", async () => {
   }
 });
 
-it("holds the draft and shows the card when a skill is recommended", async () => {
+it("holds the draft while the card is up, then sends it unchanged when send is pressed again", async () => {
   const host = document.createElement("div");
   document.body.append(host);
   const onSend = vi.fn();
   const card = { name: "future-web", description: "search the web" };
+  const evaluate = vi.fn(async () => card);
   try {
-    await mount(host, recommendationProps(vi.fn(async () => card), card), onSend);
+    const { onDismiss } = await mountCardOwner(host, evaluate, onSend);
     typeInto(host, "please search the web for this");
     await submit(host);
-    // Nothing is sent while the card is up, and the draft survives.
+    // The card owns the draft: nothing is sent and the draft survives.
     expect(onSend).not.toHaveBeenCalled();
     expect(host.textContent).toContain("future-web");
     expect(host.querySelector<HTMLElement>("[role=textbox]")!.textContent).toContain("search the web");
+
+    // The send button stays live, and pressing it is the second half of the
+    // card's "send without it" pair: drop the suggestion, send as typed. A
+    // silent no-op here reads as a broken button.
+    await submit(host);
+    expect(onDismiss).toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(sentContent(onSend)).toBe("please search the web for this");
+    // Re-sending must not spend a second recommender call on the same draft.
+    expect(evaluate).toHaveBeenCalledTimes(1);
   }
   finally {
     act(() => host.remove());
@@ -179,13 +235,11 @@ it("installs, appends the slash command and sends on 安装并使用", async () 
   const onSend = vi.fn();
   const card = { name: "future-web", description: "search the web" };
   try {
-    const props = recommendationProps(vi.fn(async () => card), card);
-    await mount(host, props, onSend);
+    const { onInstall } = await mountCardOwner(host, vi.fn(async () => card), onSend);
     typeInto(host, "please search the web for this");
     await submit(host);
-    const installButton = Array.from(host.querySelectorAll("button")).find(b => b.textContent?.includes("Install & use"))!;
-    await act(async () => installButton.click());
-    expect(props.onInstall).toHaveBeenCalledWith(card);
+    await act(async () => buttonSaying(host, "Install & use").click());
+    expect(onInstall).toHaveBeenCalledWith(card);
     // The sent message carries the original draft plus the slash command,
     // appended after a space.
     expect(onSend).toHaveBeenCalledTimes(1);
@@ -204,17 +258,59 @@ it("sends the original draft unchanged on dismiss", async () => {
   const onSend = vi.fn();
   const card = { name: "future-web", description: "search the web" };
   try {
-    const props = recommendationProps(vi.fn(async () => card), card);
-    await mount(host, props, onSend);
+    const { onDismiss } = await mountCardOwner(host, vi.fn(async () => card), onSend);
     typeInto(host, "please search the web for this");
     await submit(host);
-    const dismissButton = Array.from(host.querySelectorAll("button")).find(b => b.textContent?.includes("Send without it"))!;
-    await act(async () => dismissButton.click());
-    expect(props.onDismiss).toHaveBeenCalled();
+    await act(async () => buttonSaying(host, "Send without it").click());
+    expect(onDismiss).toHaveBeenCalled();
     expect(onSend).toHaveBeenCalledTimes(1);
     expect(sentContent(onSend)).toBe("please search the web for this");
   }
   finally {
     act(() => host.remove());
+  }
+});
+
+it.each(["unmount", "switch", "disabled", "streaming"])("does not send a delayed evaluation after %s", async (scenario) => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const onSend = vi.fn();
+  let resolve!: (card: null) => void;
+  const evaluation = new Promise<null>((release) => {
+    resolve = release;
+  });
+  const skillRecommendation = recommendationProps(() => evaluation);
+  const props = { onSend, modelOptions: [], skillRecommendation, draftKey: "evaluation-a" };
+  let unmounted = false;
+  clearComposerDraft("evaluation-a");
+  clearComposerDraft("evaluation-b");
+  try {
+    await act(async () => root.render(<Composer {...props} />));
+    typeInto(host, "please search the web for this");
+    await submit(host);
+    expect(onSend).not.toHaveBeenCalled();
+    if (scenario === "unmount") {
+      act(() => root.unmount());
+      unmounted = true;
+    }
+    else if (scenario === "switch") {
+      act(() => root.render(<Composer {...props} draftKey="evaluation-b" />));
+      typeInto(host, "a new conversation draft");
+    }
+    else {
+      act(() => root.render(<Composer {...props} disabled={scenario === "disabled"} sending={scenario === "streaming"} />));
+    }
+    await act(async () => resolve(null));
+    expect(onSend).not.toHaveBeenCalled();
+    if (scenario === "switch")
+      expect(host.querySelector("[role=textbox]")?.textContent).toBe("a new conversation draft");
+  }
+  finally {
+    if (!unmounted)
+      act(() => root.unmount());
+    host.remove();
+    clearComposerDraft("evaluation-a");
+    clearComposerDraft("evaluation-b");
   }
 });

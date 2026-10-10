@@ -334,7 +334,7 @@ describe("activity rail workspace pinning", () => {
 });
 
 describe("activity rail FutureOS session navigation", () => {
-  it("keeps Phone Control available during a temporary account check failure", async () => {
+  it("keeps Remote available during a temporary account check failure", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -347,7 +347,7 @@ describe("activity rail FutureOS session navigation", () => {
     ));
     await flushAsync();
     try {
-      expect([...container.querySelectorAll("button")].some(button => button.textContent === "Phone Control")).toBe(true);
+      expect(isRemoteEntryThere(container)).toBe(true);
     }
     finally {
       act(() => root.unmount());
@@ -355,7 +355,16 @@ describe("activity rail FutureOS session navigation", () => {
     }
   });
 
-  it("hides Phone Control after the platform rejects the account key", async () => {
+  /**
+   * The entry is no longer gated on the account at all.
+   *
+   * It used to be hidden unless signed in, because the *host* half issues its
+   * pairing code through the FutureOS service. But the client half needs no
+   * account, so hiding the entry hid a feature that worked — and a signed-out
+   * user who wants to connect out to their other computer is exactly the user
+   * this entry is for. The section that does need an account says so itself.
+   */
+  it("keeps Remote available even after the platform rejects the account key", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -368,7 +377,7 @@ describe("activity rail FutureOS session navigation", () => {
     ));
     await flushAsync();
     try {
-      expect([...container.querySelectorAll("button")].some(button => button.textContent === "Phone Control")).toBe(false);
+      expect(isRemoteEntryThere(container)).toBe(true);
     }
     finally {
       act(() => root.unmount());
@@ -376,3 +385,8 @@ describe("activity rail FutureOS session navigation", () => {
     }
   });
 });
+
+/** The one nav entry for both directions of remote. */
+function isRemoteEntryThere(container: HTMLElement): boolean {
+  return [...container.querySelectorAll("button")].some(button => button.textContent === "Remote");
+}

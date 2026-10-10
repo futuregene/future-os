@@ -1,46 +1,24 @@
 import type { MessageAttachment } from "@future-os/thread-projection";
 import type { FormEvent } from "react";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
-import type { listAvailableSkills } from "../../integrations/skills/skillsClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { ContextToolOption, MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowUp, ChevronDown, Loader2, Paperclip, ShieldCheck, ShieldOff, ShieldQuestion, Square, TriangleAlert, X } from "lucide-react";
+import type { SessionMentionOption } from "./sessionMention";
+import { Paperclip, TriangleAlert, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Trans, useTranslation } from "react-i18next";
-import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
-import { localizedModelDescription, modelKey, modelLabel, modelOption, modelSupportsThinking, normalizeThinkingLevel, thinkingLevels } from "../../integrations/agent/agentClient";
-import { useProviderNames } from "../../integrations/agent/useProviderNames";
-import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
-import { loadSkillCatalog } from "../../integrations/skills/skillsClient";
-import { deleteTempAttachment, readNativeClipboardFilePaths, savePastedFile, savePastedImage } from "../../integrations/storage/threadStore";
+import { useTranslation } from "react-i18next";
+import { modelKey, modelOption } from "../../integrations/agent/agentClient";
+import { useSkillCatalog } from "../../integrations/skills/useSkillCatalog";
 import { cn } from "../../lib/cn";
-import { formatBytes } from "../../lib/format";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
-import { isLinux, isWindows } from "../../lib/platform";
-import { classifyAttachment, fileNameFromPath, imageExtensionFromMime, MAX_IMAGES_PER_TURN, READ_SOURCE_MAX_BYTES, splitFileName } from "./attachments";
+import { useCommittedRef } from "../../lib/useCommittedRef";
+import { useOperationLifetime } from "../../lib/useOperationLifetime";
+import { splitFileName } from "./attachments";
+import { ComposerControls } from "./composer/ComposerControls";
+import { useComposerAttachments } from "./composer/useComposerAttachments";
 import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "./composerDraft";
 import { MentionEditor } from "./MentionEditor";
-
-/** Approval-tier order for the composer dropdown (availability is host-gated). */
-const APPROVAL_TIERS: ApprovalTier[] = ["manual", "sandbox", "off"];
-const MAX_COPIED_FILES_PER_PASTE = 10;
-const MAX_COPIED_FILE_BYTES = 10 * 1024 * 1024;
-const MAX_COPIED_FILES_TOTAL_BYTES = 20 * 1024 * 1024;
-
-/**
- * Icon per approval tier, shared between the dropdown rows and the trigger so
- * the button always mirrors the selected tier. Shield family: question (asks
- * you) → check (sandboxed) → off (unrestricted).
- */
-function tierIcon(tier: ApprovalTier, className: string) {
-  if (tier === "sandbox")
-    return <ShieldCheck className={className} />;
-  if (tier === "off")
-    return <ShieldOff className={className} />;
-  return <ShieldQuestion className={className} />;
-}
+import { SkillRecommendCard } from "./SkillRecommendCard";
 
 export interface ComposerSendPayload {
   attachments: MessageAttachment[];
@@ -59,7 +37,9 @@ export interface SkillRecommendationCard {
 /**
  * Optional skill-recommendation wiring (new-conversation first turn only).
  * When present, submit is first routed through `onEvaluate`; a returned card
- * holds submission until the user installs or dismisses it.
+ * holds the draft until the user installs the skill, presses the card's
+ * "send without it" button, or sends again (a plain send counts as the
+ * latter).
  */
 export interface SkillRecommendationProp {
   /** The card to show, or null. */
@@ -80,9 +60,14 @@ export interface SkillRecommendationProp {
 
 interface ComposerProps {
   /**
-   * Resolve when the message is accepted, not when the assistant finishes.
-   * Rejecting preserves the submitted draft. New-conversation callers resolve
-   * once the prompt is staged in its newly created thread.
+   * Send the message. The composer hands the draft over and empties itself as
+   * soon as this returns (the caller shows the message optimistically, so the
+   * box must not keep a second copy of it). Resolve when the message is
+   * accepted, not when the assistant finishes; rejecting restores the
+   * submitted draft — unless the user typed something new in the meantime, in
+   * which case their draft wins and the rejected message stays readable in the
+   * conversation. New-conversation callers resolve once the prompt is staged
+   * in its newly created thread.
    */
   onSend: (payload: ComposerSendPayload) => void | Promise<void>;
   className?: string;
@@ -95,6 +80,7 @@ interface ComposerProps {
   thinkingLevel?: string;
   onThinkingLevelChange?: (thinkingLevel: string) => void;
   approvalTier?: ApprovalTier;
+  futureSessionStatus?: string;
   onChangeApprovalTier?: (value: ApprovalTier) => void;
   /**
    * A reply is streaming. The send button becomes an interrupt button and
@@ -116,6 +102,12 @@ interface ComposerProps {
   placeholder?: string;
   textareaClassName?: string;
   workspaceId?: string | null;
+  /**
+   * Conversations offered by the `#` menu, already ordered and with the current
+   * conversation excluded (see `sessionMentionOptions`). Omit/empty to disable
+   * the menu.
+   */
+  sessionMentions?: SessionMentionOption[];
   /**
    * Identifies the conversation whose unsent input (text, mentions, attachments)
    * this composer holds. The draft is scoped to this key in sessionStorage, so
@@ -143,6 +135,7 @@ function ComposerImpl({
   thinkingLevel,
   onThinkingLevelChange,
   approvalTier,
+  futureSessionStatus = "checking",
   onChangeApprovalTier,
   sending,
   onAbort,
@@ -152,21 +145,11 @@ function ComposerImpl({
   placeholder,
   textareaClassName,
   workspaceId,
+  sessionMentions,
   draftKey,
   onDragStateChange,
 }: ComposerProps) {
   const { t, i18n } = useTranslation("agent");
-  const sandboxAvailability = useSandboxAvailability();
-  const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
-  const [attachError, setAttachError] = useState<string | null>(null);
-  // Drag-over verdict: null (no drag), "accept" (droppable), "reject"
-  // (unsupported type — pre-validated on `enter` so the drop zone shows the
-  // rejection before release, and the drop is silently ignored).
-  const [dragState, setDragState] = useState<ComposerDragState>(null);
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
-  const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
-  const [approvalMenuOpen, setApprovalMenuOpen] = useState(false);
-  const providerNames = useProviderNames();
   // The editor is non-controlled (see MentionEditor); we only mirror its empty
   // state to enable/disable the send button.
   const [inputEmpty, setInputEmpty] = useState(true);
@@ -191,6 +174,19 @@ function ComposerImpl({
   // True while the recommended skill is installing (disables the card buttons).
   const [installingSkill, setInstallingSkill] = useState(false);
   const editorRef = useRef<MentionEditorHandle | null>(null);
+  const captureOperation = useOperationLifetime(draftKey);
+  const { attachments, attachmentsRef, setAttachments, attachError, setAttachError, dragState, addAttachmentPaths, attachPastedFiles, handleAttachFiles, removeAttachment }
+    = useComposerAttachments({ disabled, onDragStateChange, captureOperation });
+  const sendStateRef = useCommittedRef({ disabled, sending, compactionPending, onSend });
+  useEffect(() => {
+    recommendPendingRef.current = false;
+    evaluatedDraftRef.current = null;
+    cardHandledRef.current = false;
+    setRecommendPending(false);
+    setInstallingSkill(false);
+    setSendPending(false);
+    setContextActionPending(false);
+  }, [draftKey]);
 
   const contextTools = useMemo<ContextToolOption[]>(() => {
     if (!onCompactContext || sending || compactionPending)
@@ -205,58 +201,37 @@ function ComposerImpl({
   const handleContextToolSelect = useCallback((toolId: string) => {
     if (toolId !== "compact" || !onCompactContext || compactionPending)
       return;
+    const isCurrent = captureOperation();
     const result = onCompactContext();
     if (result) {
       setContextActionPending(true);
-      result.catch(() => {}).finally(() => setContextActionPending(false));
+      result.catch(() => {}).finally(() => {
+        if (isCurrent())
+          setContextActionPending(false);
+      });
     }
-  }, [compactionPending, onCompactContext]);
+  }, [captureOperation, compactionPending, onCompactContext]);
 
-  // Installed skills for the `/` menu. The name stays the English slash-command
-  // name; the description follows the UI language (mirrors SkillsView). Skill
-  // frontmatter often lacks name_zh/description_zh, so fall back to the
-  // platform catalogue (which always carries zh text) for those.
-  const [skills, setSkills] = useState<SkillMentionOption[]>([]);
-  useEffect(() => {
-    let cancelled = false;
+  const catalog = useSkillCatalog();
+  const skills = useMemo<SkillMentionOption[]>(() => {
     const useZh = i18n.language !== "en";
-    // Through the shared cache: the recommender on this screen reads the same
-    // two lists, and an uncached read here would double the RPCs per message.
-    const { installed: installedCall, catalogue: catalogueCall } = loadSkillCatalog();
-    Promise.all([
-      installedCall,
-      // Best-effort: the catalogue needs the platform; offline it just
-      // contributes no zh fallback.
-      catalogueCall.catch(() => [] as Awaited<ReturnType<typeof listAvailableSkills>>),
-    ])
-      .then(([installed, catalogue]) => {
-        if (cancelled)
-          return;
-        const zhById = new Map(catalogue.map(entry => [entry.id, entry]));
-        setSkills(installed.map((skill) => {
-          const nameZh = skill.nameZh || zhById.get(skill.id)?.nameZh || null;
-          const descriptionZh = skill.descriptionZh || zhById.get(skill.id)?.descriptionZh || null;
-          return {
-            name: skill.name,
-            description: useZh ? descriptionZh || skill.description : skill.description,
-            nameZh,
-            descriptionZh,
-          };
-        }));
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [i18n.language]);
+    const localized = new Map(catalog.catalogue.map(skill => [skill.id, skill]));
+    return catalog.installed.map((skill) => {
+      const nameZh = skill.nameZh || localized.get(skill.id)?.nameZh || null;
+      const descriptionZh = skill.descriptionZh || localized.get(skill.id)?.descriptionZh || null;
+      return {
+        name: skill.name,
+        description: useZh ? descriptionZh || skill.description : skill.description,
+        nameZh,
+        descriptionZh,
+      };
+    });
+  }, [catalog, i18n.language]);
 
   // ── Per-conversation draft (sessionStorage, keyed by draftKey) ──────────────
   // Live mirrors so the persist path always reads current values regardless of
   // render timing (the editor text is read from the live DOM on save).
-  const attachmentsRef = useRef(attachments);
-  attachmentsRef.current = attachments;
-  const draftKeyRef = useRef(draftKey);
-  draftKeyRef.current = draftKey;
+  const draftKeyRef = useCommittedRef(draftKey);
   // Last known editor text (getContent markdown) — a fallback for when the
   // editor ref is gone (e.g. reading during unmount).
   const lastTextRef = useRef("");
@@ -275,7 +250,7 @@ function ComposerImpl({
     const text = editorRef.current ? editorRef.current.getContent() : lastTextRef.current;
     lastTextRef.current = text;
     saveComposerDraft(key, { attachments: attachmentsRef.current, text });
-  }, []);
+  }, [attachmentsRef, draftKeyRef]);
 
   // Load this conversation's draft when it becomes active. Continuous saves
   // (editor onChange + the attachments effect) keep the outgoing conversation's
@@ -289,7 +264,7 @@ function ComposerImpl({
     restoredTextRef.current = text;
     setAttachments(draft?.attachments ?? []);
     setAttachError(null);
-  }, [draftKey]);
+  }, [draftKey, setAttachError, setAttachments]);
 
   // The `/`-menu skills load after mount, so a freshly restored draft with a
   // `/name` token (e.g. the Skills page 「试试」 prefill) first renders as plain
@@ -322,11 +297,6 @@ function ComposerImpl({
   // attachment chip is flagged so the user knows the image may not be understood.
   // Unknown model (not in the catalog yet) → treat as vision-capable.
   const supportsImages = activeModel ? activeModel.supportsImages !== false : true;
-  const supportsThinking = modelSupportsThinking(activeModelId, modelOptions);
-  const activeThinkingLevel = supportsThinking ? normalizeThinkingLevel(thinkingLevel) : "off";
-  // Localized thinking-level label; unknown levels fall back to the raw value.
-  const thinkingLevelLabel = (level: string) => t(`composer.thinkingLevelLabels.${level}`, { defaultValue: level });
-
   // The file tree's "attach to context" action inserts a mention pill into the
   // active thread's composer. editorRef is stable, so subscribe once.
   useEffect(() => onFutureEvent("attach-file-to-context", (detail) => {
@@ -377,29 +347,40 @@ function ComposerImpl({
     }
 
     // Skill recommendation: hold the draft while we ask the recommender. A
-    // returned card keeps the draft unsubmitted until the user installs or
-    // dismisses it; anything else (timeout, no match, error) sends normally.
+    // returned card keeps the draft unsubmitted until the user acts on it
+    // (install, dismiss, or send again); anything else (timeout, no match,
+    // error) sends normally.
     const reco = skillRecommendation;
     if (reco) {
-      // A card is on screen and not yet acted on: the user decides. The card's
-      // own actions send through `sendNow` directly.
-      if (reco.card && !cardHandledRef.current)
+      // A card is on screen and not yet acted on: a plain send means "send
+      // without it" — the same thing the card's secondary button does. The
+      // send button stays live here (only the recommender wait disables it),
+      // so returning silently would read as a broken button.
+      if (reco.card && !cardHandledRef.current) {
+        dismissRecommendedSkill();
         return;
+      }
       // Ask once per draft. `evaluatedDraftRef` records that this draft has been
       // asked, so the fall-through below cannot re-enter this branch and spend a
       // second call for the same message.
       if (!cardHandledRef.current && evaluatedDraftRef.current !== trimmed) {
+        const isCurrent = captureOperation();
         evaluatedDraftRef.current = trimmed;
         recommendPendingRef.current = true;
         setRecommendPending(true);
         reco
           .onEvaluate(trimmed)
           .then((card) => {
-            if (!card)
-              sendNow();
+            if (isCurrent() && !card)
+              sendNow(trimmed);
           })
-          .catch(() => sendNow())
+          .catch(() => {
+            if (isCurrent())
+              sendNow(trimmed);
+          })
           .finally(() => {
+            if (!isCurrent())
+              return;
             recommendPendingRef.current = false;
             setRecommendPending(false);
           });
@@ -418,40 +399,73 @@ function ComposerImpl({
    * (`recommendPendingRef`, still set while the promise chain is resolving),
    * silently swallowing the send.
    */
-  function sendNow() {
-    const trimmed = (editorRef.current?.getContent() ?? "").trim();
+  function sendNow(evaluatedText?: string) {
+    const state = sendStateRef.current;
+    if (!editorRef.current || state.disabled || state.sending || state.compactionPending)
+      return;
     const submittedText = editorRef.current?.getContent() ?? "";
+    const trimmed = submittedText.trim();
+    if (evaluatedText !== undefined && evaluatedText !== trimmed)
+      return;
     const submittedDraftKey = draftKeyRef.current;
-    const submittedAttachments = attachments;
-    const clearComposer = () => {
-      // The editor remains editable during delivery. A late ACK must not erase
-      // a revised draft or a different conversation's composer.
-      if (!editorRef.current || draftKeyRef.current !== submittedDraftKey)
+    const submittedAttachments = attachmentsRef.current;
+    if (!trimmed && submittedAttachments.length === 0)
+      return;
+    const isCurrent = captureOperation();
+    /**
+     * Hand the submitted draft over: the caller appends the message to the
+     * conversation the moment it is called (the optimistic bubble precedes the
+     * agent handshake), so clearing on the delivery ACK instead left the same
+     * message visible in the thread *and* sitting in the box for as long as
+     * that handshake took — session setup, the pre-run git snapshot, or a run
+     * already in flight could stretch it to seconds. The editor stays editable
+     * during delivery, so a revised draft or another conversation's composer is
+     * never touched: only what was actually submitted is dropped.
+     */
+    const dropSubmittedDraft = () => {
+      if (!isCurrent() || !editorRef.current || draftKeyRef.current !== submittedDraftKey)
         return;
-      const unchanged = (editorRef.current?.getContent() ?? "") === submittedText;
-      if (unchanged) {
-        editorRef.current?.clear();
-        lastTextRef.current = "";
-      }
+      editorRef.current.clear();
+      lastTextRef.current = "";
       const remaining = attachmentsRef.current.filter(item => !submittedAttachments.includes(item));
       attachmentsRef.current = remaining;
       setAttachments(remaining);
       setAttachError(null);
-      if (unchanged && remaining.length === 0 && submittedDraftKey)
+      if (remaining.length === 0 && submittedDraftKey)
         clearComposerDraft(submittedDraftKey);
     };
-    const result = onSend({ attachments, content: trimmed });
+    /**
+     * Put the submitted draft back after a rejected delivery (rationale on
+     * `ComposerProps.onSend`). A draft typed in the meantime wins, and so does
+     * the conversation the user is now in; in both cases the rejected message
+     * stays recoverable from its bubble in the thread.
+     */
+    const restoreComposer = () => {
+      if (!isCurrent() || !editorRef.current || draftKeyRef.current !== submittedDraftKey)
+        return;
+      if ((editorRef.current.getContent() ?? "").trim().length > 0)
+        return;
+      editorRef.current.restore(submittedText);
+      lastTextRef.current = submittedText;
+      const restored = [...submittedAttachments, ...attachmentsRef.current];
+      attachmentsRef.current = restored;
+      setAttachments(restored);
+      if (submittedDraftKey)
+        saveComposerDraft(submittedDraftKey, { attachments: restored, text: submittedText });
+    };
+    dropSubmittedDraft();
+    const result = state.onSend({ attachments: submittedAttachments, content: trimmed });
     if (result) {
-      // Async send: clear only on success so a failure keeps the draft
-      // (rationale on ComposerProps.onSend). The caller reports the error.
+      // Async send: the caller reports the failure, and only then does the
+      // draft come back.
       setSendPending(true);
       result
-        .then(clearComposer)
-        .catch(() => {})
-        .finally(() => setSendPending(false));
-      return;
+        .catch(restoreComposer)
+        .finally(() => {
+          if (isCurrent())
+            setSendPending(false);
+        });
     }
-    clearComposer();
   }
 
   // Reset the handled flag whenever a fresh card appears, so its actions arm.
@@ -467,9 +481,12 @@ function ComposerImpl({
     const reco = skillRecommendation;
     if (!reco?.card || installingSkill)
       return;
+    const isCurrent = captureOperation();
     setInstallingSkill(true);
     try {
       const installed = await reco.onInstall(reco.card);
+      if (!isCurrent())
+        return;
       if (!installed) {
         // Install failed: tell the user and keep the card up so they can retry
         // or send without the skill. The draft is untouched.
@@ -488,7 +505,8 @@ function ComposerImpl({
       submitValue();
     }
     finally {
-      setInstallingSkill(false);
+      if (isCurrent())
+        setInstallingSkill(false);
     }
   }
 
@@ -500,218 +518,6 @@ function ComposerImpl({
     skillRecommendation.onDismiss();
     submitValue();
   }
-
-  const addAttachmentPaths = useCallback(async (paths: string[], temporary = false, names?: Map<string, string>) => {
-    const classified = await Promise.all(
-      paths.map(async path => ({ path, result: await classifyAttachment(path) })),
-    );
-    // Compute next/rejected against the current attachments, then call both
-    // setters — never call setAttachError inside a setAttachments updater
-    // (updaters must be pure; StrictMode/concurrent React may run them twice).
-    // Classification is asynchronous and several sources (picker, paste, drag)
-    // may finish out of order. Merge into the live ref, not the render-time
-    // closure, so a later completion cannot overwrite an earlier one.
-    const next = [...attachmentsRef.current];
-    const rejected: string[] = [];
-    for (const { path, result } of classified) {
-      const name = names?.get(path) ?? fileNameFromPath(path);
-      if (next.some(attachment => attachment.path === path))
-        continue;
-      if (result.kind === null) {
-        rejected.push(t("composer.attachRejectedReason", { name, reason: result.reason }));
-        continue;
-      }
-      // Images carry a per-message count cap regardless of model (a text-only model
-      // still receives the paths, but keeping the same ceiling avoids surprises
-      // when switching models mid-draft). Every other file type is unlimited —
-      // the agent reads local paths on demand with its own tools.
-      if (result.kind === "image") {
-        const imageCount = next.filter(attachment => attachment.kind === "image").length;
-        if (imageCount >= MAX_IMAGES_PER_TURN) {
-          rejected.push(t("composer.attachRejectedLimit", { name, count: MAX_IMAGES_PER_TURN }));
-          continue;
-        }
-      }
-      next.push({ kind: result.kind, name, path, ...(temporary ? { temporary: true } : {}) });
-    }
-    attachmentsRef.current = next;
-    setAttachments(next);
-    setAttachError(rejected.length > 0 ? t("composer.attachIgnored", { items: rejected.join("，") }) : null);
-  }, [t]);
-
-  async function attachImageFiles(files: File[]) {
-    // Save every file first, then attach in ONE addAttachmentPaths call:
-    // calling it per file inside the loop reuses the same closure over the
-    // pre-paste `attachments`, so each iteration's setAttachments overwrites
-    // the previous one and only the last image survives.
-    const saved: string[] = [];
-    const rejected: string[] = [];
-    for (const file of files) {
-      if (file.size > READ_SOURCE_MAX_BYTES) {
-        rejected.push(t("composer.attachRejectedReason", {
-          name: file.name,
-          reason: t("attachment.imageTooLarge", { max: formatBytes(READ_SOURCE_MAX_BYTES) }),
-        }));
-        continue;
-      }
-      try {
-        const buffer = await file.arrayBuffer();
-        const result = await savePastedImage({
-          bytes: Array.from(new Uint8Array(buffer)),
-          extension: imageExtensionFromMime(file.type) ?? "png",
-        });
-        saved.push(result.path);
-      }
-      catch {
-        rejected.push(t("composer.attachRejectedReason", { name: file.name, reason: t("attachment.readFailed") }));
-      }
-    }
-    if (saved.length > 0) {
-      await addAttachmentPaths(saved, true);
-      const accepted = new Set(attachmentsRef.current.map(attachment => attachment.path));
-      // Files written for this paste but rejected by classification/model limits
-      // are no longer referenced by the draft and can be reclaimed immediately.
-      await Promise.all(saved.filter(path => !accepted.has(path)).map(path => deleteTempAttachment(path).catch(() => {})));
-    }
-    if (rejected.length > 0)
-      setAttachError(t("composer.attachIgnored", { items: rejected.join("，") }));
-  }
-
-  async function attachPastedFiles(files: File[]) {
-    // Finder uses a native file-URL pasteboard type which WKWebView turns into
-    // opaque File objects. Recover the original paths before copying bytes.
-    const nativePaths = await readNativeClipboardFilePaths().catch(() => []);
-    if (nativePaths.length > 0) {
-      await addAttachmentPaths(nativePaths);
-      return;
-    }
-    const copiedFiles = files.filter(file => !file.type.startsWith("image/"));
-    const imageFiles = files.filter(file => file.type.startsWith("image/"));
-    if (imageFiles.length > 0)
-      await attachImageFiles(imageFiles);
-    const candidates = copiedFiles.slice(0, MAX_COPIED_FILES_PER_PASTE);
-    const total = candidates.reduce((sum, file) => sum + file.size, 0);
-    const rejected: string[] = [];
-    if (copiedFiles.length > MAX_COPIED_FILES_PER_PASTE)
-      rejected.push(t("composer.attachCopiedCountLimit", { count: MAX_COPIED_FILES_PER_PASTE }));
-    if (total > MAX_COPIED_FILES_TOTAL_BYTES) {
-      setAttachError(t("composer.attachIgnored", { items: t("composer.attachCopiedTotalLimit", { max: formatBytes(MAX_COPIED_FILES_TOTAL_BYTES) }) }));
-      return;
-    }
-    const saved: string[] = [];
-    const names = new Map<string, string>();
-    for (const file of candidates) {
-      if (file.size > MAX_COPIED_FILE_BYTES) {
-        rejected.push(t("composer.attachRejectedReason", { name: file.name, reason: t("composer.attachCopiedFileLimit", { max: formatBytes(MAX_COPIED_FILE_BYTES) }) }));
-        continue;
-      }
-      try {
-        const buffer = await file.arrayBuffer();
-        const result = await savePastedFile({ bytes: Array.from(new Uint8Array(buffer)), name: file.name });
-        saved.push(result.path);
-        names.set(result.path, file.name);
-      }
-      catch {
-        rejected.push(t("composer.attachRejectedReason", { name: file.name, reason: t("attachment.readFailed") }));
-      }
-    }
-    if (saved.length > 0) {
-      await addAttachmentPaths(saved, true, names);
-      const accepted = new Set(attachmentsRef.current.map(attachment => attachment.path));
-      await Promise.all(saved.filter(path => !accepted.has(path)).map(path => deleteTempAttachment(path).catch(() => {})));
-    }
-    if (rejected.length > 0)
-      setAttachError(t("composer.attachIgnored", { items: rejected.join("，") }));
-  }
-
-  async function handleAttachFiles() {
-    if (disabled)
-      return;
-
-    // Any file type is acceptable (the agent reads paths with its own tools), so
-    // the picker offers no extension filter. Images picked for a text-only model
-    // are rejected post-selection in addAttachmentPaths.
-    const selected = await open({
-      multiple: true,
-      title: t("composer.attachDialogTitle"),
-    });
-    const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
-    if (paths.length === 0)
-      return;
-
-    await addAttachmentPaths(paths);
-  }
-
-  function removeAttachment(path: string) {
-    const removed = attachmentsRef.current.find(attachment => attachment.path === path);
-    const next = attachmentsRef.current.filter(attachment => attachment.path !== path);
-    attachmentsRef.current = next;
-    setAttachments(next);
-    if (removed?.temporary)
-      void deleteTempAttachment(path).catch(() => {});
-  }
-
-  // Held in a ref so the webview drag listener below doesn't re-subscribe on
-  // every attachment change (addAttachmentPaths closes over `attachments`).
-  const addAttachmentPathsRef = useRef(addAttachmentPaths);
-  addAttachmentPathsRef.current = addAttachmentPaths;
-
-  // Update the verdict and (when the parent opts in) report it, so the parent
-  // can draw the drag highlight around a larger card. Ref-backed for the same
-  // reason as above: the drag listener must not re-subscribe when the callback
-  // identity changes. `dragStateRef` lets `over` read the current verdict
-  // without a stale closure.
-  const dragStateRef = useRef<ComposerDragState>(null);
-  const onDragStateChangeRef = useRef(onDragStateChange);
-  onDragStateChangeRef.current = onDragStateChange;
-  const setDrag = useCallback((next: ComposerDragState) => {
-    dragStateRef.current = next;
-    setDragState(next);
-    onDragStateChangeRef.current?.(next);
-  }, []);
-
-  useEffect(() => {
-    if (disabled)
-      return;
-
-    let active = true;
-    let dispose: (() => void) | undefined;
-    void getCurrentWebview()
-      .onDragDropEvent((event) => {
-        if (event.payload.type === "enter") {
-          // Any file is acceptable at drag time (the agent reads paths with its
-          // own tools; images degrade to a path for text-only models). Directory
-          // drops are caught by classification on release.
-          setDrag(event.payload.paths.length > 0 ? "accept" : "reject");
-        }
-        else if (event.payload.type === "over") {
-          // `over` has no paths; keep the verdict decided on `enter`.
-          setDrag(dragStateRef.current ?? "accept");
-        }
-        else if (event.payload.type === "leave") {
-          setDrag(null);
-        }
-        else if (event.payload.type === "drop") {
-          setDrag(null);
-          // Forward every dropped path; classification in addAttachmentPaths
-          // rejects the unsupported ones (e.g. directories) with a reason.
-          if (event.payload.paths.length > 0)
-            void addAttachmentPathsRef.current(event.payload.paths);
-        }
-      })
-      .then((unlisten) => {
-        if (active)
-          dispose = unlisten;
-        else
-          unlisten();
-      });
-
-    return () => {
-      active = false;
-      dispose?.();
-      setDrag(null);
-    };
-  }, [disabled, setDrag]);
 
   // When the parent handles the highlight (onDragStateChange), draw neither the
   // ring nor the reject overlay here — the parent rings the whole card instead.
@@ -729,39 +535,13 @@ function ComposerImpl({
     >
       {skillRecommendation?.card
         ? (
-            <div className="mb-2 flex items-start gap-3 rounded-md border border-focus/40 bg-focus-soft px-3 py-2.5">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5 text-xs font-medium text-ink">
-                  <span className="text-focus">{t("composer.skillRecommend.cardTitle")}</span>
-                  <span className="font-mono text-ink">
-                    /
-                    {skillRecommendation.card.name}
-                  </span>
-                </div>
-                <p className="mt-0.5 line-clamp-2 text-xs text-ink-muted">
-                  {skillRecommendation.card.description}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5">
-                <button
-                  className="inline-flex items-center gap-1 rounded-md bg-focus px-2.5 py-1 text-xs font-medium text-on-accent transition hover:opacity-90 disabled:opacity-60"
-                  type="button"
-                  disabled={installingSkill}
-                  onClick={() => void installRecommendedSkill()}
-                >
-                  {installingSkill ? <Loader2 className="size-3 animate-spin" /> : null}
-                  {t("composer.skillRecommend.installAndUse")}
-                </button>
-                <button
-                  className="rounded-md border border-line px-2.5 py-1 text-xs text-ink-muted transition hover:bg-surface-raised disabled:opacity-60"
-                  type="button"
-                  disabled={installingSkill}
-                  onClick={dismissRecommendedSkill}
-                >
-                  {t("composer.skillRecommend.dismissAndSend")}
-                </button>
-              </div>
-            </div>
+            <SkillRecommendCard
+              description={skillRecommendation.card.description}
+              installing={installingSkill}
+              name={skillRecommendation.card.name}
+              onDismiss={dismissRecommendedSkill}
+              onInstall={() => void installRecommendedSkill()}
+            />
           )
         : null}
       {drawOwnHighlight && dragState === "reject"
@@ -828,6 +608,7 @@ function ComposerImpl({
         workspaceId={workspaceId}
         skills={skills}
         contextTools={contextTools}
+        sessions={sessionMentions}
         // Locked while the recommender is being asked: the message about to be
         // sent must be the one that was evaluated, and a box that silently
         // ignores the send button reads as broken (the send button below spins
@@ -845,233 +626,26 @@ function ComposerImpl({
       {attachError
         ? <div className="px-1 pb-1 text-xs text-warning">{attachError}</div>
         : null}
-      {/* Wraps rather than overflows: a narrow center cannot fit the model /
-          thinking / send group beside the attach / approval group, so the
-          right-hand group drops to a second row instead of pushing the send
-          button past the pane's edge. */}
-      <div className="flex flex-wrap items-center justify-between gap-y-1 pt-1">
-        <div className="flex min-w-0 items-center gap-1">
-          <button
-            className="inline-flex size-7 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-            disabled={disabled}
-            onClick={() => void handleAttachFiles()}
-            type="button"
-            aria-label={t("composer.attachFiles")}
-            title={t("composer.attachFilesHint")}
-          >
-            <Paperclip className="size-3.5" />
-          </button>
-          {onChangeApprovalTier
-            ? (
-                <SelectMenu
-                  align="left"
-                  open={approvalMenuOpen}
-                  onDismiss={() => setApprovalMenuOpen(false)}
-                  panelClassName="w-64 overflow-hidden"
-                  trigger={(
-                    <button
-                      className="inline-flex h-7 max-w-40 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
-                      onClick={() => {
-                        setModelMenuOpen(false);
-                        setThinkingMenuOpen(false);
-                        setApprovalMenuOpen(open => !open);
-                      }}
-                      type="button"
-                      title={t("composer.approval")}
-                    >
-                      {tierIcon(approvalTier ?? "off", "size-3 shrink-0")}
-                      <span className="truncate">{t(`composer.approvalTier.${approvalTier ?? "off"}`)}</span>
-                      <ChevronDown className="size-3 shrink-0" />
-                    </button>
-                  )}
-                >
-                  {APPROVAL_TIERS.map(tier => (
-                    <SelectMenuItem
-                      className="py-1.5"
-                      disabled={tier === "sandbox" && !sandboxAvailability.available}
-                      key={tier}
-                      selected={(approvalTier ?? "off") === tier}
-                      onSelect={() => {
-                        onChangeApprovalTier(tier);
-                        setApprovalMenuOpen(false);
-                      }}
-                    >
-                      {tierIcon(tier, "size-4 shrink-0 text-ink-soft")}
-                      <span className="min-w-0 flex-1 space-y-0.5">
-                        <span className="block truncate font-medium leading-tight text-ink">{t(`composer.approvalTier.${tier}`)}</span>
-                        <span className="block text-xs leading-tight text-ink-muted">
-                          {tier === "sandbox" && !sandboxAvailability.resolved
-                            ? t("composer.approvalTierDesc.sandboxChecking")
-                            : tier === "sandbox" && !sandboxAvailability.available
-                              ? t("composer.approvalTierDesc.sandboxUnavailable")
-                              : tier === "off"
-                                ? <Trans t={t} i18nKey="composer.approvalTierDesc.off" components={{ em: <span className="font-semibold" /> }} />
-                                : t(tier === "sandbox" && isWindows
-                                    ? "composer.approvalTierDesc.sandboxWindows"
-                                    : tier === "sandbox" && isLinux
-                                      ? "composer.approvalTierDesc.sandboxLinux"
-                                      : `composer.approvalTierDesc.${tier}`)}
-                        </span>
-                      </span>
-                    </SelectMenuItem>
-                  ))}
-                </SelectMenu>
-              )
-            : null}
-        </div>
-        <div className="ms-auto flex min-w-0 items-center gap-2">
-          <SelectMenu
-            className="hidden md:block"
-            open={modelMenuOpen}
-            onDismiss={() => setModelMenuOpen(false)}
-            panelClassName="max-h-[40vh] w-56 overflow-y-auto"
-            trigger={(
-              <button
-                className="inline-flex h-7 max-w-48 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
-                onClick={() => {
-                  setThinkingMenuOpen(false);
-                  setApprovalMenuOpen(false);
-                  setModelMenuOpen(open => !open);
-                }}
-                type="button"
-                title={t("composer.model")}
-              >
-                <span className="truncate">{modelLabel(activeModelId, modelOptions) ?? t("common:modelFallback")}</span>
-                <ChevronDown className="size-3 shrink-0" />
-              </button>
-            )}
-          >
-            {modelOptions.length === 0
-              ? (
-                  <div className="px-3 py-2 text-sm text-ink-muted">
-                    {modelsEmptyReason === "all_disabled"
-                      ? t("composer.allModelsDisabled")
-                      : t("composer.startAgentForModels")}
-                  </div>
-                )
-              : null}
-            {modelOptions.map(model => (
-              <SelectMenuItem
-                className="py-1"
-                key={`${model.provider}/${model.id}`}
-                selected={model === activeModel}
-                onSelect={() => {
-                  onModelChange?.(modelKey(model));
-                  setModelMenuOpen(false);
-                }}
-                title={localizedModelDescription(model, i18n.language) ?? undefined}
-              >
-                <span className="min-w-0 flex-1 space-y-0.5">
-                  <span className="block truncate font-medium leading-tight text-ink">{model.label}</span>
-                  <span className="block truncate text-xs leading-tight text-ink-muted">
-                    {providerNames[model.provider] ?? model.provider}
-                  </span>
-                </span>
-              </SelectMenuItem>
-            ))}
-          </SelectMenu>
-          <SelectMenu
-            className="hidden md:block"
-            open={thinkingMenuOpen && supportsThinking}
-            onDismiss={() => setThinkingMenuOpen(false)}
-            panelClassName="w-40 overflow-hidden"
-            trigger={(
-              <button
-                className="inline-flex h-7 max-w-40 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={() => {
-                  setModelMenuOpen(false);
-                  setApprovalMenuOpen(false);
-                  setThinkingMenuOpen(open => !open);
-                }}
-                type="button"
-                aria-label={t("composer.thinkingLevel")}
-                disabled={!supportsThinking}
-                title={supportsThinking ? t("composer.thinkingLevel") : t("composer.thinkingUnsupported")}
-              >
-                <span className="truncate">{thinkingLevelLabel(activeThinkingLevel)}</span>
-                <ChevronDown className="size-3 shrink-0" />
-              </button>
-            )}
-          >
-            {thinkingLevels.map(level => (
-              <SelectMenuItem
-                key={level}
-                selected={activeThinkingLevel === level}
-                onSelect={() => {
-                  onThinkingLevelChange?.(level);
-                  setThinkingMenuOpen(false);
-                }}
-              >
-                <span className="min-w-0 flex-1 truncate font-medium text-ink">{thinkingLevelLabel(level)}</span>
-              </SelectMenuItem>
-            ))}
-          </SelectMenu>
-          {sending
-            ? (
-                <button
-                  className="inline-flex size-7 items-center justify-center rounded-md bg-ink text-surface transition-colors hover:bg-ink-soft"
-                  onClick={() => onAbort?.()}
-                  type="button"
-                  aria-label={t("composer.stop")}
-                  title={t("composer.stop")}
-                >
-                  <Square className="size-3 fill-current" />
-                </button>
-              )
-            : (
-                <>
-                  {/* Compaction blocks submission for as long as the agent
-                      takes to summarize (minutes on a long conversation) and
-                      the send button below has no room to say why. Without
-                      this the composer looks inert: typed text stays, Enter
-                      does nothing. */}
-                  {compactionPending
-                    ? (
-                        <span
-                          className="shrink-0 text-xs whitespace-nowrap text-ink-muted"
-                          role="status"
-                        >
-                          {t("composer.compacting")}
-                        </span>
-                      )
-                    : null}
-                  {/* The recommendation wait: same reasoning as compaction,
-                      with the spinner on the button itself. */}
-                  {recommendPending
-                    ? (
-                        <span
-                          className="shrink-0 text-xs whitespace-nowrap text-ink-muted"
-                          role="status"
-                        >
-                          {t("composer.recommending")}
-                        </span>
-                      )
-                    : null}
-                  <button
-                    className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
-                    disabled={
-                      (inputEmpty && attachments.length === 0)
-                      || disabled
-                      || sendPending
-                      || compactionPending
-                      || recommendPending
-                    }
-                    type="submit"
-                    aria-label={recommendPending
-                      ? t("composer.recommending")
-                      : compactionPending ? t("composer.compacting") : t("composer.send")}
-                    title={recommendPending
-                      ? t("composer.recommending")
-                      : compactionPending ? t("composer.compacting") : t("composer.send")}
-                  >
-                    {recommendPending || compactionPending
-                      ? <Loader2 className="size-3.5 animate-spin" />
-                      : <ArrowUp className="size-3.5" />}
-                  </button>
-                </>
-              )}
-        </div>
-      </div>
+      <ComposerControls
+        disabled={disabled}
+        modelId={modelId}
+        modelOptions={modelOptions}
+        modelsEmptyReason={modelsEmptyReason}
+        onModelChange={onModelChange}
+        thinkingLevel={thinkingLevel}
+        onThinkingLevelChange={onThinkingLevelChange}
+        approvalTier={approvalTier}
+        futureSessionStatus={futureSessionStatus}
+        onChangeApprovalTier={onChangeApprovalTier}
+        sending={sending}
+        onAbort={onAbort}
+        handleAttachFiles={handleAttachFiles}
+        inputEmpty={inputEmpty}
+        attachmentCount={attachments.length}
+        sendPending={sendPending}
+        recommendPending={recommendPending}
+        compactionPending={Boolean(compactionPending)}
+      />
     </form>
   );
 }

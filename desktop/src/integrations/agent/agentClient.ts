@@ -42,6 +42,14 @@ interface AgentPromptResponse {
 }
 
 export const defaultAgentModelId = "";
+/**
+ * Thinking level a session gets when it names none.
+ *
+ * Mirrors `DEFAULT_THINKING_LEVEL` in `agent/src/rpc/session.rs` — the agent
+ * applies the same value to a session created without an explicit level (TUI,
+ * channels, tasks), so "the app default" cannot mean two different efforts
+ * depending on which client asked. Change both together.
+ */
 export const defaultThinkingLevel: ThinkingLevel = "medium";
 
 export interface AgentPromptInput {

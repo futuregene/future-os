@@ -566,7 +566,8 @@ fn notify_supervisor_enqueues_to_registered_session_only() {
                 ts: 1,
             })
             .unwrap();
-        // Registered → ledgered AND enqueued to that session (enqueue_if_busy).
+        // Registered → ledgered AND enqueued to that session with the
+        // coalescing policy (folded into one run if the supervisor is busy).
         future_loop::console::notify_supervisor(
             &mut store,
             &mut client,
@@ -581,7 +582,7 @@ fn notify_supervisor_enqueues_to_registered_session_only() {
         let calls = shared.lock().unwrap().prompt_calls.clone();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "sup-sess");
-        assert_eq!(calls[0].1, "enqueue_if_busy");
+        assert_eq!(calls[0].1, "enqueue_coalescing");
     });
     std::env::remove_var("FUTURE_LOOP_AGENT_ADDR");
     // Both notifications are durable ledger notes (the un-pushed one too).
@@ -636,7 +637,7 @@ fn notify_dead_holders_pushes_to_registered_supervisor() {
     let calls = shared.lock().unwrap().prompt_calls.clone();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].0, "sup-sess");
-    assert_eq!(calls[0].1, "enqueue_if_busy");
+    assert_eq!(calls[0].1, "enqueue_coalescing");
 }
 
 #[test]

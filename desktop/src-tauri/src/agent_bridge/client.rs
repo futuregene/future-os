@@ -11,12 +11,6 @@ use tonic::transport::Channel;
 
 use crate::agent_proto::{Attachment, FutureAgentClient, RpcCommand, RpcResponse};
 
-#[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct AgentInfo {
-    pub version: String,
-}
-
 /// Desktop client wrapper that applies the shared per-command deadline while
 /// leaving streaming RPCs on the underlying client deadline-free.
 #[derive(Clone, Debug)]
@@ -181,18 +175,31 @@ pub async fn connect_agent() -> Result<AgentClient, crate::AppError> {
     )))
 }
 
-/// Complete a real command round-trip and return the running Agent's build
-/// identity. A transport connection alone is not readiness: during startup the
-/// local endpoint may exist before the command service can answer requests.
-pub(crate) async fn get_agent_info() -> Result<AgentInfo, crate::AppError> {
+/// Complete a business command round-trip without touching skill discovery.
+/// A transport connection alone is not readiness: during startup the local
+/// endpoint may exist before the command service can answer requests.
+pub(crate) async fn get_agent_readiness(
+) -> Result<Option<future_rpc::payloads_ext::AgentReadinessPayload>, crate::AppError> {
     let mut client = connect_agent().await?;
     let response = client
-        .execute_command(base_command("get_agent_info", String::new()))
+        .execute_command(base_command("get_agent_readiness", String::new()))
         .await
         .map_err(|status| map_rpc_error("Unable to read Future Agent status", status))?
-        .into_inner()
-        .ok_or_rpc_error("Future Agent did not report its build information")?;
-    serde_json::from_value(future_rpc::decode::response_data(&response)).map_err(Into::into)
+        .into_inner();
+    // An older Agent cannot implement this handshake. Report it as an
+    // incompatible build without invoking its skill-scanning get_agent_info.
+    if !response.success && response.error == "unknown command: get_agent_readiness" {
+        return Ok(None);
+    }
+    let response = response.ok_or_rpc_error("Future Agent did not report its build information")?;
+    let info: future_rpc::payloads_ext::AgentReadinessPayload =
+        serde_json::from_value(future_rpc::decode::response_data(&response))?;
+    if info.version.is_empty() || info.agent_instance_id.is_empty() {
+        return Err(crate::AppError::Message(
+            "Future Agent returned an incomplete readiness response".to_string(),
+        ));
+    }
+    Ok(Some(info))
 }
 
 /// One-shot reachability check run when the shared channel is first
@@ -273,8 +280,16 @@ pub(super) fn fork_command(
     }
 }
 
-pub fn delete_session_command(session_id: String) -> RpcCommand {
+#[cfg(test)]
+fn delete_session_command(session_id: String) -> RpcCommand {
     base_command("delete_session", session_id)
+}
+
+pub(super) fn delete_sessions_command(session_ids: Vec<String>) -> RpcCommand {
+    RpcCommand {
+        session_ids,
+        ..base_command("delete_sessions", String::new())
+    }
 }
 
 #[cfg(test)]
@@ -491,6 +506,7 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         command: String::new(),
         shell_timeout_ms: 0,
         session_id,
+        session_ids: Vec::new(),
         entry_id: String::new(),
         tool_call_id: None,
         name: String::new(),
@@ -505,6 +521,9 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         offset: None,
         limit: None,
         before: None,
+        // Cross-session history search bound. The GUI has no UI for it yet, so
+        // it stays absent (the Agent then applies its own default scan window).
+        max_sessions: None,
         requested_run_id: String::new(),
         client_request_id: String::new(),
         busy_policy: String::new(),
@@ -816,6 +835,7 @@ mod tests {
 
         let policy = crate::agent_proto::SandboxPolicy {
             tier: "sandbox".to_string(),
+            reviewer: String::new(),
         };
         let cmd = set_sandbox_policy_command(policy, "sess".to_string());
         assert_eq!(cmd.r#type, "set_sandbox_policy");
@@ -922,5 +942,37 @@ mod tests {
         let second = command_id();
         assert_ne!(first, second, "monotonic sequence separates same-ms ids");
         assert!(first.starts_with("desktop_"));
+    }
+
+    /// A half-filled readiness handshake is not readiness. Reporting it as ready
+    /// would let login persist a credential for a build this Desktop cannot talk
+    /// to, so an empty version — or an empty instance id — must be rejected.
+    #[tokio::test]
+    async fn get_agent_readiness_rejects_a_half_filled_payload() {
+        let mock = mock_agent();
+        for payload in [
+            serde_json::json!({"version": "", "agentInstanceId": "mock-agent"}),
+            serde_json::json!({"version": "0.9.0", "agentInstanceId": ""}),
+        ] {
+            mock.push_typed_data("get_agent_readiness", payload.clone());
+            let error = get_agent_readiness()
+                .await
+                .expect_err("an incomplete readiness payload must not read as ready");
+            assert!(
+                error.to_string().contains("incomplete readiness response"),
+                "{payload} produced {error}"
+            );
+        }
+        // The complete handshake still reads as ready, version and all.
+        mock.push_typed_data(
+            "get_agent_readiness",
+            serde_json::json!({"version": "0.9.0", "agentInstanceId": "mock-agent"}),
+        );
+        let info = get_agent_readiness()
+            .await
+            .expect("complete payload")
+            .expect("an Agent that answers the handshake is ready");
+        assert_eq!(info.version, "0.9.0");
+        assert_eq!(info.agent_instance_id, "mock-agent");
     }
 }

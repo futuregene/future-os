@@ -141,9 +141,9 @@ fn migrate_v1_config(raw: &Map<String, Value>) -> Result<BrowserConfig, BrowserE
         _ => DEFAULT_ENDPOINT.to_string(),
     };
 
-    if !is_http_url(&endpoint_raw) {
+    if let Err(reason) = crate::browser::target::EndpointTarget::parse(&endpoint_raw) {
         return Err(invalid_browser_config_error(format!(
-            "Invalid V1 endpoint: \"{endpoint_raw}\". Must be an http(s) URL."
+            "Invalid V1 endpoint: {reason}"
         )));
     }
 
@@ -277,18 +277,14 @@ fn require_non_empty_string(value: Option<&Value>, field: &str) -> Result<String
     }
 }
 
-fn is_http_url(value: &str) -> bool {
-    value.starts_with("http://") || value.starts_with("https://")
-}
-
 fn require_http_url(value: String, field: &str) -> Result<String, BrowserError> {
-    if is_http_url(&value) {
-        Ok(value)
-    } else {
-        Err(invalid_browser_config_error(format!(
-            "{field} must be an http(s) URL, got: {}",
-            serde_json::to_string(&value).unwrap_or_default()
-        )))
+    // A browser endpoint is either an http(s) URL or a local socket
+    // (`unix:` / `abstract:`), so the saved endpoint must survive a config
+    // round-trip for both. The list of valid forms lives in one place —
+    // `EndpointTarget::parse` — rather than being re-stated here.
+    match crate::browser::target::EndpointTarget::parse(&value) {
+        Ok(_) => Ok(value),
+        Err(reason) => Err(invalid_browser_config_error(format!("{field}: {reason}"))),
     }
 }
 

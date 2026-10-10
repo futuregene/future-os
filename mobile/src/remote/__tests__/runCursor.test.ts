@@ -24,6 +24,37 @@ describe("runCursor", () => {
     expect(cursor.get("run1")?.highWater).toBe(1);
   });
 
+  // A feed that omits indices on purpose (the client declared a trimmed lane)
+  // must advance over the hole: the peer is not sending those slices, so a gap
+  // verdict would send the engine into a reconcile that can never recover them.
+  test("a feed that omits indices applies across the hole", () => {
+    const cursor = newCursor();
+    nextEvent(
+      cursor,
+      "run1",
+      0,
+      undefined,
+      { omitIndices: true },
+    );
+    nextEvent(
+      cursor,
+      "run1",
+      1,
+      undefined,
+      { omitIndices: true },
+    );
+    expect(
+      nextEvent(cursor, "run1", 9, undefined, { omitIndices: true }),
+    ).toEqual({ kind: "apply", idx: 9 });
+    expect(cursor.get("run1")?.highWater).toBe(9);
+    // Without the flag the same jump is still a gap: the flag is what says the
+    // hole is by design, not the jump itself.
+    const strict = newCursor();
+    nextEvent(strict, "run1", 0);
+    nextEvent(strict, "run1", 1);
+    expect(nextEvent(strict, "run1", 9)).toEqual({ kind: "gap", fromIdx: 1 });
+  });
+
   test("old idx → dup", () => {
     const cursor = newCursor();
     nextEvent(cursor, "run1", 0);

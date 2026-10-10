@@ -52,6 +52,7 @@ future tui        # 终端 2：终端界面
 | 命令 | 用途 |
 |---|---|
 | `/help` | 显示帮助浮层（快捷键 + 核心命令） |
+| `/keymap` | 按键绑定编辑器：列出每个动作及其按键，按一个键即可重新绑定 |
 | `/model [name]` | 直接设置模型；不带参数时打开可搜索的模型选择器 |
 | `/models` | 打开模型启用范围编辑器（与 `/scoped-models` 同一菜单） |
 | `/models default` | 选择 agent 侧的新会话默认模型 |
@@ -59,6 +60,7 @@ future tui        # 终端 2：终端界面
 | `/providers` | 管理 provider：增/删/改、API key、同步模型 |
 | `/provider-key <id>` | 提示输入 provider 的 API key（见下文） |
 | `/skills` | 技能浏览器：搜索、预览、插入、安装 / 卸载 / 升级 |
+| `/skill-recommend [on\|off]` | 发送前推荐合适的技能（默认开启） |
 | `/tools [none\|all]` | 多选内置工具；`none` 表示全部禁用 |
 | `/permission [all\|workspace\|none]` | 设置工具权限级别（并记住它）；不带参数时打开沙箱面板 |
 | `/sandbox` | 沙箱 tier、后端可用性与权限选择器 |
@@ -72,9 +74,8 @@ future tui        # 终端 2：终端界面
 | `/delete [--yes]` | 删除当前会话（需 `--yes` 确认）并新建一个会话 |
 | `/title [zh\|en]` | 让模型生成会话标题并应用为会话名 |
 | `/compact` | 压缩对话上下文 |
-| `/status` | 会话状态、模型、token 用量、成本（作为消息打印到对话中） |
+| `/status` | 会话状态、模型、token 用量、成本，以及本会话的消息/工具计数（作为消息打印到对话中） |
 | `/usage` | token、成本、上下文与配额面板 |
-| `/stats` | 本会话的消息 / 工具 / token 计数与成本 |
 | `/agent` | agent 版本、实例 id、已发现与已加载的技能 |
 | `/metrics` | agent 上报的运行时计数器 |
 | `/snapshot` | 当前 run 的投影快照 |
@@ -86,11 +87,8 @@ future tui        # 终端 2：终端界面
 | `/import` | *TUI 中不可用*（占位，回复提示） |
 | `/reload` | 重载技能 + 上下文文件 |
 | `/cwd <dir>` | 切换工作目录 |
+| `/worktree [new <branch>]` | 列出仓库的 worktree（分支、脏状态）并把本会话切到其中一个；带 `new` 时先在主检出的 `.worktrees/` 下新建 |
 | `/context [on\|off]` | 列出上下文文件，或开/关上下文文件加载 |
-| `/system-prompt <text>` | 替换本会话的 system prompt |
-| `/append-prompt <text>` | 向本会话的 system prompt 追加内容 |
-| `/rule <glob>` | 为本会话的工具调用放行一个路径 glob（读写，仅本次 run，相对会话 cwd） |
-| `/ephemeral [on\|off]` | 停止或恢复把对话轮次写入会话文件 |
 | `/autocompact [on\|off]` | 开/关自动上下文压缩 |
 | `/autoretry [on\|off]` | 开/关失败 run 的自动重试 |
 | `/shell <cmd>` | 经 agent 执行一条命令并显示输出 |
@@ -98,7 +96,6 @@ future tui        # 终端 2：终端界面
 | `/cancel <run-id>` | 取消排队中的运行 |
 | `/approve <request-id>` | 批准待执行工具 |
 | `/reject <request-id>` | 拒绝待执行工具 |
-| `/quit-agent [--yes]` | 请求 agent 进程关闭（需 `--yes` 确认） |
 | `/editor` | 用 `$VISUAL` / `$EDITOR` 编辑当前草稿 |
 | `/cancel-input` | 取消正在等待的 `/provider-key` 输入 |
 
@@ -120,12 +117,10 @@ agent 侧设置：自动压缩开启时页脚会显示指示；`/autoretry` 则�
 ——在会话 cwd 里按 agent 自己的超时（默认 120 秒）执行——捕获的输出与
 `exit code: N` 会在分页浮层中打开。
 
-`/delete` 与 `/quit-agent` 是两个破坏性命令：不带字面量 `--yes` 时它们只会解释
-自己要做什么，不会发送任何请求。`/delete --yes` 删除会话文件后新建一个会话；
-`/quit-agent --yes` 请求 agent 停止接受新提示词。后者的行为需要说清楚：agent 会回答
-`Existing runs continue; new prompts are rejected.`，但本地 agent 进程本身仍要由退出
-信号（Ctrl-C 或桌面端停止）结束——TUI 会原样引用 agent 的这句话，并在进程退出前
-保持连接。
+`/delete` 是破坏性命令：不带字面量 `--yes` 时它只会解释自己要做什么，不会发送任何
+请求。`/delete --yes` 删除会话文件后新建一个会话。`/worktree` 刻意只做只读查询与
+新建：它只会跑 `git worktree list`/`status`/`rev-parse` 与 `git worktree add`，并直接
+拒绝 `remove`/`prune`/`reset`/`clean`/`checkout`/`gc`/`reflog`。
 
 ## 弹窗菜单与分页浮层
 
@@ -152,7 +147,7 @@ agent 侧设置：自动压缩开启时页脚会显示指示；`/autoretry` 则�
 直接输入即过滤（`backspace` 删除字符），`↑↓` 移动高亮并在两端循环，
 `enter` 选中，`escape` 关闭。
 
-`/transcript`、`/agent`、`/stats`、`/metrics`、`/snapshot`、`/history` 与
+`/transcript`、`/agent`、`/metrics`、`/snapshot`、`/history` 与
 `/tool-output` 会把完整结果放进全屏分页浮层：
 
 | 按键 | 动作 |
@@ -363,9 +358,10 @@ API key 字段留空表示保留已存的 key；agent 从不回传 key，因此�
 - `/models default` 选择新会话使用的全局默认模型——持久化在 **agent 的**
   `~/.future/agent/settings.json`，而不是 TUI 的设置文件。
 - `/status` 把会话状态（模型、provider、图片支持、上下文窗口、token 合计、成本）
-  打印到对话中；`/usage` 把同一份状态渲染成面板：标题行含模型与会话名、上下文
-  进度条、按模型分列的 token/成本行、配额与队列告警；`/stats` 另外给出本会话的消息、
-  工具与 token 计数，`/agent` 给出 agent 自身的版本与实例信息。三者都在分页浮层中打开。
+  连本会话的消息/工具/token 账目一起打印到对话中；`/usage` 把同一份状态渲染成
+  面板：标题行含模型与会话名、上下文进度条、按模型分列的 token/成本行、配额与
+  队列告警；`/agent` 给出 agent 自身的版本与实例信息。`/status` 打印到对话中，
+  `/usage` 打开自己的面板，其余在分页浮层中打开。
 
 ## 主题
 
@@ -407,14 +403,17 @@ provider 列表、会话列表、分页浮层，以及用量/沙箱面板。默�
 
 TUI 把客户端侧设置持久化到 `~/.future/tui/settings.json`：
 `defaultModel`、`defaultThinkingLevel`、`defaultPermissionLevel`、
-`enabledModelIds`、`themeId`、`bellOnComplete` 以及上面的 `notify` 对象。
+`enabledModelIds`、`themeId`、`bellOnComplete`、`skillRecommend`（由
+`/skill-recommend` 设置，默认开启）以及上面的 `notify` 对象。
 其中 `defaultModel`、`defaultThinkingLevel` 与 `defaultPermissionLevel` 会在 TUI
 启动时应用到 agent。日志：`PI_DEBUG_REDRAW=1` 时把调试重绘日志写入
 `~/.future/tui/debug.log`；`PI_TUI_WRITE_LOG=1` 时原始屏幕写入记录到
 `~/.future/tui/write.log`。
 
-键位就是上文的固定表；`~/.future/tui/keybindings.json` 覆盖文件目前**不会被读取**
-（键位管理器里有覆盖机制，但没有任何代码把文件读进它）。
+上文的按键是默认值。`/keymap` 会打开覆盖全部已注册动作的编辑器：在高亮行上按一个键
+即可重新绑定，与默认值的差异会写入 `~/.future/tui/keybindings.json`（与
+`settings.json` 同级），启动时读取。读不了的文件，或指定了本构建不存在的动作的文件，
+会直接在该面板里报告，默认键位继续生效。
 
 ## 排障
 

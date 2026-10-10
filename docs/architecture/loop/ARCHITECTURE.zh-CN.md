@@ -80,7 +80,8 @@ goal 删除/取消，或终局且无待送通知时 watcher 退出。它不是�
 1. **先记录** `SupervisorNote`，不依赖 Agent 可达或 supervisor 已注册；同 episode 去重。
 2. **准备不可变批次** `SupervisorBatchPrepared`：会话、note keys、消息、UUID。
    每批最多 32 条，每条有界并指向完整账本；watchdog 自然合并两个 tick 之间的消息。
-3. **推送**使用 `enqueue_if_busy`，不打断编排者。失败重试使用相同请求 key 和相同正文。
+3. **推送**使用 `enqueue_coalescing`，不打断编排者；它在忙时入队，并在下一个回合边界
+   折叠成**一个**回合。失败重试使用相同请求 key 和相同正文。
 4. **送达回执** `SupervisorBatchDelivered` 只在远端接收后写入。接收不代表编排者已执行。
 
 OS 锁串行化并发 flusher。掉线保留批次，恢复补送；换 supervisor 可从账本恢复通知。

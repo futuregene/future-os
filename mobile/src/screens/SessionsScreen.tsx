@@ -1,8 +1,7 @@
 import {
-  ChevronDown,
+  ChevronLeft,
   Folder,
   MessageCircle,
-  Monitor,
   Plus,
   Pin,
   Pencil,
@@ -11,7 +10,7 @@ import {
   Unplug,
   X,
 } from "lucide-react-native";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Modal,
@@ -19,6 +18,7 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -30,8 +30,12 @@ import { DialogSurface } from "../components/DialogSurface";
 import { useAppDialog } from "../components/useAppDialog";
 import { RenameModal } from "../features/chat/components/RenameModal";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
+import { useDesktopCatalogs } from "../remote/useDesktopCatalogs";
+import { mergeSessions, type DesktopFilter } from "../remote/mergeSessions";
+import { iconGlyph } from "../remote/peerIcons";
 import type { RemoteSession } from "../remote/types";
 import { SessionList } from "./SessionList";
+import { DesktopPicker } from "./DesktopPicker";
 import { DisconnectedScreen } from "./DisconnectedScreen";
 import { colors, layout, radius, spacing } from "../theme/tokens";
 import { promptUpgrade } from "../update/prompt";
@@ -60,12 +64,36 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const selectedDesktop =
     remote.desktops.find((desktop) => desktop.pairId === remote.credentials?.pairId) ??
     remote.desktops[0];
-  const selectedDesktopName =
-    selectedDesktop?.name ??
-    remote.credentials?.expectedDesktopId ??
-    selectedDesktop?.desktopId ??
-    t("desktops.title");
   const [tab, setTabState] = useState<Tab>(lastTab);
+  /**
+   * Which desktops the session list shows. Kept for the life of the screen: a
+   * filter that reset itself on every re-render would look like the list had a
+   * mind of its own.
+   */
+  const [desktopFilter, setDesktopFilter] = useState<DesktopFilter>({ kind: "all" });
+  const activeDesktopId = remote.credentials?.expectedDesktopId ?? null;
+  // Catalogues for the *other* paired desktops, so the merged list can show
+  // their sessions without disturbing the active connection.
+  const catalogs = useDesktopCatalogs(activeDesktopId, remote.sessions);
+  const mergedRows = useMemo(
+    () => mergeSessions(catalogs.catalogs, desktopFilter),
+    [catalogs.catalogs, desktopFilter],
+  );
+  /**
+   * The merged view replaces the workspace tree only when it has something the
+   * tree cannot show — rows from another desktop. A user with one pairing keeps
+   * today's list exactly, because the flat view is a different information
+   * architecture (a workspace name can exist on two machines at once).
+   */
+  const showMerged = useMemo(
+    () => mergedRows.some(row => row.desktopId !== activeDesktopId),
+    [mergedRows, activeDesktopId],
+  );
+  const peerIcons = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const desktop of remote.desktops) map.set(desktop.desktopId, iconGlyph(desktop.icon));
+    return map;
+  }, [remote.desktops]);
   const setTab = (next: Tab) => {
     lastTab = next;
     setTabState(next);
@@ -73,6 +101,14 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const [newOpen, setNewOpen] = useState(false);
   const [newMode, setNewMode] = useState<Tab>("chat");
   const [workspaceId, setWorkspaceId] = useState("");
+  // The new-conversation dialog has two views: the workspace picker and, from
+  // its "new workspace" row, the create form (the phone has no folder picker
+  // for the desktop, so the user types the host path).
+  const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
+  const [newWorkspaceName, setNewWorkspaceName] = useState("");
+  const [newWorkspacePath, setNewWorkspacePath] = useState("");
+  const [newWorkspaceError, setNewWorkspaceError] = useState<string | null>(null);
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<SettingsScreenHandle>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
@@ -89,6 +125,8 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
       setSettingsOpen(false);
       setMenuSession(null);
       setRenameTarget(null);
+      setNewWorkspaceOpen(false);
+      setNewWorkspaceError(null);
     }
   }
 
@@ -113,7 +151,41 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     }
     setNewMode("workspace");
     setWorkspaceId(remote.workspaces[0]?.id ?? "");
+    setNewWorkspaceOpen(false);
+    setNewWorkspaceError(null);
     setNewOpen(true);
+  };
+
+  const openNewWorkspaceForm = () => {
+    setNewWorkspaceName("");
+    setNewWorkspacePath("");
+    setNewWorkspaceError(null);
+    setNewWorkspaceOpen(true);
+  };
+
+  const closeNewWorkspaceForm = () => {
+    setNewWorkspaceOpen(false);
+    setNewWorkspaceName("");
+    setNewWorkspacePath("");
+    setNewWorkspaceError(null);
+  };
+
+  const submitNewWorkspace = async () => {
+    const path = newWorkspacePath.trim();
+    if (!path || creatingWorkspace) return;
+    setCreatingWorkspace(true);
+    setNewWorkspaceError(null);
+    try {
+      const workspace = await remote.createWorkspace(path, newWorkspaceName);
+      // Back to the picker with the new workspace selected; the user confirms
+      // with the ordinary "new conversation" button.
+      setWorkspaceId(workspace.id);
+      closeNewWorkspaceForm();
+    } catch {
+      setNewWorkspaceError(t("sessions.createWorkspaceFailed"));
+    } finally {
+      setCreatingWorkspace(false);
+    }
   };
 
   const confirmUnpair = () => {
@@ -164,6 +236,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const closeNew = () => {
     pendingNewConversationRef.current = null;
     setNewOpen(false);
+    closeNewWorkspaceForm();
   };
 
   const flushPendingNewConversation = () => {
@@ -319,20 +392,13 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           ] : []}
         />
         <View style={styles.deviceBar}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={t("desktops.title")}
-          onPress={onManageDesktops}
-          style={({ pressed }) => [styles.desktopSelector, pressed && styles.pressed]}
-        >
-          <View style={styles.desktopIcon}>
-            <Monitor color={colors.accent} size={20} />
-          </View>
-          <Text numberOfLines={1} style={styles.desktopIdentity}>
-            {selectedDesktopName}
-          </Text>
-          <ChevronDown color={colors.inkSoft} size={16} />
-        </Pressable>
+          <DesktopPicker
+            activeDesktopId={remote.credentials?.expectedDesktopId ?? null}
+            desktops={remote.desktops}
+            filter={desktopFilter}
+            onChange={setDesktopFilter}
+            onManage={onManageDesktops}
+          />
           <View style={styles.topActions}>
             <ConnectionBadge
               active={active}
@@ -370,6 +436,9 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           tab={tab}
           active={active}
           onTabChange={setTab}
+          activeDesktopId={remote.credentials?.expectedDesktopId ?? null}
+          icons={peerIcons}
+          merged={showMerged ? mergedRows : undefined}
           empty={tab === "workspace" ? workspaceEmpty : !connected ? offlineEmpty : createChatEmpty}
           onMenu={openSessionMenu}
         />}
@@ -392,66 +461,135 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           transparent
           visible={newOpen}
         >
-          <DialogSurface footer={
+          <DialogSurface footer={newWorkspaceOpen ? (
+            <Button
+              disabled={creatingWorkspace || !newWorkspacePath.trim()}
+              label={t("sessions.createWorkspaceAction")}
+              onPress={() => void submitNewWorkspace()}
+            />
+          ) : (
             <Button
               disabled={newMode === "workspace" && !workspaceId}
               label={t("sessions.new")}
               onPress={startConversation}
             />
-          }>
-              <View style={styles.dialogHeader}>
-                <Text style={styles.dialogTitle}>{t("sessions.new")}</Text>
-                <Pressable accessibilityRole="button" accessibilityLabel={t("common.close")} onPress={closeNew} style={styles.settingsButton}>
-                  <X color={colors.inkMuted} size={20} />
-                </Pressable>
-              </View>
-              <View style={styles.modeOptions}>
-                {(["workspace", "chat"] as Tab[]).map((mode) => (
-                  <Pressable
-                    key={mode}
-                    accessibilityRole="radio"
-                    accessibilityState={{ checked: newMode === mode }}
-                    onPress={() => {
-                      setNewMode(mode);
-                      if (mode === "workspace" && !workspaceId)
-                        setWorkspaceId(remote.workspaces[0]?.id ?? "");
-                    }}
-                    style={[styles.modeOption, newMode === mode && styles.modeOptionActive]}
-                  >
-                    {mode === "workspace" ? (
-                      <Folder color={colors.accent} size={18} />
-                    ) : (
-                      <MessageCircle color={colors.accent} size={18} />
-                    )}
-                    <Text style={styles.modeOptionText}>
-                      {mode === "workspace" ? t("sessions.workspace") : t("sessions.conversations")}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-              {newMode === "workspace" && (
-                <View style={styles.workspaceOptionsContent}>
-                  {remote.workspaces.map((workspace) => (
-                    <Pressable
-                      key={workspace.id}
-                      accessibilityRole="radio"
-                      accessibilityState={{ checked: workspaceId === workspace.id }}
-                      onPress={() => setWorkspaceId(workspace.id)}
-                      style={[
-                        styles.workspaceOption,
-                        workspaceId === workspace.id && styles.workspaceOptionActive,
-                      ]}
-                    >
-                      <Folder color={colors.accent} size={17} />
-                      <Text numberOfLines={1} style={styles.workspaceOptionName}>
-                        {workspace.name}
-                      </Text>
+          )}>
+              {newWorkspaceOpen ? (
+                <>
+                  <View style={styles.dialogHeader}>
+                    <Pressable accessibilityRole="button" accessibilityLabel={t("common.back")} onPress={closeNewWorkspaceForm} style={styles.settingsButton}>
+                      <ChevronLeft color={colors.inkMuted} size={20} />
                     </Pressable>
-                  ))}
-                  {remote.workspaces.length === 0 && (
-                    <Text style={styles.emptyInside}>{t("sessions.noWorkspaces")}</Text>
+                    <Text style={styles.dialogTitle}>{t("sessions.createWorkspace")}</Text>
+                    <Pressable accessibilityRole="button" accessibilityLabel={t("common.close")} onPress={closeNew} style={styles.settingsButton}>
+                      <X color={colors.inkMuted} size={20} />
+                    </Pressable>
+                  </View>
+                  <View style={styles.workspaceForm}>
+                    <Text style={styles.fieldLabel}>{t("sessions.workspaceName")}</Text>
+                    <TextInput
+                      accessibilityLabel={t("sessions.workspaceName")}
+                      autoCapitalize="sentences"
+                      editable={!creatingWorkspace}
+                      placeholder={t("sessions.workspaceNamePlaceholder")}
+                      placeholderTextColor={colors.inkMuted}
+                      style={styles.workspaceInput}
+                      value={newWorkspaceName}
+                      onChangeText={setNewWorkspaceName}
+                    />
+                    <Text style={styles.fieldLabel}>{t("sessions.workspacePath")}</Text>
+                    <TextInput
+                      accessibilityLabel={t("sessions.workspacePath")}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      editable={!creatingWorkspace}
+                      placeholder={t("sessions.workspacePathPlaceholder")}
+                      placeholderTextColor={colors.inkMuted}
+                      style={styles.workspaceInput}
+                      value={newWorkspacePath}
+                      onChangeText={setNewWorkspacePath}
+                    />
+                    <Text style={styles.fieldHint}>{t("sessions.workspacePathHint")}</Text>
+                    {newWorkspaceError && (
+                      <Text style={styles.fieldError}>{newWorkspaceError}</Text>
+                    )}
+                  </View>
+                </>
+              ) : (
+                <>
+                  <View style={styles.dialogHeader}>
+                    <Text style={styles.dialogTitle}>{t("sessions.new")}</Text>
+                    <Pressable accessibilityRole="button" accessibilityLabel={t("common.close")} onPress={closeNew} style={styles.settingsButton}>
+                      <X color={colors.inkMuted} size={20} />
+                    </Pressable>
+                  </View>
+                  <View style={styles.modeOptions}>
+                    {(["workspace", "chat"] as Tab[]).map((mode) => (
+                      <Pressable
+                        key={mode}
+                        accessibilityRole="radio"
+                        accessibilityState={{ checked: newMode === mode }}
+                        onPress={() => {
+                          setNewMode(mode);
+                          if (mode === "workspace" && !workspaceId)
+                            setWorkspaceId(remote.workspaces[0]?.id ?? "");
+                        }}
+                        style={[styles.modeOption, newMode === mode && styles.modeOptionActive]}
+                      >
+                        {mode === "workspace" ? (
+                          <Folder color={colors.accent} size={18} />
+                        ) : (
+                          <MessageCircle color={colors.accent} size={18} />
+                        )}
+                        <Text style={styles.modeOptionText}>
+                          {mode === "workspace" ? t("sessions.workspace") : t("sessions.conversations")}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                  {newMode === "workspace" && (
+                    <View style={styles.workspaceOptionsContent}>
+                      {remote.workspaces.map((workspace) => (
+                        <Pressable
+                          key={workspace.id}
+                          accessibilityRole="radio"
+                          accessibilityState={{ checked: workspaceId === workspace.id }}
+                          onPress={() => setWorkspaceId(workspace.id)}
+                          style={[
+                            styles.workspaceOption,
+                            workspaceId === workspace.id && styles.workspaceOptionActive,
+                          ]}
+                        >
+                          <Folder color={colors.accent} size={17} />
+                          <Text numberOfLines={1} style={styles.workspaceOptionName}>
+                            {workspace.name}
+                          </Text>
+                        </Pressable>
+                      ))}
+                      {/* The phone can't browse the host, so it registers a
+                          directory the user typed — the same store write as the
+                          Desktop's own create-workspace dialog. Gated on the
+                          capability: an older desktop answers the command with
+                          "Unsupported command". */}
+                      {remote.capabilities?.has("workspace_create_v1") && (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={t("sessions.createWorkspace")}
+                          onPress={openNewWorkspaceForm}
+                          style={styles.workspaceOption}
+                        >
+                          <Plus color={colors.accent} size={17} />
+                          <Text numberOfLines={1} style={styles.workspaceOptionName}>
+                            {t("sessions.createWorkspace")}
+                          </Text>
+                        </Pressable>
+                      )}
+                      {remote.workspaces.length === 0 && (
+                        <Text style={styles.emptyInside}>{t("sessions.noWorkspaces")}</Text>
+                      )}
+                    </View>
                   )}
-                </View>
+                </>
               )}
           </DialogSurface>
         </Modal>
@@ -469,6 +607,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
             onClose={() => setSettingsOpen(false)}
             onCheckUpdate={() => afterSettings(() => void checkUpdate())}
             checkingUpdate={checkingUpdate}
+            onOpenConversation={sessionId => afterSettings(() => void remote.selectSession(sessionId))}
           /> : null}
         </Modal>
 
@@ -610,6 +749,20 @@ const styles = StyleSheet.create({
   },
   workspaceOptionActive: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
   workspaceOptionName: { flex: 1, color: colors.ink, fontSize: 14, fontWeight: "600" },
+  workspaceForm: { gap: spacing.xs },
+  fieldLabel: { color: colors.ink, fontSize: 14, fontWeight: "600" },
+  workspaceInput: {
+    minHeight: layout.touchTarget,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: radius.md,
+    color: colors.ink,
+    fontSize: 15,
+  },
+  fieldHint: { color: colors.inkMuted, fontSize: 13, lineHeight: 18 },
+  fieldError: { color: colors.danger, fontSize: 13, lineHeight: 18 },
   settingsLabel: {
     color: colors.inkMuted,
     fontSize: 12,

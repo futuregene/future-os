@@ -1,0 +1,15 @@
+[package]
+name = "future-app-workspaces"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The desktop app's workspace records (~/.future/app/app.db) — shared by the Tauri backend and the CLI"
+
+[dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde.workspace = true
+chrono = { workspace = true, features = ["clock"] }
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

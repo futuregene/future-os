@@ -162,7 +162,18 @@ pub struct InternalTabInfo {
     pub index: usize,
     pub title: String,
     pub url: String,
+    /// The page this tool will act on.
+    ///
+    /// Not necessarily the one on screen: it is the page the user selected (or
+    /// the tool resolved), and the two can differ.
     pub active: bool,
+    /// The page the user is actually looking at.
+    ///
+    /// For CDP this is observed from the page (`document.visibilityState`),
+    /// which is the only answer that can be trusted; for WebDriver the current
+    /// window handle already is the visible one. A caller that must touch what
+    /// the user sees should require this, not `active`.
+    pub visible: bool,
 }
 
 /// `InternalActionResult`.
@@ -247,6 +258,18 @@ pub trait BrowserSession: Send {
     ) -> Result<InternalActionResult, String>;
 
     async fn tabs(&mut self, action: &TabsAction) -> Result<InternalTabsResult, String>;
+
+    /// The order this session presents tabs in.
+    ///
+    /// Persisted by callers so `--index` means the same tab from one command to
+    /// the next: each CLI run is a separate process, and without a stored order
+    /// every run re-derives one from CDP discovery order, which is not stable.
+    ///
+    /// Empty means "this session has no order worth keeping" (the default), and
+    /// callers then leave the stored order alone.
+    fn tab_order(&mut self) -> Vec<String> {
+        Vec::new()
+    }
 
     async fn evaluate(&mut self, request: &EvaluateRequest) -> Result<Value, String>;
 

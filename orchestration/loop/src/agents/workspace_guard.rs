@@ -331,6 +331,38 @@ mod tests {
 
     // ── path normalization ───────────────────────────────────────────────
 
+    /// `std::fs::canonicalize` hands back the Windows verbatim spelling. Every
+    /// branch of the stripping helper matters: the drive-letter form is unwrapped
+    /// as-is, the UNC form has its `UNC\` marker removed so the result is a plain
+    /// `\\server\share`, and a path that never had the prefix is returned
+    /// untouched (the `else` branch, which the two others would otherwise mask).
+    #[cfg(windows)]
+    #[test]
+    fn ordinary_path_unwraps_verbatim_and_unc_spellings() {
+        assert_eq!(
+            ordinary_path(std::path::PathBuf::from(r"\\?\C:\work\repo")),
+            std::path::PathBuf::from(r"C:\work\repo")
+        );
+        assert_eq!(
+            ordinary_path(std::path::PathBuf::from(r"\\?\UNC\server\share\dir")),
+            std::path::PathBuf::from(r"\\server\share\dir")
+        );
+        // Already-ordinary paths pass through unchanged.
+        let plain = std::path::PathBuf::from(r"C:\work\repo");
+        assert_eq!(ordinary_path(plain.clone()), plain);
+        let unc = std::path::PathBuf::from(r"\\server\share");
+        assert_eq!(ordinary_path(unc.clone()), unc);
+    }
+
+    /// Off Windows the helper is the identity: canonicalize already returns a
+    /// plain path, so nothing may be rewritten.
+    #[cfg(not(windows))]
+    #[test]
+    fn ordinary_path_is_the_identity_off_windows() {
+        let path = std::path::PathBuf::from("/work/repo");
+        assert_eq!(ordinary_path(path.clone()), path);
+    }
+
     #[test]
     fn normalize_absolutizes_relative_paths_against_cwd() {
         let cwd = std::env::current_dir().unwrap();

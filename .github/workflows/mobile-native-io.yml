@@ -4,13 +4,13 @@ on:
   pull_request:
     paths:
       - 'mobile/modules/future-share-intent/android/**'
-      - 'scripts/test-mobile-share-io.py'
+      - 'scripts/tests/test-mobile-share-io.py'
       - '.github/workflows/mobile-native-io.yml'
   push:
     branches: [main]
     paths:
       - 'mobile/modules/future-share-intent/android/**'
-      - 'scripts/test-mobile-share-io.py'
+      - 'scripts/tests/test-mobile-share-io.py'
       - '.github/workflows/mobile-native-io.yml'
 
 permissions:
@@ -26,4 +26,4 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - run: python3 scripts/test-mobile-share-io.py
+      - run: python3 scripts/tests/test-mobile-share-io.py

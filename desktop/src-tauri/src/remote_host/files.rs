@@ -24,7 +24,10 @@ pub const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_JSON_RICH_PREVIEW_BYTES: u64 = 1024 * 1024;
 pub const MAX_MESSAGE_BYTES: u64 = 20 * 1024 * 1024;
 pub const MAX_ATTACHMENTS: usize = 10;
-pub const MAX_IMAGES: usize = 4;
+// The per-message image cap for a remote (phone) send. It matches the attachment
+// cap, so a message may be filled with images; a batch over either limit is
+// rejected. Desktop-side selection keeps its own, smaller rule.
+pub const MAX_IMAGES: usize = 10;
 const MOBILE_PREVIEW_MAX_EDGE: u32 = 1600;
 const PREVIEW_CACHE_VERSION: &[u8] = b"futureos-mobile-preview-v1";
 const MAX_PREVIEW_CACHE_BYTES: u64 = 100 * 1024 * 1024;
@@ -134,9 +137,21 @@ fn preview_cache_path(source: &Path) -> Result<Option<PathBuf>, crate::AppError>
     ))
 }
 
+/// Sweep the shared preview cache: expired files, then least-recently-modified
+/// ones while the directory is over its byte budget.
 fn prune_preview_cache() {
-    let dir = preview_cache_dir();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    prune_preview_cache_at(&preview_cache_dir());
+}
+
+/// The sweep itself, over an explicit directory.
+///
+/// Taking the directory as a parameter is what keeps the unit test off the
+/// process-wide cache: `tests` runs in parallel threads, and a sibling test
+/// calling [`clear_preview_cache`] does `remove_dir_all` on the shared path —
+/// deleting the fixture this sweep is meant to observe. Same shape as
+/// [`persist_image_preview_cache`], which also takes its path.
+fn prune_preview_cache_at(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     let mut files = entries
@@ -617,6 +632,10 @@ fn mime_type_for_name(name: &str) -> &'static str {
     if lower.ends_with(".tar.gz") {
         return "application/gzip";
     }
+    // Names with no extension at all (`Makefile`, `.gitignore`, `Cargo.lock`).
+    if is_text_file_name(name) {
+        return "text/plain";
+    }
     let ext = Path::new(&lower)
         .extension()
         .and_then(|value| value.to_str())
@@ -633,7 +652,9 @@ fn mime_type_for_name(name: &str) -> &'static str {
         "csv" => "text/csv",
         "tsv" => "text/tab-separated-values",
         "json" => "application/json",
+        "ipynb" => "application/json",
         "jsonl" => "application/jsonl",
+        "ndjson" => "application/x-ndjson",
         "yaml" | "yml" => "application/yaml",
         "xml" => "application/xml",
         "html" | "htm" => "text/html",
@@ -688,10 +709,10 @@ fn mime_type_for_name(name: &str) -> &'static str {
 /// The phone's allow-list (`mobile/src/remote/fileTypes.ts`, `route: "text"`)
 /// must cover exactly this set — a suffix missing here is refused before the
 /// transfer, and one accepted here must be previewable there. (`.txt` / `.log`
-/// are handled by the `text/plain` arm above, `.md` / `.json` by theirs.)
-/// The desktop overlay's list (`desktop/src/features/filepreview/previewKind.ts`)
-/// is deliberately wider: it has no transfer budget and reads whatever the OS
-/// hands it.
+/// are handled by the `text/plain` arm above, `.md` / `.json` / `.ipynb` by
+/// theirs.) The desktop overlay's own list
+/// (`desktop/src/features/filepreview/previewKind.ts`) is deliberately wider:
+/// it has no transfer budget and reads whatever the OS hands it.
 const CODE_TEXT_EXTENSIONS: &[&str] = &[
     "asm",
     "bash",
@@ -702,26 +723,36 @@ const CODE_TEXT_EXTENSIONS: &[&str] = &[
     "clj",
     "cljs",
     "cjs",
+    "cmake",
     "cmd",
     "conf",
     "cpp",
     "cs",
     "csh",
+    "csproj",
     "css",
+    "cts",
+    "csv",
     "cxx",
     "dart",
+    "diff",
+    "edn",
     "el",
+    "elm",
     "env",
     "erl",
     "ex",
     "exs",
+    "f",
     "f90",
     "f95",
     "fish",
     "go",
     "gradle",
+    "graphql",
     "groovy",
     "h",
+    "hcl",
     "hh",
     "hpp",
     "hs",
@@ -729,21 +760,30 @@ const CODE_TEXT_EXTENSIONS: &[&str] = &[
     "ini",
     "java",
     "jl",
+    "jsonl",
     "js",
     "jsx",
     "kt",
     "kts",
     "less",
     "lisp",
+    "lock",
     "lua",
     "m",
+    "mk",
     "mjs",
+    "mm",
+    "mts",
+    "ndjson",
     "nim",
     "pas",
+    "patch",
     "php",
     "pl",
+    "plist",
     "pm",
     "properties",
+    "proto",
     "ps1",
     "py",
     "pyi",
@@ -755,22 +795,102 @@ const CODE_TEXT_EXTENSIONS: &[&str] = &[
     "scm",
     "scss",
     "sh",
+    "sln",
     "sol",
     "sql",
     "svelte",
     "swift",
     "tf",
+    "tfvars",
     "toml",
     "ts",
+    "tsv",
     "tsx",
     "vb",
     "vue",
+    "xcconfig",
+    "xhtml",
+    "xml",
+    "yaml",
+    "yml",
     "zig",
     "zsh",
 ];
 
+/// Suffix-less file names the phone reads in-app as plain text. Kept in step
+/// with the phone's `MOBILE_FILE_NAMES` (`mobile/src/remote/fileTypes.ts`).
+const CODE_TEXT_NAMES: &[&str] = &[
+    ".babelrc",
+    ".bashrc",
+    ".bazelrc",
+    ".condarc",
+    ".dockerignore",
+    ".editorconfig",
+    ".envrc",
+    ".eslintrc",
+    ".gitattributes",
+    ".gitignore",
+    ".gitmodules",
+    ".npmrc",
+    ".nvmrc",
+    ".prettierrc",
+    ".profile",
+    ".rprofile",
+    ".vimrc",
+    ".yamllint",
+    ".zshrc",
+    "authors",
+    "brewfile",
+    "build.bazel",
+    "caddyfile",
+    "changelog",
+    "codeowners",
+    "gemfile",
+    "go.mod",
+    "go.sum",
+    "justfile",
+    "license",
+    "meson.build",
+    "notice",
+    "podfile",
+    "procfile",
+    "rakefile",
+    "readme",
+    "vagrantfile",
+    "workspace",
+];
+
+/// Names that qualify themselves with a suffix (`Dockerfile.dev`, `Makefile.am`,
+/// `.env.local`): the prefix alone, or the prefix followed by `.`.
+const CODE_TEXT_NAME_PREFIXES: &[&str] = &[
+    "makefile",
+    "gnumakefile",
+    "dockerfile",
+    "containerfile",
+    "jenkinsfile",
+    ".env",
+];
+
 fn is_code_text_extension(ext: &str) -> bool {
     CODE_TEXT_EXTENSIONS.contains(&ext)
+}
+
+/// The last path segment, lowercased. `name` is only ever a client-supplied
+/// string, so both platform separators have to be considered — `Path` would
+/// treat `C:\w\Makefile` as one component on Unix.
+fn base_file_name(name: &str) -> String {
+    display_name(name, name).to_ascii_lowercase()
+}
+
+fn is_text_file_name(name: &str) -> bool {
+    let base = base_file_name(name);
+    if CODE_TEXT_NAMES.contains(&base.as_str()) {
+        return true;
+    }
+    CODE_TEXT_NAME_PREFIXES.iter().any(|prefix| {
+        base.strip_prefix(prefix)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+    })
 }
 
 fn is_mobile_download_allowed(name: &str) -> bool {
@@ -857,6 +977,10 @@ fn prepare_preview(
         .unwrap_or_default()
         .to_ascii_lowercase();
     let original_name = display_name(requested_display_name, "attachment");
+    // Suffix-less files (`.gitignore`, `Makefile`, `Cargo.lock`) have nothing for
+    // the extension branches below to match on; the name is their only signal,
+    // and it is the name the client matched on to ask for a text preview.
+    let named_text = is_text_file_name(&original_name);
     let dir = transfer_root().join("download");
     ensure_private_dir(&dir)?;
     let stamp = new_transfer_id("preview");
@@ -938,9 +1062,10 @@ fn prepare_preview(
             .into());
     }
     let markdown = matches!(ext.as_str(), "md" | "markdown");
-    let json = ext == "json";
+    let json = matches!(ext.as_str(), "json" | "ipynb");
     let rich_json = json && size < MAX_JSON_RICH_PREVIEW_BYTES;
-    let plain_text = matches!(ext.as_str(), "txt" | "log") || is_code_text_extension(&ext);
+    let plain_text =
+        named_text || matches!(ext.as_str(), "txt" | "log") || is_code_text_extension(&ext);
     if !markdown && !json && !plain_text {
         return Err("This file type must be opened by a mobile app."
             .to_string()
@@ -1109,6 +1234,51 @@ pub fn clear_preview_cache() {
 pub fn clear_all() {
     clear_transfers();
     clear_preview_cache();
+}
+
+/// Serve a local file as if a `download_prepare` had named it.
+///
+/// The client's pull path needs a host that will really publish chunks, and
+/// reaching one through `download_prepare` would mean standing up an agent
+/// session whose attachment the host is willing to export. That would test the
+/// host's policy, which is already covered in this module; what is new and
+/// worth exercising is the *client's* half — registering the pull, joining the
+/// byte publish to the acknowledgement, and checking the assembled file
+/// against the size and hash the host declared. So the record is created here,
+/// with the same shape and the same serving path a prepared download uses.
+///
+/// Returned as the **wire form** rather than the struct: that is what really
+/// travels, so a test reading it also checks the field names the two sides
+/// agree on.
+#[cfg(test)]
+pub(crate) fn register_download_for_test(path: &Path) -> serde_json::Value {
+    let size = std::fs::metadata(path)
+        .expect("the test file to exist")
+        .len();
+    let content_hash = sha256_file(path).expect("hash the test file");
+    let transfer_id = new_transfer_id("download");
+    DOWNLOADS.lock().unwrap().insert(
+        transfer_id.clone(),
+        DownloadRecord {
+            path: path.to_path_buf(),
+            size,
+            created_at: SystemTime::now(),
+        },
+    );
+    serde_json::to_value(DownloadInfo {
+        transfer_id,
+        name: path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        mime_type: "application/octet-stream".to_string(),
+        size,
+        content_hash,
+        preview_kind: "file".to_string(),
+        variant: "original".to_string(),
+        chunk_bytes: CHUNK_BYTES,
+    })
+    .expect("a declaration always serializes")
 }
 
 pub(crate) fn write_upload_chunk(
@@ -1341,11 +1511,21 @@ mod tests {
         assert_eq!(preview.mime_type, "application/json");
         std::fs::remove_file(preview.path).unwrap();
 
+        // Text data formats are read in-app as plain text.
         let csv = dir.join("result.csv");
         std::fs::write(&csv, "sample,value\na,1\n").unwrap();
-        let error = prepare_preview(&csv, "result.csv")
-            .expect_err("CSV must be delegated to an installed mobile app");
-        assert!(error.to_string().contains("mobile app"));
+        let csv_preview = prepare_preview(&csv, "result.csv").unwrap();
+        assert_eq!(csv_preview.preview_kind, "text");
+        assert_eq!(csv_preview.mime_type, "text/plain");
+        std::fs::remove_file(csv_preview.path).unwrap();
+
+        // A notebook is one JSON document, so it gets the rich JSON reader.
+        let notebook = dir.join("plan.ipynb");
+        std::fs::write(&notebook, r#"{"cells":[]}"#).unwrap();
+        let notebook_preview = prepare_preview(&notebook, "plan.ipynb").unwrap();
+        assert_eq!(notebook_preview.preview_kind, "json");
+        assert_eq!(notebook_preview.mime_type, "application/json");
+        std::fs::remove_file(notebook_preview.path).unwrap();
 
         // Code / config files are read in-app as plain text.
         for (file_name, body) in [
@@ -1353,12 +1533,32 @@ mod tests {
             ("train.py", "print('hi')\n"),
             ("server.go", "package main\n"),
             ("config.toml", "[a]\nb = 1\n"),
+            ("api.proto", "message Ping {}\n"),
+            ("changes.patch", "--- a\n+++ b\n"),
         ] {
             let code = dir.join(file_name);
             std::fs::write(&code, body).unwrap();
             let preview = prepare_preview(&code, file_name).unwrap();
             assert_eq!(preview.preview_kind, "text");
             assert_eq!(preview.mime_type, "text/plain");
+            std::fs::remove_file(preview.path).unwrap();
+        }
+
+        // A suffix-less name is the only signal those files have.
+        for file_name in [
+            "Makefile",
+            "Dockerfile.dev",
+            ".gitignore",
+            "Cargo.lock",
+            "go.mod",
+            "LICENSE",
+        ] {
+            let named = dir.join(file_name);
+            std::fs::write(&named, "all:\n\tcc -o app main.c\n").unwrap();
+            let preview = prepare_preview(&named, file_name).unwrap();
+            assert_eq!(preview.preview_kind, "text");
+            assert_eq!(preview.mime_type, "text/plain");
+            assert_eq!(preview.name, file_name);
             std::fs::remove_file(preview.path).unwrap();
         }
 
@@ -1378,12 +1578,22 @@ mod tests {
         assert_eq!(mime_type_for_name("drawing.svg"), "image/svg+xml");
         assert_eq!(mime_type_for_name("MAIN.RS"), "text/plain");
         assert_eq!(mime_type_for_name("train.py"), "text/x-python");
+        assert_eq!(mime_type_for_name("analysis.ipynb"), "application/json");
+        // Suffix-less names, reached through either platform's path form.
+        assert_eq!(mime_type_for_name("Makefile"), "text/plain");
+        assert_eq!(mime_type_for_name("Dockerfile.dev"), "text/plain");
+        assert_eq!(mime_type_for_name(".gitignore"), "text/plain");
+        assert_eq!(mime_type_for_name("C:\\w\\servers\\Makefile"), "text/plain");
         assert!(is_mobile_download_allowed("archive.7z"));
         assert!(is_mobile_download_allowed("analysis.jsonl"));
         assert!(is_mobile_download_allowed("main.rs"));
         assert!(is_mobile_download_allowed("config.toml"));
+        assert!(is_mobile_download_allowed("Cargo.lock"));
+        assert!(is_mobile_download_allowed("Makefile"));
         assert!(!is_mobile_download_allowed("dataset.h5"));
         assert!(!is_mobile_download_allowed("unknown"));
+        // A name that merely starts like one of the prefixes is not a match.
+        assert!(!is_mobile_download_allowed("makefile-list.bin"));
     }
 }
 
@@ -1605,10 +1815,17 @@ mod flow_tests {
             UploadReference { upload_id: id }
         };
 
-        // Five images exceed the four-image cap.
-        let five: Vec<UploadReference> = (0..5).map(|_| make_image()).collect();
-        let error = claim_uploads(&five, "thread-img").unwrap_err();
-        assert!(error.to_string().contains("at most 4 images"));
+        // Eleven images exceed the ten-image cap (and the ten-attachment one).
+        let eleven: Vec<UploadReference> = (0..MAX_IMAGES + 1).map(|_| make_image()).collect();
+        let error = claim_uploads(&eleven, "thread-img").unwrap_err();
+        assert!(error.to_string().contains("at most 10 attachments"));
+
+        // The same batch up to the cap is accepted.
+        let ten: Vec<UploadReference> = (0..MAX_IMAGES).map(|_| make_image()).collect();
+        assert_eq!(
+            claim_uploads(&ten, "thread-img-10").unwrap().len(),
+            MAX_IMAGES
+        );
 
         // A non-image payload claiming to be an image fails validation.
         let bogus = init_upload("pic.png", "", "image/png", "image", 4, 4)
@@ -2292,7 +2509,11 @@ mod flow_tests {
 
     #[test]
     fn prune_preview_cache_removes_expired_files() {
-        let dir = preview_cache_dir();
+        // A private directory, not `preview_cache_dir()`: the shared cache is
+        // process-wide and a sibling test wipes it, which deleted this test's
+        // fresh fixture out from under the assertion (flaky only under full-suite
+        // load, when the two happen to interleave).
+        let dir = std::env::temp_dir().join(unique("futureos-prune-cache"));
         std::fs::create_dir_all(&dir).unwrap();
         let expired = dir.join("expired.jpg");
         std::fs::write(&expired, b"old").unwrap();
@@ -2308,11 +2529,20 @@ mod flow_tests {
             .set_times(std::fs::FileTimes::new().set_modified(past))
             .unwrap();
 
-        prune_preview_cache();
+        prune_preview_cache_at(&dir);
 
         assert!(!expired.exists(), "expired cache file removed");
         assert!(fresh.exists(), "fresh cache file kept");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A sweep of a directory that does not exist is a no-op, not a panic: it is
+    /// reached on every transfer cycle before the cache has ever been written.
+    #[test]
+    fn prune_preview_cache_tolerates_a_missing_directory() {
+        let dir = std::env::temp_dir().join(unique("futureos-prune-cache-absent"));
+        assert!(!dir.exists(), "fixture must not exist");
+        prune_preview_cache_at(&dir);
     }
 
     #[test]
@@ -2383,6 +2613,111 @@ mod flow_tests {
         // `cache_path.exists()` → early return without touching the cache.
         persist_image_preview_cache(&prepared, &cache);
         assert_eq!(std::fs::read(&cache).unwrap(), b"already there");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The preview cache is a *cache*: every way of populating it fails must
+    /// leave the requested download working and leave no half-written file
+    /// behind, because the phone retries the same request.
+    #[test]
+    fn a_preview_cache_that_cannot_be_written_leaves_no_debris() {
+        let dir = std::env::temp_dir().join(unique("futureos-persist-debris"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("source.jpg");
+        image::DynamicImage::new_rgb8(5, 5).save(&source).unwrap();
+        let prepared = || PreparedPreview {
+            path: source.clone(),
+            name: "x.jpg".to_string(),
+            mime_type: "image/jpeg".to_string(),
+            preview_kind: "image".to_string(),
+            variant: "preview".to_string(),
+        };
+        let temporary_files = |dir: &std::path::Path| {
+            std::fs::read_dir(dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+                .count()
+        };
+
+        // A cache path with no parent at all is not a place to write: the
+        // function returns before it computes a temporary path.
+        persist_image_preview_cache(&prepared(), Path::new(""));
+
+        // The copy of the source fails (`path` is a directory, not a file), so
+        // no temporary file may survive the attempt and no cache appears.
+        let mut unreadable = prepared();
+        unreadable.path = dir.clone();
+        let cache = dir.join("copy-failed.jpg");
+        persist_image_preview_cache(&unreadable, &cache);
+        assert!(!cache.exists(), "a failed copy must not publish a preview");
+        assert_eq!(temporary_files(&dir), 0, "a failed copy left a .tmp behind");
+
+        // The rename fails (the cache path is a non-empty directory), so the
+        // existing entry survives and no `.tmp` remains.
+        let blocked = dir.join("blocked.jpg");
+        std::fs::create_dir_all(blocked.join("occupied")).unwrap();
+        persist_image_preview_cache(&prepared(), &blocked);
+        assert!(
+            blocked.join("occupied").exists(),
+            "the existing cache survives"
+        );
+        assert_eq!(
+            temporary_files(&dir),
+            0,
+            "a failed rename left a .tmp behind"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A cache entry the desktop cannot even `stat` is an error the caller
+    /// reports, not a silent miss: answering `Ok(None)` would send the phone
+    /// back to re-prepare against a path that can never be probed.
+    #[test]
+    fn an_unstattable_cache_path_is_reported_not_ignored() {
+        // 300 characters cannot be a file-name component on any supported
+        // platform, and the resulting error is not `NotFound`.
+        let error = cached_image_preview("photo.jpg", Path::new(&"p".repeat(300)))
+            .expect_err("an unstattable cache path is an error");
+        assert!(
+            !error.to_string().is_empty(),
+            "the error carries a reason: {error}"
+        );
+        // A path that simply does not exist stays a cache miss.
+        assert!(
+            cached_image_preview("photo.jpg", Path::new("futureos-absent-preview.jpg"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// Rolling back a claimed attachment must remove its cached thumbnail too.
+    /// A surviving thumbnail is a file under the app's data dir that no row
+    /// refers to again — it is never overwritten and never collected.
+    #[test]
+    fn a_rollback_removes_the_thumbnail_as_well_as_the_copy() {
+        let dir = std::env::temp_dir().join(unique("futureos-rollback-thumb"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let copy = dir.join("attachment.png");
+        let thumbnail = dir.join("attachment.thumb.png");
+        std::fs::write(&copy, b"copy").unwrap();
+        std::fs::write(&thumbnail, b"thumb").unwrap();
+        let claimed = vec![AttachmentInput {
+            path: copy.to_string_lossy().into_owned(),
+            kind: "image".to_string(),
+            name: "attachment.png".to_string(),
+            thumbnail: Some(thumbnail.to_string_lossy().into_owned()),
+        }];
+        rollback_claimed(&claimed);
+        assert!(!copy.exists(), "the claimed copy is removed");
+        assert!(!thumbnail.exists(), "the cached thumbnail is removed");
+        // An attachment without a thumbnail is not an error.
+        rollback_claimed(&[AttachmentInput {
+            path: copy.to_string_lossy().into_owned(),
+            kind: "file".to_string(),
+            name: "gone.txt".to_string(),
+            thumbnail: None,
+        }]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

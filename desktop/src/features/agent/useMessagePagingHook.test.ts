@@ -629,4 +629,467 @@ describe("useMessagePaging", () => {
     expect(container.scrollTop).toBe(30);
     h.unmount();
   });
+
+  it("leaves ctrl-wheel (zoom) and zero-delta wheel events to the browser", async () => {
+    // boundary: a ctrl-wheel is the browser's pinch-zoom and a zero-delta wheel is
+    // noise; neither is a paging gesture, so both must be ignored before any
+    // protection or load logic runs.
+    const { container, h } = setup();
+    container.scrollTop = 0;
+    const zoom = new WheelEvent("wheel", { deltaY: -40, ctrlKey: true, cancelable: true });
+    const zero = new WheelEvent("wheel", { deltaY: 0, cancelable: true });
+    act(() => container.dispatchEvent(zoom));
+    act(() => container.dispatchEvent(zero));
+
+    expect(zoom.defaultPrevented).toBe(false);
+    expect(zero.defaultPrevented).toBe(false);
+    expect(h.current.showLoadOlderHint).toBe(false);
+    h.unmount();
+  });
+
+  it("scales a line-mode wheel by the line height, as Firefox reports it", async () => {
+    // platform-cfg: a wheel event carries `deltaMode`. Chromium reports PIXEL (0),
+    // Firefox reports LINE (1) for a mouse wheel, and some report PAGE (2). The
+    // handler scales the delta per mode, so a Firefox user's wheel moves the view
+    // by lines rather than by the raw count. Every other fixture used the
+    // constructor default (pixel), so both non-pixel arms were uncovered.
+    const container = document.createElement("div");
+    document.body.append(container);
+    container.style.lineHeight = "20px";
+    const scrollRef = { current: container as HTMLElement | null };
+    const h = renderHook(() => useMessagePaging({
+      messages: MESSAGES,
+      scrollRef,
+      userExchangeCount: 2,
+    }));
+    // Enter the protected state at the top, then take an explicit downward wheel.
+    container.scrollTop = 0;
+    act(() => h.current.handleScroll());
+    container.scrollTop = 600;
+    const down = new WheelEvent("wheel", { deltaMode: 1, deltaY: 8, cancelable: false });
+    act(() => container.dispatchEvent(down));
+
+    // 600 + 8 lines × 20px (set above, so the assertion tests the multiplication
+    // rather than the code's own `|| 16` fallback).
+    expect(container.scrollTop).toBe(760);
+    h.unmount();
+    container.remove();
+  });
+
+  it("scales a page-mode wheel by the viewport height", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    Object.defineProperty(container, "clientHeight", { configurable: true, value: 200 });
+    const scrollRef = { current: container as HTMLElement | null };
+    const h = renderHook(() => useMessagePaging({
+      messages: MESSAGES,
+      scrollRef,
+      userExchangeCount: 2,
+    }));
+    container.scrollTop = 0;
+    act(() => h.current.handleScroll());
+    container.scrollTop = 600;
+    const down = new WheelEvent("wheel", { deltaMode: 2, deltaY: 8, cancelable: false });
+    act(() => container.dispatchEvent(down));
+
+    // 600 + 8 pages × 200px viewport.
+    expect(container.scrollTop).toBe(2200);
+    h.unmount();
+    container.remove();
+  });
+
+  it("leaves a downward wheel to native scrolling", async () => {
+    // boundary: only an upward wheel at the top pages history in; a downward one is
+    // ordinary scrolling and must not be prevented or turned into a load.
+    const { container, h } = setup();
+    container.scrollTop = 0;
+    const down = new WheelEvent("wheel", { deltaY: 40, cancelable: true });
+    act(() => container.dispatchEvent(down));
+
+    expect(down.defaultPrevented).toBe(false);
+    expect(h.current.showLoadOlderHint).toBe(false);
+    h.unmount();
+  });
+
+  it("does not load on an upward wheel away from the top", async () => {
+    // boundary: the wheel is upward but the viewport is not at the top yet, so the
+    // collision that starts a transaction has not happened.
+    const { container, h } = setup();
+    container.scrollTop = 200;
+    const up = new WheelEvent("wheel", { deltaY: -40, cancelable: true });
+    act(() => container.dispatchEvent(up));
+
+    expect(h.current.showLoadOlderHint).toBe(false);
+    h.unmount();
+  });
+
+  it("does not load on an upward wheel at the top when everything is loaded", () => {
+    // boundary: no older page exists, so the collision must stay inert.
+    const { container, h } = setup(MESSAGES.slice(8), 2);
+    expect(h.current.canLoadOlder).toBe(false);
+    container.scrollTop = 0;
+    const up = new WheelEvent("wheel", { deltaY: -40, cancelable: true });
+    act(() => container.dispatchEvent(up));
+
+    expect(up.defaultPrevented).toBe(false);
+    expect(h.current.showLoadOlderHint).toBe(false);
+    h.unmount();
+  });
+
+  it("still loads older history on a non-cancelable wheel at the top", () => {
+    // boundary: WebKit reports the momentum tail of a gesture as a wheel that
+    // cannot be cancelled. Such an event still has to page history in - only the
+    // `preventDefault` is unavailable - so the load must not be gated on it.
+    const container = document.createElement("div");
+    document.body.append(container);
+    const loadOlderHistory = vi.fn(() => Promise.resolve());
+    const h = renderHook(() => useMessagePaging({
+      messages: MESSAGES.slice(8),
+      scrollRef: { current: container },
+      userExchangeCount: 2,
+      hasOlderHistory: true,
+      loadOlderHistory,
+    }));
+    expect(h.current.canLoadOlder).toBe(true);
+
+    container.scrollTop = 0;
+    const up = new WheelEvent("wheel", { deltaY: -40, cancelable: false });
+    act(() => container.dispatchEvent(up));
+
+    expect(up.defaultPrevented).toBe(false);
+    expect(loadOlderHistory).toHaveBeenCalledTimes(1);
+    expect(h.current.showLoadOlderHint).toBe(true);
+    h.unmount();
+    container.remove();
+  });
+
+  it("searches the transcript the loader returns, not the windowed messages", async () => {
+    // boundary: `loadAllHistoryForSearch` is the optional prop `ThreadSearch`
+    // passes when a search must see history the local window has not loaded.
+    // Without it the hook can only prefilter the messages already in memory, so
+    // a match further up the thread is unreachable - and the window must move
+    // onto the match the loader produced, not onto anything local.
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const loader = vi.fn(async (_signal: AbortSignal) => MESSAGES);
+    let messages = MESSAGES.slice(8);
+    const h = renderHook(() => useMessagePaging({
+      messages,
+      scrollRef: { current: container },
+      userExchangeCount: 2,
+      loadAllHistoryForSearch: loader,
+    }));
+    expect(h.current.visibleMessages.map(message => message.id)).toEqual(["u5", "a5", "u6", "a6"]);
+
+    await act(async () => {
+      await h.current.prepareSearch("u1", new AbortController().signal);
+    });
+
+    expect(loader).toHaveBeenCalledTimes(1);
+    expect(loader.mock.calls[0]![0]).toBeInstanceOf(AbortSignal);
+
+    // The caller merges the fetched history, as `useThreadMessages` does; the
+    // window start pinned by the scan is what brings u1 into view.
+    messages = MESSAGES;
+    h.rerender();
+    expect(h.current.visibleMessages[0]?.id).toBe("u1");
+    h.unmount();
+    container.remove();
+  });
+
+  it("renders an empty conversation without a window anchor", () => {
+    // boundary: empty thread. `visibleMessages[0]` and `messages[start]` are both
+    // undefined, so both anchors must fall back to null rather than dereferencing
+    // a missing row - and scrolling must stay a no-op instead of throwing.
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const h = renderHook(() => useMessagePaging({
+      messages: [],
+      scrollRef: { current: container },
+      userExchangeCount: 2,
+    }));
+
+    expect(h.current.visibleMessages).toEqual([]);
+    expect(h.current.canLoadOlder).toBe(false);
+
+    act(() => {
+      container.scrollTop = 0;
+      h.current.handleScroll();
+    });
+
+    expect(h.current.visibleMessages).toEqual([]);
+    expect(h.current.showLoadOlderHint).toBe(false);
+    h.unmount();
+    container.remove();
+  });
+
+  it("keeps the window when the history page comes back empty", async () => {
+    // boundary: the page callback is an optional out-parameter of
+    // `loadOlderHistory`, and a caller that has run past the oldest row reports
+    // an empty page. Dereferencing `page[0]` unconditionally would throw inside
+    // the callback; the guard makes an empty page a no-op.
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const loadOlderHistory = vi.fn((onPage?: (page: AgentMessage[]) => void) => {
+      onPage?.([]);
+      return Promise.resolve();
+    });
+    const h = renderHook(() => useMessagePaging({
+      messages: MESSAGES.slice(8),
+      scrollRef: { current: container },
+      userExchangeCount: 2,
+      hasOlderHistory: true,
+      loadOlderHistory,
+    }));
+    const before = h.current.visibleMessages.map(message => message.id);
+
+    act(() => {
+      h.current.loadOlder();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(loadOlderHistory).toHaveBeenCalledTimes(1);
+    expect(h.current.visibleMessages.map(message => message.id)).toEqual(before);
+    h.unmount();
+    container.remove();
+  });
+
+  it("is inert when more history is declared but no page has been loaded", () => {
+    // boundary: `hasOlderHistory` and `loadOlderHistory` are independent props,
+    // so a view can report older history while holding zero local messages and
+    // no loader. The load path then falls to its non-loading branch with
+    // `messages[start]` undefined - the row lookup must yield no anchor rather
+    // than dereference a missing message.
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const h = renderHook(() => useMessagePaging({
+      messages: [],
+      scrollRef: { current: container },
+      userExchangeCount: 2,
+      hasOlderHistory: true,
+    }));
+    expect(h.current.canLoadOlder).toBe(true);
+
+    expect(() => act(() => h.current.loadOlder())).not.toThrow();
+
+    expect(h.current.visibleMessages).toEqual([]);
+    h.unmount();
+    container.remove();
+  });
+
+  it("keeps the loaded older page in the window once the caller merges it", async () => {
+    // boundary: with the window already at the oldest local row
+    // (`effectivePageStart === 0`), a successful load reports the new page through
+    // the callback, and that page's first row becomes the pinned window start so
+    // the fetched exchange stays visible instead of snapping back.
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const older = [msg("u3", "user"), msg("a3", "assistant")];
+    const loadOlderHistory = vi.fn((onPage?: (page: AgentMessage[]) => void) => {
+      onPage?.(older);
+      return Promise.resolve();
+    });
+    let messages = MESSAGES.slice(8);
+    const h = renderHook(() => useMessagePaging({
+      messages,
+      scrollRef: { current: container },
+      userExchangeCount: 2,
+      hasOlderHistory: true,
+      loadOlderHistory,
+    }));
+    expect(h.current.visibleMessages.map(message => message.id)).toEqual(["u5", "a5", "u6", "a6"]);
+
+    act(() => {
+      h.current.loadOlder();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(loadOlderHistory).toHaveBeenCalledTimes(1);
+
+    // The caller merges the fetched page into the transcript, as
+    // `useThreadMessages` does; the pinned window from the page callback is what
+    // keeps the newly loaded exchange visible.
+    messages = [...older, ...messages];
+    h.rerender();
+
+    expect(h.current.visibleMessages.map(message => message.id)).toEqual([
+      "u3",
+      "a3",
+      "u5",
+      "a5",
+      "u6",
+      "a6",
+    ]);
+    h.unmount();
+    container.remove();
+  });
+
+  it("refuses to start a search on a signal that is already aborted", async () => {
+    // error-path: `ThreadSearch` aborts a superseded query, and the signal it
+    // passes may already be dead by the time the scan starts. Aborting before the
+    // loader runs must surface as a cancellation rather than pinning a window.
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const loader = vi.fn(async (_signal: AbortSignal) => MESSAGES);
+    const h = renderHook(() => useMessagePaging({
+      messages: MESSAGES.slice(8),
+      scrollRef: { current: container },
+      userExchangeCount: 2,
+      loadAllHistoryForSearch: loader,
+    }));
+    const before = h.current.visibleMessages.map(message => message.id);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      act(async () => h.current.prepareSearch("u1", controller.signal)),
+    ).rejects.toThrow(/cancelled/i);
+
+    expect(h.current.visibleMessages.map(message => message.id)).toEqual(before);
+    h.unmount();
+    container.remove();
+  });
+
+  it("stops a full-history scan when the signal fires during its batch wait", async () => {
+    // concurrency: the scan yields to the event loop every 20 messages, and an
+    // abort during that yield must stop it before it pins a window onto a match.
+    // The yield needs more than 20 messages outside the loaded window, which no
+    // other fixture provides - so the batch-wait branch was uncovered.
+    const all = Array.from({ length: 25 }, (_, index) => msg(`x${index}`, "user"));
+    const loader = vi.fn(async (_signal: AbortSignal) => all);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const h = renderHook(() => useMessagePaging({
+      messages: all.slice(-4),
+      scrollRef: { current: container },
+      userExchangeCount: 2,
+      loadAllHistoryForSearch: loader,
+    }));
+    const before = h.current.visibleMessages.map(message => message.id);
+
+    const controller = new AbortController();
+    // Attach the rejection matcher IMMEDIATELY: the scan rejects inside the timer
+    // callback below, and a promise with no handler at that moment is reported by
+    // Vitest as an unhandled error even though the test asserts it afterwards.
+    const pending = expect(
+      h.current.prepareSearch("nomatch", controller.signal),
+    ).rejects.toThrow(/cancelled/i);
+    // Let the loader resolve so the scan reaches its first 20-message yield.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    controller.abort();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    await pending;
+    expect(h.current.visibleMessages.map(message => message.id)).toEqual(before);
+    h.unmount();
+    container.remove();
+  });
+
+  it("abandons a full-history scan whose view unmounted during its batch wait", async () => {
+    // concurrency: the same batch-wait check has TWO operands and `||`
+    // short-circuits, so the abort test above only ever evaluates the first. A view
+    // that unmounts mid-scan (a fast thread switch while the walk is yielding) must
+    // stop the walk through the second operand instead - nothing may be pinned onto
+    // a window nobody is looking at.
+    const all = Array.from({ length: 25 }, (_, index) => msg(`x${index}`, "user"));
+    const loader = vi.fn(async (_signal: AbortSignal) => all);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const h = renderHook(() => useMessagePaging({
+      messages: all.slice(-4),
+      scrollRef: { current: container },
+      userExchangeCount: 2,
+      loadAllHistoryForSearch: loader,
+    }));
+    const before = h.current.visibleMessages.map(message => message.id);
+
+    // No abort this time: only the mount state can stop the walk.
+    const controller = new AbortController();
+    const pending = expect(
+      h.current.prepareSearch("nomatch", controller.signal),
+    ).rejects.toThrow(/cancelled/i);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    h.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    await pending;
+    // The window was never moved onto a match (the walk stopped before it could
+    // pin one), and the loader ran exactly once.
+    expect(before).toEqual(["x23", "x24"]);
+    expect(loader).toHaveBeenCalledTimes(1);
+    container.remove();
+  });
+
+  it("walks past its batch wait to finish a long search that is not interrupted", async () => {
+    // boundary: the batch-wait check has a fall-through side - a scan that is neither
+    // aborted nor unmounted keeps walking. That is the ordinary long-history case,
+    // and it needs MORE than 20 messages outside the loaded window so the walk
+    // crosses a yield and continues, landing on a match that sits beyond it.
+    const all = Array.from({ length: 30 }, (_, index) => msg(`x${index}`, "user"));
+    let messages = all.slice(-4);
+    // Only the match at x25 is a hit, so the walk must cross the x20 yield to find
+    // it - a single-batch scan cannot reach it.
+    const loader = vi.fn(async (_signal: AbortSignal) => all);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const h = renderHook(() => useMessagePaging({
+      messages,
+      scrollRef: { current: container },
+      userExchangeCount: 2,
+      loadAllHistoryForSearch: loader,
+    }));
+
+    // Start the walk without awaiting it, then pump the fake clock: the loader's
+    // promise resolves first, and only afterwards does the loop reach its
+    // `setTimeout(0)` yield - so a single advance cannot cover both.
+    const pending = h.current.prepareSearch("x25", new AbortController().signal);
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+    }
+    await act(async () => {
+      await pending;
+    });
+
+    // The caller merges the transcript the loader returned, as `useThreadMessages`
+    // does; the window start pinned by the walk is what brings x25 into view.
+    messages = all;
+    h.rerender();
+    expect(h.current.visibleMessages[0]?.id).toBe("x25");
+    h.unmount();
+    container.remove();
+  });
+
+  it("reveals nothing for a match outside the scroll container", () => {
+    // boundary: `revealSearchMatch` receives a DOM Range located by the search.
+    // A range whose node is not inside this container (a stale result after a
+    // re-render) must be ignored rather than scrolling the view to a stranger's
+    // geometry.
+    const { container, h } = setup();
+    const outside = document.createElement("div");
+    outside.textContent = "elsewhere";
+    document.body.append(outside);
+    const range = document.createRange();
+    range.selectNodeContents(outside);
+    const before = container.scrollTop;
+
+    act(() => h.current.revealSearchMatch(range));
+
+    expect(container.scrollTop).toBe(before);
+    expect(h.current.coolingDown).toBe(false);
+    outside.remove();
+    h.unmount();
+  });
 });

@@ -236,3 +236,45 @@ describe("thread search", () => {
     container.remove();
   });
 });
+
+it("keeps composer focus when streamed content changes with search open", () => {
+  const frames = new Map<number, FrameRequestCallback>();
+  let id = 0;
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+    frames.set(++id, callback);
+    return id;
+  });
+  vi.stubGlobal("cancelAnimationFrame", (frame: number) => frames.delete(frame));
+  const container = document.createElement("div");
+  const thread = document.createElement("div");
+  const composer = document.createElement("textarea");
+  const rootRef = { current: thread };
+  document.body.append(container, thread, composer);
+  const root = createRoot(container);
+  try {
+    act(() => root.render(<ThreadSearch contentKey={1} rootRef={rootRef} />));
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { ctrlKey: true, key: "f" })));
+    act(() => {
+      const callbacks = [...frames.values()];
+      frames.clear();
+      callbacks.forEach(callback => callback(0));
+    });
+    expect(document.activeElement).toBe(container.querySelector("input"));
+    composer.focus();
+    act(() => root.render(<ThreadSearch contentKey={2} rootRef={rootRef} />));
+    expect(document.activeElement).toBe(composer);
+    act(() => {
+      const callbacks = [...frames.values()];
+      frames.clear();
+      callbacks.forEach(callback => callback(0));
+    });
+    expect(document.activeElement).toBe(composer);
+  }
+  finally {
+    act(() => root.unmount());
+    container.remove();
+    thread.remove();
+    composer.remove();
+    vi.unstubAllGlobals();
+  }
+});

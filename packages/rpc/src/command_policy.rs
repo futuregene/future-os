@@ -67,12 +67,14 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "cycle_thinking_level",
     "delete_provider",
     "delete_session",
+    "delete_sessions",
     "disable_builtin_tools",
     "disable_tools",
     "export_html",
     "fork",
     "generate_session_title",
     "get_agent_info",
+    "get_agent_readiness",
     "get_commands",
     "get_events_since",
     "get_run_snapshot",
@@ -82,6 +84,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "get_runtime_metrics",
     "get_session_entries",
     "get_session_history_entry",
+    "search_all_session_history",
     "search_session_history",
     "get_session_events_since",
     "get_session_stats",
@@ -94,6 +97,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "sync_skills",
     "list_tool_calls",
     "get_tool_output",
+    "get_tool_call_args",
     "list_providers",
     "list_session_ids",
     "list_sessions",
@@ -151,6 +155,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             ExecutionKind::AsyncAck,
         ),
         "get_agent_info"
+        | "get_agent_readiness"
         | "get_commands"
         | "get_last_assistant_text"
         | "get_runtime_metrics"
@@ -197,11 +202,13 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "get_run_snapshot"
         | "list_tool_calls"
         | "get_tool_output"
+        | "get_tool_call_args"
         | "get_fork_messages"
         | "get_messages"
         | "get_session_entries"
         | "get_session_history_entry"
         | "search_session_history"
+        | "search_all_session_history"
         | "get_session_events_since"
         | "list_session_ids"
         | "list_sessions"
@@ -218,6 +225,7 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
         | "cycle_thinking_level"
         | "delete_provider"
         | "delete_session"
+        | "delete_sessions"
         | "disable_builtin_tools"
         | "disable_tools"
         | "export_html"
@@ -285,7 +293,11 @@ mod tests {
 
     #[test]
     fn history_recall_is_bounded_and_read_only() {
-        for name in ["search_session_history", "get_session_history_entry"] {
+        for name in [
+            "search_session_history",
+            "search_all_session_history",
+            "get_session_history_entry",
+        ] {
             let p = command_policy(name).unwrap();
             assert_eq!(p.timeout, STORAGE_TIMEOUT);
             assert_eq!(p.retry, RetryPolicy::SafeRead);

@@ -891,3 +891,41 @@ mod image_persistence_tests {
             .any(|b| matches!(b, ContentBlock::Image { .. })));
     }
 }
+
+/// A legacy entry that only has `thinking` (no reasoning block in its content)
+/// must still project a leading reasoning block, and an entry that already
+/// carries one must not gain a duplicate.
+#[cfg(test)]
+mod thinking_projection {
+    use super::*;
+    use crate::session::SessionEntry;
+    use crate::types::ContentBlock;
+
+    #[test]
+    fn legacy_thinking_becomes_a_leading_reasoning_block_exactly_once() {
+        let mut entry = SessionEntry::new_assistant(serde_json::json!("answer"), Vec::new());
+        entry.thinking = "synthetic thought".into();
+        let messages = entries_to_agent_messages(std::slice::from_ref(&entry), false);
+        assert_eq!(messages.len(), 1);
+        assert!(matches!(
+            messages[0].content.first(),
+            Some(ContentBlock::Reasoning { .. })
+        ));
+        assert_eq!(messages[0].content.len(), 2);
+
+        entry.content = Some(serde_json::json!([
+            {"type":"reasoning","text":"synthetic thought"},
+            {"type":"text","text":"answer"}
+        ]));
+        let messages = entries_to_agent_messages(std::slice::from_ref(&entry), false);
+        assert_eq!(
+            messages[0]
+                .content
+                .iter()
+                .filter(|block| matches!(block, ContentBlock::Reasoning { .. }))
+                .count(),
+            1,
+            "an already-projected reasoning block is not duplicated"
+        );
+    }
+}

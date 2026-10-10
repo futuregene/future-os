@@ -139,6 +139,38 @@ pub fn image_data_url_for_model(path: &str) -> Option<String> {
 /// carry a `-<hash>` suffix (`+local[.dirty]` for local builds).
 pub const VERSION: &str = env!("FUTURE_VERSION");
 
+/// Build identity of this agent binary, injected by `agent/build.rs` and
+/// reported through `get_agent_info`. `VERSION` alone cannot identify the code:
+/// a release tag (`1.2.3`) and a coordinated test/nightly build
+/// (`0.0.2-<run>+test`) contain no commit at all, so a client checking whether
+/// the *running* process is the commit it is reading needs these separately.
+/// `unknown` means the build had no git checkout.
+pub const GIT_COMMIT: &str = env!("FUTURE_GIT_COMMIT");
+pub const GIT_COMMIT_SHORT: &str = env!("FUTURE_GIT_COMMIT_SHORT");
+pub const GIT_DIRTY: &str = env!("FUTURE_GIT_DIRTY");
+pub const BUILD_TARGET: &str = env!("FUTURE_BUILD_TARGET");
+pub const BUILD_PROFILE: &str = env!("FUTURE_BUILD_PROFILE");
+
+/// The build identity as JSON, ready to merge into a response object.
+///
+/// `gitCommit` is `null` rather than the literal `"unknown"` when the build had
+/// no checkout: a caller comparing it against `git rev-parse HEAD` must not read
+/// "no commit recorded" as a commit name. `gitDirty` follows the same rule —
+/// with no working tree there is nothing to be dirty, which is not the same as
+/// verified clean.
+pub fn build_identity_json() -> serde_json::Value {
+    let known =
+        |value: &str| (!value.is_empty() && value != "unknown").then(|| serde_json::json!(value));
+    let commit_present = known(GIT_COMMIT).is_some();
+    serde_json::json!({
+        "gitCommit": known(GIT_COMMIT),
+        "gitCommitShort": if commit_present { known(GIT_COMMIT_SHORT) } else { None },
+        "gitDirty": commit_present.then(|| GIT_DIRTY == "1"),
+        "buildTarget": known(BUILD_TARGET),
+        "buildProfile": known(BUILD_PROFILE),
+    })
+}
+
 /// Resolve the user home directory consistently for every Agent subsystem.
 ///
 /// `HOME`/`USERPROFILE` are honoured first so isolated home redirects
@@ -518,6 +550,36 @@ mod util_tests {
         assert!(ensure_workspace_accessible(dir.path(), false).is_ok());
     }
 
+    /// The repair path is entered for any blocked managed directory: the write
+    /// test fails because `.future_write_test` is an existing directory, the
+    /// repair runs (a no-op when the owner bits are already intact), and the
+    /// retry fails the same way — so the caller gets the write error instead of
+    /// a false "the workspace is fine".
+    #[test]
+    fn ensure_workspace_accessible_repair_retry_reports_the_same_blockage() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".future_write_test")).unwrap();
+        let error = ensure_workspace_accessible(dir.path(), true).unwrap_err();
+        assert_ne!(
+            error.kind(),
+            std::io::ErrorKind::NotFound,
+            "a blocked existing directory is not a missing one: {error:?}"
+        );
+        assert!(dir.path().join(".future_write_test").is_dir());
+    }
+
+    /// Without `auto_repair` the blocked directory is returned as-is: a user
+    /// workspace must never be chmod'ed, rebuilt or removed.
+    #[test]
+    fn ensure_workspace_accessible_reports_a_blocked_dir_without_repair() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".future_write_test")).unwrap();
+        let error = ensure_workspace_accessible(dir.path(), false).unwrap_err();
+        assert_ne!(error.kind(), std::io::ErrorKind::NotFound, "{error:?}");
+        assert!(dir.path().is_dir(), "the caller's directory is left alone");
+        assert!(dir.path().join(".future_write_test").is_dir());
+    }
+
     #[cfg(unix)]
     #[test]
     fn ensure_workspace_accessible_repairs_readonly_dir() {
@@ -745,9 +807,12 @@ mod util_tests {
     }
 
     #[test]
-    fn is_tty_returns_bool() {
-        // Just verify it doesn't panic
-        let _ = is_tty();
+    fn is_tty_inspects_standard_input() {
+        use std::io::IsTerminal;
+        // Pins *which* stream the helper reads: a redirect of stdout (how cargo
+        // test runs) must not change the answer, so this cannot be replaced by
+        // `stdout().is_terminal()`. A discriminating test needs a pty.
+        assert_eq!(is_tty(), std::io::stdin().is_terminal());
     }
 
     #[test]

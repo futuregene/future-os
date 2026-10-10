@@ -66,6 +66,7 @@ model as an ordinary prompt.
 | Command | Purpose |
 |---|---|
 | `/help` | Show the help overlay (shortcuts + core commands) |
+| `/keymap` | Key-binding editor: list every action with its keys, rebind by pressing a key |
 | `/model [name]` | Set the model directly, or open the searchable model selector with no arg |
 | `/models` | Open the model enable-scope editor (same menu as `/scoped-models`) |
 | `/models default` | Pick the agent-side default model for new sessions |
@@ -73,6 +74,7 @@ model as an ordinary prompt.
 | `/providers` | Manage providers: add/edit/delete, API keys, sync models |
 | `/provider-key <id>` | Prompt for a provider API key (see below) |
 | `/skills` | Skill browser: search, preview, insert, install / uninstall / upgrade |
+| `/skill-recommend [on\|off]` | Offer a fitting skill before sending a message (on by default) |
 | `/tools [none\|all]` | Multi-select the built-in tools; `none` disables all of them |
 | `/permission [all\|workspace\|none]` | Set the tool permission level (and remember it); no arg opens the sandbox panel |
 | `/sandbox` | Sandbox tier, backend availability and the permission picker |
@@ -86,9 +88,8 @@ model as an ordinary prompt.
 | `/delete [--yes]` | Delete the current session (confirmed with `--yes`) and start a new one |
 | `/title [zh\|en]` | Generate a session title with the model and apply it as the name |
 | `/compact` | Compress the conversation context |
-| `/status` | Session state, model, token usage, cost (printed into the chat) |
+| `/status` | Session state, model, token usage, cost and this session's message/tool counters (printed into the chat) |
 | `/usage` | Token, cost, context and quota panel |
-| `/stats` | Message / tool / token counters and cost for this session |
 | `/agent` | Agent version, instance id, discovered and loaded skills |
 | `/metrics` | The agent's runtime counters |
 | `/snapshot` | The current (or last) run's projection snapshot — it needs a run |
@@ -100,11 +101,8 @@ model as an ordinary prompt.
 | `/import` | *Not available in the TUI* (stub, replies with a notice) |
 | `/reload` | Reload skills + context files |
 | `/cwd <dir>` | Change the working directory |
+| `/worktree [new <branch>]` | List the repository's worktrees (branch, dirty state) and move this session into one; with `new` it adds a worktree under the main checkout's `.worktrees/` first |
 | `/context [on\|off]` | List the context files, or turn loading them on/off |
-| `/system-prompt <text>` | Replace this session's system prompt |
-| `/append-prompt <text>` | Append to this session's system prompt |
-| `/rule <glob>` | Allow a path glob (read + write) for this session's tool calls — this run only, relative to the session cwd |
-| `/ephemeral [on\|off]` | Stop or resume writing turns to the session file |
 | `/autocompact [on\|off]` | Turn automatic context compaction on/off |
 | `/autoretry [on\|off]` | Turn automatic retry of failed runs on/off |
 | `/shell <cmd>` | Run one command through the agent and show its output |
@@ -112,7 +110,6 @@ model as an ordinary prompt.
 | `/cancel <run-id>` | Cancel a queued run |
 | `/approve <request-id>` | Approve a pending tool execution |
 | `/reject <request-id>` | Reject a pending tool execution |
-| `/quit-agent [--yes]` | Ask the agent process to shut down (confirmed with `--yes`) |
 | `/editor` | Edit the current draft in `$VISUAL` / `$EDITOR` |
 | `/cancel-input` | Abort a pending `/provider-key` prompt |
 
@@ -139,14 +136,11 @@ the agent's one-shot `shell` command — run in the session cwd under the agent'
 own timeout (120 s by default) — and the captured output plus `exit code: N` open
 in the pager.
 
-`/delete` and `/quit-agent` are the two destructive commands: without the
-literal `--yes` they only explain themselves and send no request. `/delete
---yes` removes the session file and then starts a fresh session;
-`/quit-agent --yes` asks the agent to stop accepting new prompts. Note what the
-second one does *and* does not do — the agent answers with
-`Existing runs continue; new prompts are rejected.`, but the local agent process
-is only torn down by an exit signal (Ctrl-C, or the desktop's stop): this TUI
-quotes the agent's own note and keeps its connection until then.
+`/delete` is the destructive command: without the literal `--yes` it only
+explains itself and sends no request. `/delete --yes` removes the session file
+and then starts a fresh session. `/worktree` is deliberately read-and-add only —
+it runs `git worktree list`/`status`/`rev-parse` and `git worktree add`, and
+refuses `remove`/`prune`/`reset`/`clean`/`checkout`/`gc`/`reflog` outright.
 
 ## Pop-up menus and the pager
 
@@ -176,7 +170,7 @@ The session lists (`/sessions`, `/tree`, `/fork`) use a simpler filterable
 list instead: type to filter (backspace deletes a character), `↑↓` moves the
 highlight and wraps at the ends, `enter` selects and `escape` closes.
 
-`/transcript`, `/agent`, `/stats`, `/metrics`, `/snapshot`, `/history` and
+`/transcript`, `/agent`, `/metrics`, `/snapshot`, `/history` and
 `/tool-output` open the whole result in a full-screen pager:
 
 | Key | Action |
@@ -426,9 +420,9 @@ the form cannot show one.
 - `/status` prints session state (model, provider, image support, context
   window, token totals, cost) into the chat; `/usage` renders the same state as
   a panel: title row with the model and session name, the context bar, per-model
-  token/cost rows, quota and queue warnings; `/stats` adds the message, tool and
-  token counters for the session, and `/agent` the agent's own version and
-  instance facts. All three open in the pager.
+  token/cost rows, quota and queue warnings; `/agent` reports the agent's own
+  version and instance facts. `/status` prints into the chat, `/usage` opens its
+  own panel, and the rest open in the pager.
 
 ## Theme
 
@@ -476,15 +470,19 @@ written when stdout is not a TTY, so print mode and piped runs stay clean.
 
 The TUI persists client-side settings to `~/.future/tui/settings.json`:
 `defaultModel`, `defaultThinkingLevel`, `defaultPermissionLevel`,
-`enabledModelIds`, `themeId`, `bellOnComplete` and the `notify` object above.
+`enabledModelIds`, `themeId`, `bellOnComplete`, `skillRecommend` (set by
+`/skill-recommend`, on by default) and the `notify` object above.
 `defaultModel`, `defaultThinkingLevel` and `defaultPermissionLevel` are applied
 to the agent when the TUI starts. Logs: `PI_DEBUG_REDRAW=1` writes debug redraw
 logging to `~/.future/tui/debug.log`; `PI_TUI_WRITE_LOG=1` logs raw screen writes
 to `~/.future/tui/write.log`.
 
-The keybindings are the fixed table above; a `~/.future/tui/keybindings.json`
-override file is **not read yet** (the override mechanism exists in the
-keybinding manager, but nothing loads a file into it).
+The keys in the table above are the defaults. `/keymap` opens an editor over
+every registered action: press a key on a highlighted row to rebind it, and the
+difference from the defaults is written to `~/.future/tui/keybindings.json`
+(beside `settings.json`), which is read at startup. A file that cannot be read,
+or that names an action this build does not have, is reported inside that panel
+and the defaults stay in force.
 
 ## Troubleshooting
 

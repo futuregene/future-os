@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { Image, Text } from "react-native";
 import { MarkdownText } from "../MarkdownText";
-import { MarkdownImageLoaderContext, markdownImagePath, type MarkdownImageLoader } from "../MarkdownImage";
+import { MarkdownImageLoaderContext, resolveMarkdownPath, type MarkdownImageLoader } from "../MarkdownImage";
 
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 
@@ -23,7 +23,7 @@ test.each([
   ["https://example.com/a.png", "/docs/a.md", null],
   ["javascript:alert(1)", "/docs/a.md", null],
 ])("image path %s relative to %s", (src, base, expected) => {
-  expect(markdownImagePath(src!, base)).toBe(expected);
+  expect(resolveMarkdownPath(src!, base)).toBe(expected);
 });
 
 test("uncached images in a reply body load themselves", async () => {
@@ -64,6 +64,28 @@ test("a failed auto-load offers retry, duplicate taps do not start duplicate wor
   expect(tree.root.findByType(Image).props.source.uri).toBe("file:///retry.png");
   act(() => tree.root.findByType(Image).props.onError());
   expect(button("attachment.retryImage")).toBeDefined();
+});
+
+test("a double tap on the load button starts only one transfer", async () => {
+  let resolveLoad!: (uri: string) => void;
+  const loader = {
+    scope: "one",
+    cached: () => null,
+    load: jest.fn(() => new Promise<string>(resolve => { resolveLoad = resolve; })),
+  };
+  await act(async () => { tree = create(render(loader)); });
+  // The auto-start already owns a transfer; the taps land in the same frame,
+  // before the disabled state has been rendered.
+  expect(loader.load).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    button("attachment.loadImage").props.onPress();
+    button("attachment.loadImage").props.onPress();
+  });
+  // A second controller would race the first one's abort and could leave the
+  // placeholder spinning forever with both transfers cancelled.
+  expect(loader.load).toHaveBeenCalledTimes(1);
+  await act(async () => resolveLoad("file:///a.png"));
+  expect(tree.root.findByType(Image).props.source.uri).toBe("file:///a.png");
 });
 
 // A reply re-projects on every streaming delta; the image must not be

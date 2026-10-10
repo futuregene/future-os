@@ -1,8 +1,11 @@
 //! Shared process-lifetime task runtime, including synchronous store entry points.
+//
+// The re-exports mirror the feature split in `now`: the gui build forwards
+// tauri's runtime, the headless build owns a tokio one.
 #[cfg(all(feature = "gui", test))]
-pub(crate) use tauri::async_runtime::{set, JoinHandle};
+pub(crate) use tauri::async_runtime::set;
 #[cfg(all(feature = "gui", not(test)))]
-pub(crate) use tauri::async_runtime::{set, JoinHandle};
+pub(crate) use tauri::async_runtime::set;
 
 #[cfg(not(feature = "gui"))]
 pub(crate) use tokio::task::JoinHandle;
@@ -17,7 +20,34 @@ pub(crate) fn set(handle: tokio::runtime::Handle) {
         .expect("Desktop runtime already initialized");
 }
 
-fn spawn_untracked<F>(future: F) -> JoinHandle<()>
+/// The handle a task spawned through [`spawn`] comes back as.
+///
+/// It differs by feature, so callers outside this module name it rather than
+/// the two concrete types — a caller that had to know would need the feature
+/// split duplicated at every spawn site.
+#[cfg(feature = "gui")]
+pub(crate) type TaskHandle = tauri::async_runtime::JoinHandle<()>;
+#[cfg(not(feature = "gui"))]
+pub(crate) type TaskHandle = JoinHandle<()>;
+
+/// Whether a task spawned through [`spawn`] has finished.
+///
+/// The one thing the two handle types spell differently, so it lives here with
+/// the type alias rather than at each call site. Test-only, because nothing in
+/// production asks a task whether it is done.
+#[cfg(test)]
+pub(crate) fn task_finished(handle: &TaskHandle) -> bool {
+    #[cfg(feature = "gui")]
+    {
+        handle.inner().is_finished()
+    }
+    #[cfg(not(feature = "gui"))]
+    {
+        handle.is_finished()
+    }
+}
+
+fn spawn_untracked<F>(future: F) -> TaskHandle
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
@@ -41,7 +71,7 @@ where
 }
 
 #[cfg(not(test))]
-pub(crate) fn spawn<F>(future: F) -> JoinHandle<()>
+pub(crate) fn spawn<F>(future: F) -> TaskHandle
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
@@ -88,7 +118,7 @@ where
 }
 
 #[cfg(test)]
-pub(crate) fn spawn<F>(future: F) -> JoinHandle<()>
+pub(crate) fn spawn<F>(future: F) -> TaskHandle
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {

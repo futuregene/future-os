@@ -3,7 +3,9 @@
 # ResetSandbox passes through the maintenance CLI code; 124 means timeout.
 param(
     [Parameter(Mandatory = $true)][string]$InstallDir,
-    [ValidateSet('Check', 'Close', 'ResetSandbox', 'VerifyInstall')][string]$Mode = 'Check'
+    [ValidateSet('Check', 'Close', 'CloseFiles', 'ResetSandbox', 'VerifyInstall', 'AcquireLease', 'HoldLease', 'ReleaseLease')][string]$Mode = 'Check',
+    [string]$LeaseDir,
+    [int]$InstallerPid
 )
 $ErrorActionPreference = 'Stop'
 
@@ -84,6 +86,145 @@ function Invoke-FutureOSInstallVerification {
     }
 }
 
+function Get-FutureOSAgentStateDirectory {
+    $root = $env:FUTURE_HOME
+    if (-not $root -or -not [IO.Path]::IsPathRooted($root)) {
+        $profile = @($env:HOME, $env:USERPROFILE, [Environment]::GetFolderPath('UserProfile')) |
+            Where-Object { $_ -and [IO.Path]::IsPathRooted($_) } | Select-Object -First 1
+        if (-not $profile) { throw 'Cannot resolve the FutureOS user profile for Agent lock verification.' }
+        $root = [IO.Path]::Combine($profile, '.future')
+    }
+    return [IO.Path]::Combine([IO.Path]::GetFullPath($root), 'agent')
+}
+
+function Test-FutureOSAgentLock {
+    param([string]$Action)
+    $stateDirectory = Get-FutureOSAgentStateDirectory
+    $null = [IO.Directory]::CreateDirectory($stateDirectory)
+    $lockPath = [IO.Path]::Combine($stateDirectory, 'agent-instance.lock')
+    $metadataPath = [IO.Path]::Combine($stateDirectory, 'agent-instance.json')
+    $deadline = [DateTime]::UtcNow.AddSeconds($(if ($Action -eq 'Close') { 10 } else { 0 }))
+    do {
+        $stream = $null
+        try {
+            $stream = [IO.FileStream]::new($lockPath, [IO.FileMode]::OpenOrCreate,
+                [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+            $stream.Lock(0, 1)
+            $stream.Unlock(0, 1)
+            return 0
+        } catch [IO.IOException] {
+            $code = $_.Exception.HResult -band 0xffff
+            if ($code -ne 32 -and $code -ne 33) { throw }
+            # A locked first byte cannot be read as a PID on Windows. Read the
+            # separate metadata only for process identification.
+            $owner = $null
+            try {
+                if ([IO.File]::Exists($metadataPath)) {
+                    $info = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+                    $owner = [Diagnostics.Process]::GetProcessById([int]$info.pid)
+                    $executable = [IO.Path]::GetFullPath($owner.MainModule.FileName)
+                    $recorded = [IO.Path]::GetFullPath([string]$info.executable)
+                    $recordedHome = [IO.Path]::GetFullPath([string]$info.futureHome)
+                    $expectedHome = [IO.Path]::GetFullPath([IO.Path]::GetDirectoryName($stateDirectory))
+                    $name = [IO.Path]::GetFileNameWithoutExtension($executable)
+                    $verified = [string]::Equals($executable, $recorded, [StringComparison]::OrdinalIgnoreCase) -and
+                        [string]::Equals($recordedHome, $expectedHome, [StringComparison]::OrdinalIgnoreCase) -and
+                        @('future', 'future-agent').Contains($name.ToLowerInvariant()) -and
+                        ([int64]$owner.StartTime.ToFileTimeUtc() -eq [int64]$info.startTimeFiletime)
+                    if ($verified) {
+                        Write-Host "FutureOS Agent lock held by PID $($owner.Id): $executable"
+                        if ($Action -eq 'Close') {
+                            $owner.Kill()
+                            if (-not $owner.WaitForExit(10000)) { return 32 }
+                        }
+                    } else {
+                        Write-Host 'FutureOS Agent lock metadata does not match its recorded process.'
+                    }
+                } else {
+                    Write-Host 'FutureOS Agent lock is occupied (legacy Agent or missing metadata).'
+                }
+            } catch {
+                Write-Host "FutureOS Agent lock is occupied; its owner could not be verified: $($_.Exception.Message)"
+            } finally {
+                if ($null -ne $owner) { $owner.Dispose() }
+            }
+            if ($Action -ne 'Close' -or [DateTime]::UtcNow -ge $deadline) { return 32 }
+            Start-Sleep -Milliseconds 100
+        } finally {
+            if ($null -ne $stream) { $stream.Dispose() }
+        }
+    } while ($true)
+}
+
+function Invoke-FutureOSAgentLease {
+    param([string]$Action, [string]$Directory, [int]$OwnerPid)
+    if (-not $Directory) { return 5 }
+    $ready = [IO.Path]::Combine($Directory, 'agent-lock-ready')
+    $errorFile = [IO.Path]::Combine($Directory, 'agent-lock-error')
+    $stop = [IO.Path]::Combine($Directory, 'agent-lock-stop')
+    $done = [IO.Path]::Combine($Directory, 'agent-lock-done')
+    if ($Action -eq 'AcquireLease') {
+        foreach ($marker in @($ready, $errorFile, $stop, $done)) {
+            Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue
+        }
+        $powershell = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $PSCommandPath +
+            '" -InstallDir "' + $InstallDir + '" -Mode HoldLease -LeaseDir "' + $Directory +
+            '" -InstallerPid ' + $OwnerPid
+        $child = Start-Process -FilePath $powershell -ArgumentList $arguments -WindowStyle Hidden -PassThru
+        try {
+            $deadline = [DateTime]::UtcNow.AddSeconds(10)
+            while ([DateTime]::UtcNow -lt $deadline) {
+                if ([IO.File]::Exists($ready)) { return 0 }
+                if ([IO.File]::Exists($errorFile)) { return [int][IO.File]::ReadAllText($errorFile) }
+                if ($child.HasExited) { return 5 }
+                Start-Sleep -Milliseconds 50
+            }
+            [IO.File]::WriteAllText($stop, 'stop')
+            return 5
+        } finally { $child.Dispose() }
+    }
+    if ($Action -eq 'ReleaseLease') {
+        if (-not [IO.File]::Exists($ready)) { return 0 }
+        [IO.File]::WriteAllText($stop, 'stop')
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        while (-not [IO.File]::Exists($done) -and [DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 50
+        }
+        if (-not [IO.File]::Exists($done)) { return 5 }
+        return 0
+    }
+    # Keep the one-byte lock for the entire NSIS replacement. The owner
+    # process handle makes an installer crash release the lease as well.
+    $stream = $null
+    $installer = $null
+    try {
+        $stateDirectory = Get-FutureOSAgentStateDirectory
+        $null = [IO.Directory]::CreateDirectory($stateDirectory)
+        $lockPath = [IO.Path]::Combine($stateDirectory, 'agent-instance.lock')
+        $installer = [Diagnostics.Process]::GetProcessById($OwnerPid)
+        $stream = [IO.FileStream]::new($lockPath, [IO.FileMode]::OpenOrCreate,
+            [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+        $stream.Lock(0, 1)
+        [IO.File]::WriteAllText($ready, [string]$PID)
+        while (-not [IO.File]::Exists($stop) -and -not $installer.HasExited) {
+            Start-Sleep -Milliseconds 100
+        }
+        $stream.Unlock(0, 1)
+        [IO.File]::WriteAllText($done, 'done')
+        return 0
+    } catch [IO.IOException] {
+        [IO.File]::WriteAllText($errorFile, '32')
+        return 32
+    } catch {
+        [IO.File]::WriteAllText($errorFile, '5')
+        return 5
+    } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+        if ($null -ne $installer) { $installer.Dispose() }
+    }
+}
+
 function Invoke-FutureOSPreflight {
     param([string]$Directory, [string]$Action)
 
@@ -122,6 +263,14 @@ function Invoke-FutureOSPreflight {
             }
         }
 
+        # The Agent lock is user-home scoped, so an Agent from another install
+        # can survive exact-path cleanup. Never replace binaries while that
+        # Agent still owns this FutureOS home.
+        if ($Action -ne 'CloseFiles') {
+            $lockStatus = Test-FutureOSAgentLock -Action $Action
+            if ($lockStatus -ne 0) { return $lockStatus }
+        }
+
         # OPEN_EXISTING, never truncate the installed executables. Checking only
         # the process list misses read-only files, ACLs and non-FutureOS lockers.
         foreach ($target in $targets) {
@@ -147,6 +296,9 @@ function Invoke-FutureOSPreflight {
     }
 }
 
+if ($Mode -in @('AcquireLease', 'HoldLease', 'ReleaseLease')) {
+    exit (Invoke-FutureOSAgentLease -Action $Mode -Directory $LeaseDir -OwnerPid $InstallerPid)
+}
 if ($Mode -eq 'ResetSandbox') {
     exit (Invoke-FutureOSSandboxReset -Directory $InstallDir)
 }

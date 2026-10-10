@@ -7,6 +7,10 @@ use serde_json::{json, Value};
 pub const HISTORY_DEFAULT_BYTES: i64 = 8_192;
 pub const HISTORY_MAX_BYTES: i64 = 32_768;
 pub const HISTORY_MAX_MATCHES: i64 = 20;
+/// How many of the most recently updated sessions a cross-session search scans
+/// when the caller does not ask for a different bound.
+pub const HISTORY_DEFAULT_SESSIONS: i64 = 50;
+pub const HISTORY_MAX_SESSIONS: i64 = 500;
 
 type EntryMetadata = (i64, String, Option<String>, Option<String>, Option<i64>);
 
@@ -41,61 +45,153 @@ fn require_session(db: &Connection, session: &str) -> Result<()> {
     Ok(())
 }
 
+/// Shared validation for the two search entry points. Rejects the query shapes
+/// the CLI documents, so both surfaces fail with the same wording.
+fn validate_history_query(query: &str, limit: i64) -> Result<String> {
+    let query = query.trim();
+    if query.is_empty() {
+        bail!("a nonempty query is required");
+    }
+    if query.chars().count() > 200 || query.contains('\0') {
+        bail!("query must be at most 200 characters without NUL");
+    }
+    if !(1..=HISTORY_MAX_MATCHES).contains(&limit) {
+        bail!("search limit must be between 1 and {HISTORY_MAX_MATCHES}");
+    }
+    Ok(query.to_owned())
+}
+
+/// The per-session match query, shared by single-session and cross-session
+/// search so both report identical fields, snippets and byte offsets.
+///
+/// Returns at most `limit + 1` rows: the extra row is how each caller tells
+/// "exactly limit matches" from "more exist".
+fn search_session_matches(
+    db: &Connection,
+    session: &str,
+    query: &str,
+    limit: i64,
+) -> Result<Vec<Value>> {
+    let mut stmt = db.prepare(
+        "WITH hits AS (
+            SELECT e.entry_id,e.position,e.role,e.run_id,e.timestamp_ms,b.ordinal,b.kind,b.tool_call_id,b.tool_name,
+            coalesce(CASE WHEN b.kind='tool_call' THEN b.arguments_json ELSE b.text END,'') AS body
+            FROM entries e JOIN message_blocks b ON b.session_id=e.session_id AND b.entry_position=e.position
+            WHERE e.session_id=?1 AND e.entry_type IN ('user','assistant','tool')
+            AND b.kind IN ('text','tool_call','tool_result')
+        ), matches AS (
+            SELECT *,CASE WHEN tool_call_id=?2 THEN 1 ELSE instr(CAST(lower(body) AS BLOB),CAST(lower(?2) AS BLOB)) END AS hit FROM hits
+        )
+        SELECT entry_id,position,role,run_id,timestamp_ms,ordinal,kind,tool_call_id,tool_name,
+            substr(CAST(body AS BLOB),max(1,hit-120),480),
+            (hit-1) +
+            COALESCE((SELECT sum(length(CAST(CASE WHEN prior.kind='tool_call' THEN prior.arguments_json ELSE prior.text END AS BLOB)))
+                FROM message_blocks prior WHERE prior.session_id=?1 AND prior.entry_position=matches.position
+                AND prior.ordinal<matches.ordinal AND prior.kind IN ('text','tool_call','tool_result')),0)
+        FROM matches WHERE hit>0 ORDER BY position DESC,ordinal LIMIT ?3"
+    )?;
+    let mut rows = stmt.query(params![session, query, limit + 1])?;
+    let mut matches = Vec::new();
+    while let Some(row) = rows.next()? {
+        let snippet = row.get::<_, Vec<u8>>(9)?;
+        matches.push(json!({
+            "entryId":row.get::<_,String>(0)?,"entryPosition":row.get::<_,i64>(1)?,
+            "role":row.get::<_,Option<String>>(2)?,"runId":row.get::<_,Option<String>>(3)?,
+            "timestampMs":row.get::<_,Option<i64>>(4)?,"blockIndex":row.get::<_,i64>(5)?,
+            "kind":row.get::<_,String>(6)?,"toolCallId":row.get::<_,Option<String>>(7)?,
+            "toolName":row.get::<_,Option<String>>(8)?,
+            // Trimmed to character boundaries, so lossy decoding only
+            // ever substitutes for genuinely invalid stored bytes.
+            "snippet":String::from_utf8_lossy(trim_partial_characters(&snippet)),
+            "byteOffset":row.get::<_,i64>(10)?
+        }));
+    }
+    Ok(matches)
+}
+
 impl Manager {
     /// Literal substring search, ASCII case insensitive. Scan only one session,
     /// excluding reasoning, provider metadata, checkpoints and lifecycle records.
     pub(crate) fn search_history(&self, session: &str, query: &str, limit: i64) -> Result<Value> {
-        let query = query.trim();
-        if session.is_empty() || query.is_empty() {
+        if session.is_empty() {
             bail!("sessionId and nonempty query are required");
         }
-        if query.chars().count() > 200 || query.contains('\0') {
-            bail!("query must be at most 200 characters without NUL");
-        }
-        if !(1..=HISTORY_MAX_MATCHES).contains(&limit) {
-            bail!("search limit must be between 1 and {HISTORY_MAX_MATCHES}");
-        }
-        let (session, query) = (session.to_owned(), query.to_owned());
+        let query = validate_history_query(query, limit)?;
+        let (session, query) = (session.to_owned(), query);
         self.storage()?.db.call(move |db| {
             let tx = db.transaction()?;
             require_session(&tx, &session)?;
-            let mut stmt = tx.prepare(
-                "WITH hits AS (
-                    SELECT e.entry_id,e.position,e.role,e.run_id,e.timestamp_ms,b.ordinal,b.kind,b.tool_call_id,b.tool_name,
-                    coalesce(CASE WHEN b.kind='tool_call' THEN b.arguments_json ELSE b.text END,'') AS body
-                    FROM entries e JOIN message_blocks b ON b.session_id=e.session_id AND b.entry_position=e.position
-                    WHERE e.session_id=?1 AND e.entry_type IN ('user','assistant','tool')
-                    AND b.kind IN ('text','tool_call','tool_result')
-                ), matches AS (
-                    SELECT *,CASE WHEN tool_call_id=?2 THEN 1 ELSE instr(CAST(lower(body) AS BLOB),CAST(lower(?2) AS BLOB)) END AS hit FROM hits
-                )
-                SELECT entry_id,position,role,run_id,timestamp_ms,ordinal,kind,tool_call_id,tool_name,
-                    substr(CAST(body AS BLOB),max(1,hit-120),480),
-                    (hit-1) +
-                    COALESCE((SELECT sum(length(CAST(CASE WHEN prior.kind='tool_call' THEN prior.arguments_json ELSE prior.text END AS BLOB)))
-                        FROM message_blocks prior WHERE prior.session_id=?1 AND prior.entry_position=matches.position
-                        AND prior.ordinal<matches.ordinal AND prior.kind IN ('text','tool_call','tool_result')),0)
-                FROM matches WHERE hit>0 ORDER BY position DESC,ordinal LIMIT ?3"
-            )?;
-            let mut rows = stmt.query(params![session,query,limit+1])?;
-            let mut matches = Vec::new();
-            while let Some(row) = rows.next()? {
-                let snippet = row.get::<_, Vec<u8>>(9)?;
-                matches.push(json!({
-                    "entryId":row.get::<_,String>(0)?,"entryPosition":row.get::<_,i64>(1)?,
-                    "role":row.get::<_,Option<String>>(2)?,"runId":row.get::<_,Option<String>>(3)?,
-                    "timestampMs":row.get::<_,Option<i64>>(4)?,"blockIndex":row.get::<_,i64>(5)?,
-                    "kind":row.get::<_,String>(6)?,"toolCallId":row.get::<_,Option<String>>(7)?,
-                    "toolName":row.get::<_,Option<String>>(8)?,
-                    // Trimmed to character boundaries, so lossy decoding only
-                    // ever substitutes for genuinely invalid stored bytes.
-                    "snippet":String::from_utf8_lossy(trim_partial_characters(&snippet)),
-                    "byteOffset":row.get::<_,i64>(10)?
-                }));
-            }
+            let mut matches = search_session_matches(&tx, &session, &query, limit)?;
             let has_more = matches.len() > limit as usize;
             matches.truncate(limit as usize);
             Ok(json!({"sessionId":session,"query":query,"matches":matches,"hasMore":has_more}))
+        })
+    }
+
+    /// The same literal search, but across the `max_sessions` most recently
+    /// updated sessions instead of one. Sessions are scanned newest-first and
+    /// the merged matches are ordered by their own timestamps, so a single call
+    /// answers "have we ever talked about X" without knowing which session.
+    ///
+    /// Search cost is bounded by the session cap, not by the query, so the
+    /// response reports `scannedSessions` and `truncated` rather than silently
+    /// searching less than the whole history.
+    pub(crate) fn search_history_all(
+        &self,
+        query: &str,
+        limit: i64,
+        max_sessions: i64,
+    ) -> Result<Value> {
+        let query = validate_history_query(query, limit)?;
+        if !(1..=HISTORY_MAX_SESSIONS).contains(&max_sessions) {
+            bail!("session scan bound must be between 1 and {HISTORY_MAX_SESSIONS}");
+        }
+        self.storage()?.db.call(move |db| {
+            let tx = db.transaction()?;
+            // One row beyond the cap: its presence is how we know older
+            // sessions were left out, without a second COUNT query.
+            let mut stmt = tx.prepare(
+                "SELECT s.id, s.title FROM sessions s
+                 WHERE s.revision>=0
+                 AND NOT EXISTS(SELECT 1 FROM legacy_imports li WHERE li.session_id=s.id AND li.status='skipped')
+                 ORDER BY s.updated_at_ms DESC, s.id DESC LIMIT ?1",
+            )?;
+            let mut sessions: Vec<(String, Option<String>)> = stmt
+                .query_map([max_sessions + 1], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            let truncated = sessions.len() as i64 > max_sessions;
+            sessions.truncate(max_sessions as usize);
+
+            let mut matches = Vec::new();
+            let mut any_session_more = false;
+            for (session, title) in &sessions {
+                let mut found = search_session_matches(&tx, session, &query, limit)?;
+                if found.len() > limit as usize {
+                    any_session_more = true;
+                    found.truncate(limit as usize);
+                }
+                for entry in found.iter_mut() {
+                    if let Value::Object(fields) = entry {
+                        fields.insert("sessionId".into(), Value::String(session.clone()));
+                        if let Some(title) = title {
+                            fields.insert("sessionName".into(), Value::String(title.clone()));
+                        }
+                    }
+                }
+                matches.append(&mut found);
+            }
+            // Stable sort: entries with no timestamp keep the per-session
+            // newest-first order they were collected in.
+            matches.sort_by(|a, b| {
+                let ts = |value: &Value| value["timestampMs"].as_i64().unwrap_or(0);
+                ts(b).cmp(&ts(a))
+            });
+            let has_more = any_session_more || matches.len() > limit as usize;
+            matches.truncate(limit as usize);
+            Ok(json!({
+                "query":query,"matches":matches,"hasMore":has_more,
+                "scannedSessions":sessions.len(),"truncated":truncated
+            }))
         })
     }
 
@@ -369,5 +465,124 @@ mod tests {
         assert_eq!(r["totalBytes"], 2_000_000);
         assert_eq!(r["nextOffset"], 8192);
         assert!(r.to_string().len() < 10_000);
+    }
+
+    /// Pin a session's position in the cross-session scan order. `replace`
+    /// stamps `updated_at_ms` with the wall clock, so two sessions created in
+    /// the same millisecond would otherwise be ordered by the id tiebreaker.
+    fn pin_session(m: &Manager, session: &str, updated_at_ms: i64, name: Option<&str>) {
+        let session = session.to_owned();
+        let metadata = name.map(|name| json!({"session_name": name}).to_string());
+        m.storage()
+            .unwrap()
+            .db
+            .call(move |db| {
+                db.execute(
+                    "UPDATE sessions SET updated_at_ms=?1, current_metadata_json=coalesce(?2,current_metadata_json) WHERE id=?3",
+                    params![updated_at_ms, metadata, session],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn cross_session_search_labels_each_match_and_orders_by_timestamp() {
+        let (_t, m) = setup();
+        pin_session(&m, "s", 2_000, Some("Alpha"));
+        pin_session(&m, "other", 1_000, None);
+        let r = m.search_history_all("exposharing", 20, 50).unwrap();
+        let matches = r["matches"].as_array().unwrap();
+        assert_eq!(r["scannedSessions"], 2);
+        assert_eq!(r["truncated"], false);
+        assert_eq!(r["hasMore"], false);
+        // Newest first: the tool result (00:02) precedes the two 00:00 hits.
+        assert_eq!(matches.len(), 3);
+        assert_eq!(matches[0]["entryId"], "t");
+        assert_eq!(matches[0]["sessionId"], "s");
+        assert_eq!(matches[0]["sessionName"], "Alpha");
+        assert_eq!(matches[1]["entryId"], "u");
+        assert_eq!(matches[1]["sessionId"], "s");
+        // A session with no title simply omits the field.
+        assert_eq!(matches[2]["entryId"], "foreign");
+        assert_eq!(matches[2]["sessionId"], "other");
+        assert!(matches[2].get("sessionName").is_none());
+        // The per-session payload is unchanged apart from the two added keys.
+        assert_eq!(matches[0]["kind"], "tool_result");
+        assert!(matches[0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("ExpoSharing"));
+    }
+
+    #[test]
+    fn cross_session_search_bounds_matches_and_the_session_scan() {
+        let (_t, m) = setup();
+        pin_session(&m, "s", 2_000, None);
+        pin_session(&m, "other", 1_000, None);
+        let r = m.search_history_all("exposharing", 1, 50).unwrap();
+        assert_eq!(r["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(r["hasMore"], true);
+
+        // max_sessions cuts the scan to the most recently updated sessions and
+        // says so, instead of quietly reporting an incomplete history.
+        let r = m.search_history_all("exposharing", 20, 1).unwrap();
+        assert_eq!(r["scannedSessions"], 1);
+        assert_eq!(r["truncated"], true);
+        assert!(r["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["sessionId"] == "s"));
+    }
+
+    #[test]
+    fn cross_session_search_validates_bounds_before_touching_storage() {
+        let (_temp, m) = setup();
+        assert!(m.search_history_all("   ", 5, 50).is_err());
+        assert!(m.search_history_all(&"q".repeat(200), 5, 50).is_ok());
+        assert!(m.search_history_all(&"q".repeat(201), 5, 50).is_err());
+        assert!(m.search_history_all("q", 0, 50).is_err());
+        assert!(m.search_history_all("q", 21, 50).is_err());
+        assert!(m.search_history_all("q", 5, 0).is_err());
+        assert!(m.search_history_all("q", 5, 501).is_err());
+        assert!(m.search_history_all("q", 5, 500).is_ok());
+    }
+
+    /// The cross-session hit SQL is the single-session one, so a query with no
+    /// matches must come back empty rather than falling back to any session.
+    #[test]
+    fn cross_session_search_returns_no_matches_for_an_absent_literal() {
+        let (_t, m) = setup();
+        let r = m
+            .search_history_all("nothing-like-this-anywhere", 20, 50)
+            .unwrap();
+        assert!(r["matches"].as_array().unwrap().is_empty());
+        assert_eq!(r["hasMore"], false);
+        // Both fixture sessions are searched even though neither matches.
+        assert_eq!(r["scannedSessions"], 2);
+    }
+
+    #[test]
+    fn out_of_range_search_and_read_requests_are_rejected_before_touching_storage() {
+        let (_temp, m) = setup();
+        assert!(m.search_history("", "query", 5).is_err());
+        assert!(m.search_history("s", "   ", 5).is_err());
+        // The query bound is on characters, not bytes.
+        assert!(m.search_history("s", &"q".repeat(200), 20).is_ok());
+        assert!(m.search_history("s", &"q".repeat(201), 5).is_err());
+        assert!(m.search_history("s", "q", 0).is_err());
+        assert!(m.search_history("s", "q", 21).is_err());
+
+        assert!(m.read_history_entry("s", "", 0, 8).is_err());
+        assert!(m.read_history_entry("s", "u", -1, 8).is_err());
+        assert!(m.read_history_entry("s", "u", 0, 3).is_err());
+        assert!(m.read_history_entry("s", "u", 0, 40_000).is_err());
+        assert!(m.read_history_entry("s", "missing-entry", 0, 8).is_err());
+        let error = m
+            .read_history_entry("s", "u", 1_000, 8)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("readable bytes"), "{error}");
     }
 }

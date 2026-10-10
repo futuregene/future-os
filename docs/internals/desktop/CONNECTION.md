@@ -305,8 +305,8 @@ subjects.
 | `cmd.{sessionId}` | phone sends commands to the Desktop; the Desktop subscribes via a pairing-level queue |
 | `rep.{deviceId}.…` | device-scoped request replies |
 | `evt.{sessionId}` | the Desktop publishes session events |
-| `presence` | the Desktop publishes online status and bridge instance identity |
-| `state.sessions` / `state.workspaces` | the Desktop publishes catalog snapshots |
+| `presence` | the Desktop publishes online status, bridge instance identity and the current catalog revision |
+| `state.sessions` / `state.workspaces` | the Desktop publishes catalog snapshots on change |
 | `state.events` | negotiated low-rate run/approval/configuration notices (`selective_events_v1`) |
 | `xfer.up.>` | phone upload chunks and download-pull initiation |
 | `xfer.down.>` | the Desktop sends file chunks down |
@@ -327,6 +327,207 @@ intentional unsubscribe on navigation is not a transport failure. Reopening
 still fills missing details from the durable journal. The platform API, JWT
 scope and Agent authority are unchanged; Desktop-to-broker legacy publication
 is retained, while irrelevant detailed delivery to the phone is avoided.
+
+**Lean event content (2026-09-26):** a phone that declares `lean_events_v1`
+receives the same event lane with the content it never renders removed.
+
+Measured on the three heaviest completed runs, the two capabilities the phone
+declares contribute in sequence — which is the only way to read them, because
+coalescing shipped first and the phone's before/after is coalesced-vs-
+coalesced+lean. Through `scripts/measure/measure-live-lane.py` at the commit
+that dropped the shell command:
+
+| Sample, as the phone receives it | Messages | Wire bytes |
+| --- | ---: | ---: |
+| 1 undeclared, unmerged | 174,791 | 77.21 MB |
+| 1 coalesced only (`event_coalescing_v1`) | 8,713 | 5.33 MB |
+| 1 coalesced + `lean_events_v1` | **1,085** | **0.19 MB** |
+| 2 undeclared → coalesced → + lean | 166,685 → 8,472 → **1,167** | 73.19 → 5.07 → **0.21 MB** |
+| 3 undeclared → coalesced → + lean | 154,907 → 8,689 → **750** | 66.96 → 4.92 → **0.13 MB** |
+
+So the trim's own contribution to a phone is **-96% to -97%** on top of
+coalescing (5.3 / 5.1 / 4.9 MB → 0.19 / 0.21 / 0.13 MB), not the ~-98% the
+raw-to-lean ratio suggests: that ratio credits the trim with merging it did not
+do. What is left is per-call metadata (`tool_start` ~30%, `tool_end` ~26%),
+usage counters (~13%), thinking boundaries (~15%) and the visible reply text.
+
+That lane no longer carries a shell call's command at all: the row keeps the
+call's identity and fetches the command through `get_tool_call_args` when it is
+opened — the same round trip, and the same cache, the history page already uses
+(it drops the arguments for the same reason). One consequence is priced in
+deliberately and asserted by the render checks: the client exempts a bare
+`grep`/`diff`/`test` exiting 1 from being shown as a failure, and its own
+predicate reads the command. The agent sends that verdict as `is_soft_fail` on
+the outcome, so the exemption normally needs nothing else; a row whose outcome
+predates that field reads as failed instead. See `FETCHED_LABEL_TOOLS` in
+`remote_host::lean`.
+
+Re-measured through the real Noise+AEAD channel by
+`scripts/measure/verify-e2e-bytes.py`, which installs the live-lane capability
+flags the way the supervisor does — a harness that skips that step silently
+measures the *undeclared* lane and reports it as "coalesced", which is exactly
+the mistake that produced a wrong marginal figure once. The measurement now
+asserts the flag and the merging, so that cannot pass unnoticed again. It also
+builds each event's `eventId` the way the agent does: an empty one there
+understates every body by ~96 bytes.
+
+| Event | Without the declaration | With it |
+| --- | --- | --- |
+| `thinking_delta`, `tool_delta`, `toolcall_delta` | per-token content | not published |
+| `tool_end` / `tool_result` | plus the captured output | output dropped; `exit_code`, `is_soft_fail`, `target_path`, `error` kept |
+| `run_snapshot` | plus folded `snapshotEvents` | array dropped; the client only uses this event as a resync signal |
+
+Only those named types are touched; every other event is forwarded
+byte-for-byte, so a future type cannot be silently reshaped. Three properties
+make the removal safe rather than lossy: `thinking_start`/`thinking_end` alone
+open and close a reasoning row, a tool's target already rides `tool_start`'s
+complete `tool_args`, and a tool's outcome is on `tool_end` as structured fields.
+The client therefore reads `exit_code` instead of parsing an `[exit: N]` footer
+out of the output — which is why an older client must not be sent this feed, and
+why the flag is cleared on every new connection rather than latched.
+
+The durable replay path is rewritten to match (`get_events_since`, the snapshot
+bootstrap). There the page's cursor fields are computed **before** the rewrite:
+dropping an event must not move `nextSinceIdx`, or a client that resumes from it
+would re-fetch a range whose events are always dropped. The folded projection
+riding a replay page keeps its events and their `idx` — both the desktop and the
+client reject an empty or reordered list — so only their text is blanked.
+
+Dropping an event **does** leave a hole in the `idx` sequence, and the client's
+integrity checks are what had to learn that (2026-09-26). Both the live lane and
+the replay path used to be validated as "one event per source index": the live
+cursor called a jump a gap and reconciled, and a replayed tail had to satisfy
+`watermark == since + events.length`. With the trim running, every check failed —
+so a lean phone reconciled forever behind "latest content not synced yet" and
+never cleared it. Two consequences are now part of the contract:
+
+- A trimmed replay page states how many source events its range held before the
+trim (`rawEvents`), which is what keeps the "reached the pinned watermark" check
+*
+exact* rather than relaxed; ordering and range bounds take the place of counting
+arrivals. A page from a peer that trims nothing carries no `rawEvents` and is
+validated exactly as before.
+- The client's live cursor is told whether this connection's feed omits indices
+(its own `lean_events_v1` ack) and then advances over a hole instead of treating
+it as loss. Reconciling cannot recover slices the peer is not sending, so a gap
+verdict there is unanswerable by construction. The same flag suppresses the
+"unknown prefix" reconcile, for the same reason.
+
+**Lean history (2026-09-26):** the same declaration also trims the history pages
+(`get_session_entries`, both the paged and the full read). Three payloads, all of
+them unread rather than merely unrendered, measured on the three heaviest real
+sessions (whole-session payloads, `scripts/measure/measure-lean-history.py`):
+
+| Trim | Share of the page |
+| --- | --- |
+| reasoning body | 25.6-32.2% |
+| tool-result body | 22.0-26.5% |
+| tool-call arguments beyond the four a target can come from | 12.3-17.8% |
+
+Together 67.1% / 72.7% / 68.4% of a whole session. `targetFromArgs` derives a tool
+row's text from `command`, `path`, `file_path` or `filePath` and reads **no other**
+argument key for any tool name, so keeping exactly those four is
+behaviour-preserving; `foldToolEntry` reads a result block's `toolCallId` and
+`isError` and nothing else; a reasoning body is only rendered when its row is
+expanded.
+
+What a phone actually pays is smaller than the whole session, and it is measured
+on **the page the phone asks for** (the newest `HISTORY_PAGE_USER_EXCHANGES`
+exchanges, selected by the agent) rather than on a whole session. Three numbers
+have to be read apart, because they answer three different questions:
+
+| requested page | trim, same entries (plain) | trim (gzip) | the reply a phone receives |
+| ---: | ---: | ---: | ---: |
+| 236 entries | 391,543 → 104,417 B (−73.3%) | 149,107 → **32,446 B** (−78.2%) | 32,446 B |
+| 154 entries | 388,069 → 65,859 B (−83.0%) | 164,421 → **19,488 B** (−88.1%) | 19,488 B |
+| 1,094 entries | 1,027,973 → 353,228 B (−65.6%) | 240,513 → **64,550 B** (−73.2%) | 64,550 B |
+
+Across the ten heaviest sessions the page a phone receives is **14.7–64.6 KB
+gzipped** (median ≈ 32 KB), from 51–354 KB of trimmed JSON. **The plain-JSON
+figure is not what the phone pays**: the client declares `reply_gzip_v1`, so a
+reply at or above 32 KiB goes out compressed with `Compression::fast()`, and the
+remaining page compresses *better* than what the trim removed — which is why the
+trim's share rises under compression rather than falling. `wireBytes` in the
+measurement still counts plain JSON plus crypto overhead, so read `leanReplyGzip`
+for the byte a phone is billed.
+
+The trim removes bytes from every entry it touches, and applied to a whole
+session that is −76.8% / −76.6% / −80.1% (11.61 → 2.69 MiB, 9.29 → 2.17, 4.52 →
+0.90). But the *page* passes through the 512 KiB budget afterwards, which sheds
+whole oldest exchanges — so the two clients do not receive the same content, and
+comparing their byte counts measures nothing. The 1,094-entry row above is why:
+the undeclared client's page is cut to 72 entries while the lean page is delivered
+whole. The lean page is *larger* there precisely because it still holds the
+exchanges the other had to drop. That is the outcome the trim is for — the phone
+gets the history it asked for — and it is not a byte claim.
+
+A corrected instrument matters here, and went through three rounds. The first fed
+the bridge a *whole session* and let the budget reduce it, reporting "as many
+newest exchanges as fit in 512 KiB" rather than the requested page — overstating
+a lean page about three-fold. `verify_e2e.rs` now pages its scripted agent's
+replies like the agent does (`paginate_backward`), and
+`measure-lean-history.py --phone-page N` measures the real page through the
+shipping trim and budget. The second round is the table above: that measurement
+originally asserted `lean ≤ undeclared` on bytes, which is false whenever the
+budget cuts one page and not the other, and reported a negative "saved" as if the
+trim had cost bytes. The third is compression: the instrument reported plain JSON
+plus crypto overhead as the wire size, which overstates what a `reply_gzip_v1`
+client pays by up to 12× (1.49 MB "wire" for a page that leaves as 50 KB). It now
+runs the real reply through the shipping encoder and reports the compressed size.
+
+Nothing in this trim adds, removes or reorders an entry or a block — entries keep
+their identity and count — so a page's `nextOffset`/`hasMore`/flush-cursor
+arithmetic and the client's gap-fill are unaffected. It is applied **before** the
+page byte budget rather than after, so that a page which *exceeds* the budget
+spends it on trimmed exchanges and holds more of them per round trip; a page that
+already fits is simply smaller.
+
+**What bounds one reply (2026-09-26):** the budget is `BACKWARD_HISTORY_PAGE_BYTES`
+(512 KiB) and it exists to stay under NATS's 1 MiB payload limit with envelope
+headroom — but it is a *soft* bound, and the layers that make it safe are worth
+knowing before touching any of them:
+
+- The budget sheds **whole oldest exchanges** and stops when only the newest one
+  is left, so a single exchange larger than 512 KiB is not deferred. Measured on
+  real sessions: a non-chunked newest page came within **15.6 KB of the 1 MiB
+  limit** (1,032,942 wire bytes) and was relayed intact — the budget bounded the
+  other two samples at ~0.5 MB. A page can therefore approach the limit, and the
+  trim is what keeps it away: that same page is 114,222 bytes for a lean client.
+- The budget bounds a page only up to the **oldest exchange it may shed**: a
+  lean page does not fill the budget when the requested exchanges are smaller
+  than it (147,735 of 524,288 observed for a 3-exchange page, where the
+  undeclared page hit the budget and was cut to 279 of its 325 entries).
+  Filling the budget is what happens when the *whole session* is offered to the
+  budget — not what the phone's own page request does.
+- Oversize is an explicit error, never a silent drop: `encode_reply_payload`
+  compares against `future_remote_crypto::MAX_PLAINTEXT` (1 MiB − header − tag,
+  chosen so a sealed record is exactly ≤ 1 MiB) and answers
+  `remote_reply_too_large` instead of handing NATS something it would drop and
+  leave the client timing out.
+- The phone never leans on any of this for large pages: history/replay reads go
+  through `requestReadPage` (`chunkedRead: true`), which reassembles a logical
+  page from ≤192 KiB chunks, so no single record is near the limit.
+
+It is the same declaration as the lean event lane because it is the same client
+generation: the reasoning row, the tool target and the tool outcome are exactly
+the three things that client reads differently. It is cleared on every new
+connection for the same reason.
+
+**Idle catalog traffic (2026-09-25):** catalog snapshots are published only when
+content changes. There is no periodic re-send: the presence heartbeat carries
+`catalogVersion` (`{epoch, sessions, workspaces}`), and a client whose applied
+revision is older pulls the catalog itself (`list_sessions` /
+`list_workspaces`). Because the revision is recomputed from the store on every
+catalog tick and only advances when the visible content changes, a *stale*
+advertised revision is impossible — a missed push is therefore always
+observable, and heals in one heartbeat instead of a timer.
+
+The publisher records a snapshot's signature only once `secure::publish`
+reports the payload actually left the endpoint. Sealing yields no message while
+the secure channel has no established key yet (before the client's handshake,
+and again after a credential refresh cleared it), so a change during that window
+is retried on the next tick rather than lost — which a change-driven publisher,
+unlike the periodic one this replaced, cannot paper over.
 
 NATS Core is at-most-once delivery. Existing real-time events must be
 hole-filled by authoritative-log replay, and catalog notices calibrated by
@@ -662,6 +863,14 @@ pairing management remain in a separate This phone section.
   relays its operation id, and the phone reports the outcome only after the
   matching terminal `compaction_*` event (a missing event is reported as a
   missing result, never as a failure). An older host leaves the tool hidden.
+- Handshakes advertise `fork_v1`, and a settled reply on the phone offers the
+  same Fork action as the Desktop. `fork_session` is a session-scoped write:
+  the host resolves the parent conversation from the Agent session id, forks
+  the settled turn of the persisted `sourceEntryId` through the same path as
+  the Desktop's own Fork button, and answers the new session + thread so the
+  phone can open it. The command's own id is the idempotent request identity,
+  so a retried fork converges on one child. An older host leaves the action
+  hidden.
 - `get_desktop_settings` / `update_desktop_settings` expose only the four fields
   above. Writes are partial, allowlisted, and committed by the existing Desktop
   settings store, never persisted or queued on the phone. `list_settings_models`
@@ -802,10 +1011,10 @@ Support codes are used uniformly for logs and user-understandable error hints;
 | Service authorization failure (`service_authorization`) | `AU001` |
 | Credential expired or connection auth anomaly (`credential_expired`, `credential_connect`) | `AU002` |
 | Pairing or credential revoked (`revoked`, `credential_revoked`) | `PA001` |
-| Pairing code invalid or expired | `PA002` |
+| Pairing code invalid or expired, or the handshake was refused (the bridge serves a different identity than the code it displays) | `PA002` |
 | Pairing claim address untrusted (the phone picks the trusted production/test platform from the QR code; the environment is not limited by the APK version) | `PA003` |
 | Pairing interface used an insecure transport | `PA004` |
-| Desktop identity verification failed | `PA005` |
+| Desktop identity verification failed (the two builds cannot complete the handshake) | `PA005` |
 | Unknown pairing fault | `PA999` |
 | Protocol error (`protocol`) | `PT001` |
 | Connection recovery budget exhausted (`generation_unhealthy`) | `RT001` |
@@ -821,6 +1030,12 @@ Support codes are used uniformly for logs and user-understandable error hints;
 | Credential persistence failure | `LC004` |
 | Known local fault (`local`) | `LC001` |
 | Unknown local fault | `LC999` |
+
+> One known collision: the desktop's log line for replacing pre-v2 credentials
+> reuses the tag `[PA003]` (`desktop/src-tauri/src/remote/supervisor/start.rs:505`),
+> while this table reserves `PA003` for the mobile "untrusted pairing claim
+> address" hint. The codes above are the contract; the desktop log tag is a
+> local debugging label, not a user-facing code.
 
 ### 7.1 Customer wording and colors
 
@@ -948,14 +1163,15 @@ Acceptance is based on observable invariants, covering at least:
   Agent; real-device fault injection and source/simulation test results are
   reported separately.
 
-### 8.1 Client development progress (2026-09-14)
+### 8.1 Client implementation status (2026-09-14; code re-checked 2026-09-26)
 
-This round's client development is complete and has entered concentrated
-simulator and real-device acceptance; future-server remains unchanged.
-"Pending acceptance" in the table below is running verification, not an
-unimplemented development phase.
+The client refactor described in this section has landed in the repository —
+the table below maps each domain to its code. The "verification focus" column
+records what the round planned to exercise on simulators and real devices; this
+document does not track that acceptance run's results. future-server remains
+unchanged.
 
-| Domain | Implemented | Concentrated acceptance focus |
+| Domain | Implemented | Verification focus |
 | --- | --- | --- |
 | Host boundary | `remote/services.rs` defines the business/state/pairing/file four interfaces, `protocol.rs` carries DTOs; `remote_host/` implements the Desktop business/catalog/file/platform adapters; `agent_events.rs` outputs events, wired into Remote by the integration layer; protocol commands can inject a substitute host | original session, approval, workspace, attachment business semantics and permissions stay consistent |
 | Desktop lifecycle | a single `Supervisor` owns user intent, access generations, the active runtime, retry budgets, and the background task group; stop/sleep cancel uniformly; initial connection and renewal share candidate build and readiness install; wake recovery reports yellow only while tasks run | stop vs readiness interleaving, sleep-wake, brief offline, gateway restart, both ends' renewal |
@@ -994,6 +1210,15 @@ re-open local remote access; it ends with the Desktop process.
   mismatches, auto-recovery can only query accepted receipts; without a
   receipt, clear the auto-delivery intent and keep the session draft. A user
   actively re-sending is a new authorization action.
+- A remote `prompt` names a conversation the client *listed*. An empty session
+  id is a new-conversation draft and still creates its thread lazily; a session
+  id no thread on this Desktop owns is refused (`session_not_on_desktop`) rather
+  than answered with a conversation of its own. The old behavior made "message
+  for conversation A" and "message for an id I have never seen" the same thing,
+  so a client reading a merged list across Desktops had its text silently
+  re-homed into a new chat — under a title derived from it, with nothing
+  reported. A deleted conversation reads the same way and is refused for the
+  same reason.
 - Agent probes take at most 3 seconds per round, 3 seconds apart; a successful
   result over 10 seconds old is no longer considered available; monotonic
   clocks are used. Only the existing Agent is connected — no second Agent
@@ -1003,16 +1228,11 @@ re-open local remote access; it ends with the Desktop process.
   reads all stay in the host adapter layer. The architecture separation does
   not change file-access authorization.
 
-Historical local verification (2026-09-11): the Tauri backend's full 1140 tests
-passed, plus 1 new supervisor-cancellation test passed separately; Desktop
-frontend 92 groups, 846 items passed; Mobile full 48 groups, 678 items passed.
-Those results only match that baseline and do not mean the 2026-09-14 candidate
-completed equivalent running verification. The current candidate runs
-Desktop/Mobile TypeScript and ESLint, Tauri `cargo fmt --check`/Clippy, and
-`git diff --check` per the submission flow; the local test suites are not run —
-GitHub Actions runs them. Simulator/real-device lifecycle, real gateway faults,
-and Desktop sidecar exit still need concentrated acceptance; static checks and
-automated tests do not substitute for those results.
+Verification runs in CI (GitHub Actions): Desktop/Mobile TypeScript and ESLint,
+Tauri `cargo fmt --check`/Clippy, `git diff --check`, and the test suites.
+Simulator/real-device lifecycle, real gateway faults, and Desktop sidecar exit
+still need concentrated acceptance; static checks and automated tests do not
+substitute for those results.
 
 ### 8.2 Mobile unified recovery coordination
 

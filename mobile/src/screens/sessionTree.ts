@@ -49,7 +49,46 @@ export function buildSessionTree(sessions: RemoteSession[]): SessionNode[] {
 
 export type CatalogRow =
   | { kind: "workspace"; key: string; workspace: RemoteWorkspace; count: number }
-  | { kind: "session"; key: string; session: RemoteSession; depth: number; hasChildren: boolean };
+  | {
+    kind: "session";
+    key: string;
+    session: RemoteSession;
+    depth: number;
+    hasChildren: boolean;
+    /**
+     * Which desktop the session lives on, when the list is merged.
+     *
+     * Absent in the ordinary single-desktop list, where every row is the active
+     * desktop's and a label would be noise. Present in the merged list, where a
+     * row that lost its source would be opened against the wrong machine.
+     */
+    desktopId?: string;
+  };
+
+/**
+ * The merged list as rows: pinned first, then recency, with the source kept on
+ * every row.
+ *
+ * Flat rather than grouped by workspace because a workspace name can exist on
+ * two desktops at once; the grouping stops meaning anything once rows come from
+ * more than one machine.
+ */
+export function mergedRows(
+  rows: import("../remote/mergeSessions").MergedSessionRow[],
+  query: string,
+): CatalogRow[] {
+  const search = query.trim().toLocaleLowerCase();
+  return rows
+    .filter(row => !search || row.session.title.toLocaleLowerCase().includes(search))
+    .map(row => ({
+      kind: "session" as const,
+      key: row.key,
+      session: row.session,
+      depth: 0,
+      hasChildren: false,
+      desktopId: row.desktopId,
+    }));
+}
 
 export function catalogRows(
   sessions: RemoteSession[],

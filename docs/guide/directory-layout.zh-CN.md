@@ -15,6 +15,7 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 │   ├── sessions/              # 保留的旧 JSONL 迁移来源
 │   ├── run-events/            # 保留的旧事件迁移来源
 │   ├── agent-instance.lock    # 每用户 Agent 单例锁
+│   ├── agent-instance.json    # 安装器可读取的进程身份信息
 │   ├── skills/                # 已安装的用户技能（APP_SKILLS_DIR）
 │   ├── browser/               # CLI 浏览器工具状态（config.json、profile/、artifacts/）
 │   ├── images/                # CLI 图片工具输出目录
@@ -26,7 +27,8 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 │   └── feishu/                # 飞书桥数据（会话文件、接收的文件）
 ├── tui/                       # 终端界面（future-tui）
 │   ├── settings.json          # defaultModel、defaultThinkingLevel 等（见 tui.zh-CN.md）
-│   ├── keybindings.json       # 可选按键绑定覆盖
+│   ├── keybindings.json       # 按键绑定覆盖（由 /keymap 写入，启动时读取）
+│   ├── skill_reco.json        # 当天技能推荐配额（当天已推荐过的技能与已评估的草稿）
 │   ├── debug.log              # 调试重绘日志（仅 PI_DEBUG_REDRAW=1）
 │   ├── write.log              # 原始屏幕写入日志（仅 PI_TUI_WRITE_LOG=1）
 │   └── crash.log              # 崩溃时的 panic 回溯
@@ -49,7 +51,10 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 归 `future-agent`（默认每用户本地 IPC 的 gRPC 后端）所有。其配置
 完全从本目录的文件读取——没有任何模型相关的 CLI 旗标或环境变量：
 
-- `settings.json` — agent 设置。
+- `settings.json` — agent 设置（compaction、retry、`maxTurns`、
+  `defaultPermissionLevel`、`defaultModel`）。用 `future config get` /
+  `future config set` 读写；设置在用到时才生效，因此读取不需要重启，`set` 也不会
+  动到文件里的其他键。
 - `models.json` — provider 目录，形如
   `{"providers": {"<provider>": {"apiKey": …, "baseUrl": …, "models": [{"id", "name", "contextWindow"}]}}}`。
   `future auth login` 会自动同步此文件；也可以手工编辑。
@@ -60,6 +65,8 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 - `agent-instance.lock` — 当前 FutureOS home 的单例锁。测试应隔离 HOME（Windows 同时
   隔离 USERPROFILE），或用 `FUTURE_HOME` / `future agent --home` 把 Agent 指向另一个
   FutureOS home（见[多实例运行](#多实例运行future_home)）；仅更换 TCP 端口无法绕过单例锁。
+- `agent-instance.json` — 记录 PID、可执行文件路径、FutureOS home，以及 Windows
+  上的进程创建时间，供安装器核对进程身份。异常退出后文件可能残留；以操作系统锁为准。
 - `skills/` — 两个技能发现目录之一（`APP_SKILLS_DIR`）；另一个是
   `~/.agents/skills/`（`AGENTS_SKILLS_DIR`）。技能是含 `SKILL.md` +
   YAML frontmatter 的普通目录。
@@ -134,15 +141,20 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
 ## `~/.future/tui/` — 终端界面
 
 归 `future-tui` 所有。`settings.json` 持久化客户端侧设置（`defaultModel`、
-`defaultThinkingLevel`、`defaultPermissionLevel`、`enabledModelIds`）；
-可选的按键绑定覆盖放在 `keybindings.json`；`debug.log` 在设置 `PI_DEBUG_REDRAW=1` 时写入调试重绘日志，设置 `PI_TUI_WRITE_LOG=1` 时 `write.log` 记录原始屏幕写入；`crash.log` 在 TUI 崩溃时接收 panic 回溯。
+`defaultThinkingLevel`、`defaultPermissionLevel`、`enabledModelIds`、`themeId`、
+`skillRecommend`）；按键绑定覆盖放在 `keybindings.json`（`/keymap` 写入与默认值不同的
+绑定，启动时读取）；`skill_reco.json` 保存当天技能推荐配额（已推荐过哪些技能、已评估过
+哪些草稿——按天滚动，从不跨天读取）；`debug.log` 在设置 `PI_DEBUG_REDRAW=1` 时写入调试重绘日志，设置 `PI_TUI_WRITE_LOG=1` 时 `write.log` 记录原始屏幕写入；`crash.log` 在 TUI 崩溃时接收 panic 回溯。
 见 [tui.zh-CN.md](tui.zh-CN.md)。
 
 ## `~/.future/app/` — 桌面 GUI
 
 归 Tauri 桌面应用所有（见 `desktop/`）：
 
-- `app.db` — SQLite 数据库（线程、run、审批请求等）。
+- `app.db` — SQLite 数据库（线程、run、审批请求等）。其中的 `app_settings` 表存放
+  桌面端自己的偏好，`future desktop settings` 可以读写；`workspaces` 表存放工作区会话
+  归档到的那些工作区，`future workspace` 可以读取并新增（见
+  [自我认知](self-inspection.zh-CN.md)）。
 - `images/` — 持久化的每线程图片树（`<thread_id>/thumb/`，工作区对话另有
   `<thread_id>/origin/`）。放在 `~/.future` 而非系统缓存目录，是因为 macOS
   可能清理缓存目录。

@@ -1,37 +1,83 @@
 use super::*;
 
-/// Deliver locally tombstoned session deletions after the Agent becomes
-/// reachable. A delete is idempotent; `session not found` is success too.
+/// Deliver deletion intent in bounded batches over one shared client. Concurrent
+/// GUI/background drains coalesce; partial or ambiguous replies keep tombstones.
 pub async fn reconcile_delete_outbox() {
+    use future_rpc::session_deletion::{DeleteSessionsResponse, MAX_DELETE_SESSIONS};
+    static DRAIN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let Ok(_drain) = DRAIN.try_lock() else {
+        return;
+    };
     let Ok(session_ids) = crate::store::pending_agent_session_deletes() else {
         return;
     };
-    for session_id in session_ids {
-        let result = async {
-            let mut client = connect_agent().await?;
+    if session_ids.is_empty() {
+        return;
+    }
+    let mut client = match connect_agent().await {
+        Ok(client) => client,
+        Err(error) => {
+            let outcomes = session_ids
+                .into_iter()
+                .map(|session_id| (session_id, Some(error.to_string())))
+                .collect::<Vec<_>>();
+            let _ = crate::store::settle_agent_session_deletes(&outcomes);
+            return;
+        }
+    };
+    for batch in session_ids.chunks(MAX_DELETE_SESSIONS) {
+        let reply = async {
             let response = client
-                .execute_command(delete_session_command(session_id.clone()))
+                .execute_command(client::delete_sessions_command(batch.to_vec()))
                 .await
-                .map_err(|status| map_rpc_error("Agent delete delivery failed", status))?;
-            let response = response.into_inner();
-            if response.success || response.error.contains("session not found") {
-                Ok(())
-            } else {
-                Err(crate::AppError::Message(response.error))
+                .map_err(|status| map_rpc_error("Agent delete delivery failed", status))?
+                .into_inner();
+            if !response.success {
+                return Err(crate::AppError::Message(response.error));
             }
+            let payload = future_rpc::decode::response_data(&response);
+            let decoded: DeleteSessionsResponse =
+                serde_json::from_value(payload).map_err(|error| {
+                    crate::AppError::Message(format!("Invalid Agent deletion response: {error}"))
+                })?;
+            let expected: std::collections::HashSet<_> = batch.iter().map(String::as_str).collect();
+            let actual: std::collections::HashSet<_> = decoded
+                .results
+                .iter()
+                .map(|result| result.session_id.as_str())
+                .collect();
+            // Never clear intent on a missing, duplicate or unrelated outcome.
+            if decoded.results.len() != batch.len() || actual != expected {
+                return Err(crate::AppError::Message(
+                    "Incomplete Agent deletion response".to_owned(),
+                ));
+            }
+            Ok(decoded
+                .results
+                .into_iter()
+                .map(|result| {
+                    let error = if result.deleted {
+                        None
+                    } else {
+                        Some(if result.error.is_empty() {
+                            "Agent session deletion failed".to_owned()
+                        } else {
+                            result.error
+                        })
+                    };
+                    (result.session_id, error)
+                })
+                .collect::<Vec<_>>())
         }
         .await;
-        match result {
-            Ok(()) => {
-                let _ = crate::store::acknowledge_agent_session_delete(&session_id);
-            }
-            Err(error) => {
-                let _ = crate::store::note_agent_session_delete_failure(
-                    &session_id,
-                    &error.to_string(),
-                );
-            }
-        }
+        let outcomes = match reply {
+            Ok(outcomes) => outcomes,
+            Err(error) => batch
+                .iter()
+                .map(|session_id| (session_id.clone(), Some(error.to_string())))
+                .collect(),
+        };
+        let _ = crate::store::settle_agent_session_deletes(&outcomes);
     }
 }
 

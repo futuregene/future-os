@@ -8,8 +8,8 @@ use super::*;
 /// Build the full presence snapshot (directory + per-session streaming) together
 /// with a signature that changes iff the snapshot's UI-visible content changes.
 /// The signature is recomputed straight from the store each call, so it can never
-/// drift from reality: a missed dirty-mark only delays propagation (the 20s
-/// heartbeat recomputes and self-heals), it never desyncs.
+/// drift from reality: a missed dirty-mark only delays propagation (the catalog
+/// tick recomputes it and advertises the new revision), it never desyncs.
 pub(super) fn build_presence_snapshot(
     pair_id: &str,
     bridge_instance_id: &str,
@@ -50,8 +50,9 @@ pub(super) fn build_workspaces_snapshot() -> Option<(serde_json::Value, String)>
     host().workspaces()
 }
 
-/// Liveness-only heartbeat (no directory). Sent every ~20s while the catalog is
-/// unchanged so an idle link carries almost no traffic.
+/// Liveness-only payload: no directory content. Carries no catalog revision
+/// either; a caller that needs the recovery signal uses
+/// [`presence_heartbeat_payload`].
 pub(super) fn light_presence_payload(pair_id: &str, bridge_instance_id: &str) -> serde_json::Value {
     json!({
         "online": true,
@@ -60,6 +61,33 @@ pub(super) fn light_presence_payload(pair_id: &str, bridge_instance_id: &str) ->
         "bridgeInstanceId": bridge_instance_id,
         "lastHeartbeatTs": unix_timestamp(),
     })
+}
+
+/// Heartbeat payload: liveness plus the catalog revision.
+///
+/// The revision is what replaces the old "re-send every unchanged snapshot
+/// every 20s" self-heal. A client compares it against the revision it last
+/// applied; when the advertised one is newer, a pushed snapshot was lost (core
+/// NATS is at-most-once) and the client pulls the catalogue itself. That makes
+/// recovery faster than the timer it replaces (one tick, not 20s) while an
+/// idle, unchanged directory costs nothing but this packet.
+///
+/// A revision that stays put on an unchanged snapshot is only safe because
+/// `sessions()`/`workspaces()` recompute it from the store on every catalog
+/// tick: the signal is derived from ground truth, not from an accumulating
+/// dirty flag that a missed mark could strand.
+pub(super) fn presence_heartbeat_payload(
+    pair_id: &str,
+    bridge_instance_id: &str,
+) -> serde_json::Value {
+    let mut payload = light_presence_payload(pair_id, bridge_instance_id);
+    let (epoch, sessions, workspaces) = host().catalog_revisions();
+    payload["catalogVersion"] = json!({
+        "epoch": epoch,
+        "sessions": sessions,
+        "workspaces": workspaces,
+    });
+    payload
 }
 
 pub(super) fn unix_timestamp() -> u64 {

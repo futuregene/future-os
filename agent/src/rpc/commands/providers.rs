@@ -1,6 +1,7 @@
 //! Sessionless provider / auth / model-registry command handlers.
 
 use crate::rpc::{AppState, RpcCommand, RpcResponse};
+use future_rpc::payloads_ext::{SkillCandidatePayload, SuggestSkillPayload};
 
 /// Serializes provider snapshots with config mutations through the registry
 /// refresh. The lower config lock protects file RMWs; this command-level lock
@@ -101,13 +102,32 @@ pub(crate) fn handle_set_default_model(state: &AppState, cmd: &RpcCommand, id: &
 pub(crate) fn get_agent_info_response(state: &AppState, id: &str) -> String {
     let skills_count =
         crate::skills::discover_skills_cached(&crate::skills::global_skill_dirs()).len();
+    let mut data = serde_json::json!({
+        "version": crate::utils::VERSION,
+        "agentInstanceId": state.agent_instance_id,
+        "skillsCount": skills_count,
+    });
+    // The running binary's build identity, so a client can check whether this
+    // process is the commit it is reading rather than trusting a version string
+    // that may carry no commit at all.
+    if let (Some(object), Some(identity)) = (
+        data.as_object_mut(),
+        crate::utils::build_identity_json().as_object().cloned(),
+    ) {
+        object.extend(identity);
+    }
+    RpcResponse::ok(id, "get_agent_info", data)
+}
+
+/// A business-RPC readiness check that cannot wait on skill discovery. Login
+/// and process supervision only need the running Agent's identity and version.
+pub(crate) fn get_agent_readiness_response(state: &AppState, id: &str) -> String {
     RpcResponse::ok(
         id,
-        "get_agent_info",
+        "get_agent_readiness",
         serde_json::json!({
             "version": crate::utils::VERSION,
             "agentInstanceId": state.agent_instance_id,
-            "skillsCount": skills_count,
         }),
     )
 }
@@ -530,14 +550,25 @@ pub(crate) fn cmd_refresh_skills(state: &AppState, id: &str) -> String {
 /// collapses to "no recommendation" and the client submits normally.
 pub(crate) fn cmd_suggest_skill(id: &str, cmd: &RpcCommand) -> String {
     let skill = crate::skill_reco::suggest_skill(&cmd.suggest_query, &cmd.suggest_candidates);
-    RpcResponse::ok(
-        id,
-        "suggest_skill",
-        serde_json::json!({
-            "skill": skill.map(|c| serde_json::json!({
-                "name": c.name,
-                "description": c.description,
-            })),
+    // Serialize the shared payload type rather than hand-written JSON. The field
+    // name is the whole wire contract here: `future_rpc::encode` reads this JSON
+    // back into the same struct, and a mismatch makes it return `None`, which
+    // means no typed payload, which the desktop turns into "no recommendation"
+    // via its `.catch(() => null)`. The agent would still log a successful
+    // recommendation, so that drift would look like the feature quietly not
+    // working.
+    //
+    // Building the type makes the field name the compiler's business on both
+    // sides instead of a string that only matches by convention.
+    let payload = SuggestSkillPayload {
+        skill: skill.map(|candidate| SkillCandidatePayload {
+            name: candidate.name,
+            description: candidate.description,
         }),
-    )
+    };
+    match serde_json::to_value(payload) {
+        Ok(value) => RpcResponse::ok(id, "suggest_skill", value),
+        // Unreachable for this shape (two strings), but a handler must answer.
+        Err(error) => RpcResponse::build_fail(id, "suggest_skill", &error.to_string()),
+    }
 }

@@ -6,6 +6,7 @@
 
 ```sh
 future session history search --session SESSION_ID --query "ExpoSharing" --limit 5 --json
+future session history search --all --query "ExpoSharing" --sessions 50 --json
 future session history get --session SESSION_ID --entry ENTRY_ID --json
 ```
 
@@ -16,6 +17,22 @@ future session history get --session SESSION_ID --entry ENTRY_ID --json
 - 结果按最新 entry 优先，返回 `entryId`、`blockIndex`、角色、时间、run/tool 标识、简短片段和 `byteOffset`。
 - `hasMore` 表示还有匹配，可缩小关键词或增加 limit。
 - 片段按字节限制，边缘可能出现替代字符；精确原文应使用 get。
+
+## 跨会话搜索
+
+`--all` 回答的是「我们以前是否处理过这件事」，不需要先知道是哪个会话：它取代
+`--session`，跨会话检索，并给每条命中加上 `sessionId`（会话有标题时还加
+`sessionName`）。会话按最近更新优先扫描，命中再按各自时间排序。
+
+扫描范围由 `--sessions` 限制（1～500，默认 50），因此单次调用的开销不会随全部历史
+增长。响应会说明它覆盖了多少历史，而不是暗示覆盖了全部：
+
+- `scannedSessions`——实际扫描的会话数；
+- `truncated`——扫描窗口之外还有更早的会话、且未被检索时为 `true`；
+- `hasMore`——超出 `--limit` 仍有命中时为 `true`。
+
+调用方必须同时看这两个标志，才能把空结果当作「从未讨论过」；超过 500 个会话时
+`--sessions` 也无法补全视野，此时应改为收窄查询词。
 
 ## 有界读取
 
@@ -28,6 +45,55 @@ future session history get --session SESSION_ID --entry ENTRY_ID --offset 8192 -
 返回的 `chunks` 保留各自的 block 编号、工具 ID、字段类型、块内字节偏移和总大小。跟随 `nextOffset` 继续读取，不猜测中文字符的字节边界；非法偏移会报错。也可把搜索结果的 `byteOffset` 交给 get。`hasMore=false` 且 `nextOffset=null` 表示结束。
 
 `--json` 保留准确文本，包括换行和 NUL。工具参数是序列化 JSON 的**文本片段**，分页片段不保证本身是完整 JSON。`omittedKinds` 告知被排除的非召回块类型。
+
+## 带筛选的会话全文
+
+`future session history` 面向「**找到**某一段」，而「**处理**整段对话」——读出全部用户消息、
+把工具调用的输入与输出分开、抽出工具碰过的文件路径、按页翻完一个长会话——用
+`future session transcript`：
+
+```sh
+future session transcript --session SESSION_ID [选项]
+```
+
+它读的是与 `session info` 相同的展示投影，因此 **thinking（reasoning）块在这里可见**（这点与
+`history search` 不同），且不调用模型。
+
+| 选项 | 作用 |
+|---|---|
+| `--select <列表>` | 保留哪些切片：`user`、`assistant`、`thinking`、`tool-call`、`tool-result`、`session`、`compaction`、`all`。默认 `user,assistant,tool-call,tool-result`（thinking 需显式选择：它在真实会话里占绝大多数字节）。 |
+| `--tool <列表>` | 只看这些工具的调用与结果。 |
+| `--input` / `--output` | 工具调用只留参数；工具结果只留输出文本。 |
+| `--paths` | 工具调用与结果只留其中提到的文件路径，其余内容全部去掉。 |
+| `--grep <文本>` | 只保留内容包含该文本的块（不区分大小写；覆盖 text、thinking、工具名与参数）。 |
+| `--cursor N`、`--limit N`、`--all` | 按展示顺序取窗口。`--limit`（默认 50，上限 500）限制的是**命中**条目数，不是原始条目数。 |
+| `--max-bytes N` | 输出超过 N 字节前停止（默认 262144；`0` 表示不限制）。 |
+| `--truncate N` | 对每个超过 N 个字符的字符串做截断。 |
+| `--counts` | 只打印窗口的分布（条目、块类型、工具、run 结果、token、错误数、字节数），不打印条目。 |
+| `--runs` | 每个 run 一行：状态、耗时、token、错误。 |
+| `--json` | 机器可读结果。 |
+
+每个输出的条目都带该 run 的结果（`run`、`runId`），以及该 run 记录过的 token 用量
+（`usage`）——「哪个 run 失败了、为什么」因此不必再查第二条命令；`--runs` 是同一批数据
+的账目形式：
+
+```sh
+future session transcript --session SESSION_ID --runs
+# session=… runs=4 failed=1
+# [   1] run-…  completed 300.8s in=481K
+# [ 424] run-…  failed 12.4s
+#        error: upstream disconnected
+```
+
+返回里带 `cursor`、`nextCursor`、`scannedEntries`、`hasMore` 与命中的 `entries`，调用方用
+`--cursor nextCursor` 翻页直到 `hasMore` 为 false。`--counts` 与 `--runs` 是汇总：它们不受
+`--select`/`--tool`/`--grep` 影响、拒绝 `--cursor`，且默认覆盖整个会话（除非用 `--limit` 或
+`--all` 限定），因此 `--counts` 适合作为了解陌生会话的第一步。`--limit` 在条目模式下按命中
+条目计数，在 `--runs` 下按不同的 run 计数。
+
+有两条边界需要说明：`--paths` 是启发式的（调用取结构化参数里的路径类字段，结果取文本里像路径的
+词元）；`--tool` 是靠「配对的调用名」来筛工具**结果**的，所以配对调用落在窗口之外的结果无法归属，
+会被跳过并在返回的 `skippedUnattributedToolResults` 中计数，而不是假装它属于该工具。
 
 ## entry ID 是什么？
 

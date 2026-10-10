@@ -1,6 +1,7 @@
 //! future-agent — Rust implementation of the FutureAgent agent backend
 
 pub mod agent;
+pub mod approval_review;
 pub mod auth;
 pub mod cli;
 pub mod compaction;
@@ -17,6 +18,7 @@ pub mod sandbox;
 pub mod session;
 pub mod skill_reco;
 pub mod skills;
+mod system_one;
 pub mod tools;
 pub mod types;
 pub mod utils;
@@ -68,6 +70,22 @@ pub(crate) mod test_support {
             .as_nanos();
         let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::env::temp_dir().join(format!("futureos-{tag}-{stamp}-{seq}"))
+    }
+
+    /// An absolute path in the *host's* spelling from a POSIX-spelled
+    /// argument. The Linux-helper protocol is POSIX, but the code under test
+    /// validates host paths (`Path::is_absolute`), so a fixture that is
+    /// absolute on unix has to gain a drive prefix on Windows to reach the
+    /// same accept branch. On unix the string is returned unchanged.
+    pub(crate) fn host_absolute_path(path: &str) -> std::path::PathBuf {
+        if cfg!(windows) {
+            std::path::PathBuf::from(format!(
+                "C:\\{}",
+                path.trim_start_matches('/').replace('/', "\\")
+            ))
+        } else {
+            std::path::PathBuf::from(path)
+        }
     }
 
     /// Redirect HOME/USERPROFILE to an isolated directory for the duration of

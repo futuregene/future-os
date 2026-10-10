@@ -358,6 +358,44 @@ mod tests {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
     }
 
+    /// Re-arming an observer replaces its lifecycle subscription: the first
+    /// `Unsubscribe` must be dropped (`old.unsubscribe()`), otherwise the
+    /// router keeps serving a stale handler and `dispose()` — which drops only
+    /// the stored one — would leave the observer receiving events forever.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn re_arming_replaces_the_previous_lifecycle_subscription() {
+        let (url, server) = scripted_nav_server(vec![]).await;
+        let conn = CdpConnection::connect(&url, 5000).await.unwrap();
+        let session = CdpSession::new("", conn.clone());
+        let observer = ActionNavigationObserver::new("main", "loader-old");
+        observer.arm(&session);
+        observer.arm(&session);
+
+        conn.dispatch_test(
+            None,
+            "Page.lifecycleEvent",
+            &json!({"frameId": "main", "loaderId": "loader-new", "name": "init"}),
+        );
+        assert_eq!(
+            observer.new_loader_id.lock().unwrap().as_deref(),
+            Some("loader-new"),
+            "the replacement subscription is live"
+        );
+
+        observer.dispose();
+        conn.dispatch_test(
+            None,
+            "Page.lifecycleEvent",
+            &json!({"frameId":"main","loaderId":"after-dispose","name":"init"}),
+        );
+        assert_eq!(
+            observer.new_loader_id.lock().unwrap().as_deref(),
+            Some("loader-new"),
+            "a leaked first subscription would still deliver after dispose"
+        );
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), server).await;
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn action_observer_ignores_iframe_lifecycle_events() {
         let (url, server) = scripted_nav_server(vec![]).await;

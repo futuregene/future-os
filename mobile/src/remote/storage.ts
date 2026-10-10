@@ -61,7 +61,9 @@ async function deleteCredentialFields(): Promise<void> {
 async function loadLegacyCredentials(): Promise<RemoteCredentials | null> {
   const commit = await SecureStore.getItemAsync(CREDENTIAL_COMMIT_KEY, secureOptions);
   if (commit === "cleared") return null;
-  if (commit !== null && commit !== "a" && commit !== "b")
+  // A non-string is "absent", like the registry read above: a platform shim
+  // yielding `undefined` must not be read as a corrupted commit marker.
+  if (typeof commit === "string" && commit !== "a" && commit !== "b")
     throw new Error("invalid_credential_commit");
   const entries = await Promise.all(
     Object.entries(CREDENTIAL_KEYS).map(async ([field, key]) => [
@@ -121,6 +123,9 @@ async function writeDesktop(
     pairId: credentials.pairId,
     slot,
     ...(previous?.name ? { name: previous.name } : {}),
+    // Same rule as the name: a credential refresh is not the user changing how
+    // the desktop looks, so it must not drop the icon they chose.
+    ...(previous?.icon ? { icon: previous.icon } : {}),
   };
   // One commit switches the complete bundle and active selection together.
   await commitRegistry({
@@ -133,7 +138,10 @@ async function writeDesktop(
 
 async function readRegistry(): Promise<DesktopRegistry> {
   const raw = await SecureStore.getItemAsync(DESKTOP_REGISTRY_KEY, secureOptions);
-  if (raw !== null) {
+  // `null` is the documented "missing" value, but a platform shim can also
+  // yield `undefined`. Both mean absent — treating a non-string as parseable is
+  // how a missing registry turns into "corrupt registry" on some devices.
+  if (typeof raw === "string") {
     let parsed: DesktopRegistry;
     try {
       parsed = JSON.parse(raw) as DesktopRegistry;
@@ -144,7 +152,8 @@ async function readRegistry(): Promise<DesktopRegistry> {
       !parsed.desktops.every((entry) => entry && typeof entry.desktopId === "string" &&
         entry.desktopId && typeof entry.pairId === "string" && entry.pairId &&
         (entry.slot === "a" || entry.slot === "b") &&
-        (entry.name === undefined || typeof entry.name === "string")) ||
+        (entry.name === undefined || typeof entry.name === "string") &&
+        (entry.icon === undefined || typeof entry.icon === "string")) ||
       new Set(parsed.desktops.map((entry) => entry.desktopId)).size !== parsed.desktops.length)
       throw new Error("invalid_desktop_registry");
     // The active id is only a selection pointer. If an interrupted migration
@@ -171,12 +180,49 @@ async function readRegistry(): Promise<DesktopRegistry> {
 
 export async function loadPairedDesktops(): Promise<PairedDesktop[]> {
   return enqueueCredentialOperation(async () =>
-    (await readRegistry()).desktops.map(({ desktopId, pairId, name }) => ({
+    (await readRegistry()).desktops.map(({ desktopId, pairId, name, icon }) => ({
       desktopId,
       pairId,
       ...(name ? { name } : {}),
+      ...(icon ? { icon } : {}),
     })),
   );
+}
+
+/**
+ * Set (or clear) a desktop's display name and/or icon.
+ *
+ * Both are local to this phone: they never reach the platform or the desktop,
+ * so they are not part of the pair. An empty string clears the field, which is
+ * what the editor sends when the user blanks the box.
+ */
+export async function labelDesktop(
+  desktopId: string,
+  patch: { name?: string; icon?: string },
+): Promise<void> {
+  return enqueueCredentialOperation(async () => {
+    const registry = await readRegistry();
+    if (!registry.desktops.some((item) => item.desktopId === desktopId)) return;
+    const clean = (value: string | undefined) => {
+      const trimmed = value?.trim();
+      return trimmed ? trimmed : undefined;
+    };
+    await commitRegistry({
+      ...registry,
+      desktops: registry.desktops.map((item) => {
+        if (item.desktopId !== desktopId) return item;
+        const name = patch.name === undefined ? item.name : clean(patch.name);
+        const icon = patch.icon === undefined ? item.icon : clean(patch.icon);
+        return {
+          desktopId: item.desktopId,
+          pairId: item.pairId,
+          slot: item.slot,
+          ...(name ? { name } : {}),
+          ...(icon ? { icon } : {}),
+        };
+      }),
+    });
+  });
 }
 
 /**
@@ -194,7 +240,7 @@ export async function renameDesktop(desktopId: string, name: string): Promise<vo
         if (item.desktopId !== desktopId) return item;
         return trimmed
           ? { ...item, name: trimmed }
-          : { desktopId: item.desktopId, pairId: item.pairId, slot: item.slot };
+          : { desktopId: item.desktopId, pairId: item.pairId, slot: item.slot, ...(item.icon ? { icon: item.icon } : {}) };
       }),
     });
   });

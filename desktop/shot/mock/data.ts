@@ -11,6 +11,7 @@
 const now = Date.now();
 const minute = 60_000;
 const hour = 60 * minute;
+const day = 24 * hour;
 
 export interface MockWorkspace {
   id: string;
@@ -784,5 +785,299 @@ export const reviewFiles = [
     diff: "",
   },
 ];
+
+// ── Tasks ────────────────────────────────────────────────────────────────────
+// The shapes `commands/tasks.rs` serializes (camelCase), so the panel renders
+// exactly what a real backend would hand it.
+
+export interface MockTaskRun {
+  id: string;
+  kind: string;
+  origin: string;
+  status: string;
+  dueAt: number | null;
+  threadId: string | null;
+  sessionId: string | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  promptVersion: number | null;
+  resultSummary: string | null;
+  errorMessage: string | null;
+}
+
+export interface MockTask {
+  id: string;
+  name: string;
+  enabled: boolean;
+  prompt: string;
+  promptVersion: number;
+  cwd: string;
+  modelId: string | null;
+  thinkingLevel: string | null;
+  sessionPolicy: string;
+  sessionRetention: string;
+  conversationMode: string;
+  triggerKind: string;
+  trigger: Record<string, unknown>;
+  depJoin: string;
+  nextDueAt: number | null;
+  queued: boolean;
+  /** Upstream dependencies this task waits on (0 when it has none). */
+  depCount: number;
+  /** Prompt suggestions awaiting a decision (0 when there are none). */
+  latestRun: MockTaskRun | null;
+}
+
+export const tasks: MockTask[] = [
+  {
+    id: "tsk_weekly_report",
+    name: "每周进展周报",
+    enabled: true,
+    prompt: [
+      "读一遍本目录下 notes/ 里本周新增或改动的文件，把其中的结论变化整理成中文周报。",
+      "",
+      "要求：",
+      "- 只写本周实际发生的进展，不要复述背景；没有进展就写「本周无进展」。",
+      "- 每条结论后附上对应文件路径。",
+      "- 写入 reports/weekly-<信封里的 due 日期>.md，不要覆盖已有文件。",
+      "- 结尾给出一个「下周待办」小节，最多三条。",
+    ].join("\n"),
+    promptVersion: 4,
+    cwd: "~/Research/dopamine-decision",
+    modelId: "future/deepseek-v4-pro",
+    thinkingLevel: "high",
+    sessionPolicy: "existing",
+    sessionRetention: "keep",
+    conversationMode: "workspace",
+    triggerKind: "schedule",
+    trigger: { mode: "weekly", days: ["mon", "fri"], time: "10:00" },
+    depJoin: "all",
+    nextDueAt: now + 2 * hour + 40 * minute,
+    queued: false,
+    depCount: 1,
+    latestRun: {
+      id: "trn_report_2",
+      kind: "main",
+      origin: "schedule",
+      status: "completed",
+      dueAt: now - 2 * day,
+      threadId: "th_review",
+      sessionId: "sess_review",
+      startedAt: now - 2 * day,
+      finishedAt: now - 2 * day + 3 * minute,
+      promptVersion: 4,
+      resultSummary: "写入 reports/weekly-2026-10-05.md：3 条结论变化、2 条新增证据；下周待办已列出。",
+      errorMessage: null,
+    },
+  },
+  {
+    id: "tsk_lit_watch",
+    name: "文献监控",
+    enabled: true,
+    prompt: [
+      "检索最近 7 天与「多巴胺 风险决策」相关的新论文，逐篇给出三行摘要（问题、方法、结论）。",
+      "只保留有实验数据的文章；综述类单独列一节。",
+      "写入 reports/lit-watch.md（覆盖上一版，历史留在会话里）。",
+      "同时把最值得读的一篇的 DOI 放到摘要开头。",
+    ].join("\n"),
+    promptVersion: 2,
+    cwd: "~/Research/dopamine-decision",
+    modelId: null,
+    thinkingLevel: null,
+    sessionPolicy: "new",
+    sessionRetention: "keep",
+    conversationMode: "workspace",
+    triggerKind: "schedule",
+    trigger: { mode: "interval", every_minutes: 720 },
+    depJoin: "all",
+    nextDueAt: now + 6 * hour,
+    queued: true,
+    // One suggestion is waiting: the row badges it and the detail lists it.
+    depCount: 0,
+    latestRun: {
+      id: "trn_lit_9",
+      kind: "main",
+      origin: "schedule",
+      status: "failed",
+      dueAt: now - 6 * hour,
+      threadId: "th_lit",
+      sessionId: "sess_lit",
+      startedAt: now - 6 * hour,
+      finishedAt: now - 6 * hour + 40_000,
+      promptVersion: 2,
+      resultSummary: null,
+      errorMessage: "上游检索服务返回 503；未写入文件。",
+    },
+  },
+  {
+    id: "tsk_month_end",
+    name: "月末归档",
+    enabled: true,
+    prompt: [
+      "把本月产生的所有 reports/ 与 figures/ 文件归档到 archive/<年-月>/ 下，并生成一份索引 README。",
+      "只移动，不删除；遇到同名文件加后缀 -2 而不是覆盖。",
+      "索引里按文件类型分组，并标出每个文件最后一次被修改的时间。",
+    ].join("\n"),
+    promptVersion: 1,
+    cwd: "~/Research",
+    modelId: null,
+    thinkingLevel: "medium",
+    sessionPolicy: "new",
+    sessionRetention: "keep",
+    conversationMode: "workspace",
+    triggerKind: "schedule",
+    trigger: { mode: "monthly", day: 31, time: "09:00" },
+    depJoin: "all",
+    nextDueAt: now + 24 * day,
+    queued: false,
+    depCount: 0,
+    latestRun: null,
+  },
+  {
+    id: "tsk_notify",
+    name: "失败汇总通知",
+    enabled: false,
+    prompt: [
+      "上游任务失败时运行：读取它的运行记录与错误摘要，写成一段不超过 80 字的中文说明。",
+      "说明要包含：哪个任务、什么时候、失败原因、是否需要人工介入。",
+      "写入 reports/incidents.md（追加，不覆盖）。",
+    ].join("\n"),
+    promptVersion: 1,
+    cwd: "~/Research",
+    modelId: null,
+    thinkingLevel: "low",
+    sessionPolicy: "new",
+    sessionRetention: "keep",
+    conversationMode: "workspace",
+    triggerKind: "manual",
+    trigger: {},
+    depJoin: "all",
+    nextDueAt: null,
+    queued: false,
+    depCount: 2,
+    latestRun: {
+      id: "trn_notify_1",
+      kind: "chain",
+      origin: "chain",
+      status: "completed",
+      dueAt: null,
+      threadId: null,
+      sessionId: null,
+      startedAt: now - 6 * hour,
+      finishedAt: now - 6 * hour + 20_000,
+      promptVersion: 1,
+      resultSummary: "已在 reports/incidents.md 追加一条：文献监控 503，需人工确认检索服务。",
+      errorMessage: null,
+    },
+  },
+];
+
+/** Runs of one task, newest first (the panel's `list_task_runs`). */
+export const taskRuns: Record<string, MockTaskRun[]> = {
+  tsk_weekly_report: [
+    tasks[0]!.latestRun!,
+    {
+      id: "trn_report_1",
+      kind: "main",
+      origin: "schedule",
+      status: "completed",
+      dueAt: now - 5 * day,
+      threadId: "th_review",
+      sessionId: "sess_review",
+      startedAt: now - 5 * day,
+      finishedAt: now - 5 * day + 2 * minute,
+      promptVersion: 3,
+      resultSummary: "写入 reports/weekly-2026-10-02.md：2 条结论变化；提示词已由建议更新到 v4。",
+      errorMessage: null,
+    },
+  ],
+  // Two runs, so the panel's per-run cards (and the suggestion that belongs to
+  // exactly one of them) are what the screenshot shows.
+  tsk_lit_watch: [
+    tasks[1]!.latestRun!,
+    {
+      id: "trn_lit_8",
+      kind: "main",
+      origin: "schedule",
+      status: "completed",
+      dueAt: now - 18 * hour,
+      threadId: "th_lit",
+      sessionId: "sess_lit",
+      startedAt: now - 18 * hour,
+      finishedAt: now - 18 * hour + 52_000,
+      promptVersion: 2,
+      resultSummary: "写入 reports/lit-watch.md：新增 3 篇，综述 1 篇；开头给出 DOI 10.1038/s41593-026-01234-5。",
+      errorMessage: null,
+    },
+  ],
+  tsk_notify: [tasks[3]!.latestRun!],
+  tsk_month_end: [],
+};
+
+/** Dependency edges, keyed by downstream task (the panel's `list_task_deps`). */
+export const taskDeps: Record<string, Array<{ upstreamTaskId: string; upstreamName: string; on: string; satisfied: boolean }>> = {
+  tsk_weekly_report: [
+    { upstreamTaskId: "tsk_lit_watch", upstreamName: "文献监控", on: "completed", satisfied: true },
+  ],
+  tsk_notify: [
+    { upstreamTaskId: "tsk_lit_watch", upstreamName: "文献监控", on: "failure", satisfied: false },
+    { upstreamTaskId: "tsk_weekly_report", upstreamName: "每周进展周报", on: "failure", satisfied: false },
+  ],
+  tsk_lit_watch: [],
+  tsk_month_end: [],
+};
+
+/** Prompt versions, oldest first (the panel's `list_task_revisions`). */
+export const taskRevisions: Record<string, Array<{ id: string; version: number; prompt: string; source: string; status: string; reason: string | null; confidence: number | null; createdAt: number }>> = {
+  tsk_weekly_report: [
+    {
+      id: "rev_w1",
+      version: 1,
+      prompt: "整理本周进展。",
+      // What the prompt-change bookkeeping writes for the version being
+      // replaced: who wrote it was never recorded, so the row says what is
+      // certain instead of guessing.
+      source: "superseded",
+      status: "superseded",
+      reason: null,
+      confidence: null,
+      createdAt: now - 30 * day,
+    },
+    {
+      id: "rev_w3",
+      version: 3,
+      prompt: "读 notes/ 里本周新增或改动的文件，整理成中文周报。",
+      source: "user",
+      status: "superseded",
+      reason: null,
+      confidence: null,
+      createdAt: now - 9 * day,
+    },
+    {
+      id: "rev_w4",
+      version: 4,
+      prompt: "（当前生效版本，见左侧提示词）补上「下周待办」与文件路径要求。",
+      source: "reflection",
+      status: "active",
+      reason: "上一版没写明输出路径，运行结果无处可查；同时缺一条可执行的下周计划。",
+      confidence: 0.82,
+      createdAt: now - 2 * day,
+    },
+  ],
+  tsk_lit_watch: [
+    {
+      id: "rev_l2",
+      version: 2,
+      prompt: "（当前生效版本）限定 7 天内、按问题/方法/结论三行摘要，并给出 DOI。",
+      source: "user",
+      status: "active",
+      reason: null,
+      confidence: null,
+      createdAt: now - 4 * day,
+    },
+  ],
+  tsk_month_end: [],
+  tsk_notify: [],
+};
 
 export const nowRef = now;

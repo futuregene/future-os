@@ -101,6 +101,43 @@ fn take_post_start_failure(run_id: &str) -> Option<String> {
     }
 }
 
+/// Test-only registry of the run callbacks `prompt_internal` built for a
+/// session, so a test can invoke the *production* closures with production
+/// inputs and assert what they do. Two of them cannot run at runtime on a host
+/// without a working sandbox backend (`escalation`, `on_sandboxed`), and the
+/// third (`on_checkpoint`) is shadowed by the compaction ticket whenever a
+/// compaction journal is present — which, in this wiring, is exactly when the
+/// callback is installed. Keyed by session id: tests use distinct session ids
+/// and never consume each other's capture. Absent from non-test builds.
+#[cfg(test)]
+struct RunCallbacksForTest {
+    on_checkpoint: crate::agent::CheckpointCallback,
+    escalation: crate::sandbox::EscalationRequester,
+    on_sandboxed: crate::tools::SandboxedNotifier,
+}
+
+#[cfg(test)]
+static RUN_CALLBACKS_FOR_TEST: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<String, RunCallbacksForTest>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(test)]
+fn capture_run_callbacks_for_test(
+    session_id: &str,
+    on_checkpoint: crate::agent::CheckpointCallback,
+    escalation: crate::sandbox::EscalationRequester,
+    on_sandboxed: crate::tools::SandboxedNotifier,
+) {
+    RUN_CALLBACKS_FOR_TEST.lock().insert(
+        session_id.to_string(),
+        RunCallbacksForTest {
+            on_checkpoint,
+            escalation,
+            on_sandboxed,
+        },
+    );
+}
+
 impl ServerSession {
     #[cfg(test)]
     pub(super) fn scheduled_setting_summary(
@@ -214,7 +251,7 @@ impl ServerSession {
             sandbox_tier: self
                 .sandbox_policy
                 .as_ref()
-                .map(|policy| policy.tier.as_str().to_string()),
+                .map(|policy| policy.mode().to_string()),
         };
         // Freeze the provider, model, tools and AgentConfig before accepting.
         // A queued run must not observe a later set_model/set_thinking/tools
@@ -313,15 +350,59 @@ impl ServerSession {
             .first()
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("there is no queued run to start"))?;
-        let payload: ScheduledPromptPayload = serde_json::from_value(request.payload.clone())?;
-        // Every accepted request keeps its own execution snapshot. Merging
-        // queued text here used the front request's model, tools, cwd and
-        // sandbox settings for later requests, which could silently widen
-        // permissions or run work under a model the user did not select.
-        let snapshot = self
-            .scheduled_snapshots
-            .remove(&request.run_id)
-            .ok_or_else(|| anyhow::anyhow!("accepted run snapshot is unavailable"))?;
+        let mut payload: ScheduledPromptPayload = serde_json::from_value(request.payload.clone())?;
+        // Follow-up coalescing (opt-in per request via `enqueue_coalescing`):
+        // the requests queued directly behind the front one fold into it, so a
+        // burst of supplements is answered together in ONE run instead of one by
+        // one. Their text, model-context sidecar, images and attachments are
+        // appended in queue order — nothing is dropped, nothing is reordered —
+        // while the EXECUTION configuration (model, thinking level, cwd,
+        // permissions, sandbox) comes from the LAST folded request: the user's
+        // latest instruction decides how the combined turn runs.
+        // Fold BEFORE the run is activated so `prompt_internal` builds the user
+        // message once, from the merged payload (the fold is not reversible at
+        // that point). If activation then fails, the error arm below cancels the
+        // front request, and the folded requests are gone with it: their
+        // content was admitted, never answered, and their clients hold `merged`
+        // receipts. The window is narrow (persistence is checked above, and a
+        // scheduled run needs no shared-loop lock) and the failure mode is the
+        // pre-existing one for the front request itself — an inaccessible
+        // workspace or a lost lease race drops the whole turn, folded or not.
+        let folded = self.scheduler.drain_coalescing_after_first();
+        for trailing in &folded {
+            let trailing_payload: ScheduledPromptPayload =
+                serde_json::from_value(trailing.payload.clone())?;
+            if !payload.message.is_empty() && !trailing_payload.message.is_empty() {
+                payload.message.push_str("\n\n");
+            }
+            payload.message.push_str(&trailing_payload.message);
+            if !payload.model_context.is_empty() && !trailing_payload.model_context.is_empty() {
+                payload.model_context.push_str("\n\n");
+            }
+            payload
+                .model_context
+                .push_str(&trailing_payload.model_context);
+            payload.images.extend(trailing_payload.images);
+            payload.attachments.extend(trailing_payload.attachments);
+        }
+        // The front request keeps the run identity it was acknowledged with
+        // (run id, sequence, client request id) — only the effective settings
+        // move to the last folded request.
+        let coalesced_run_ids: Vec<String> = folded
+            .iter()
+            .map(|trailing| trailing.run_id.clone())
+            .collect();
+        let mut snapshot = self.scheduled_snapshots.remove(&request.run_id);
+        for trailing in &folded {
+            if let Some(folded_snapshot) = self.scheduled_snapshots.remove(&trailing.run_id) {
+                snapshot = Some(folded_snapshot);
+            }
+        }
+        let snapshot =
+            snapshot.ok_or_else(|| anyhow::anyhow!("accepted run snapshot is unavailable"))?;
+        // Keep the payload's own copy of the effective settings consistent, so a
+        // later reader sees the configuration this run actually uses.
+        payload.settings = snapshot.settings.clone();
         debug_assert_eq!(snapshot.settings.model, payload.settings.model);
         #[cfg(test)]
         {
@@ -338,6 +419,7 @@ impl ServerSession {
             Some(&request.client_request_id),
             Some(&request),
             Some(snapshot),
+            &coalesced_run_ids,
         )?;
         Ok(crate::runtime::RunAck {
             run_id: lease.run_id,
@@ -384,6 +466,9 @@ impl ServerSession {
             client_request_id,
             None,
             None,
+            // A directly-submitted prompt is never a coalescing fold target:
+            // folding only happens at the run boundary for queued requests.
+            &[],
         )
     }
 
@@ -397,6 +482,7 @@ impl ServerSession {
         client_request_id: Option<&str>,
         scheduled: Option<&crate::runtime::ScheduledRunRequest>,
         accepted_snapshot: Option<AcceptedRunSnapshot>,
+        coalesced_run_ids: &[String],
     ) -> Result<crate::runtime::RunLease> {
         let accepted_settings = accepted_snapshot
             .as_ref()
@@ -423,12 +509,14 @@ impl ServerSession {
             settings
                 .sandbox_tier
                 .as_deref()
-                .map(|tier| crate::sandbox::SandboxPolicy {
-                    tier: crate::sandbox::SandboxTier::parse(tier),
-                })
+                .map(crate::sandbox::SandboxPolicy::from_mode)
         } else {
             self.sandbox_policy.clone()
-        };
+        }
+        .map(|policy| {
+            let signed_in = !policy.model_reviewer || crate::system_one::endpoint().is_some();
+            crate::approval_review::account_sandbox_policy(policy, signed_in)
+        });
 
         let cwd_path = std::path::Path::new(&run_cwd);
         crate::utils::ensure_workspace_accessible(
@@ -589,6 +677,22 @@ impl ServerSession {
                 "run_id".to_string(),
                 serde_json::Value::String(run_lease.run_id.clone()),
             );
+            // Audit trail for a coalesced turn: the queued requests whose
+            // content this run absorbed, in queue order. Their own runs were
+            // never started (each answered terminal/`merged`), so this is what
+            // records — for the history and the journal — why one answer
+            // covers several submissions.
+            if !coalesced_run_ids.is_empty() {
+                metadata.insert(
+                    "coalesced_run_ids".to_string(),
+                    serde_json::Value::Array(
+                        coalesced_run_ids
+                            .iter()
+                            .map(|run_id| serde_json::Value::String(run_id.clone()))
+                            .collect(),
+                    ),
+                );
+            }
         }
         let user_entry_id = user_message.ensure_journal_entry_id();
         let user_attachments = user_message
@@ -683,7 +787,8 @@ impl ServerSession {
         let creator_id = self.creator_id.clone();
         let source_meta = self.source_meta.clone();
         let auto_compaction = self.auto_compaction;
-        let approval_gate = self.approval_gate.clone();
+        run_loop.clear_interrupt();
+        let mut approval_gate = self.approval_gate.clone();
         let is_ephemeral = self.ephemeral;
 
         // Resolve the sandbox boundary once per run: canonicalized writable
@@ -703,17 +808,37 @@ impl ServerSession {
             None => crate::sandbox::ResolvedSandbox::disabled(&session_cwd),
         });
 
+        // Auto is an approval reviewer, never a new OS sandbox tier. A failed
+        // sandbox probe always retains the existing human Manual flow.
+        if run_sandbox_policy
+            .as_ref()
+            .is_some_and(|policy| policy.model_reviewer)
+            && sandbox.wraps_shell()
+        {
+            run_loop.tool_review_annotations =
+                Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new()));
+            approval_gate = approval_gate.for_run(
+                prompt.message.to_string(),
+                &initial_messages[..initial_messages.len() - 1],
+                &user_entry_id,
+                run_loop.interrupt_flag(),
+                run_loop.tool_review_annotations.clone(),
+            );
+        }
+
         // Build per-session StreamContext (callbacks) — these are session-
         // specific closures and must NOT be stored on the shared Loop.
         let save_messages = messages_arc.clone();
         let save_persistence = self.persistence.clone();
         let persisted_run_id = run_lease.run_id.clone();
+        let review_gate = approval_gate.clone();
         let save_closure: crate::agent::PersistCallback =
             Arc::new(move |msg: &mut crate::types::AgentMessage| {
+                msg.ensure_journal_entry_id();
+                review_gate.observe_review_message(msg);
                 if is_ephemeral {
                     return;
                 }
-                msg.ensure_journal_entry_id();
                 let mut persisted = msg.clone();
                 // Every entry of this run carries its run identity — not just
                 // assistant entries — so a message's home run never has to be
@@ -735,6 +860,8 @@ impl ServerSession {
                 checkpoint_persistence
                     .commit_checkpoint(crate::session::checkpoint_to_entry(checkpoint))
             });
+        #[cfg(test)]
+        let checkpoint_callback_for_test = checkpoint_callback.clone();
         let stream_ctx = crate::agent::StreamContext {
             // Use the bare model ID from the Loop — the LLM API expects just
             // the model name, not the "provider/model" display format stored
@@ -793,7 +920,6 @@ impl ServerSession {
 
         // Clear any stale interrupt flag copied from the next-run control
         // plane. Each run owns its snapshot after this boundary.
-        run_loop.clear_interrupt();
         let shared_interrupt_flag = run_loop.interrupt_flag();
         self.broadcaster
             .set_persistence_interrupt(shared_interrupt_flag.clone());
@@ -843,6 +969,18 @@ impl ServerSession {
                 });
             })
         };
+
+        // Test-only handle on the closures this run built (see
+        // `RunCallbacksForTest`). Nothing is captured in a non-test build.
+        #[cfg(test)]
+        {
+            capture_run_callbacks_for_test(
+                &session_id,
+                checkpoint_callback_for_test,
+                escalation.clone(),
+                on_sandboxed.clone(),
+            );
+        }
 
         // Build the run future; SessionRuntime owns spawning, monitoring, and
         // the task slot. Terminal persistence is committed through the
@@ -957,6 +1095,8 @@ impl ServerSession {
                     .map(|value| value.error_message())
             });
             let commit_truncation = stream_truncation.clone();
+            let maintenance_manager = session_manager.clone();
+            let maintenance_session_id = session_id.clone();
             let persistence_task = tokio::task::spawn_blocking(move || {
                 if is_ephemeral {
                     return anyhow::Ok(());
@@ -1180,6 +1320,13 @@ impl ServerSession {
                     });
                 }
             }
+            // The transcript terminal and agent_end event are now durable.
+            // This completion is the only trigger. Missed or failed attempts
+            // keep the raw journal; startup and idle work never retry them.
+            if !is_ephemeral && broadcaster.persistence_error().is_none() {
+                maintenance_manager
+                    .request_journal_compaction(&maintenance_session_id, &task_lease.run_id);
+            }
         };
         #[cfg(test)]
         {
@@ -1303,19 +1450,6 @@ impl ServerSession {
             session_id: self.session_id.clone(),
             model: model.to_owned(),
             thinking_level: thinking_level.to_owned(),
-            prompt_guidelines: vec![
-                // The write-via-shell prohibition is platform-neutral, but its
-                // examples must name the redirection forms the host's shell
-                // actually has, or a PowerShell model won't map "don't use
-                // `cat > file`" onto "don't use Out-File".
-                {
-                    #[cfg(not(target_os = "windows"))]
-                    let forms = "`>`, `>>`, tee, heredocs, `cat > file`";
-                    #[cfg(target_os = "windows")]
-                    let forms = "`>`, `>>`, Out-File, Set-Content, Add-Content";
-                    format!("When asked to create, save, write, or modify a file, ALWAYS use the write or edit tool — including for absolute paths and paths outside the current working directory (both tools accept any path). Do NOT use shell redirection ({forms}) to write files: shell file writes bypass file tracking and the approval flow. Reserve shell redirection for piping between commands, not for creating files. Only describe file changes after the tool succeeds.")
-                },
-            ],
             ..Default::default()
         });
         (prompt, context_files)

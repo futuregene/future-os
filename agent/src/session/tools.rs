@@ -17,6 +17,9 @@ impl Manager {
     pub(crate) fn tool_output(&self, session: &str, run: &str, call: &str) -> Result<Value> {
         self.storage()?.tool_output(session, run, call)
     }
+    pub(crate) fn tool_call_args(&self, session: &str, run: &str, call: &str) -> Result<Value> {
+        self.storage()?.tool_call_args(session, run, call)
+    }
 }
 
 impl SqliteStore {
@@ -51,10 +54,42 @@ impl SqliteStore {
     fn tool_output(&self, session: &str, run: &str, call: &str) -> Result<Value> {
         let (session, run, call) = (session.to_owned(), run.to_owned(), call.to_owned());
         self.db.call(move |db| {
-            let mut stmt=db.prepare("SELECT b.text,b.is_error,e.timestamp_ms FROM message_blocks b JOIN entries e ON e.session_id=b.session_id AND e.position=b.entry_position WHERE b.session_id=?1 AND e.run_id=?2 AND b.tool_call_id=?3 AND b.kind='tool_result' ORDER BY e.position DESC LIMIT 1")?;
+            let mut stmt=db.prepare("SELECT b.text,b.is_error,e.timestamp_ms,e.metadata_json FROM message_blocks b JOIN entries e ON e.session_id=b.session_id AND e.position=b.entry_position WHERE b.session_id=?1 AND e.run_id=?2 AND b.tool_call_id=?3 AND b.kind='tool_result' ORDER BY e.position DESC LIMIT 1")?;
             let mut rows=stmt.query(params![session,run,call])?;
-            let output=if let Some(row)=rows.next()? {Some(json!({"toolCallId":call,"runId":run,"text":row.get::<_,Option<String>>(0)?,"isError":row.get::<_,Option<bool>>(1)?.unwrap_or(false),"createdAtMs":row.get::<_,Option<i64>>(2)?}))}else{None};
+            let output=if let Some(row)=rows.next()? {
+                let metadata: Option<String> = row.get(3)?;
+                let metadata = metadata.map(|s| serde_json::from_str::<Value>(&s)).transpose()?;
+                let facts = metadata.as_ref().and_then(|meta| meta.get("meta")).and_then(|meta| meta.get("shell_result"));
+                let mut output = json!({"toolCallId":call,"runId":run,"text":row.get::<_,Option<String>>(0)?,"isError":row.get::<_,Option<bool>>(1)?.unwrap_or(false),"createdAtMs":row.get::<_,Option<i64>>(2)?});
+                if let Some(facts) = facts { output["shell_result"] = facts.clone(); }
+                Some(output)
+            }else{None};
             Ok(json!({"output":output}))
+        })
+    }
+
+    /// One tool call's stored arguments, by identity.
+    ///
+    /// The history page a phone receives drops a shell call's `arguments`
+    /// entirely (the command is the page's most expensive unread payload), so
+    /// the client asks for them back here — by `tool_call_id`, the same
+    /// identity the page carries, scoped to its session AND run so an id that
+    /// repeats in another conversation cannot answer this one.
+    fn tool_call_args(&self, session: &str, run: &str, call: &str) -> Result<Value> {
+        let (session, run, call) = (session.to_owned(), run.to_owned(), call.to_owned());
+        self.db.call(move |db| {
+            let mut stmt = db.prepare("SELECT b.tool_name,b.arguments_json FROM message_blocks b JOIN entries e ON e.session_id=b.session_id AND e.position=b.entry_position WHERE b.session_id=?1 AND e.run_id=?2 AND b.tool_call_id=?3 AND b.kind='tool_call' ORDER BY e.position DESC LIMIT 1")?;
+            let mut rows = stmt.query(params![session, run, call])?;
+            let (name, arguments) = match rows.next()? {
+                Some(row) => (
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?
+                        .map(|raw| serde_json::from_str::<Value>(&raw))
+                        .transpose()?,
+                ),
+                None => (None, None),
+            };
+            Ok(json!({"toolCallId": call, "name": name, "arguments": arguments}))
         })
     }
 }
@@ -90,5 +125,148 @@ mod tests {
             store.tool_page("s", "two", 0, 2).unwrap()["tools"][0]["status"],
             "completed"
         );
+    }
+
+    /// The lean history page drops a shell call's arguments, so the phone asks
+    /// for them back by `(session, run, tool_call_id)`. The same id exists in
+    /// another session and run here: neither may answer for the caller's.
+    #[test]
+    fn get_tool_call_args_reads_one_call_by_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+        let call = |id: &str, run: &str, name: &str, args: Value| {
+            json!({"id":format!("{run}-{id}"),"type":"assistant","role":"assistant","timestamp":"2026-01-01T00:00:00Z","meta":{"run_id":run},
+                "content":[{"type":"tool_call","id":id,"name":name,"args":args}]})
+        };
+        store
+            .replace(
+                "s1",
+                vec![
+                    call(
+                        "call-1",
+                        "one",
+                        "shell",
+                        json!({"command": "ls -la", "timeout": 30}),
+                    ),
+                    call(
+                        "call-2",
+                        "one",
+                        "read",
+                        json!({"path": "/tmp/a", "offset": 5}),
+                    ),
+                ],
+            )
+            .unwrap();
+        store
+            .replace(
+                "s2",
+                vec![call("call-1", "one", "shell", json!({"command": "pwd"}))],
+            )
+            .unwrap();
+        // Same call id, same session, two runs: the run scopes the read.
+        store
+            .replace(
+                "s3",
+                vec![
+                    call("call-1", "one", "shell", json!({"command": "pwd"})),
+                    call("call-1", "two", "shell", json!({"command": "whoami"})),
+                ],
+            )
+            .unwrap();
+
+        let hit = store.tool_call_args("s1", "one", "call-1").unwrap();
+        assert_eq!(hit["toolCallId"], json!("call-1"));
+        assert_eq!(hit["name"], json!("shell"));
+        assert_eq!(
+            hit["arguments"],
+            json!({"command": "ls -la", "timeout": 30})
+        );
+        assert_eq!(
+            store.tool_call_args("s1", "one", "call-2").unwrap()["arguments"],
+            json!({"path": "/tmp/a", "offset": 5})
+        );
+        // The other session's identically named call must not leak in.
+        assert_eq!(
+            store.tool_call_args("s2", "one", "call-1").unwrap()["arguments"],
+            json!({"command": "pwd"})
+        );
+        assert_eq!(
+            store.tool_call_args("s3", "one", "call-1").unwrap()["arguments"],
+            json!({"command": "pwd"})
+        );
+        assert_eq!(
+            store.tool_call_args("s3", "two", "call-1").unwrap()["arguments"],
+            json!({"command": "whoami"})
+        );
+        // Misses are explicit nulls, never another call's arguments.
+        for (session, run, id) in [
+            ("s1", "one", "missing"),
+            ("s1", "two", "call-1"),
+            ("s4", "one", "call-1"),
+        ] {
+            let miss = store.tool_call_args(session, run, id).unwrap();
+            assert_eq!(miss["toolCallId"], json!(id));
+            assert!(miss["name"].is_null(), "{session}/{run}/{id} must miss");
+            assert!(
+                miss["arguments"].is_null(),
+                "{session}/{run}/{id} must miss"
+            );
+        }
+    }
+}
+
+/// The RPC-facing wrappers around the store queries. They are the only path
+/// `list_tool_calls` / `get_tool_output` reach production through, so their
+/// delegation is asserted against the store's own answer.
+#[cfg(test)]
+mod manager_wrappers {
+    use super::*;
+
+    #[test]
+    fn the_manager_delegates_tool_reads_to_the_initialized_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = crate::session::Manager::new(dir.path().join("sessions"));
+        manager
+            .storage()
+            .unwrap()
+            .replace(
+                "s",
+                vec![
+                    json!({"id":"a","type":"assistant","role":"assistant","timestamp":"2026-01-01T00:00:00Z","meta":{"run_id":"one"},"content":[{"type":"tool_call","id":"call-0","name":"read","args":null}]}),
+                    json!({"id":"t","type":"tool","role":"tool","timestamp":"2026-01-01T00:00:01Z","meta":{"run_id":"one"},"content":[{"type":"tool_result","tool_call_id":"call-0","content":"synthetic result"}]}),
+                ],
+            )
+            .unwrap();
+        let page = manager.tool_page("s", "one", 0, 5).unwrap();
+        assert_eq!(page["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(page["tools"][0]["name"], "read");
+        assert_eq!(page["hasMore"], false);
+        assert_eq!(
+            manager.tool_output("s", "one", "call-0").unwrap()["output"]["text"],
+            "synthetic result"
+        );
+    }
+}
+
+#[cfg(test)]
+mod shell_history_tests {
+    use super::*;
+    #[test]
+    fn structured_attempts_survive_sqlite_reopen_and_tool_inspection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.db");
+        let facts = json!({"command":"action", "cwd":"/repo", "duration_ms":8,
+        "status":"exited", "exit_code":2, "is_soft_fail":false, "is_error":true,
+        "attempts":[{"status":"exited","exit_code":7,"duration_ms":4,"output":"original [exit: 0]","output_truncated":false,"escalated":false},
+        {"status":"exited","exit_code":2,"duration_ms":4,"output":"retry","output_truncated":false,"escalated":true}],
+        "approval":"approved","note":null});
+        let store = SqliteStore::open(&path).unwrap();
+        store.replace("s", vec![json!({"id":"out","type":"tool","role":"tool","timestamp":"2026-10-09T00:00:00Z","meta":{"run_id":"r","shell_result":facts},"content":[{"type":"tool_result","tool_call_id":"t","content":"summary","is_error":true}]})]).unwrap();
+        drop(store);
+        let reopened = SqliteStore::open(&path).unwrap();
+        let output = reopened.tool_output("s", "r", "t").unwrap();
+        assert_eq!(output["output"]["shell_result"], facts);
+        assert_eq!(output["output"]["isError"], true);
+        assert!(reopened.tool_output("s", "other", "t").unwrap()["output"].is_null());
     }
 }

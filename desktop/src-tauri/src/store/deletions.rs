@@ -31,31 +31,44 @@ pub fn is_agent_session_tombstoned(session_id: &str) -> Result<bool, crate::AppE
 
 pub fn pending_agent_session_deletes() -> Result<Vec<String>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt =
-        conn.prepare("SELECT session_id FROM agent_delete_outbox ORDER BY requested_at")?;
+    let mut stmt = conn
+        .prepare("SELECT session_id FROM agent_delete_outbox ORDER BY requested_at, session_id")?;
     let rows = stmt.query_map([], |row| row.get(0))?;
     let session_ids = rows.collect::<Result<Vec<String>, _>>()?;
     Ok(session_ids)
 }
 
-pub fn acknowledge_agent_session_delete(session_id: &str) -> Result<(), crate::AppError> {
-    let conn = connect()?;
-    conn.execute(
-        "DELETE FROM agent_delete_outbox WHERE session_id = ?1",
-        [session_id],
-    )?;
-    Ok(())
+#[cfg(test)]
+fn acknowledge_agent_session_delete(session_id: &str) -> Result<(), crate::AppError> {
+    settle_agent_session_deletes(&[(session_id.to_owned(), None)])
 }
 
-pub fn note_agent_session_delete_failure(
-    session_id: &str,
-    error: &str,
+#[cfg(test)]
+fn note_agent_session_delete_failure(session_id: &str, error: &str) -> Result<(), crate::AppError> {
+    settle_agent_session_deletes(&[(session_id.to_owned(), Some(error.to_owned()))])
+}
+
+/// Acknowledge only confirmed outcomes, keeping failures fenced for retry.
+/// All outcomes from one Agent batch share one local durability boundary.
+pub fn settle_agent_session_deletes(
+    outcomes: &[(String, Option<String>)],
 ) -> Result<(), crate::AppError> {
-    let conn = connect()?;
-    conn.execute(
-        "UPDATE agent_delete_outbox SET attempts = attempts + 1, last_error = ?2 WHERE session_id = ?1",
-        params![session_id, error],
-    )?;
+    let mut conn = connect()?;
+    let tx = conn.transaction()?;
+    for (session_id, error) in outcomes {
+        if let Some(error) = error {
+            tx.execute(
+                "UPDATE agent_delete_outbox SET attempts = attempts + 1, last_error = ?2 WHERE session_id = ?1",
+                params![session_id, error],
+            )?;
+        } else {
+            tx.execute(
+                "DELETE FROM agent_delete_outbox WHERE session_id = ?1",
+                [session_id],
+            )?;
+        }
+    }
+    tx.commit()?;
     Ok(())
 }
 

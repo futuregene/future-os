@@ -8,7 +8,9 @@
 ## 1. Design and implementation
 
 `agent/src/sandbox/seatbelt.rs` compiles the RuleSet into SBPL, and
-`PreparedShell` launches `/usr/bin/sandbox-exec -p <profile> bash -c <command>`.
+`PreparedShell` launches `/usr/bin/sandbox-exec -p <profile> <shell> -c
+<command>` with the same selected Unix shell as the unwrapped tool (`$SHELL`
+when it names bash/zsh, otherwise the first bash/zsh on PATH, otherwise `sh`).
 There is no Linux-style mount helper, and host ACLs are not modified.
 
 - The profile starts from `(deny default)` and allows fork/exec/process-info,
@@ -52,8 +54,15 @@ runs without Seatbelt wrapping **once** — no persistent policy change and no
 precise-path authorization generated. Full title and path display limits are in
 [COMMON §4](COMMON.md#4-审批协议与界面).
 
-The current rejection judgment includes `Operation not permitted` /
-`sandbox-exec` text heuristics; network errors are not grounds for rejection.
+The failure heuristic recognizes `operation not permitted` / `sandbox-exec`
+without ASCII case sensitivity and structured Node `Error: EPERM:` or
+`code: 'EPERM'` diagnostics. A nonzero exit is required. A match requests
+approval and, if approved, retries within the same tool call; the main model
+does not need to issue another call. Network and ordinary missing-file errors
+do not trigger this route. Tool-result summaries use the same permission hints.
+Diagnostic path mentions remain untrusted context, not confirmed targets.
+The macOS shell schema omits Windows-only `additional_permissions`; unexpected
+requests still fail the existing backend validation.
 The exact kernel-denied path, or that the command had no prior side effects,
 cannot be reliably proven — so no promise of zero false positives / safe
 automatic replay. Hard-deny rules also do not cover a bare command after user
@@ -66,15 +75,13 @@ is accepted; future system compatibility needs continuous native re-verification
 
 ## 3. Progress and acceptance
 
-R1 (2026-07-04) rules/Seatbelt/native-read approval, R2 GUI file persistence,
-R3 guards and same-turn injection are complete. The original profile escaping,
-path handling, process-group termination, and smoke framework are reused; the
-old network-rejection test was changed to an open-network expectation.
+Rules/Seatbelt/native-read approval, GUI file persistence, and guards with
+same-turn injection are implemented. The original profile escaping, path
+handling, process-group termination, and smoke framework are reused; the old
+network-rejection test was changed to an open-network expectation.
 
-Historical R3: Agent 58 lib, Seatbelt 9 smoke, GUI 72, frontend 39 pass,
-lint/check-desktop pass; these are not re-run results from this documentation
-pass. `auth.json` was later temporarily removed from the overrides, so the old
-"auth read-deny PASS" no longer represents current capability.
+`auth.json` was temporarily removed from the overrides (COMMON §3.1), so older
+"auth read-deny PASS" records do not represent current capability.
 
 Run on real macOS at the candidate commit (tests must be run explicitly with
 `--ignored`; skipping is not passing):
@@ -92,8 +99,8 @@ check active/passive titles, rejection not re-run, one-time allowance not
 changing later protection, and no persistent allowance for native sensitive
 reads.
 
-This documentation pass did not run the macOS smoke; the newly added Linux
-private report does not mean macOS has a trustworthy error channel too.
+macOS has no private completion-report channel comparable to Linux's; do not
+assume Linux's report semantics apply here.
 
 ## 4. Differences, gaps, and follow-up plan
 

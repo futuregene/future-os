@@ -67,6 +67,16 @@ pub struct RpcCommand {
     /// In this mode limit counts user exchanges rather than raw journal rows.
     #[prost(int64, optional, tag = "98")]
     pub before: ::core::option::Option<i64>,
+    /// Upper bound on how many sessions `search_all_session_history` scans,
+    /// ordered by most recently updated first. Absent selects the server
+    /// default; the response reports `scannedSessions` and `truncated` so a
+    /// caller can tell that older sessions were left unsearched.
+    #[prost(int64, optional, tag = "147")]
+    pub max_sessions: ::core::option::Option<i64>,
+    /// delete_sessions: 1..32 distinct session IDs, with per-session outcomes.
+    /// The single-session delete_session command remains supported.
+    #[prost(string, repeated, tag = "148")]
+    pub session_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Session name (set by /name command).  Used with set_session_name, and
     /// accepted by new_session as the initial human-readable session title.
     #[prost(string, tag = "93")]
@@ -116,7 +126,10 @@ pub struct RpcCommand {
     pub client_request_id: ::prost::alloc::string::String,
     /// Atomic behavior when the session already has an active run:
     /// "enqueue_if_busy" (default) appends behind the active run (follow-up),
-    /// or "supersede_session" interrupts the active run and runs this next.
+    /// "enqueue_coalescing" appends as well but lets the run boundary fold a
+    /// consecutive run of such requests into ONE run (a folded request comes
+    /// back terminal with reason "merged"), or "supersede_session" interrupts
+    /// the active run and runs this next.
     /// Empty is interpreted as "enqueue_if_busy".
     #[prost(string, tag = "144")]
     pub busy_policy: ::prost::alloc::string::String,
@@ -205,6 +218,9 @@ pub struct SandboxPolicy {
     /// "off" (unrestricted) | "manual" (approval required) | "sandbox" (macOS Seatbelt, macOS only).
     #[prost(string, tag = "7")]
     pub tier: ::prost::alloc::string::String,
+    /// Empty/user = human; model requires sandbox. Older agents safely keep human approval.
+    #[prost(string, tag = "8")]
+    pub reviewer: ::prost::alloc::string::String,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct AuthUpdate {
@@ -368,7 +384,7 @@ pub struct RpcResponse {
 pub struct ResponsePayload {
     #[prost(
         oneof = "response_payload::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18"
     )]
     pub kind: ::core::option::Option<response_payload::Kind>,
 }
@@ -410,6 +426,8 @@ pub mod response_payload {
         GetRuntimeMetrics(super::RuntimeMetricsResponse),
         #[prost(message, tag = "17")]
         SuggestSkill(super::SuggestSkillResult),
+        #[prost(message, tag = "18")]
+        GetAgentReadiness(super::AgentReadiness),
     }
 }
 /// list_sessions response wrapper.
@@ -511,6 +529,36 @@ pub struct AgentInfo {
     pub agent_instance_id: ::prost::alloc::string::String,
     #[prost(uint64, tag = "3")]
     pub skills_count: u64,
+    /// Build identity of the RUNNING agent binary. `version` alone cannot carry
+    /// it: a release tag (`1.2.3`) and a coordinated test/nightly build
+    /// (`0.0.2-<run>+test`) contain no commit at all, and a dev build only an
+    /// abbreviated hash. A client that wants to know whether this process matches
+    /// the checkout it is reading (or the CLI at the other end) needs the full
+    /// object name, so it is a separate field rather than something parsed out of
+    /// `version`. Empty when the agent was built without a git checkout.
+    #[prost(string, tag = "4")]
+    pub git_commit: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub git_commit_short: ::prost::alloc::string::String,
+    /// Uncommitted changes at build time; only meaningful when git_commit is set,
+    /// which is also the only case it is serialized for.
+    #[prost(bool, optional, tag = "6")]
+    pub git_dirty: ::core::option::Option<bool>,
+    /// Target triple and Cargo profile this binary was compiled for — what a bug
+    /// report otherwise has to guess.
+    #[prost(string, tag = "7")]
+    pub build_target: ::prost::alloc::string::String,
+    #[prost(string, tag = "8")]
+    pub build_profile: ::prost::alloc::string::String,
+}
+/// Lightweight business-RPC handshake for Desktop startup and login. Skill
+/// discovery belongs to get_agent_info / the dedicated skill commands.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct AgentReadiness {
+    #[prost(string, tag = "1")]
+    pub version: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub agent_instance_id: ::prost::alloc::string::String,
 }
 /// get_commands response.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -688,7 +736,7 @@ pub struct RuntimeMetricsResponse {
 pub struct EventPayload {
     #[prost(
         oneof = "event_payload::Kind",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15"
     )]
     pub kind: ::core::option::Option<event_payload::Kind>,
 }
@@ -724,6 +772,8 @@ pub mod event_payload {
         Error(super::ErrorEvent),
         #[prost(message, tag = "14")]
         UserMessage(super::UserMessageEvent),
+        #[prost(message, tag = "15")]
+        ApprovalAssessment(super::ApprovalAssessmentEvent),
     }
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -829,6 +879,9 @@ pub struct ToolEnd {
     pub is_soft_fail: ::core::option::Option<bool>,
     #[prost(string, optional, tag = "7")]
     pub target_path: ::core::option::Option<::prost::alloc::string::String>,
+    /// Serialized host-owned ShellResult. Absent for legacy records.
+    #[prost(string, optional, tag = "8")]
+    pub shell_result_json: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ApprovalDecisionEvent {
@@ -988,6 +1041,12 @@ pub struct SessionState {
     pub pending_approvals: ::prost::alloc::vec::Vec<ApprovalRequestInfo>,
     #[prost(message, optional, tag = "40")]
     pub usage: ::core::option::Option<SessionUsage>,
+    /// Approval tier this session's sandbox policy was set to: "off" | "manual"
+    /// | "sandbox". Absent when the session never chose one, so a reader can tell
+    /// "no policy set" from "set to off". Read-back counterpart of
+    /// `set_sandbox_policy`; the OS availability of the tier is `probe_sandbox`.
+    #[prost(string, optional, tag = "41")]
+    pub sandbox_tier: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, Copy, PartialEq, ::prost::Message)]
 pub struct SessionUsage {
@@ -1435,6 +1494,60 @@ pub struct ProjectedRunEvent {
     /// so projection snapshots and live frames decode through one path.
     #[prost(message, optional, tag = "20")]
     pub payload: ::core::option::Option<EventPayload>,
+}
+/// Terminal automatic-review audit. Never a human pending approval.
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ApprovalClassification {
+    #[prost(string, optional, tag = "1")]
+    pub risk: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "2")]
+    pub authorization: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "3")]
+    pub reason_code: ::core::option::Option<::prost::alloc::string::String>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct ApprovalAssessmentEvent {
+    #[prost(string, tag = "1")]
+    pub assessment_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub approval_request_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "3")]
+    pub tool_call_id: ::prost::alloc::string::String,
+    #[prost(string, tag = "4")]
+    pub reviewer: ::prost::alloc::string::String,
+    #[prost(string, tag = "5")]
+    pub status: ::prost::alloc::string::String,
+    #[prost(message, optional, tag = "6")]
+    pub reported: ::core::option::Option<ApprovalClassification>,
+    #[prost(message, optional, tag = "7")]
+    pub effective: ::core::option::Option<ApprovalClassification>,
+    #[prost(map = "string, double", tag = "8")]
+    pub confidence: ::std::collections::HashMap<::prost::alloc::string::String, f64>,
+    #[prost(string, tag = "9")]
+    pub probabilities_json: ::prost::alloc::string::String,
+    #[prost(string, optional, tag = "10")]
+    pub model: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "11")]
+    pub provider_request_id: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, optional, tag = "12")]
+    pub error_code: ::core::option::Option<::prost::alloc::string::String>,
+    #[prost(string, tag = "13")]
+    pub action_json: ::prost::alloc::string::String,
+    #[prost(string, tag = "14")]
+    pub action_digest: ::prost::alloc::string::String,
+    #[prost(int32, tag = "15")]
+    pub attempt: i32,
+    #[prost(int32, tag = "16")]
+    pub prompt_version: i32,
+    #[prost(int32, tag = "17")]
+    pub reason_catalog_version: i32,
+    #[prost(int32, tag = "18")]
+    pub policy_version: i32,
+    #[prost(int64, tag = "19")]
+    pub duration_ms: i64,
+    /// Source IDs, omissions and budget metadata only; no original evidence text.
+    #[prost(string, optional, tag = "20")]
+    pub input_context_json: ::core::option::Option<::prost::alloc::string::String>,
 }
 /// Generated client implementations.
 pub mod future_agent_client {

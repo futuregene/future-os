@@ -34,11 +34,31 @@ describe("mention editor placeholder", () => {
     container.remove();
   });
 
-  function placeholderVisible() {
-    return Array.from(container.querySelectorAll("div")).some(element =>
+  function placeholderElement() {
+    return Array.from(container.querySelectorAll("div")).find(element =>
       element !== editor && element.textContent === "Message" && element.childElementCount === 0,
     );
   }
+
+  function placeholderVisible() {
+    return Boolean(placeholderElement());
+  }
+
+  it("sizes the hint to the whole editor box so the empty-state repaint clears stale text", () => {
+    // WKWebView on macOS keeps removed text painted in the composer unless the
+    // whole box is dirtied (see the report behind this test: after a send the
+    // DOM was empty, the hint was up, and the last line was still on screen).
+    // Mounting the hint is what dirties it, so it must cover the box rather
+    // than just the text's own width.
+    const hint = placeholderElement()!;
+    expect(hint.className).toContain("inset-0");
+    // Same padding as the editor, so the hint sits exactly where a first line
+    // would — widening the box must not move the text.
+    expect(hint.className).toContain("px-2");
+    expect(hint.className).toContain("py-1");
+    // Must stay click-through: the hint overlays the editor now.
+    expect(hint.className).toContain("pointer-events-none");
+  });
 
   it("tracks DOM edits even without an input event, without replacing the text or caret", async () => {
     expect(placeholderVisible()).toBe(true);

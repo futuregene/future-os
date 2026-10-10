@@ -79,7 +79,17 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 )
                 .await
                 {
-                    Ok(data) => {
+                    Ok(mut data) => {
+                        // Trim before the byte budget, not after: the budget sheds
+                        // whole oldest exchanges to fit a reply, so measuring the
+                        // trimmed page is what lets it hold more of them per round
+                        // trip. Nothing here adds or removes an entry, so the
+                        // cursor arithmetic below is untouched (see `lean_entries`).
+                        if crate::remote_host::lean::enabled() {
+                            if let Some(entries) = data.get_mut("entries") {
+                                crate::remote_host::lean::lean_entries(entries);
+                            }
+                        }
                         // A chunked first paint is the one page that pays the
                         // byte budget for a reader who is waiting: dropping the
                         // oldest complete exchange sends it to the next pull
@@ -119,7 +129,12 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 return;
             }
             match crate::agent_bridge::get_session_entries(cmd.session_id.clone()).await {
-                Ok(data) => {
+                Ok(mut data) => {
+                    if crate::remote_host::lean::enabled() {
+                        if let Some(entries) = data.get_mut("entries") {
+                            crate::remote_host::lean::lean_entries(entries);
+                        }
+                    }
                     let entries = entries_vec(data);
                     reply(
                         sink,
@@ -141,6 +156,43 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
             }
         }
+        // A lean client's way back to the arguments its page omitted. Gated on
+        // the declaration that asked for the trim: an undeclared client's page
+        // still carries every argument, so it has no use for this command and
+        // must not find a path to it (the reply is the same "unsupported" a
+        // client of an older bridge would get).
+        "get_tool_call_args" => {
+            if !crate::remote_host::lean::enabled() {
+                reply(
+                    sink,
+                    false,
+                    Value::Null,
+                    Some("Unsupported command: get_tool_call_args"),
+                )
+                .await;
+                return;
+            }
+            if cmd.session_id.is_empty() || cmd.run_id.is_empty() || cmd.tool_call_id.is_empty() {
+                reply(
+                    sink,
+                    false,
+                    Value::Null,
+                    Some("sessionId, runId and toolCallId are required"),
+                )
+                .await;
+                return;
+            }
+            match crate::agent_bridge::get_tool_call_args(
+                cmd.session_id.clone(),
+                cmd.run_id.clone(),
+                cmd.tool_call_id.clone(),
+            )
+            .await
+            {
+                Ok(data) => reply(sink, true, data, None).await,
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            }
+        }
         "get_events_since" => {
             if cmd.prefer_snapshot
                 && cmd.chunked_read
@@ -155,6 +207,15 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 .await
                 {
                     Ok(Some(snapshot)) => {
+                        // The snapshot's folded events are the same reasoning and
+                        // tool-argument content again, in a shape both sides
+                        // validate for length and ordering — so its events keep
+                        // their `idx` and only their text is blanked.
+                        let mut snapshot = snapshot;
+                        crate::remote_host::lean::lean_replay_page(
+                            &mut snapshot,
+                            crate::remote_host::lean::enabled(),
+                        );
                         reply(sink, true, snapshot, None).await;
                         return;
                     }
@@ -224,6 +285,13 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         next < watermark
                             && (agent_has_more || page["hasMore"].as_bool().unwrap_or(false))
                     );
+                    // Only now, with the page's cursors fixed: the lean rewrite
+                    // drops events, and dropping one must not move the resume
+                    // point (see `lean_replay_page`).
+                    crate::remote_host::lean::lean_replay_page(
+                        &mut page,
+                        crate::remote_host::lean::enabled(),
+                    );
                     reply(sink, true, page, None).await;
                 }
                 Err(e) => reply(sink, false, Value::Null, Some(&e.to_string())).await,
@@ -279,5 +347,20 @@ mod tests {
         for before in [2_173_i64, 1_950, 859, 1, 0] {
             assert!(!is_newest_page(Some(before)), "cursor {before}");
         }
+    }
+
+    /// The history handler serves a closed set of read commands. A name from
+    /// another family means the routing table and the handler disagreed, which
+    /// must be loud rather than answered.
+    #[tokio::test]
+    #[should_panic(expected = "handler received")]
+    async fn a_command_from_another_family_is_not_answered() {
+        use crate::remote::protocol::IncomingCmd;
+        let sink = crate::remote::test_support::RecordingSink::default();
+        let cmd = IncomingCmd {
+            cmd_type: "get_settings".into(),
+            ..Default::default()
+        };
+        super::execute(&cmd, &sink).await;
     }
 }

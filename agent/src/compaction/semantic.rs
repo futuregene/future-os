@@ -1306,6 +1306,14 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(SummaryCallError::Cancelled)));
+        // The caller sees the cancellation as its own message, never as the
+        // provider's text: a cancelled summary must not be retried or reported
+        // as a provider failure.
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "summary request cancelled",
+            "the Cancelled arm owns its message"
+        );
     }
 
     #[tokio::test]
@@ -1773,13 +1781,20 @@ mod tests {
                 None,
             )
             .unwrap();
+        // Unchanged *and* no checkpoint: an untouched projection must not be
+        // reported as a compaction, or the caller would commit a receipt for a
+        // checkpoint that does not exist.
         assert!(matches!(prepared, ContextPreparation::Unchanged { .. }));
+        assert!(into_compacted(prepared).is_none());
     }
 
     // ─── stream/event scripting for call_summary_model arms ────────────────
 
     enum StreamScript {
         Events(Vec<ModelStreamEvent>),
+        /// The request itself is rejected (a provider-side error before any
+        /// frame), e.g. an oversized request.
+        Fail(String),
         /// A stream whose sender is leaked, so `next()` never resolves and the
         /// summary-event timeout fires (mirrors a hung provider connection).
         Hang,
@@ -1812,6 +1827,7 @@ mod tests {
                     }
                     Ok(ReceiverStream::new(rx))
                 }
+                StreamScript::Fail(message) => Err(anyhow::anyhow!(message)),
                 StreamScript::Hang => {
                     let (tx, rx) = mpsc::channel::<ModelStreamEvent>(1);
                     std::mem::forget(tx);
@@ -2006,6 +2022,35 @@ mod tests {
         assert!(serialize_message(&tool_result, SerializationMode::Strict)
             .contains("[truncated for compaction]"));
 
+        // A short result is carried verbatim (no ellipsis marker, no rewrite).
+        let short_result = AgentMessage {
+            role: "tool".to_string(),
+            content: vec![ContentBlock::tool_result("c9", "cap=128MiB", false)],
+            ..Default::default()
+        };
+        let short = serialize_message(&short_result, SerializationMode::Normal);
+        assert!(short.contains("[Tool result c9]: cap=128MiB"), "{short}");
+        assert!(!short.contains("[truncated for compaction]"));
+
+        // An assistant tool call is named with its id and arguments, so the
+        // summary model can see which file/command was attempted.
+        let tool_call = AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::tool_call(
+                "c9",
+                "read",
+                serde_json::json!({"path":"config.json"}),
+                Default::default(),
+            )],
+            ..Default::default()
+        };
+        let call_text = serialize_message(&tool_call, SerializationMode::Normal);
+        assert!(
+            call_text.contains("[Assistant tool call c9]: read("),
+            "{call_text}"
+        );
+        assert!(call_text.contains("config.json"), "{call_text}");
+
         // Empty text falls through to the catch-all arm and is ignored.
         let empty_text = AgentMessage {
             role: "user".to_string(),
@@ -2015,6 +2060,93 @@ mod tests {
         assert_eq!(
             serialize_message(&empty_text, SerializationMode::Normal),
             ""
+        );
+    }
+
+    /// Attachment images are charged as a fixed allowance, and the two sources of
+    /// them (an inline image block, an `attachments` metadata entry) must not be
+    /// added together: a message that carries both would otherwise be billed as
+    /// two images and shorten the projection the model is allowed to see.
+    #[test]
+    fn attachment_images_are_charged_once_whichever_way_they_are_declared() {
+        let base = projected_token_cost(&projected("user", "hello world", "e1"));
+        let attachments = serde_json::json!([{"kind": "image"}, {"kind": "file"}]);
+
+        let mut inline = projected("user", "hello world", "e1");
+        inline
+            .message
+            .content
+            .push(ContentBlock::image("https://example.com/x.png"));
+        let inline_cost = projected_token_cost(&inline);
+        assert_eq!(
+            inline_cost,
+            base + 2_048,
+            "one inline image is one image allowance"
+        );
+
+        let mut both = inline.clone();
+        both.message
+            .metadata
+            .get_or_insert_with(Default::default)
+            .insert("attachments".into(), attachments.clone());
+        assert_eq!(
+            projected_token_cost(&both),
+            inline_cost,
+            "metadata attachments must not be charged on top of an inline image"
+        );
+
+        let mut metadata_only = projected("user", "hello world", "e1");
+        metadata_only
+            .message
+            .metadata
+            .get_or_insert_with(Default::default)
+            .insert("attachments".into(), attachments);
+        assert_eq!(
+            projected_token_cost(&metadata_only),
+            base + 2_048,
+            "exactly one of the two metadata entries names an image"
+        );
+    }
+
+    /// Retention notes are what the next agent reads about material it can no
+    /// longer see; the two outcomes (omitted vs summarized) must not be conflated.
+    #[test]
+    fn retention_note_distinguishes_omitted_outputs_from_summarized_ones() {
+        assert_eq!(
+            retention_note(3, evidence::ALGORITHM_DETERMINISTIC),
+            "\n\n[Retention note: 3 older assistant outputs were omitted from the active \
+             context (not summarized) to fit. Query original history for their exact text.]"
+        );
+        let summarized = retention_note(3, evidence::ALGORITHM_SUMMARIZED);
+        assert!(
+            summarized.contains("3 older assistant outputs were summarized to fit"),
+            "{summarized}"
+        );
+        assert!(!summarized.contains("not summarized"), "{summarized}");
+    }
+
+    /// A projection whose only possible cut is the existing checkpoint itself has
+    /// nothing left to compact: the boundary walk lands on the last message, and
+    /// the plan must refuse rather than emit a checkpoint that covers no history.
+    #[test]
+    fn plan_refuses_a_boundary_that_lands_on_the_existing_checkpoint() {
+        let manager = test_manager();
+        let mut prompt = test_prompt();
+        prompt
+            .messages
+            .push(internal_checkpoint("an earlier handoff", "cp1"));
+        let result = plan(
+            &manager,
+            prompt,
+            CompactionTrigger::Automatic,
+            CompactionPhase::PreTurn,
+            None,
+            None,
+            4096,
+        );
+        assert!(
+            matches!(result, Err(ContextError::NoValidBoundary)),
+            "a cut at the checkpoint covers nothing compactable"
         );
     }
 
@@ -2056,6 +2188,24 @@ mod tests {
         let plan = test_plan(vec![projected("user", "hi", "e1")]);
         let result = finalize(&manager, &plan, "   ".to_string(), "v", "m");
         assert_eq!(result.unwrap_err(), ContextError::InvalidSummary);
+    }
+
+    /// An autonomous compaction that does not shrink the context is a loss: it
+    /// pays a model call and replaces history with a summary of the same size.
+    /// `finalize` must refuse it, while the same plan with a summary that does
+    /// shrink is admitted — so the refusal is about progress, not shape.
+    #[test]
+    fn finalize_refuses_a_summary_that_would_not_shrink_an_automatic_compaction() {
+        let manager = test_manager();
+        let plan = test_plan(vec![projected("user", "hi", "e1")]);
+        assert_eq!(plan.tokens_before, 100);
+        let grown = finalize(&manager, &plan, "s".repeat(400), "v", "m");
+        assert_eq!(grown.unwrap_err(), ContextError::NoProgress);
+
+        let shrunk = finalize(&manager, &plan, "s".repeat(40), "v", "m").unwrap();
+        let (_, checkpoint) = into_compacted(shrunk)
+            .expect("a shrinking summary is admitted and yields a checkpoint");
+        assert!(checkpoint.tokens_after < checkpoint.tokens_before);
     }
 
     // ─── call_summary_model event arms ────────────────────────────────────
@@ -2332,5 +2482,105 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(SummaryCallError::Cancelled)));
+    }
+
+    /// A provider that accepts the request and then never connects is a timeout,
+    /// not a hang: the summary call is bounded, and the failure is reported as a
+    /// timeout rather than as a context-limit failure, because the two have
+    /// different recovery paths (the retry policy vs the emergency projection).
+    #[tokio::test]
+    async fn a_summary_request_that_never_connects_times_out() {
+        let result = call_summary_model_with_messages(
+            &PendingRequestProvider,
+            "m",
+            "",
+            Vec::new(),
+            "p".into(),
+            Vec::new(),
+            &AtomicBool::new(false),
+            8192,
+            None,
+        )
+        .await;
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "summary request timed out",
+            "the connect timeout owns its message"
+        );
+    }
+
+    /// A provider that rejects the summary request for its size is different from
+    /// a hung one: the rejection is classified as a context limit and is *not*
+    /// retried, because the same oversized request can only fail again.
+    /// `ScriptStreamProvider` holds a single script, so a retry would panic
+    /// instead of quietly passing.
+    #[tokio::test]
+    async fn a_summary_request_rejected_for_its_size_is_not_retried() {
+        let provider = ScriptStreamProvider::new([StreamScript::Fail(
+            "maximum context length exceeded (HTTP 400)".to_string(),
+        )]);
+        let error = call_summary_model_with_messages(
+            &provider,
+            "m",
+            "",
+            Vec::new(),
+            "p".into(),
+            Vec::new(),
+            &AtomicBool::new(false),
+            8192,
+            None,
+        )
+        .await
+        .expect_err("an oversized summary request must fail");
+        assert!(
+            matches!(error, SummaryCallError::ContextLimit(_)),
+            "{error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("maximum context length exceeded"),
+            "the provider's reason must reach the caller: {error}"
+        );
+    }
+
+    /// Frame types the summary does not consume are ignored, and an error that
+    /// arrives *after* the stream finished a complete answer must not throw that
+    /// answer away — a trailing transport error is not a reason to recompute the
+    /// handoff. Reasoning frames must not leak into the text either.
+    #[tokio::test]
+    async fn a_complete_summary_survives_unknown_frames_and_a_trailing_error() {
+        let provider = ScriptStreamProvider::new([StreamScript::Events(vec![
+            ModelStreamEvent::ReasoningDelta {
+                id: "s".into(),
+                text: "private thinking".into(),
+            },
+            ModelStreamEvent::TextDelta {
+                id: "s".into(),
+                text: "the summary".into(),
+            },
+            ModelStreamEvent::Finish {
+                reason: FinishReason::Stop,
+                usage: None,
+            },
+            ModelStreamEvent::Error {
+                message: "connection reset after the finish".into(),
+            },
+        ])]);
+        let text = call_summary_model_with_messages(
+            &provider,
+            "m",
+            "",
+            Vec::new(),
+            "p".into(),
+            Vec::new(),
+            &AtomicBool::new(false),
+            8192,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(text, "the summary");
+        assert!(!text.contains("private thinking"));
     }
 }

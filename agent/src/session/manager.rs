@@ -33,6 +33,7 @@ pub struct Manager {
     pub dir: PathBuf,
     store: OnceLock<SqliteStore>,
     initialization: parking_lot::Mutex<()>,
+    maintenance: parking_lot::Mutex<Option<super::journal_compaction::JournalMaintenance>>,
     /// Bounded LRU of display projections. Pagination requests for one stable
     /// SQLite revision slice this shared projection instead of loading and
     /// projecting the complete journal again for every page.
@@ -48,6 +49,7 @@ impl Manager {
             dir,
             store: OnceLock::new(),
             initialization: parking_lot::Mutex::new(()),
+            maintenance: parking_lot::Mutex::new(None),
             display_entries_cache: parking_lot::Mutex::new(Vec::new()),
             #[cfg(test)]
             fail_saves_remaining: std::sync::atomic::AtomicU64::new(0),
@@ -81,7 +83,27 @@ impl Manager {
 
     /// Called before serving RPC, while the Agent instance lock is held.
     pub fn initialize(&self) -> Result<()> {
-        self.storage().map(|_| ())
+        self.start_journal_maintenance()
+    }
+
+    fn start_journal_maintenance(&self) -> Result<()> {
+        let mut maintenance = self.maintenance.lock();
+        if maintenance.is_none() {
+            *maintenance = Some(super::journal_compaction::JournalMaintenance::start(
+                self.storage()?.clone(),
+            )?);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn request_journal_compaction(&self, session: &str, run: &str) {
+        if let Err(error) = self.start_journal_maintenance() {
+            tracing::warn!(%error, "could not start journal maintenance");
+            return;
+        }
+        if let Some(maintenance) = self.maintenance.lock().as_ref() {
+            maintenance.request(session, run);
+        }
     }
 
     pub(crate) fn storage(&self) -> Result<&SqliteStore> {
@@ -202,7 +224,10 @@ impl Manager {
         let id = id.to_owned();
         let values = Self::encoded(&[user, started])?;
         self.storage()?.db.call(move |db| {
-            let tx = db.transaction()?;
+            // Reads the existing markers before it writes: take the write lock
+            // at BEGIN, or a concurrent connection's commit invalidates this
+            // snapshot and the upgrade fails instantly (SQLITE_BUSY_SNAPSHOT).
+            let tx = crate::session::database::begin_immediate(db)?;
             let existing: Vec<SessionEntry> = super::sqlite_store::read_run_markers(&tx, &id)?
                 .into_iter()
                 .map(serde_json::from_value)
@@ -252,11 +277,48 @@ impl Manager {
     ) -> Result<()> {
         let id = id.to_owned();
         self.storage()?.db.call(move |db| {
-            let tx = db.transaction()?;
-            let payload: String = tx.query_row("SELECT payload FROM entry_records WHERE session_id=?1 AND entry_type='session_info' ORDER BY position DESC LIMIT 1", [&id], |row| row.get(0))?;
-            let entry: serde_json::Value = serde_json::from_str(&payload)?;
-            let mut info = entry["content"].as_object().cloned()
-                .ok_or_else(|| anyhow!("session has no session_info object"))?;
+            // Reads the current metadata before it writes: take the write lock
+            // at BEGIN, or a concurrent connection's commit invalidates this
+            // snapshot and the upgrade fails instantly (SQLITE_BUSY_SNAPSHOT).
+            let tx = crate::session::database::begin_immediate(db)?;
+            // The authoritative current metadata is `sessions.current_metadata_json`
+            // — `entry_records` *projects* a `session_info` entry's content from
+            // it (`records.rs` `VIEWS`), so reading the entry adds nothing and
+            // makes the update depend on an entry that may not exist. A
+            // legacy-imported transcript has no `session_info` entry at all, so
+            // the previous `query_row(..)` on that entry failed with a bare
+            // "Query returned no rows": `future session set --title/--thinking`
+            // on an imported session reported success while persisting nothing.
+            //
+            // Three distinct cases, deliberately not collapsed:
+            //   no row          -> the session does not exist (caller's bug)
+            //   NULL column     -> nothing recorded yet; start empty (the
+            //                      legacy-import case this fixes)
+            //   non-object JSON -> corrupt metadata; report it rather than
+            //                      silently replacing it and dropping every
+            //                      other field it held
+            // Outer `Option` = is there a row; inner = is the column NULL.
+            let existing: Option<Option<String>> = tx
+                .query_row(
+                    "SELECT current_metadata_json FROM sessions WHERE id=?1",
+                    [&id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()
+                .context("session metadata could not be read")?;
+            let Some(existing) = existing else {
+                // The row itself is missing, so the appended entry would fail on
+                // its foreign key. Name the real cause instead of surfacing a
+                // constraint error.
+                return Err(anyhow!("session not found: no row for {id}"));
+            };
+            let mut info = match existing {
+                None => serde_json::Map::new(),
+                Some(json) => serde_json::from_str::<serde_json::Value>(&json)
+                    .ok()
+                    .and_then(|value| value.as_object().cloned())
+                    .ok_or_else(|| anyhow!("session has no session_info object"))?,
+            };
             info.extend(fields);
             let entry = SessionEntry::session_info(
                 serde_json::Value::Object(info),
@@ -306,7 +368,10 @@ impl Manager {
         let creator_id = request.creator_id.clone();
         let fingerprint_for_tx = fingerprint.clone();
         let outcome = self.storage()?.db.call(move |db| {
-            let tx = db.transaction()?;
+            // Reads the operation and the parent's entries before it writes:
+            // take the write lock at BEGIN, or a concurrent connection's commit
+            // invalidates this snapshot and the upgrade fails instantly.
+            let tx = crate::session::database::begin_immediate(db)?;
             if let Some((stored_fingerprint, child_id)) = tx
                 .query_row(
                     "SELECT request_fingerprint, child_session_id FROM fork_operations WHERE request_id=?1",
@@ -528,8 +593,14 @@ impl Manager {
     }
 
     pub fn delete(&self, id: &str) -> Result<()> {
-        self.storage()?.delete(id)?;
-        self.invalidate_display_entries(id);
+        self.delete_many(&[id.to_owned()])
+    }
+
+    pub(crate) fn delete_many(&self, ids: &[String]) -> Result<()> {
+        self.storage()?.delete_many(ids.to_vec())?;
+        for id in ids {
+            self.invalidate_display_entries(id);
+        }
         Ok(())
     }
 }
@@ -639,6 +710,90 @@ mod tests {
             .unwrap();
         assert_eq!(assistant.thinking, "thought");
         assert_eq!(assistant.tool_calls.len(), 1);
+    }
+
+    /// The real outcome must survive the storage round-trip: the history page
+    /// the phone renders reads the block's `is_error`, and a reloaded session
+    /// hands the same flag back to the model.
+    #[test]
+    fn stored_tool_result_is_error_round_trips_to_history_and_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().to_path_buf());
+        let mut session = Session::new("/tmp/test", "claude");
+        let assistant = crate::types::AgentMessage {
+            role: "assistant".into(),
+            content: vec![
+                crate::types::ContentBlock::tool_call(
+                    "call-1",
+                    "shell",
+                    serde_json::json!({"command": "cargo build"}),
+                    Default::default(),
+                ),
+                crate::types::ContentBlock::tool_call(
+                    "call-2",
+                    "shell",
+                    serde_json::json!({"command": "ls"}),
+                    Default::default(),
+                ),
+            ],
+            ..Default::default()
+        };
+        let failed = crate::types::AgentMessage {
+            role: "tool".into(),
+            content: vec![crate::types::ContentBlock::tool_result(
+                "call-1",
+                "error[E0308]: mismatched types\n[exit: 101]",
+                true,
+            )],
+            name: "shell".into(),
+            ..Default::default()
+        };
+        let succeeded = crate::types::AgentMessage {
+            role: "tool".into(),
+            content: vec![crate::types::ContentBlock::tool_result(
+                "call-2", "file.txt", false,
+            )],
+            name: "shell".into(),
+            ..Default::default()
+        };
+        session.entries.push(agent_message_to_entry(&assistant));
+        session.entries.push(agent_message_to_entry(&failed));
+        session.entries.push(agent_message_to_entry(&succeeded));
+        manager.save(&session).unwrap();
+
+        let disk = raw_lines(&manager, &session.id);
+        let entries: Vec<serde_json::Value> = disk
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let tool = |id: &str| {
+            entries
+                .iter()
+                .find(|value| value["type"] == "tool" && value["content"][0]["tool_call_id"] == id)
+                .unwrap_or_else(|| panic!("no stored tool entry for {id}"))
+        };
+        assert_eq!(
+            tool("call-1")["content"][0]["is_error"],
+            serde_json::json!(true)
+        );
+        // A success stays unflagged (same reading as `false`).
+        assert!(tool("call-2")["content"][0].get("is_error").is_none());
+
+        let loaded = manager.load(&session.id).unwrap();
+        let messages = entries_to_agent_messages(&loaded.entries, false);
+        let flags: Vec<(&str, bool)> = messages
+            .iter()
+            .filter(|message| message.role == "tool")
+            .map(|message| match &message.content[0] {
+                crate::types::ContentBlock::ToolResult {
+                    tool_call_id,
+                    is_error,
+                    ..
+                } => (tool_call_id.as_str(), *is_error),
+                other => panic!("tool message without a tool_result block: {other:?}"),
+            })
+            .collect();
+        assert_eq!(flags, vec![("call-1", true), ("call-2", false)]);
     }
 
     /// Regression test for the HTTP 400 "Messages with role 'tool' must be a
@@ -934,6 +1089,49 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// A session whose entries carry no `session_info` (every legacy-imported
+    /// transcript, since the importer never synthesises one) must still accept a
+    /// metadata update. The reader used to require an existing `session_info`
+    /// row and failed with a bare "Query returned no rows", so `future session
+    /// set --title/--thinking/--model` on an imported session reported success
+    /// while persisting nothing.
+    #[test]
+    fn metadata_update_works_without_an_existing_session_info_entry() {
+        let (dir, manager) = temp_manager("update-info-no-snapshot");
+        // Exactly the shape the legacy importer produces: conversation entries
+        // only, no session_info.
+        manager
+            .storage()
+            .unwrap()
+            .replace(
+                "s-imported",
+                vec![serde_json::json!({
+                    "id": "e1", "type": "user", "role": "user",
+                    "timestamp": "2026-01-01T00:00:00Z", "content": "hi"
+                })],
+            )
+            .unwrap();
+        assert!(
+            manager
+                .load("s-imported")
+                .unwrap()
+                .get_session_info()
+                .is_none(),
+            "precondition: no session_info exists yet"
+        );
+
+        manager
+            .update_session_info("s-imported", "session_name", serde_json::json!("Named"))
+            .unwrap();
+
+        let loaded = manager.load("s-imported").unwrap();
+        assert_eq!(loaded.name, "Named");
+        assert_eq!(loaded.get_session_info().unwrap()["session_name"], "Named");
+        // The conversation itself must survive the metadata write.
+        assert_eq!(loaded.entries.len(), 2, "user entry + appended snapshot");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn update_session_info_appends_complete_snapshot() {
         let (dir, manager) = temp_manager("update-info");
@@ -973,6 +1171,54 @@ mod tests {
             .filter(|e| e.entry_type == ENTRY_TYPE_SESSION_INFO)
             .count();
         assert_eq!(info_count, 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `update_session_info_fields` reads the current metadata and then writes,
+    /// so it must take the write lock at `BEGIN`. A deferred transaction keeps
+    /// the read snapshot it opened while a *different* connection to the same
+    /// agent.db (every live session owns one) commits; SQLite then fails the
+    /// upgrade immediately with SQLITE_BUSY_SNAPSHOT — "database is locked" —
+    /// bypassing both `busy_timeout` and the retry ladder. That is the error the
+    /// startup metadata sync records while it is only logged by its caller, and
+    /// the session then rejects every prompt with "session persistence is
+    /// unavailable: database is locked" until the agent restarts.
+    #[test]
+    fn metadata_update_survives_a_concurrent_commit_on_another_connection() {
+        let (dir, manager) = temp_manager("update-info-race");
+        let info = SessionEntry::session_info(
+            serde_json::json!({"cwd": "/a", "model": "m1", "session_name": "n1"}),
+            "m1".to_string(),
+            "low".to_string(),
+        );
+        let session = Session::snapshot(
+            "s-race".to_string(),
+            "/a".to_string(),
+            "m1".to_string(),
+            "n1".to_string(),
+            String::new(),
+            vec![
+                info,
+                SessionEntry::new_user("user", serde_json::json!("hi")),
+            ],
+        );
+        manager.save(&session).unwrap();
+
+        // Hold the write lock from a second connection and release it only after
+        // the update has read its snapshot, so a deferred read-then-write loses
+        // the upgrade while the update below waits for the lock at `BEGIN`.
+        let blocker = rusqlite::Connection::open(manager.database_path()).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            blocker.execute_batch("COMMIT").unwrap();
+        });
+        let updated = manager.update_session_info("s-race", "model", serde_json::json!("m2"));
+        release.join().unwrap();
+        updated.expect("a concurrent commit must not lose the metadata update");
+
+        let loaded = manager.load("s-race").unwrap();
+        assert_eq!(loaded.get_session_info().unwrap()["model"], "m2");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1712,5 +1958,93 @@ mod tests {
         assert!(content
             .iter()
             .any(|b| { b.get("type").and_then(|t| t.as_str()) == Some("tool_result") }));
+    }
+}
+
+/// A fork request must carry its own idempotency key and a parent before any
+/// storage work happens; both rejections are the first thing the RPC path sees.
+#[cfg(test)]
+mod fork_request_validation {
+    use super::*;
+    use crate::session::{ForkPoint, ForkRequest};
+
+    fn request(request_id: &str, parent: &str) -> ForkRequest {
+        ForkRequest {
+            request_id: request_id.to_string(),
+            parent_session_id: parent.to_string(),
+            point: ForkPoint::LatestSettled,
+            created_by: "test".to_string(),
+            creator_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_fork_request_needs_its_own_id_and_a_parent_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().join("sessions"));
+        let error = manager
+            .create_fork(request("   ", "parent"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("fork request id is required"), "{error}");
+        let error = manager
+            .create_fork(request("request", " "))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("fork parent session id is required"),
+            "{error}"
+        );
+    }
+}
+
+/// The in-process projection cache: a hit must be promoted (still present on the
+/// next read) and the cache must stay bounded.
+#[cfg(test)]
+mod display_cache_paths {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn a_cache_hit_is_promoted_and_the_oldest_entry_is_evicted() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Manager::new(dir.path().join("sessions"));
+        let mut session = crate::session::Session::new("/synthetic", "mock");
+        session.entries.push(crate::session::SessionEntry::new_user(
+            "user",
+            serde_json::json!("question"),
+        ));
+        manager.save(&session).unwrap();
+        let revision = manager.session_revision(&session.id).unwrap();
+        manager.cache_display_entries(
+            &session.id,
+            revision.clone(),
+            Arc::new(vec![serde_json::json!({"id":"entry"})]),
+        );
+        assert_eq!(
+            manager
+                .cached_display_entries(&session.id, &revision)
+                .unwrap()
+                .len(),
+            1
+        );
+        // The hit was promoted, so it is still cached on the next read.
+        assert!(manager
+            .cached_display_entries(&session.id, &revision)
+            .is_some());
+
+        for index in 0..=DISPLAY_ENTRIES_CACHE_MAX {
+            manager.cache_display_entries(
+                &format!("filler-{index}"),
+                revision.clone(),
+                Arc::new(Vec::new()),
+            );
+        }
+        assert!(
+            manager
+                .cached_display_entries(&session.id, &revision)
+                .is_none(),
+            "the cap evicts the oldest entry"
+        );
     }
 }

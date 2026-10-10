@@ -1,12 +1,15 @@
 import type { SkillCandidate, SkillRecoToday } from "../../integrations/skills/skillsClient";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  loadSkillCatalog,
   recordSkillReco,
   skillRecoToday,
   suggestSkill,
 } from "../../integrations/skills/skillsClient";
+import { useSkillCatalog } from "../../integrations/skills/useSkillCatalog";
+import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
+import { useCommittedRef } from "../../lib/useCommittedRef";
+import { useOperationLifetime } from "../../lib/useOperationLifetime";
 
 /**
  * Skill recommendation for any user message (not just a conversation's first).
@@ -34,8 +37,19 @@ import {
 export const MIN_QUERY_BYTES = 30;
 /** Don't recommend for very long drafts (also keeps the Jev prompt small). */
 export const MAX_QUERY_CHARS = 2000;
-/** Recommendations shown per user per local day; a spent budget stops the calls. */
+/** Recommendations shown per user per local day in a formal release build. */
 export const DAILY_RECOMMENDATION_LIMIT = 3;
+/** Generous test-build budget, so manual/repeated verification is not throttled. */
+export const TEST_DAILY_RECOMMENDATION_LIMIT = 1000;
+
+/**
+ * Formal releases are the production boundary. All non-release builds are test
+ * builds and use the larger budget; until build identity arrives, fail closed
+ * to the production limit so the UI never briefly over-recommends.
+ */
+export function dailyRecommendationLimit(isRelease: boolean | null | undefined): number {
+  return isRelease === false ? TEST_DAILY_RECOMMENDATION_LIMIT : DAILY_RECOMMENDATION_LIMIT;
+}
 /**
  * Hard budget for the whole recommend round-trip.
  *
@@ -73,6 +87,19 @@ interface Options {
   sessionStatus: string;
   /** Future balance in credits; recommendation requires a positive balance. */
   balance: number | null;
+  /**
+   * Where the data comes from. Defaults to this app's own recommender, so every
+   * existing caller is unchanged.
+   */
+  source?: SkillRecoSource;
+  /**
+   * A catalogue read to use instead of this app's own.
+   *
+   * A paired computer's catalogue has to be read over the wire, so it arrives
+   * as data from whoever owns that read; when it is given, this app's own
+   * catalogue is not loaded at all.
+   */
+  catalog?: SkillCatalogData;
 }
 
 /** True when the draft already picks at least one skill (`/name` pill). */
@@ -118,6 +145,70 @@ export function shownDescription(
   return zh && zh.trim().length > 0 ? zh : card.description;
 }
 
+/**
+ * Where a recommendation's data comes from.
+ *
+ * This app's own recommender, budget and account gates by default; a paired
+ * computer's when the conversation being evaluated lives there. The trigger
+ * rules stay in this hook either way — the source only answers questions,
+ * because the same policy has to hold for a conversation on another machine and
+ * a second copy of the rules would drift from this one.
+ */
+export interface SkillRecoSource {
+  /**
+   * Whether this source's account gates apply.
+   *
+   * They do for this app: the recommender runs against a signed-in Future
+   * account, and evaluating without one would spend a round trip on an answer
+   * that cannot come. They do not for a paired computer — the account that
+   * matters is *that* machine's, this one cannot read its sign-in state, and the
+   * host already degrades `suggest_skill` to "no recommendation" on its own. So
+   * the hook skips a gate it cannot evaluate rather than pretending to pass it.
+   */
+  accountGated: boolean;
+  /** Today's state: the daily budget and the duplicate checks. */
+  today: () => Promise<SkillRecoToday>;
+  /** One recommendation, or null when that machine will not make one. */
+  suggest: (query: string, candidates: SkillCandidate[]) => Promise<SkillCandidate | null>;
+  /** Record a recommendation that was actually shown. */
+  record: (skillId: string, messageHash: string) => Promise<void>;
+}
+
+/** A catalogue entry: what the candidate set and the card need, and what an install needs. */
+export interface SkillCatalogEntry {
+  id: string;
+  description: string;
+  descriptionZh?: string | null;
+  /**
+   * The version to install. The recommender names a skill but not a version, so
+   * installing the one it suggested means looking it up in the same catalogue
+   * the card came from — and a catalogue that does not publish one cannot be
+   * installed from here.
+   */
+  version?: string | null;
+}
+
+/** A catalogue read: what the source has, and what it could install. */
+export interface SkillCatalogData {
+  installed: { id: string }[];
+  catalogue: SkillCatalogEntry[];
+}
+
+/**
+ * This app's own recommender and budget.
+ *
+ * The calls are wrapped rather than referenced, so importing this module does
+ * not read the whole client: a caller that mocks only the parts it needs (a
+ * shell test, say) is not forced to define functions nothing in its path
+ * reaches.
+ */
+export const localSkillRecoSource: SkillRecoSource = {
+  accountGated: true,
+  today: () => readToday(),
+  suggest: (query, candidates) => suggestSkill(query, candidates),
+  record: (skillId, hash) => recordSkillReco(skillId, hash),
+};
+
 /** The empty day state, used before the first store read resolves. */
 const EMPTY_TODAY: SkillRecoToday = { count: 0, skillIds: [], messageHashes: [] };
 
@@ -142,69 +233,66 @@ async function readToday(): Promise<SkillRecoToday> {
 }
 
 export function useSkillRecommendation({
+  balance,
+  catalog: catalogOverride,
   enabled,
   sessionStatus,
-  balance,
+  source = localSkillRecoSource,
 }: Options): SkillRecommendationControls {
   const { i18n } = useTranslation();
+  const build = useBuildInfo();
   const [recommendation, setRecommendation] = useState<SkillCandidate | null>(null);
-  const [candidates, setCandidates] = useState<SkillCandidate[]>([]);
+
   // Live mirror so evaluate() reads the latest gate values regardless of render
   // timing; a stale closure would otherwise reuse the first render's
   // toggle/balance for the whole session.
-  const gateRef = useRef({ enabled, sessionStatus, balance });
-  gateRef.current = { enabled, sessionStatus, balance };
-  const candidatesRef = useRef(candidates);
-  candidatesRef.current = candidates;
+  const gateRef = useCommittedRef({ balance, enabled, sessionStatus, source });
+
   const inFlightRef = useRef(false);
+  const dailyLimitRef = useCommittedRef(dailyRecommendationLimit(build.data?.isRelease));
   // The catalogue's Chinese descriptions, keyed by skill id, and the current
   // language — both read through refs because `evaluate` is created once and
   // must see the latest values (same reason as `gateRef` above).
-  const zhDescriptionsRef = useRef<Map<string, string>>(new Map());
-  const languageRef = useRef(i18n.language);
-  languageRef.current = i18n.language;
+
+  const languageRef = useCommittedRef(i18n.language);
 
   const loggedIn = sessionStatus === "authenticated" || sessionStatus === "unavailable";
   const hasBalance = balance === null || balance > 0;
-  const active = enabled && loggedIn && hasBalance;
+  // A source whose account this machine cannot see (a paired computer) is not
+  // gated on an account here: the host answers with "no recommendation" if its
+  // own account cannot produce one, which is the same outcome without a guess.
+  const accountOk = !source.accountGated || (loggedIn && hasBalance);
+  const active = enabled && accountOk;
 
-  // Load the candidate set (catalogue − installed) once the feature is active.
-  // Both lists come from the shared cache, so this costs nothing when the
-  // composer on the same screen has already read them.
-  useEffect(() => {
-    if (!active)
-      return;
-    let cancelled = false;
-    const { installed, catalogue } = loadSkillCatalog();
-    Promise.all([catalogue.catch(() => []), installed.catch(() => [])])
-      .then(([all, mine]) => {
-        if (cancelled)
-          return;
-        const installedIds = new Set(mine.map(s => s.id));
-        setCandidates(
-          all
-            .filter(entry => !installedIds.has(entry.id))
-            .map(entry => ({ name: entry.id, description: entry.description })),
-        );
-        zhDescriptionsRef.current = new Map(
-          all.map(entry => [entry.id, entry.descriptionZh]),
-        );
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [active]);
+  // Skipped when the caller brought its own catalogue, so a paired computer's
+  // conversations never read this machine's skills.
+  const localCatalog = useSkillCatalog(active && catalogOverride === undefined);
+  const catalog = catalogOverride ?? localCatalog;
+  const candidates = useMemo(() => {
+    const installed = new Set(catalog.installed.map(skill => skill.id));
+    return catalog.catalogue.filter(skill => !installed.has(skill.id))
+      .map(skill => ({ name: skill.id, description: skill.description }));
+  }, [catalog]);
+  const candidatesRef = useCommittedRef(candidates);
+  const zhDescriptionsRef = useCommittedRef(useMemo(
+    () => new Map(catalog.catalogue.flatMap(skill =>
+      skill.descriptionZh ? [[skill.id, skill.descriptionZh] as const] : [])),
+    [catalog],
+  ));
+  const captureOperation = useOperationLifetime();
 
   const evaluate = useCallback(async (draft: string): Promise<SkillCandidate | null> => {
+    const lifetimeIsCurrent = captureOperation();
+    let timedOut = false;
+    const isCurrent = () => lifetimeIsCurrent() && !timedOut;
     const gate = gateRef.current;
     const loggedInNow = gate.sessionStatus === "authenticated" || gate.sessionStatus === "unavailable";
     const hasBalanceNow = gate.balance === null || gate.balance > 0;
+    const accountOkNow = !gate.source.accountGated || (loggedInNow && hasBalanceNow);
     const trimmed = draft.trim();
     if (
       !gate.enabled
-      || !loggedInNow
-      || !hasBalanceNow
+      || !accountOkNow
       || trimmed.length === 0
       || trimmed.length > MAX_QUERY_CHARS
       || new TextEncoder().encode(trimmed).length < MIN_QUERY_BYTES
@@ -218,21 +306,20 @@ export function useSkillRecommendation({
     // Read the day state at submit time rather than caching it at mount: it is a
     // local SQLite read, and a second window (or a previous submission) may have
     // spent part of the budget since.
-    const today = await readToday();
-    // A spent budget stops the calls entirely — no call, no card.
-    if (today.count >= DAILY_RECOMMENDATION_LIMIT)
-      return null;
-    const hash = messageHash(trimmed);
-    if (today.messageHashes.includes(hash))
-      return null;
-
     inFlightRef.current = true;
-    try {
-      const result = await Promise.race([
-        suggestSkill(trimmed, candidatesRef.current).catch(() => null),
-        new Promise<null>(resolve => setTimeout(resolve, RECOMMEND_TIMEOUT_MS, null)),
-      ]);
-      if (!result)
+    const evaluateCurrentDraft = async () => {
+      const today = await source.today();
+      if (!isCurrent())
+        return null;
+      // A spent budget stops the calls entirely — no call, no card.
+      if (today.count >= dailyLimitRef.current)
+        return null;
+      const hash = messageHash(trimmed);
+      if (today.messageHashes.includes(hash))
+        return null;
+
+      const result = await source.suggest(trimmed, candidatesRef.current).catch(() => null);
+      if (!isCurrent() || !result)
         return null;
       // Same skill twice in one day: skip this recommendation rather than
       // showing a duplicate (never fall back to a second-best skill).
@@ -249,7 +336,9 @@ export function useSkillRecommendation({
         return null;
       // Record before showing: the card counts towards the daily budget the
       // moment it is displayed, regardless of what the user does with it.
-      await recordSkillReco(result.name, hash).catch(() => {});
+      await source.record(result.name, hash).catch(() => {});
+      if (!isCurrent())
+        return null;
       const shown = {
         ...result,
         description: shownDescription(
@@ -260,11 +349,27 @@ export function useSkillRecommendation({
       };
       setRecommendation(shown);
       return shown;
+    };
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        evaluateCurrentDraft(),
+        new Promise<null>((resolve) => {
+          timeout = setTimeout(() => {
+            timedOut = true;
+            resolve(null);
+          }, RECOMMEND_TIMEOUT_MS);
+        }),
+      ]);
+    }
+    catch {
+      return null;
     }
     finally {
+      clearTimeout(timeout);
       inFlightRef.current = false;
     }
-  }, []);
+  }, [candidatesRef, captureOperation, dailyLimitRef, gateRef, languageRef, source, zhDescriptionsRef]);
 
   const dismiss = useCallback(() => setRecommendation(null), []);
 

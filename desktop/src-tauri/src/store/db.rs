@@ -12,17 +12,20 @@ use super::runs::{run_from_row, RunRecord};
 use super::schema::{
     ADDED_COLUMNS, ADDED_INDEXES, AGENT_SESSION_BINDING_MIGRATION_VERSION, DROPPED_COLUMNS,
     DROPPED_TABLES, REMOTE_PROMPT_RECEIPT_MIGRATION_VERSION, RENAMED_COLUMNS, SCHEMA,
+    SESSION_DELETE_INDEXES_MIGRATION_VERSION, SESSION_DELETE_INDEXES_SQL,
     UNIQUE_AGENT_SESSION_INDEX, VERSIONED_MIGRATIONS,
 };
 use super::util::now_millis;
 
+/// `~/.future/app/` — the directory the desktop app owns. The location is
+/// defined once in `future-app-settings`, which the CLI also reads, so a
+/// `future desktop settings` call reaches the same database.
 pub(super) fn app_dir() -> Result<PathBuf, crate::AppError> {
-    let home = crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?;
-    Ok(PathBuf::from(home).join(".future").join("app"))
+    Ok(future_app_settings::app_dir()?)
 }
 
 pub(super) fn db_path() -> Result<PathBuf, crate::AppError> {
-    Ok(app_dir()?.join("app.db"))
+    Ok(future_app_settings::app_db_path()?)
 }
 
 pub fn chat_workspace_path(id: &str) -> Result<PathBuf, crate::AppError> {
@@ -185,6 +188,7 @@ pub(super) fn connect() -> Result<PooledConnection, crate::AppError> {
 
 pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     conn.execute_batch(SCHEMA)?;
+    apply_approval_assessments_migration(conn)?;
     // This is a required identity invariant: one Agent session may back only
     // one Desktop thread. Repair legacy duplicate bindings before installing
     // the unique index, otherwise an upgraded database could not start.
@@ -244,6 +248,7 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
     for statement in ADDED_INDEXES {
         conn.execute(statement, [])?;
     }
+    apply_session_delete_indexes_migration(conn)?;
     // Drop tables removed from the schema (see DROPPED_TABLES).
     // Disable FK enforcement to allow dropping tables referenced by other tables.
     // Best-effort: a missing table (fresh DB) or FK conflict (stale DB) shouldn't block startup.
@@ -264,6 +269,26 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
                 eprintln!("FutureOS migration: failed to drop {table}.{column}: {error}");
             }
         }
+    }
+    Ok(())
+}
+
+/// Install deletion indexes and record the migration in one transaction.
+fn apply_session_delete_indexes_migration(conn: &Connection) -> Result<(), crate::AppError> {
+    let applied: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
+        [SESSION_DELETE_INDEXES_MIGRATION_VERSION],
+        |row| row.get(0),
+    )?;
+    if !applied {
+        let tx =
+            rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute_batch(SESSION_DELETE_INDEXES_SQL)?;
+        tx.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, ?2)",
+            params![SESSION_DELETE_INDEXES_MIGRATION_VERSION, now_millis()],
+        )?;
+        tx.commit()?;
     }
     Ok(())
 }
@@ -552,6 +577,66 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deletion_indexes_upgrade_release_schema_and_serve_cleanup_queries() {
+        for released in [false, true] {
+            let conn = Connection::open_in_memory().unwrap();
+            if released {
+                conn.execute_batch(include_str!("fixtures/v1.2.1.sql"))
+                    .unwrap();
+            }
+            apply_schema(&conn).unwrap();
+            apply_schema(&conn).unwrap();
+            let count: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM schema_migrations WHERE version=?1",
+                    [SESSION_DELETE_INDEXES_MIGRATION_VERSION],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1);
+            for (query, index) in [
+                ("SELECT id FROM review_snapshots WHERE thread_id=?1", "idx_review_snapshots_thread"),
+                ("SELECT id FROM artifacts WHERE run_id=?1", "idx_artifacts_run"),
+                ("SELECT id FROM artifacts WHERE thread_id=?1", "idx_artifacts_thread"),
+                ("SELECT id FROM approval_assessments WHERE approval_request_id=?1", "idx_approval_assessments_request"),
+                ("SELECT id FROM threads WHERE parent_session_id=?1", "idx_threads_parent_session"),
+                ("SELECT EXISTS(SELECT 1 FROM threads WHERE COALESCE(NULLIF(TRIM(agent_session_id), ''), id)=?1 AND id!='self')", "idx_threads_effective_session"),
+            ] {
+                let plans = conn.prepare(&format!("EXPLAIN QUERY PLAN {query}")).unwrap()
+                    .query_map(["synthetic"], |row| row.get::<_, String>(3)).unwrap()
+                    .collect::<Result<Vec<_>, _>>().unwrap();
+                assert!(plans.iter().any(|plan| plan.contains(index)), "{plans:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn deletion_index_migration_rolls_back_and_can_retry() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_schema(&conn).unwrap();
+        conn.execute(
+            "DELETE FROM schema_migrations WHERE version=?1",
+            [SESSION_DELETE_INDEXES_MIGRATION_VERSION],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "DROP INDEX idx_review_snapshots_thread;
+            DROP INDEX idx_artifacts_run; DROP TABLE approval_assessments;",
+        )
+        .unwrap();
+        assert!(apply_session_delete_indexes_migration(&conn).is_err());
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name='idx_review_snapshots_thread'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "failed migration rolls back all new indexes");
+        apply_schema(&conn).unwrap();
+    }
 
     #[test]
     fn apply_schema_on_fresh_db_succeeds() {
@@ -994,6 +1079,7 @@ mod tests {
                  id TEXT PRIMARY KEY,
                  workspace_id TEXT,
                  thread_id TEXT,
+                 run_id TEXT,
                  path TEXT,
                  type TEXT,
                  created_at INTEGER NOT NULL,
@@ -1280,5 +1366,138 @@ mod tests {
 
         POOL.clear_poison();
         drop(home);
+    }
+
+    /// A database whose `threads` table predates the binding column cannot be
+    /// repaired: the migration must surface that instead of recording itself as
+    /// applied (which would leave the unique index missing forever).
+    #[test]
+    fn agent_session_binding_migration_reports_and_rolls_back_a_failing_repair() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at INTEGER NOT NULL);
+             CREATE TABLE threads (id TEXT PRIMARY KEY);",
+        )
+        .unwrap();
+
+        let error = apply_agent_session_binding_migration(&conn)
+            .expect_err("an unreparable database must not report success")
+            .to_string();
+        assert!(error.contains("agent_session_id"), "{error}");
+
+        // The whole transaction rolled back, marker row included, so the next
+        // startup retries the repair rather than skipping it.
+        let markers: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(markers, 0, "a failed migration must not record itself");
+    }
+
+    /// Same contract for the receipt backfill: a `runs` table with no
+    /// `trigger_message_id` cannot be backfilled, and the `ALTER TABLE` that ran
+    /// before the failing statement must roll back with it.
+    #[test]
+    fn remote_prompt_receipt_migration_reports_and_rolls_back_a_failing_backfill() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at INTEGER NOT NULL);
+             CREATE TABLE runs (id TEXT PRIMARY KEY, updated_at INTEGER NOT NULL);",
+        )
+        .unwrap();
+
+        let error = apply_remote_prompt_receipt_migration(&conn)
+            .expect_err("a runs table without trigger_message_id cannot be backfilled")
+            .to_string();
+        assert!(error.contains("trigger_message_id"), "{error}");
+
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(runs)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            !columns.iter().any(|column| column == "remote_accepted_at"),
+            "the added column must roll back with the failed migration: {columns:?}"
+        );
+        let markers: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(markers, 0, "a failed migration must not record itself");
+    }
+}
+
+/// Required, transactional migration shared with fresh-install schema tests.
+fn apply_approval_assessments_migration(conn: &Connection) -> Result<(), crate::AppError> {
+    const VERSION: &str = "v1.2.2-auto-approval";
+    if conn
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE version = ?1",
+            [VERSION],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some()
+    {
+        return Ok(());
+    }
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = (|| {
+        conn.execute_batch(include_str!("approval_assessments.sql"))?;
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+            params![VERSION, now_millis()],
+        )?;
+        Ok::<(), crate::AppError>(())
+    })();
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT")?,
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod approval_assessments_migration_tests {
+    use super::*;
+    #[test]
+    fn fresh_and_upgrade_are_idempotent() {
+        for upgraded in [false, true] {
+            let conn = Connection::open_in_memory().unwrap();
+            apply_schema(&conn).unwrap();
+            if upgraded {
+                conn.execute_batch("DROP TABLE approval_assessments; DELETE FROM schema_migrations WHERE version='v1.2.2-auto-approval';").unwrap();
+            }
+            apply_schema(&conn).unwrap();
+            apply_schema(&conn).unwrap();
+            let count: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM schema_migrations WHERE version='v1.2.2-auto-approval'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1);
+            conn.prepare("SELECT id,approval_request_id,run_id,tool_call_id,status,payload,created_at FROM approval_assessments").unwrap();
+        }
+    }
+    #[test]
+    fn failure_rolls_back_without_migration_marker() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations(version TEXT PRIMARY KEY,applied_at INTEGER); CREATE TABLE approval_assessments(id TEXT);").unwrap();
+        assert!(apply_approval_assessments_migration(&conn).is_err());
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM schema_migrations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        assert!(conn.is_autocommit());
     }
 }

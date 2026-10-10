@@ -1,3 +1,4 @@
+import { shellResult } from "./shellResult";
 import type { RunEvent } from "./events";
 import type { AgentActivityItem, AgentActivityKind, MessageSegment, StreamRetryState } from "./model";
 import { isRecord, pathBasename, singleLine } from "./utils";
@@ -71,6 +72,7 @@ type Slot
       };
 
 interface ToolActivity {
+  shellResult?: import("./shellResult").ShellResult;
   id: string;
   kind: Exclude<AgentActivityKind, "thinking">;
   status: AgentActivityItem["status"];
@@ -78,6 +80,14 @@ interface ToolActivity {
   detail?: string;
   argsText?: string;
   order: number;
+  /**
+   * The call's own identity and its run, carried so a row whose target the feed
+   * omitted can fetch it when opened (`get_tool_call_args`). The live lane drops
+   * a shell call's arguments now, so this is what keeps the command reachable
+   * there — the same contract the persisted projection has.
+   */
+  toolCallId?: string;
+  runId?: string;
 }
 
 /**
@@ -386,7 +396,7 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
     }
 
     if (event.eventType === "toolcall_start" || event.eventType === "tool_start") {
-      const tool = toolFromPayload(payload, event.sequence);
+      const tool = toolFromPayload(payload, event.sequence, event.runId);
       if (tool) {
         activeToolCallId = tool.id;
         toolActivities.set(tool.id, {
@@ -438,7 +448,7 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
     }
 
     if (event.eventType === "tool_end" || event.eventType === "tool_result") {
-      const tool = toolFromPayload(payload, event.sequence);
+      const tool = toolFromPayload(payload, event.sequence, event.runId);
       const explicitId = explicitToolId(payload);
       // A result may omit the tool name (some serializers drop it); resolve it
       // by the explicit id against an already-tracked tool so the row still
@@ -456,6 +466,7 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
           activeToolCallId = null;
         toolActivities.set(toolId, {
           ...existing,
+          shellResult: shellResult(isRecord(payload) ? payload.shell_result : undefined),
           status: hasToolError(payload, existing.detail) ? "failed" : "completed",
         });
         sawVisibleWork = true;
@@ -468,6 +479,7 @@ function createProjector(options?: { preferEndTokens?: boolean }, initial?: Proj
         ...existing,
         ...tool,
         id: toolId,
+        shellResult: shellResult(isRecord(payload) ? payload.shell_result : undefined),
         status: hasToolError(payload, existing?.detail ?? tool.detail) ? "failed" : "completed",
         order: existing?.order ?? tool.order,
         // The end event carries the result, not the args, so `tool.target` is
@@ -629,9 +641,12 @@ function buildSegments(
     }
 
     if (slot.type === "thinking") {
-      if (slot.text.trim()) {
-        segments.push({ kind: "thinking", id: `thinking_${index}`, text: slot.text });
-      }
+      // A reasoning block is shown from its boundary alone. Under the lean feed
+      // the deltas never arrive, so an empty slot is the normal case there and
+      // must still produce the row — it is the only indication that the model
+      // reasoned at all. (`text` stays for the full feed, which still renders
+      // the body when the row is expanded.)
+      segments.push({ kind: "thinking", id: `thinking_${index}`, text: slot.text });
       index += 1;
       continue;
     }
@@ -668,7 +683,11 @@ function buildSegments(
       // A compaction marker breaks the tool run — it renders as its own divider.
       if (current.type === "compaction")
         break;
-      if (!current.text.trim()) {
+      // Only whitespace-only *text* is glue between tools. A reasoning slot with
+      // no body is a row of its own — the lean feed never streams its deltas, so
+      // treating the empty slot as glue would swallow the row (and merge the tool
+      // calls on either side of it into one burst).
+      if (current.type === "text" && !current.text.trim()) {
         cursor += 1;
         continue;
       }
@@ -728,10 +747,14 @@ function toActivityItem(tool: ToolActivity): AgentActivityItem {
     status: tool.status,
     target: tool.target,
     detail: tool.detail,
+    shellResult: tool.shellResult,
+    ...(tool.toolCallId && tool.runId
+      ? { toolCallId: tool.toolCallId, runId: tool.runId }
+      : {}),
   };
 }
 
-function toolFromPayload(payload: unknown, sequence: number): ToolActivity | null {
+function toolFromPayload(payload: unknown, sequence: number, runId?: string): ToolActivity | null {
   if (!isRecord(payload))
     return null;
 
@@ -743,14 +766,20 @@ function toolFromPayload(payload: unknown, sequence: number): ToolActivity | nul
 
   const args = normalizeArgs(payload.tool_args ?? payload.toolArgs ?? payload.arguments);
   const target = targetFromArgs(name, args);
+  const toolCallId = explicitToolId(payload);
 
   return {
-    id: explicitToolId(payload) ?? `${name}_${sequence}`,
+    id: toolCallId ?? `${name}_${sequence}`,
     kind: name,
     status: "running",
     target: target ? singleLine(target) : undefined,
     detail: target,
     order: sequence,
+    // The identity a row needs to ask the desktop for a target the feed dropped.
+    // Absent for a synthetic id (no `tool_id` on the event), which nothing can
+    // look up: the row then renders what it has rather than a dead affordance.
+    ...(toolCallId ? { toolCallId } : {}),
+    ...(toolCallId && runId ? { runId } : {}),
   };
 }
 
@@ -837,9 +866,24 @@ const SOFT_FAIL_COMMANDS = new Set(["grep", "egrep", "fgrep", "rg", "findstr", "
 function hasToolError(payload: unknown, command: string | undefined) {
   if (!isRecord(payload))
     return false;
+  const facts = shellResult(payload.shell_result);
+  if (facts)
+    return facts.is_error;
   const error = stringValue(payload.error) ?? stringValue(payload.errorText);
   if (error?.trim())
     return true;
+  // A lean feed does not carry the captured output, so the agent's structured
+  // outcome is the whole signal: a non-zero exit code is a failure, with the
+  // same soft-fail exemption the footer path applies. `is_soft_fail` is the
+  // agent's own verdict (it had the command too); it only ever exempts.
+  const structured = numberValue(payload.exit_code) ?? numberValue(payload.exitCode);
+  if (structured !== undefined) {
+    if (structured === 0)
+      return false;
+    if (payload.is_soft_fail === true || payload.isSoftFail === true)
+      return false;
+    return !isSoftExit(structured, command);
+  }
   // A shell command that runs is returned as a *successful* tool result (no
   // error field) with the exit code in a footer line at the end of the output
   // ("[exit: N]"). Treat a non-zero code as a failure so the row isn’t
@@ -876,4 +920,8 @@ export function isSoftExit(exitCode: number, command: string | undefined) {
 
 function stringValue(value: unknown) {
   return typeof value === "string" ? value : undefined;
+}
+
+function numberValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

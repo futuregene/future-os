@@ -8,23 +8,36 @@ const HELP: &str = "future session history — search/read original conversation
 
 Usage:
   future session history search --session <id> --query <text> [--limit 5] [--json]
+  future session history search --all --query <text> [--limit 5] [--sessions 50] [--json]
   future session history get --session <id> --entry <entry-id> [--offset 0] [--limit 8192] [--json]
 
 Search matches literal text/arguments (ASCII case insensitive) or an exact tool-call ID, newest first.
 Search limit: 1..20 matches. It includes text, tool arguments and results, not thinking.
+--all searches across sessions instead of one: it scans the --sessions most recently
+updated sessions (1..500, default 50) and each match carries its sessionId. The
+response reports scannedSessions and truncated so you can see when older sessions
+were left out.
 Get offset/limit: UTF-8 bytes across readable blocks in entry order (not line numbers).
 Get limit: 4..32768 bytes. Follow nextOffset for more; UTF-8 characters are not split.
 Search byteOffset can be passed to get --offset. --json preserves exact text chunks.
-Queries are scoped to the explicitly selected session; no default-session fallback.
+Queries are scoped to the explicitly selected session (or session window); no
+default-session fallback.
 Requires an Agent/CLI version supporting history recall. No model call is made.";
+
+/// Default session window for `search --all`, mirroring the Agent's own default.
+const DEFAULT_SCAN_SESSIONS: i64 = 50;
+const MAX_SCAN_SESSIONS: i64 = 500;
 
 #[derive(Debug, PartialEq, Eq)]
 struct Options {
     search: bool,
-    session: String,
+    /// `--all`: ignore `session` and scan the most recent window instead.
+    all: bool,
+    session: Option<String>,
     value: String,
     offset: i64,
     limit: i64,
+    sessions: i64,
     json: bool,
 }
 
@@ -34,10 +47,13 @@ fn parse(args: &[String]) -> Result<Options, String> {
         Some("get") => false,
         _ => return Err("expected history search or get".into()),
     };
+    let mut all = false;
     let mut session = None;
     let mut value = None;
     let mut offset = 0;
     let mut limit = if search { 5 } else { 8192 };
+    let mut sessions = DEFAULT_SCAN_SESSIONS;
+    let mut sessions_given = false;
     let mut json = false;
     let mut seen = HashSet::new();
     let mut index = 1;
@@ -51,9 +67,14 @@ fn parse(args: &[String]) -> Result<Options, String> {
             index += 1;
             continue;
         }
+        if flag == "--all" {
+            all = true;
+            index += 1;
+            continue;
+        }
         if !matches!(
             flag,
-            "--session" | "--query" | "--entry" | "--offset" | "--limit"
+            "--session" | "--query" | "--entry" | "--offset" | "--limit" | "--sessions"
         ) {
             return Err(format!("unknown option: {flag}"));
         }
@@ -73,14 +94,34 @@ fn parse(args: &[String]) -> Result<Options, String> {
                     .map_err(|_| "offset must be a nonnegative integer")?
             }
             "--limit" => limit = raw.parse().map_err(|_| "limit must be an integer")?,
+            "--sessions" if search => {
+                sessions_given = true;
+                sessions = raw.parse().map_err(|_| "--sessions must be an integer")?
+            }
             _ => return Err(format!("{flag} is not valid for this history command")),
         }
         index += 2;
     }
+    if all && !search {
+        return Err("--all is only valid for history search".into());
+    }
+    if all && session.is_some() {
+        return Err("--session and --all are mutually exclusive".into());
+    }
+    if sessions_given && !all {
+        return Err("--sessions requires --all".into());
+    }
+    if all && !(1..=MAX_SCAN_SESSIONS).contains(&sessions) {
+        return Err(format!(
+            "--sessions must be between 1 and {MAX_SCAN_SESSIONS}"
+        ));
+    }
     if offset < 0 || !(if search { 1..=20 } else { 4..=32768 }).contains(&limit) {
         return Err("offset/limit outside the documented range".into());
     }
-    let session = session.ok_or("--session is required")?;
+    if search && !all && session.is_none() {
+        return Err("--session is required unless --all is given".into());
+    }
     let value = value.ok_or(if search {
         "--query is required"
     } else {
@@ -91,10 +132,12 @@ fn parse(args: &[String]) -> Result<Options, String> {
     }
     Ok(Options {
         search,
+        all,
         session,
         value,
         offset,
         limit,
+        sessions,
         json,
     })
 }
@@ -106,26 +149,83 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
     }
     let options = parse(args)?;
     let client = RunClient::new(&grpc_addr());
-    let result = if options.search {
-        client
-            .search_session_history(&options.session, &options.value, options.limit)
-            .await?
-    } else {
-        client
-            .get_session_history_entry(
-                &options.session,
-                &options.value,
-                options.offset,
-                options.limit,
-            )
-            .await?
+    let result = match (options.search, options.all) {
+        (true, true) => {
+            client
+                .search_all_session_history(&options.value, options.limit, options.sessions)
+                .await?
+        }
+        (true, false) => {
+            let session = options.session.as_deref().unwrap_or_default();
+            client
+                .search_session_history(session, &options.value, options.limit)
+                .await?
+        }
+        (false, _) => {
+            let session = options.session.as_deref().unwrap_or_default();
+            client
+                .get_session_history_entry(session, &options.value, options.offset, options.limit)
+                .await?
+        }
     };
     if options.json {
         out.log(&serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?);
+    } else if options.all {
+        out.log(&format_all_result(&result));
     } else {
         out.log(&format_result(&result, options.search));
     }
     Ok(())
+}
+
+/// `search --all` output: every match names the session it came from, since
+/// the entry id alone is only unique inside one session.
+fn format_all_result(value: &Value) -> String {
+    let matches = value["matches"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let mut out = format!(
+        "Scanned {} session(s){}.\n",
+        value["scannedSessions"],
+        if value["truncated"] == true {
+            " (more exist older than --sessions; raise it to widen the scan)"
+        } else {
+            ""
+        }
+    );
+    if matches.is_empty() {
+        out.push_str("\nNo matching history records.");
+        return out;
+    }
+    out.push('\n');
+    out.push_str(
+        &matches
+            .iter()
+            .map(|m| {
+                let name = string(m, "sessionName");
+                format!(
+                    "session={}{} entry={} block={} kind={} offset={}\n{}",
+                    string(m, "sessionId"),
+                    if name.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" name={name}")
+                    },
+                    string(m, "entryId"),
+                    m["blockIndex"],
+                    string(m, "kind"),
+                    m["byteOffset"],
+                    string(m, "snippet")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    );
+    if value["hasMore"] == true {
+        out.push_str("\n\nMore matches exist; refine the query or increase --limit (max 20).");
+    }
+    out
 }
 
 fn string(v: &Value, key: &str) -> String {
@@ -210,6 +310,23 @@ mod tests {
         .unwrap();
         assert!(p.search && p.json);
         assert_eq!(p.limit, 5);
+        assert_eq!(p.session.as_deref(), Some("s"));
+        assert!(!p.all);
+        // `--all` replaces `--session` and takes a scan window instead.
+        let p = parse(&args(&["search", "--all", "--query", "x"])).unwrap();
+        assert!(p.all);
+        assert!(p.session.is_none());
+        assert_eq!(p.sessions, DEFAULT_SCAN_SESSIONS);
+        let p = parse(&args(&[
+            "search",
+            "--all",
+            "--query",
+            "x",
+            "--sessions",
+            "500",
+        ]))
+        .unwrap();
+        assert_eq!(p.sessions, 500);
         let p = parse(&args(&[
             "get",
             "--session",
@@ -223,6 +340,7 @@ mod tests {
         ]))
         .unwrap();
         assert_eq!((p.offset, p.limit), (4, 8));
+        assert_eq!(p.sessions, DEFAULT_SCAN_SESSIONS);
         for values in [
             vec!["search", "--query", "x"],
             vec!["get", "--session", "s"],
@@ -240,9 +358,80 @@ mod tests {
             ],
             vec!["search", "--session", "s", "--entry", "e"],
             vec!["get", "--session", "s", "--entry", "e", "--unknown", "x"],
+            // `--all` replaces `--session` rather than supplementing it.
+            vec!["search", "--all", "--session", "s", "--query", "x"],
+            vec!["get", "--all", "--session", "s", "--entry", "e"],
+            // `--sessions` bounds a cross-session scan, so it needs both.
+            vec![
+                "search",
+                "--session",
+                "s",
+                "--query",
+                "x",
+                "--sessions",
+                "5",
+            ],
+            vec!["search", "--all", "--query", "x", "--sessions", "0"],
+            vec!["search", "--all", "--query", "x", "--sessions", "501"],
+            vec!["search", "--all", "--query", "x", "--sessions", "many"],
+            vec!["search", "--all", "--entry", "e", "--query", "x"],
+            // `--offset` belongs to `get`, `--all` never changes that.
+            vec!["search", "--all", "--query", "x", "--offset", "2"],
         ] {
             assert!(parse(&args(&values)).is_err(), "{values:?}");
         }
+    }
+    #[test]
+    fn cross_session_formatting_names_the_session_and_flags_a_cut_scan() {
+        let v = serde_json::json!({
+            "query":"x","scannedSessions":1,"truncated":true,"hasMore":false,
+            "matches":[{"sessionId":"s1","sessionName":"Alpha","entryId":"e","blockIndex":0,
+                        "kind":"tool_result","byteOffset":2,"snippet":"中文"},
+                       {"sessionId":"s2","entryId":"f","blockIndex":1,
+                        "kind":"text","byteOffset":0,"snippet":"tail"}]
+        });
+        let text = format_all_result(&v);
+        assert!(text.contains("Scanned 1 session(s)"), "{text}");
+        assert!(text.contains("--sessions"), "{text}");
+        assert!(text.contains("session=s1 name=Alpha entry=e"), "{text}");
+        // A session without a title stays readable instead of printing "name=".
+        assert!(text.contains("session=s2 entry=f"), "{text}");
+        assert!(text.contains("中文"), "{text}");
+        let empty = format_all_result(&serde_json::json!(
+            {"scannedSessions":3,"truncated":false,"matches":[],"hasMore":false}
+        ));
+        assert!(empty.contains("Scanned 3 session(s)."), "{empty}");
+        assert!(empty.contains("No matching history records."), "{empty}");
+    }
+    #[tokio::test]
+    async fn cli_cross_session_search_sends_the_scan_window() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = crate::test_server::MockAgent::respond(
+            "search_all_session_history",
+            r#"{"matches":[{"sessionId":"s","entryId":"e","snippet":"x"}],"hasMore":false,"scannedSessions":1,"truncated":false}"#,
+        );
+        let address = crate::test_server::spawn_mock(agent.clone()).await;
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from(address),
+        )]);
+        let (out, cap) = Output::memory();
+        run(
+            &args(&["search", "--all", "--query", "中文 %_", "--sessions", "7"]),
+            &out,
+        )
+        .await
+        .unwrap();
+        let seen = agent.seen_of("search_all_session_history");
+        // The cross-session command carries no session id; the scan window
+        // travels in max_sessions and the match count in limit.
+        assert_eq!(seen[0].session_id, "");
+        assert_eq!(seen[0].message, "中文 %_");
+        assert_eq!(seen[0].limit, Some(5));
+        assert_eq!(seen[0].max_sessions, Some(7));
+        assert!(String::from_utf8(cap.out.lock().unwrap().clone())
+            .unwrap()
+            .contains("session=s entry=e"));
     }
     #[test]
     fn formatting_keeps_refs_and_continuation_cursor() {
@@ -328,5 +517,125 @@ mod tests {
         assert!(String::from_utf8(cap.out.lock().unwrap().clone())
             .unwrap()
             .contains("history search"));
+    }
+
+    /// The subcommand is the first argument and nothing else is accepted: a
+    /// missing or unknown one is a usage error, not a default read.
+    #[test]
+    fn a_missing_or_unknown_subcommand_is_refused() {
+        for values in [vec![], vec!["--json"], vec!["list"], vec!["searchx"]] {
+            assert_eq!(
+                parse(&args(&values)).unwrap_err(),
+                "expected history search or get",
+                "{values:?}"
+            );
+        }
+    }
+
+    /// A flag whose value is missing *or* is itself another flag is a missing
+    /// value, so `--query --json` never searches for the literal `--json`.
+    #[test]
+    fn a_dangling_or_flag_shaped_value_is_a_missing_value() {
+        for values in [
+            vec!["search", "--session"],
+            vec!["search", "--session", "s", "--query"],
+            vec!["search", "--session", "s", "--query", "--json"],
+            vec!["get", "--session", "s", "--entry", "--json"],
+            vec!["search", "--session", "", "--query", "x"],
+        ] {
+            let err = parse(&args(&values)).unwrap_err();
+            assert!(err.contains("missing value for"), "{values:?} → {err}");
+        }
+    }
+
+    /// The query boundary: 200 characters is the last accepted length, 201 the
+    /// first refused, a blank query is refused even though it is short, and a
+    /// NUL is refused before anything reaches the agent.
+    #[test]
+    fn the_query_length_and_content_boundary_is_exact() {
+        let ok = "a".repeat(200);
+        assert!(parse(&args(&["search", "--session", "s", "--query", &ok])).is_ok());
+        let long = "a".repeat(201);
+        assert!(parse(&args(&["search", "--session", "s", "--query", &long])).is_err());
+        // An all-whitespace or NUL-bearing query is short but still illegitimate;
+        // the empty string never gets this far (it is a missing value first).
+        for bad in ["   ", "\t", "with\0nul"] {
+            let err = parse(&args(&["search", "--session", "s", "--query", bad])).unwrap_err();
+            assert_eq!(
+                err, "query must contain 1..200 characters without NUL",
+                "{bad:?}"
+            );
+        }
+        // 200 CJK characters are 200 *characters*, not 600 bytes.
+        let cjk = "中".repeat(200);
+        assert!(parse(&args(&["search", "--session", "s", "--query", &cjk])).is_ok());
+        // `--entry` has no length rule (it is an id, not a query).
+        assert!(parse(&args(&["get", "--session", "s", "--entry", "e"])).is_ok());
+    }
+
+    /// A search result is rendered one block per match, with the continuation
+    /// hint only when `hasMore` is set — and no hint when the server says it is
+    /// the last page.
+    #[test]
+    fn the_search_table_renders_every_match_and_the_continuation_hint() {
+        let v = serde_json::json!({
+            "matches": [
+                {"entryId":"e1","blockIndex":0,"kind":"text","byteOffset":0,"snippet":"first"},
+                {"entryId":"e2","blockIndex":3,"kind":"tool_result","byteOffset":17,"snippet":"第二个 匹配"},
+            ],
+            "hasMore": true
+        });
+        let text = format_result(&v, true);
+        assert!(
+            text.contains("entry=e1 block=0 kind=text offset=0\nfirst"),
+            "{text}"
+        );
+        assert!(
+            text.contains("entry=e2 block=3 kind=tool_result offset=17\n第二个 匹配"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n\n"),
+            "matches are separated by a blank line: {text}"
+        );
+        assert!(
+            text.contains("More matches exist; refine the query or increase --limit (max 20)."),
+            "{text}"
+        );
+        let text = format_result(
+            &serde_json::json!({"matches":[{"entryId":"e"}],"hasMore":false}),
+            true,
+        );
+        assert!(text.contains("entry=e"), "{text}");
+        assert!(!text.contains("More matches exist"), "{text}");
+    }
+
+    /// A successful search renders as text (not JSON) when `--json` is absent,
+    /// through the same `format_result` the tests above pin. The agent is the
+    /// in-process mock, so the whole `run` path is exercised.
+    #[tokio::test]
+    async fn a_search_without_json_prints_the_rendered_table() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = crate::test_server::MockAgent::respond(
+            "search_session_history",
+            r#"{"matches":[{"entryId":"e9","blockIndex":1,"kind":"text","byteOffset":4,"snippet":"中文 snippet"}],"hasMore":true}"#,
+        );
+        let address = crate::test_server::spawn_mock(agent).await;
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from(address),
+        )]);
+        let (out, cap) = Output::memory();
+        run(&args(&["search", "--session", "s", "--query", "中"]), &out)
+            .await
+            .expect("search succeeds");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(
+            stdout.contains("entry=e9 block=1 kind=text offset=4"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("中文 snippet"), "{stdout}");
+        assert!(stdout.contains("More matches exist"), "{stdout}");
+        assert!(!stdout.trim_start().starts_with('{'), "not JSON: {stdout}");
     }
 }

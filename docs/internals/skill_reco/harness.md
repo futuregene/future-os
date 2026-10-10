@@ -18,7 +18,7 @@ git clone --recurse-submodules https://github.com/futuregene/future-os.git
 # 2) Start it — the credential comes from the Future account
 #    (~/.future/agent/auth.json); no arguments needed
 cd scripts/skill_reco
-node server.mjs                                   # defaults to http://127.0.0.1:8791
+node server.mjs                                   # defaults to http://127.0.0.1:8787
 ```
 
 This line must appear in the startup log. If it does not, step 2 did not take effect and the
@@ -237,6 +237,20 @@ AGENT_SKILL_RECO=.../agent/src/skill_reco/mod.rs \
   node bench/check-parity.mjs                               # this directory matches the agent's mechanism
 ```
 
+**Plus a manual end-to-end pass over the gRPC command** (not in CI: it needs grpcurl, a
+real credential and a live gateway, so it costs money):
+
+```bash
+future agent --home /tmp/reco-test --verbose --log-file    # isolated; never the agent you use
+python3 suggest-skill-tests.py              # 35 checks, 5 suites; ~33 calls ≈¥0.04
+python3 suggest-skill-tests.py --only A,B,D # the three free suites (no network)
+python3 order-sensitivity.py --runs 8       # order sensitivity vs run-to-run noise
+```
+
+The unit tests cover the decision logic; this covers the wire — the typed payload the
+clients parse, every failure collapsing to "no recommendation", and the boundaries the
+constants imply (the 254-candidate cap, CJK, very long input).
+
 Both exit non-zero on a problem, and — just as important — **fail when they measured nothing** (a doc
 they cannot read, an agent source they cannot read) rather than printing a pass. `check-doc-refs.mjs`
 found two references to deleted scripts the day it was written, and `check-parity.mjs`'s default path
@@ -248,7 +262,7 @@ The product implements recommendation in the agent, in Rust (`agent/src/skill_re
 three clients (desktop / TUI / mobile) call it. This demo is a **second implementation** (JS), so it
 is worth being explicit about who owns what.
 
-**The experiment scripts have to stay in JS — that is the design, not laziness.** The 37 scripts under
+**The experiment scripts have to stay in JS — that is the design, not laziness.** The 38 scripts under
 `bench/` exist to **change the very things production fixes**: prompt wording (loose vs strict),
 payload shape (description 220 vs 256, with or without the Chinese line), chunk size, gate threshold,
 option sets. If they ran the production code they would have no knobs at all — and then today's

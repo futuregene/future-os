@@ -166,6 +166,7 @@ mod tests {
         ResolvedSandbox::resolve(
             &SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Sandbox,
+                model_reviewer: false,
             },
             ws.to_string_lossy().as_ref(),
         )

@@ -21,11 +21,12 @@ import { Animated, FlatList, Linking, Platform, Pressable, ScrollView, StyleShee
 import { AppAlert as Alert } from "./appAlerts";
 import { useStreamingText } from "./useStreamingText";
 import { chatTypography, colors, radius, spacing } from "../theme/tokens";
-import { MarkdownImage, MarkdownImageBasePathContext } from "./MarkdownImage";
+import { MarkdownImage, MarkdownImageBasePathContext, resolveMarkdownPath } from "./MarkdownImage";
 import { MathFormula } from "./MathFormula";
 
 interface MarkdownTextProps {
-  /** Message links can fetch local files; file previews never nest previews. */
+  /** Message links resolve against the workspace; a previewed document's links
+   * resolve against that document, and a local file there is openable. */
   mode?: "message" | "file-preview";
   text: string;
   /** Original desktop document path, not its downloaded phone cache URI. */
@@ -37,9 +38,11 @@ interface MarkdownTextProps {
 
 type OpenTarget = (target: string) => void;
 
-/** Rows a table paints inline in the message. Past this it gets a bounded
- * viewport, which shows about eight rows at a time — so the cutoff must stay
- * above the tables a reply usually carries, or they silently lose their tail. */
+/** Rows a table paints before it asks the reader. Past this the table paints
+ * this many rows and offers the rest behind an explicit control — a nested
+ * vertical viewport inside the list around it loses the pan gesture (see the
+ * code block below) — so the cutoff must stay above the tables a reply usually
+ * carries, or they silently lose their tail. */
 const TABLE_INLINE_ROW_LIMIT = 20;
 
 function renderInline(nodes: InlineNode[], openTarget: OpenTarget, parentKey: string): ReactNode[] {
@@ -138,19 +141,21 @@ function inlineRuns(nodes: InlineNode[]): InlineRun[] {
   return runs;
 }
 
-function InlineContent({ nodes, openTarget, textStyle, heading = false }: {
+function InlineContent({ nodes, openTarget, textStyle, heading = false, align }: {
   nodes: InlineNode[];
   openTarget: OpenTarget;
   textStyle: StyleProp<TextStyle>;
   heading?: boolean;
+  align?: "center" | "left" | "right";
 }) {
+  const alignStyle = align ? { textAlign: align } : undefined;
   return inlineRuns(nodes).map((run, index) => {
     if ("nodes" in run) return (
-      <Text key={index} selectable accessibilityRole={heading ? "header" : undefined} style={textStyle}>
+      <Text key={index} selectable accessibilityRole={heading ? "header" : undefined} style={[textStyle, alignStyle]}>
         {renderInline(run.nodes, openTarget, `run${index}`)}
       </Text>
     );
-    return <MarkdownImage key={index} alt={run.image.alt} src={run.image.src} href={run.href} openTarget={openTarget} />;
+    return <MarkdownImage key={index} alt={run.image.alt} src={run.image.src} width={run.image.width} href={run.href} openTarget={openTarget} />;
   });
 }
 
@@ -242,11 +247,22 @@ function renderBlock(
   key: string,
   isLast: boolean,
 ): ReactNode {
+  // A block's own alignment (`<p align>`, `<h3 align>` from raw HTML): text
+  // centers via `textAlign`, and a narrower-than-container image centers via the
+  // wrapper's `alignItems`. A centered block also keeps its usual bottom margin;
+  // the last block drops it.
+  const blockAlign = node.type === "paragraph" || node.type === "heading"
+    ? node.align
+    : undefined;
+  const baseMargin = isLast ? undefined : styles.blockSpacing;
+  const wrapperStyle = blockAlign === "center"
+    ? (baseMargin ? [baseMargin, { alignItems: "center" as const }] : { alignItems: "center" as const })
+    : baseMargin;
   switch (node.type) {
     case "heading":
       return (
-        <View key={key} style={isLast ? undefined : styles.blockSpacing}>
-          <InlineContent nodes={node.children} openTarget={openTarget} heading textStyle={[styles.heading, headingSizes[node.level - 1]!]} />
+        <View key={key} style={wrapperStyle}>
+          <InlineContent nodes={node.children} openTarget={openTarget} heading align={blockAlign} textStyle={[styles.heading, headingSizes[node.level - 1]!]} />
         </View>
       );
     case "code":
@@ -295,8 +311,8 @@ function renderBlock(
     }
     default:
       return (
-        <View key={key} style={isLast ? undefined : styles.blockSpacing}>
-          <InlineContent nodes={node.children} openTarget={openTarget} textStyle={styles.bodyText} />
+        <View key={key} style={wrapperStyle}>
+          <InlineContent nodes={node.children} openTarget={openTarget} align={blockAlign} textStyle={styles.bodyText} />
         </View>
       );
   }
@@ -315,31 +331,36 @@ function renderBlocks(
 function MarkdownTable({ node, openTarget }: { node: TableNode; openTarget: OpenTarget }) {
   const { t } = useTranslation();
   const [width, setWidth] = useState(0);
+  const [expanded, setExpanded] = useState(false);
   const { fontScale } = useWindowDimensions();
   const cellWidths = useMemo(() => markdownTableWidths(node, width, fontScale), [node, width, fontScale]);
-  const tableWidth = cellWidths.reduce((sum, cellWidth) => sum + cellWidth, 0);
-  const renderRow = useCallback(({ item, index }: { item: InlineNode[][]; index: number }) => (
-    <MarkdownTableRow cells={item} alignments={node.alignments} cellWidths={cellWidths} openTarget={openTarget} striped={index % 2 === 1} />
-  ), [cellWidths, node.alignments, openTarget]);
   const bounded = node.rows.length > TABLE_INLINE_ROW_LIMIT;
+  const collapsed = bounded && !expanded;
+  // Every painted row is a real row of the table, wrapped by the message list
+  // like any other block. The 360dp inner viewport this replaces put most of a
+  // long table behind a scroll region the surrounding list takes the drag for,
+  // so its tail could not be reached at all. The horizontal scroller stays —
+  // a sideways pan is not contended for, and a wide table still needs it.
+  const rows = collapsed ? node.rows.slice(0, TABLE_INLINE_ROW_LIMIT) : node.rows;
+  const label = t(collapsed ? "chat.tableRowsExpand" : "chat.tableRowsCollapse", { count: node.rows.length });
   return (
     <View style={styles.constrained} onLayout={event => setWidth(event.nativeEvent.layout.width)}>
       <ScrollView horizontal nestedScrollEnabled>
         <View style={styles.table}>
           <MarkdownTableRow cells={node.headers} alignments={node.alignments} cellWidths={cellWidths} openTarget={openTarget} header />
-          {bounded ? (
-            <FlatList data={node.rows} renderItem={renderRow} nestedScrollEnabled
-              initialNumToRender={12} maxToRenderPerBatch={12} windowSize={5}
-              style={{ height: 360, width: tableWidth }}
-              keyExtractor={(_row, index) => String(index)} />
-          ) : node.rows.map((row, rowIndex) => (
+          {rows.map((row, rowIndex) => (
             <MarkdownTableRow key={rowIndex} cells={row} alignments={node.alignments} cellWidths={cellWidths} openTarget={openTarget} striped={rowIndex % 2 === 1} />
           ))}
         </View>
       </ScrollView>
-      {/* A bounded viewport clips rows: say so, or the table looks complete. */}
+      {/* Rows held back make the table look complete: say how many it holds and
+          make the rest one tap away. The control sits outside the horizontal
+          scroller, so it stays on screen when the table is wider than the phone. */}
       {bounded ? (
-        <Text style={styles.tableRowsHint}>{t("chat.tableRowsScrolled", { count: node.rows.length })}</Text>
+        <Pressable accessibilityLabel={label} accessibilityRole="button"
+          onPress={() => setExpanded(value => !value)} style={styles.tableRowsToggle}>
+          <Text style={styles.tableRowsHint}>{label}</Text>
+        </Pressable>
       ) : null}
     </View>
   );
@@ -415,18 +436,24 @@ export function MarkdownText({ text, onOpenFile, imageBasePath, mode = "message"
   const openTarget = useCallback<OpenTarget>(rawTarget => {
     const target = classifyMarkdownTarget(rawTarget);
     if (target.kind === "local-file") {
-      if (mode === "file-preview") {
-        Alert.alert(t("attachment.title"), t("attachment.localLinkDesktopOnly"));
-      } else {
-        onOpenFile?.(target.path);
+      // In a previewed document a link is relative to that document, not to the
+      // workspace the desktop resolves chat links against. A document opened
+      // from this phone has no desktop-side directory to resolve against.
+      const path = mode === "file-preview"
+        ? resolveMarkdownPath(target.path, imageBasePath)
+        : target.path;
+      if (!path) {
+        Alert.alert(t("attachment.title"), t("attachment.localLinkUnresolvable"));
+        return;
       }
+      onOpenFile?.(path);
       return;
     }
     if (target.kind !== "external-url") return;
     void Linking.openURL(target.url).catch(() => {
       Alert.alert(t("attachment.title"), t("attachment.linkOpenFailed"));
     });
-  }, [mode, onOpenFile, t]);
+  }, [imageBasePath, mode, onOpenFile, t]);
   const renderPreviewBlock = useCallback(({ item, index }: { item: MarkdownNode; index: number }) => (
     <MarkdownBlock node={item} openTarget={openTarget} isLast={index === document.nodes.length - 1} animate={false} />
   ), [document.nodes.length, openTarget]);
@@ -556,7 +583,8 @@ const styles = StyleSheet.create({
   tableHead: { backgroundColor: colors.surfaceSubtle },
   tableBodyRow: { borderTopWidth: 1, borderTopColor: colors.lineSoft },
   tableRowZebra: { backgroundColor: colors.surfaceSubtle },
-  tableRowsHint: { paddingHorizontal: spacing.sm, paddingTop: spacing.xs, color: colors.inkMuted, fontSize: 12 },
+  tableRowsToggle: { minHeight: 44, justifyContent: "center", paddingHorizontal: spacing.sm },
+  tableRowsHint: { color: colors.accent, fontSize: 12 },
   tableCell: { paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
   th: {
     color: colors.inkStrong,

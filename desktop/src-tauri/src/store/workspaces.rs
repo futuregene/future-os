@@ -1,79 +1,45 @@
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::db::*;
 use super::records::*;
 use super::util::*;
+use future_app_workspaces as workspaces;
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceRecord {
-    pub id: String,
-    pub name: String,
-    pub kind: String,
-    pub path: String,
-    pub description: Option<String>,
-    pub pinned: bool,
-    pub cleanup_status: String,
-    pub cleanup_requested_at: Option<i64>,
-    pub cleaned_at: Option<i64>,
-    pub last_opened_at: Option<i64>,
-    pub created_at: i64,
-    pub updated_at: i64,
-    pub deleted_at: Option<i64>,
+pub use future_app_workspaces::Workspace as WorkspaceRecord;
+
+const WORKSPACE_COLUMNS: &str = workspaces::COLUMNS;
+
+/// The row mapper for the desktop-only queries in this module (chat workspaces,
+/// read-back by id). The user-workspace rules shared with the CLI live in
+/// `future-app-workspaces`.
+fn workspace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceRecord> {
+    workspaces::from_row(row)
 }
-
-sql_record!(pub(super) WORKSPACE_COLUMNS, workspace_from_row -> WorkspaceRecord {
-    id, name, kind, path, description, pinned, cleanup_status, cleanup_requested_at,
-    cleaned_at, last_opened_at, created_at, updated_at, deleted_at,
-});
 
 pub fn list_workspaces() -> Result<Vec<WorkspaceRecord>, crate::AppError> {
     let conn = connect()?;
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {WORKSPACE_COLUMNS}
-             FROM workspaces
-             WHERE deleted_at IS NULL
-             ORDER BY COALESCE(last_opened_at, updated_at) DESC"
-    ))?;
-    let rows = stmt.query_map([], workspace_from_row)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+    Ok(workspaces::list(&conn)?)
 }
 
+/// Create (or reopen) the user workspace for a directory. The rules — `~`
+/// expansion, the directory having to exist unless `create_directory` says
+/// otherwise, the name defaulting to the directory's own name, and one
+/// directory meaning one workspace however it is spelled — are
+/// `future_app_workspaces::create`, shared with `future workspace add`.
 pub fn create_workspace(input: CreateWorkspaceInput) -> Result<WorkspaceRecord, crate::AppError> {
-    let path = expand_tilde(&input.path)?;
-    if input.create_directory.unwrap_or(false) {
-        fs::create_dir_all(&path)?;
-    } else if !path.is_dir() {
-        return Err(format!(
-            "Workspace path does not exist or is not a directory: {}",
-            path.display()
-        )
-        .into());
-    }
-
-    let name = input
-        .name
-        .unwrap_or_else(|| workspace_name_from_path(&path));
-    let workspace = get_or_create_user_workspace(name, path, input.description)?;
-    mark_catalog_dirty();
-    Ok(workspace)
-}
-
-pub(super) fn get_or_create_user_workspace(
-    name: String,
-    path: PathBuf,
-    description: Option<String>,
-) -> Result<WorkspaceRecord, crate::AppError> {
     let mut conn = connect()?;
-    // BEGIN IMMEDIATE so the SELECT-then-INSERT is atomic against a concurrent
-    // create for the same path (mirrors the approvals/artifacts write paths).
-    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let workspace = get_or_create_user_workspace_in(&tx, name, path, description)?;
-    tx.commit()?;
+    let workspace = workspaces::create(
+        &mut conn,
+        &input.path,
+        input.name,
+        input.description,
+        input.create_directory.unwrap_or(false),
+        now_millis(),
+    )?;
+    // The phone's workspace snapshot is signature-based, but a create is worth
+    // marking dirty like every other workspace mutation.
+    mark_catalog_dirty();
     Ok(workspace)
 }
 
@@ -85,79 +51,34 @@ pub(super) fn get_or_create_user_workspace_in(
     path: PathBuf,
     description: Option<String>,
 ) -> Result<WorkspaceRecord, crate::AppError> {
-    if let Some(workspace) = find_user_workspace_in(conn, &path)? {
-        return Ok(workspace);
-    }
-
-    let now = now_millis();
-    let workspace_id = create_id("ws");
-    const INSERT_SQL: &str = "INSERT INTO workspaces (
-             id, name, kind, path, description, cleanup_status, last_opened_at,
-             created_at, updated_at
-         ) VALUES (?1, ?2, 'user', ?3, ?4, 'active', ?5, ?5, ?5)";
-    let args = params![
-        workspace_id,
+    Ok(workspaces::find_or_create_user(
+        conn,
         name,
-        normalize_workspace_path(&path).display().to_string(),
+        &path,
         description,
-        now
-    ];
-    conn.execute(INSERT_SQL, args)?;
-
-    loaded(get_workspace_in(conn, &workspace_id)?, "Created workspace")
+        now_millis(),
+    )?)
 }
 
-/// Resolve the user workspace for a directory, or `None` when the directory
-/// has no workspace yet. A client's spelling is never taken as identity here:
-/// see [`normalize_workspace_path`].
-pub fn find_user_workspace_by_path(
-    path: &Path,
-) -> Result<Option<WorkspaceRecord>, crate::AppError> {
-    let conn = connect()?;
-    find_user_workspace_in(&conn, path)
-}
-
-/// Connection-injecting variant of [`find_user_workspace_by_path`].
-///
-/// The stored spelling is matched first (one indexed lookup). Only when that
-/// misses are the other rows compared by their canonical path, which is how a
-/// workspace stored under an older aliasing spelling — a pre-normalization row,
-/// or one created before its directory existed — is still found instead of
-/// duplicated.
-pub(super) fn find_user_workspace_in(
-    conn: &Connection,
-    path: &Path,
-) -> Result<Option<WorkspaceRecord>, crate::AppError> {
-    let normalized = normalize_workspace_path(path);
-    let stored = conn
-        .query_row(
-            &format!(
-                "SELECT {WORKSPACE_COLUMNS}
-             FROM workspaces
-             WHERE kind = 'user' AND path = ?1 AND deleted_at IS NULL
-             LIMIT 1"
-            ),
-            params![normalized.display().to_string()],
-            workspace_from_row,
+/// File a conversation under the workspace for its session's new cwd — the rule
+/// the app applies when it sees a `cwd_changed`, for the app's own callers
+/// (`agent_bridge::reconcile_thread_workspace`) and for the CLI
+/// (`future session set <id> --cwd`), which reaches the same store directly.
+pub fn file_session_workspace(
+    session_id: &str,
+    cwd: &str,
+) -> Result<Option<workspaces::CwdFiling>, crate::AppError> {
+    let mut conn = connect()?;
+    let filing = workspaces::file_session_for_cwd(&mut conn, session_id, cwd, now_millis())?;
+    if matches!(
+        filing,
+        Some(
+            workspaces::CwdFiling::WorkspaceCreated(_) | workspaces::CwdFiling::WorkspaceReused(_)
         )
-        .optional()?;
-    if stored.is_some() {
-        return Ok(stored);
+    ) {
+        mark_catalog_dirty();
     }
-
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {WORKSPACE_COLUMNS}
-             FROM workspaces
-             WHERE kind = 'user' AND deleted_at IS NULL"
-    ))?;
-    let rows = stmt.query_map([], workspace_from_row)?;
-    for row in rows {
-        let row = row?;
-        if normalize_workspace_path(Path::new(&row.path)) == normalized {
-            return Ok(Some(row));
-        }
-    }
-    Ok(None)
+    Ok(filing)
 }
 
 pub fn get_or_create_chat_workspace(
@@ -166,22 +87,6 @@ pub fn get_or_create_chat_workspace(
 ) -> Result<WorkspaceRecord, crate::AppError> {
     let conn = connect()?;
     get_or_create_chat_workspace_in(&conn, thread_id, title)
-}
-
-/// Update a chat workspace record's path (e.g. from the initial thread-id
-/// name to the session-id name after the agent session is created).
-pub fn update_chat_workspace_path(thread_id: &str, new_path: &str) -> Result<(), crate::AppError> {
-    let conn = connect()?;
-    let old_path = chat_workspace_path(thread_id)?.display().to_string();
-    if old_path == new_path {
-        return Ok(());
-    }
-    conn.execute(
-        "UPDATE workspaces SET path = ?1, updated_at = ?2
-         WHERE path = ?3 AND kind = 'temporary'",
-        rusqlite::params![new_path, super::util::now_millis(), old_path,],
-    )?;
-    Ok(())
 }
 
 /// Connection-injecting variant so a composite write (e.g. `create_thread`) can
@@ -733,12 +638,14 @@ mod tests {
         )
         .expect("re-spell the stored path");
         drop(conn);
+        let conn = connect().expect("connect");
         assert_eq!(
-            find_user_workspace_by_path(&real)
+            future_app_workspaces::find_user_by_path(&conn, &real)
                 .expect("find")
                 .map(|workspace| workspace.id),
             Some(created.id)
         );
+        drop(conn);
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -763,10 +670,15 @@ mod tests {
         .expect("create");
         // Stored canonicalized: `~` expands to HOME, and a HOME sitting behind
         // a symlink (macOS `/var` → `/private/var`) is stored as resolved so
-        // every client's spelling maps to this one workspace.
-        assert_eq!(
-            created.path,
-            dir.canonicalize().unwrap().display().to_string()
+        // every client's spelling maps to this one workspace. The stored form
+        // is the ordinary spelling, never Windows' `\\?\` extended-length one
+        // (a workspace path is handed to shells and to the UI).
+        let canonical = crate::store::strip_verbatim_prefix(dir.canonicalize().unwrap());
+        assert_eq!(created.path, canonical.display().to_string());
+        assert!(
+            !created.path.starts_with(r"\\?\"),
+            "a stored workspace path must not keep the verbatim prefix: {}",
+            created.path
         );
         drop(home);
     }
@@ -791,13 +703,52 @@ mod tests {
         let titled =
             get_or_create_chat_workspace("thread_y", Some("Poem".to_string())).expect("titled");
         assert_eq!(titled.name, "Poem Workspace");
+    }
 
-        // Path update: same path is a no-op; a new path rewrites the row.
-        let current = created.path.clone();
-        update_chat_workspace_path("thread_x", &current).expect("no-op update");
-        update_chat_workspace_path("thread_x", "/tmp/renamed-chat").expect("update");
-        let moved = get_workspace(&created.id).expect("get").expect("some");
-        assert_eq!(moved.path, "/tmp/renamed-chat");
+    /// A chat conversation's cwd lands on its own temporary workspace (the
+    /// scratch directory is not a project), and the workspace's stored path
+    /// follows it — the desktop half of the `cwd_changed` filing.
+    #[test]
+    fn filing_a_chat_session_moves_its_temporary_workspace() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("ws_file_chat");
+        let conn = connect().expect("connect");
+        apply_schema(&conn).expect("apply schema");
+        drop(conn);
+
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Chat".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("sess-chat".to_string()),
+        })
+        .expect("chat thread");
+        let before = get_workspace(&thread.workspace_id)
+            .expect("get")
+            .expect("exists");
+        assert_eq!(before.kind, "temporary");
+
+        // The agent reports the session-named scratch directory.
+        let moved_path = crate::store::chat_workspace_path("sess-chat").expect("chat path");
+        assert_eq!(
+            file_session_workspace("sess-chat", &moved_path.display().to_string())
+                .expect("file")
+                .expect("a filing"),
+            workspaces::CwdFiling::ChatWorkspaceUpdated
+        );
+        let after = get_workspace(&thread.workspace_id)
+            .expect("get")
+            .expect("exists");
+        assert_eq!(after.path, moved_path.display().to_string());
+        assert_eq!(after.kind, "temporary");
+        assert!(
+            list_workspaces()
+                .expect("list")
+                .iter()
+                .all(|workspace| workspace.kind != "user"),
+            "a scratch directory must not become a user workspace"
+        );
     }
 
     #[test]
@@ -864,5 +815,167 @@ mod tests {
 
         assert_eq!(purge_soft_deleted_workspaces().expect("purge"), 1);
         assert!(get_workspace("ws_dead").expect("get").is_none());
+    }
+
+    /// A workspace `future workspace add` wrote — the CLI creates the database
+    /// and the table without the app having run — must be a workspace the
+    /// desktop can read: listed in the sidebar, found by path, and surviving the
+    /// app's own schema pass when it starts.
+    #[test]
+    fn a_workspace_written_by_the_cli_is_readable_by_the_desktop() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("ws_cli_row");
+        let dir = std::env::temp_dir().join(format!("futureos-cli-ws-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create the directory the CLI would point at");
+
+        // What `future workspace add` does: make the app directory, open the
+        // database (the app has never created it), create the table, insert.
+        {
+            let database = db_path().expect("app db path");
+            std::fs::create_dir_all(database.parent().expect("app dir")).expect("create app dir");
+            let mut conn = Connection::open(database).expect("open");
+            future_app_workspaces::ensure_table(&conn).expect("create the table");
+            future_app_workspaces::create(
+                &mut conn,
+                &dir.display().to_string(),
+                Some("From CLI".to_string()),
+                None,
+                false,
+                1,
+            )
+            .expect("create");
+        }
+
+        let listed = list_workspaces().expect("the desktop lists the CLI's row");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "From CLI");
+        assert_eq!(listed[0].kind, "user");
+        let conn = connect().expect("connect");
+        let found = future_app_workspaces::find_user_by_path(&conn, &dir)
+            .expect("find")
+            .expect("the desktop finds the CLI's workspace by path");
+        assert_eq!(found.id, listed[0].id);
+        drop(conn);
+
+        // The app's startup schema pass runs over whatever is there.
+        let conn = connect().expect("connect");
+        apply_schema(&conn).expect("apply the desktop schema over the CLI's database");
+        drop(conn);
+        assert_eq!(list_workspaces().expect("list").len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The CLI creates this table itself when the desktop app has never run
+    /// (`future_app_workspaces::ensure_table`), and the desktop creates it from
+    /// its own migrations. The two must describe the same table, or a
+    /// CLI-created database would decode (or fail to decode) differently once
+    /// the app opens it.
+    #[test]
+    fn the_shared_table_matches_the_desktop_schema() {
+        fn columns(conn: &Connection) -> Vec<String> {
+            let mut statement = conn
+                .prepare("PRAGMA table_info(workspaces)")
+                .expect("read table info");
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                })
+                .expect("query table info");
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .expect("collect columns")
+                .into_iter()
+                .map(|(name, kind, not_null, default)| {
+                    format!("{name} {kind} notnull={not_null} default={default:?}")
+                })
+                .collect()
+        }
+
+        let desktop = test_conn();
+        let shared = Connection::open_in_memory().expect("open in-memory database");
+        future_app_workspaces::ensure_table(&shared).expect("shared schema");
+
+        assert_eq!(
+            columns(&desktop),
+            columns(&shared),
+            "future-app-workspaces must create the table the desktop migrates"
+        );
+    }
+
+    /// A conversation's cwd change files it under the workspace for the
+    /// directory — the desktop-side half of what the app does when it observes a
+    /// `cwd_changed`, reachable without a bridge so the CLI can do it too.
+    #[test]
+    fn filing_a_session_files_the_thread_and_marks_the_catalogue() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("ws_file_session");
+        let conn = connect().expect("connect");
+        apply_schema(&conn).expect("apply schema");
+        drop(conn);
+
+        // An imported conversation: a thread bound to the agent session.
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("New".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("sess-file".to_string()),
+        })
+        .expect("thread");
+        crate::store::take_catalog_dirty();
+
+        let directory = tempfile::tempdir().expect("directory");
+        let filing = file_session_workspace("sess-file", &directory.path().display().to_string())
+            .expect("file")
+            .expect("a filing");
+        let workspaces::CwdFiling::WorkspaceCreated(workspace_id) = filing else {
+            panic!("expected a created workspace, got {filing:?}");
+        };
+        assert!(
+            crate::store::take_catalog_dirty(),
+            "a filing is a workspace change the phone's catalogue must learn about"
+        );
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("get")
+                .expect("exists")
+                .workspace_id,
+            workspace_id
+        );
+
+        // A session the desktop has never imported has nothing to file.
+        assert_eq!(
+            file_session_workspace("sess-ghost", &directory.path().display().to_string())
+                .expect("file"),
+            Some(workspaces::CwdFiling::NotImported)
+        );
+    }
+
+    /// The desktop's own workspace reads are `future-app-workspaces`: a row
+    /// stored under an older spelling of the same directory resolves to its
+    /// workspace instead of a duplicate, and the app sees the row the CLI wrote
+    /// (`a_workspace_written_by_the_cli_is_readable_by_the_desktop` above).
+    #[test]
+    fn an_aliased_spelling_resolves_to_its_workspace() {
+        let conn = test_conn();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let canonical = dir.path().canonicalize().expect("canonicalize");
+        let aliased = format!("{}{}", canonical.display(), std::path::MAIN_SEPARATOR);
+        conn.execute(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws-alias', 'W', 'user', ?1, 1, 1)",
+            rusqlite::params![aliased],
+        )
+        .expect("seed aliased workspace");
+
+        let found = future_app_workspaces::find_user_by_path(&conn, &canonical)
+            .expect("query")
+            .expect("an aliased spelling must resolve to its workspace");
+        assert_eq!(found.id, "ws-alias");
+        assert_eq!(found.path, aliased);
     }
 }

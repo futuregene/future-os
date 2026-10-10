@@ -3,6 +3,7 @@
 mod agent;
 
 use std::io::{IsTerminal, Write};
+use std::process::Stdio;
 use std::time::Duration;
 
 use crate::{future_login, remote, AppError};
@@ -103,12 +104,19 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
     let platform = crate::future_platform::current_platform_url();
     eprintln!("Platform login authorized ({platform}).");
     // Fresh servers have no WebView to trigger the usual initial model sync.
-    if let Err(error) = crate::agent_bridge::sync_future_models().await {
+    // Through the scheduler so the automatic loop shares this run's clock, the
+    // same way the window's `sync_future_models` command does.
+    if let Err(error) = crate::scheduler::refresh_future_models_now().await {
         eprintln!(
             "Model catalog refresh failed; existing configured models remain available: {error}"
         );
     }
-
+    // The window's fixed-interval maintenance (app updates and the balance
+    // event need a WebView; see `scheduler::start_headless`).
+    crate::scheduler::start_headless();
+    // Built-in skills are installed by the window's post-login onboarding. A
+    // server never renders that flow, so it runs the same CLI step itself.
+    tokio::spawn(bootstrap_builtin_skills());
     if options.re_pair {
         require_terminal()?;
         eprintln!("Revoking the saved phone pairing (--re-pair).");
@@ -123,6 +131,10 @@ async fn session(options: &Options, agent: &mut agent::Agent) -> Result<(), AppE
     crate::agent_bridge::spawn_session_discovery();
     crate::agent_bridge::spawn_delete_outbox_worker();
     crate::agent_bridge::spawn_active_run_watchdog();
+    // User-defined tasks run here too: headless desktop has no webview, so the
+    // executor's notifications downgrade to ledger-only (the run rows are the
+    // signal). This is what lets a server box run tasks with no GUI attached.
+    crate::tasks::start_headless();
     tokio::spawn(async {
         crate::agent_bridge::reconcile_interrupted_runs().await;
         crate::agent_bridge::reconcile_pending_approvals().await;
@@ -199,6 +211,58 @@ fn require_terminal() -> Result<(), AppError> {
     } else {
         Err("Login/pairing requires an interactive terminal. Run `futureos-headless` as the same user first; authorization links are not written to redirected logs.".into())
     }
+}
+
+/// Install the platform's built-in skills the way the window's post-login
+/// onboarding does: `future init`, which is idempotent and needs no login. The
+/// window spawns the bundled CLI through the Tauri shell plugin; the server has
+/// no plugin, so the same CLI is spawned directly — and only after the Agent,
+/// because the install writes the Agent's own skill database.
+///
+/// Best-effort by the same contract as the window's step: a missing CLI or a
+/// failed install is reported and then ignored. The phone can still install
+/// skills from its own Skills page, and the catalog fetch behind `future init`
+/// is a network call this foreground process must not stall on.
+async fn bootstrap_builtin_skills() {
+    let executable = match agent::find_sidecar() {
+        Ok(executable) => executable,
+        Err(error) => {
+            eprintln!("Skipping built-in skill setup: {error}");
+            return;
+        }
+    };
+    let output = tokio::process::Command::new(&executable)
+        .arg("init")
+        .stdin(Stdio::null())
+        .output()
+        .await;
+    let output = match output {
+        Ok(output) => output,
+        Err(error) => {
+            eprintln!("Could not run {} init: {error}", executable.display());
+            return;
+        }
+    };
+    // Both streams go to stderr with the window's `[skills]` prefix: stdout is
+    // reserved for the authorization and pairing material this entry point
+    // prints when it is attached to a terminal.
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        eprintln!("[skills] {line}");
+    }
+    for line in String::from_utf8_lossy(&output.stderr).lines() {
+        eprintln!("[skills] {line}");
+    }
+    if !output.status.success() {
+        eprintln!(
+            "FutureOS: skill bootstrap did not complete ({}).",
+            output.status
+        );
+    }
+    // The Agent caches skill discovery for prompt-time injection. The window
+    // refreshes that cache on startup, so a server that just gained built-ins
+    // must give the Agent the same signal or a run started from the phone would
+    // not be offered them until the next restart.
+    crate::agent_bridge::refresh_skills().await;
 }
 
 async fn ensure_login(options: &Options) -> Result<(), AppError> {
@@ -633,6 +697,7 @@ mod tests {
     #[test]
     fn invitation_contains_all_mobile_identity_fields_and_is_ready_only() {
         let mut status = remote::RemoteStatus {
+            client: None,
             phase: remote::RemotePhase::Ready,
             reason: None,
             recovery: None,

@@ -168,27 +168,17 @@ pub fn restore_thread(thread_id: String) -> Result<store::ThreadRecord, crate::A
 pub async fn delete_thread(
     input: store::DeleteThreadInput,
 ) -> Result<store::ThreadRecord, crate::AppError> {
-    let thread = store::get_thread(&input.thread_id)?
-        .ok_or_else(|| "Thread could not be loaded.".to_string())?;
-    // Shells opened from this conversation are children of the app and must not
-    // outlive their conversation: closing them here means a deleted thread can
-    // never leave an orphaned terminal pointable at a removed directory.
-    close_thread_terminals(&input.thread_id);
-    let session_id = thread.agent_session_id.as_deref().unwrap_or(&thread.id);
-    stop_active_session_before_delete(session_id).await?;
-    let thread = store::delete_thread_with_files(&input.thread_id, input.delete_files)?;
-    if store::is_agent_session_tombstoned(session_id)? {
-        agent_bridge::drop_observer(session_id);
-    }
-    crate::agent_bridge::reconcile_delete_outbox().await;
-    Ok(thread)
+    // The same sequence the tasks host runs when a task deletes the conversation
+    // it just used: see `crate::conversations`.
+    crate::conversations::delete_conversation(&input.thread_id, input.delete_files).await
 }
 
-/// Batch-delete multiple threads. For each thread, the DB row + children are
-/// hard-deleted and the agent session JSONL is removed. For chat-mode threads
-/// with `delete_files`, the temporary workspace directory on disk is also
-/// removed. Workspace-mode threads are never touched on disk regardless of
-/// `delete_files`. Returns a summary of deleted count and failures.
+/// Batch-delete multiple threads. For each thread, the thread and its
+/// descendants are hard-deleted and their agent session JSONL is removed. For
+/// chat-mode threads with `delete_files`, the temporary workspace directory on
+/// disk is also removed. Workspace-mode threads are never touched on disk
+/// regardless of `delete_files`. Returns a summary of deleted count and
+/// failures.
 #[tauri::command]
 pub async fn batch_delete_threads(
     input: store::BatchDeleteThreadsInput,
@@ -197,45 +187,39 @@ pub async fn batch_delete_threads(
         deleted_count: 0,
         failed: Vec::new(),
     };
+    let mut prepared = Vec::new();
+    let mut stopped = std::collections::HashSet::new();
     for thread_id in &input.thread_ids {
-        close_thread_terminals(thread_id);
-        let deleted = async {
-            let thread = store::get_thread(thread_id)?.ok_or_else(|| {
-                crate::AppError::Message("Thread could not be loaded.".to_string())
-            })?;
-            let session_id = thread.agent_session_id.as_deref().unwrap_or(&thread.id);
-            stop_active_session_before_delete(session_id).await?;
-            store::delete_thread_with_files(thread_id, input.delete_files)
+        let targets = match store::thread_delete_closure(thread_id) {
+            Ok(targets) => targets,
+            Err(error) => {
+                result.failed.push(format!("{thread_id}: {error}"));
+                continue;
+            }
+        };
+        let ready = async {
+            for target in &targets {
+                close_thread_terminals(&target.id);
+                let session_id = crate::conversations::thread_session_id(target);
+                if !stopped.contains(session_id) {
+                    crate::conversations::stop_active_session_before_delete(session_id).await?;
+                    stopped.insert(session_id.to_owned());
+                }
+            }
+            Ok::<_, crate::AppError>(())
         }
         .await;
-        match deleted {
-            Ok(_) => result.deleted_count += 1,
+        match ready {
+            Ok(()) => prepared.push(thread_id.clone()),
             Err(error) => result.failed.push(format!("{thread_id}: {error}")),
         }
     }
+    let local = store::delete_thread_trees(&prepared, input.delete_files)?;
+    result.deleted_count += local.deleted_count;
+    result.failed.extend(local.failed);
     crate::agent_bridge::reconcile_delete_outbox().await;
 
     Ok(result)
-}
-
-/// Stop and confirm any active Agent execution before its thread row or files
-/// are removed. Inactive sessions avoid an unnecessary Agent round trip.
-async fn stop_active_session_before_delete(session_id: &str) -> Result<(), crate::AppError> {
-    if !store::active_run_sessions()?
-        .iter()
-        .any(|active| active == session_id)
-    {
-        return Ok(());
-    }
-    agent_bridge::abort_session(session_id).await?;
-    if !agent_bridge::wait_for_agent_idle(session_id).await {
-        return Err(
-            "Future Agent did not confirm that the session stopped; deletion was cancelled."
-                .to_string()
-                .into(),
-        );
-    }
-    Ok(())
 }
 
 /// Close every terminal tab a conversation owns. Called from the deletion
@@ -816,7 +800,7 @@ mod tests {
         // The agent never acknowledges the delete, so the tombstone row
         // survives and the observer-drop arm runs.
         script_mock_agent(MockScript {
-            transport_fail: ["delete_session".to_string()].into_iter().collect(),
+            transport_fail: ["delete_sessions".to_string()].into_iter().collect(),
             ..Default::default()
         });
         let deleted = delete_thread(store::DeleteThreadInput {
@@ -1034,7 +1018,6 @@ mod tests {
         let thread = make_thread(&_home, Some("sess_del"));
         crate::commands::agent_mock::ensure_mock_agent();
         script_mock_agent(MockScript {
-            data: HashMap::from([("delete_session".to_string(), "{}".to_string())]),
             ..Default::default()
         });
         let deleted = delete_thread(store::DeleteThreadInput {
@@ -1062,13 +1045,10 @@ mod tests {
         .expect("active run");
         let agent = crate::commands::agent_mock::ensure_mock_agent();
         script_mock_agent(MockScript {
-            data: HashMap::from([
-                ("delete_session".to_string(), "{}".to_string()),
-                (
-                    "get_state".to_string(),
-                    crate::agent_bridge::get_state_payload("sess_active_delete", false).to_string(),
-                ),
-            ]),
+            data: HashMap::from([(
+                "get_state".to_string(),
+                crate::agent_bridge::get_state_payload("sess_active_delete", false).to_string(),
+            )]),
             ..Default::default()
         });
         let request_offset = agent.requests().len();
@@ -1092,7 +1072,7 @@ mod tests {
             .unwrap();
         let delete = commands
             .iter()
-            .position(|command| command == "delete_session")
+            .position(|command| command == "delete_sessions")
             .unwrap();
         assert!(abort < delete, "{commands:?}");
         script_mock_agent(MockScript::default());
@@ -1113,6 +1093,57 @@ mod tests {
         .expect("batch delete");
         assert_eq!(result.deleted_count, 1);
         assert_eq!(result.failed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn delete_thread_takes_its_descendants_with_it() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_delete_cascade");
+        let parent = make_thread(&_home, Some("sess_gui_parent"));
+        let child = make_thread(&_home, Some("sess_gui_child"));
+        store::sync_thread_parent_session("sess_gui_child", "sess_gui_parent").expect("lineage");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            ..Default::default()
+        });
+
+        delete_thread(store::DeleteThreadInput {
+            thread_id: parent.id.clone(),
+            delete_files: false,
+        })
+        .await
+        .expect("delete parent");
+
+        assert!(store::get_thread(&parent.id).expect("get").is_none());
+        assert!(store::get_thread(&child.id).expect("get").is_none());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn batch_delete_does_not_report_a_cascaded_child_as_a_failure() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_batch_cascade");
+        let parent = make_thread(&_home, Some("sess_batch_parent"));
+        let child = make_thread(&_home, Some("sess_batch_child"));
+        store::sync_thread_parent_session("sess_batch_child", "sess_batch_parent")
+            .expect("lineage");
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            ..Default::default()
+        });
+
+        // The user selected both the parent and its child.
+        let result = batch_delete_threads(store::BatchDeleteThreadsInput {
+            thread_ids: vec![parent.id.clone(), child.id.clone()],
+            delete_files: false,
+        })
+        .await
+        .expect("batch delete");
+
+        assert!(result.failed.is_empty(), "{:?}", result.failed);
+        assert_eq!(result.deleted_count, 2, "both selections are gone");
+        assert!(store::get_thread(&child.id).expect("get").is_none());
+        script_mock_agent(MockScript::default());
     }
 
     #[tokio::test]
@@ -1259,6 +1290,30 @@ mod tests {
         script_mock_agent(MockScript::default());
     }
 
+    /// A conversation that has never been prompted has no agent session yet, so
+    /// there is nothing to page through: the command answers an **empty page**
+    /// without calling the agent at all. The distinction from the sibling test
+    /// (`…treats_a_vanished_session_as_an_empty_page`) is the shape of the
+    /// answer, not the shape of the failure — this arm must not depend on the
+    /// agent being reachable, which is why the mock is left unreachable here.
+    #[tokio::test]
+    async fn get_session_entries_page_is_empty_for_a_thread_without_a_session() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_entries_page_nosession");
+        let thread = make_thread(&_home, None);
+        crate::commands::agent_mock::ensure_mock_agent();
+        // Nothing is scripted. If this arm called the agent, the default mock
+        // answer would not produce this payload, so the assertions below would
+        // fail rather than pass by accident.
+        let page = get_session_entries_page(thread.id.clone(), None, 10)
+            .await
+            .expect("a session-less thread is an empty page");
+        assert_eq!(page["entries"], serde_json::json!([]));
+        assert_eq!(page["hasMore"], serde_json::json!(false));
+        assert_eq!(page["nextOffset"], serde_json::json!(0));
+        script_mock_agent(MockScript::default());
+    }
+
     #[tokio::test]
     async fn update_thread_thinking_level_with_blank_level_skips_the_agent() {
         let _lock = mock_agent_lock();
@@ -1304,6 +1359,76 @@ mod tests {
         });
         let err = get_thread_agent_state(thread.id.clone()).await.unwrap_err();
         assert!(!err.to_string().is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn get_thread_agent_state_errors_when_the_typed_payload_is_null() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_agent_state_null");
+        let thread = make_thread(&_home, Some("sess_state_null"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        // `success = true` with a null payload: the reply is well-formed at the
+        // RPC level but carries no state. A client that treated that as "no
+        // state" would render an empty panel; it is an error instead, because
+        // `get_state` always answers with an object.
+        script_mock_agent(MockScript {
+            data: HashMap::from([("get_state".to_string(), "null".to_string())]),
+            ..Default::default()
+        });
+        let error = get_thread_agent_state(thread.id.clone())
+            .await
+            .expect_err("a null typed payload must not be mistaken for state");
+        assert!(
+            error.to_string().contains("typed payload"),
+            "the error must name the payload as the problem: {error}"
+        );
+        script_mock_agent(MockScript::default());
+    }
+
+    /// A session the agent no longer knows about is an **empty page**, not an
+    /// error: the conversation row outlives its agent session (the session can
+    /// be reaped while the desktop is closed), and a client that surfaced that
+    /// as a failure would show a toast for a thread whose history is simply
+    /// gone. The distinction matters because the alternative arm right below it
+    /// (`result => result`) propagates every *other* agent error.
+    #[tokio::test]
+    async fn get_session_entries_page_treats_a_vanished_session_as_an_empty_page() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_entries_page_gone");
+        let thread = make_thread(&_home, Some("sess_entries_gone"));
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([(
+                "get_session_entries".to_string(),
+                "session not found".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let page = get_session_entries_page(thread.id.clone(), None, 10)
+            .await
+            .expect("a vanished session is an empty page, not a failure");
+        assert_eq!(page["entries"], serde_json::json!([]));
+        assert_eq!(page["hasMore"], serde_json::json!(false));
+        assert_eq!(page["nextOffset"], serde_json::json!(0));
+
+        // The sibling arm: any other rejection is still an error, so the
+        // empty-page answer above cannot be the accidental result of the
+        // command failing for an unrelated reason.
+        script_mock_agent(MockScript {
+            errors: HashMap::from([(
+                "get_session_entries".to_string(),
+                "disk exploded".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let error = get_session_entries_page(thread.id.clone(), None, 10)
+            .await
+            .expect_err("an unrelated agent failure must propagate");
+        assert!(
+            error.to_string().contains("disk exploded"),
+            "the agent's own message must survive: {error}"
+        );
         script_mock_agent(MockScript::default());
     }
 
@@ -1382,6 +1507,54 @@ mod tests {
             .await
             .expect("missing session is a benign empty history");
         assert_eq!(value["entries"], serde_json::json!([]));
+        script_mock_agent(MockScript::default());
+    }
+
+    /// The deletion is *cancelled*, not merely reported, when the agent will not
+    /// confirm that the session stopped. That is the whole point of the guard:
+    /// deleting the row while a run is still writing would orphan the JSONL the
+    /// agent is appending to, and the transcript would come back corrupted on
+    /// the next launch. The last assertion is what makes this a cancellation
+    /// claim rather than an error-path claim.
+    #[tokio::test]
+    async fn deleting_a_thread_is_cancelled_when_the_agent_will_not_confirm_the_stop() {
+        let _lock = mock_agent_lock();
+        let _home = init("cmd_delete_unconfirmed");
+        let thread = make_thread(&_home, Some("sess_delete_unconf"));
+        // A live run is what makes the session active, so the delete path takes
+        // the abort-then-confirm branch instead of the no-op one.
+        crate::store::create_run(store::CreateRunInput {
+            id: Some("run_unconfirmed".into()),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create run");
+        crate::commands::agent_mock::ensure_mock_agent();
+        // `abort_session` is accepted (the default mock answer), but `get_state`
+        // never decodes into a state, so the agent never confirms idle.
+        script_mock_agent(MockScript {
+            data: HashMap::from([("get_state".to_string(), "null".to_string())]),
+            ..Default::default()
+        });
+
+        let error = delete_thread(store::DeleteThreadInput {
+            thread_id: thread.id.clone(),
+            delete_files: false,
+        })
+        .await
+        .expect_err("an unconfirmed stop must refuse the deletion");
+        assert!(
+            error.to_string().contains("did not confirm"),
+            "the refusal must say the agent did not confirm: {error}"
+        );
+        assert!(
+            crate::store::get_thread(&thread.id)
+                .expect("lookup")
+                .is_some(),
+            "the cancellation must leave the conversation row in place"
+        );
         script_mock_agent(MockScript::default());
     }
 

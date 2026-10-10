@@ -716,6 +716,202 @@ mod runtime_tests {
         stop();
     }
 
+    /// The live lane's half of the lean feed. The unit tests pin the rewrite
+    /// rules; this pins that `publish_event` actually consults the declared
+    /// flag, drops the content events before they reach the queue, and forwards
+    /// a tool result the client can still read an outcome from.
+    ///
+    /// `HomeGuard` holds `TEST_HOME_LOCK`, so no sibling test can publish while
+    /// the process-wide flag is flipped.
+    #[tokio::test]
+    async fn lean_lane_drops_streamed_content_and_keeps_the_tool_outcome() {
+        let _home = HomeGuard::new("remote-lean");
+        let nats = FakeNats::start().await;
+        install_state(fake_state(&nats, "pair_lean").await);
+        let mut tap = nats.tap();
+
+        crate::remote_host::lean::set_enabled(true);
+        publish_event(
+            "sess-lean",
+            "thinking_delta",
+            r#"{"text":"long reasoning","block_id":"b"}"#,
+            "r",
+            1,
+            0,
+            "e1",
+            "",
+            -1,
+            0,
+        );
+        publish_event(
+            "sess-lean",
+            "tool_delta",
+            r#"{"text":"{\"path\"","tool_id":"c1"}"#,
+            "r",
+            2,
+            0,
+            "e2",
+            "",
+            -1,
+            0,
+        );
+        publish_event(
+            "sess-lean",
+            "tool_start",
+            r#"{"tool_args":{"command":"ls -la"}}"#,
+            "r",
+            3,
+            0,
+            "e3",
+            "",
+            -1,
+            0,
+        );
+        publish_event(
+            "sess-lean",
+            "tool_end",
+            r#"{"text":"boom\n[exit: 3]","exit_code":3,"tool_id":"c1"}"#,
+            "r",
+            4,
+            0,
+            "e4",
+            "",
+            -1,
+            0,
+        );
+        // The argument-less `input` phase never reaches the lane either.
+        publish_event(
+            "sess-lean",
+            "tool_start",
+            r#"{"phase":"input","tool_name":"read","tool_id":"c2","tool_args":""}"#,
+            "r",
+            5,
+            0,
+            "e5",
+            "",
+            -1,
+            0,
+        );
+        crate::remote_host::lean::set_enabled(false);
+
+        // The first thing on the lane is the tool start, not the reasoning that
+        // was published before it.
+        let first = await_publish(
+            &mut tap,
+            "p.pair_lean.evt.sess-lean",
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(first.json()["type"], json!("tool_start"));
+        assert_eq!(first.json()["idx"], json!(3));
+
+        let second = await_publish(
+            &mut tap,
+            "p.pair_lean.evt.sess-lean",
+            Duration::from_secs(5),
+        )
+        .await;
+        let body = second.json();
+        assert_eq!(body["type"], json!("tool_end"));
+        assert_eq!(body["idx"], json!(4));
+        let data: serde_json::Value =
+            serde_json::from_str(body["data"].as_str().expect("data is a string")).unwrap();
+        assert!(data.get("text").is_none(), "captured output is dropped");
+        assert_eq!(data["exit_code"], json!(3), "outcome survives");
+        assert_eq!(data["tool_id"], json!("c1"), "identity survives");
+
+        // The envelope is trimmed to the keys a subscriber reads. `eventId` is
+        // the largest of the dropped ones (~96 B: `{session}:{run}:{epoch}:{idx}`).
+        assert_eq!(body["runId"], json!("r"));
+        assert_eq!(body["eventId"], json!(null), "eventId is dropped");
+        assert_eq!(body["sessionId"], json!(null), "sessionId is dropped");
+        assert_eq!(body["timestamp"], json!(null), "timestamp is dropped");
+        assert_eq!(body["schemaVersion"], json!(null));
+        assert_eq!(body["epoch"], json!(null));
+        assert_eq!(body["sessionIdx"], json!(null));
+        assert_eq!(body["runSequence"], json!(null));
+        assert!(body["data"].is_string(), "the payload itself stays");
+
+        // Nothing trails the dropped events onto the lane.
+        super::test_support::assert_no_publish(
+            &mut tap,
+            "p.pair_lean.evt.sess-lean",
+            Duration::from_millis(200),
+        )
+        .await;
+
+        stop();
+    }
+
+    /// The same events, with no declaration: the lane keeps its legacy shape, so
+    /// an older client on this desktop is served exactly what it was before.
+    #[tokio::test]
+    async fn a_client_that_did_not_declare_keeps_the_full_lane() {
+        let _home = HomeGuard::new("remote-lean-legacy");
+        let nats = FakeNats::start().await;
+        install_state(fake_state(&nats, "pair_legacy").await);
+        let mut tap = nats.tap();
+
+        publish_event(
+            "sess-legacy",
+            "thinking_delta",
+            r#"{"text":"kept"}"#,
+            "r",
+            1,
+            0,
+            "e1",
+            "",
+            -1,
+            0,
+        );
+        publish_event(
+            "sess-legacy",
+            "tool_end",
+            r#"{"text":"boom\n[exit: 3]"}"#,
+            "r",
+            2,
+            0,
+            "e2",
+            "",
+            -1,
+            0,
+        );
+
+        let first = await_publish(
+            &mut tap,
+            "p.pair_legacy.evt.sess-legacy",
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(first.json()["type"], json!("thinking_delta"));
+        let second = await_publish(
+            &mut tap,
+            "p.pair_legacy.evt.sess-legacy",
+            Duration::from_secs(5),
+        )
+        .await;
+        let body = second.json();
+        assert_eq!(body["type"], json!("tool_end"));
+        let data: serde_json::Value = serde_json::from_str(body["data"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            data["text"],
+            json!("boom\n[exit: 3]"),
+            "the legacy lane must keep the footer the client parses"
+        );
+
+        // And the envelope keeps every legacy key: a client that did not declare
+        // lean is served the byte-identical body it always was.
+        assert_eq!(body["sessionId"], json!("sess-legacy"));
+        assert_eq!(body["eventId"], json!("e2"));
+        assert_eq!(body["schemaVersion"], json!(2));
+        assert_eq!(body["sessionIdx"], json!(-1));
+        assert_eq!(body["runSequence"], json!(0));
+        assert!(body.get("timestamp").is_some(), "timestamp survives");
+        assert!(body.get("epoch").is_some(), "epoch survives");
+
+        stop();
+    }
+
     #[tokio::test]
     async fn publish_event_reports_offline_and_full_queue_drops() {
         let _home = HomeGuard::new("remote-drops");
@@ -979,6 +1175,76 @@ mod runtime_tests {
         assert!(!health.is_terminal());
     }
 
+    /// The platform hands out the SAME `pair_id` again when a desktop that is
+    /// already known asks for a second invitation, and any generation rebuild
+    /// before the phone pairs re-runs `establish()` — which mints a fresh
+    /// invitation (new NKey, new secure identity, new PSK) because the first
+    /// one was never confirmed. The QR the desktop displays must always be the
+    /// invitation the running bridge can authenticate: scanning it is the only
+    /// pairing path the user has.
+    #[tokio::test]
+    async fn a_reissued_pair_code_for_the_same_pair_id_still_pairs() {
+        let _home = HomeGuard::new("remote-reissue");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let pair_id = format!("pair_{}", unique("reissue"));
+        platform.respond_pair_code_for(&pair_id, nats.url());
+
+        let first = start(RemoteStartInput {}).await.expect("first start");
+        assert!(matches!(first.phase, RemotePhase::Ready));
+        assert_eq!(first.pair_id, pair_id);
+        assert!(first.pairing_code.is_some());
+
+        // Nobody scanned the first invitation; the bridge is rebuilt (the
+        // supervisor's `GenerationWatch` does exactly this, via
+        // `spawn_runtime_reconnect`) and mints a replacement for the same pair.
+        let second_code = platform.respond_pair_code_for(&pair_id, nats.url());
+        let second = super::start_once(true).await.expect("rebuilt generation");
+        assert!(matches!(second.phase, RemotePhase::Ready));
+        assert_eq!(second.pair_id, pair_id);
+        let shown = second.pairing_code.clone().expect("an invitation is shown");
+        assert!(
+            shown.contains(&second_code),
+            "the desktop must display the invitation it just minted: {shown}"
+        );
+
+        // The phone scans exactly what the desktop is showing.
+        let mobile = nats_connect(&nats).await;
+        let _channel = super::test_support::secure_pair(&mobile, &shown, &second.pair_id).await;
+
+        stop();
+        wait_for_web_port_free().await;
+    }
+
+    /// Control for the test above: when the rebuild gets a NEW pair_id the
+    /// identity is rebuilt with it, so the displayed invitation pairs. This
+    /// isolates "the same pair_id came back" as the trigger.
+    #[tokio::test]
+    async fn a_reissued_pair_code_for_a_new_pair_id_still_pairs() {
+        let _home = HomeGuard::new("remote-reissue-new-pair");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        platform.respond_pair_code(nats.url());
+
+        let first = start(RemoteStartInput {}).await.expect("first start");
+        assert!(matches!(first.phase, RemotePhase::Ready));
+
+        platform.respond_pair_code(nats.url());
+        let second = super::start_once(true).await.expect("rebuilt generation");
+        assert!(matches!(second.phase, RemotePhase::Ready));
+        let shown = second.pairing_code.clone().expect("an invitation is shown");
+
+        let mobile = nats_connect(&nats).await;
+        let _channel = super::test_support::secure_pair(&mobile, &shown, &second.pair_id).await;
+
+        stop();
+        wait_for_web_port_free().await;
+    }
+
     #[tokio::test]
     async fn start_runs_the_full_bridge_and_stop_winds_it_down() {
         let _home = HomeGuard::new("remote-start");
@@ -1035,6 +1301,24 @@ mod runtime_tests {
             serde_json::from_slice(&channel.open(&reply_context, &reply.payload).unwrap()).unwrap();
         assert_eq!(reply["success"], true);
         // The presence heartbeat and both catalog snapshots now flow encrypted.
+        //
+        // Read the snapshots first. Each is published exactly once, on the tick
+        // that detects it (there is no periodic re-send any more), while the
+        // heartbeat repeats — and the await helpers *discard* what they drain
+        // past. Waiting on the repeating subject first can therefore swallow the
+        // one-shot snapshot and then wait for a second that never comes.
+        await_publish(
+            &mut tap,
+            &format!("p.{}.state.sessions", started.pair_id),
+            Duration::from_secs(5),
+        )
+        .await;
+        await_publish(
+            &mut tap,
+            &format!("p.{}.state.workspaces", started.pair_id),
+            Duration::from_secs(5),
+        )
+        .await;
         let mut presence_data = serde_json::Value::Null;
         await_publish_matching(
             &mut tap,
@@ -1052,18 +1336,13 @@ mod runtime_tests {
         )
         .await;
         assert_eq!(presence_data["online"], json!(true));
-        await_publish(
-            &mut tap,
-            &format!("p.{}.state.sessions", started.pair_id),
-            Duration::from_secs(5),
-        )
-        .await;
-        await_publish(
-            &mut tap,
-            &format!("p.{}.state.workspaces", started.pair_id),
-            Duration::from_secs(5),
-        )
-        .await;
+        // An idle directory advertises its revision instead of re-sending.
+        assert!(
+            presence_data["catalogVersion"]["sessions"]
+                .as_u64()
+                .is_some_and(|revision| revision > 0),
+            "the heartbeat must carry the catalog revision: {presence_data}"
+        );
 
         // The event mirror is live.
         publish_event(
@@ -1336,8 +1615,9 @@ mod runtime_tests {
     fn bridge_shared_state_survives_generation_swaps_but_rotates_epoch() {
         let _home = HomeGuard::new("remote-shared-generation");
         *SUPERVISOR.bridge_shared.lock().unwrap() = None;
-        let first = shared_runtime("pair_shared", true, false);
-        let same_credential_epoch = shared_runtime("pair_shared", true, false);
+        let creds = test_creds("pair_shared", "nats://127.0.0.1:4222", 3600);
+        let first = shared_runtime(&creds, true, false);
+        let same_credential_epoch = shared_runtime(&creds, true, false);
         assert!(Arc::ptr_eq(
             &first.reply_slots,
             &same_credential_epoch.reply_slots
@@ -1351,13 +1631,29 @@ mod runtime_tests {
             same_credential_epoch.bridge_instance_id
         );
 
-        let rebuilt = shared_runtime("pair_shared", true, true);
+        let rebuilt = shared_runtime(&creds, true, true);
         assert!(Arc::ptr_eq(&first.reply_slots, &rebuilt.reply_slots));
         assert!(Arc::ptr_eq(
             &first.pairing_confirmed,
             &rebuilt.pairing_confirmed
         ));
         assert_ne!(first.bridge_instance_id, rebuilt.bridge_instance_id);
+
+        // A re-minted invitation for the same pair_id describes keys the cached
+        // runtime cannot prove, so it must not inherit any of it — least of all
+        // a `pairing_confirmed` that a previous, unrelated pairing set.
+        let reissued = shared_runtime(
+            &test_creds("pair_shared", "nats://127.0.0.1:4222", 3600),
+            false,
+            false,
+        );
+        assert!(!Arc::ptr_eq(&first.reply_slots, &reissued.reply_slots));
+        assert!(!Arc::ptr_eq(
+            &first.pairing_confirmed,
+            &reissued.pairing_confirmed
+        ));
+        assert!(!reissued.pairing_confirmed.load(Ordering::Acquire));
+        assert_ne!(first.bridge_instance_id, reissued.bridge_instance_id);
         *SUPERVISOR.bridge_shared.lock().unwrap() = None;
     }
 
@@ -1816,6 +2112,122 @@ mod runtime_tests {
         std::fs::remove_dir_all(&workspace_dir).ok();
     }
 
+    /// The idle-directory contract, which replaced the "re-send every unchanged
+    /// snapshot every 20s" self-heal with a revision advertised on the presence
+    /// heartbeat. Both halves are load-bearing: without the first an idle link
+    /// still pays for a full snapshot, and without the second a dropped push is
+    /// never noticed. A regression in either half breaks exactly one assertion
+    /// here.
+    #[tokio::test]
+    async fn idle_catalog_advertises_a_revision_instead_of_resending() {
+        let _home = HomeGuard::new("remote-idle-catalog");
+        init_store();
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        let pair = unique("pairidle");
+        let session = unique("sessidle");
+        // Exactly one thread and no runs: the snapshot signature is stable, so
+        // any republication below is the timer this test exists to forbid.
+        let thread = crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "chat".to_string(),
+            title: Some("Idle thread".to_string()),
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some(session.clone()),
+        })
+        .unwrap();
+
+        let handle = spawn_presence_heartbeat(client.clone(), pair.clone(), "bridge_idle".into());
+        let mut tap = nats.tap();
+        await_publish(
+            &mut tap,
+            &format!("p.{pair}.state.sessions"),
+            Duration::from_secs(5),
+        )
+        .await;
+
+        // The heartbeat must carry the revision of the snapshot just published.
+        // Draining until it appears makes the quiet window below a steady-state
+        // measurement rather than a race with the first tick.
+        let revision = await_publish_matching(
+            &mut tap,
+            &format!("p.{pair}.presence"),
+            Duration::from_secs(5),
+            |published| {
+                published.json()["catalogVersion"]["sessions"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    > 0
+            },
+        )
+        .await;
+        let baseline = revision.json()["catalogVersion"]["sessions"]
+            .as_u64()
+            .unwrap();
+        // The heartbeat is the *only* traffic an idle link now carries, so its
+        // size is part of what this change promises. A regression that ships the
+        // directory inside it would show up here rather than as a silent cost.
+        let heartbeat_bytes = serde_json::to_vec(&revision.json()).unwrap().len();
+        assert!(
+            heartbeat_bytes < 512,
+            "an idle heartbeat must stay small, got {heartbeat_bytes} B"
+        );
+        assert!(
+            revision.json()["catalogVersion"]["workspaces"]
+                .as_u64()
+                .unwrap_or(0)
+                > 0,
+            "both domains share one revision envelope"
+        );
+
+        // Steady state: hundreds of catalog ticks (10ms in tests) with no change
+        // must produce no second snapshot. The old timer's 20s tick had long
+        // since fired by this point, so a reintroduced resend fails here.
+        let quiet_until = std::time::Instant::now() + Duration::from_millis(400);
+        loop {
+            let remaining = quiet_until.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, tap.recv()).await {
+                Ok(Ok(published)) => assert_ne!(
+                    published.subject,
+                    format!("p.{pair}.state.sessions"),
+                    "an unchanged catalog must not be re-sent on a timer"
+                ),
+                // Closed tap or the quiet window elapsing ends the measurement.
+                Ok(Err(_)) | Err(_) => break,
+            }
+        }
+
+        // ...while a real change still moves the advertised revision, which is
+        // the only thing a client needs to know it must pull.
+        crate::store::rename_thread(crate::store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "Renamed idle".to_string(),
+        })
+        .unwrap();
+        let moved = await_publish_matching(
+            &mut tap,
+            &format!("p.{pair}.presence"),
+            Duration::from_secs(5),
+            |published| {
+                published.json()["catalogVersion"]["sessions"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    > baseline
+            },
+        )
+        .await;
+        assert!(
+            moved.json()["catalogVersion"]["sessions"].as_u64().unwrap() > baseline,
+            "a catalog change must advance the advertised revision"
+        );
+
+        handle.abort();
+    }
+
     #[tokio::test]
     async fn heartbeat_publish_failure_exits_for_generation_supervisor() {
         let _home = HomeGuard::new("remote-heartbeat-fail");
@@ -2099,6 +2511,78 @@ mod runtime_tests {
         assert_eq!(live_data, replay_data);
     }
 
+    /// The coalescing lane is the one a modern client opts into. It must still
+    /// publish a burst (merged, never dropped) and it must end when the queue
+    /// closes, so a generation swap does not leak the drain.
+    #[tokio::test]
+    async fn the_coalescing_lane_merges_a_burst_and_ends_on_a_closed_queue() {
+        let _home = HomeGuard::new("remote-coalesce-drain");
+        let nats = FakeNats::start().await;
+        let client = nats_connect_once(&nats).await;
+        let (tx, rx) = tokio::sync::mpsc::channel(EVENT_QUEUE_CAPACITY);
+        let drain = spawn_secure_event_publisher(
+            client.clone(),
+            rx,
+            secure::Transport::legacy_fixture(),
+            Arc::new(AtomicBool::new(true)),
+        );
+        let mut tap = nats.tap();
+
+        for (idx, text) in [(1, "a"), (2, "b")] {
+            let body = build_event_body(
+                "s1",
+                "text_chunk",
+                &json!({ "text": text }).to_string(),
+                "r1",
+                idx,
+                1,
+                "e",
+                "",
+                -1,
+                idx,
+            );
+            tx.send(EventPublish {
+                subject: "p.pair_coal.evt.s1".to_string(),
+                payload: serde_json::to_vec(&body).unwrap(),
+                status_subject: None,
+            })
+            .await
+            .unwrap();
+        }
+
+        // Collect everything the lane emits for the burst. Whether the two
+        // fragments merge is a timing decision; "no character lost or
+        // duplicated" is the invariant either way.
+        let deadline = std::time::Instant::now() + Duration::from_millis(600);
+        let mut merged_text = String::new();
+        let mut published = 0usize;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match tokio::time::timeout(remaining, tap.recv()).await {
+                Ok(Ok(message)) if message.subject == "p.pair_coal.evt.s1" => {
+                    published += 1;
+                    let payload = message.json();
+                    let data: serde_json::Value =
+                        serde_json::from_str(payload["data"].as_str().unwrap()).unwrap();
+                    merged_text.push_str(data["text"].as_str().unwrap());
+                }
+                Ok(Ok(_)) => {}
+                _ => break,
+            }
+        }
+        assert!(published >= 1, "the coalescing lane must publish the burst");
+        assert_eq!(merged_text, "ab", "no fragment may be lost or duplicated");
+
+        drop(tx);
+        tokio::time::timeout(Duration::from_secs(2), drain)
+            .await
+            .expect("a closed queue must end the drain")
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn start_once_returns_empty_when_not_requested() {
         let _home = HomeGuard::new("remote-start-not-requested");
@@ -2187,7 +2671,7 @@ mod runtime_tests {
         let _home = HomeGuard::new("remote-resume");
         let nats = FakeNats::start().await;
         install_state(fake_state(&nats, "pair_resume").await);
-        let _shared = shared_runtime("pair_resume", true, false);
+        let _shared = shared_runtime(&test_creds("pair_resume", nats.url(), 3600), true, false);
         SUPERVISOR.start_requested.store(true, Ordering::Release);
 
         handle_system_resume();
@@ -2510,5 +2994,84 @@ mod runtime_tests {
         assert_eq!(body["online"], json!(false));
         assert_eq!(body["unpaired"], json!(true));
         stop();
+    }
+
+    /// A wake-from-sleep recovery that is in flight must be presented as
+    /// *reconnecting*, even though the stored error code is the same
+    /// `system_sleep` that produced it. The phase is what the UI indicator reads:
+    /// the identical code with no worker running is a finished sleep, reported as
+    /// a failure attributed to sleep rather than as an in-flight reconnect.
+    #[tokio::test]
+    async fn status_presents_an_in_flight_sleep_recovery_as_reconnecting() {
+        let _home = HomeGuard::new("remote-status-sleep");
+        SUPERVISOR.start_requested.store(true, Ordering::Release);
+        SUPERVISOR
+            .resume_recovery_running
+            .store(true, Ordering::Release);
+        *SUPERVISOR.last_error_code.lock().unwrap() = Some("system_sleep".to_string());
+        let reconnecting = status();
+        assert!(
+            matches!(reconnecting.phase, RemotePhase::Reconnecting),
+            "{reconnecting:?}"
+        );
+        assert_eq!(reconnecting.reason, Some(RemoteFailureReason::SystemSleep));
+
+        // The same error code with the recovery worker stopped is not an
+        // in-flight reconnect; both keep the reason, because the cause is the
+        // same sleep.
+        SUPERVISOR
+            .resume_recovery_running
+            .store(false, Ordering::Release);
+        let settled = status();
+        assert!(matches!(settled.phase, RemotePhase::Failed), "{settled:?}");
+        assert_eq!(settled.reason, Some(RemoteFailureReason::SystemSleep));
+
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
+    }
+
+    /// `spawn_runtime_reconnect` is the recovery for a subscription task that
+    /// died. In the test build it is deliberately a no-op: it must not arm the
+    /// singleton flag or record a failure attempt, because the tests that drive
+    /// the supervisor own that state themselves.
+    #[tokio::test]
+    async fn spawning_a_runtime_reconnect_is_a_noop_under_test() {
+        let _home = HomeGuard::new("remote-runtime-reconnect-noop");
+        SUPERVISOR
+            .runtime_reconnect_running
+            .store(false, Ordering::Release);
+        SUPERVISOR
+            .runtime_reconnect_attempts
+            .store(0, Ordering::Release);
+        spawn_runtime_reconnect();
+        assert!(
+            !SUPERVISOR.runtime_reconnect_running.load(Ordering::Acquire),
+            "the test build must not arm the real reconnect worker"
+        );
+        assert_eq!(
+            SUPERVISOR
+                .runtime_reconnect_attempts
+                .load(Ordering::Acquire),
+            0
+        );
+    }
+
+    /// A `get_read_chunk` for a snapshot the desktop no longer holds is answered
+    /// with the transport's own error code, which the phone already branches on.
+    #[tokio::test]
+    async fn an_expired_read_chunk_is_answered_with_the_transport_error() {
+        let _home = HomeGuard::new("remote-read-chunk-expired");
+        let sink = crate::remote::test_support::RecordingSink::default();
+        host()
+            .execute(
+                crate::remote::protocol::IncomingCmd {
+                    cmd_type: "get_read_chunk".into(),
+                    reply_id: unique("read"),
+                    ..Default::default()
+                },
+                &sink,
+            )
+            .await;
+        assert_eq!(sink.error_text(), "remote_read_expired");
     }
 }

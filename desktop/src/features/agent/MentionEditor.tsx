@@ -1,13 +1,17 @@
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent, Ref } from "react";
 import type { WorkspaceFileResult } from "../../integrations/storage/threadStore";
-import { Blocks, FileText, Minimize2 } from "lucide-react";
+import type { SessionMentionGroup, SessionMentionOption } from "./sessionMention";
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { searchWorkspaceFiles } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
+import { useCommittedRef } from "../../lib/useCommittedRef";
 import { localPathsFromUriList } from "./clipboardAttachments";
+import { hashContext, isEditorEmpty, mentionContext, PILL_ATTR, serialize, slashContext } from "./composer/mentionDom";
+import { FileMenu, SessionMenu, SlashMenu } from "./composer/MentionMenus";
 import { parseMentionSegments } from "./mentionMarkdown";
-import { buildSlashMenuGroups, hasMixedSlashResults } from "./slashMenu";
+import { filterSessionMentions, groupSessionMentions } from "./sessionMention";
+import { buildSlashMenuGroups } from "./slashMenu";
 
 /** A skill offered by the `/` menu; `name` is the English slash-command name. */
 export interface SkillMentionOption {
@@ -33,10 +37,6 @@ export type SlashMenuItem
   = | { kind: "context-tool"; tool: ContextToolOption }
     | { kind: "skill"; skill: SkillMentionOption };
 
-/**
- * Filter and order `/` results. Context tools always precede skills. The UI
- * only renders a Skills separator when both groups have results.
- */
 export interface MentionEditorHandle {
   /** Serialize to markdown: text verbatim, each file pill → `[name](./path)`. */
   getContent: () => string;
@@ -64,6 +64,8 @@ interface MentionEditorProps {
   /** Common context actions shown above skills in the `/` menu. */
   contextTools?: ContextToolOption[];
   onContextToolSelect?: (toolId: string) => void;
+  /** Conversations offered by the `#` menu, in menu order; omit/empty to disable it. */
+  sessions?: SessionMentionOption[];
   disabled?: boolean;
   placeholder: string;
   className?: string;
@@ -84,7 +86,6 @@ interface MentionEditorProps {
 }
 
 /** Marks a file pill span; `data-path` holds the `./relative/path` target. */
-const PILL_ATTR = "data-mention";
 
 /**
  * `@`-mention editor. A non-controlled `contentEditable` div: React renders it
@@ -100,6 +101,7 @@ export function MentionEditor({
   skills,
   contextTools = [],
   onContextToolSelect,
+  sessions = [],
   disabled,
   placeholder,
   className,
@@ -121,6 +123,9 @@ export function MentionEditor({
   // `/` trigger: null → inactive; "" → bare `/` (all tools and skills).
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [selectedSlashItem, setSelectedSlashItem] = useState(0);
+  // `#` trigger: null → inactive; "" → bare `#` (every conversation).
+  const [hashQuery, setHashQuery] = useState<string | null>(null);
+  const [selectedSession, setSelectedSession] = useState(0);
   const [empty, setEmpty] = useState(true);
   const emptyRef = useRef(true);
 
@@ -135,11 +140,22 @@ export function MentionEditor({
     ...slashGroups.skills.map(skill => ({ kind: "skill" as const, skill })),
   ], [slashGroups]);
   const slashMenuOpen = slashQuery !== null && (contextTools.length > 0 || (skills?.length ?? 0) > 0);
+  const sessionMenuOpen = hashQuery !== null && sessions.length > 0;
+  // The `#` menu is grouped by workspace (chats first), unlike the flat `/` menu.
+  const sessionGroups = useMemo<SessionMentionGroup[]>(
+    () => (hashQuery === null ? [] : groupSessionMentions(filterSessionMentions(sessions, hashQuery))),
+    [hashQuery, sessions],
+  );
+  // One flat row list, so keyboard navigation walks the same order the menu
+  // renders (group headings are not rows).
+  const sessionItems = useMemo(
+    () => sessionGroups.flatMap(group => group.sessions),
+    [sessionGroups],
+  );
 
   // Live mirror of the skills prop so the imperative restore() can rebuild
   // skill pills from `/name` tokens without re-declaring the handle.
-  const skillsRef = useRef(skills);
-  skillsRef.current = skills;
+  const skillsRef = useCommittedRef(skills);
 
   const syncEmpty = useCallback(() => {
     const next = isEditorEmpty(editorRef.current);
@@ -177,14 +193,17 @@ export function MentionEditor({
     focus: () => editorRef.current?.focus(),
     insertMention,
     // Rebuild the DOM from markdown: verbatim text becomes text nodes, each
-    // `[name](./path)` mention becomes an atomic pill (same builder as a live
-    // pick), so the editor never re-hydrates raw markup.
+    // `[name](./path)` mention and `[title](futureos://session/<id>)` reference
+    // becomes an atomic pill (same builders as a live pick), so the editor
+    // never re-hydrates raw markup.
     restore: (content: string) => {
       const editor = editorRef.current;
       if (editor) {
         editor.innerHTML = "";
         for (const segment of content ? parseMentionSegments(content) : []) {
-          if (segment.mention && segment.path)
+          if (segment.mention && segment.sessionId)
+            editor.appendChild(buildSessionPill({ sessionId: segment.sessionId, title: segment.text }));
+          else if (segment.mention && segment.path)
             editor.appendChild(buildPill({ name: segment.text, path: segment.path.replace(/^\.\//, "") }));
           else if (segment.text)
             appendTextWithSkillPills(editor, segment.text);
@@ -208,26 +227,41 @@ export function MentionEditor({
     setQuery(null);
     setOpen(false);
     setSlashQuery(null);
+    setHashQuery(null);
   }
 
-  // Refresh the active trigger (`@` file mention or `/` skill) at the caret.
+  // Refresh the active trigger (`@` file mention, `/` skill or `#` conversation)
+  // at the caret.
   function updateTrigger() {
     const editor = editorRef.current;
     const mention = mentionContext(editor);
     if (mention) {
       setQuery(mention.query);
       setSlashQuery(null);
+      setHashQuery(null);
       return;
     }
     setQuery(null);
     const slash = slashContext(editor);
-    setSlashQuery(slash ? slash.query : null);
+    if (slash) {
+      setSlashQuery(slash.query);
+      setHashQuery(null);
+      return;
+    }
+    setSlashQuery(null);
+    const hash = hashContext(editor);
+    setHashQuery(hash ? hash.query : null);
   }
 
   // Reset the highlighted slash item whenever the `/` query changes.
   useEffect(() => {
     setSelectedSlashItem(0);
   }, [slashQuery]);
+
+  // Same for the `#` menu: a new query means a new (shorter) result list.
+  useEffect(() => {
+    setSelectedSession(0);
+  }, [hashQuery]);
 
   // Debounced workspace-file search driven by the active-mention query.
   useEffect(() => {
@@ -280,6 +314,19 @@ export function MentionEditor({
     pill.setAttribute("contenteditable", "false");
     pill.className = "text-accent";
     pill.textContent = `/${name}`;
+    return pill;
+  }
+
+  // Session pill: shows the conversation's title, carries its session id.
+  // serialize() writes the `futureos://session/<id>` link the agent resolves.
+  function buildSessionPill(session: { sessionId: string; title: string }): HTMLSpanElement {
+    const pill = document.createElement("span");
+    pill.setAttribute(PILL_ATTR, "session");
+    pill.setAttribute("data-session", session.sessionId);
+    pill.setAttribute("data-title", session.title);
+    pill.setAttribute("contenteditable", "false");
+    pill.className = "text-accent";
+    pill.textContent = `#${session.title}`;
     return pill;
   }
 
@@ -354,6 +401,20 @@ export function MentionEditor({
     range.setEnd(context.textNode, context.caretOffset);
     range.deleteContents();
     placePill(range, buildSkillPill(skill.name));
+  }
+
+  // Replace the typed `#query` with an atomic pill carrying the session id.
+  function insertSession(session: SessionMentionOption) {
+    const editor = editorRef.current;
+    const context = hashContext(editor);
+    if (!editor || !context)
+      return;
+
+    const range = document.createRange();
+    range.setStart(context.textNode, context.hashOffset);
+    range.setEnd(context.textNode, context.caretOffset);
+    range.deleteContents();
+    placePill(range, buildSessionPill(session));
   }
 
   /** Remove the typed `/query` and immediately run a context action. */
@@ -520,7 +581,26 @@ export function MentionEditor({
         return;
       }
     }
-    if (event.key === "Escape" && (open || slashMenuOpen)) {
+    if (sessionMenuOpen && sessionItems.length > 0) {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        setSelectedSession(index => (index + 1) % sessionItems.length);
+        return;
+      }
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        setSelectedSession(index => (index - 1 + sessionItems.length) % sessionItems.length);
+        return;
+      }
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        const item = sessionItems[selectedSession];
+        if (item)
+          insertSession(item);
+        return;
+      }
+    }
+    if (event.key === "Escape" && (open || slashMenuOpen || sessionMenuOpen)) {
       event.preventDefault();
       closeMenu();
       return;
@@ -605,9 +685,34 @@ export function MentionEditor({
             />
           )
         : null}
+      {sessionMenuOpen
+        ? (
+            <SessionMenu
+              groups={sessionGroups}
+              items={sessionItems}
+              selectedIndex={selectedSession}
+              emptyLabel={t("composer.noSessionMatches")}
+              chatsLabel={t("composer.sessionsSection")}
+              workspaceLabel={t("composer.workspaceSection")}
+              onSelect={insertSession}
+            />
+          )
+        : null}
+      {/* The empty-state hint, sized to the whole editor box on purpose:
+          `inset-0` plus the editor's own padding, so the text still sits where
+          a typed first line would, but mounting it — which always follows a
+          clear — dirties every pixel of the box, and the repaint that follows
+          wipes anything the clear itself left painted. WKWebView on macOS 26
+          drops the editor's own invalidation for removed text: after a send the
+          DOM was empty and this hint was up, yet the last line stayed on screen
+          (same family as MessageBlock's will-change note). Two things keep that
+          repair working — do not shrink this back to the text's own width
+          (`left-2 top-1`), and do not give the editor a compositor layer of its
+          own (`will-change`/`translateZ`): the hint can only erase the
+          editor's stale pixels while both paint into the same layer. */}
       {empty
         ? (
-            <div className="pointer-events-none absolute left-2 top-1 select-none text-sm leading-5 text-ink-muted">
+            <div className="pointer-events-none absolute inset-0 select-none px-2 py-1 text-sm leading-5 text-ink-muted">
               {placeholder}
             </div>
           )
@@ -661,241 +766,4 @@ export function MentionEditor({
       />
     </div>
   );
-}
-
-function FileMenu({
-  emptyLabel,
-  onSelect,
-  results,
-  selectedIndex,
-}: {
-  emptyLabel: string;
-  onSelect: (file: WorkspaceFileResult) => void;
-  results: WorkspaceFileResult[];
-  selectedIndex: number;
-}) {
-  // Keep the keyboard-highlighted row visible while the list scrolls.
-  const listRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    listRef.current
-      ?.querySelector(`[data-menu-index="${selectedIndex}"]`)
-      ?.scrollIntoView({ block: "nearest" });
-  }, [selectedIndex]);
-
-  return (
-    <div ref={listRef} className="absolute bottom-full left-2 z-30 mb-2 max-h-72 w-[min(30rem,calc(100%-1rem))] overflow-y-auto rounded-lg border border-line-soft bg-surface p-1 shadow-panel">
-      {results.length === 0
-        ? <div className="px-2 py-2 text-sm text-ink-muted">{emptyLabel}</div>
-        : null}
-      {results.map((file, index) => {
-        const dir = file.path.slice(0, file.path.length - file.name.length);
-        return (
-          <button
-            className={cn(
-              "flex h-9 w-full items-center gap-2 rounded-md px-2 text-left transition-colors",
-              index === selectedIndex ? "bg-surface-subtle" : "hover:bg-surface-subtle",
-            )}
-            data-menu-index={index}
-            key={file.path}
-            onMouseDown={(event) => {
-              // Keep the editor's selection/focus so insertion targets the caret.
-              event.preventDefault();
-              onSelect(file);
-            }}
-            type="button"
-          >
-            <FileText className="size-4 shrink-0 text-ink-soft" />
-            <span className="min-w-0 flex-1 truncate text-sm">
-              {dir ? <span className="text-ink-muted">{dir}</span> : null}
-              <span className="font-medium text-ink">{file.name}</span>
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function SlashMenu({
-  emptyLabel,
-  groups,
-  onSelect,
-  selectedIndex,
-  skillsLabel,
-}: {
-  emptyLabel: string;
-  groups: { contextTools: ContextToolOption[]; skills: SkillMentionOption[] };
-  onSelect: (item: SlashMenuItem) => void;
-  selectedIndex: number;
-  skillsLabel: string;
-}) {
-  // Keep the keyboard-highlighted row visible while the list scrolls.
-  const listRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    listRef.current
-      ?.querySelector(`[data-menu-index="${selectedIndex}"]`)
-      ?.scrollIntoView({ block: "nearest" });
-  }, [selectedIndex]);
-
-  const items: SlashMenuItem[] = [
-    ...groups.contextTools.map(tool => ({ kind: "context-tool" as const, tool })),
-    ...groups.skills.map(skill => ({ kind: "skill" as const, skill })),
-  ];
-  const mixed = hasMixedSlashResults(groups);
-  return (
-    <div ref={listRef} className="absolute bottom-full left-2 z-30 mb-2 max-h-72 w-[min(30rem,calc(100%-1rem))] overflow-y-auto rounded-lg border border-line-soft bg-surface p-1 shadow-panel">
-      {items.length === 0
-        ? <div className="px-2 py-2 text-sm text-ink-muted">{emptyLabel}</div>
-        : null}
-      {items.map((item, index) => (
-        <div key={item.kind === "context-tool" ? `tool:${item.tool.id}` : `skill:${item.skill.name}`}>
-          {mixed && index === groups.contextTools.length
-            ? <div className="px-2 pb-1 pt-2 text-xs font-medium text-ink-muted">{skillsLabel}</div>
-            : null}
-          <button
-            className={cn(
-              "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors",
-              index === selectedIndex ? "bg-surface-subtle" : "hover:bg-surface-subtle",
-            )}
-            data-menu-index={index}
-            onMouseDown={(event) => {
-              // Keep the editor's selection/focus so insertion targets the caret.
-              event.preventDefault();
-              onSelect(item);
-            }}
-            type="button"
-          >
-            {item.kind === "context-tool"
-              ? <Minimize2 className="mt-0.5 size-4 shrink-0 text-ink-soft" />
-              : <Blocks className="mt-0.5 size-4 shrink-0 text-ink-soft" />}
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-sm font-medium text-ink">
-                {item.kind === "context-tool" ? item.tool.name : `/${item.skill.name}`}
-              </span>
-              {(item.kind === "context-tool" ? item.tool.description : item.skill.description)
-                ? <span className="block truncate text-xs text-ink-muted">{item.kind === "context-tool" ? item.tool.description : item.skill.description}</span>
-                : null}
-            </span>
-          </button>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/** True when the editor has no text and no pills. */
-function isEditorEmpty(editor: HTMLDivElement | null): boolean {
-  if (!editor)
-    return true;
-  if (editor.querySelector(`[${PILL_ATTR}]`))
-    return false;
-  return (editor.textContent ?? "").trim().length === 0;
-}
-
-/**
- * The active `@` mention at the caret, if any. Reads the caret's text node and
- * matches `@query` at its end — a pill (separate node) naturally bounds it.
- * The `@` may appear anywhere in the text (start, after whitespace, or inside
- * CJK sentences); an ASCII letter/digit or `./@` right before it suppresses the
- * trigger so emails (`foo@bar`) and paths (`./x`, `a/b`) never open the menu.
- */
-function mentionContext(editor: HTMLDivElement | null): {
-  query: string;
-  textNode: Text;
-  atOffset: number;
-  caretOffset: number;
-} | null {
-  const selection = window.getSelection();
-  if (!editor || !selection || selection.rangeCount === 0 || !selection.isCollapsed)
-    return null;
-  const node = selection.anchorNode;
-  if (!node || node.nodeType !== Node.TEXT_NODE || !editor.contains(node))
-    return null;
-  const caretOffset = selection.anchorOffset;
-  const before = (node.textContent ?? "").slice(0, caretOffset);
-  const match = before.match(/(^|[^\w.@/])@([^\s@]*)$/);
-  if (!match)
-    return null;
-  const query = match[2] ?? "";
-  return {
-    query,
-    textNode: node as Text,
-    atOffset: caretOffset - query.length - 1, // index of `@`
-    caretOffset,
-  };
-}
-
-/**
- * The active `/` skill trigger at the caret, if any. Same caret scan as
- * `mentionContext`, but matches `/query`. Like `@`, the `/` may sit anywhere
- * in the text (including mid-sentence in CJK); an ASCII letter/digit or `./@`
- * right before it suppresses the trigger so paths (`./x`, `a/b`) and dates
- * (`2026/07`) never open the skill menu.
- */
-function slashContext(editor: HTMLDivElement | null): {
-  query: string;
-  textNode: Text;
-  slashOffset: number;
-  caretOffset: number;
-} | null {
-  const selection = window.getSelection();
-  if (!editor || !selection || selection.rangeCount === 0 || !selection.isCollapsed)
-    return null;
-  const node = selection.anchorNode;
-  if (!node || node.nodeType !== Node.TEXT_NODE || !editor.contains(node))
-    return null;
-  const caretOffset = selection.anchorOffset;
-  const before = (node.textContent ?? "").slice(0, caretOffset);
-  const match = before.match(/(^|[^\w.@/])\/([^\s/]*)$/);
-  if (!match)
-    return null;
-  const query = match[2] ?? "";
-  return {
-    query,
-    textNode: node as Text,
-    slashOffset: caretOffset - query.length - 1, // index of `/`
-    caretOffset,
-  };
-}
-
-/** Serialize the editor: text verbatim, pills → `[name](./path)` markdown links. */
-function serialize(editor: HTMLDivElement | null): string {
-  if (!editor)
-    return "";
-  let out = "";
-  const visit = (node: Node) => {
-    if (node.nodeType === Node.TEXT_NODE) {
-      out += node.textContent ?? "";
-      return;
-    }
-    if (node.nodeType !== Node.ELEMENT_NODE)
-      return;
-    const element = node as HTMLElement;
-    const pillKind = element.getAttribute(PILL_ATTR);
-    if (pillKind === "skill") {
-      out += `/${element.getAttribute("data-skill") ?? ""}`;
-      return;
-    }
-    if (pillKind) {
-      const label = (element.textContent ?? "").replace(/\[/g, "(").replace(/\]/g, ")");
-      const path = element.getAttribute("data-path") ?? "";
-      // Angle-wrap whenever the path holds whitespace OR parens: a bare `)` in
-      // the path closes the markdown link early, truncating downstream parsing
-      // (MessageBlock's MENTION_LINK matches the `<...>` form for these).
-      out += `[${label}](${/[\s()]/.test(path) ? `<${path}>` : path})`;
-      return;
-    }
-    if (element.tagName === "BR") {
-      out += "\n";
-      return;
-    }
-    for (const child of Array.from(element.childNodes))
-      visit(child);
-    // A browser-inserted block wrapper implies a line break after it.
-    if (element.tagName === "DIV" || element.tagName === "P")
-      out += "\n";
-  };
-  for (const child of Array.from(editor.childNodes))
-    visit(child);
-  return out.replace(/\u200B/g, ""); // strip any stray zero-width spaces
 }

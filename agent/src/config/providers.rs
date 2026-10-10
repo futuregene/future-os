@@ -104,6 +104,21 @@ pub struct ProviderUpsertSpec {
     pub clear_api_key: bool,
 }
 
+/// The model-entry keys [`apply_provider_upsert`] owns. Any other key already
+/// present on a same-id entry (`compat`, `hide`, `supportedParameters`, a
+/// legacy `limit`, and anything a future version adds) is preserved across an
+/// edit, because this RPC cannot express it and dropping it would silently
+/// change how the model behaves.
+const MANAGED_MODEL_FIELDS: [&str; 7] = [
+    "id",
+    "name",
+    "modalities",
+    "contextWindow",
+    "maxTokens",
+    "reasoning",
+    "cost",
+];
+
 impl ProviderUpsertSpec {
     /// Whether this mutation changes the models.json side of provider state.
     /// Non-empty model lists remain supported for older RPC clients that do
@@ -483,6 +498,16 @@ pub fn apply_provider_upsert(
         provider.remove("baseUrl");
     }
     if spec.replace_models || !spec.models.is_empty() {
+        // Replacing the array must not strip per-model fields this RPC does not
+        // carry: model-level `compat` (e.g. Qwen's `thinkingFormat`), `hide`,
+        // `supportedParameters`, a legacy `limit`, or any future key. Merge each
+        // new entry onto the existing entry with the same id — a removed model
+        // has no match and still goes away, and a renamed model starts clean.
+        let existing_models = provider
+            .get("models")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         let models = spec
             .models
             .iter()
@@ -505,6 +530,22 @@ pub fn apply_provider_upsert(
                         "cache_read": model.cost.cache_read,
                         "cache_write": model.cost.cache_write,
                     });
+                }
+                if let Some(existing) = existing_models
+                    .iter()
+                    .find(|existing| {
+                        existing.get("id").and_then(Value::as_str) == Some(model.id.as_str())
+                    })
+                    .and_then(Value::as_object)
+                {
+                    let entry = entry
+                        .as_object_mut()
+                        .expect("the entry was just built as an object");
+                    for (key, value) in existing {
+                        if !MANAGED_MODEL_FIELDS.contains(&key.as_str()) {
+                            entry.insert(key.clone(), value.clone());
+                        }
+                    }
                 }
                 entry
             })
@@ -846,6 +887,95 @@ mod tests {
         )
         .unwrap();
         assert_eq!(root["providers"]["myprov"]["models"], json!([]));
+    }
+
+    #[test]
+    fn upsert_preserves_unmanaged_fields_of_kept_models() {
+        // The RPC cannot carry `compat`/`hide`/`supportedParameters`, so an edit
+        // must merge them back onto the entry it already has for that id.
+        // Otherwise the CLI wizard — which does not know those keys — silently
+        // drops e.g. Qwen's thinkingFormat and the model stops thinking.
+        let mut root: Map<String, Value> = serde_json::from_str(
+            r#"{"providers":{"acme":{"models":[
+                {"id":"keep","name":"Keep","reasoning":true,
+                 "compat":{"thinkingFormat":"qwen-chat-template"},
+                 "hide":true,
+                 "supportedParameters":["max_completion_tokens"]},
+                {"id":"removed","name":"Removed"}
+            ]}}}"#,
+        )
+        .unwrap();
+        let spec = ProviderUpsertSpec {
+            id: "acme".to_string(),
+            replace_models: true,
+            models: vec![ProviderModelSpec {
+                id: "keep".to_string(),
+                name: "Keep".to_string(),
+                modalities: vec!["text".to_string()],
+                context_window: 204800,
+                max_tokens: 32768,
+                reasoning: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        apply_provider_upsert(&mut root, &spec).unwrap();
+
+        let models = root["providers"]["acme"]["models"].as_array().unwrap();
+        assert_eq!(models.len(), 1, "the removed model is gone: {models:?}");
+        let kept = &models[0];
+        assert_eq!(kept["id"], json!("keep"));
+        assert_eq!(
+            kept["contextWindow"],
+            json!(204800),
+            "managed fields are still overwritten: {kept}"
+        );
+        assert_eq!(
+            kept["compat"],
+            json!({"thinkingFormat": "qwen-chat-template"}),
+            "model-level compat must survive an edit: {kept}"
+        );
+        assert_eq!(kept["hide"], json!(true));
+        assert_eq!(
+            kept["supportedParameters"],
+            json!(["max_completion_tokens"])
+        );
+    }
+
+    #[test]
+    fn upsert_does_not_borrow_fields_for_a_different_model_id() {
+        // A renamed or brand-new model must not inherit the old entry's
+        // unmanaged fields: `compat` travels with the id it was written for.
+        let mut root: Map<String, Value> = serde_json::from_str(
+            r#"{"providers":{"acme":{"models":[{"id":"old","compat":{"thinkingFormat":"qwen"}}]}}}"#,
+        )
+        .unwrap();
+        apply_provider_upsert(
+            &mut root,
+            &ProviderUpsertSpec {
+                id: "acme".to_string(),
+                replace_models: true,
+                models: vec![ProviderModelSpec {
+                    id: "new".to_string(),
+                    name: "New".to_string(),
+                    modalities: vec!["text".to_string()],
+                    context_window: 4096,
+                    max_tokens: 1024,
+                    reasoning: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let models = root["providers"]["acme"]["models"].as_array().unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0]["id"], json!("new"));
+        assert!(
+            models[0].get("compat").is_none(),
+            "a new id starts clean: {:?}",
+            models[0]
+        );
     }
 
     #[test]
@@ -1232,11 +1362,20 @@ mod tests {
     }
 
     #[test]
-    fn restore_file_logs_when_rollback_remove_fails() {
+    fn restore_file_restores_a_snapshot_and_tolerates_a_missing_target() {
         let (_dir, auth, _models) = temp_paths("restore-missing");
-        // snapshot None → rollback removes the file; it never existed, so the
-        // removal fails and the warning path runs (stderr, non-fatal).
+        // Some(bytes): the exact bytes go back, byte for byte.
+        restore_file(&auth, Some(b"{\n  \"a\": 1\n}\n"), false);
+        assert_eq!(
+            std::fs::read_to_string(&auth).unwrap(),
+            "{\n  \"a\": 1\n}\n"
+        );
+        // None: the file this call may have created is removed, and a target
+        // that never existed is not an error worth surfacing.
         restore_file(&auth, None, false);
+        assert!(!auth.exists());
+        restore_file(&auth, None, false);
+        assert!(!auth.exists());
     }
 
     #[test]
@@ -1302,6 +1441,117 @@ mod tests {
     fn make_readonly(path: &Path) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+
+    /// Windows cannot replace a read-only *file*: `fs::rename` is
+    /// `MoveFileEx(MOVEFILE_REPLACE_EXISTING)`, which fails with
+    /// `ACCESS_DENIED` when the destination is read-only. That is the same
+    /// "the write fails, the read still works" injection the Unix tests get from
+    /// a chmod'd directory, and it needs no root skip — the attribute denies an
+    /// elevated process too.
+    #[cfg(windows)]
+    fn make_readonly(path: &Path) {
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+
+    /// An auth-only change whose write fails must leave models.json completely
+    /// alone — the file was never written by this call, so there is nothing to
+    /// restore and restoring would clobber a concurrent writer.
+    #[cfg(windows)]
+    #[test]
+    fn upsert_auth_write_fails_without_models_change_skips_restore() {
+        let (_dir, auth, models) = temp_paths("upsert-auth-fail-nomodels-win");
+        let original =
+            "{\n  \"providers\": {\n    \"existing\": {\n      \"name\": \"x\"\n    }\n  }\n}\n";
+        std::fs::write(&auth, "{}\n").unwrap();
+        std::fs::write(&models, original).unwrap();
+        make_readonly(&auth);
+        let spec = ProviderUpsertSpec {
+            id: "newprov".to_string(),
+            api_key: Some("sk-x".to_string()),
+            ..Default::default()
+        };
+        let error = upsert_provider_files(&auth, &models, &spec).unwrap_err();
+        assert!(error.contains("failed to write"), "{error}");
+        assert_eq!(std::fs::read_to_string(&models).unwrap(), original);
+    }
+
+    /// The models.json write fails: nothing was persisted, the rollback cannot
+    /// replace the read-only file either (logged), and the bytes on disk are
+    /// still the ones the caller started with.
+    #[cfg(windows)]
+    #[test]
+    fn upsert_restores_models_when_models_write_fails() {
+        let (_dir, auth, models) = temp_paths("upsert-models-fail-win");
+        std::fs::write(&models, "{}\n").unwrap();
+        make_readonly(&models);
+        let spec = ProviderUpsertSpec {
+            id: "newprov".to_string(),
+            name: Some("New".to_string()),
+            ..Default::default()
+        };
+        let error = upsert_provider_files(&auth, &models, &spec).unwrap_err();
+        assert!(error.contains("failed to write"), "{error}");
+        assert_eq!(std::fs::read_to_string(&models).unwrap(), "{}\n");
+    }
+
+    /// The models.json write landed and the auth.json write failed, so only the
+    /// file this call already wrote is rolled back — byte-for-byte, so the GUI's
+    /// pretty-printed formatting survives.
+    #[cfg(windows)]
+    #[test]
+    fn upsert_restores_models_when_auth_write_fails() {
+        let (_dir, auth, models) = temp_paths("upsert-auth-fail-win");
+        let original =
+            "{\n  \"providers\": {\n    \"keep\": {\n      \"name\": \"Keep\"\n    }\n  }\n}\n";
+        std::fs::write(&auth, "{}\n").unwrap();
+        std::fs::write(&models, original).unwrap();
+        make_readonly(&auth);
+        let spec = ProviderUpsertSpec {
+            id: "newprov".to_string(),
+            name: Some("New".to_string()),
+            api_key: Some("sk-x".to_string()),
+            ..Default::default()
+        };
+        let error = upsert_provider_files(&auth, &models, &spec).unwrap_err();
+        assert!(error.contains("failed to write"), "{error}");
+        assert_eq!(std::fs::read_to_string(&models).unwrap(), original);
+    }
+
+    /// The delete's models.json write fails: the provider is still there, and
+    /// the rollback that could not restore it is logged rather than replacing
+    /// the original error.
+    #[cfg(windows)]
+    #[test]
+    fn delete_restores_models_when_models_write_fails() {
+        let (_dir, auth, models) = temp_paths("delete-models-fail-win");
+        let original = "{\"providers\":{\"gone\":{\"name\":\"G\"}}}\n";
+        std::fs::write(&models, original).unwrap();
+        std::fs::write(&auth, "{}\n").unwrap();
+        make_readonly(&models);
+        let error = delete_provider_files(&auth, &models, "gone").unwrap_err();
+        assert!(error.contains("failed to write"), "{error}");
+        assert_eq!(std::fs::read_to_string(&models).unwrap(), original);
+    }
+
+    /// The delete's auth.json write failed, so models.json — already rewritten
+    /// without the provider — is put back: a half-deleted provider is the one
+    /// state a client must never see.
+    #[cfg(windows)]
+    #[test]
+    fn delete_restores_models_when_auth_write_fails() {
+        let (_dir, auth, models) = temp_paths("delete-auth-fail-win");
+        std::fs::write(&auth, "{\"gone\":{\"type\":\"api_key\"}}\n").unwrap();
+        std::fs::write(&models, "{\"providers\":{\"gone\":{\"name\":\"G\"}}}\n").unwrap();
+        make_readonly(&auth);
+        let error = delete_provider_files(&auth, &models, "gone").unwrap_err();
+        assert!(error.contains("failed to write"), "{error}");
+        assert!(
+            std::fs::read_to_string(&models).unwrap().contains("gone"),
+            "models.json must be rolled back, not left half-deleted"
+        );
     }
 
     #[cfg(unix)]

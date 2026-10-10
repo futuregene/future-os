@@ -110,22 +110,26 @@ pub async fn which(name: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// The host shell, one `#[cfg]` test per platform: a `cfg!` pair inside one
+    /// body leaves the other platform's tuple as a never-executed line in this
+    /// report (the same shape `external_editor::host_dialect_matches_the_platform`
+    /// uses). `which` reads PATH — serialize against tests that repoint it.
+    #[cfg(windows)]
     #[tokio::test]
-    async fn which_finds_shell() {
-        // `which` reads PATH — serialize against tests that repoint it.
+    async fn which_finds_the_host_shell() {
         let _guard = crate::test_env::lock_env().await;
-        // The host shell: `sh` on POSIX, `cmd` on Windows.
-        let (name, expected) = if cfg!(windows) {
-            ("cmd", "cmd")
-        } else {
-            ("sh", "sh")
-        };
-        let found = which(name).await;
-        assert!(
-            found.is_some(),
-            "`which {name}` should resolve on this host"
-        );
-        assert!(found.as_deref().unwrap_or("").contains(expected));
+        let found = which("cmd").await;
+        assert!(found.is_some(), "`which cmd` should resolve on Windows");
+        assert!(found.as_deref().unwrap_or("").contains("cmd"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn which_finds_the_host_shell() {
+        let _guard = crate::test_env::lock_env().await;
+        let found = which("sh").await;
+        assert!(found.is_some(), "`which sh` should resolve on POSIX");
+        assert!(found.as_deref().unwrap_or("").contains("sh"));
     }
 
     #[tokio::test]

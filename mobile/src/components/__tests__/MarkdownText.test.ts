@@ -64,31 +64,43 @@ describe("MarkdownText layout and fidelity", () => {
       Array.from({ length: 10 }, (_, i) => `| ${i + 1} | repo-${i + 1} | ${100 - i} |\n`).join("");
     const root = render(text);
     expect(root.findAllByType(FlatList)).toHaveLength(0);
+    // Under the cutoff a table is complete: nothing waits behind a control.
+    expect(root.findAll(node => node.props.accessibilityRole === "button"
+      && String(node.props.accessibilityLabel).startsWith("chat.tableRows"))).toHaveLength(0);
     const output = JSON.stringify(renderer.toJSON());
     expect(output).toContain("repo-9");
     expect(output).toContain("repo-10");
   });
 
-  test("a table past the inline limit keeps its bounded viewport and says how many rows it holds", () => {
+  test("a table past the inline limit holds its tail back until the reader asks for it", () => {
     const text = "| A | B |\n|---|---|\n" + Array.from({ length: 25 }, (_, i) => `| ${i} | value |\n`).join("");
     const root = render(text);
-    const list = root.findByType(FlatList);
-    expect(list.props.data).toHaveLength(25);
-    // Rows past the viewport are still reachable, but only if the reader is told.
-    expect(root.findAllByType(Text).map(node => node.props.children)).toContain("chat.tableRowsScrolled:25");
+    // No inner viewport: the list around the table takes the vertical pan, so a
+    // nested one would hide rows the reader cannot reach.
+    expect(root.findAllByType(FlatList)).toHaveLength(0);
+    const painted = () => root.findAllByType(Text).map(node => paintedText(node));
+    expect(painted()).not.toContain("24");
+    const open = root.findAll(node => node.props.accessibilityLabel === "chat.tableRowsExpand:25" && typeof node.props.onPress === "function")[0]!;
+    act(() => open.props.onPress());
+    expect(painted()).toContain("24");
+    const close = root.findAll(node => node.props.accessibilityLabel === "chat.tableRowsCollapse:25" && typeof node.props.onPress === "function")[0]!;
+    act(() => close.props.onPress());
+    expect(painted()).not.toContain("24");
   });
 
-  test("a 5000-row table mounts a bounded internal viewport", () => {
+  test("a 5000-row table paints a bounded head and keeps its columns aligned", () => {
     const text = "| A | B |\n|---|---|\n" + Array.from({ length: 5000 }, (_, i) => `| ${i} | value |\n`).join("");
     const root = render(text);
-    const list = root.findByType(FlatList);
-    expect(list.props.data).toHaveLength(5000);
     expect(root.findAllByType(Text).length).toBeLessThan(100);
     const headerCells = root.findByType(ScrollView).findAllByType(View)
       .filter(node => StyleSheet.flatten(node.props.style)?.paddingHorizontal === 8).slice(0, 2);
     expect(headerCells).toHaveLength(2);
-    expect(StyleSheet.flatten(list.props.style).width).toBe(headerCells.reduce((sum, cell) =>
-      sum + StyleSheet.flatten(cell.props.style).width, 0));
+    // The body rows are the table's own children, so they carry the header's
+    // widths rather than a viewport's.
+    const widths = root.findByType(ScrollView).findAllByType(View)
+      .filter(node => typeof StyleSheet.flatten(node.props.style)?.width === "number")
+      .map(node => StyleSheet.flatten(node.props.style).width);
+    expect(widths.slice(2, 4)).toEqual(widths.slice(0, 2));
   });
 
   test("large code previews a bounded wrapped head and expands to the whole source", () => {
@@ -127,6 +139,61 @@ describe("MarkdownText layout and fidelity", () => {
     expect(JSON.stringify(renderer.toJSON())).not.toContain("**");
   });
 
+  test("a bold URL keeps the punctuation and the code span after it out of the link", () => {
+    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+    try {
+      const root = render("**https://github.com/huichen/futureos-wechat-articles**（PRIVATE，`huichen` 账号下）");
+      const links = root.findAll(node =>
+        typeof node.props.onPress === "function" && StyleSheet.flatten(node.props.style)?.textDecorationLine === "underline");
+      expect(links.length).toBeGreaterThan(0);
+      // The composite and host node of one link: both paint exactly the URL.
+      expect(links.every(node => paintedText(node) === "https://github.com/huichen/futureos-wechat-articles")).toBe(true);
+      act(() => links[0]!.props.onPress());
+      // Tapping opened `…articles**（PRIVATE，`huichen`` before: the target ran
+      // on to the end of the sentence.
+      expect(open).toHaveBeenCalledWith("https://github.com/huichen/futureos-wechat-articles");
+      let bold = false;
+      for (let parent = links[0]!.parent; parent; parent = parent.parent) {
+        if (StyleSheet.flatten(parent.props?.style)?.fontWeight === "700") bold = true;
+      }
+      expect(bold).toBe(true);
+      // Only the URL is a link and only the URL is blue: the sentence's own
+      // punctuation, code span and text are outside both.
+      const output = JSON.stringify(renderer.toJSON());
+      expect(output).not.toContain("**");
+      expect(output).toContain("（PRIVATE，");
+      expect(output).toContain("账号下）");
+    } finally { open.mockRestore(); }
+  });
+
+  test("a local image inside a list item renders as an openable file chip", () => {
+    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+    try {
+      const root = render("- ![chart](docs/chart.png)");
+      // A path the phone cannot display inline becomes a chip that names the
+      // file and opens it, rather than an alt-text word that does nothing.
+      const chip = root.findAllByType(Text).find(
+        node => paintedText(node) === "chart" && typeof node.props.onPress === "function",
+      );
+      expect(chip).toBeDefined();
+      act(() => chip!.props.onPress());
+      expect(open).not.toHaveBeenCalled();
+    } finally { open.mockRestore(); }
+  });
+
+  test("an in-document anchor wrapped around an image never reaches the OS", () => {
+    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+    try {
+      const root = render("[![chart](docs/chart.png)](#section)");
+      const pressables = root.findAll(node => typeof node.props.onPress === "function");
+      expect(pressables.length).toBeGreaterThan(0);
+      // The image's own chip and its link wrapper both resolve to an anchor in
+      // this document; handing it to Linking would open a browser on a fragment.
+      act(() => { pressables.forEach(node => node.props.onPress()); });
+      expect(open).not.toHaveBeenCalled();
+    } finally { open.mockRestore(); }
+  });
+
   test("headings have distinct scales and accessible heading roles", () => {
     const root = render("# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six");
     const headings = root.findAllByType(Text).filter(node => node.props.accessibilityRole === "header");
@@ -134,6 +201,19 @@ describe("MarkdownText layout and fidelity", () => {
     const sizes = headings.map(node => StyleSheet.flatten(node.props.style).fontSize);
     expect(new Set(sizes).size).toBe(6);
     expect(sizes).toEqual([...sizes].sort((a, b) => b - a));
+  });
+
+  test("a centered HTML block aligns its text and caps/centers a widthed image", () => {
+    const root = render('<p align="center">hello</p>\n\n<div align="center">\n<img src="https://example.com/a.png" width="120">\n</div>');
+    // The centered paragraph's text carries textAlign.
+    const hello = root.findAllByType(Text).find(
+      node => Array.isArray(node.props.children) && node.props.children[0] === "hello",
+    );
+    expect(StyleSheet.flatten(hello?.props.style)).toMatchObject({ textAlign: "center" });
+    // The widthed image is capped at 120 and centered within its block.
+    const image = root.findByType(Image);
+    const style = StyleSheet.flatten(image.props.style);
+    expect(style).toMatchObject({ width: "100%", maxWidth: 120, alignSelf: "center" });
   });
 
   test("ordered markers retain start values and do not have a fixed clipping width", () => {
@@ -258,6 +338,15 @@ describe("MarkdownText layout and fidelity", () => {
     expect(output).toContain("frac{a}{b}");
     expect(output).toContain("graph TD; A-->B;");
   });
+
+  test("a formula the TeX layout cannot render stays readable as its source", () => {
+    // `\frac{a}` is an arity error: MathJax answers with an error node, so the
+    // vector is refused and the reader keeps the TeX rather than a blank gap.
+    const root = render("Broken $\\frac{a}$ here");
+    expect(root.findAllByType(SvgXml)).toHaveLength(0);
+    const source = root.findAllByType(Text).map(node => paintedText(node)).filter(Boolean);
+    expect(source.join(" ")).toContain("\\frac{a}");
+  });
 });
 
 describe("MarkdownText", () => {
@@ -368,20 +457,48 @@ describe("MarkdownText", () => {
     expect(onOpenFile).toHaveBeenCalledWith("assets/pic.png");
   });
 
-  test("prompts for a local image from a Markdown file preview", () => {
+  test("a local link inside a Markdown preview opens beside it, not on a desktop-only notice", () => {
+    const onOpenFile = jest.fn();
     const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
     let renderer: ReactTestRenderer | undefined;
     act(() => {
       renderer = create(
         createElement(MarkdownText, {
+          imageBasePath: "/root/articles/silver/cover-notes.md",
           mode: "file-preview",
-          text: "![diagram](assets/pic.png)",
+          onOpenFile,
+          text: "[SOURCES](../../SOURCES.md) and [sub](images/diagram.png)",
+        }),
+      );
+    });
+    const links = renderer?.root.findAllByType(Text).filter(node => node.props.onPress) ?? [];
+    act(() => links[0]?.props.onPress());
+    act(() => links[1]?.props.onPress());
+    // Relative to the document that carries the link, not to the workspace.
+    expect(onOpenFile).toHaveBeenNthCalledWith(1, "/root/articles/silver/../../SOURCES.md");
+    expect(onOpenFile).toHaveBeenNthCalledWith(2, "/root/articles/silver/images/diagram.png");
+    expect(alert).not.toHaveBeenCalled();
+    alert.mockRestore();
+  });
+
+  test("cannot follow a link in a document opened from this phone's own storage", () => {
+    const onOpenFile = jest.fn();
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    let renderer: ReactTestRenderer | undefined;
+    act(() => {
+      renderer = create(
+        createElement(MarkdownText, {
+          imageBasePath: "file:///phone/cache/report.md",
+          mode: "file-preview",
+          onOpenFile,
+          text: "[diagram](assets/pic.png)",
         }),
       );
     });
     const chip = renderer?.root.findAllByType(Text).find(node => node.props.onPress);
     act(() => chip?.props.onPress());
-    expect(alert).toHaveBeenCalledTimes(1);
+    expect(onOpenFile).not.toHaveBeenCalled();
+    expect(alert).toHaveBeenCalledWith("attachment.title", "attachment.localLinkUnresolvable");
     alert.mockRestore();
   });
 
@@ -425,5 +542,110 @@ describe("MarkdownText", () => {
     expect(pressable).toBeUndefined();
     expect(open).not.toHaveBeenCalled();
     open.mockRestore();
+  });
+});
+
+/** A tree of its own for the cases below: they assert error surfaces and block
+ * kinds the layout suite does not need, and each mounts and unmounts its own. */
+describe("MarkdownText error surfaces and block kinds", () => {
+  const mounted: ReactTestRenderer[] = [];
+  const render = (text: string) => {
+    let tree!: ReactTestRenderer;
+    act(() => { tree = create(createElement(MarkdownText, { text })); });
+    mounted.push(tree);
+    return tree.root;
+  };
+  afterEach(() => {
+    for (const tree of mounted.splice(0)) act(() => tree.unmount());
+  });
+
+  test("a copy whose clipboard write fails says so instead of claiming success", async () => {
+    const copy = jest.spyOn(Clipboard, "setStringAsync").mockRejectedValue(new Error("clipboard busy"));
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    try {
+      const root = render("```ts\n" + 'const value = "text";\n'.repeat(40) + "```");
+      const button = root.findAll(node =>
+        node.props.accessibilityLabel === "chat.copy" && typeof node.props.onPress === "function")[0]!;
+      await act(async () => { button.props.onPress(); });
+      expect(copy).toHaveBeenCalled();
+      expect(alert).toHaveBeenCalledWith("common.error", "clipboard busy");
+    } finally {
+      copy.mockRestore();
+      alert.mockRestore();
+    }
+  });
+
+  test("a link the phone cannot open reports itself rather than failing silently", async () => {
+    const open = jest.spyOn(Linking, "openURL").mockRejectedValue(new Error("no handler"));
+    const alert = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+    try {
+      const root = render("[site](https://example.com)");
+      const link = root.findAllByType(Text).find(node => node.props.onPress)!;
+      await act(async () => { link.props.onPress(); });
+      expect(open).toHaveBeenCalledWith("https://example.com");
+      expect(alert).toHaveBeenCalledWith("attachment.title", "attachment.linkOpenFailed");
+    } finally {
+      open.mockRestore();
+      alert.mockRestore();
+    }
+  });
+
+  test("blockquotes, rules, struck text and file embeds all paint as themselves", async () => {
+    // Each of these is a distinct block/inline kind. A fall-through would still
+    // show the words, so the assertion is that the *structure* is gone: the
+    // quote keeps its bar, the rule paints no literal dashes, the embed becomes
+    // a pressable chip with its title, and `~~` never reaches the screen.
+    const root = render([
+      "> quoted **line** and *slanted*…",
+      "",
+      "---",
+      "",
+      "```futureos-file",
+      "id: docs/report.md",
+      "title: The report",
+      "```",
+      "",
+      "~~struck~~ and ![shot](assets/pic.png)",
+      "",
+      "a **bold ![inline-chip](docs/chart.png) tail**",
+    ].join("\n"));
+    const screen = paintedText(root.findByType(View));
+    expect(screen).toContain("quoted line");
+    expect(screen).toContain("slanted");
+    expect(screen).not.toContain("*slanted*");
+    expect(screen).toContain("struck");
+    expect(screen).not.toContain("~~");
+    // The rule is a drawn line, not three characters of prose.
+    expect(screen).not.toContain("---");
+    // The embed keeps the title the directive carries, not the file path.
+    expect(screen).toContain("The report");
+    expect(screen).not.toContain("futureos-file");
+    // Pressing the embed chip opens the file the directive names.
+    const embedChip = root.findAllByType(Text).find(node =>
+      node.props.onPress && paintedText(node) === "The report");
+    expect(embedChip).toBeDefined();
+    act(() => embedChip!.props.onPress());
+    // ...and the local image nested in bold text is a chip for its own path,
+    // not a bare file name the reader cannot open.
+    const inlineChip = root.findAllByType(Text).find(node =>
+      node.props.onPress && paintedText(node) === "inline-chip");
+    expect(inlineChip).toBeDefined();
+    act(() => inlineChip!.props.onPress());
+  });
+
+  test("a file embed opens its target, and a quote keeps its own bar", () => {
+    const root = render([
+      ">> nested **quote**",
+      "",
+      "```futureos-file",
+      "id: docs/report.md",
+      "```",
+    ].join("\n"));
+    // Nested quoting exercises the recursive block renderer too.
+    expect(paintedText(root.findByType(View))).toContain("nested quote");
+    // With no title, the chip falls back to the file's base name.
+    const chip = root.findAllByType(Text).find(node =>
+      node.props.onPress && paintedText(node) === "report.md");
+    expect(chip).toBeDefined();
   });
 });

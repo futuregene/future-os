@@ -24,4 +24,13 @@ export class CatalogVersionGate {
     this.revisions[domain] = version.revision;
     return true;
   }
+
+  /**
+   * The revision last applied for a domain, or `-1` before any snapshot. Used
+   * to tell a presence-advertised revision that is merely current (nothing to
+   * do) from one that is newer (a snapshot push was lost, so pull).
+   */
+  revision(domain: "sessions" | "workspaces"): number {
+    return this.revisions[domain];
+  }
 }

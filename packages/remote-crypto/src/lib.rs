@@ -404,4 +404,102 @@ mod tests {
             assert!(r.read(&i.write(b"").unwrap()).is_err());
         }
     }
+
+    /// The reconnect pattern is a *different* Noise pattern (IK, no PSK) and is
+    /// only reachable when the peer's static key is already known — the arm the
+    /// pairing path never exercises.
+    #[test]
+    fn reconnect_pattern_uses_ik_and_needs_the_remote_static_key() {
+        let (a, _) = generate_identity().unwrap();
+        let (b, public_b) = generate_identity().unwrap();
+        let prologue = prologue("pair_1", "desktop_1").unwrap();
+        // IK initiator knows the responder's static key; no PSK on reconnect.
+        let mut i = Handshake::new(
+            Pattern::Reconnect,
+            true,
+            &a,
+            Some(&public_b),
+            None,
+            &prologue,
+        )
+        .unwrap();
+        let mut r = Handshake::new(Pattern::Reconnect, false, &b, None, None, &prologue).unwrap();
+        r.read(&i.write(b"").unwrap()).unwrap();
+        i.read(&r.write(b"").unwrap()).unwrap();
+        assert_eq!(i.remote_public_key().unwrap(), public_b);
+        let (mut i, mut r) = (i.finish().unwrap(), r.finish().unwrap());
+        let wire = i.seal("event", b"after reconnect").unwrap();
+        assert_eq!(r.open("event", &wire).unwrap(), b"after reconnect");
+        // IK cannot start without the peer's static key.
+        assert!(Handshake::new(Pattern::Reconnect, true, &a, None, None, &prologue).is_err());
+    }
+
+    /// Identity IDs are concatenated into the prologue, so a hostile or merely
+    /// sloppy id must be refused before it can shift the transcript.
+    #[test]
+    fn prologue_rejects_empty_overlong_and_non_alphanumeric_ids() {
+        assert!(prologue("", "desktop_1").is_err());
+        assert!(prologue("pair_1", "").is_err());
+        assert!(prologue(&"a".repeat(129), "desktop_1").is_err());
+        assert!(prologue("pair_1", &"a".repeat(129)).is_err());
+        // The separator itself would let one id impersonate another.
+        assert!(prologue("pair\ndesktop", "desktop_1").is_err());
+        assert!(prologue("pair/1", "desktop_1").is_err());
+        assert!(prologue("pair_1", "desktop 1").is_err());
+        // The accepted alphabet is exactly [A-Za-z0-9_-], at the 128 boundary.
+        assert!(prologue("Aa0_-", "Zz9").is_ok());
+        assert!(prologue(&"a".repeat(128), "desktop_1").is_ok());
+    }
+
+    /// AAD binds the header to the caller's context; a context the protocol
+    /// cannot authenticate (empty, non-ASCII, over-long) must fail closed rather
+    /// than seal plaintext under a weaker binding.
+    #[test]
+    fn seal_and_open_reject_unusable_contexts() {
+        let (mut i, mut r) = pair();
+        for context in ["", "\u{1f600}emoji", &"c".repeat(1025)] {
+            assert!(i.seal(context, b"payload").is_err(), "context: {context:?}");
+        }
+        let wire = i.seal("event", b"payload").unwrap();
+        assert!(r.open("", &wire).is_err());
+        assert!(r.open("\u{1f600}emoji", &wire).is_err());
+        assert!(r.open(&"c".repeat(1025), &wire).is_err());
+    }
+
+    #[test]
+    fn handshake_write_read_and_finish_refuse_oversized_or_premature_use() {
+        let (a, _) = generate_identity().unwrap();
+        let (b, _) = generate_identity().unwrap();
+        let prologue = prologue("pair_1", "desktop_1").unwrap();
+        let mut i =
+            Handshake::new(Pattern::Pair, true, &a, None, Some(&[7; 32]), &prologue).unwrap();
+        // Oversized handshake payloads are refused on both sides.
+        assert!(i.write(&vec![0; 4097]).is_err());
+        assert!(i.read(&vec![0; 8193]).is_err());
+        // A truncated/garbage handshake message is rejected, not panicked on.
+        assert!(i.read(b"\x00\x01\x02").is_err());
+        // `finish` before the handshake completes must not mint a channel
+        // (consumes the handshake, so it comes last).
+        assert!(i.finish().is_err());
+        let _ = b;
+    }
+
+    /// `reply_context` binds the reply to the request's channel id and sequence,
+    /// so a request that is not a sealed frame — or a subject that would push the
+    /// context over the size the AAD accepts — must be refused.
+    #[test]
+    fn reply_context_rejects_non_frames_and_oversized_subjects() {
+        assert!(reply_context("subject", b"").is_err());
+        assert!(reply_context("subject", &[0u8; HEADER_LEN]).is_err());
+        // Correct magic but a subject long enough to overflow the context bound.
+        let (mut i, _r) = pair();
+        let wire = i.seal("event", b"payload").unwrap();
+        assert!(reply_context(&"s".repeat(1024), &wire).is_err());
+        // The accepted shape is stable and hex-encodes the 16-byte channel id.
+        let context = reply_context("subject", &wire).unwrap();
+        assert_eq!(
+            context,
+            format!("reply:subject:{}", hex::encode(&wire[4..HEADER_LEN]))
+        );
+    }
 }

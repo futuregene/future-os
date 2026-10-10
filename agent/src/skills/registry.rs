@@ -166,7 +166,7 @@ pub fn list_skill_records() -> Result<Vec<SkillRecord>> {
 /// missing. Runs in mutator processes (CLI, desktop) beside a possibly
 /// running agent, so it follows the same recognition rules as the session
 /// schema's `open_connection`: refuse foreign or unrecognized files, accept
-/// the schema versions this build knows (0, 2, 3, 4).
+/// the schema versions this build knows (0, 2, 3, 4, 5).
 ///
 /// A file created here is stamped `application_id` + `user_version = 4`; an
 /// existing v3 database moves to v4 after the new tables are created.
@@ -192,8 +192,13 @@ pub(crate) fn open_registry(path: &Path) -> Result<Connection> {
         if version != 0 || tables != 0 {
             bail!("refusing to initialize an unrecognized database");
         }
-    } else if version != 0 && version != 2 && version != 3 && version != 4 {
+    } else if version != 0 && version != 2 && version != 3 && version != 4 && version != 5 {
         bail!("unsupported Agent database schema version {version}");
+    }
+    if fresh {
+        // Set the pointer-map layout before WAL writes the fresh file header.
+        // Existing databases keep their layout and are never fully rebuilt.
+        connection.pragma_update(None, "auto_vacuum", 2)?;
     }
     connection.pragma_update(None, "journal_mode", "WAL")?;
     let tx = connection.transaction()?;
@@ -406,7 +411,53 @@ mod tests {
         record_skill_installed("future-x", Some("1.0.0")).unwrap();
         assert_eq!(list_skill_records().unwrap().len(), 1);
 
+        let check = Connection::open(&path).unwrap();
+        assert_eq!(
+            check
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            5,
+            "registry writes must preserve the snapshot schema version"
+        );
+
         // The session store's connection still serves requests afterwards.
         assert!(manager.import_records().unwrap().is_empty());
+    }
+
+    /// A v3 database is adopted in place: its tables are kept, and only the
+    /// schema version moves — opening it must never drop or recreate anything.
+    #[test]
+    fn a_v3_database_is_migrated_in_place_without_losing_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.db");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(SKILLS_TABLE_SQL).unwrap();
+        connection
+            .execute_batch(&format!(
+                "PRAGMA application_id = {APPLICATION_ID};\n PRAGMA user_version = 3;"
+            ))
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO skills(name,version,deleted,installed_at_ms,updated_at_ms)
+                 VALUES('legacy','0.9.0',0,1,1)",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let migrated = open_registry(&path).unwrap();
+        let version: i64 = migrated
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+        let name: String = migrated
+            .query_row("SELECT name FROM skills", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(name, "legacy", "the upgrade must keep the existing rows");
+
+        // And a v4 database is accepted as-is on the next open.
+        drop(migrated);
+        assert!(open_registry(&path).is_ok());
     }
 }

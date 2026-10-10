@@ -1,6 +1,7 @@
 import { CatalogVersionGate } from "./catalogVersion";
 import type {
   SnapshotVersion,
+  CatalogRevisions,
   StreamEvent,
   ModelsData,
   RemoteModel,
@@ -24,6 +25,27 @@ const INITIAL_SYNC: CatalogSyncState = {
   settings: "idle",
 };
 const MODEL_RECOVERY_DELAYS_MS = [1_000, 5_000, 15_000, 30_000] as const;
+
+/**
+ * `root` plus every session below it in the local lineage. Cycle-safe: a
+ * malformed parent loop ends once no session outside the set chains to it.
+ * Pinned sessions are included — the pin moves a child in the sidebar, not in
+ * the lineage the desktop deletes by.
+ */
+function subtreeSessionIds(sessions: RemoteSession[], root: string): Set<string> {
+  const removed = new Set([root]);
+  for (let grown = true; grown;) {
+    grown = false;
+    for (const session of sessions) {
+      if (removed.has(session.sessionId)) continue;
+      if (session.parentSessionId && removed.has(session.parentSessionId)) {
+        removed.add(session.sessionId);
+        grown = true;
+      }
+    }
+  }
+  return removed;
+}
 
 /**
  * The desktop's control-plane catalogue — sessions, workspaces, the model
@@ -355,10 +377,50 @@ export function useSessionCatalog(
         revisions.current.workspaces === revision
       )
         markSync("workspaces", "failed");
-      // Keep the last snapshot. The desktop also pushes a 20-second baseline,
-      // so a transient read failure must not flash the catalogue empty.
+      // Keep the last snapshot on a failed read. Not flashing the catalogue
+      // empty is the point: the desktop no longer re-sends a baseline on a timer,
+      // so the recovery path is the next presence heartbeat's revision asking for
+      // a fresh pull — not a retry loop that would blank the list in the meantime.
     }
   }, [clientRef, markSync]);
+
+  /**
+   * Reconcile a presence heartbeat's catalog revisions against what this client
+   * has actually applied.
+   *
+   * This is the replacement for the desktop's old "re-send every unchanged
+   * snapshot every 20s" self-heal: a heartbeated revision newer than the applied
+   * one proves the pushed snapshot was lost on the at-most-once event lane, so
+   * the client pulls the catalogue itself.
+   *
+   * Applied immediately rather than debounced. The heartbeat and the snapshot
+   * are published by different desktop tasks, so whichever arrives first wins
+   * and the loser is rejected by the version gate — at most one fetch per
+   * change, never a duplicate. A failed pull needs no retry timer either: the
+   * next heartbeat still advertises a newer revision and asks again.
+   */
+  const noteCatalogRevisions = useCallback(
+    (version: CatalogRevisions | undefined) => {
+      if (!version) return;
+      // A revision from another epoch describes a desktop generation this client
+      // has not authenticated; reconnect recovery owns that transition.
+      const epoch = authenticatedEpoch.current;
+      if (!epoch || version.epoch !== epoch) return;
+      if (
+        typeof version.sessions === "number" &&
+        version.sessions > versionGate.current.revision("sessions")
+      ) {
+        void refreshSessions();
+      }
+      if (
+        typeof version.workspaces === "number" &&
+        version.workspaces > versionGate.current.revision("workspaces")
+      ) {
+        void refreshWorkspaces();
+      }
+    },
+    [refreshSessions, refreshWorkspaces],
+  );
 
   /** Drop catalogue state (unpair / credentials cleared). */
   const applyWorkspaces = useCallback(
@@ -431,9 +493,12 @@ export function useSessionCatalog(
   );
 
   /**
-   * Delete a session on the desktop and drop it locally. Returns true when the
-   * deleted session was the one currently selected, so the caller can close the
-   * conversation (a navigation concern the catalogue doesn't own).
+   * Delete a session on the desktop and drop it locally. The desktop delete is
+   * recursive — a conversation's descendants go with it — so the local
+   * catalogue drops the whole subtree rather than keeping rows the desktop no
+   * longer knows about. Returns true when the deleted subtree contained the
+   * selected session, so the caller can close the conversation (a navigation
+   * concern the catalogue doesn't own).
    */
   const deleteSession = useCallback(
     async (sessionId: string, threadId: string): Promise<boolean> => {
@@ -443,8 +508,9 @@ export function useSessionCatalog(
       await client.request({ type: "delete_session", sessionId, threadId }, sessionId);
       if (clientRef.current !== client || catalogEpoch.current !== epoch) return false;
       revisions.current.sessions += 1;
-      setSessions((current) => current.filter((session) => session.sessionId !== sessionId));
-      return selectedRef.current === sessionId;
+      const removed = subtreeSessionIds(sessionsRef.current, sessionId);
+      setSessions((current) => current.filter((session) => !removed.has(session.sessionId)));
+      return removed.has(selectedRef.current);
     },
     [clientRef, selectedRef, setSessions],
   );
@@ -515,6 +581,35 @@ export function useSessionCatalog(
     [clientRef, setSessions],
   );
 
+  /**
+   * Register an existing directory on the desktop as a workspace — the same
+   * store write as the desktop's own create-workspace dialog. The directory
+   * must already exist (the phone has no folder picker for the host, so it
+   * types the path). The desktop answers the fresh catalogue so the shared
+   * version gate applies, and echoes the created row so the caller can select
+   * it without re-deriving the id from the path.
+   */
+  const createWorkspace = useCallback(
+    async (path: string, name: string): Promise<RemoteWorkspace> => {
+      const client = clientRef.current;
+      const trimmedPath = path.trim();
+      if (!client || !trimmedPath) throw new Error("Workspace path unavailable");
+      const epoch = catalogEpoch.current;
+      const response = await client.request<WorkspacesData>(
+        { type: "create_workspace", path: trimmedPath, name: name.trim() },
+        "list",
+      );
+      const workspace = response.data?.workspace;
+      if (!workspace?.id) throw new Error("Invalid workspace snapshot");
+      if (clientRef.current === client && catalogEpoch.current === epoch) {
+        if (Array.isArray(response.data.workspaces))
+          applyWorkspaces(response.data.workspaces, response.data.version);
+      }
+      return workspace;
+    },
+    [applyWorkspaces, clientRef],
+  );
+
   const setWorkspacePinned = useCallback(
     async (workspaceId: string, pinned: boolean) => {
       const client = clientRef.current;
@@ -550,6 +645,7 @@ export function useSessionCatalog(
     applySessionSnapshot,
     observeRunEvent,
     refreshSessions,
+    noteCatalogRevisions,
     refreshModels,
     refreshSettings,
     refreshWorkspaces,
@@ -557,6 +653,7 @@ export function useSessionCatalog(
     generateTitle,
     deleteSession,
     deleteWorkspace,
+    createWorkspace,
     setSessionPinned,
     setWorkspacePinned,
     reset,

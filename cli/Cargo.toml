@@ -19,6 +19,15 @@ tonic.workspace = true
 # Single proto codegen owner (PR #112): generated proto code lives in the
 # future-rpc crate; the CLI consumes it instead of owning a generated copy.
 future-rpc = { path = "../packages/rpc" }
+# The desktop app's setting schema (keys, defaults, validation, app.db path),
+# shared with the Tauri backend so `future desktop settings` cannot drift.
+future-app-settings = { path = "../packages/app-settings" }
+# The desktop app's workspace table and rules, shared with the Tauri backend so
+# `future workspace add` and the app's own dialog cannot drift apart.
+future-app-workspaces = { path = "../packages/app-workspaces" }
+# The CLI opens the desktop app's database itself (`future workspace`); the
+# connection, the pragmas and the row reads all go through the shared crate.
+rusqlite = { version = "0.40", features = ["bundled"] }
 # Embedded components: `future agent|tui|channel|loop <args>` runs the same
 # code as the standalone binaries (kept as separate [[bin]] targets too, see
 # Makefile run-* targets). The entry points build their own tokio runtimes,
@@ -27,6 +36,7 @@ future-agent = { path = "../agent" }
 future-tui = { path = "../tui" }
 future-channel = { path = "../channels" }
 future-loop = { path = "../orchestration/loop" }
+future-tasks = { path = "../orchestration/tasks" }
 serde.workspace = true
 # preserve_order: JSON object key order must match the TS CLI's JS semantics
 # (JSON.parse preserves insertion order; serde_json's default BTreeMap sorts).

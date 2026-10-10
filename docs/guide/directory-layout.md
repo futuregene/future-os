@@ -16,6 +16,7 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   ├── sessions/              # retained legacy JSONL migration sources
 │   ├── run-events/            # retained legacy event migration sources
 │   ├── agent-instance.lock    # per-user agent singleton lock
+│   ├── agent-instance.json    # readable process identity for installer diagnostics
 │   ├── skills/                # installed user skills (APP_SKILLS_DIR)
 │   ├── browser/               # CLI browser-tool state (config.json, profile/, artifacts/)
 │   ├── images/                # CLI image-tool output directory
@@ -27,7 +28,8 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   └── feishu/                # the Feishu bridge's data (session file, received files)
 ├── tui/                       # the terminal UI (future-tui)
 │   ├── settings.json          # defaultModel, defaultThinkingLevel, … (see tui.md)
-│   ├── keybindings.json       # optional keybinding overrides
+│   ├── keybindings.json       # key-binding overrides (/keymap writes it, read at startup)
+│   ├── skill_reco.json        # skill-recommendation budget for the current local day
 │   ├── debug.log              # TUI runtime log
 │   ├── write.log              # raw screen-write log (PI_TUI_WRITE_LOG=1 only)
 │   └── crash.log              # panic backtrace appended on crash
@@ -52,7 +54,11 @@ Owned by `future-agent` (the gRPC backend, defaulting to per-user local IPC). Re
 config purely from files here — there are no model-related CLI flags or env
 vars:
 
-- `settings.json` — agent settings.
+- `settings.json` — agent settings (compaction, retry, `maxTurns`,
+  `defaultPermissionLevel`, `defaultModel`). Read and change it with
+  `future config get` / `future config set`; the Agent applies the values when it
+  uses them, so no restart is needed to read them and none of the file's other
+  keys are touched by a `set`.
 - `models.json` — provider catalog in the shape
   `{"providers": {"<provider>": {"apiKey": …, "baseUrl": …, "models": [{"id", "name", "contextWindow"}]}}}`.
   `future auth login` syncs this automatically; it can also be hand-edited.
@@ -70,6 +76,9 @@ vars:
   home (`FUTURE_HOME` / `future agent --home`, see
   [Running several isolated instances](#running-several-isolated-instances-future_home));
   changing only the TCP port does not bypass the lock.
+- `agent-instance.json` — readable process identity for installer diagnostics
+  (PID, executable path, FutureOS home and, on Windows, process creation time).
+  It may remain after a crash; the operating-system lock is authoritative.
 - `skills/` — one of the two skill discovery directories
   (`APP_SKILLS_DIR`); the other is `~/.agents/skills/` (`AGENTS_SKILLS_DIR`).
   Skills are plain directories with a `SKILL.md` + YAML frontmatter.
@@ -159,7 +168,11 @@ directory, which also keeps the files it received from the platform.
 
 Owned by `future-tui`. `settings.json` persists client-side settings
 (`defaultModel`, `defaultThinkingLevel`, `defaultPermissionLevel`,
-`enabledModelIds`); optional keybinding overrides go in `keybindings.json`;
+`enabledModelIds`, `themeId`, `skillRecommend`); key-binding overrides live in
+`keybindings.json` (`/keymap` writes the non-default bindings, and the file is
+read at startup); `skill_reco.json` holds the current local day's
+skill-recommendation budget (which skills were already offered and which
+drafts were already evaluated — rolled over, never read across days);
 `debug.log` is written when `PI_DEBUG_REDRAW=1`, and `write.log` records raw
 screen writes when `PI_TUI_WRITE_LOG=1`; `crash.log` receives the panic
 backtrace when the TUI crashes. See [tui.md](tui.md).
@@ -168,7 +181,11 @@ backtrace when the TUI crashes. See [tui.md](tui.md).
 
 Owned by the Tauri desktop app (see `desktop/`):
 
-- `app.db` — the SQLite database (threads, runs, approval requests, …).
+- `app.db` — the SQLite database (threads, runs, approval requests, …). Its
+  `app_settings` table holds the app's own preferences, which `future desktop
+  settings` reads and writes, and its `workspaces` table holds the workspaces
+  workspace conversations are filed under, which `future workspace` reads and
+  adds to (see [self-inspection](self-inspection.md)).
 - `images/` — persistent per-thread image tree (`<thread_id>/thumb/` and,
   for workspace conversations, `<thread_id>/origin/`). Kept under `~/.future`
   rather than the OS cache dir because macOS may purge the cache.

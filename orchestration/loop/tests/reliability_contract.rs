@@ -77,6 +77,13 @@ fn outbox_batches_and_retries_an_immutable_payload_after_disconnect() {
             shared.lock().unwrap().prompt_messages,
             vec![batches[0].1.clone()]
         );
+        // The outbox delivers with the coalescing follow-up policy: while the
+        // orchestrator is busy, batches queue and the run boundary folds them
+        // into ONE reconciliation turn.
+        assert_eq!(
+            shared.lock().unwrap().prompt_calls,
+            vec![("supervisor".to_string(), "enqueue_coalescing".to_string())]
+        );
         assert!(supervision::pending_delivery(&store, &goal).unwrap());
         supervision::flush(&mut store, &goal, &mut client)
             .await

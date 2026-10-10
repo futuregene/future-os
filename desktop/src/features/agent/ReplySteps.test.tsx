@@ -49,16 +49,16 @@ afterEach(async () => {
   await i18n.changeLanguage("en");
 });
 
-it.each(["en", "zh"])("folds mixed steps into a muted right-aligned glyph/count summary with an accessible failure label (%s)", async (language) => {
+it.each(["en", "zh"])("folds mixed steps into a muted left-aligned glyph/count summary with an accessible failure label (%s)", async (language) => {
   await i18n.changeLanguage(language);
   await render([prose, thought, tool, failed, running], { streaming: true });
   const button = summary();
   expect(button.textContent).toBe("×2·×1");
   expect(button.getAttribute("aria-label")).toBe(language === "zh" ? "工具调用 2 次 · 思考 1 次 · 1 次失败" : "Tool calls 2× · Thought 1× · 1 failed");
   expect(button.getAttribute("aria-expanded")).toBe("false");
-  expect(button.classList.contains("self-end")).toBe(true);
+  expect(button.classList.contains("self-start")).toBe(true);
   expect(button.parentElement!.classList.contains("text-ink-muted")).toBe(true);
-  expect(button.querySelector(".lucide-triangle-alert")).not.toBeNull();
+  expect(button.querySelector(".lucide-triangle-alert")).toBeNull();
   expect(container.textContent).toContain("Visible response");
   expect(container.textContent).toContain(i18n.t("agent:activity.runningCommand"));
   expect(container.textContent).not.toContain("Full reasoning content");
@@ -69,7 +69,7 @@ it("expands steps in timeline order on the left and keeps each detail independen
   await render([thought, tool, failed]);
   const button = summary();
   await click(button);
-  expect(button.classList.contains("self-end")).toBe(true);
+  expect(button.classList.contains("self-start")).toBe(true);
   expect(button.getAttribute("aria-expanded")).toBe("true");
   const children = button.nextElementSibling!;
   const headers = Array.from(children.querySelectorAll("button"));
@@ -119,14 +119,14 @@ it("keeps live reasoning outside the group, collapsed but expandable", async () 
   await render([tool, failed, liveThought], { streaming: true });
   expect(summary().textContent).toBe("×2");
   const thinkingButton = Array.from(container.querySelectorAll("button")).find(button => button.textContent === i18n.t("agent:activity.thinking"))!;
-  expect(thinkingButton.classList.contains("self-end")).toBe(true);
+  expect(thinkingButton.classList.contains("self-start")).toBe(true);
   expect(container.textContent).not.toContain("Currently reasoning");
   await click(thinkingButton);
   expect(container.textContent).toContain("Currently reasoning");
   expect(thinkingButton.classList.contains("self-start")).toBe(true);
 });
 
-it("keeps a same-kind burst as one projected step with its nested count and original targets", async () => {
+it("keeps a same-kind burst as one projected step and counts every call behind it", async () => {
   const burst: MessageSegment = { id: "burst", kind: "activity", item: {
     id: "burst",
     kind: "read",
@@ -138,7 +138,9 @@ it("keeps a same-kind burst as one projected step with its nested count and orig
     ],
   } };
   await render([burst, thought]);
-  expect(summary().textContent).toBe("×1·×1");
+  // The burst is one row, but it stands for its two calls: the summary has to
+  // agree with the "Read 2 files" row it reveals, not with the row count.
+  expect(summary().textContent).toBe("×2·×1");
   await click(summary());
   const burstButton = summary().nextElementSibling!.querySelector("button")!;
   expect(burstButton.textContent).toBe(i18n.t("agent:activity.readFiles", { count: 2 }));
@@ -154,4 +156,20 @@ it("preserves an expanded summary as new settled steps arrive", async () => {
   expect(summary().getAttribute("aria-expanded")).toBe("true");
   expect(summary().textContent).toBe("×2·×1");
   expect(summary().nextElementSibling!.textContent).toContain(i18n.t("agent:activity.failed.shell"));
+});
+
+it("shows a thinking-only group without inventing a tool count", async () => {
+  // boundary: a group can hold thinking segments and no activity at all (a model
+  // that reasons before answering, interrupted before any tool call). Then `tools`
+  // is 0, so its summary term and its wrench glyph must both be omitted rather
+  // than rendering a bare "0" or an icon with no count behind it.
+  await render([thought, thought]);
+  const button = summary();
+
+  // The thoughts term alone carries the summary - no tool term at all.
+  expect(button.getAttribute("aria-label")).toBe(i18n.t("agent:activity.stepThoughts", { count: 2 }));
+  expect(button.getAttribute("aria-label")).not.toContain("0");
+  expect(button.querySelector(".lucide-wrench")).toBeNull();
+  expect(button.querySelector(".lucide-brain")).not.toBeNull();
+  expect(button.textContent).toBe("×2");
 });

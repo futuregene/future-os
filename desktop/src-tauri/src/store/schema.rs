@@ -5,7 +5,8 @@
 /// must also have a versioned migration for existing databases; changing this
 /// constant alone is insufficient. See `desktop/CLAUDE.md`, “Released database
 /// migrations”.
-pub(super) const SCHEMA: &str = r#"
+pub(super) const SCHEMA: &str = concat!(
+    r#"
 CREATE TABLE IF NOT EXISTS workspaces (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -275,7 +276,9 @@ CREATE INDEX IF NOT EXISTS idx_approval_requests_run_status ON approval_requests
 CREATE INDEX IF NOT EXISTS idx_artifacts_workspace ON artifacts(workspace_id, deleted_at);
 -- Every read is "today's rows", so index the day the queries all filter on.
 CREATE INDEX IF NOT EXISTS idx_skill_reco_events_day ON skill_reco_events(day);
-"#;
+"#,
+    include_str!("approval_assessments.sql")
+);
 
 /// Columns added to pre-existing tables after their initial `CREATE`. SQLite's
 /// `CREATE TABLE IF NOT EXISTS` will not add columns to a table that already
@@ -358,6 +361,8 @@ pub(super) const VERSIONED_MIGRATIONS: &[(&str, &str, &str, &str)] = &[
 pub(super) const AGENT_SESSION_BINDING_MIGRATION_VERSION: &str =
     "v1.1.5-unique-agent-session-binding";
 pub(super) const REMOTE_PROMPT_RECEIPT_MIGRATION_VERSION: &str = "v1.1.7-remote-prompt-receipt";
+pub(super) const SESSION_DELETE_INDEXES_MIGRATION_VERSION: &str = "v1.2.3-session-delete-indexes";
+pub(super) const SESSION_DELETE_INDEXES_SQL: &str = include_str!("session_delete_indexes.sql");
 pub(super) const UNIQUE_AGENT_SESSION_INDEX: &str =
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_agent_session_unique \
      ON threads(agent_session_id) \

@@ -27,6 +27,7 @@ pub fn response_payload(command: &str, data: &Value) -> Option<proto::ResponsePa
         "prompt" => prompt(data).map(Kind::Prompt),
         "list_models" => list_models(data).map(Kind::ListModels),
         "get_agent_info" => get_agent_info(data).map(Kind::GetAgentInfo),
+        "get_agent_readiness" => get_agent_readiness(data).map(Kind::GetAgentReadiness),
         "get_commands" => get_commands(data).map(Kind::GetCommands),
         "compact" => compact(data).map(Kind::Compact),
         "shell" => shell(data).map(Kind::Shell),
@@ -108,6 +109,7 @@ pub(crate) fn get_state_to_proto(p: &GetStatePayload) -> proto::SessionState {
             .iter()
             .filter_map(approval_card_to_proto)
             .collect(),
+        sandbox_tier: p.sandbox_tier.clone(),
     }
 }
 
@@ -469,8 +471,45 @@ pub fn event_payload(event_type: &str, data_json: &str) -> Option<proto::EventPa
                     exit_code: data.exit_code,
                     is_soft_fail: data.is_soft_fail,
                     target_path: data.target_path,
+                    shell_result_json: data
+                        .shell_result
+                        .as_ref()
+                        .and_then(|facts| serde_json::to_string(facts).ok()),
                 })
             }),
+        "approval_assessment" => {
+            let classification = |v: &serde_json::Value| proto::ApprovalClassification {
+                risk: v["risk"].as_str().map(str::to_string),
+                authorization: v["authorization"].as_str().map(str::to_string),
+                reason_code: v["reason_code"].as_str().map(str::to_string),
+            };
+            Some(Kind::ApprovalAssessment(proto::ApprovalAssessmentEvent {
+                assessment_id: value["assessment_id"].as_str()?.into(),
+                approval_request_id: value["approval_request_id"].as_str()?.into(),
+                tool_call_id: value["tool_call_id"].as_str()?.into(),
+                reviewer: value["reviewer"].as_str()?.into(),
+                status: value["status"].as_str()?.into(),
+                reported: (!value["reported"].is_null())
+                    .then(|| classification(&value["reported"])),
+                effective: Some(classification(&value["effective"])),
+                confidence: serde_json::from_value(value["confidence"].clone()).ok()?,
+                probabilities_json: value["probabilities"].to_string(),
+                model: value["model"].as_str().map(str::to_string),
+                provider_request_id: value["provider_request_id"].as_str().map(str::to_string),
+                error_code: value["error_code"].as_str().map(str::to_string),
+                action_json: value["action"].to_string(),
+                action_digest: value["action_digest"].as_str()?.into(),
+                attempt: value["attempt"].as_i64()? as i32,
+                prompt_version: value["prompt_version"].as_i64()? as i32,
+                reason_catalog_version: value["reason_catalog_version"].as_i64()? as i32,
+                policy_version: value["policy_version"].as_i64()? as i32,
+                duration_ms: value["duration_ms"].as_i64()?,
+                input_context_json: value
+                    .get("input_context")
+                    .filter(|v| !v.is_null())
+                    .map(serde_json::Value::to_string),
+            }))
+        }
         "approval_request" => approval_card_to_proto(&value).map(Kind::ApprovalRequest),
         "approval_decision" => {
             serde_json::from_value::<crate::event_payloads::ApprovalDecisionData>(value)
@@ -583,6 +622,23 @@ fn get_agent_info(data: &Value) -> Option<proto::AgentInfo> {
         version: payload.version,
         agent_instance_id: payload.agent_instance_id,
         skills_count: payload.skills_count as u64,
+        // Proto strings cannot be absent, so "not reported" is the empty string
+        // here; `git_dirty` stays a real Option so "not reported" remains
+        // distinguishable from `false`.
+        git_commit: payload.git_commit.unwrap_or_default(),
+        git_commit_short: payload.git_commit_short.unwrap_or_default(),
+        git_dirty: payload.git_dirty,
+        build_target: payload.build_target.unwrap_or_default(),
+        build_profile: payload.build_profile.unwrap_or_default(),
+    })
+}
+
+fn get_agent_readiness(data: &Value) -> Option<proto::AgentReadiness> {
+    let payload: crate::payloads_ext::AgentReadinessPayload =
+        serde_json::from_value(data.clone()).ok()?;
+    Some(proto::AgentReadiness {
+        version: payload.version,
+        agent_instance_id: payload.agent_instance_id,
     })
 }
 

@@ -25,6 +25,12 @@ pub struct MockTarget {
     /// CDP target type ("page", "worker", ...). The page manager only
     /// attaches to "page" targets.
     pub kind: String,
+    /// What this target answers for `document.visibilityState`.
+    ///
+    /// Modelled per target because that is the fact the tool must observe: only
+    /// the foreground tab reports `visible`, and a test for "act on what the
+    /// user sees" needs one visible and one hidden page.
+    pub visibility_state: String,
 }
 
 /// Test hook: expression → `Some(value)` to override the default
@@ -406,6 +412,8 @@ fn dispatch_method(
                 url: url.clone(),
                 title: String::new(),
                 kind: "page".to_string(),
+                // A freshly created tab is the one Chrome switches to.
+                visibility_state: "visible".to_string(),
             });
             if !state.suppress_target_created {
                 events.push(json!({
@@ -548,6 +556,12 @@ fn evaluate_response(state: &MockCdpState, expression: &str, session_id: Option<
             return value;
         }
     }
+    if expression.contains("visibilityState") {
+        // Per target: only the foreground tab reports `visible`.
+        return json!(target_for(state, session_id)
+            .map(|t| t.visibility_state.clone())
+            .unwrap_or_else(|| "hidden".to_string()));
+    }
     if expression.contains("__futureClickState") {
         if expression.contains("addEventListener") {
             return state.click_meta.clone();
@@ -595,6 +609,15 @@ pub fn target(id: &str, url: &str, title: &str) -> MockTarget {
         url: url.to_string(),
         title: title.to_string(),
         kind: "page".to_string(),
+        visibility_state: "visible".to_string(),
+    }
+}
+
+/// A target that reports itself hidden (a background tab).
+pub fn hidden_target(id: &str, url: &str, title: &str) -> MockTarget {
+    MockTarget {
+        visibility_state: "hidden".to_string(),
+        ..target(id, url, title)
     }
 }
 
@@ -605,6 +628,7 @@ pub fn target_kind(id: &str, url: &str, title: &str, kind: &str) -> MockTarget {
         url: url.to_string(),
         title: title.to_string(),
         kind: kind.to_string(),
+        visibility_state: "visible".to_string(),
     }
 }
 

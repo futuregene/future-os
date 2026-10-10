@@ -143,4 +143,25 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(value["info"], "中文, a, b");
     }
+
+    /// The comma scan is what decides whether a command needs the stdin
+    /// rewrite at all, and it has to see commas nested inside arrays as well
+    /// as objects — a top-level array of objects is a normal tool payload.
+    #[test]
+    fn comma_detection_walks_arrays_objects_and_scalars() {
+        assert!(json_values_contain_commas(&serde_json::json!(["a,b"])));
+        assert!(json_values_contain_commas(
+            &serde_json::json!([{"k": "a,b"}])
+        ));
+        assert!(json_values_contain_commas(
+            &serde_json::json!({"k": ["x", "a,b"]})
+        ));
+        assert!(json_values_contain_commas(&serde_json::json!("bare,comma")));
+        // Scalars that cannot carry a comma — and collections of them — are
+        // left alone, so plain commands keep their original spelling.
+        assert!(!json_values_contain_commas(&serde_json::json!(7)));
+        assert!(!json_values_contain_commas(&serde_json::json!(true)));
+        assert!(!json_values_contain_commas(&serde_json::json!(null)));
+        assert!(!json_values_contain_commas(&serde_json::json!(["ab", 3])));
+    }
 }

@@ -20,6 +20,7 @@ use crate::browser::safari::safari_manager::safari_start;
 use crate::browser::screenshot_writer::{browser_dir, resolve_screenshot_path, write_screenshot};
 use crate::browser::scripts::SNAPSHOT_FUNCTION_SOURCE;
 use crate::browser::selector::resolve_target;
+use crate::browser::target::{EndpointTarget, SocketSpec};
 use crate::browser::types::{BrowserConfig, BrowserConnectionConfig, DEFAULT_TIMEOUTS};
 use crate::output::Output;
 use serde_json::{json, Map, Value};
@@ -36,21 +37,40 @@ pub struct BrowserToolEntry {
 }
 
 /// `BROWSER_TOOL_CATALOG` — the single `browser` tool.
+///
+/// Every argument the tool actually reads belongs here: this catalog is what
+/// `future tools describe browser` prints, so a flag missing from it is a flag
+/// nobody can discover. `endpoint` in particular is the only way to reach a
+/// browser that is not on the default TCP port (including a local socket).
 pub fn browser_tool_catalog() -> Vec<(&'static str, BrowserToolEntry)> {
     vec![(
         "browser",
         BrowserToolEntry {
-            description: "Control a local Chrome/Edge/Safari browser for web automation: navigate pages, take snapshots, click elements, fill forms, capture screenshots.",
+            description: "Control a local Chrome/Edge/Safari browser for web automation: navigate pages, take snapshots, click elements, fill forms, capture screenshots. Connects over HTTP (a remote debugging port) or a local socket (`unix:<path>` / `abstract:<name>`, e.g. Chrome on Android).",
             args: vec![
                 ("command", "sub-command: start | status | open | snapshot | click | type | press | scroll | screenshot | console | tabs (required)"),
                 ("url", "URL to navigate to (for open / start)"),
                 ("ref", "element reference from a previous snapshot (for click / type)"),
+                ("selector", "CSS selector, when no ref is available (for click / type / scroll)"),
+                ("target", "alias for selector"),
                 ("text", "text to type into an element (for type)"),
                 ("key", "key to press, e.g. \"Enter\" or \"Escape\" (for press)"),
+                ("submit", "press Enter after typing, e.g. to submit a form (for type, default: false)"),
+                ("clear", "clear the element before typing (for type, default: true)"),
+                ("direction", "scroll direction: \"up\" | \"down\" (for scroll, default: down)"),
+                ("amount", "scroll distance in pixels (for scroll, default: 300)"),
+                ("action", "tab action: list | new | select | close (for tabs, default: list)"),
+                ("index", "tab index, from the tab list (for tabs select / close)"),
                 ("fullPage", "capture the full scrollable page (for screenshot, default: false)"),
                 ("limit", "max snapshot lines to return (default: 80)"),
                 ("path", "file path to save screenshot, e.g. ./page.png (for screenshot)"),
+                ("output", "alias for path (for screenshot)"),
                 ("level", "console message level to filter: \"log\" | \"warn\" | \"error\" (for console)"),
+                ("endpoint", "CDP endpoint to use instead of the saved one, e.g. \"http://127.0.0.1:9222\", \"unix:/tmp/chrome.sock\", or \"abstract:chrome_devtools_remote\". Does not modify the saved endpoint."),
+                ("port", "debugging port (for start, default: 9222). Ignored for a socket endpoint."),
+                ("browser", "which browser to launch (for start): \"chrome\" | \"edge\" | \"safari\" (default: auto-detect)"),
+                ("executablePath", "browser binary to launch (for start), when auto-detection misses it"),
+                ("profileDir", "user-data directory for a launched browser (for start)"),
             ],
             example: "{\"command\": \"open\", \"url\": \"https://example.com\"}",
         },
@@ -136,6 +156,26 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
     // Safari path — delegate to SafariManager.
     if browser_arg.as_deref() == Some("safari") {
         return browser_start_safari(args, requested_port).await;
+    }
+
+    // A socket endpoint is attach-only (see `browser_start_socket`). An
+    // explicit `--endpoint` decides first; otherwise a socket saved in the
+    // config still applies, unless the caller asked for a specific TCP port —
+    // that is a request to move back to TCP.
+    let socket_source = match (
+        string_arg(args, "endpoint"),
+        number_arg(args, "port").is_some(),
+    ) {
+        (Some(raw), _) => Some(raw),
+        (None, false) => Some(config_endpoint_or_default(
+            &load_browser_config().await.unwrap_or_default(),
+        )),
+        (None, true) => None,
+    };
+    if let Some(raw) = socket_source {
+        if let Ok(EndpointTarget::Socket(spec)) = EndpointTarget::parse(&raw) {
+            return browser_start_socket(&raw, &spec).await;
+        }
     }
 
     // Chrome/Edge/Chromium path
@@ -273,6 +313,100 @@ async fn browser_start(args: &Map<String, Value>) -> Result<LocalToolResult, Str
     })
 }
 
+/// Why a socket endpoint did not answer, in the terms the user needs.
+///
+/// Two failures look identical in a bare "not reachable" but have different
+/// fixes, so they are told apart:
+///
+/// - the socket refused the connection (or does not exist) → nothing is
+///   listening: the browser is not running;
+/// - the socket accepted the connection and then stayed silent → something is
+///   there but not serving, which on Android means a backgrounded/frozen
+///   browser that must be brought back to the foreground.
+///
+/// Costs one extra probe, and only on a path that has already failed.
+#[cfg(unix)]
+async fn unreachable_socket_reason(endpoint: &str, spec: &SocketSpec) -> String {
+    if let Err(connect_error) = spec.connect().await {
+        return format!(
+            "nothing is listening on {spec} ({connect_error}). Start the browser in the \
+             environment that owns that socket."
+        );
+    }
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        crate::browser::chromium::socket_http::get(spec, "/json/version"),
+    )
+    .await
+    {
+        // Connected, but the probe that said "unreachable" had already timed
+        // out; say so rather than blaming the browser's absence.
+        Err(_) => format!(
+            "{spec} accepted a connection but nothing answered. If the browser is running, \
+             bring it to the foreground (it may be backgrounded or frozen), then retry."
+        ),
+        Ok(Err(error)) => format!("{spec} accepted a connection but the probe failed: {error}"),
+        Ok(Ok(_)) => format!(
+            "{endpoint} answered a fresh probe but not the one that failed; retry the command."
+        ),
+    }
+}
+
+/// Off Unix there is no socket to connect to, so the distinction cannot be
+/// made: say what is true on this platform instead of guessing.
+#[cfg(not(unix))]
+async fn unreachable_socket_reason(_endpoint: &str, spec: &SocketSpec) -> String {
+    format!(
+        "{spec} is a socket endpoint, which this platform cannot connect to. \
+         Use an http(s) endpoint on this host, or a host that supports Unix sockets."
+    )
+}
+
+/// `start` for a socket endpoint: attach, never launch.
+///
+/// There is no port to open and nothing here could be launched — the browser
+/// belongs to the environment that owns the socket (Chrome on an Android
+/// device, say), and it is already listening. So `start` records the endpoint
+/// for later commands, which is what the TCP path does when it finds a
+/// browser already running.
+async fn browser_start_socket(
+    endpoint: &str,
+    spec: &SocketSpec,
+) -> Result<LocalToolResult, String> {
+    if !endpoint_reachable(endpoint).await {
+        return Err(format!(
+            "browser start: {}\n\
+             The browser is not something this tool can launch for you — it belongs to \
+             the environment that owns that socket.",
+            unreachable_socket_reason(endpoint, spec).await
+        ));
+    }
+    let _transaction = lock_browser_config().await?;
+    let mut config = load_browser_config().await?;
+    let existing_endpoint = config.connection.endpoint().to_string();
+    config.connection = BrowserConnectionConfig::Cdp {
+        browser_kind: "chromium".to_string(),
+        endpoint: endpoint.to_string(),
+    };
+    save_browser_config(&config).await?;
+    let note = if !existing_endpoint.is_empty() && existing_endpoint != endpoint {
+        format!(
+            "Browser endpoint was updated (was {existing_endpoint}). Subsequent commands will use this browser."
+        )
+    } else {
+        "Browser is already running at this endpoint.".to_string()
+    };
+    Ok(LocalToolResult {
+        text: None,
+        structured_content: Some(json!({
+            "endpoint": endpoint,
+            "socket": spec.to_string(),
+            "status": "already_running",
+            "note": note,
+        })),
+    })
+}
+
 /// Safari start path (browser-tools.ts `if (browserArg === "safari")`).
 async fn browser_start_safari(
     args: &Map<String, Value>,
@@ -335,6 +469,37 @@ fn is_permission_error(e: &str) -> bool {
 
 async fn browser_status(args: &Map<String, Value>) -> Result<LocalToolResult, String> {
     let endpoint = endpoint_for(args).await;
+    // A socket endpoint has no URL to GET: the transport *is* the socket, so it
+    // goes through the shared resolver. Keeping the HTTP path below as it is
+    // preserves the status-code field it reports on an HTTP error.
+    if matches!(
+        EndpointTarget::parse(&endpoint),
+        Ok(EndpointTarget::Socket(_))
+    ) {
+        let spec = match EndpointTarget::parse(&endpoint) {
+            Ok(EndpointTarget::Socket(spec)) => spec,
+            // Unreachable: the guard above matched a socket.
+            _ => return Err(format!("not a socket endpoint: {endpoint}")),
+        };
+        return Ok(match resolve_cdp_endpoint(&endpoint, 1_000).await {
+            Ok(info) => LocalToolResult {
+                text: None,
+                structured_content: Some(json!({
+                    "endpoint": endpoint,
+                    "reachable": true,
+                    "version": info.version,
+                })),
+            },
+            Err(_) => LocalToolResult {
+                text: None,
+                structured_content: Some(json!({
+                    "endpoint": endpoint,
+                    "reachable": false,
+                    "error": unreachable_socket_reason(&endpoint, &spec).await,
+                })),
+            },
+        });
+    }
     let client = reqwest::Client::new();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(1),
@@ -473,18 +638,14 @@ async fn browser_tabs(ctx: &mut SessionContext) -> Result<LocalToolResult, Strin
 
     if action == "list" {
         let result = ctx.session.tabs(&TabsAction::List).await?;
+        // Storing the order here is what makes a later `tabs select --index N`
+        // address the tab this listing named.
+        let order = ctx.session.tab_order();
+        save_tab_order(&order).await?;
         let tabs = match result {
-            crate::browser::backend::InternalTabsResult::List { tabs } => tabs
-                .iter()
-                .map(|tab| {
-                    json!({
-                        "index": tab.index,
-                        "title": tab.title,
-                        "url": tab.url,
-                        "active": tab.active,
-                    })
-                })
-                .collect::<Vec<_>>(),
+            crate::browser::backend::InternalTabsResult::List { tabs } => {
+                tabs.iter().map(tab_json).collect::<Vec<_>>()
+            }
             _ => Vec::new(),
         };
         return Ok(LocalToolResult {
@@ -571,20 +732,47 @@ async fn browser_tabs(ctx: &mut SessionContext) -> Result<LocalToolResult, Strin
 }
 
 /// `(tabs, tabCount)` — the full tab list in the "list" shape.
+/// One tab, as the tool reports it.
+///
+/// The single place this shape is built: `list` and the refresh after
+/// `new`/`select`/`close` must agree, and when they did not (`visible` was
+/// missing from the refresh) the same command reported different fields
+/// depending on the action.
+/// Remember the tab order the session just used.
+///
+/// Each invocation is a fresh process, so an order that is not stored is
+/// re-derived from CDP discovery order next time — which is how `--index 1`
+/// could address a different tab than it did a moment ago.
+async fn save_tab_order(order: &[String]) -> Result<(), String> {
+    if order.is_empty() {
+        return Ok(());
+    }
+    let _transaction = lock_browser_config().await?;
+    let mut config = load_browser_config().await?;
+    config.tab_order = Some(order.to_vec());
+    save_browser_config(&config).await.map_err(String::from)
+}
+
+fn tab_json(tab: &crate::browser::backend::InternalTabInfo) -> Value {
+    json!({
+        "index": tab.index,
+        "title": tab.title,
+        "url": tab.url,
+        // `active` is what commands will act on; `visible` is what the page
+        // says the user is looking at. Normally equal — they diverge exactly
+        // when a command would touch something the user cannot see, which is
+        // why both are reported.
+        "active": tab.active,
+        "visible": tab.visible,
+    })
+}
+
 async fn list_tabs(ctx: &mut SessionContext) -> Result<(Vec<Value>, usize), String> {
     let result = ctx.session.tabs(&TabsAction::List).await?;
     let tabs = match result {
-        crate::browser::backend::InternalTabsResult::List { tabs } => tabs
-            .iter()
-            .map(|tab| {
-                json!({
-                    "index": tab.index,
-                    "title": tab.title,
-                    "url": tab.url,
-                    "active": tab.active,
-                })
-            })
-            .collect::<Vec<_>>(),
+        crate::browser::backend::InternalTabsResult::List { tabs } => {
+            tabs.iter().map(tab_json).collect::<Vec<_>>()
+        }
         _ => Vec::new(),
     };
     let count = tabs.len();
@@ -1371,6 +1559,51 @@ mod tests {
         assert!(!is_browser_tool("web_search"));
     }
 
+    /// Every argument the handlers read is documented, and vice versa.
+    ///
+    /// The catalog is what `future tools describe browser` prints, so an
+    /// argument missing from it cannot be discovered — which is exactly how
+    /// `endpoint` (and `port`, `selector`, …) stayed invisible while this tool
+    /// supported them. Scanning the source keeps the two in step without a
+    /// second hand-maintained list.
+    #[test]
+    fn the_catalog_documents_every_argument_the_handlers_read() {
+        use std::collections::BTreeSet;
+
+        let source = include_str!("browser_tools.rs");
+        let mut read: BTreeSet<String> = BTreeSet::new();
+        for helper in ["string_arg", "number_arg", "boolean_arg"] {
+            for rest in source.split(helper).skip(1) {
+                // The call is `<helper>(<args>, "name")`.
+                let Some(after) = rest.split_once("args, \"").map(|(_, tail)| tail) else {
+                    continue;
+                };
+                if let Some((name, _)) = after.split_once('"') {
+                    read.insert(name.to_string());
+                }
+            }
+        }
+
+        let documented: BTreeSet<String> = browser_tool_catalog()
+            .remove(0)
+            .1
+            .args
+            .iter()
+            .map(|(key, _)| (*key).to_string())
+            .collect();
+
+        let undocumented: Vec<&String> = read.difference(&documented).collect();
+        assert!(
+            undocumented.is_empty(),
+            "these arguments are read but not documented, so `future tools describe browser` hides them: {undocumented:?}"
+        );
+        let unused: Vec<&String> = documented.difference(&read).collect();
+        assert!(
+            unused.is_empty(),
+            "the catalog documents arguments nothing reads: {unused:?}"
+        );
+    }
+
     #[tokio::test]
     async fn dispatch_requires_command_and_rejects_unknown() {
         let (out, _cap) = Output::memory();
@@ -1400,6 +1633,7 @@ mod tests {
                         title: "TA".to_string(),
                         url: "http://a/".to_string(),
                         active: true,
+                        visible: true,
                     },
                     InternalTabInfo {
                         page_id: "b".to_string(),
@@ -1407,6 +1641,7 @@ mod tests {
                         title: "TB".to_string(),
                         url: "http://b/".to_string(),
                         active: false,
+                        visible: false,
                     },
                 ],
             })),
@@ -2181,6 +2416,117 @@ mod tests {
         );
     }
 
+    /// The chosen order survives into the stored config.
+    ///
+    /// Without this, every CLI run re-derives the order from CDP discovery, and
+    /// `tabs select --index N` can address a tab other than the one a listing
+    /// just named — the reason the workaround for "wrong tab" was unreliable
+    /// too.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn listing_tabs_stores_the_order_for_the_next_command() {
+        let (_g, _e, _d) = isolated_home().await;
+        let mock = crate::test_cdp::MockCdp::start_with(
+            vec![
+                crate::test_cdp::target("T-1", "http://one/", "One"),
+                crate::test_cdp::target("T-2", "http://two/", "Two"),
+            ],
+            "Chrome/126",
+        )
+        .await;
+        save_cdp_config(&mock.http_url, "chromium").await;
+
+        let (out, _cap) = Output::memory();
+        call_browser_tool(
+            "browser",
+            &args(&[("command", json!("tabs")), ("action", json!("list"))]),
+            &out,
+        )
+        .await
+        .unwrap();
+
+        let stored = load_browser_config().await.unwrap();
+        assert_eq!(
+            stored.tab_order.as_deref(),
+            Some(["T-1".to_string(), "T-2".to_string()].as_slice()),
+            "the listing's order is persisted for the next invocation"
+        );
+    }
+
+    #[tokio::test]
+    async fn saving_an_empty_order_leaves_the_stored_one_alone() {
+        let (_g, _e, _d) = isolated_home().await;
+        save_tab_order(&["T-9".to_string()]).await.unwrap();
+        // The default trait impl returns empty for a session with no order to
+        // keep — that must not erase what is stored.
+        save_tab_order(&[]).await.unwrap();
+        let stored = load_browser_config().await.unwrap();
+        assert_eq!(
+            stored.tab_order.as_deref(),
+            Some(["T-9".to_string()].as_slice())
+        );
+    }
+
+    // ── is_permission_error ───────────────────────────────────────────
+
+    /// Two failures that look alike are told apart: nothing listening means
+    /// start the browser, while a silent socket means bring it to the
+    /// foreground.
+    ///
+    /// Collapsing them into one "not reachable" sent a reader looking for a
+    /// browser that was already running.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_socket_with_nothing_listening_says_to_start_the_browser() {
+        let spec = SocketSpec::Path("/tmp/future-no-listener-here.sock".to_string());
+        let reason =
+            unreachable_socket_reason("unix:/tmp/future-no-listener-here.sock", &spec).await;
+        assert!(reason.contains("nothing is listening"), "{reason}");
+        assert!(reason.contains("Start the browser"), "{reason}");
+        assert!(
+            !reason.contains("foreground"),
+            "a missing browser is not a foregrounding problem: {reason}"
+        );
+    }
+
+    /// A socket that accepts and then says nothing is the opposite diagnosis.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_socket_that_never_answers_points_at_the_foreground() {
+        let path = std::env::temp_dir().join(format!("future-silent-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = tokio::net::UnixListener::bind(&path).expect("bind");
+        // Accept and hold: connected, never answered.
+        let held = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            drop(stream);
+        });
+
+        let spec = SocketSpec::Path(path.display().to_string());
+        let reason = unreachable_socket_reason(&format!("unix:{}", path.display()), &spec).await;
+        assert!(reason.contains("nothing answered"), "{reason}");
+        assert!(reason.contains("foreground"), "{reason}");
+        assert!(
+            !reason.contains("nothing is listening"),
+            "something *is* listening: {reason}"
+        );
+
+        held.abort();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `status` reports that reason rather than a bare "not reachable".
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn status_over_a_dead_socket_explains_why() {
+        let (_g, _e, _d) = isolated_home().await;
+        let a = args(&[("endpoint", json!("unix:/tmp/future-status-dead.sock"))]);
+        let sc = structured(&browser_status(&a).await.unwrap());
+        assert_eq!(sc["reachable"], json!(false));
+        let error = sc["error"].as_str().unwrap_or_default();
+        assert!(error.contains("nothing is listening"), "{error}");
+    }
+
     // ── is_permission_error ───────────────────────────────────────────
 
     #[test]
@@ -2403,6 +2749,326 @@ mod tests {
         assert!(err.contains("Could not find Chrome or Edge"), "{err}");
     }
 
+    /// `launcher_for` is the discovery boundary the `executablePath` argument
+    /// goes through: an explicit path is taken as-is (launching it is the
+    /// caller's risk), no path means platform discovery, and the test override
+    /// short-circuits both so no test has to depend on a browser being
+    /// installed on the host.
+    #[tokio::test]
+    async fn launcher_for_resolves_an_explicit_path_then_the_host_then_the_override() {
+        let _guard = crate::test_env::lock_env().await;
+        *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = None;
+
+        // An explicit path is used verbatim, with the kind inferred from it. The
+        // `infer_kind` order is edge → chrome → chromium, so a path that
+        // contains both (`/opt/chromium/chrome`) is reported as `chrome`.
+        let (command, kind) = launcher_for(Some("/opt/chromium/chrome"))
+            .expect("an explicit path is always a launcher");
+        assert_eq!(command, "/opt/chromium/chrome");
+        assert_eq!(kind, "chrome");
+        let (_, kind) = launcher_for(Some("/usr/bin/chromium-browser")).expect("explicit chromium");
+        assert_eq!(kind, "chromium");
+        let (_, kind) = launcher_for(Some("C:\\tools\\msedge.exe")).expect("explicit edge");
+        assert_eq!(kind, "edge");
+
+        // The override wins over both discovery and the explicit path — which
+        // is what lets the tests below pin a launcher without a browser.
+        *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() =
+            Some(Some(("pinned-browser".to_string(), "chrome".to_string())));
+        assert_eq!(
+            launcher_for(Some("/opt/chromium/chrome")),
+            Some(("pinned-browser".to_string(), "chrome".to_string()))
+        );
+        // …and an override that says "no launcher" is honoured too.
+        *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = Some(None);
+        assert_eq!(launcher_for(Some("/opt/chromium/chrome")), None);
+        *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = None;
+    }
+
+    /// `browser= safari` is a dispatch, not a launcher lookup: it hands the
+    /// whole call to the Safari manager, which answers for this platform.
+    #[tokio::test]
+    async fn start_with_browser_safari_dispatches_to_the_safari_manager() {
+        let (_g, _e, _d) = isolated_home().await;
+        let err = browser_start(&args(&[
+            ("browser", json!("safari")),
+            ("port", json!(free_port())),
+        ]))
+        .await
+        .map(|_| ())
+        .unwrap_err();
+        // Off macOS the manager refuses before any probe; on macOS it would
+        // probe a real safaridriver. Either way the *dispatch* is what is
+        // asserted, so the platform-specific text is not pinned.
+        assert!(!err.is_empty(), "the safari path reported nothing");
+    }
+
+    /// The profile directory is derived from `profileDir` / the port, created
+    /// before the browser starts, and a directory that cannot be created is
+    /// reported rather than launched past.
+    ///
+    /// Two placements, because the two `create_dir_all` calls guard different
+    /// things: an explicit `profileDir` under a regular file fails the profile
+    /// creation (leaving `browser_dir` untouched), and a writable profile with
+    /// `FUTURE_HOME` pointing at a regular file fails the *browser* directory
+    /// creation instead. Neither reaches the launcher, so no browser is
+    /// started — neither test needs a Chrome on the host.
+    #[tokio::test]
+    async fn a_profile_directory_that_cannot_be_created_is_reported() {
+        // One env lock for the whole test: `EnvGuard` restores the *value it
+        // saved*, so releasing the lock while a guard is still alive would let
+        // another test's guard write this one's directory back over its own.
+        let (guard, env, dir) = isolated_home().await;
+        // The launcher override is irrelevant here (the failure precedes it),
+        // but pinning it keeps a host browser out of the picture entirely.
+        *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() =
+            Some(Some(("pinned-browser".to_string(), "chrome".to_string())));
+
+        // 1. profileDir under a regular file → the profile creation fails.
+        let blocker = dir.path().join("blocker");
+        tokio::fs::write(&blocker, "x")
+            .await
+            .expect("write blocker");
+        let err = browser_start(&args(&[
+            ("port", json!(free_port())),
+            (
+                "profileDir",
+                json!(blocker.join("profile").to_string_lossy()),
+            ),
+        ]))
+        .await
+        .map(|_| ())
+        .unwrap_err();
+        assert!(!err.is_empty(), "the profile failure is reported");
+
+        // 2. A writable explicit profileDir, but a HOME that is a regular file
+        //    → the *browser* directory creation fails.
+        drop(env);
+        let dir2 = tempfile::tempdir().expect("tempdir");
+        let home_file = dir2.path().join("home-file");
+        tokio::fs::write(&home_file, "x").await.expect("write home");
+        let profile = dir2.path().join("profile");
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_HOME",
+            home_file.as_os_str().to_os_string(),
+        )]);
+        let err = browser_start(&args(&[
+            ("port", json!(free_port())),
+            ("profileDir", json!(profile.to_string_lossy())),
+        ]))
+        .await
+        .map(|_| ())
+        .unwrap_err();
+        assert!(!err.is_empty(), "the browser-dir failure is reported");
+        assert!(profile.is_dir(), "the explicit profile was created first");
+
+        *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = None;
+        drop(guard);
+    }
+
+    /// A launcher that cannot be started is an error, and the read-only
+    /// launcher discovery has already produced the argv by then.
+    ///
+    /// The pinned launcher does not exist, so nothing is ever started: the
+    /// PowerShell `Start-Process` fails on the missing file, and the launch is
+    /// reported as an error. The wrapper is bounded because a launcher that never
+    /// answers would otherwise be the suite's problem, not this test's.
+    ///
+    /// WINDOWS-ONLY, because the premise does not hold on unix: there the spawn is
+    /// detached and a missing launcher is reported as `starting` rather than as an
+    /// error, so CI (Linux) saw `unwrap_err()` on an `Ok` value. Recorded as a
+    /// platform difference for the owners instead of asserting an outcome this test
+    /// cannot justify on unix.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_launcher_that_cannot_be_started_is_reported() {
+        let (_g, _e, _d) = isolated_home().await;
+        *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = Some(Some((
+            "C:\\future-clitui-no-such-browser.exe".to_string(),
+            "chrome".to_string(),
+        )));
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            browser_start(&args(&[("port", json!(free_port()))])),
+        )
+        .await
+        .expect("the launch must answer within 60s");
+        *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = None;
+        let err = result.map(|_| ()).unwrap_err();
+        assert!(!err.is_empty(), "the launch failure is reported");
+    }
+
+    /// A launcher that starts but never serves is still reported after the
+    /// bounded readiness window, with the port and profile it used — the
+    /// browser is detached, so the tool succeeds with `status: starting` and
+    /// the caller learns the endpoint it should retry against (the unix tests
+    /// cover the other side, where it becomes reachable and reports `started`).
+    ///
+    /// The pinned launcher is a real Windows executable that exits at once
+    /// (`where` on an unknown option): `Start-Process` itself succeeds, which
+    /// is all this arm needs, and no browser is opened.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_launcher_that_never_serves_is_reported_as_starting() {
+        let (_g, _e, _d) = isolated_home().await;
+        *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() =
+            Some(Some(("where".to_string(), "chrome".to_string())));
+        let port = free_port();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            browser_start(&args(&[("port", json!(port))])),
+        )
+        .await
+        .expect("the readiness window must close within 60s");
+        *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = None;
+        let result = result.expect("a detached launch is a success");
+        let structured = result.structured_content.expect("structured content");
+        assert_eq!(structured["status"], "starting");
+        assert_eq!(structured["port"], json!(port));
+        assert_eq!(structured["requestedPort"], json!(port));
+        assert_eq!(
+            structured["endpoint"],
+            json!(format!("http://127.0.0.1:{port}"))
+        );
+        // The default profile directory is the port-independent one, because
+        // the requested port was free and was therefore the one used.
+        assert!(
+            structured["profileDir"]
+                .as_str()
+                .expect("profileDir")
+                .contains("browser"),
+            "{structured}"
+        );
+        assert_eq!(structured["launcher"]["command"], "where");
+        assert!(structured["launcher"]["args"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    /// The readiness window is the CLI's own retry loop: a browser that
+    /// answers *during* the poll must be reported as `started`, with the port
+    /// and active URL it launched with and the connection persisted for the
+    /// commands that follow.
+    ///
+    /// The endpoint cannot simply be up beforehand: `browser_start` probes it
+    /// first and would take the `already_running` arm instead. So the launcher
+    /// is a script that records that it ran, and the mock CDP endpoint is
+    /// brought up only once that marker appears — the marker is proof that
+    /// `resolve_port` and the reachability pre-check are behind us, which makes
+    /// the ordering a fact of the code rather than a sleep the test hopes is
+    /// long enough. What is left for the code to do is notice the endpoint
+    /// within its own 10 s / 250 ms retry window.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn start_reports_started_when_the_endpoint_answers_in_the_readiness_window() {
+        let (_g, _e, dir) = isolated_home().await;
+        let port = free_port();
+        let marker = dir.path().join("launched.txt");
+
+        #[cfg(windows)]
+        let launcher = {
+            // `Start-Process` runs a `.cmd` (probed on this host), and the
+            // script writes its marker next to itself via `%~dp0`.
+            let script = dir.path().join("launcher.cmd");
+            std::fs::write(
+                &script,
+                "@echo off\r\n> \"%~dp0launched.txt\" echo launched\r\nexit /b 0\r\n",
+            )
+            .expect("write launcher script");
+            script
+        };
+        #[cfg(unix)]
+        let launcher = {
+            use std::os::unix::fs::PermissionsExt;
+            let script = dir.path().join("launcher.sh");
+            std::fs::write(
+                &script,
+                format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+            )
+            .expect("write launcher script");
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod launcher script");
+            script
+        };
+        let command = launcher.display().to_string();
+        *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() =
+            Some(Some((command.clone(), "chrome".to_string())));
+
+        let started = tokio::spawn(async move {
+            browser_start(&args(&[
+                ("port", json!(port)),
+                ("url", json!("http://home/")),
+            ]))
+            .await
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the launcher never ran, so the flow never reached the launch step"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port as u16))
+            .await
+            .expect("the requested port is still free: nothing was listening on it");
+        let server = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut request = [0u8; 2048];
+                    let _ = socket.read(&mut request).await;
+                    let body =
+                        br#"{"Browser":"Chrome/1","webSocketDebuggerUrl":"ws://127.0.0.1:1/ws"}"#;
+                    let mut response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .into_bytes();
+                    response.extend_from_slice(body);
+                    let _ = socket.write_all(&response).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(30), started)
+            .await
+            .expect("browser_start is bounded by its own 10 s window")
+            .expect("the task does not panic")
+            .expect("a browser that answers inside the window is a success");
+        *BROWSER_LAUNCHER_OVERRIDE.lock().unwrap() = None;
+        server.abort();
+
+        let sc = structured(&result);
+        assert_eq!(sc["status"], json!("started"), "{sc}");
+        assert_eq!(sc["endpoint"], json!(format!("http://127.0.0.1:{port}")));
+        assert_eq!(sc["port"], json!(port));
+        assert_eq!(sc["requestedPort"], json!(port));
+        assert_eq!(sc["launcher"]["command"], json!(command));
+        // The requested port was free, so the port-independent profile dir is
+        // the right one (the scanned-port arm has its own test).
+        assert!(
+            sc["profileDir"]
+                .as_str()
+                .expect("profileDir")
+                .contains("browser"),
+            "{sc}"
+        );
+        // Persisted, so the next browser command in this session finds it.
+        let saved = load_browser_config().await.expect("config load");
+        assert_eq!(
+            saved.connection.endpoint(),
+            format!("http://127.0.0.1:{port}")
+        );
+        assert_eq!(saved.active_url.as_deref(), Some("http://home/"));
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     async fn start_launch_becomes_reachable_reports_started() {
@@ -2533,10 +3199,13 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
 
     // ── Safari start path ─────────────────────────────────────────────
 
-    #[cfg(target_os = "macos")] // safari webdriver path errors out pre-network elsewhere
+    // The macOS gate is a runtime seam here (`safari_manager::force_macos_gate`),
+    // not a compile-time one, so this path is exercised on every platform
+    // instead of silently skipping off macOS.
     #[tokio::test(flavor = "multi_thread")]
     async fn start_safari_already_running_persists_config() {
         let (_g, _e, _d) = isolated_home().await;
+        let _macos = crate::browser::safari::safari_manager::force_macos_gate();
         // Mock safaridriver: /status + session creation.
         let base = crate::test_server::spawn_http(vec![
             crate::test_server::HttpRoute::json("/status", 200, r#"{"ready":true}"#),
@@ -2566,10 +3235,10 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         assert_eq!(saved.active_url.as_deref(), Some("http://safari/"));
     }
 
-    #[cfg(target_os = "macos")] // safari webdriver path errors out pre-network elsewhere
     #[tokio::test(flavor = "multi_thread")]
     async fn start_safari_permission_error_is_actionable() {
         let (_g, _e, _d) = isolated_home().await;
+        let _macos = crate::browser::safari::safari_manager::force_macos_gate();
         let base = crate::test_server::spawn_http(vec![
             crate::test_server::HttpRoute::json("/status", 200, r#"{"ready":true}"#),
             crate::test_server::HttpRoute::json(
@@ -2594,10 +3263,10 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         );
     }
 
-    #[cfg(target_os = "macos")] // safari webdriver path errors out pre-network elsewhere
     #[tokio::test(flavor = "multi_thread")]
     async fn start_safari_other_error_propagates() {
         let (_g, _e, _d) = isolated_home().await;
+        let _macos = crate::browser::safari::safari_manager::force_macos_gate();
         let base = crate::test_server::spawn_http(vec![
             crate::test_server::HttpRoute::json("/status", 200, r#"{"ready":true}"#),
             crate::test_server::HttpRoute::json(

@@ -58,4 +58,32 @@ describe("remote HTTP cancellation", () => {
     await failure;
     expect(jest.getTimerCount()).toBe(0);
   });
+
+  test("a signal already aborted before the call never reaches the network", async () => {
+    jest.useFakeTimers();
+    const fetchMock = jest.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const controller = new AbortController();
+    controller.abort();
+    await expect(remoteHttp("https://example.test", {}, response => response.json(), controller.signal))
+      .rejects.toThrow("remote_request_cancelled");
+    expect(fetchMock).not.toHaveBeenCalled();
+    // No deadline is left behind by a request that never started.
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test("an abort that lands with the response wins over the response", async () => {
+    jest.useFakeTimers();
+    const controller = new AbortController();
+    globalThis.fetch = jest.fn(async () => {
+      controller.abort();
+      return { json: async () => ({ ok: true }) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const consume = jest.fn(async () => "consumed");
+    await expect(remoteHttp("https://example.test", {}, consume, controller.signal))
+      .rejects.toThrow("remote_request_cancelled");
+    // The body is never handed to the consumer after a cancellation.
+    expect(consume).not.toHaveBeenCalled();
+    expect(jest.getTimerCount()).toBe(0);
+  });
 });

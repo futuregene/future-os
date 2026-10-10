@@ -1,18 +1,12 @@
-import type { AgentMessage, MessageAttachment } from "@future-os/thread-projection";
-import { convertFileSrc } from "@tauri-apps/api/core";
-import { FileText, GitBranch, Paperclip, RotateCcw, StepForward, TriangleAlert } from "lucide-react";
-import { Fragment, memo, useState } from "react";
+import type { AgentMessage } from "@future-os/thread-projection";
+import { GitBranch, RotateCcw, StepForward } from "lucide-react";
+import { Fragment, memo } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../components/ui/CopyButton";
 import { useCopyState } from "../../components/ui/useCopyState";
-import { openPath } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { formatDateTime, formatMessageTimestamp } from "../../lib/date";
-import { formatNumber } from "../../lib/format";
-import { emitFutureEvent } from "../../lib/futureEvents";
 import { useNow } from "../../lib/useNow";
-import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
-import { previewKindForPath } from "../filepreview/previewKind";
 import { STREAMED_BLOCK_CONTAINMENT } from "../markdown/LiveMarkdownContext";
 import { StreamingMarkdownContent } from "../markdown/MarkdownContent";
 import { SafeLink } from "../markdown/renderers/SafeLink";
@@ -21,6 +15,8 @@ import { canContinueResponse, isCompletedWithoutReply } from "./agentMessageForm
 import { splitExternalLinkSegments } from "./externalLinks";
 import { parseMentionSegments } from "./mentionMarkdown";
 import { MessageMeta } from "./MessageMeta";
+import { AttachmentChip } from "./messages/AttachmentChip";
+import { CompactionDivider, StatusDivider } from "./messages/MessageStatus";
 import { buildReplyBlocks } from "./replyBlocks";
 import { ReplySteps } from "./ReplySteps";
 import { ThinkingBlock } from "./ThinkingBlock";
@@ -133,7 +129,11 @@ function MessageBlockImpl({
         onPointerLeave={() => onLeave(message.id)}
         onPointerOver={() => onHover(message.id)}
       >
-        <div className={cn("mb-1 flex items-center gap-2", isUser && "justify-end")}>
+        <div className={cn(
+          "flex items-center gap-2",
+          isUser ? "mb-1 justify-end" : "mb-3 border-b border-line-soft/40 pb-2",
+        )}
+        >
           <span className="text-sm font-semibold text-ink">
             {t(message.authorKey)}
           </span>
@@ -288,7 +288,7 @@ function MessageBlockImpl({
               )
             : null}
         </div>
-        <div className={cn("flex flex-wrap items-center justify-end gap-2", isUser ? "mt-1" : "mt-3")}>
+        <div className={cn("flex flex-wrap items-center gap-2", isUser ? "mt-1 justify-end" : "mt-3 justify-start")}>
           {streaming
             ? (
                 <StreamingIndicator
@@ -331,7 +331,7 @@ function MessageBlockImpl({
                 </button>
               )
             : null}
-          {!isUser ? <MessageMeta message={message} /> : null}
+          {!isUser ? <MessageMeta message={message} hovered={hovered} /> : null}
           {streaming && !isUser && message.thinkingActive && !segments?.some(segment => segment.kind === "thinking")
             ? <span className="select-none text-xs text-ink-muted">{t("message.thinking")}</span>
             : null}
@@ -343,9 +343,10 @@ function MessageBlockImpl({
 
 /**
  * User messages render as plain text (never markdown — the user's `*`/`#`/`1.`
- * stay literal), except `@` file mentions, which show in the accent color like
- * the composer pill, and `[label](http…)` links (e.g. the coach prompt's manual
- * link), which render clickable via SafeLink. Everything else is verbatim.
+ * stay literal), except `@` file mentions and `#` session references, which show
+ * in the accent color like the composer pill, and `[label](http…)` links (e.g.
+ * the coach prompt's manual link), which render clickable via SafeLink.
+ * Everything else is verbatim.
  */
 function UserMessageText({ content }: { content: string }) {
   const segments = parseMentionSegments(content);
@@ -354,7 +355,14 @@ function UserMessageText({ content }: { content: string }) {
     <p className="whitespace-pre-wrap">
       {segments.map(segment =>
         segment.mention
-          ? <span key={segment.key} className="font-medium text-accent">{segment.text}</span>
+          ? (
+              <span key={segment.key} className="font-medium text-accent">
+                {/* A session reference keeps the composer's `#` marker, so a
+                    reference to another conversation cannot be mistaken for a
+                    file mention in a glance over the transcript. */}
+                {segment.sessionId ? `#${segment.text}` : segment.text}
+              </span>
+            )
           : (
               <Fragment key={segment.key}>
                 {splitExternalLinkSegments(segment.text).map(linkSegment =>
@@ -373,83 +381,6 @@ function UserMessageText({ content }: { content: string }) {
   );
 }
 
-function StatusDivider({ label, pulsing = false, title, warning = false }: {
-  label: string;
-  pulsing?: boolean;
-  title?: string;
-  warning?: boolean;
-}) {
-  return (
-    <div
-      aria-label={label}
-      className={cn("flex select-none items-center gap-3 py-1", pulsing && "animate-pulse")}
-      role="status"
-      title={title}
-    >
-      <span className="h-px flex-1 bg-line" />
-      <span className="flex items-center gap-1 whitespace-nowrap text-xs text-ink-muted">
-        {warning ? <TriangleAlert aria-hidden="true" className="size-3 shrink-0" /> : null}
-        {label}
-      </span>
-      <span className="h-px flex-1 bg-line" />
-    </div>
-  );
-}
-
-/** Inline divider marking where the agent auto-compacted the conversation. */
-function CompactionDivider({
-  tokensBefore,
-  tokensAfter,
-  status = "completed",
-  error,
-  trigger,
-}: {
-  tokensBefore?: number;
-  tokensAfter?: number;
-  status?: "running" | "completed" | "failed";
-  error?: string;
-  trigger?: string;
-}) {
-  const { t, i18n } = useTranslation("agent");
-  const manual = trigger === "manual";
-  // Both counts come from the committed checkpoint: `tokensBefore` is what the
-  // turn was about to send, `tokensAfter` the agent's estimate of the next
-  // turn's prompt. They are only meaningful as a pair — a lone `tokensBefore`
-  // (released journal, legacy row) keeps the older label.
-  const delta = tokensBefore && tokensBefore > 0 && tokensAfter && tokensAfter > 0
-    ? {
-        before: formatNumber(tokensBefore, i18n.language),
-        after: formatNumber(tokensAfter, i18n.language),
-      }
-    : null;
-  const label = status === "running"
-    ? manual ? t("message.manuallyCompacting") : t("message.compacting")
-    : status === "failed"
-      ? manual ? t("message.manualCompactionFailed") : t("message.compactionFailed")
-      : delta
-        ? t(
-            manual
-              ? "message.manuallyCompactedTokensDelta"
-              : "message.compactedTokensDelta",
-            delta,
-          )
-        : manual
-          ? t("message.manuallyCompacted")
-          : tokensBefore && tokensBefore > 0
-            ? t("message.compactedTokens", {
-                formattedCount: formatNumber(tokensBefore, i18n.language),
-              })
-            : t("message.compacted");
-  return (
-    <StatusDivider
-      label={label}
-      pulsing={status === "running"}
-      title={error}
-      warning={status === "failed"}
-    />
-  );
-}
-
 /**
  * Live "generating" marker shown in place of the copy button while a reply
  * streams: a small amber dot with a pulsing ping halo (no brain icon — the
@@ -464,83 +395,5 @@ function StreamingIndicator({ label, showLabel }: { label: string; showLabel: bo
       </span>
       {showLabel ? <span className="text-xs text-ink-muted">{label}</span> : null}
     </div>
-  );
-}
-
-function AttachmentChip({ attachment }: { attachment: MessageAttachment }) {
-  // A thumbnail (images now; PDF page previews later) renders as a small preview.
-  // If it's absent (generation failed, or the thread's image dir was reclaimed)
-  // or fails to load, fall back to the named pill instead of a blank box.
-  const { t } = useTranslation("agent");
-  const [failed, setFailed] = useState(false);
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const previewKind = previewKindForPath(attachment.path);
-  const missingMessage = t("attachment.fileMissing", { name: attachment.name });
-
-  function handleOpen() {
-    if (previewKind) {
-      setPreviewOpen(true);
-      return;
-    }
-    void openPath(attachment.path).catch(() => {
-      emitFutureEvent("toast", { message: missingMessage, tone: "error" });
-    });
-  }
-
-  if (attachment.thumbnail && !failed) {
-    return (
-      <>
-        <button
-          className="inline-flex max-w-64 items-center overflow-hidden rounded-md"
-          onClick={handleOpen}
-          title={attachment.name}
-          type="button"
-        >
-          <img
-            alt={attachment.name}
-            className="max-h-64 max-w-64 object-contain"
-            onError={() => setFailed(true)}
-            src={convertFileSrc(attachment.thumbnail)}
-          />
-        </button>
-        {/* Preview the full-size original. If it's gone (moved/reclaimed), toast
-            that it's damaged and close — the 96px thumbnail isn't worth previewing. */}
-        <FilePreviewOverlay
-          kind={previewKind ?? "image"}
-          name={attachment.name}
-          onClose={() => setPreviewOpen(false)}
-          open={previewOpen}
-          path={attachment.path}
-          unavailableMessage={missingMessage}
-        />
-      </>
-    );
-  }
-  return (
-    <>
-      <button
-        className="inline-flex max-w-72 items-center gap-1.5 rounded-md bg-surface px-2 py-1 text-xs text-ink-soft ring-1 ring-line-soft transition-colors hover:bg-surface-subtle hover:text-ink"
-        onClick={handleOpen}
-        title={attachment.path}
-        type="button"
-      >
-        {attachment.kind === "file"
-          ? <FileText className="size-3 shrink-0" />
-          : <Paperclip className="size-3 shrink-0" />}
-        <span className="truncate">{attachment.name}</span>
-      </button>
-      {previewKind
-        ? (
-            <FilePreviewOverlay
-              kind={previewKind}
-              name={attachment.name}
-              onClose={() => setPreviewOpen(false)}
-              open={previewOpen}
-              path={attachment.path}
-              unavailableMessage={missingMessage}
-            />
-          )
-        : null}
-    </>
   );
 }

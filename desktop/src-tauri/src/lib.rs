@@ -14,6 +14,7 @@ mod auth_store;
 mod build_info;
 mod commands;
 mod config_io;
+mod conversations;
 mod device_identity;
 mod error;
 mod future_login;
@@ -31,9 +32,9 @@ mod menu;
 mod proc;
 mod remote;
 mod remote_host;
+mod remote_peer;
 mod run_error;
 mod runtime;
-#[cfg(feature = "gui")]
 mod scheduler;
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
 mod shadow_review;
@@ -42,6 +43,7 @@ mod skills;
 mod skills_bootstrap;
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
 mod store;
+mod tasks;
 #[cfg(feature = "gui")]
 mod terminal;
 #[cfg(all(feature = "gui", target_os = "windows"))]
@@ -98,6 +100,21 @@ pub(crate) static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new((
 
 fn install_rustls_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+/// FutureOS home root (`<home>/agent`, `<home>/tasks`, …), normally `~/.future`.
+///
+/// `FUTURE_HOME` replaces the whole root (matching the agent); otherwise the
+/// desktop app dir's parent is used, so the tasks store and the GUI store can
+/// never disagree about which home they belong to.
+pub(crate) fn future_home_root() -> std::path::PathBuf {
+    if let Some(override_dir) = future_rpc::home::future_home_override() {
+        return override_dir;
+    }
+    future_app_settings::app_dir()
+        .ok()
+        .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
+        .unwrap_or_else(|| std::env::temp_dir().join(".future"))
 }
 
 #[cfg(feature = "gui")]
@@ -485,10 +502,21 @@ mod gui {
     /// created outside the GUI (TUI/CLI/channels) were imported into the store —
     /// so the sidebar re-lists threads. No payload: a bare invalidation signal.
     pub(crate) fn emit_threads_updated() {
-        if let Some(handle) = APP_HANDLE.get() {
-            use tauri::Emitter;
-            let _ = handle.emit("threads-updated", ());
+        emit_threads_updated_via(APP_HANDLE.get());
+    }
+
+    /// Route the invalidation through an optional handle (see
+    /// [`emit_review_updated_via`]).
+    fn emit_threads_updated_via<R: tauri::Runtime>(handle: Option<&tauri::AppHandle<R>>) {
+        if let Some(handle) = handle {
+            emit_threads_updated_on(handle);
         }
+    }
+
+    /// Emit the "threads-updated" invalidation on a caller-supplied handle.
+    fn emit_threads_updated_on<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) {
+        use tauri::Emitter;
+        let _ = handle.emit("threads-updated", ());
     }
 
     #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -878,6 +906,10 @@ mod gui {
                 // Future balance (1h), and Future models (24h). Missed ticks while
                 // suspended are skipped; each task runs at most once after resume.
                 scheduler::start(app.handle().clone());
+                // User-defined tasks: the tick loop claims due tasks and runs
+                // them through the sidecar agent (full permission). Headless
+                // desktop starts the same loop from `headless/mod.rs`.
+                tasks::start(app.handle().clone());
                 // Do not preemptively cancel non-terminal GUI rows at startup. The
                 // Agent is authoritative and may have survived a GUI crash; the
                 // watchdog below reattaches or settles each row only after it can
@@ -939,6 +971,20 @@ mod gui {
                         // agent reachability (skips when the agent is down).
                         if let Err(error) = store::reconcile_orphan_sessions().await {
                             eprintln!("FutureOS orphan-session reconcile failed: {error}");
+                        }
+                        // Rows mirrored by older builds for sessions that were
+                        // created but never prompted are empty conversations
+                        // with no run to their name; drop them so the list
+                        // converges without waiting for the periodic pass.
+                        match store::reconcile_empty_conversations().await {
+                            Ok(0) => {}
+                            Ok(removed) => {
+                                eprintln!("FutureOS: removed {removed} empty conversation(s)");
+                                crate::emit_threads_updated();
+                            }
+                            Err(error) => {
+                                eprintln!("FutureOS empty-conversation reconcile failed: {error}")
+                            }
                         }
                         // Rows produced by older startup convergence builds are
                         // terminal locally (`cancelled/interrupted`) and therefore
@@ -1039,6 +1085,7 @@ mod gui {
                 list_tool_calls_bulk,
                 list_tool_outputs,
                 list_approval_requests,
+                list_approval_assessments,
                 list_pending_approval_requests,
                 decide_approval_request,
                 save_approval_rule,
@@ -1060,6 +1107,18 @@ mod gui {
                 probe_windows_sandbox,
                 reset_windows_sandbox,
                 agent_prompt,
+                list_tasks,
+                create_task,
+                update_task,
+                delete_task,
+                set_task_enabled,
+                run_task_now,
+                list_task_runs,
+                list_task_deps,
+                set_task_dep,
+                remove_task_dep,
+                list_task_revisions,
+                apply_task_revision,
                 list_installed_skills,
                 list_available_skills,
                 get_skill_guide,
@@ -1076,6 +1135,18 @@ mod gui {
                 remote_status,
                 remote_unpair,
                 remote_pairing_status,
+                remote_peer_list,
+                remote_peer_pair,
+                remote_peer_connect,
+                remote_peer_disconnect,
+                remote_peer_unpair,
+                remote_peer_set_label,
+                remote_peer_sessions,
+                remote_peer_workspaces,
+                remote_peer_list_files,
+                remote_peer_download_file,
+                remote_peer_upload_file,
+                remote_peer_request,
                 terminal_server_info,
                 open_url
             ])
@@ -1175,6 +1246,7 @@ mod gui {
             apply_main_window_geometry, coalesce_runtime_updates, emit_approvals_updated_on,
             emit_approvals_updated_via, emit_remote_activity_on, emit_remote_activity_via,
             emit_review_updated_on, emit_review_updated_via, emit_runtime_updates_on,
+            emit_threads_updated, emit_threads_updated_on, emit_threads_updated_via,
             main_window_geometry, runtime_update_drain_loop, sample_thread_streaming,
             sample_thread_streaming_with, size_main_window_to_screen,
             thread_streaming_monitor_loop, ThreadRuntimeUpdate, ThreadRuntimeUpdateBatch,
@@ -1369,10 +1441,16 @@ mod gui {
             emit_review_updated_via(Some(handle), "thread-1");
             emit_remote_activity_via(Some(handle), "thread-1");
             emit_approvals_updated_via(Some(handle), "thread-1", "approval-1");
+            emit_threads_updated_via(Some(handle));
             // None arm: process-global APP_HANDLE unset in tests.
             emit_review_updated_via::<tauri::test::MockRuntime>(None, "thread-1");
             emit_remote_activity_via::<tauri::test::MockRuntime>(None, "thread-1");
             emit_approvals_updated_via::<tauri::test::MockRuntime>(None, "thread-1", "approval-1");
+            emit_threads_updated_via::<tauri::test::MockRuntime>(None);
+            emit_threads_updated_on(handle);
+            // The public entry point reads the process-global handle, which no
+            // test populates, so it takes the None arm without panicking.
+            emit_threads_updated();
         }
 
         #[test]

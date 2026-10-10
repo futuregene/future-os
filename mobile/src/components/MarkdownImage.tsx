@@ -13,10 +13,14 @@ export interface MarkdownImageLoader {
 export const MarkdownImageLoaderContext = createContext<MarkdownImageLoader | null>(null);
 export const MarkdownImageBasePathContext = createContext<string | undefined>(undefined);
 
-/** Keep relative paths relative to the desktop document, never the downloaded
- * phone cache file. The host canonicalizes and enforces its file-read boundary.
+/** Resolve a document-relative Markdown path (an image or a link) against the
+ * desktop path of the document that contains it, never the downloaded phone
+ * cache file. The host canonicalizes and enforces its own file-read boundary.
+ * Returns null when there is no usable base: a document opened from this
+ * phone's picker names a phone-local file, and a relative path cannot be
+ * resolved to anything the desktop can read.
  */
-export function markdownImagePath(src: string, basePath?: string): string | null {
+export function resolveMarkdownPath(src: string, basePath?: string): string | null {
   const path = localFilePath(src);
   if (!path) return null;
   if (basePath && /^[a-z][a-z0-9+.-]*:\/\//i.test(basePath)) return null;
@@ -25,20 +29,21 @@ export function markdownImagePath(src: string, basePath?: string): string | null
   return slash < 0 ? path : `${basePath.slice(0, slash + 1)}${path}`;
 }
 
-export function MarkdownImage({ src, alt, href, openTarget }: {
+export function MarkdownImage({ src, alt, width, href, openTarget }: {
   src: string;
   alt: string;
+  width?: number;
   href?: string;
   openTarget(target: string): void;
 }) {
   const loader = useContext(MarkdownImageLoaderContext);
   const basePath = useContext(MarkdownImageBasePathContext);
   const url = remoteMarkdownImageUrl(src);
-  const path = markdownImagePath(src, basePath);
+  const path = resolveMarkdownPath(src, basePath);
   const target = classifyMarkdownTarget(href ?? "");
   const linked = target.kind === "local-file" || target.kind === "external-url";
   if (url) {
-    const image = <LoadedImage key={url} alt={alt} uri={url} />;
+    const image = <LoadedImage key={url} alt={alt} uri={url} width={width} />;
     return linked ? <Pressable accessibilityRole="link" accessibilityLabel={alt || href} onPress={() => openTarget(href!)}>{image}</Pressable> : image;
   }
   if (!path || !loader) return (
@@ -46,13 +51,14 @@ export function MarkdownImage({ src, alt, href, openTarget }: {
       {alt || basename(src)}
     </Text>
   );
-  return <LocalImage key={`${loader.scope}:${path}`} alt={alt || basename(path)} loader={loader} path={path} onOpen={() => openTarget(href ?? src)} linked={linked} />;
+  return <LocalImage key={`${loader.scope}:${path}`} alt={alt || basename(path)} loader={loader} path={path} width={width} onOpen={() => openTarget(href ?? src)} linked={linked} />;
 }
 
-function LocalImage({ alt, loader, path, onOpen, linked }: {
+function LocalImage({ alt, loader, path, width, onOpen, linked }: {
   alt: string;
   loader: MarkdownImageLoader;
   path: string;
+  width?: number;
   onOpen(): void;
   linked: boolean;
 }) {
@@ -91,7 +97,7 @@ function LocalImage({ alt, loader, path, onOpen, linked }: {
     void load();
   }, [load, uri]);
   if (uri) return <Pressable accessibilityRole={linked ? "link" : "button"} accessibilityLabel={alt} onPress={onOpen}>
-    <LoadedImage key={uri} alt={alt} uri={uri} onFailure={() => { setUri(null); setFailed(true); }} />
+    <LoadedImage key={uri} alt={alt} uri={uri} width={width} onFailure={() => { setUri(null); setFailed(true); }} />
   </Pressable>;
   return (
     <View style={styles.placeholder}>
@@ -104,11 +110,16 @@ function LocalImage({ alt, loader, path, onOpen, linked }: {
   );
 }
 
-function LoadedImage({ alt, uri, onFailure }: { alt: string; uri: string; onFailure?(): void }) {
+function LoadedImage({ alt, uri, width, onFailure }: { alt: string; uri: string; width?: number; onFailure?(): void }) {
   const [failed, setFailed] = useState(false);
   const [aspectRatio, setAspectRatio] = useState(1.5);
   if (failed) return <Text selectable style={styles.caption}>{alt || uri}</Text>;
-  return <Image accessibilityLabel={alt} source={{ uri }} resizeMode="contain" style={[styles.image, { aspectRatio }]}
+  // `width` is a declarative maximum (from `<img width=…>`): `width: "100%"`
+  // fills the container while `maxWidth` caps it, so a 600px image fills a
+  // phone and is capped on a wide preview; an unset width fills unbounded.
+  // `alignSelf: "center"` overrides the `100%` width and centers a capped image
+  // in its (block) parent; the parent is block in chat and preview alike.
+  return <Image accessibilityLabel={alt} source={{ uri }} resizeMode="contain" style={[styles.image, { aspectRatio }, width ? { alignSelf: "center", maxWidth: width } : null]}
     onError={() => { setFailed(true); onFailure?.(); }}
     onLoad={(event) => {
       // The intrinsic size only exists on renderers that decode the image

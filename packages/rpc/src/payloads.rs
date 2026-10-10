@@ -62,6 +62,10 @@ pub struct GetStatePayload {
     pub requested_run: Option<Value>,
     /// Approval-request card payloads the session is parked on.
     pub pending_approvals: Vec<Value>,
+    /// The sandbox tier this session's policy was set to. `None` means no
+    /// policy was ever set, which is not the same as `Some("off")`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox_tier: Option<String>,
 }
 
 /// A run's live state (get_state `activeRun` / `interruptedRun`; proto
@@ -246,6 +250,7 @@ mod tests {
             interrupted_run: None,
             requested_run: None,
             pending_approvals: vec![],
+            sandbox_tier: None,
         };
         let value = serde_json::to_value(&payload).unwrap();
 
@@ -255,6 +260,51 @@ mod tests {
         assert!(value.get("sessionName").is_none(), "empty name is omitted");
         assert!(value.get("session_name").is_none(), "no legacy alias");
         assert!(value.get("extensions").is_none());
+        // No policy set must not be spelled as "off" — that is a real choice.
+        assert!(
+            value.get("sandboxTier").is_none(),
+            "an unset sandbox tier is omitted, not defaulted"
+        );
+    }
+
+    /// A session that never chose a sandbox tier decodes as `None` from both an
+    /// absent key and an explicit `null`, and a chosen one survives the trip.
+    #[test]
+    fn sandbox_tier_is_optional_in_both_directions() {
+        let with_tier = json!({
+            "agentInstanceId": "a", "model": "m", "imageSupport": false,
+            "thinkingLevel": "off", "isStreaming": false, "isCompacting": false,
+            "explicitSession": true, "autoCompactionEnabled": true, "queryCount": 0,
+            "version": "v", "cwd": "/w", "skills": [], "contextFiles": [],
+            "contextWindow": 1, "contextTokens": 0, "contextPercent": 0.0,
+            "usage": {"inputTokens":0,"outputTokens":0,"cacheReadTokens":0,
+                      "cacheWriteTokens":0,"costCny":0.0},
+            "permissionLevel": "all", "createdBy": "cli", "sourceMeta": null,
+            "queuedRuns": [], "queuedCount": 0, "recentTerminalAcks": [],
+            "pendingApprovals": [], "sandboxTier": "sandbox"
+        });
+        let payload: GetStatePayload = serde_json::from_value(with_tier).unwrap();
+        assert_eq!(payload.sandbox_tier.as_deref(), Some("sandbox"));
+
+        for spelling in [json!(null), json!("missing")] {
+            let mut value = json!({
+                "agentInstanceId": "a", "model": "m", "imageSupport": false,
+                "thinkingLevel": "off", "isStreaming": false, "isCompacting": false,
+                "explicitSession": true, "autoCompactionEnabled": true, "queryCount": 0,
+                "version": "v", "cwd": "/w", "skills": [], "contextFiles": [],
+                "contextWindow": 1, "contextTokens": 0, "contextPercent": 0.0,
+                "usage": {"inputTokens":0,"outputTokens":0,"cacheReadTokens":0,
+                          "cacheWriteTokens":0,"costCny":0.0},
+                "permissionLevel": "all", "createdBy": "cli", "sourceMeta": null,
+                "queuedRuns": [], "queuedCount": 0, "recentTerminalAcks": [],
+                "pendingApprovals": []
+            });
+            if spelling == json!(null) {
+                value["sandboxTier"] = json!(null);
+            }
+            let payload: GetStatePayload = serde_json::from_value(value).unwrap();
+            assert_eq!(payload.sandbox_tier, None, "{spelling}");
+        }
     }
 
     #[test]
@@ -304,6 +354,61 @@ mod tests {
         ] {
             assert!(value.get(key).is_none(), "{key} must not exist");
         }
+    }
+
+    /// A history page is mostly absent optionals, so an entry that leaves its
+    /// six optional fields unset must not spend a `null` on each of them.
+    /// Every consumer reads them through an optional accessor, so omitting and
+    /// `null` are the same to it — but only if the omission actually happens,
+    /// which is what this pins (the sibling test above covers legacy aliases,
+    /// not these).
+    #[test]
+    fn session_entry_payload_omits_unset_optionals_instead_of_nulling_them() {
+        let payload = SessionEntryPayload {
+            id: "e1".into(),
+            kind: "assistant".into(),
+            role: "assistant".into(),
+            created_at_ms: 1_785_931_200_000,
+            blocks: Vec::new(),
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        // The required identity of the entry is always present...
+        for key in ["id", "kind", "role", "createdAtMs", "blocks"] {
+            assert!(value.get(key).is_some(), "{key} must exist");
+        }
+        // ...while none of the optional payload survives as an explicit null.
+        for key in ["runId", "metadata", "usage", "run", "session", "checkpoint"] {
+            assert!(value.get(key).is_none(), "{key} must be omitted, not null");
+            assert_ne!(value.get(key), Some(&json!(null)), "{key} must not be null");
+        }
+    }
+
+    /// The omission must be a serialization concern only: a client that talks to
+    /// an older agent (or a cached page) still has to deserialize a payload that
+    /// spells the optionals out as `null`.
+    #[test]
+    fn session_entry_payload_still_reads_explicit_nulls() {
+        let raw = json!({
+            "id": "e1",
+            "kind": "tool",
+            "role": "tool",
+            "createdAtMs": 1_785_931_200_000_i64,
+            "runId": null,
+            "blocks": [],
+            "metadata": null,
+            "usage": null,
+            "run": null,
+            "session": null,
+            "checkpoint": null,
+        });
+        let payload: SessionEntryPayload = serde_json::from_value(raw).unwrap();
+        assert!(payload.run_id.is_none());
+        assert!(payload.metadata.is_none());
+        assert!(payload.usage.is_none());
+        assert!(payload.run.is_none());
+        assert!(payload.session.is_none());
+        assert!(payload.checkpoint.is_none());
     }
 
     #[test]
@@ -380,8 +485,10 @@ mod tests {
             interrupted_run: None,
             requested_run: None,
             pending_approvals: vec![],
+            sandbox_tier: Some("manual".to_string()),
         };
         let canonical = serde_json::to_value(&payload).unwrap();
+        assert_eq!(canonical["sandboxTier"], json!("manual"));
         let decoded: GetStatePayload = serde_json::from_value(canonical.clone()).unwrap();
         assert_eq!(serde_json::to_value(&decoded).unwrap(), canonical);
     }

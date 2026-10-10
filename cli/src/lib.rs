@@ -41,8 +41,36 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
     let rest: &[String] = args.get(2..).unwrap_or(&[]);
 
     // if (group === "--version" || group === "-v" || group === "version")
-    if matches!(group, Some("--version" | "-v" | "version")) {
+    //
+    // `version` is both a bare form and a group with `--json`, so it must be
+    // matched before the group dispatch below.
+    if matches!(group, Some("--version" | "-v")) {
         out.log(&format!("future v{}", version::VERSION));
+        return 0;
+    }
+    if group == Some("version") {
+        let help_flag = command == Some("--help")
+            || command == Some("-h")
+            || rest.iter().any(|a| a == "--help" || a == "-h");
+        if help_flag {
+            out.log(help::VERSION_HELP);
+            return 0;
+        }
+        let json_flag = command == Some("--json") || rest.iter().any(|a| a == "--json");
+        let unknown = [command, rest.first().map(String::as_str)]
+            .into_iter()
+            .flatten()
+            .find(|arg| !matches!(*arg, "--json" | "--help" | "-h"));
+        if let Some(argument) = unknown {
+            out.log_err(&format!("Unknown argument: {argument}\n"));
+            out.log_err("Usage: future version [--json]");
+            return 1;
+        }
+        if json_flag {
+            out.log(version::build_info_json().trim_end());
+        } else {
+            out.log(&format!("future v{}", version::VERSION));
+        }
         return 0;
     }
 
@@ -60,18 +88,62 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
         return catch(out, commands::init::init_command(out)).await;
     }
 
-    // `future config` — interactive model-provider setup.
+    // `future config` — interactive model-provider setup, plus non-interactive
+    // reads/writes of the global settings document.
     if group == Some("config") {
-        if command == Some("--help") || command == Some("-h") {
-            out.log(help::CONFIG_HELP);
-            return 0;
+        match command {
+            None => return catch(out, commands::configure::configure(out)).await,
+            Some("--help" | "-h") => {
+                out.log(help::CONFIG_HELP);
+                return 0;
+            }
+            Some(sub) => {
+                let args = rest.to_vec();
+                let help_flag = args.iter().any(|a| a == "--help" || a == "-h");
+                match sub {
+                    "get" => {
+                        if help_flag {
+                            out.log(help::CONFIG_GET_HELP);
+                            return 0;
+                        }
+                        return catch(out, async { commands::settings::get(&args, out) }).await;
+                    }
+                    "set" => {
+                        if help_flag {
+                            out.log(help::CONFIG_SET_HELP);
+                            return 0;
+                        }
+                        return catch(out, async { commands::settings::set(&args, out) }).await;
+                    }
+                    argument => {
+                        out.log_err(&format!("Unknown argument: {argument}\n"));
+                        out.log_err("Usage: future config [get [<key>] | set <key> <value>]");
+                        return 1;
+                    }
+                }
+            }
         }
-        if let Some(argument) = command {
-            out.log_err(&format!("Unknown argument: {argument}\n"));
-            out.log_err("Usage: future config");
-            return 1;
-        }
-        return catch(out, commands::configure::configure(out)).await;
+    }
+
+    // if (group === "desktop") — the desktop app's own settings document.
+    if group == Some("desktop") {
+        return catch(out, async {
+            commands::desktop::desktop(command, rest, out)
+        })
+        .await;
+    }
+
+    // if (group === "task") — reusable prompt + trigger + full-permission runs.
+    if group == Some("task") {
+        return catch(out, commands::task::task(command, rest, out)).await;
+    }
+
+    // `future workspace` — the desktop app's workspaces, from the terminal.
+    if group == Some("workspace") {
+        return catch(out, async {
+            commands::workspace::workspace(command, rest, out)
+        })
+        .await;
     }
 
     // if (group === "auth" && (!command || command === "--help" || command === "-h"))
@@ -291,12 +363,56 @@ mod tests {
 
     #[tokio::test]
     async fn version_flags() {
-        for flag in ["--version", "-v", "version"] {
+        for flag in ["--version", "-v"] {
             let (code, stdout, stderr) = run(&[flag]).await;
             assert_eq!(code, 0);
             assert_eq!(stdout, format!("future v{}\n", version::VERSION));
             assert_eq!(stderr, "");
         }
+        // The bare `version` form prints the same string as `--version`, so
+        // existing callers keep working.
+        let (code, stdout, stderr) = run(&["version"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, format!("future v{}\n", version::VERSION));
+        assert_eq!(stderr, "");
+    }
+
+    /// `version --json` reports the build identity a support conversation (or an
+    /// agent) needs, and the two forms agree on the version string.
+    #[tokio::test]
+    async fn version_json_reports_the_build_identity() {
+        let (code, stdout, stderr) = run(&["version", "--json"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(stderr, "");
+        let info: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(info["version"], version::VERSION);
+        assert_eq!(info["isRelease"], version::is_release(version::VERSION));
+        assert!(info["buildTarget"].is_string(), "{stdout}");
+        // Locally this is a real commit; a tarball build reports null instead.
+        if let Some(commit) = info["gitCommit"].as_str() {
+            assert_eq!(commit.len(), 40, "{stdout}");
+        }
+    }
+
+    #[tokio::test]
+    async fn version_help_and_unknown_argument() {
+        for values in [
+            vec!["version", "--help"],
+            vec!["version", "-h"],
+            vec!["version", "--json", "--help"],
+        ] {
+            let (code, stdout, stderr) = run(&values).await;
+            assert_eq!(code, 0, "{values:?}");
+            assert_eq!(stdout, format!("{}\n", help::VERSION_HELP), "{values:?}");
+            assert_eq!(stderr, "", "{values:?}");
+        }
+        let (code, stdout, stderr) = run(&["version", "bogus"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert_eq!(
+            stderr,
+            "Unknown argument: bogus\n\nUsage: future version [--json]\n"
+        );
     }
 
     #[tokio::test]
@@ -338,8 +454,101 @@ mod tests {
         assert_eq!(stdout, "");
         assert_eq!(
             stderr,
-            "Unknown argument: unexpected\n\nUsage: future config\n"
+            "Unknown argument: unexpected\n\nUsage: future config [get [<key>] | set <key> <value>]\n"
         );
+    }
+
+    /// `config get` / `config set` are reachable from the dispatcher, print
+    /// their own help without touching the file, and read the Agent's settings
+    /// document from the FUTURE_HOME in effect.
+    #[tokio::test]
+    async fn config_get_and_set_dispatch() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env =
+            crate::test_env::EnvGuard::set(&[("FUTURE_HOME", dir.path().as_os_str().to_owned())]);
+
+        for (args, expected) in [
+            (vec!["config", "get", "--help"], help::CONFIG_GET_HELP),
+            (vec!["config", "set", "--help"], help::CONFIG_SET_HELP),
+        ] {
+            let (code, stdout, stderr) = run(&args).await;
+            assert_eq!(code, 0, "{args:?}");
+            assert_eq!(stdout, format!("{expected}\n"), "{args:?}");
+            assert_eq!(stderr, "", "{args:?}");
+        }
+
+        let (code, stdout, stderr) = run(&["config", "get"]).await;
+        assert_eq!(code, 0);
+        assert!(stdout.contains("defaultPermissionLevel = all"), "{stdout}");
+        assert_eq!(stderr, "");
+
+        let (code, stdout, stderr) = run(&["config", "set", "maxTurns", "9"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("maxTurns = 9"), "{stdout}");
+
+        let (code, stdout, stderr) = run(&["config", "get", "maxTurns"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, "9\n");
+        assert_eq!(stderr, "");
+
+        // A rejected write is reported as a command failure, not a traceback.
+        let (code, stdout, stderr) = run(&["config", "set", "maxTurns", "-1"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert!(
+            stderr.starts_with("maxTurns must be at least 0"),
+            "{stderr}"
+        );
+    }
+
+    #[tokio::test]
+    async fn desktop_settings_dispatch_routes_reads_writes_and_help() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let _env = crate::test_env::EnvGuard::set(&[("HOME", dir.path().as_os_str().to_owned())]);
+
+        // A bare `desktop` and the settings help both print the group help.
+        for args in [
+            &["desktop"][..],
+            &["desktop", "--help"][..],
+            &["desktop", "settings", "--help"][..],
+        ] {
+            let (code, stdout, stderr) = run(args).await;
+            assert_eq!(code, 0, "{args:?}");
+            assert_eq!(stdout, format!("{}\n", help::DESKTOP_HELP), "{args:?}");
+            assert_eq!(stderr, "", "{args:?}");
+        }
+
+        // Reads report defaults before the desktop app has ever written one.
+        let (code, stdout, stderr) = run(&["desktop", "settings"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("approvalTier = off"), "{stdout}");
+        assert!(stdout.contains("bellOnComplete = true"), "{stdout}");
+
+        // A write is visible to the next read, bare for scripting.
+        let (code, _, stderr) =
+            run(&["desktop", "settings", "set", "bellOnComplete", "false"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        let (code, stdout, stderr) = run(&["desktop", "settings", "get", "bellOnComplete"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert_eq!(stdout, "false\n");
+
+        // A rejected value is a command failure, not a traceback.
+        let (code, stdout, stderr) =
+            run(&["desktop", "settings", "set", "titleLanguage", "fr"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert!(
+            stderr.contains("titleLanguage must be en or zh"),
+            "{stderr}"
+        );
+
+        // An unknown subcommand reports the usage line.
+        let (code, stdout, stderr) = run(&["desktop", "bogus"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert!(stderr.contains("Unknown argument: bogus"), "{stderr}");
     }
 
     #[tokio::test]
@@ -390,6 +599,17 @@ mod tests {
             (&["init", "-h"], help::INIT_HELP),
             (&["config", "--help"], help::CONFIG_HELP),
             (&["config", "-h"], help::CONFIG_HELP),
+            (&["desktop", "--help"], help::DESKTOP_HELP),
+            (&["desktop", "-h"], help::DESKTOP_HELP),
+            (&["desktop", "settings", "--help"], help::DESKTOP_HELP),
+            (
+                &["desktop", "settings", "get", "--help"],
+                help::DESKTOP_GET_HELP,
+            ),
+            (
+                &["desktop", "settings", "set", "--help"],
+                help::DESKTOP_SET_HELP,
+            ),
             (&["auth", "--help"], help::AUTH_GROUP_HELP),
             (&["auth", "-h"], help::AUTH_GROUP_HELP),
             (&["auth", "login", "--help"], help::AUTH_LOGIN_HELP),

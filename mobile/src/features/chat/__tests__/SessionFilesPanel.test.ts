@@ -2,6 +2,7 @@ import { createElement, type ComponentProps } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { BackHandler, FlatList } from "react-native";
 import { SessionFilesPanel } from "../components/SessionFilesPanel";
+import { AppAlert } from "../../../components/appAlerts";
 import type { SessionFileListing } from "../../../remote/types";
 
 jest.mock("lucide-react-native", () => ({
@@ -183,5 +184,23 @@ test("late requests cannot replace a refreshed directory or repopulate an offlin
   expect(entries()).toEqual([]);
   expect(tree.root.findAll(node => node.props.children === "files.offline").length).toBeGreaterThan(0);
   await act(async () => { tree.update(createElement(SessionFilesPanel, props)); });
+  expect(entries()).toHaveLength(2);
+});
+
+test("descending into a folder and jumping back to the root re-reads the session root", async () => {
+  await mount();
+  await press("files.openFolder:reports");
+  expect(listFiles).toHaveBeenLastCalledWith("C:\\work\\reports");
+  await press("files.root");
+  expect(listFiles).toHaveBeenLastCalledWith("");
+});
+
+test("a failed open reports the failure and leaves the directory in place", async () => {
+  const alert = jest.spyOn(AppAlert, "alert").mockImplementation(() => {});
+  onOpenFile.mockRejectedValueOnce(new Error("no longer there"));
+  await mount();
+  await press("files.openFile:notes.md");
+  expect(alert).toHaveBeenCalledWith("files.title", "attachment.downloadFailed");
+  // The reader may be editing another file; the listing must not disappear.
   expect(entries()).toHaveLength(2);
 });

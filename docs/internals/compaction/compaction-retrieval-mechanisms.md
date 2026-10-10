@@ -198,12 +198,13 @@ acknowledgement.
 One earlier run did overstate this: it named an executor "shell" while running
 `shlex.split(command)` followed by a single `future` process, so compound commands never
 composed. Every nonzero exit it recorded was such a compound command. The corrected path is
-`native_open_exam.py -> NativeFutureShell.execute_shell -> production_tool_executor ->
+`run_open_book.py -> NativeFutureShell.execute_shell -> production_tool_executor ->
 shell_tool().handler -> shell_invocation -> the full shell command -> native CLI/RPC/journal`,
 and it exports the original Rust tool definition instead of a hand-written substitute. Glue
 may isolate, convert inputs, invoke and record; it must never silently remove or invent a
 capability, and the algorithms and tool execution stay the products' own code.
 
 Experiment glue lives in `agent/examples/production_tool_executor.rs` and
-`scripts/compaction_experiment/native_future_shell.py`, `native_codex.py`, `native_opencode.py` and
-`native_stores.py`.
+`scripts/compaction_experiment/native_future_shell.py`, `native_codex.py` and
+`native_stores.py`; the OpenCode arm is modelled from the transcribed rules in
+`strategies.py`, with `opencode_fidelity.mjs` for serialisation, not a native adapter.

@@ -120,7 +120,7 @@ pub(crate) fn project_entries(entries: &[SessionEntry]) -> Vec<serde_json::Value
                 created_at_ms: e.timestamp.timestamp_millis(),
                 run_id,
                 blocks,
-                metadata,
+                metadata: metadata.filter(|value| !metadata_is_redundant(value)),
                 usage: stats.cloned(),
                 run: outcome.cloned(),
                 session: (e.entry_type == "session_info")
@@ -141,4 +141,105 @@ pub(crate) fn project_entries(entries: &[SessionEntry]) -> Vec<serde_json::Value
             serde_json::to_value(payload).expect("serializable history payload")
         })
         .collect()
+}
+
+/// Whether an entry's projected `metadata` carries nothing a client can use, so
+/// the payload can omit it entirely.
+///
+/// The value here is `SessionEntry.meta` — the entry's own metadata object, with
+/// `run_id` already hoisted into the payload's own field — not the raw
+/// `entries.metadata_json` column, whose `{"meta":…,"timestamp":…}` wrapper is
+/// loader plumbing that never reaches the wire. Measured on a 6,300-entry real
+/// page: 6,292 entries carry exactly `{}` and one carries `{"attachments":…}`.
+///
+/// So the only redundant shape is the empty object, and ~57 bytes per entry of
+/// DB-side wrapper is already projected away upstream. Dropping the empty object
+/// saves its 14 bytes on the wire; anything non-empty is kept verbatim, because
+/// `attachments` lives here and *is* rendered (the phone shows the attached
+/// images and files).
+fn metadata_is_redundant(metadata: &serde_json::Value) -> bool {
+    matches!(metadata.as_object(), Some(object) if object.is_empty())
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::metadata_is_redundant;
+    use serde_json::json;
+
+    /// The measured shape of almost every entry: `e.meta` minus the hoisted
+    /// `run_id`, which leaves an object with nothing in it.
+    #[test]
+    fn the_empty_object_is_redundant() {
+        assert!(metadata_is_redundant(&json!({})));
+    }
+
+    /// The one that must never regress: attached images/files are rendered on
+    /// the phone, and losing them would be silent (the bubble simply shows no
+    /// image).
+    #[test]
+    fn attachments_always_survive() {
+        assert!(!metadata_is_redundant(&json!({
+            "attachments": [{"path": "/tmp/a.png", "kind": "image"}]
+        })));
+        // Even an empty attachment list is a deliberate value, not absence.
+        assert!(!metadata_is_redundant(&json!({"attachments": []})));
+    }
+
+    /// Fail closed: an unrecognized key keeps the whole object rather than being
+    /// dropped by a rule written before that key existed, and a non-object
+    /// metadata value is passed through untouched.
+    #[test]
+    fn unknown_keys_and_shapes_are_kept() {
+        assert!(!metadata_is_redundant(&json!({"future_key": 1})));
+        assert!(!metadata_is_redundant(&json!({"nested": {}})));
+        assert!(!metadata_is_redundant(&json!("text")));
+        assert!(!metadata_is_redundant(&json!(null)));
+        assert!(!metadata_is_redundant(&json!([1, 2])));
+        assert!(!metadata_is_redundant(&json!(0)));
+    }
+}
+
+/// A terminal marker that cannot be attributed to a run (no content, or no
+/// `run_id`) must leave the run's usage unclaimed, and only the authoritative
+/// `session_info` snapshot is projected.
+#[cfg(test)]
+mod projection_guards {
+    use super::*;
+    use crate::session::SessionEntry;
+
+    #[test]
+    fn unusable_terminal_markers_change_nothing_and_stale_metadata_is_dropped() {
+        let assistant = SessionEntry::new_assistant(serde_json::json!("answer"), Vec::new());
+        let baseline = project_entries(std::slice::from_ref(&assistant));
+
+        // No content at all, and content without a run id: neither can be
+        // attributed, so the projection is identical to having no marker.
+        let without_content = SessionEntry {
+            content: None,
+            ..SessionEntry::run_terminal("r", "completed", 7, 9, None)
+        };
+        let without_run_id = SessionEntry {
+            content: Some(serde_json::json!({"state":"completed","run_tokens":7})),
+            ..SessionEntry::run_terminal("r", "completed", 7, 9, None)
+        };
+        let with_markers = project_entries(&[assistant, without_content, without_run_id]);
+        assert_eq!(baseline, with_markers);
+
+        // Only the first session_info slot survives, carrying the last snapshot.
+        let old = SessionEntry::session_info(
+            serde_json::json!({"session_name":"old"}),
+            "mock".into(),
+            String::new(),
+        );
+        let new = SessionEntry::session_info(
+            serde_json::json!({"session_name":"new"}),
+            "mock".into(),
+            String::new(),
+        );
+        let projected = project_entries(&[old, new]);
+        assert_eq!(projected.len(), 1);
+        let session = projected[0]["session"].to_string();
+        assert!(session.contains("new"), "{session}");
+        assert!(!session.contains("old"), "{session}");
+    }
 }

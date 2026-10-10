@@ -63,7 +63,37 @@ mod tests {
         );
         assert!(!error.contains("os error"), "{error}");
         drop(guard);
-        assert!(InstanceGuard::at(directory.path()).is_ok());
+        // Retry briefly before calling the lock leaked: a sibling test's
+        // `Command::spawn` forks while this guard is open, and the child shares
+        // the open file description until it execs. `flock` ownership follows
+        // the description rather than the fd, so the lock can still read as held
+        // for the length of that window -- an artifact of running the suite in
+        // parallel, not a lock that was never released. A lock that really is
+        // never released still fails here, just after the deadline.
+        //
+        // Report the reason rather than a bare `is_ok()`: this line failed
+        // intermittently under full-suite load (3 times in ~20 runs) with no way
+        // to tell a lock that was not released from an unrelated `open` failure,
+        // which is the difference between a product bug and a test-environment
+        // one. It has never reproduced in isolation (150 single runs, 320
+        // concurrent runs of this test, and several full-suite runs all pass).
+        //
+        // fd exhaustion was measured and ruled out: this test holds no fds (all
+        // three of its cases pass under `ulimit -n 128`, where 284 other tests
+        // fail with EMFILE), and the suite's peak demand stays below 256 against
+        // a 2560 soft limit.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match InstanceGuard::at(directory.path()) {
+                Ok(_) => break,
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(error) => {
+                    panic!("re-acquiring the lock after release failed: {error}")
+                }
+            }
+        }
     }
 
     #[test]
@@ -80,5 +110,35 @@ mod tests {
         let second = tempfile::tempdir().unwrap();
         let _a = InstanceGuard::at(first.path()).unwrap();
         let _b = InstanceGuard::at(second.path()).unwrap();
+    }
+
+    /// `acquire()` resolves the data directory from the process-global HOME, so
+    /// this is the only test that needs the same fixture the store tests use.
+    #[test]
+    fn acquire_resolves_the_home_directory_and_keeps_its_lock() {
+        let home = crate::auth_store::test_support::HomeGuard::new("instance-acquire");
+        let root = std::env::var("HOME").expect("HomeGuard publishes HOME");
+        let data_directory = Path::new(&root).join(".future").join("app");
+        let guard = InstanceGuard::acquire().expect("acquire under the override HOME");
+        assert!(
+            data_directory.join("desktop.lock").is_file(),
+            "acquire must create the lock file under HOME/.future/app"
+        );
+
+        let error = InstanceGuard::acquire()
+            .err()
+            .expect("the data directory is already owned")
+            .to_string();
+        assert!(error.contains("Desktop is already running"), "{error}");
+        assert!(
+            error.contains(&data_directory.display().to_string()),
+            "the message must name the contended directory: {error}"
+        );
+
+        drop(guard);
+        // Releasing the only owner makes the same directory available again.
+        let reacquired = InstanceGuard::acquire().expect("reacquire after release");
+        drop(reacquired);
+        drop(home);
     }
 }

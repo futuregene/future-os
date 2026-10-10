@@ -150,7 +150,7 @@ pub(super) static HEARTBEAT_PUBLISH_EPISODE: FailureEpisode =
     }));
 
 /// Port for the embedded web client HTTP server.
-pub(super) const WEB_PORT: u16 = 8022;
+pub(crate) const WEB_PORT: u16 = 8022;
 /// The remote browser client is a single self-contained HTML file. Embed it so
 /// release bundles do not depend on the build machine's source checkout.
 pub(super) const EMBEDDED_WEB_INDEX: &[u8] =

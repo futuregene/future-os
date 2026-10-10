@@ -40,7 +40,7 @@ jobs:
       # ossutil v2 is fetched directly from Aliyun's public CDN (no third-party
       # action). Auth is entirely via the OSS_* env vars set at the job level.
       - name: Setup ossutil
-        run: bash scripts/setup-ossutil.sh
+        run: bash scripts/release/setup-ossutil.sh
 
       # Upload/update the current Chinese pages. Old objects are retained until
       # they are removed through a separately authorized OSS maintenance task.

@@ -20,8 +20,20 @@ interface UseSendMessageInput {
   sendingRef: MutableRefObject<boolean>;
   setMessages: Dispatch<SetStateAction<AgentMessage[]>>;
   setRecentRun: (run: StoredRun) => void;
-  refreshRecentRun: (threadId: string, workspaceId?: string | null) => Promise<void>;
+  refreshRecentRun: (threadId: string) => Promise<void>;
   onThreadActivity: () => void;
+}
+
+/** The identity of one send, held from before `createRun` answers. */
+interface LocalSend {
+  /** The run this send created, once `createRun` has answered. */
+  runId: string | null;
+  /**
+   * Settles the promise this send returned to its caller. Called only by
+   * {@link useSendMessage}'s `abandonSend` — that caller cannot rely on the
+   * pipeline settling, which is the whole point of holding it here.
+   */
+  releaseDelivery: () => void;
 }
 
 /**
@@ -43,7 +55,7 @@ export function useSendMessage({
 }: UseSendMessageInput) {
   const sendGenerationRef = useRef(0);
   // Object identity identifies this send even before createRun completes.
-  const localSendRef = useRef<{ runId: string | null } | null>(null);
+  const localSendRef = useRef<LocalSend | null>(null);
 
   const handleSend = useCallback(async (payload: ComposerSendPayload, onAccepted?: () => void) => {
     if (!thread) {
@@ -66,7 +78,16 @@ export function useSendMessage({
       return;
     }
     sendingRef.current = true;
-    const localSend = { runId: null as string | null };
+    // Resolved by `abandonSend`, raced against the pipeline below. Abandoning
+    // this send cannot stop the pipeline (its invoke is already in flight), so
+    // the wait has to be cut short here — otherwise a caller waiting on delivery
+    // waits forever. See `abandonSend` for why that cannot be left to the
+    // pipeline's own settle.
+    let releaseDelivery!: () => void;
+    const abandoned = new Promise<void>((resolve) => {
+      releaseDelivery = resolve;
+    });
+    const localSend: LocalSend = { runId: null, releaseDelivery };
     localSendRef.current = localSend;
 
     const sendGeneration = sendGenerationRef.current + 1;
@@ -74,7 +95,7 @@ export function useSendMessage({
     const isCurrentSend = () => sendGenerationRef.current === sendGeneration;
 
     try {
-      await runSendPipeline(
+      const pipeline = runSendPipeline(
         {
           isCurrentSend,
           onAccepted,
@@ -93,6 +114,12 @@ export function useSendMessage({
         },
         payload,
       );
+      // Losing the race leaves the pipeline rejected with nobody left to
+      // observe it; mark that as handled so an abandoned failure is not
+      // reported as an unhandled rejection. When the pipeline wins the race its
+      // own rejection is what surfaces, exactly as before.
+      pipeline.catch(() => {});
+      await Promise.race([pipeline, abandoned]);
     }
     catch (error) {
       // Run failures are already surfaced as friendly failure bubbles by the
@@ -101,7 +128,8 @@ export function useSendMessage({
       // truly unexpected error. Show it verbatim — wrapping it in a "run
       // failed" template would mislabel validation feedback.
       emitFutureEvent("toast", { message: errorMessage(error), tone: "error" });
-      throw error;
+      if (onAccepted)
+        throw error;
     }
     finally {
       // Release the in-flight lock — but only if a newer send/thread switch
@@ -121,6 +149,12 @@ export function useSendMessage({
     // interval callback no-ops once `isCurrentSend()` turns false, so there's
     // nothing to clear here — it stops on its own when that send's await
     // returns.
+    //
+    // Deliberately does NOT release the caller waiting on delivery, unlike
+    // `abandonSend`: nobody is left to release (the composer unmounted with
+    // this view), and leaving the promise pending keeps the pendingPrompt
+    // ownership set holding this prompt — a remounted instance of the same
+    // conversation must not send its staged first message a second time.
     return () => {
       sendGenerationRef.current += 1;
       sendingRef.current = false;
@@ -137,7 +171,16 @@ export function useSendMessage({
   const abandonSend = useCallback(() => {
     sendGenerationRef.current += 1;
     sendingRef.current = false;
+    // Release whoever is waiting on this send's delivery, so an abandoned send
+    // cannot keep the composer locked on its pending send. The run is settled
+    // (that is what triggered the abandon) and the watchdog is reloading its
+    // persisted reply, so this reports delivery — not a rejection, which would
+    // put the submitted draft back and duplicate the message the thread is
+    // already showing. Dropping the whole send identity (rather than a flag)
+    // also makes a second abandon of an already-abandoned send a no-op.
+    const abandoned = localSendRef.current;
     localSendRef.current = null;
+    abandoned?.releaseDelivery();
   }, [sendingRef]);
 
   return { handleSend, abandonSend, localSendRef };

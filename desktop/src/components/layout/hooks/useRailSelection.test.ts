@@ -62,6 +62,48 @@ describe("rail selection", () => {
     h.unmount();
   });
 
+  it("only Escape leaves selection mode, and nothing is bound once it is off", () => {
+    const item = thread("item");
+    const h = renderHook(() => useRailSelection({
+      onBatchDeleteThreads: vi.fn(),
+      onSelectThread: vi.fn(),
+      threadScopes: new Map([[item.id, "chat"]]),
+      visibleThreads: [item],
+    }));
+
+    // While selection mode is off there is no listener at all, so Escape is just
+    // a normal key (e.g. it must not close anything on the user's behalf).
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(h.current.selectionMode).toBe(false);
+
+    act(() => h.current.enterSelectionMode("chat"));
+    expect(h.current.selectionMode).toBe(true);
+
+    // A non-Escape key must not end the batch — only Escape does.
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "a" }));
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown" }));
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace" }));
+    });
+    expect(h.current.selectionMode).toBe(true);
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(h.current.selectionMode).toBe(false);
+
+    // And the listener is gone again: a later Escape is inert.
+    act(() => h.current.enterSelectionMode("chat"));
+    act(() => h.current.exitSelectionMode());
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(h.current.selectionMode).toBe(false);
+    h.unmount();
+  });
+
   it("routes row activation to selection without opening the thread", () => {
     const item = thread("item");
     const onSelectThread = vi.fn();

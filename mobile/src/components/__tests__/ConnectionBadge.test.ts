@@ -58,12 +58,26 @@ test("only the dot is visible, with a 44pt button and an accessible status", () 
   expect(tree.root.findByType(Modal).props.visible).toBe(true);
   expect(trigger().props.accessibilityState.expanded).toBe(true);
   expect(text()).toContain("connection.statusDetails.connected.reason");
-  expect(tree.root.findAllByType(Button)).toHaveLength(0);
   expect(onReconnect).not.toHaveBeenCalled();
 });
 
 test.each([
-  [{ phase: "connecting", desktopOnline: false }, "connection.connecting", "connection.statusDetails.connecting.reason"],
+  [{ phase: "ready", desktopOnline: true }, "connection.statusDetails.connected.reason"],
+  [{ phase: "connecting", desktopOnline: false }, "connection.statusDetails.connecting.reason"],
+] as const)("offers a manual reconnect while the status still reads healthy (%j)", (state, hint) => {
+  render(connectionPresentation(state));
+  open();
+  expect(text()).toContain(hint);
+  const action = tree.root.findByType(Button);
+  expect(action.props.label).toBe("connection.reconnect");
+  // Secondary: a healthy connection must not push the escape hatch forward.
+  expect(action.props.variant).toBe("secondary");
+  act(() => action.props.onPress());
+  expect(onReconnect).toHaveBeenCalledTimes(1);
+  expect(tree.root.findByType(Modal).props.visible).toBe(false);
+});
+
+test.each([
   [{ phase: "ready", desktopOnline: false }, "connection.waitingDesktop", "connection.statusDetails.waitingDesktop.reason"],
   [{ phase: "ready", desktopOnline: true, agentAvailable: false }, "connection.waitingDesktop", "connection.statusDetails.devicePreparing.reason (LC003)"],
 ] as const)("explains %j without offering an inappropriate reconnect", (state, label, hint) => {
@@ -97,6 +111,7 @@ test.each([
   expect(onReconnect).not.toHaveBeenCalled();
   const action = tree.root.findByType(Button);
   expect(action.props.label).toBe(label);
+  expect(action.props.variant).toBe("primary");
   act(() => action.props.onPress());
   expect(onReconnect).toHaveBeenCalledTimes(1);
   expect(tree.root.findByType(Modal).props.visible).toBe(false);

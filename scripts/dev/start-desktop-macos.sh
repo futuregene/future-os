@@ -1,0 +1,404 @@
+#!/bin/bash
+set -euo pipefail
+
+echo "FutureOS local desktop test"
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+SCRIPT_DIR="${SCRIPT_PATH%/*}"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+DESKTOP_DIR="$ROOT_DIR/desktop"
+AGENT_DIR="$ROOT_DIR/agent"
+CLI_DIR="$ROOT_DIR/cli"
+LOG_DIR="$ROOT_DIR/.logs"
+
+AGENT_ADDR="${FUTURE_AGENT_GRPC_ADDR:-auto}"
+case "$AGENT_ADDR" in
+  ""|[Aa][Uu][Tt][Oo])
+    AGENT_TRANSPORT="local"
+    AGENT_ADDR="auto"
+    AGENT_SOCKET="${FUTURE_AGENT_SOCKET:-$HOME/.future/run/agent.sock}"
+    AGENT_ENDPOINT="unix://$AGENT_SOCKET"
+    AGENT_TCP_ADDR=""
+    AGENT_HOST=""
+    AGENT_PORT=""
+    ;;
+  *)
+    AGENT_TRANSPORT="tcp"
+    AGENT_TCP_ADDR="${AGENT_ADDR#http://}"
+    AGENT_TCP_ADDR="${AGENT_TCP_ADDR#https://}"
+    AGENT_HOST="${AGENT_TCP_ADDR%:*}"
+    AGENT_PORT="${AGENT_TCP_ADDR##*:}"
+    AGENT_ENDPOINT="http://$AGENT_TCP_ADDR"
+    AGENT_SOCKET=""
+    ;;
+esac
+DESKTOP_DEV_PORT="${DESKTOP_DEV_PORT:-5173}"
+# The agent writes to its default log location (~/.future/agent/logs/agent.log,
+# created by the agent itself) via bare `--log-file`; the repo .logs dir only
+# holds script state (pid file) and the agent's stdout/stderr capture.
+AGENT_LOG="$HOME/.future/agent/logs/agent.log"
+AGENT_CONSOLE_LOG="$LOG_DIR/future-agent-test.log.console"
+AGENT_BUILD_LOG="$LOG_DIR/future-agent-test.build.log"
+CLI_BUILD_LOG="$LOG_DIR/future-cli-test.build.log"
+DESKTOP_CONSOLE_LOG="$LOG_DIR/futureos-desktop-test.log.console"
+AGENT_PID_FILE="$LOG_DIR/future-agent-test.pid"
+
+REUSE_AGENT="${REUSE_AGENT:-0}"
+BUILD_AGENT="${BUILD_AGENT:-1}"
+BUILD_CLI="${BUILD_CLI:-1}"
+CLEAN_STALE_APP_TASKS="${CLEAN_STALE_APP_TASKS:-1}"
+DRY_RUN="${DRY_RUN:-0}"
+LIVE_LOGS="${LIVE_LOGS:-1}"
+
+STARTED_AGENT_PID=""
+DESKTOP_PID=""
+
+stream_log_to_console() {
+  local label="$1"
+  local line
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    printf '[%s] %s\n' "$label" "$line"
+  done
+}
+
+mirror_log() {
+  local label="$1"
+  if [[ "$LIVE_LOGS" == "1" ]]; then
+    stream_log_to_console "$label"
+  else
+    cat >/dev/null
+  fi
+}
+
+# Keep a direct child PID while isolating it from the terminal's foreground
+# process group. Perl is shipped with macOS; exec preserves the child's PID.
+exec_in_own_session() {
+  exec perl -MPOSIX=setsid -e '
+    setsid() != -1 or die "setsid: $!\n";
+    exec @ARGV or die "exec: $!\n";
+  ' -- "$@"
+}
+
+stop_process_group() {
+  local pid="$1"
+  local label="$2"
+  local attempt
+  [[ -n "$pid" ]] || return 0
+  if kill -0 -- "-$pid" 2>/dev/null; then
+    echo "Stopping $label process group=$pid"
+    kill -TERM -- "-$pid" 2>/dev/null || true
+    for ((attempt = 0; attempt < 50; attempt++)); do
+      kill -0 -- "-$pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 -- "-$pid" 2>/dev/null; then
+      echo "Force stopping $label process group=$pid"
+      kill -KILL -- "-$pid" 2>/dev/null || true
+    fi
+  fi
+  wait "$pid" 2>/dev/null || true
+}
+
+stop_process() {
+  local pid="$1"
+  local label="$2"
+  [[ -n "$pid" ]] || return 0
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "Stopping $label pid=$pid"
+    kill -TERM "$pid" 2>/dev/null || true
+    sleep 1
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "Force stopping $label pid=$pid"
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  fi
+  wait "$pid" 2>/dev/null || true
+}
+
+cleanup() {
+  trap '' INT TERM
+  # Tauri/Vite and the GUI must stop before the endpoint they consume.
+  stop_process_group "$DESKTOP_PID" "desktop"
+  stop_process "$STARTED_AGENT_PID" "future-agent"
+  if [[ -f "$AGENT_PID_FILE" ]] && [[ "$(cat "$AGENT_PID_FILE" 2>/dev/null || true)" == "$STARTED_AGENT_PID" ]]; then
+    rm -f "$AGENT_PID_FILE"
+  fi
+}
+
+wait_for_agent() {
+  local attempts=60
+
+  for _ in $(seq 1 "$attempts"); do
+    if ! kill -0 "$STARTED_AGENT_PID" 2>/dev/null; then
+      echo "future-agent exited before becoming ready."
+      break
+    fi
+    if agent_is_ready; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "future-agent did not become ready at $AGENT_ENDPOINT"
+  echo "Agent log: $AGENT_LOG"
+  tail -n 80 "$AGENT_LOG" 2>/dev/null || true
+  echo "Agent console log (stdout/stderr, panics): $AGENT_CONSOLE_LOG"
+  tail -n 80 "$AGENT_CONSOLE_LOG" 2>/dev/null || true
+  return 1
+}
+
+agent_is_ready() {
+  if [[ "$AGENT_TRANSPORT" == "tcp" ]]; then
+    nc -z "$AGENT_HOST" "$AGENT_PORT" >/dev/null 2>&1
+    return
+  fi
+
+  [[ -S "$AGENT_SOCKET" ]] || return 1
+  if [[ -x "$ROOT_DIR/target/debug/future" ]]; then
+    (
+      unset FUTURE_AGENT_GRPC_ADDR
+      FUTURE_AGENT_SOCKET="$AGENT_SOCKET" \
+        "$ROOT_DIR/target/debug/future" models --json >/dev/null 2>&1
+    )
+  fi
+}
+
+stop_pid_file_process() {
+  local pid_file="$1"
+  local label="$2"
+  local pid
+
+  if [[ ! -f "$pid_file" ]]; then
+    return 0
+  fi
+
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  if [[ -z "$pid" ]] || [[ "$pid" == "$$" ]] || [[ "$pid" == "${BASHPID:-$$}" ]] || [[ "$pid" == "${PPID:-}" ]]; then
+    rm -f "$pid_file"
+    return 0
+  fi
+
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f "$pid_file"
+    return 0
+  fi
+
+  if ! pid_looks_like_agent "$pid"; then
+    echo "Ignoring stale $label pid file; pid=$pid is not this test agent."
+    rm -f "$pid_file"
+    return 0
+  fi
+
+  echo "Stopping previous $label pid=$pid"
+  kill "$pid" 2>/dev/null || true
+  sleep 1
+
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "Force stopping previous $label pid=$pid"
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+
+  rm -f "$pid_file"
+}
+
+pid_looks_like_agent() {
+  local pid="$1"
+  local command_line
+
+  if ! command -v ps >/dev/null 2>&1; then
+    return 0
+  fi
+
+  command_line="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+  [[ "$command_line" == *"$AGENT_DIR"* || "$command_line" == *"future-agent"* ]]
+}
+
+cancel_stale_app_tasks() {
+  local db_path="$HOME/.future/app/app.db"
+
+  if [[ ! -f "$db_path" ]]; then
+    return 0
+  fi
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    echo "sqlite3 not found; skipping stale app task cleanup."
+    return 0
+  fi
+
+  echo "Cancelling stale desktop runs and approvals in $db_path"
+  sqlite3 "$db_path" <<'SQL' || echo "Skipping stale app task cleanup because the database is busy or not initialized."
+UPDATE approval_requests
+SET status = 'cancelled',
+    decision_note = 'Cancelled by start-desktop-macos.sh before a fresh desktop test run.',
+    decided_at = CAST(strftime('%s','now') AS INTEGER) * 1000,
+    updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000
+WHERE status = 'pending';
+
+UPDATE runs
+SET status = 'cancelled',
+    error_message = 'Cancelled by start-desktop-macos.sh before a fresh desktop test run.',
+    ended_at = COALESCE(ended_at, CAST(strftime('%s','now') AS INTEGER) * 1000),
+    updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000
+WHERE status IN ('queued', 'running', 'waiting_approval');
+SQL
+}
+
+mkdir -p "$LOG_DIR"
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+echo "Workspace: $ROOT_DIR"
+echo "Agent endpoint: $AGENT_ENDPOINT"
+echo "desktop dev port: $DESKTOP_DEV_PORT"
+
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "DRY_RUN=1; startup checks only, not cleaning tasks or starting processes."
+  exit 0
+fi
+
+if ! command -v perl >/dev/null 2>&1; then
+  echo "perl is required to isolate desktop and agent processes on macOS." >&2
+  exit 1
+fi
+
+if [[ "$CLEAN_STALE_APP_TASKS" == "1" ]]; then
+  cancel_stale_app_tasks
+fi
+
+if [[ ! -d "$DESKTOP_DIR/node_modules" ]]; then
+  echo "Installing desktop dependencies..."
+  (cd "$DESKTOP_DIR" && npm ci)
+fi
+
+if [[ "${RUN_CHECKS:-0}" == "1" ]]; then
+  echo "Running desktop checks..."
+  (cd "$DESKTOP_DIR" && npm run lint)
+  (cd "$DESKTOP_DIR" && npm run stylelint)
+  (cd "$DESKTOP_DIR" && npm test)
+  (cd "$DESKTOP_DIR" && npm run build)
+  (cd "$DESKTOP_DIR/src-tauri" && cargo check)
+fi
+
+if [[ "$BUILD_AGENT" == "1" ]]; then
+  echo "Building future-agent..."
+  if ! (cd "$AGENT_DIR" && cargo build) >"$AGENT_BUILD_LOG" 2>&1; then
+    echo "future-agent build failed. See $AGENT_BUILD_LOG"
+    tail -n 80 "$AGENT_BUILD_LOG"
+    exit 1
+  fi
+  echo "future-agent built."
+fi
+
+# Build the unified Rust CLI (cargo build, matching make build-cli) and put it
+# on the agent's PATH, so skills that shell out to `future` resolve it.
+# Non-fatal: a failure only means those skills won't work; the desktop test proceeds.
+if [[ "$BUILD_CLI" == "1" ]]; then
+  echo "Building future CLI..."
+  if ! (cd "$CLI_DIR" && cargo build) >"$CLI_BUILD_LOG" 2>&1; then
+    echo "future CLI build failed; skills that call \`future\` will not work. See $CLI_BUILD_LOG"
+  else
+    echo "future CLI built."
+  fi
+fi
+# The agent (started below) inherits this exported PATH.
+if [[ -x "$ROOT_DIR/target/debug/future" ]]; then
+  export PATH="$ROOT_DIR/target/debug:$PATH"
+fi
+
+if [[ "$REUSE_AGENT" == "1" ]] && agent_is_ready; then
+  echo "Using existing future-agent at $AGENT_ENDPOINT"
+else
+  stop_pid_file_process "$AGENT_PID_FILE" "future-agent"
+  if agent_is_ready; then
+    echo "Agent endpoint $AGENT_ENDPOINT is already in use, but not by the process recorded in $AGENT_PID_FILE."
+    echo "Stop the old agent manually, or run with REUSE_AGENT=1 if you intentionally want to reuse it."
+    exit 1
+  fi
+  # `agent` is a member of the root Cargo workspace, so `cargo build` (even when
+  # invoked from within agent/) writes the binary to the workspace-level target
+  # dir ($ROOT_DIR/target/debug) — NOT $AGENT_DIR/target/debug. Launching a
+  # stale crate-local binary here can silently select an older RPC command set.
+  # Always launch the exact workspace artifact built above.
+  AGENT_BIN="$ROOT_DIR/target/debug/future-agent"
+  if [[ ! -x "$AGENT_BIN" ]]; then
+    echo "Agent binary not found at $AGENT_BIN."
+    echo "Build it first (BUILD_AGENT defaults to 1) or run with BUILD_AGENT=1."
+    exit 1
+  fi
+  echo "Starting future-agent..."
+  # Launch the workspace artifact directly so the pid file tracks the Agent,
+  # not a cargo wrapper that could leave an orphan holding the endpoint.
+  : >"$AGENT_CONSOLE_LOG"
+  (
+    cd "$AGENT_DIR"
+    if [[ "$AGENT_TRANSPORT" == "tcp" ]]; then
+      exec_in_own_session "$AGENT_BIN" --grpc-addr "$AGENT_TCP_ADDR" --log-file
+    else
+      exec_in_own_session "$AGENT_BIN" --log-file
+    fi
+  ) </dev/null > >(tee -a "$AGENT_CONSOLE_LOG" | mirror_log "agent") 2>&1 &
+  STARTED_AGENT_PID="$!"
+  echo "$STARTED_AGENT_PID" >"$AGENT_PID_FILE"
+  wait_for_agent
+  echo "future-agent started pid=$STARTED_AGENT_PID"
+  echo "Agent log: $AGENT_LOG"
+  echo "Agent console log: $AGENT_CONSOLE_LOG"
+fi
+
+# Tauri validates bundle.externalBin sidecars (future) at COMPILE time — even
+# for `tauri dev`. This script runs the agent as a standalone process and the
+# desktop connects to it, so the bundled sidecar is never launched here; it only
+# needs to exist. Create an empty placeholder if it is missing (CI and the
+# packaging scripts stage the real binary).
+TRIPLE="$(rustc -Vv | sed -n 's/^host: //p')"
+BIN_DIR="$DESKTOP_DIR/src-tauri/binaries"
+mkdir -p "$BIN_DIR"
+sidecar="$BIN_DIR/future-$TRIPLE"
+if [[ ! -f "$sidecar" ]]; then
+  : >"$sidecar"
+  chmod +x "$sidecar"
+fi
+
+echo "Starting desktop..."
+echo "Press Ctrl-C here to stop the desktop and the agent started by this script."
+echo "Desktop log: $DESKTOP_CONSOLE_LOG"
+
+# Give Desktop its own session so cleanup can stop npm, Vite, Cargo, and Tauri
+# together. Bash job control (`set -m`) also changes the group of every later
+# `sleep` in the supervisor loop and intermittently fails with setpgid EPERM.
+
+# The launcher owns terminal input; child stdin is detached so no background
+# reader can suspend the Tauri process group with SIGTTIN.
+echo "Live logs: [agent] and [desktop] lines are mirrored here; set LIVE_LOGS=0 to keep file-only logs."
+: >"$DESKTOP_CONSOLE_LOG"
+(
+  cd "$DESKTOP_DIR"
+  if [[ "$AGENT_TRANSPORT" == "tcp" ]]; then
+    export FUTURE_AGENT_GRPC_ADDR="$AGENT_ADDR"
+  else
+    unset FUTURE_AGENT_GRPC_ADDR
+  fi
+  exec_in_own_session npm run tauri:dev
+) </dev/null > >(tee -a "$DESKTOP_CONSOLE_LOG" | mirror_log "desktop") 2>&1 &
+DESKTOP_PID="$!"
+
+# Rebuilds happen inside the long-lived Tauri job. Keep the same Agent alive
+# across them; never silently restart a crashed Agent with active sessions.
+while kill -0 "$DESKTOP_PID" 2>/dev/null; do
+  if [[ -n "$STARTED_AGENT_PID" ]] && ! kill -0 "$STARTED_AGENT_PID" 2>/dev/null; then
+    echo "future-agent exited unexpectedly; stopping desktop. See $AGENT_LOG and $AGENT_CONSOLE_LOG" >&2
+    exit 1
+  fi
+  sleep 1
+done
+
+if wait "$DESKTOP_PID"; then
+  :
+else
+  desktop_status=$?
+  echo "Desktop exited unexpectedly (status $desktop_status). See $DESKTOP_CONSOLE_LOG" >&2
+  tail -n 80 "$DESKTOP_CONSOLE_LOG" >&2
+  exit "$desktop_status"
+fi

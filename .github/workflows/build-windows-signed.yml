@@ -158,7 +158,7 @@ jobs:
         shell: powershell
         timeout-minutes: 5
         run: |
-          . scripts/lib/windows-signing.ps1
+          . scripts/release/lib/windows-signing.ps1
           $cert = Resolve-SigningCert
           "SIGN_THUMBPRINT=$($cert.Thumbprint)" | Add-Content -Path $env:GITHUB_ENV
           Write-Host "cert   : $($cert.Subject)"
@@ -208,7 +208,7 @@ jobs:
         shell: powershell
         timeout-minutes: 15
         run: |
-          . scripts/lib/windows-signing.ps1
+          . scripts/release/lib/windows-signing.ps1
           $signTool = Find-SignTool
           $triple = (rustc -Vv | Select-String '^host:').Line.Split(' ')[1]
           $p = "desktop/src-tauri/binaries/future-$triple.exe"
@@ -242,7 +242,7 @@ jobs:
       - name: Set Tauri bundle version
         run: node scripts/version.mjs --set-bundle
 
-      # The overlay points bundle.windows.signCommand at scripts/sign-file.ps1;
+      # The overlay points bundle.windows.signCommand at scripts/release/sign-file.ps1;
       # it is generated per build rather than committed to tauri.conf.json so
       # build.yml (no certificate) and local dev builds are unaffected. A failing
       # sign command aborts the bundle — Tauri propagates the non-zero exit — so a
@@ -259,9 +259,9 @@ jobs:
         run: |
           if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw "TAURI_SIGNING_PRIVATE_KEY secret is required" }
           if (-not $env:TAURI_UPDATER_PUBLIC_KEY) { throw "TAURI_UPDATER_PUBLIC_KEY secret is required" }
-          . scripts/lib/windows-signing.ps1
+          . scripts/release/lib/windows-signing.ps1
           $overlay = New-SignOverlayConfig -Thumbprint $env:SIGN_THUMBPRINT `
-                                           -SignScript (Resolve-Path scripts/sign-file.ps1).Path
+                                           -SignScript (Resolve-Path scripts/release/sign-file.ps1).Path
           $config = Get-Content $overlay -Raw | ConvertFrom-Json
           $config.bundle | Add-Member -NotePropertyName createUpdaterArtifacts -NotePropertyValue $true
           $config | Add-Member -NotePropertyName plugins -NotePropertyValue @{
@@ -323,8 +323,8 @@ jobs:
         shell: powershell
         timeout-minutes: 5
         run: |
-          & ./scripts/test-windows-installer-preflight.ps1
-          & ./scripts/test-install.ps1
+          & ./scripts/tests/test-windows-installer-preflight.ps1
+          & ./scripts/tests/test-install.ps1
 
       # Portable (install-free) build: the desktop exe plus the unified CLI binary,
       # all in one directory. In signed mode, sign the staged copies explicitly:
@@ -344,7 +344,7 @@ jobs:
           Copy-Item "orchestration/loop/LICENSE", "orchestration/loop/NOTICE", "orchestration/loop/UPSTREAM.md" "$dir/licenses/loop/"
 
           if ("${{ inputs.signed }}" -eq "true") {
-            . scripts/lib/windows-signing.ps1
+            . scripts/release/lib/windows-signing.ps1
             $signTool = Find-SignTool
             foreach ($exe in @("FutureOS.exe", "future.exe")) {
               Invoke-SignFile -SignTool $signTool -Thumbprint $env:SIGN_THUMBPRINT -Path "$dir/$exe"
@@ -365,7 +365,7 @@ jobs:
         if: inputs.signed
         shell: powershell
         run: |
-          . scripts/lib/windows-signing.ps1
+          . scripts/release/lib/windows-signing.ps1
           $signTool = Find-SignTool
           $installers = @(Get-ChildItem desktop/src-tauri/target/release/bundle/nsis/*.exe -ErrorAction SilentlyContinue)
           if (-not $installers) { throw "Tauri produced no installer under bundle/nsis." }

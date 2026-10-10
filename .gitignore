@@ -71,7 +71,7 @@ channel/
 # cwd) — ignore at any level; the file is no longer tracked.
 agent-profile.svg
 
-# Coverage reports (scripts/coverage.sh)
+# Coverage reports (scripts/measure/coverage.sh)
 /coverage/
 # Frontend coverage output (vitest --coverage / jest --coverage)
 desktop/coverage/

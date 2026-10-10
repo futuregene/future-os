@@ -25,6 +25,8 @@ mod references;
 #[cfg(feature = "gui")]
 mod remote;
 #[cfg(feature = "gui")]
+mod remote_peer;
+#[cfg(feature = "gui")]
 mod review;
 #[cfg(feature = "gui")]
 mod runs;
@@ -32,6 +34,8 @@ mod runs;
 mod settings;
 #[cfg(feature = "gui")]
 mod skills;
+#[cfg(feature = "gui")]
+mod tasks;
 #[cfg(feature = "gui")]
 mod terminal;
 #[cfg(feature = "gui")]
@@ -60,6 +64,8 @@ pub use self::references::*;
 #[cfg(feature = "gui")]
 pub use self::remote::*;
 #[cfg(feature = "gui")]
+pub use self::remote_peer::*;
+#[cfg(feature = "gui")]
 pub use self::review::*;
 #[cfg(feature = "gui")]
 pub use self::runs::*;
@@ -67,6 +73,8 @@ pub use self::runs::*;
 pub use self::settings::*;
 #[cfg(feature = "gui")]
 pub use self::skills::*;
+#[cfg(feature = "gui")]
+pub use self::tasks::*;
 #[cfg(feature = "gui")]
 pub use self::terminal::*;
 #[cfg(feature = "gui")]

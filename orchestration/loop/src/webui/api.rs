@@ -1114,6 +1114,67 @@ mod tests {
     }
 
     #[test]
+    fn events_page_falls_back_to_raw_for_a_corrupt_ledger_line() {
+        // The dashboard must stay readable while an operator debugs a broken
+        // ledger: a line that is not JSON is projected as `{"raw": line}`
+        // instead of failing the whole page.
+        let (_initial_store, dir, gid) = open_store_with_goal();
+        let ledger = dir.path().join("goals").join(&gid).join("events.jsonl");
+        let mut text = std::fs::read_to_string(&ledger).unwrap();
+        text.push_str("this line is not json\n");
+        std::fs::write(&ledger, text).unwrap();
+
+        // The store instance was opened before the corruption, so re-open it.
+        let store = Store::open(&dir.path().to_string_lossy() as &str).unwrap();
+        let views = events_page(&store, &gid, 500).unwrap().unwrap();
+        let corrupt = views
+            .iter()
+            .find(|v| v.event.get("raw").is_some())
+            .expect("the corrupt line must surface as a raw view");
+        assert!(
+            corrupt
+                .event
+                .get("raw")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s.contains("not json")),
+            "the raw view must carry the offending line: {:?}",
+            corrupt.event
+        );
+        assert_eq!(corrupt.kind, "unknown", "an unparsable line has no kind");
+        assert_eq!(corrupt.ts, 0);
+        assert_eq!(corrupt.event_id, "");
+        // The valid events around it still project normally.
+        assert!(
+            views.iter().any(|v| v.kind == "goal_started"),
+            "valid events must still render"
+        );
+    }
+
+    #[test]
+    fn goal_detail_classifies_a_run_without_a_stamped_failure_kind() {
+        // A record written before the writeback classification existed has
+        // `failure_kind: None`; the dashboard classifies it on read rather than
+        // rendering an empty class.
+        let (store, _dir, gid) = open_store_with_goal();
+        let mut legacy = rec("T1", "legacy-run", now_epoch(), FailureKind::None, 0.1);
+        legacy.failure_kind = None;
+        legacy.terminal_state = "failed".into();
+        store.append_run(&gid, &legacy).unwrap();
+
+        let detail = goal_detail(&store, &gid).unwrap().unwrap();
+        let rendered = serde_json::to_string(&detail).unwrap();
+        assert!(
+            rendered.contains("legacy-run"),
+            "the unclassified run must still appear: {rendered}"
+        );
+        // The run list is ordered newest-first and carries every run.
+        assert!(
+            detail.runs.len() >= 3,
+            "every run must project (expected at least the 2 fixture runs plus the legacy one)"
+        );
+    }
+
+    #[test]
     fn label_helpers_cover_every_variant() {
         use crate::state::{TaskClass, TodoStatus};
         for (class, label) in [
@@ -1122,6 +1183,7 @@ mod tests {
             (TaskClass::UserAction, "user_action"),
             (TaskClass::Monitor, "monitor"),
             (TaskClass::Blocker, "blocker"),
+            (TaskClass::Coordination, "coordination"),
         ] {
             let mut t = Todo::advancement("t", "x");
             t.class = class;

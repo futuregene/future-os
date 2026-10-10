@@ -54,6 +54,13 @@ tauri-build = { version = "2", features = [], optional = true }
 # tonic/prost versions must stay aligned with its workspace pins.
 future-rpc = { path = "../../packages/rpc" }
 future-remote-crypto = { path = "../../packages/remote-crypto" }
+future-app-settings = { path = "../../packages/app-settings" }
+# The desktop app's workspace records, shared with `future workspace` in the
+# CLI so the two writers cannot drift apart.
+future-app-workspaces = { path = "../../packages/app-workspaces" }
+# Task kernel/store shared with the CLI and headless desktop (the tick loop
+# is the single executor; this host wires it to the sidecar agent).
+future-tasks = { path = "../../orchestration/tasks" }
 tauri = { version = "2", features = ["protocol-asset", "test"], optional = true }
 tauri-plugin-shell = { version = "2", optional = true }
 tauri-plugin-updater = { version = "2", optional = true }

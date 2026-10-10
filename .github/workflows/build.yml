@@ -231,7 +231,7 @@ jobs:
           overwrite: true
           retention-days: 7
       - name: Setup ossutil
-        run: bash scripts/setup-ossutil.sh
+        run: bash scripts/release/setup-ossutil.sh
       - name: Upload artifacts to OSS
         run: |
           set -euo pipefail

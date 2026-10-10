@@ -19,17 +19,17 @@ mod session_events;
 mod skills;
 mod stream;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 pub(crate) use self::test_support::get_state_payload;
 
 pub use self::approval::{decide_approval, inject_session_rule, reconcile_pending_approvals};
-pub(crate) use self::client::get_agent_info;
+pub(crate) use self::client::get_agent_readiness;
 pub(crate) use self::client::raw_agent_addr;
 pub use self::client::{
-    connect_agent, delete_session_command, get_available_models_command, get_run_state_command,
+    connect_agent, get_available_models_command, get_run_state_command,
     get_session_entries_before_command, get_session_entries_page_command, get_state_command,
     list_streaming_sessions_command, map_rpc_error, set_default_model_command, set_model_command,
     set_session_name_command, set_thinking_level_command, RpcResponseExt,
@@ -39,7 +39,7 @@ pub use self::delete_outbox::{reconcile_delete_outbox, spawn_delete_outbox_worke
 pub use self::headless::{
     prepare_prompt_persisted_with_trigger, run_prepared_prompt_with_acceptance, PreparedPrompt,
 };
-pub(crate) use self::import::list_agent_session_ids;
+pub(crate) use self::import::{list_agent_session_ids, session_has_messages};
 pub use self::models::{list_agent_models, list_builtin_providers, AgentModelOption};
 #[cfg(test)]
 pub(crate) use self::observer::has_observer;
@@ -51,6 +51,7 @@ pub use self::observer::{
 pub use self::prompt::agent_prompt;
 pub(crate) use self::prompt::agent_prompt_with_acceptance;
 pub use self::prompt::{agent_prompt_with_model_context, AgentPromptRequest, AgentPromptResponse};
+pub use self::queries::provision_agent_session_with_policy;
 #[cfg(test)]
 use self::queries::reload_agent_credentials;
 pub use self::queries::{
@@ -61,7 +62,8 @@ pub use self::queries::{
     SyncFutureModelsResult, WindowsSandboxProbeResult,
 };
 pub(crate) use self::queries::{
-    get_events_since_page, get_run_snapshot, provision_agent_session, query_tools,
+    get_events_since_page, get_run_snapshot, get_tool_call_args, provision_agent_session,
+    query_tools,
 };
 pub use self::reconciliation::{
     attach_remote_stream, reconcile_interrupted_runs, reconcile_thread_workspace,
@@ -70,6 +72,7 @@ pub use self::reconciliation::{
 pub use self::run_control::{abort_run, compact_agent_session, compact_thread_context};
 pub(crate) use self::run_control::{abort_session, wait_for_agent_idle};
 pub use self::session::fork_agent_session;
+pub(crate) use self::session::set_agent_sandbox_policy_tier;
 pub use self::session_events::spawn_session_events_observer;
 pub use self::skills::{
     install_skill, list_available_skills, list_installed_skills, refresh_skills, suggest_skill,

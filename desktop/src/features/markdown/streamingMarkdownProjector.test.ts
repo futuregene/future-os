@@ -42,6 +42,10 @@ describe("incremental single-table projection", () => {
     "| A | B |\n| --- | --- |\n| one | two |\n\n| C | D |\n| --- | --- |\n| three | four |",
     "| A | B |\n| --- | --- |\n| first | second |\n\n\n",
     "| one |\n| --- |\n| two |\n| three | extra |\n| last |",
+    // A `$$` block that opens and closes on formula lines: the projector's own
+    // tree decides the block boundaries, so it must read the fence the same way
+    // `parseFutureMarkdown` does or the block after it is swallowed.
+    "before\n\n$$a = b\n= c$$\n\n| A | B |\n| --- | --- |\n| one | two |\n\nafter",
   ])("matches the canonical parser at every partial prefix: %s", (source) => {
     const project = createStreamingMarkdownProjector();
     for (let length = 0; length <= source.length; length++) {
@@ -86,6 +90,28 @@ describe("incremental single-table projection", () => {
     for (let batch = 0; batch < 30; batch++) {
       text += `\n| batch ${batch} | **value** |\n| more | \\(x_${batch}\\) |`;
       assertEquivalent(project, text);
+    }
+  });
+
+  it("repairs an unclosed link destination in the tree it reuses for a single block", () => {
+    // A one-block reply hands *this* processor's tree straight to
+    // `parseFutureMarkdown` (see the plugin set above), so a repair registered
+    // only on the canonical processor would leave the streaming render leaking
+    // `bench/REPORT.md(<./bench/REPORT.md)` until the reply settled.
+    const project = createStreamingMarkdownProjector();
+    const text = "结论：[bench/REPORT.md](<./bench/REPORT.md)（脚本：[out.py](<./out.py)）";
+    for (const live of [true, false]) {
+      const blocks = assertEquivalent(project, text, live);
+      expect(blocks[0]?.document?.nodes).toMatchObject([{
+        type: "paragraph",
+        children: [
+          { type: "text", text: "结论：" },
+          { type: "futureReference", reference: { label: "bench/REPORT.md" } },
+          { type: "text", text: "（脚本：" },
+          { type: "futureReference", reference: { label: "out.py" } },
+          { type: "text", text: "）" },
+        ],
+      }]);
     }
   });
 });

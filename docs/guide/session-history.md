@@ -10,6 +10,7 @@ is required. No new model tools are introduced: the agent can use its existing
 
 ```sh
 future session history search --session SESSION_ID --query "ExpoSharing" --limit 5 --json
+future session history search --all --query "ExpoSharing" --sessions 50 --json
 future session history get --session SESSION_ID --entry ENTRY_ID --json
 ```
 
@@ -22,6 +23,26 @@ controls the match count, default 5, maximum 20. A match returns `entryId`,
 `blockIndex`, role, timestamp, run/tool identifiers, a bounded snippet, and
 `byteOffset`. A snippet can contain replacement characters at its byte-bounded
 edges; use `get` to obtain exact text. `hasMore` means additional matches exist.
+
+## Cross-session search
+
+`--all` answers "have we ever discussed this" without knowing which session:
+it replaces `--session`, searches across sessions and adds `sessionId` (and
+`sessionName`, when the session has a title) to every match. Sessions are scanned
+newest-first and matches are ordered by their own timestamps.
+
+The scan is bounded by `--sessions` (1..500, default 50) so the cost of one call
+does not grow with the whole history. The response therefore reports how much of
+the history it covered, instead of implying it covered all of it:
+
+- `scannedSessions` — how many sessions were searched;
+- `truncated` — `true` when sessions older than the scan window exist and were
+  not searched;
+- `hasMore` — `true` when more matches exist beyond `--limit`.
+
+A caller must read both flags before treating an empty result as "this was never
+discussed", and `--sessions` cannot fix an incomplete picture beyond 500 sessions
+— narrow the query instead.
 
 `get` uses the `(session_id, entry_id)` index. It returns the entry's text/argument
 fields as ordered `chunks` with original `blockIndex`, `toolCallId`, `toolName`,
@@ -46,6 +67,61 @@ fail explicitly. `hasMore=false` and `nextOffset=null` mark the end. JSON output
 preserves exact text, including embedded newlines and NUL; tool arguments are
 serialized JSON **text fragments**, not necessarily a complete JSON object on
 every page. Returned block byte offsets let clients reconstruct each field.
+
+## The filtered transcript
+
+`future session history` is built for *finding* one passage. To *process* a whole
+conversation — read every user message, separate a tool's inputs from its
+outputs, pull out the file paths a tool touched, page through a long session —
+use `future session transcript`:
+
+```sh
+future session transcript --session SESSION_ID [options]
+```
+
+It reads the same display projection as `session info` — so `reasoning` blocks
+are visible, unlike `history search` — and makes no model call.
+
+| Option | Effect |
+|---|---|
+| `--select <list>` | Which slices to keep: `user`, `assistant`, `thinking`, `tool-call`, `tool-result`, `session`, `compaction`, `all`. Default `user,assistant,tool-call,tool-result` (reasoning is opt-in: it dominates a real session's bytes). |
+| `--tool <list>` | Only these tools' calls and results. |
+| `--input` / `--output` | Tool calls: the arguments only. Tool results: the result text only. |
+| `--paths` | Tool calls and results: the file paths they mention, and nothing else. |
+| `--grep <text>` | Keep only blocks whose content contains this text (case-insensitive; matches text, thinking, tool name and arguments). |
+| `--cursor N`, `--limit N`, `--all` | The window, in display-entry order. `--limit` (default 50, max 500) bounds matching entries, not raw ones. |
+| `--max-bytes N` | Stop before the output passes N bytes (default 262144; `0` disables). |
+| `--truncate N` | Truncate every emitted string longer than N characters. |
+| `--counts` | Print the window's distribution — entries, block kinds, tools, run outcomes, tokens, errors, bytes — instead of entries. |
+| `--runs` | Print one row per run — status, duration, tokens, error. |
+| `--json` | Machine-readable report. |
+
+Every emitted entry carries its run's outcome (`run`, `runId`) and, where the
+run recorded one, its token `usage`. That is what makes "which run failed, and
+why" answerable without a second command; `--runs` is the same data as a ledger:
+
+```sh
+future session transcript --session SESSION_ID --runs
+# session=… runs=4 failed=1
+# [   1] run-…  completed 300.8s in=481K
+# [ 424] run-…  failed 12.4s
+#        error: upstream disconnected
+```
+
+The report carries `cursor`, `nextCursor`, `scannedEntries`, `hasMore` and the
+matching `entries`, so a caller pages with `--cursor nextCursor` until `hasMore`
+is false. `--counts` and `--runs` are summaries: they ignore
+`--select`/`--tool`/`--grep`, refuse `--cursor`, and cover the whole session
+unless `--limit` (or `--all`) bounds them — which makes `--counts` the cheap
+first look at an unfamiliar session. `--limit` counts matching entries in the
+entry modes and distinct runs under `--runs`.
+
+Two limits are worth stating. `--paths` is a heuristic: it takes structured
+path-ish argument keys from a call, and path-shaped tokens from a result's text.
+And `--tool` filters a tool *result* by the name of the call it pairs with, so a
+result whose call falls outside the scanned window cannot be attributed — it is
+skipped, and the report counts it in `skippedUnattributedToolResults` rather than
+pretending it belongs to the tool.
 
 ## Entry IDs versus tool-call IDs
 

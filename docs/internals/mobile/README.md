@@ -27,6 +27,12 @@ development and distribution maintenance.
   workspaces can be deleted wholesale (including their sessions; files inside
   the desktop's workspace directory are not deleted), and workspace
   collapse state survives restarts.
+- The workspace picker in the new-conversation dialog can register a directory
+  on the connected desktop as a workspace. The user types the host path (the
+  phone has no folder picker for the desktop); the directory must already exist,
+  and a path that already has a workspace reopens that one instead of
+  duplicating it. The action requires the desktop's `workspace_create_v1`
+  capability; older desktops do not expose it.
 - Workspaces can be pinned too (the group menu in the workspace tab). A pinned
   group sits below the pinned conversations and above every unpinned group; the
   flag lives in the desktop store, so it survives a re-pair and the desktop rail
@@ -38,17 +44,19 @@ development and distribution maintenance.
 - Paginated history loading, deduplication by `(runId, idx)`, and real-time
   event backfill via `get_events_since` after reconnection.
 - Pick images from the system photo library or shoot with the system camera;
-  add file attachments through the system file picker; download session
-  attachments and preview images, Markdown, text, and JSON in the app — other
-  supported types go to the system app to open, save, or share. The preview
-  page can also share the original file or open it in another app; a missing
-  reader does not block saving and sharing.
+  add file attachments through the system file picker; a message carries at most
+  10 attachments in total, images included; download session attachments and
+  preview images, Markdown, text, and JSON in the app — other supported types go
+  to the system app to open, save, or share. Text, Markdown, and JSON previews
+  render only the first 2 MiB. The preview page can also share the original file
+  or open it in another app; a missing reader does not block saving and sharing.
 - The folder button atop a session shows the session's directory on the
   desktop; enter subdirectories, go back up, refresh the list, or toggle hidden
   files; tapping a file reuses the phone preview/system-open flow.
 - Android supports **sharing** text/images/files from other apps; iOS adds a
-  native Share Extension that, after saving, opens FutureOS to import
-  text/links/images/files. You can create a normal/workspace session or pick an
+  native Share Extension that saves shared content; the next time FutureOS
+  opens it imports text/links/images/files. You can create a normal/workspace
+  session or pick an
   existing one; content appends to the target session's draft, preserving
   existing text and attachments — nothing uploads or auto-sends before
   confirmation. iOS save/external-open also integrate the native document
@@ -79,8 +87,9 @@ development and distribution maintenance.
 
 - The input area keeps two rows: one for text input, one shared by the model,
   thinking mode, `/` skills, attachments, and the send/stop buttons. Below
-  360pt or with large font sizes, model and thinking merge into a "model
-  settings" entry; action buttons keep a 44pt touch target.
+  380pt or with large font sizes the toolbar tightens its gaps while keeping
+  both the model and thinking selectors visible; action buttons keep a 44pt
+  touch target.
 - Typing `/` at the start of a message or after whitespace, or tapping the `/`
   left of attachments, expands the skill candidates above the input. Keywords
   filter by skill name, description, and available Chinese metadata; selecting
@@ -146,10 +155,35 @@ offline push.
   prefetch.
 - Attachment sources and file open/save/share menus reuse `ActionMenu`; after
   choosing a source, wait for the menu to close before invoking the system
-  camera, photo, or file picker. The Android gallery uses `PickVisualMedia`
-  (system-chosen compatibility fallback), no longer preferring `ACTION_PICK`
-  into arbitrary third-party galleries. System permission dialogs and system
-  pickers are still drawn by the OS.
+  camera, photo, or file picker. Android's album resolves its route through the
+  native probe (`resolveImagePickRoutes`, `future-file-handler`) before anything
+  launches: Android 13+ uses `PickVisualMedia` (the system photo picker, with
+  multi-select) when that picker answers. Below 33 a gallery is preferred, but
+  only when it answers the intent the app actually launches — image
+  `ACTION_GET_CONTENT`, which expo-image-picker's legacy contract invokes; the
+  contract cannot target one component, so a gallery that only advertises
+  `ACTION_PICK` on MediaStore's image collection falls through to the next route
+  rather than risking a file manager. Never launch the pick through
+  expo-intent-launcher: it resolves a result's `data` to the *Intent's* string
+  (`"Intent { dat=content://… }"`), not a URI, so a real pick could never open.
+  A real photo picker (framework, AOSP backport
+  `androidx.activity.result.contract.action.PICK_IMAGES`, or its Play-services
+  build) still wins over any hand-drawn UI. The probe's `<queries>` entries name
+  the scheme as well as the MIME type, because package visibility hides a
+  gallery whose filter declares `android:scheme="content"` from a rule that only
+  names a type.
+  When no app can present the album at all — an Android compatibility container
+  such as 卓易通 on HarmonyOS, which exposes neither a gallery nor a photo picker
+  to the APK — the app draws the grid itself (`AlbumPickerModal`, fed by
+  `listAlbumImages`: MediaStore first, then the usual photo directories) instead
+  of letting AndroidX degrade to `ACTION_OPEN_DOCUMENT`, the document picker that
+  "选择手机文件" already covers. Only that route asks for the media permission,
+  and it says so in the grid when it is refused; the system pickers keep working
+  without it. "Album" is recognized from the app's package name, and an unknown
+  package is not treated as a gallery (showing a file list under an album label is
+  the failure being prevented). No route asks for a full-album permission beyond
+  that grid case. System permission dialogs and system pickers are still drawn by
+  the OS.
 - Returning to the list from a session keeps the list instance and scroll
   position; the list's reverse enter animation is not replayed. In the
   workspace and conversation lists, independent sessions keep compact spacing
@@ -173,8 +207,8 @@ offline push.
   off while the toolbar is searching or selecting (the tab bar is hidden then,
   so the swipe would change mode unseen); the tabs themselves still switch on
   tap.
-- The input area stays two rows (text + toolbar); narrow screens merge model
-  settings without shrinking action-button touch targets.
+- The input area stays two rows (text + toolbar); narrow screens tighten the
+  toolbar without shrinking action-button touch targets.
 - Skill regressions: typed and button-inserted `/`, Chinese search, mid-body
   replacement, close/back key, load-failure retry, late skill results when
   switching desktops, and narrow/large-font layouts after keyboard popup.
@@ -214,7 +248,11 @@ increments.
 - Reopening a session shows "Syncing latest content…" even with cached
   messages, until status, history, and event backfill complete; failure retry
   or waiting for reconnection keeps the corresponding hint. This state is
-  separate from "model generating".
+  separate from "model generating". While a run is generating, the plain
+  "syncing" hint stays down: the transcript's own streaming row is the progress
+  report, and a lane backfilling behind live output is routine traffic with
+  nothing for the reader to act on — the retry and waiting-for-connection
+  states still show, because streaming text cannot say them.
 - The hint floats above the timeline, is not inserted as a list row, and does
   not change scroll position when appearing/disappearing.
 - Streaming text reveals only new suffixes in batches, about a 192ms window per
@@ -377,8 +415,8 @@ Or use the one-shot launch script (creates/starts a simulator, installs deps,
 prebuilds, and runs automatically):
 
 ```bash
-scripts/start-mobile-ios.sh          # dev mode (Metro + debug build)
-scripts/start-mobile-ios.sh release  # release mode (standalone, no Metro)
+scripts/dev/start-mobile-ios.sh          # dev mode (Metro + debug build)
+scripts/dev/start-mobile-ios.sh release  # release mode (standalone, no Metro)
 ```
 
 ### Manual iOS run (device)

@@ -68,6 +68,15 @@ it("offers all three choices and changes the visible screen without a restart", 
   expect(getLanguagePreference()).toBe("en");
 });
 
+it("re-selecting the active choice writes nothing", async () => {
+  // The already-selected row is still pressable. Writing it again would both
+  // churn storage and re-run the i18n switch for no visible change.
+  expect(getLanguagePreference()).toBe("system");
+  await select("Follow system");
+  expect(mockSetItem).not.toHaveBeenCalled();
+  expect(getLanguagePreference()).toBe("system");
+});
+
 it("follows locale events in system mode and treats non-Chinese as English", async () => {
   await localeEvent("zh");
   expect(screenText()).toBe("设置");

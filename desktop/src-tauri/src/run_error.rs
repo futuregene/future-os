@@ -98,6 +98,16 @@ mod tests {
             classify_run_error("[PROVIDER_CANCELLED] provider cancelled generation"),
             "model_failed"
         );
+        // A queued run is alive on the agent: its phrasing must never be read as
+        // a failure, and it gets its own category rather than `unknown`.
+        assert_eq!(
+            classify_run_error("[RUN_QUEUED] waiting behind an older run"),
+            "run_queued"
+        );
+        assert_eq!(
+            classify_run_error("[run_queued] accepted, waiting"),
+            "run_queued"
+        );
     }
 
     #[test]

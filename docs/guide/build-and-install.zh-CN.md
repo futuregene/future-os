@@ -10,7 +10,7 @@
 
 - **Rust** 1.97+（由 `rust-toolchain.toml` 固定版本）
 - **Node.js** 24+（见 `.nvmrc`）—— 用于 GUI 前端
-- 可选：**Python 3** —— 仅用于 `make generate-models` 与 CLI golden 差分测试（`make test-cli-diff`）
+- 可选：**Python 3** —— 用于手动/文档类目标（`make generate-models`、`make check-docs` / `make test-docs-check`、`make test-cli-diff` / `make test-tui-tmux` 差分装置）以及 profiling 目标（`make profile-agent` / `profile-quick` / `profile-heap`）
 - 可选：**protoc**（Protocol Buffers 编译器）—— 仅用于 `make generate-proto`；生成代码已入库，正常构建不需要
 
 TUI 与 CLI 均为 Rust（`cargo build`），不再需要 Bun 或 Node。
@@ -48,10 +48,10 @@ make install-cli    # 仅统一 `future` CLI
 make install-desktop    # 仅桌面应用（自带 agent/CLI sidecar）
 make install-skills # 内置技能 + /future-loop 技能
 make package-desktop    # 桌面打包 → .app + .dmg 位于 desktop/src-tauri/target/release/bundle/
-scripts/build-desktop-macos.sh  # 本地 DMG；有 Developer ID 证书时自动签名
+scripts/build/build-desktop-macos.sh  # 本地 DMG；有 Developer ID 证书时自动签名
 ```
 
-`scripts/build-desktop-macos.sh` 将统一 `future` CLI sidecar 连同 GUI 一起构建。它会自动使用 Keychain 中唯一的 `Developer ID Application` 身份并生成 `*-sign.dmg`；若身份不唯一，则回退到普通 DMG。用 `--help` 查看证书选择、输出目录与 Apple 公证选项。
+`scripts/build/build-desktop-macos.sh` 将统一 `future` CLI sidecar 连同 GUI 一起构建。它会自动使用 Keychain 中唯一的 `Developer ID Application` 身份并生成 `*-sign.dmg`；若身份不唯一，则回退到普通 DMG。用 `--help` 查看证书选择、输出目录与 Apple 公证选项。
 
 ## Linux（Debian/Ubuntu）
 
@@ -97,8 +97,8 @@ sudo apt install -y protobuf-compiler                             # 可选 —�
 构建与安装：
 
 ```bash
-scripts/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS-portable-linux.tar.gz
-scripts/start-desktop-linux.sh                    # 本地 Linux Desktop + agent 开发会话
+scripts/build/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS-portable-linux.tar.gz
+scripts/dev/start-desktop-linux.sh                    # 本地 Linux Desktop + agent 开发会话
 make install        # 或直接从源码安装：GUI + 统一 `future` CLI + 技能（agent/tui/channel/loop 已内嵌）→ /usr/local/bin（sudo）
 make install-cli    # 仅统一 `future` CLI
 make install-desktop    # 仅桌面应用（自带 agent/CLI sidecar）
@@ -106,7 +106,7 @@ make install-skills # 内置技能 + /future-loop 技能
 make package-desktop    # 桌面打包 → .deb 位于 desktop/src-tauri/target/release/bundle/
 ```
 
-`scripts/start-desktop-linux.sh` 会以开发模式针对本地构建的 agent 运行 GUI，
+`scripts/dev/start-desktop-linux.sh` 会以开发模式针对本地构建的 agent 运行 GUI，
 并在 GUI 退出后停止由脚本启动的 agent。Bubblewrap 检查只作提示，以便同时测试
 沙盒不可用时的界面。
 
@@ -167,8 +167,8 @@ Push-Location desktop; npm run tauri:build; Pop-Location   # → NSIS 安装 .ex
 
 说明：
 
-- `scripts\start-desktop-windows.bat` 以开发模式针对本地构建的 agent 运行 GUI。
-- `scripts/` 下的脚本（`build-desktop-macos.sh`、`build-desktop-windows-portable.ps1`、`build-desktop-windows-installer.ps1`）把上述步骤封装成单条命令，复刻 CI 打包流水线（DMG / 便携 zip / NSIS 安装器）。它们会预先检查工具链，且需要 `protoc`（`brew install protobuf` / `choco install protoc`）。产物包含 GUI 与统一 `future` CLI（agent/tui/channel/loop 已内嵌）——不含单独的 TUI。
+- `scripts\dev\start-desktop-windows.bat` 以开发模式针对本地构建的 agent 运行 GUI。
+- `scripts/build/` 下的脚本（`build-desktop-macos.sh`、`build-desktop-windows-portable.ps1`、`build-desktop-windows-installer.ps1`）把上述步骤封装成单条命令，复刻 CI 打包流水线（DMG / 便携 zip / NSIS 安装器）。它们会预先检查工具链，且需要 `protoc`（`brew install protobuf` / `choco install protoc`）。产物包含 GUI 与统一 `future` CLI（agent/tui/channel/loop 已内嵌）——不含单独的 TUI。
 
 ## Loop 控制面（`future-loop`）
 
@@ -188,8 +188,8 @@ make install-skills                    # 内置技能 + /future-loop 技能 → 
 可选：另行安装独立 `future-loop` 二进制（开发用途）：
 
 ```bash
-bash scripts/install-future-loop.sh        # CLI → ~/.local/bin/future-loop，技能 → ~/.future/agent/skills/
-bash scripts/install-future-loop.sh --release
+bash scripts/release/install-future-loop.sh        # CLI → ~/.local/bin/future-loop，技能 → ~/.future/agent/skills/
+bash scripts/release/install-future-loop.sh --release
 ```
 
 验证：
@@ -202,7 +202,7 @@ future loop status        # 主要入口（与 `future-loop status` 同一套代
 > `future channel`、`future loop`——每个都运行与独立二进制（`future-agent`、
 > `future-tui`、`future-channel`、`future-loop`）完全相同的代码。独立二进制仍可通过
 > `cargo build -p <crate>` 构建、`make run-*` 运行（开发用途）；独立 `future-loop`
-> 二进制可用 scripts/install-future-loop.sh 安装。
+> 二进制可用 scripts/release/install-future-loop.sh 安装。
 
 功能与用法见 [loop 控制面指南](../architecture/loop-control-plane.zh-CN.md)。
 

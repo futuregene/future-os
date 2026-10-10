@@ -4,7 +4,7 @@
 
 <h3 align="center">One AI agent, everywhere you work.</h3>
 <p align="center">
-  Terminal, desktop, mobile, and your chat apps — one Rust core, one agent, 3,800+ models.<br>
+  Terminal, desktop, mobile, and your chat apps — one Rust core, one agent.<br>
   Configurable approvals and OS sandboxes. Local-first. Open source.
 </p>
 
@@ -18,7 +18,7 @@
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
   <a href="#features">Features</a> •
-  <a href="#configure-a-model">3,800+ Models</a> •
+  <a href="#configure-a-model">Models</a> •
   <a href="#essential-slash-commands-tui">Commands</a> •
   <a href="#troubleshooting">Troubleshooting</a>
 </p>
@@ -43,9 +43,9 @@
 
 | Category | Details |
 |---|---|
-| **Multi-Interface** | Terminal UI (TUI), desktop app (GUI), mobile apps (Android & iOS), CLI, IM bots — one agent, everywhere |
+| **Multi-Interface** | Terminal UI (TUI), desktop app (GUI), mobile apps (Android & iOS), CLI, IM bots — one agent, everywhere. The desktop backend also runs **headless on a server** (`futureos-headless`: no window or WebView, works over SSH), and the phone↔desktop channel is **end-to-end encrypted** — a Noise handshake with ChaCha20-Poly1305 records, so the relay only carries ciphertext ([headless](docs/guide/desktop-headless.md), [remote](docs/wiki/en/Remote.md)) |
 | **Configurable Tool Safety** | read, write, edit, shell — approval rules and sandbox tiers (`off` / `manual` / `sandbox`); macOS Seatbelt, Linux system Bubblewrap, Windows restricted-token write protection. Availability and guarantees differ by platform ([guide](docs/wiki/en/Sandbox.md)) |
-| **Model Flexibility** | 3800+ built-in models across 140+ providers ([catalog](docs/wiki/en/Models.md)); custom providers via `models.json`; scoped model lists |
+| **Model Flexibility** | **Bring your own key**: the [built-in catalog](docs/wiki/en/Models.md) covers the major providers, and any OpenAI- or Anthropic-compatible endpoint can be added through `models.json`. Or sign in to the **FutureOS provider** (`future auth login`) and have the keys and model list provisioned for you. Both work side by side, and you choose which models the picker offers ([setup](#configure-a-model)) |
 | **Loop Engineering** | Durable goals/todos/gates/monitors for long-horizon runs of 24+ hours — deterministic should-run kernel, event-sourced state, hard checks (evidence floor / acceptance contracts / verify gates), lease liveness, multi-agent ([guide](docs/architecture/loop-control-plane.md)) |
 | **Powerful Built-in Skills** | 15+ skills out of the box for everyday agent work — image read & generation, PDF/Word parsing, web search, browser control, slides, software install, and the `/future-loop` long-run goal orchestrator ([builtin](https://github.com/futuregene/future-skills/tree/main/builtin)) |
 | **Forkable Sessions** | Branch any conversation like a repo — fork, clone, and tree navigation over JSONL session history |
@@ -200,12 +200,22 @@ non-interactive commands never perform it.
 | `/model [name]` | Select / switch model |
 | `/new` | Start a new session |
 | `/sessions` | Browse and switch sessions |
+| `/tree` | Session tree with fork/clone hierarchy |
+| `/fork` | Fork from a chosen message |
+| `/clone` | Clone the current session |
+| `/name <name>` | Set the session name |
+| `/scoped-models` | Configure the model enable/disable list |
 | `/compact` | Compress conversation context |
 | `/status` | Session state, token usage, cost |
 | `/stop` | Abort current generation |
-| `/providers` | Configure providers and models |
+| `/cancel <run-id>` | Cancel a queued run |
+| `/cwd <dir>` | Change the working directory |
+| `/approve <request-id>` | Approve a pending tool execution |
+| `/reject <request-id>` | Reject a pending tool execution |
+| `/reload` | Reload skills and context files |
 | `/skills` | Browse, install and manage skills |
-| `/theme` | Switch the color theme |
+| `/providers` | Configure providers and models |
+| `/theme [id]` | Switch the color theme |
 
 Run `/help` in the TUI for the full list (40+ commands).
 
@@ -214,15 +224,20 @@ Run `/help` in the TUI for the full list (40+ commands).
 | Key | Action |
 |---|---|
 | `ctrl+c` | Interrupt / exit |
+| `ctrl+l` | Clear screen / redraw |
 | `ctrl+p` | Cycle model |
-| `ctrl+r` | Browse sessions |
 | `ctrl+t` | Cycle thinking level |
+| `shift+tab` | Cycle thinking |
 | `ctrl+o` | Expand / collapse thinking |
 | `ctrl+g` | Expand / collapse tool output |
+| `ctrl+d` | Compact view: fold runs of tool calls and thinking |
 | `ctrl+x` | Copy the last answer |
+| `ctrl+r` | Browse sessions |
 | `ctrl+v` | Paste clipboard (image or text) |
 | `tab` | Autocomplete |
 | `↑↓` | Scroll / navigate lists |
+| `page up` / `page down` | Scroll the chat |
+| `ctrl+↑` / `ctrl+↓` | Scroll the chat line by line |
 | `enter` | Submit / accept |
 | `escape` | Close popup |
 

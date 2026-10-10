@@ -157,9 +157,11 @@ mod tests {
             "watch",
             std::time::Duration::from_secs(60),
         ));
-        assert!(detect_obligations(&goal)
-            .iter()
-            .all(|o| o.kind != "monitor_no_change_streak"));
+        let obligations = detect_obligations(&goal);
+        assert!(
+            obligations.is_empty(),
+            "a monitor below its change threshold must raise nothing: {obligations:?}"
+        );
     }
 
     #[test]
@@ -199,18 +201,28 @@ mod tests {
         let mut goal = Goal::new("g", "objective", "/tmp");
         goal.execution_profile.outcome_floor_streak_threshold = 2;
         goal.outcome_streak = 1;
-        assert!(detect_obligations(&goal)
-            .iter()
-            .all(|o| o.kind != "surface_only_progress_streak"));
+        // Below the floor nothing is raised — and the fixture yields an EMPTY
+        // list, so `is_empty` is the claim that can fail. (The `.all(kind != X)`
+        // this replaces could never fail: with an empty list the closure never
+        // ran. Same vacuity as the disabled-floor case below.)
+        assert!(
+            detect_obligations(&goal).is_empty(),
+            "below the floor nothing is raised"
+        );
         goal.outcome_streak = 2;
         assert!(detect_obligations(&goal)
             .iter()
             .any(|o| o.kind == "surface_only_progress_streak"));
         // Floor disabled → never raised.
         goal.execution_profile.outcome_floor_streak_threshold = 0;
-        assert!(detect_obligations(&goal)
-            .iter()
-            .all(|o| o.kind != "surface_only_progress_streak"));
+        // A disabled floor raises nothing at all. Asserting `.all(kind != X)` here
+        // was VACUOUS: the list is empty, so the closure never ran and the
+        // assertion could not fail. `is_empty` is the claim that can fail.
+        let disabled = detect_obligations(&goal);
+        assert!(
+            disabled.is_empty(),
+            "a disabled floor must raise no obligations: {disabled:?}"
+        );
     }
 
     #[test]
@@ -227,8 +239,10 @@ mod tests {
         let mut todo2 = Todo::advancement("t1", "work");
         todo2.complete(true, vec![]);
         goal2.add(todo2);
-        assert!(detect_obligations(&goal2)
-            .iter()
-            .all(|o| o.kind != "succession_gap"));
+        let cleared = detect_obligations(&goal2);
+        assert!(
+            cleared.is_empty(),
+            "a goal whose only todo declared no-follow-up owes nothing: {cleared:?}"
+        );
     }
 }

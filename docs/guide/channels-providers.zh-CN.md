@@ -60,8 +60,9 @@
 
 ## Provider 能力矩阵
 
-`future channel list` 会打印你当前构建的这张矩阵，含每个通道的成熟度与声明式外部依赖。
-能力列是桥可以依赖的行为：
+`future channel list` 会报告当前构建中每个通道的成熟度、配置状态、桥类型、能力与声明式
+外部依赖；`list --json` 另外给出完整的外部依赖原文与单条上限。下方矩阵把能力列表展开成
+逐项列，并补上接入方式与提及门。能力列是桥可以依赖的行为：
 
 - **编辑**：桥可以改写同一条消息来做渐进式流式回复；不具备该能力的通道在结束时一次性发送。
 - **线程**：每个线程是独立的 agent 会话，也是独立的会话。
@@ -75,7 +76,7 @@
   `require_mention` 决定。纯私聊通道——WhatsApp、iMessage、Email、Terminal——为「否」，
   因为它们收到的消息在语义上都已经指向机器人。
 - **单条上限**：平台限制，单位就是平台计数的单位：除 Slack（UTF-16 单元，一个 emoji 算两个）
-  与 IRC/Email（字节）外都是字符。
+  与 IRC/Email/WeCom（字节）外都是字符。
 
 | 通道 | id | 成熟度 | 接入方式 | 编辑 | 线程 | typing | reactions | 收媒体 | 提及门 | 单条上限 | 外部依赖 |
 |---|---|---|---|---|---|---|---|---|---|---|---|
@@ -113,13 +114,14 @@ preview 不等于半成品：它周围的链路（策略、去重、会话、流
 ## 各通道配置
 
 下列每个块都是该 provider 真正读取的最小集合：它自己的 `config_example`（即
-`future channel list` 打印的内容）加上它认可的其他键。所有键都有默认值，标注 *必填* 的凭据
-除外。标注 *测试口* 的键用于把通道指向 mock 服务，生产环境留空。策略键（`dm_policy`、
-`dm_allowlist`、`group_policy`、`group_allowlist`、`require_mention`）由桥为每个通道读取；
-块里列出的是该通道示例中点到的键，其余键取上一节的默认值。
+`channels/src/providers/` 下 provider 文件中的示例字面量）加上它认可的其他键。所有键都有
+默认值，标注 *必填* 的凭据除外。标注 *测试口* 的键用于把通道指向 mock 服务，生产环境留空。
+策略键（`dm_policy`、`dm_allowlist`、`group_policy`、`group_allowlist`、
+`require_mention`）由桥为每个通道读取；块里列出的是该通道示例中点到的键，其余键取上一节的
+默认值。
 
 不存在 `streaming` 键：通道是否流式取决于它是否声明 `edit` 能力。该键仍出现在 Discord 与
-Mattermost 的 `future channel list` 示例中，但不被读取。
+Mattermost 的 `config_example` 中，但不被读取。
 
 ### Telegram
 
@@ -141,8 +143,8 @@ Mattermost 的 `future channel list` 示例中，但不被读取。
 
 长轮询只需出网 HTTPS，并会把 offset 持久化（`<通道>/offset.json`），因此重启既不丢已排队的
 更新，也不会重放已经回答过的消息。webhook 模式需要一个指向 `webhook.addr` 的公网地址
-（请放在反代之后以启用 TLS）以及 `secret_token`，通道会校验 Telegram 回显在请求头里的值，
-再解析请求体。
+（请放在反代之后以启用 TLS）；配置 `secret_token` 后，通道会在解析请求体前校验 Telegram
+回显在请求头里的值，留空则该闸门敞开。
 
 只有普通的 `message` 更新会变成提示：编辑消息、频道帖子与服务事件都被忽略。群消息在机器人的
 用户名出现在 mention 实体中、或该消息回复了机器人自己的消息时，才算被指向。回复会被转义成
@@ -322,11 +324,13 @@ Cloud API 一次只和一个客户对话，所以每条消息都是私聊会话�
 ```jsonc
 {
   "enabled": true,
-  "app_id": "",
-  "app_secret": "",
+  "app_id": "",                           // 必填：开放平台控制台里的应用 ID
+  "app_secret": "",                       // 必填：与 app_id 一起用于换取 token
   "sandbox": false,
   "group_allowlist": [],
-  "require_mention": true
+  "require_mention": true,
+  "api_base": "",                         // 测试口：替换 API 源（生产或沙箱）
+  "gateway_url": ""                       // 测试口：替换通过 GET /gateway 发现的地址
 }
 ```
 
@@ -341,7 +345,7 @@ Cloud API 一次只和一个客户对话，所以每条消息都是私聊会话�
 ```jsonc
 {
   "enabled": true,
-  "recipients": [],
+  "recipients": [],                       // 已声明但本构建不读取
   "sender_allowlist": [],
   "poll_seconds": 5,
   "db_path": ""
@@ -351,7 +355,8 @@ Cloud API 一次只和一个客户对话，所以每条消息都是私聊会话�
 发送通过 `osascript` 驱动 Messages.app；接收只读读取本地 Messages 数据库，并把 Apple 纪元
 （2001-01-01，纳秒）换算成 Unix 毫秒。`db_path` 默认指向标准位置，存在的意义是让测试指向
 夹具。运行桥的进程需要「完全磁盘访问权限」，且该通道只在 macOS 存在——其他平台上每个入口都
-报 `unsupported`，不会假装可用。访问规则是 `sender_allowlist`；这里的 iMessage 会话都是私聊，
+报 `unsupported`，不会假装可用。`sender_allowlist` 在 provider 层先过滤发送者
+（留空表示全部接受），共享私聊策略随后还会再判一次；这里的 iMessage 会话都是私聊，
 因此没有提及门。
 
 ### Email
@@ -373,7 +378,10 @@ Cloud API 一次只和一个客户对话，所以每条消息都是私聊会话�
 `multipart/alternative` 与 `mixed`，支持 quoted-printable、base64 与 RFC 2047 头，优先
 `text/plain`，回退到去标签的 `text/html`。回复通过 `In-Reply-To`/`References` 串线程，
 因此能力里 `threads` 为是。附件只被**列出**而不下载，桥也绝不回复邮箱自身的地址。
-`security` 取 `implicit`（连上即 TLS，993/465 端口）或 `starttls`（587/25 端口）；
+`sender_allowlist` 与 `subject_prefix` 是额外的闸门——留空表示接受所有发送者、所有主题。
+`security` 取 `implicit`（连上即 TLS，993/465 端口）、`starttls`（587/25 端口）或
+`plain`（不加密，仅适用于回环或内网中继）；`imap.host`、`imap.username`、`imap.password`、
+`smtp.host` 与 `smtp.from` 必填，`smtp.username`/`smtp.password` 要么都填、要么都不填；
 `timeout_seconds` 限制每一次协议读取，因此「接受连接后不再应答」的服务器会被判为可重试错误，
 而不是把轮询循环挂死。不支持 OAuth——请用密码或应用专用密码。
 
@@ -385,11 +393,11 @@ Cloud API 一次只和一个客户对话，所以每条消息都是私聊会话�
 ```jsonc
 {
   "enabled": true,
-  "corp_id": "",                         // 企业 ID，ww…；回调的接收方 ID 要与它一致
-  "agent_id": 0,                         // 自建应用 AgentId；每次发送都要带上
-  "secret": "",                          // 应用 Secret，用于换取 access_token
-  "token": "",                           // 回调 Token
-  "encoding_aes_key": "",                 // 回调 EncodingAESKey，43 个字符
+  "corp_id": "",                         // 必填：企业 ID，ww…；回调的接收方 ID 要与它一致
+  "agent_id": 0,                         // 必填：自建应用 AgentId；每次发送都要带上
+  "secret": "",                          // 必填：应用 Secret，用于换取 access_token
+  "token": "",                           // 接收必填：回调 Token
+  "encoding_aes_key": "",                 // 接收必填：回调 EncodingAESKey，43 个字符
   "webhook": { "addr": "127.0.0.1:8790", "path": "/webhooks/wecom" },
   "dm_policy": "allowlist", "dm_allowlist": [],
   "api_base": ""                         // 测试接缝：替换应用 API 的源

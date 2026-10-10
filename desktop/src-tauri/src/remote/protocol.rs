@@ -19,6 +19,9 @@ pub(crate) struct IncomingCmd {
     pub(crate) message: String,
     // approval_decision
     pub(crate) entry_id: String,
+    // fork_session: the persisted user entry whose settled turn the phone forks
+    // at. The command's own `id` is the fork request identity (idempotent child).
+    pub(crate) source_entry_id: String,
     pub(crate) mode: String,
     // get_events_since (P1c backfill)
     pub(crate) run_id: String,
@@ -27,6 +30,8 @@ pub(crate) struct IncomingCmd {
     // get_messages pagination (NATS payload-limit guard)
     pub(crate) offset: i64,
     pub(crate) limit: i64,
+    // get_tool_call_args: the call whose arguments a lean client asks back.
+    pub(crate) tool_call_id: String,
     // get_session_entries backward cursor (mobile lazy history)
     pub(crate) before: Option<i64>,
     // set_model / set_thinking_level
@@ -37,6 +42,17 @@ pub(crate) struct IncomingCmd {
     pub(crate) settings: serde_json::Value,
     pub(crate) skill_id: String,
     pub(crate) version: String,
+    // Task management (one whole task write, like `provider`; plus the ids a
+    // revisions/run command addresses).
+    pub(crate) task: serde_json::Value,
+    pub(crate) task_id: String,
+    pub(crate) revision_id: String,
+    // set_task_enabled
+    pub(crate) enabled: bool,
+    // set_task_dep: the upstream a task waits for, and the condition it fires
+    // on. `remove_task_dep` needs only the id pair.
+    pub(crate) upstream_task_id: String,
+    pub(crate) on: String,
     // suggest_skill: the draft to recommend for, and the UNINSTALLED skill
     // candidates the phone offers. The candidates travel from the phone because
     // the catalogue is the client's to fetch; the desktop only forwards them to
@@ -59,6 +75,13 @@ pub(crate) struct IncomingCmd {
     pub(crate) pinned: bool,
     // prompt creation mode / existing workspace selection
     pub(crate) workspace_id: String,
+    // create_workspace: the desktop-side directory to register (the phone has
+    // no folder picker for the host, so it types the path).
+    pub(crate) path: String,
+    // `secure_ready`: what the client says it is. Optional and additive, so an
+    // older client that sends neither is simply "unknown" rather than wrong.
+    pub(crate) device_name: String,
+    pub(crate) device_kind: String,
     // file transfer control + prompt attachment references
     pub(crate) mime_type: String,
     pub(crate) kind: String,
@@ -97,12 +120,14 @@ impl Default for IncomingCmd {
             session_id: String::new(),
             message: String::new(),
             entry_id: String::new(),
+            source_entry_id: String::new(),
             mode: String::new(),
             run_id: String::new(),
             prompt_id: String::new(),
             since_idx: -1,
             offset: 0,
             limit: 0,
+            tool_call_id: String::new(),
             before: None,
             model_id: String::new(),
             provider_id: String::new(),
@@ -111,6 +136,12 @@ impl Default for IncomingCmd {
             settings: serde_json::Value::Null,
             skill_id: String::new(),
             version: String::new(),
+            task: serde_json::Value::Null,
+            task_id: String::new(),
+            revision_id: String::new(),
+            enabled: false,
+            upstream_task_id: String::new(),
+            on: String::new(),
             query: String::new(),
             candidates: serde_json::Value::Null,
             message_hash: String::new(),
@@ -120,12 +151,15 @@ impl Default for IncomingCmd {
             thread_id: String::new(),
             pinned: false,
             workspace_id: String::new(),
+            path: String::new(),
             mime_type: String::new(),
             kind: String::new(),
             original_size: 0,
             transfer_size: 0,
             transfer_id: String::new(),
             file_path: String::new(),
+            device_name: String::new(),
+            device_kind: String::new(),
             attachments: Vec::new(),
             protocol_version: 0,
             pair_id: String::new(),

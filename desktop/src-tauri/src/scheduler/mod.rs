@@ -8,9 +8,11 @@ use std::future::Future;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "gui")]
 use tauri::Emitter;
 
 use crate::agent_bridge::SyncFutureModelsResult;
+#[cfg(feature = "gui")]
 use crate::commands::UpdateStatus;
 use crate::future_login::FutureBalance;
 use crate::AppError;
@@ -99,7 +101,7 @@ where
     F: FnMut() -> Fut + Send + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    tauri::async_runtime::spawn(async move {
+    let loop_body = async move {
         loop {
             tokio::time::sleep_until(tokio::time::Instant::from_std(job.next_due())).await;
             if !job.claim_if_due(Instant::now()) {
@@ -110,7 +112,15 @@ where
             let _execution = job.execution.lock().await;
             run().await;
         }
-    });
+    };
+    // The window build spawns on Tauri's runtime (the one the WebView's
+    // asynchronous commands run on); the server build has no Tauri runtime and
+    // uses the process runtime `headless::run` installs, exactly like
+    // `tasks::start_headless`.
+    #[cfg(feature = "gui")]
+    tauri::async_runtime::spawn(loop_body);
+    #[cfg(not(feature = "gui"))]
+    tokio::spawn(loop_body);
 }
 
 async fn run_explicit<T, F, Fut>(job: &'static FixedIntervalJob, run: F) -> Result<T, AppError>
@@ -140,7 +150,11 @@ fn future_signed_in() -> bool {
 /// Start the three process-lifetime maintenance loops. Their first automatic
 /// runs happen after one full interval; existing startup/login/manual paths use
 /// the `*_now` functions below and reset the matching deadline.
-pub fn start(app: tauri::AppHandle) {
+///
+/// Generic over the runtime so the wiring can be exercised from a
+/// `tauri::test::mock_app()` handle as well as from the real Wry one.
+#[cfg(feature = "gui")]
+pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     let update_app = app.clone();
     spawn_fixed_interval(&APP_UPDATE_JOB, move || {
         let app = update_app.clone();
@@ -192,6 +206,40 @@ pub fn start(app: tauri::AppHandle) {
     });
 }
 
+/// The headless entry point's maintenance loop: the same Future-catalogue job
+/// with the same interval and the same signed-in gate, without the two the
+/// server cannot use. The window build uses [`start`] instead; this exists in
+/// both so the server path can share the job, its clock and its tests.
+///
+/// `app update` needs the Tauri updater plugin and an installer to hand the
+/// downloaded bundle to, so it does not exist in the server build at all; the
+/// `balance` job's only output is a WebView event, and the phone reads neither
+/// the balance nor that event. The catalogue is different: the Agent announces
+/// its own refresh (`publish_provider_config_changed`), which the remote bridge
+/// already forwards to the phone, so a server that runs for weeks keeps the
+/// phone's model list current instead of freezing it at first launch.
+pub fn start_headless() {
+    spawn_fixed_interval(&FUTURE_MODELS_JOB, refresh_future_catalogue_if_signed_in);
+}
+
+/// The server's catalogue job body. Split out so the signed-in gate is testable
+/// without a runtime, and so the automatic run stays on the job's own clock: it
+/// must never reset the deadline the way the explicit `*_now` entry points do.
+async fn refresh_future_catalogue_if_signed_in() {
+    if !future_signed_in() {
+        return;
+    }
+    match crate::agent_bridge::sync_future_models().await {
+        Ok(result) if result.synced => eprintln!(
+            "FutureOS: Future model catalogue refreshed ({} models).",
+            result.model_count
+        ),
+        Ok(_) => {}
+        Err(error) => eprintln!("FutureOS scheduled model refresh failed: {error}"),
+    }
+}
+
+#[cfg(feature = "gui")]
 pub async fn check_app_update_now<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<UpdateStatus, AppError> {
@@ -243,5 +291,297 @@ mod tests {
         assert_eq!(APP_UPDATE_INTERVAL, Duration::from_secs(86_400));
         assert_eq!(FUTURE_BALANCE_INTERVAL, Duration::from_secs(3_600));
         assert_eq!(FUTURE_MODELS_INTERVAL, Duration::from_secs(86_400));
+    }
+
+    /// A job's own delegation must agree with the schedule it wraps — the
+    /// scheduler reads `next_due`/`claim_if_due` through the job, not the
+    /// schedule, so a mismatch here would be invisible to the pure tests above.
+    #[test]
+    fn a_job_delegates_to_its_schedule() {
+        let job: &'static FixedIntervalJob =
+            Box::leak(Box::new(FixedIntervalJob::new(Duration::from_secs(60))));
+        let start = Instant::now();
+        assert!(job.next_due() > start, "the first run is one interval out");
+        assert!(
+            !job.claim_if_due(start),
+            "a job must not be due before its first interval"
+        );
+        let resumed = start + Duration::from_secs(600);
+        assert!(job.claim_if_due(resumed));
+        assert_eq!(job.next_due(), resumed + Duration::from_secs(60));
+        // An explicit trigger moves the deadline the same way, so a manual
+        // refresh cannot be duplicated by the automatic run right after it.
+        let manual = resumed + Duration::from_secs(5);
+        job.note_explicit_trigger(manual);
+        assert_eq!(job.next_due(), manual + Duration::from_secs(60));
+        assert!(!job.claim_if_due(manual));
+        assert!(job.claim_if_due(manual + Duration::from_secs(60)));
+    }
+
+    /// A poisoned mutex must not wedge the scheduler: a panic in one job must
+    /// leave the others able to claim their slots.
+    #[test]
+    fn a_poisoned_schedule_is_recovered() {
+        let job: &'static FixedIntervalJob =
+            Box::leak(Box::new(FixedIntervalJob::new(Duration::from_secs(60))));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = job.schedule();
+            panic!("intentional: poison the schedule for the recovery test");
+        }));
+        let start = Instant::now();
+        // Still usable: the deadline survives, and the claim succeeds.
+        assert!(job.next_due() > start);
+        assert!(job.claim_if_due(start + Duration::from_secs(60)));
+    }
+
+    /// `run_explicit` reports what the job returned, and propagates its error
+    /// unchanged — the caller (`check_app_update_now` and friends) surfaces it
+    /// to the UI, so swallowing it would show a stale "up to date".
+    #[tokio::test]
+    async fn an_explicit_run_returns_the_inner_result_and_its_error() {
+        let job: &'static FixedIntervalJob =
+            Box::leak(Box::new(FixedIntervalJob::new(Duration::from_secs(3600))));
+        let before = Instant::now();
+        let value = run_explicit(job, || async { Ok::<_, AppError>(7_u32) })
+            .await
+            .expect("the inner Ok is returned");
+        assert_eq!(value, 7);
+        // The explicit run counts as a run: the automatic deadline moved.
+        assert!(job.next_due() >= before + Duration::from_secs(3600));
+
+        let error = run_explicit(job, || async { Err::<u32, _>("inner failure".into()) })
+            .await
+            .expect_err("the inner error is propagated");
+        assert!(error.to_string().contains("inner failure"));
+    }
+
+    /// The execution lock is the scheduler's only defence against a slow job
+    /// running twice at once — two overlapping update checks would each write
+    /// the same cache and emit a different status. Driven with real concurrency
+    /// so the lock, not the test's own sequencing, is what serializes them.
+    #[tokio::test]
+    async fn concurrent_explicit_runs_never_overlap() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let job: &'static FixedIntervalJob =
+            Box::leak(Box::new(FixedIntervalJob::new(Duration::from_secs(3600))));
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let completed = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let active = active.clone();
+            let peak = peak.clone();
+            let completed = completed.clone();
+            handles.push(tokio::spawn(async move {
+                run_explicit(job, || async move {
+                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    peak.fetch_max(now, Ordering::SeqCst);
+                    // Long enough that an unserialized run would overlap.
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    completed.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, AppError>(())
+                })
+                .await
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("task joined").expect("run ok");
+        }
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            1,
+            "the execution lock must serialize overlapping runs"
+        );
+        assert_eq!(
+            completed.load(Ordering::SeqCst),
+            4,
+            "serializing must not drop a run"
+        );
+    }
+
+    /// The spawned loop is the production path for all three jobs, and its
+    /// `continue` arm is the one that handles an explicit trigger moving the
+    /// deadline while the sleep is pending. Both are driven here with a real
+    /// short interval instead of the production 1–24h ones.
+    #[tokio::test]
+    async fn a_spawned_job_fires_at_its_deadline_and_reanchors() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let job: &'static FixedIntervalJob =
+            Box::leak(Box::new(FixedIntervalJob::new(Duration::from_millis(40))));
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counter = runs.clone();
+        spawn_fixed_interval(job, move || {
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        // Let the loop wake and run at least twice: an interval-based job must
+        // keep rearming, not fire once and stop.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while runs.load(Ordering::SeqCst) < 2 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            runs.load(Ordering::SeqCst) >= 2,
+            "the fixed-interval loop must rearm and run again, ran {} time(s)",
+            runs.load(Ordering::SeqCst)
+        );
+
+        // Push the deadline out from under the pending sleep: the loop must
+        // observe the moved deadline and not run again before it.
+        job.note_explicit_trigger(Instant::now() + Duration::from_secs(3600));
+        let settled = runs.load(Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            settled,
+            "an explicit trigger must suppress the automatic run it just replaced"
+        );
+    }
+
+    /// `start` wires the three window loops and must not panic without a real
+    /// window. A mock app is the whole requirement: the loops sleep for a full
+    /// interval before doing anything.
+    #[cfg(feature = "gui")]
+    #[test]
+    fn starting_the_loops_on_a_mock_app_is_inert() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let before = Instant::now();
+        start(handle);
+        // The first automatic run is one full interval away for each job, so
+        // starting the loops must not disturb the schedules' deadlines.
+        assert!(APP_UPDATE_JOB.next_due() > before);
+        assert!(FUTURE_BALANCE_JOB.next_due() > before);
+        assert!(FUTURE_MODELS_JOB.next_due() > before);
+        assert_eq!(APP_UPDATE_EVENT, "scheduler-app-update");
+        assert_eq!(FUTURE_BALANCE_EVENT, "scheduler-future-balance");
+        assert_eq!(FUTURE_AUTH_INVALID_EVENT, "scheduler-future-auth-invalid");
+        assert_eq!(FUTURE_MODELS_EVENT, "scheduler-future-models");
+    }
+
+    /// The server build's maintenance loop: the catalogue job's body is gated on
+    /// the account and, unlike the explicit `*_now` entry points, must leave the
+    /// scheduled deadline alone — otherwise the automatic run and a manual
+    /// refresh would keep pushing each other out and neither would settle.
+    ///
+    /// Deliberately never signs in: the signed-in arm reaches the Agent, and a
+    /// developer machine running its own `future agent` must stay untouched.
+    #[tokio::test]
+    async fn the_headless_catalogue_job_skips_while_signed_out_and_keeps_its_clock() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("scheduler_headless");
+
+        // Signed out: the body returns before the Agent is contacted at all.
+        assert!(!future_signed_in());
+        let before = FUTURE_MODELS_JOB.next_due();
+        refresh_future_catalogue_if_signed_in().await;
+        assert_eq!(
+            FUTURE_MODELS_JOB.next_due(),
+            before,
+            "an automatic run must not re-anchor the schedule; only an explicit trigger does"
+        );
+        // Arming the loop is inert: the first automatic run is a full interval
+        // away, so the deadline is untouched by the spawn.
+        start_headless();
+        assert_eq!(FUTURE_MODELS_JOB.next_due(), before);
+    }
+
+    /// `future_signed_in` gates both signed-in-only jobs. It must be false for
+    /// every shape of "not signed in" — no file, no entry, an entry with no
+    /// key, a blank key — and only true for a real key. Whitespace-only counts
+    /// as blank: that is a cleared field, not a credential.
+    #[test]
+    fn future_signed_in_requires_a_non_blank_key() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("scheduler_signin");
+
+        // No auth file at all.
+        assert!(!future_signed_in(), "an absent auth file is not signed in");
+
+        // An unrelated provider must not satisfy the check.
+        crate::auth_store::set_provider_key("some-other-provider", "k").expect("write");
+        assert!(
+            !future_signed_in(),
+            "another provider's key is not a Future key"
+        );
+
+        // A Future entry with no key.
+        let mut map = crate::auth_store::read().expect("read");
+        map.insert(
+            crate::auth_store::FUTURE_PROVIDER_ID.to_string(),
+            serde_json::json!({}),
+        );
+        crate::auth_store::write(&map).expect("write");
+        assert!(
+            !future_signed_in(),
+            "an entry without a key is not signed in"
+        );
+
+        // A blank key is a cleared field.
+        for blank in ["", "   "] {
+            let mut map = crate::auth_store::read().expect("read");
+            map.insert(
+                crate::auth_store::FUTURE_PROVIDER_ID.to_string(),
+                serde_json::json!({ "key": blank }),
+            );
+            crate::auth_store::write(&map).expect("write");
+            assert!(
+                !future_signed_in(),
+                "a blank key ({blank:?}) must not count as signed in"
+            );
+        }
+
+        // A non-string key cannot be a credential either.
+        let mut map = crate::auth_store::read().expect("read");
+        map.insert(
+            crate::auth_store::FUTURE_PROVIDER_ID.to_string(),
+            serde_json::json!({ "key": 42 }),
+        );
+        crate::auth_store::write(&map).expect("write");
+        assert!(!future_signed_in(), "a non-string key is not signed in");
+
+        // The real thing.
+        crate::auth_store::set_future_login("fut_live_key", "https://api.future.test")
+            .expect("set login");
+        assert!(
+            future_signed_in(),
+            "a trimmed non-empty key is the signed-in state"
+        );
+    }
+
+    /// The three `*_now` entry points exist so a manual refresh and a startup
+    /// check share the automatic job's clock. Each must reset that job's
+    /// deadline even when the underlying call fails, or the automatic loop
+    /// would immediately repeat the failed attempt.
+    #[tokio::test]
+    async fn a_manual_refresh_resets_its_own_job_deadline_on_failure() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("scheduler_now");
+        // Not signed in: `fetch_balance` refuses before any network call.
+        let before = Instant::now();
+        let result = refresh_future_balance_now().await;
+        assert!(result.is_err(), "no key means no balance fetch");
+        assert!(
+            FUTURE_BALANCE_JOB.next_due() >= before + Duration::from_secs(3600),
+            "a failed manual refresh must still reset the automatic deadline"
+        );
+
+        // The model sync does not consult the account: its outcome depends on
+        // whether an Agent answers (the scripted test double another test in
+        // the process may have installed) or is unreachable. Both are ordinary
+        // production outcomes, so only the clock is asserted here — the failure
+        // path is covered by the balance job above.
+        let before = Instant::now();
+        let _ = refresh_future_models_now().await;
+        assert!(
+            FUTURE_MODELS_JOB.next_due() >= before + Duration::from_secs(3600),
+            "a manual refresh must reset the automatic deadline whatever the Agent says"
+        );
     }
 }

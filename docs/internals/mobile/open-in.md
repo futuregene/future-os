@@ -41,7 +41,7 @@ Run `npm run check` in `mobile/`: includes assertions on the actual Expo plugin
 generated config, native inbox events, read races, drafts not auto-sending, and
 the existing share regressions.
 
-Run `python3 scripts/test-mobile-ios-share.py` at the repo root: executes the
+Run `python3 scripts/tests/test-mobile-ios-share.py` at the repo root: executes the
 real inbox copy code with macOS Swift, covering Chinese filenames, file
 contents, one-time consumption, over-limit, corrupt input, and path safety.
 

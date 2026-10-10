@@ -148,6 +148,95 @@ fn worker_bridge_enforces_acceptance_and_machine_validation() {
 }
 
 #[test]
+fn worker_bridge_rejects_a_result_for_a_different_todo() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_str().unwrap();
+    let gid = init_goal(root, "bridge todo mismatch");
+    let store = future_loop::store::Store::open(root).unwrap();
+    let bootstrap = store.replay(&gid).unwrap().unwrap().todos[0].id.clone();
+    assert_eq!(
+        run(
+            root,
+            &[
+                "todo",
+                "supersede",
+                "--goal",
+                &gid,
+                "--todo-id",
+                &bootstrap,
+                "--reason",
+                "setup",
+            ],
+        )
+        .2,
+        0
+    );
+    assert_eq!(
+        run(
+            root,
+            &["todo", "add", "--goal", &gid, "--text", "selected work"]
+        )
+        .2,
+        0
+    );
+    let selected = store
+        .replay(&gid)
+        .unwrap()
+        .unwrap()
+        .todos
+        .iter()
+        .find(|t| t.text.contains("selected work"))
+        .unwrap()
+        .id
+        .clone();
+
+    // A completed result naming a DIFFERENT todo must not be accepted as this
+    // turn's delivery: the stdout bridge is an automatic entry point, not an
+    // escape hatch around the selected todo's evidence and machine checks.
+    let input = format!(
+        "{}\nBRIDGE done\n",
+        serde_json::json!({
+            "todo_id": "todo_not_selected",
+            "terminal_state": "completed",
+            "evidence": "attempt scored",
+        })
+    );
+    let (_, err, code) = run_stdin(root, &["worker-bridge", "--goal", &gid], &input);
+    assert_eq!(code, 0, "{err}");
+    let after = store.replay(&gid).unwrap().unwrap();
+    let record = after.history.last().unwrap();
+    assert_eq!(
+        record.error.as_deref(),
+        Some("worker result does not match the selected todo"),
+        "the mismatch must be recorded as the run error"
+    );
+    assert!(
+        !future_loop::executor::turn_succeeded(record),
+        "a mismatched result must not count as a success"
+    );
+    assert_eq!(
+        after.todo(&selected).unwrap().status,
+        future_loop::state::TodoStatus::Open,
+        "the selected todo must stay open"
+    );
+
+    // A malformed result line is refused with a message naming the protocol.
+    let (_, err, code) = run_stdin(root, &["worker-bridge", "--goal", &gid], "not json\n");
+    assert_ne!(code, 0, "a malformed result must fail the bridge");
+    assert!(err.contains("invalid worker result line"), "{err}");
+
+    // An empty line is EOF-style: the bridge closes cleanly without a record.
+    let history_before = store.replay(&gid).unwrap().unwrap().history.len();
+    let (_, err, code) = run_stdin(root, &["worker-bridge", "--goal", &gid], "\n");
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        store.replay(&gid).unwrap().unwrap().history.len(),
+        history_before,
+        "closing the bridge must not append a run record"
+    );
+}
+
+#[test]
 fn owner_diagnostics_frontier_and_completion_lease_views_agree() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_str().unwrap();

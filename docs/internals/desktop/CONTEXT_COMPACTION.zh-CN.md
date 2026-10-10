@@ -1,19 +1,20 @@
 # 上下文压缩架构与语义压缩下一阶段开发计划
 
-状态：**v2 数据底座已落地；语义压缩核心（S1）已实现并接入运行时**——自动压缩
-（PreTurn/MidTurn）、provider-limit 恢复与手动 `/compact` 均调用
-`prepare_semantic_with_lifecycle`（`agent/src/agent/run_loop.rs`、
-`agent/src/rpc/session.rs`），摘要走 `semantic-v1`，provider-limit 失败时回退
-`deterministic-emergency-v1`。模型切换的「旧模型优先」fallback 链（S3）已实现但
-运行时调用点尚未接线（均传 `None`，仅测试覆盖）；S4 兼容/发布收口验证【待核实】。
-（2026-08-24 定稿；2026-09-16 复核运行时接线）
+状态：**v2 数据底座已落地；运行时压缩已改用证据（evidence）策略，而非本文最初规划的 S1–S4 语义流水线**（2026-09-26 复核）。
 
 基线提交：`8fd6804e Implement durable context compaction checkpoints`
 
-本文是 FutureOS 上下文压缩的当前权威设计。它分为两部分：
+**实现状态（2026-09-26）。** v2 数据底座（§3）仍然成立，§6–§7 的 phase/trigger 按设计上线（`CompactionTrigger`/`CompactionPhase`，`agent/src/compaction/mod.rs:119-133`）。自动（PreTurn/MidTurn）、provider-limit 恢复与手动压缩都进入 `prepare_with_journal_and_summary`（`agent/src/compaction/durable.rs:245`；调用点 `agent/src/agent/run_loop.rs:390,638`、`agent/src/rpc/session.rs:751`），只写两种 `algorithm_version`（`agent/src/compaction/semantic/evidence.rs:7,13`）：
 
-1. 已落地且后续不得破坏的 v2 数据与兼容性底座；
-2. 下一阶段要实现的本地语义压缩、模型切换检测和压缩请求容错。
+- `summarized-evidence-v1` —— 确定性 tool-evidence 索引 + 模型写的累积式 handoff 摘要，运行时默认；
+- `deterministic-evidence-v1` —— 不调用模型；provider 不可用或摘要调用失败时提交的也是它。
+
+计划中的 fold 机制不在生产路径上：没有分块 fold（§10.2）、没有 context-limit 重新规划（§10.3），也没有独立的 `deterministic-emergency-v1` 算法（§10.5）——实际摘要调用只做有上限的瞬时错误重试，失败即回退到确定性投影（`semantic/evidence.rs:486-490,580`）。`prepare_semantic*` 入口及其 `semantic-v1` 命名已退役（`agent/src/compaction/mod.rs:314-322`）；S3 的「旧模型优先」链（§9.4/§13）同样不在生产：`ModelContextDownshift` 用会话当前模型做压缩（`agent/src/agent/run_loop.rs:335-345`）。摘要模板与 previous-summary 合并（§9.1–§9.2）确实在摘要调用内落地（`agent/src/compaction/semantic.rs:39-65`、`semantic/evidence.rs:640-690`）。下方 §13–§15 保留为历史计划记录；当前实现见 [`docs/internals/compaction/compaction.md`](../compaction/compaction.md)。
+
+本文记录 FutureOS 上下文压缩的设计与兼容性契约。它分为两部分：
+
+1. 已落地且后续不得破坏的 v2 数据与兼容性底座——这部分仍是权威约束；
+2. 2026-08 的语义压缩计划（本地结构化摘要、模型切换检测、压缩请求容错），现保留为历史计划记录：实际交付的是上文所述的证据（evidence）策略组合。
 
 本文不再把已经完成的 Journal、Prompt Projection、ContextCheckpoint、RPC/UI marker 和 fork 兼容工作列为未来迁移项。
 
@@ -166,9 +167,9 @@ checkpoint 与消息 append 共用同一个 FIFO 持久化队列。只有此前 
 - checkpoint 和消息共享同一日志序列，分页不改变历史内容；
 - desktop SQLite schema 没有变化，后续阶段也不得为上下文压缩新增 SQLite 表。
 
-## 4. 当前基线的剩余问题
+## 4. 本计划起步时基线的剩余问题
 
-v2 数据底座解决了误报、历史重写和兼容问题，但当前摘要器仍是确定性文件操作摘要：
+v2 数据底座解决了误报、历史重写和兼容问题，但在 2026-08-24 定稿时，摘要器仍是确定性文件操作摘要：
 
 ```text
 Previous conversation summarized.
@@ -479,7 +480,11 @@ semantic-v1
 deterministic-emergency-v1
 ```
 
-紧急摘要同样必须通过 checkpoint 范围校验和 durable commit。不得写一个空 summary，也不得把语义摘要失败误报成 `semantic-v1` 成功。
+> **实际命名与计划不同。** 计划中的 `semantic-v1` / `deterministic-emergency-v1`
+> 已被 `summarized-evidence-v1` / `deterministic-evidence-v1` 取代（见开头实现
+> 状态）。下面的规则仍然成立：不得写空 summary，也不得把模型摘要失败误报成
+> summarized 成功——失败或不可用时提交确定性投影，并通过 `on_fallback` 上报回退
+> （`agent/src/compaction/semantic/evidence.rs:486-490,605-610`）。
 
 ## 11. Checkpoint 提交流程
 
@@ -532,7 +537,14 @@ deterministic-emergency-v1
 
 下一阶段不修改 desktop SQLite schema，不新增 message、run-event、summary 或 checkpoint 表。模型切换状态、摘要中间结果和 retry 状态均属于单次运行内存；只有 final checkpoint 进入 agent JSONL。
 
+> 实际新增（2026-09-26）：**Agent** 数据库（不是 desktop SQLite）增加了 `compaction_operations`，用于让手动与自动压缩跨重启幂等——key、digest、operation id、state 与 result JSON（`agent/src/session/database.rs:336-343`）。摘要本身仍不存库；重放操作没有 result 时会重建确定性索引并重新生成模型摘要。
+
 ## 13. 下一阶段开发计划
+
+> 历史计划记录（2026-08-24）。它最终以不同形态交付：S1/S2 落地为证据（evidence）
+> 策略（`summarized-evidence-v1` / `deterministic-evidence-v1`），旧语义入口退役；
+> S3 的 phase/trigger 工作落地，但「旧模型优先」链没有；S4 的兼容性工作见
+> `docs/internals/compaction/compaction.md` 的验证章节。详见开头的实现状态。
 
 ### Phase S1：语义摘要核心
 
@@ -651,6 +663,11 @@ S1–S4 可以按独立提交交付，但只有 S1 与 S2 同时完成后才允�
 - desktop SQLite schema snapshot 完全不变。
 
 ## 15. 完成标准
+
+> 这是语义流水线的计划验收标准。与实际交付不一致处按以下方式理解：第 1 条对应
+> `summarized-evidence-v1` + 相同结构化模板；第 4 条不含分块 fold（改为一次有界
+> 摘要调用 + 确定性回退）；第 5 条以 `deterministic-evidence-v1` 回退替代独立的
+> 紧急摘要算法。
 
 下一阶段只有在以下条件全部满足后才算完成：
 

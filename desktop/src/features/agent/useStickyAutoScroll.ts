@@ -1,5 +1,6 @@
 import type { RefObject } from "react";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCommittedRef } from "../../lib/useCommittedRef";
 
 /** Within this many px of the bottom, auto-follow streaming output. */
 const STICK_THRESHOLD_PX = 48;
@@ -46,12 +47,9 @@ export function useStickyAutoScroll({
   // Keep the callbacks in refs so the effect/handlers always call the latest
   // without listing them as deps (which would re-run the follow effect on every
   // render when the parent passes inline closures).
-  const shouldRestoreAnchorRef = useRef(shouldRestoreReadingAnchor);
-  shouldRestoreAnchorRef.current = shouldRestoreReadingAnchor;
-  const onScrollRef = useRef(onScroll);
-  const onContentSettledRef = useRef(onContentSettled);
-  onScrollRef.current = onScroll;
-  onContentSettledRef.current = onContentSettled;
+  const shouldRestoreAnchorRef = useCommittedRef(shouldRestoreReadingAnchor);
+  const onScrollRef = useCommittedRef(onScroll);
+  const onContentSettledRef = useCommittedRef(onContentSettled);
 
   // Jump straight to the latest message and re-enable auto-follow.
   const scrollToLatest = useCallback(() => {
@@ -103,7 +101,7 @@ export function useStickyAutoScroll({
       !stickToBottomRef.current && distance > JUMP_BUTTON_THRESHOLD_PX,
     );
     onContentSettledRef.current?.();
-  }, [followEnabled, scrollRef]);
+  }, [followEnabled, onContentSettledRef, scrollRef]);
 
   // Compose external scroll handling (e.g. floating scrollbar visibility) with
   // sticky detection: re-derive stickiness from the caret's distance to the
@@ -139,7 +137,7 @@ export function useStickyAutoScroll({
       writtenTopRef.current = null;
       setShowJumpToLatest(distance > JUMP_BUTTON_THRESHOLD_PX);
     }
-  }, [scrollRef, settleViewport]);
+  }, [onScrollRef, scrollRef, settleViewport, shouldRestoreAnchorRef]);
 
   useLayoutEffect(settleViewport, [contentKey, settleViewport]);
 

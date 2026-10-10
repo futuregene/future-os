@@ -6,7 +6,7 @@
 
 | Scenario | Implementation and handling |
 | --- | --- |
-| File download, export, share, open-externally failure | `AppAlert` → `AppDialogHost` → `useAppDialog` → `DialogSurface`; keeps the existing timing of showing after download/preview exit. Android low-level error details are selectable for copying. |
+| File download, export, share, open-externally failure | `AppAlert` → `AppDialogHost` → `useAppDialog` → `DialogSurface`; keeps the existing timing of showing after download/preview exit. Error details are selectable on iOS; Android renders the message as plain text so OEM selection backgrounds cannot appear. |
 | Session rename failure, file list load failure, Markdown/message link open failure | Same `AppAlert` channel, no longer calling the native `Alert`. |
 | Cellular download confirmation | Same channel; confirm/cancel/system-back are all handled after the dialog closes, avoiding the download-progress dialog and confirmation dialog contending. |
 | Upgrade confirmation, install failure, foreground-notification fallback, iOS toast substitutes | Same channel, allowing non-React callers to submit; multiple requests queue in order, preventing an error from covering an unhandled confirmation. |
@@ -17,8 +17,10 @@
 | File preview | Keep the full-page/pageSheet reading UI; not a prompt box. |
 
 `DialogSurface` unifies the mask, max width, radius, safe area, keyboard
-avoidance, and long-content scrolling. Error details use selectable text so a
-long native error does not push the close button out. ESLint forbids business
+avoidance, and long-content scrolling. Long errors scroll inside that container
+instead of pushing the close button out; their text is selectable on iOS and
+plain on Android (iOS keeps native selection, Android avoids OEM selection
+backgrounds). ESLint forbids business
 code importing `Alert` directly from `react-native`, preventing a second style
 of error dialog from creeping back in.
 
@@ -34,7 +36,8 @@ environment renders these panels still needs real-device verification.
 Automation covers: button actions executed only after iOS/Android closing
 completes, cancelable and non-cancelable, duplicate close events, concurrent
 error queueing, a confirmation action producing another error, and long error
-details using selectable text with the shared dialog container. Existing
+details scrolling in the shared dialog container (iOS selectable text, Android
+plain text). Existing
 `DialogSurface` tests cover safe areas, scrolling, and keyboard handling; no
 claim of completed visual acceptance without real-device screenshots.
 

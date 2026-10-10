@@ -1,3 +1,5 @@
+import type { ShellResult } from "@future-os/thread-projection";
+
 export type ConnectionPhase =
   | "booting"
   /** Desktop explicitly ended the remote session; wait for a user retry. */
@@ -27,6 +29,13 @@ export interface PairedDesktop {
   pairId: string;
   /** Absent until the user renames the desktop; the id is shown instead. */
   name?: string;
+  /**
+   * A glyph id from the fixed set (mobile `config/peerIcons.ts`), chosen by the
+   * user. Stored as the id rather than the glyph so the set can be restyled or
+   * translated later without rewriting saved labels — and so an unknown value
+   * renders the default instead of arbitrary stored text.
+   */
+  icon?: string;
 }
 
 export interface RemoteCredentials {
@@ -55,6 +64,13 @@ export interface RemoteSession {
   pinned?: boolean;
   streaming: boolean;
   status?: string;
+  /**
+   * Last activity (unix millis), from the desktop's own
+   * `COALESCE(last_message_at, updated_at, created_at)`. Absent on a desktop
+   * older than the field, in which case the session sorts below dated ones
+   * rather than pretending to be current.
+   */
+  lastMessageAt?: number | null;
 }
 
 export interface RemoteWorkspace {
@@ -84,10 +100,25 @@ export interface SnapshotVersion {
   revision: number;
 }
 
+/** Per-domain catalog revisions advertised on a presence heartbeat. */
+export interface CatalogRevisions {
+  epoch?: string;
+  sessions?: number;
+  workspaces?: number;
+}
+
 export interface Presence {
   catalogEpoch?: string;
   sessionsVersion?: SnapshotVersion;
   workspacesVersion?: SnapshotVersion;
+  /**
+   * Catalog revisions as of this heartbeat. A revision newer than the one this
+   * client applied proves a pushed snapshot was lost (core NATS is
+   * at-most-once), so the client pulls the catalogue itself. The desktop no
+   * longer re-sends an unchanged snapshot on a timer, which is what makes an
+   * idle directory cost only this packet.
+   */
+  catalogVersion?: CatalogRevisions;
   agentAvailable?: boolean;
   online: boolean;
   /** An intentional desktop disconnect; `online: false` is authoritative. */
@@ -102,6 +133,23 @@ export interface Presence {
   sessions?: PresenceSession[];
   workspaces?: RemoteWorkspace[];
 }
+
+/**
+ * A conversation the composer's draft refers to. The draft carries it as a
+ * compact token (`#title`) and the message it sends carries the link
+ * `[title](futureos://session/<id>)` — the id is the payload.
+ */
+export interface SessionReferenceTarget {
+  sessionId: string;
+  title: string;
+}
+
+/**
+ * The references a draft holds, keyed by the token that stands in for each one.
+ * Kept with the draft (see `draftStorage`) because the token alone does not
+ * carry the id: losing the map would turn a reference back into plain text.
+ */
+export type SessionReferenceMap = Record<string, SessionReferenceTarget>;
 
 /** Installed skills discovered by the connected Agent (same catalogue as desktop). */
 export interface RemoteSkill {
@@ -386,6 +434,12 @@ export interface TimelineToolRow {
    *  calls the summary row stands for. */
   count?: number;
   children?: TimelineToolRow[];
+  shellResult?: ShellResult;
+  /** The call's identity and run, on rows projected from persisted entries.
+   *  A lean history page omits a shell call's arguments, so a row with no
+   *  target fetches its command back by this identity when opened. */
+  toolCallId?: string;
+  runId?: string;
 }
 
 /**
@@ -423,6 +477,12 @@ export type TimelineItem =
       role: "user" | "assistant";
       text: string;
       runId?: string;
+      /**
+       * The canonical persisted Agent entry this user bubble came from. Forking
+       * points at this identity (never rendered text), and an optimistic bubble
+       * that has no entry yet simply has none.
+       */
+      sourceEntryId?: string;
       // Live "in-flight" flag for assistant replies, mirroring the desktop app's
       // per-message `status === "streaming"`. While true the footer shows the
       // generating indicator instead of the copy button. Driven by agent_start /
@@ -490,6 +550,15 @@ export interface RemoteCommand {
   preferSnapshot?: boolean;
   /** Client capabilities declared on `secure_ready` (additive, opt-in). */
   features?: string[];
+  /**
+   * What this device is, declared on `secure_ready`.
+   *
+   * Beside `features` rather than inside it: a capability is something a client
+   * asks for, and this is something it *is*. The desktop shows it to the user,
+   * which is the only reason it exists — an older desktop ignores both fields.
+   */
+  deviceName?: string;
+  deviceKind?: string;
   replyId?: string;
   replayUntilIdx?: number;
   bridgeInstanceId?: string;
@@ -498,12 +567,16 @@ export interface RemoteCommand {
   sessionId?: string;
   message?: string;
   entryId?: string;
+  /** fork_session: the persisted user entry whose settled turn to fork at. */
+  sourceEntryId?: string;
   mode?: string;
   runId?: string;
   promptId?: string;
   sinceIdx?: number;
   offset?: number;
   limit?: number;
+  /** get_tool_call_args: the call whose arguments a lean client asks back. */
+  toolCallId?: string;
   /** Exclusive cursor for backward, user-exchange-based history pages. */
   before?: number;
   modelId?: string;
@@ -515,6 +588,16 @@ export interface RemoteCommand {
   provider?: CustomProviderUpsert | BuiltinProviderUpdate;
   skillId?: string;
   version?: string;
+  /** Task management: one whole task write (like `provider`), plus the ids a
+   * run/revision command addresses. */
+  task?: Record<string, unknown>;
+  taskId?: string;
+  revisionId?: string;
+  /** set_task_enabled */
+  enabled?: boolean;
+  /** set_task_dep: the upstream to wait for, and the condition it fires on. */
+  upstreamTaskId?: string;
+  on?: string;
   /** suggest_skill: the draft to recommend for, and the candidates to choose from. */
   query?: string;
   candidates?: { name: string; description: string }[];
@@ -523,6 +606,8 @@ export interface RemoteCommand {
   name?: string;
   transferName?: string;
   workspaceId?: string;
+  /** create_workspace: the desktop-side directory path the phone typed. */
+  path?: string;
   /** Thread-scoped mutating commands (delete_session / set_session_pinned). */
   threadId?: string;
   pinned?: boolean;
@@ -558,6 +643,8 @@ export interface ModelsData {
 export interface WorkspacesData {
   version?: SnapshotVersion;
   workspaces: RemoteWorkspace[];
+  /** create_workspace echoes the created row; the catalogue list omits it. */
+  workspace?: RemoteWorkspace;
 }
 
 export interface HistoryData {
@@ -572,6 +659,8 @@ export interface EntriesData {
   total?: number;
   hasMore?: boolean;
   nextOffset?: number;
+  /** The bridge shed whole oldest exchanges to fit its page byte budget. */
+  trimmed?: boolean;
 }
 
 export interface PromptAck {

@@ -138,8 +138,16 @@ pub(crate) static FORCE_NEW_FAILURE: AtomicBool = AtomicBool::new(false);
 /// one without real console handles — the interactive TUI needs a console — so
 /// a redirected runner (an IDE, CI, an agent harness) cannot construct one and
 /// the test skips instead of failing. POSIX construction is infallible.
+///
+/// Inside the console child spawned by `console_harness`, a console *is*
+/// available and the skip is not an option: the test must run for real, so a
+/// failure to build one panics instead of quietly passing an empty test.
 #[cfg(all(test, windows))]
 pub(crate) fn terminal_or_skip() -> Option<Terminal> {
+    if crate::console_harness::in_console_child() {
+        crate::console_harness::adopt_own_console();
+        return Some(Terminal::new().expect("console child must be able to build a Terminal"));
+    }
     match Terminal::new() {
         Ok(terminal) => Some(terminal),
         Err(error) => {
@@ -151,13 +159,33 @@ pub(crate) fn terminal_or_skip() -> Option<Terminal> {
 
 #[cfg(all(test, not(windows)))]
 pub(crate) fn terminal_or_skip() -> Option<Terminal> {
-    Some(Terminal::new().unwrap())
+    // A console is not guaranteed on unix either: CI is headless, where `Terminal::new()`
+    // can still succeed while the reader's start path fails with "stdin is not a TTY".
+    // Check the tty as well as construction, and return None so callers skip instead of
+    // panicking -- the same contract the Windows helper above honours.
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        eprintln!("[skip] terminal test needs a tty on stdin");
+        return None;
+    }
+    match Terminal::new() {
+        Ok(terminal) => Some(terminal),
+        Err(error) => {
+            eprintln!("[skip] terminal test needs a console: {error}");
+            None
+        }
+    }
 }
 
 /// Terminal platform backend for tests. See [`terminal_or_skip`] for why this
 /// can be unavailable on Windows.
 #[cfg(all(test, windows))]
 pub(crate) fn backend_or_skip() -> Option<platform::Backend> {
+    if crate::console_harness::in_console_child() {
+        crate::console_harness::adopt_own_console();
+        return Some(
+            platform::Backend::new().expect("console child must be able to build a Backend"),
+        );
+    }
     match platform::Backend::new() {
         Ok(backend) => Some(backend),
         Err(error) => {
@@ -169,7 +197,19 @@ pub(crate) fn backend_or_skip() -> Option<platform::Backend> {
 
 #[cfg(all(test, not(windows)))]
 pub(crate) fn backend_or_skip() -> Option<platform::Backend> {
-    Some(platform::Backend::new().unwrap())
+    // Same reasoning as `terminal_or_skip` above: headless CI has no tty, so skip rather
+    // than panic in a helper whose entire purpose is to make a missing console tolerable.
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        eprintln!("[skip] terminal test needs a tty on stdin");
+        return None;
+    }
+    match platform::Backend::new() {
+        Ok(backend) => Some(backend),
+        Err(error) => {
+            eprintln!("[skip] terminal test needs a console: {error}");
+            None
+        }
+    }
 }
 
 impl Terminal {
@@ -1051,6 +1091,88 @@ mod tests {
         assert_eq!(t.rows(), 33);
         restore_env("COLUMNS", old_c);
         restore_env("LINES", old_l);
+    }
+
+    /// `Terminal::default()` is the `impl Default` the app's own construction
+    /// path uses (`Self::new().expect(...)`); it is only reachable where a
+    /// console exists, so this runs in the harness child and skips elsewhere
+    /// (`terminal_or_skip` is what makes the difference explicit).
+    #[test]
+    fn default_constructs_a_terminal_from_a_real_console() {
+        let Some(probe) = terminal_or_skip() else {
+            return;
+        };
+        let columns = probe.columns();
+        drop(probe);
+        let terminal = Terminal::default();
+        assert_eq!(terminal.columns(), columns);
+        assert!(terminal.rows() > 0);
+        assert!(!terminal.kitty_protocol_active());
+    }
+
+    /// `Terminal::new` carries a fault-injection seam for the POSIX-infallible
+    /// `Backend::new`. The unix PTY fixture uses it to prove `run_interactive`
+    /// reports a failed terminal init; this asserts the seam itself, on every
+    /// platform, including that it is **one-shot** — a seam that stayed set would
+    /// poison every later construction in the process.
+    #[test]
+    fn the_injected_terminal_failure_is_reported_once() {
+        let _guard = terminal_test_lock();
+        FORCE_NEW_FAILURE.store(true, Ordering::SeqCst);
+        let error = match Terminal::new() {
+            Ok(_) => panic!("the seam must make terminal construction fail"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), "injected test failure");
+
+        // Drained: the seam is spent, so the following call reaches the real
+        // backend. Whatever that returns is fine here — the point is that it is
+        // no longer the injected error.
+        match Terminal::new() {
+            Ok(terminal) => assert!(terminal.columns() > 0),
+            Err(error) => assert_ne!(
+                error.to_string(),
+                "injected test failure",
+                "the seam must not fire twice"
+            ),
+        }
+        FORCE_NEW_FAILURE.swap(false, Ordering::SeqCst);
+    }
+
+    /// The reader loop's Windows-only spurious-wake case: `wait` can report
+    /// `Input` with no bytes pending (a window event with no size change), and a
+    /// zero-byte read must then mean "nothing yet" — *not* EOF. The predicate
+    /// that decides it is `eof_is_terminal`, and the loop's own use of it is
+    /// `if n == 0 && !backend.eof_is_terminal() { continue; }`, so the predicate
+    /// and the loop must agree. A `read_stdin` call is deliberately **not** made
+    /// here: on a console with nothing pending it blocks until input arrives,
+    /// which would hang the suite.
+    #[test]
+    fn a_zero_byte_console_read_is_not_eof() {
+        let Some(backend) = backend_or_skip() else {
+            return;
+        };
+        assert!(
+            !backend.eof_is_terminal(),
+            "a Windows console read of 0 bytes means 'no key data', so the reader \
+             loop must continue rather than break"
+        );
+        // Whatever `wait` reports, it must be one of the outcomes the loop
+        // handles — and a size change stays edge-triggered.
+        let mut previous_was_resize = false;
+        for _ in 0..3 {
+            match backend.wait(0) {
+                ReadWait::Resize => {
+                    assert!(
+                        !previous_was_resize,
+                        "a size change must not be reported twice in a row"
+                    );
+                    previous_was_resize = true;
+                }
+                ReadWait::Timeout | ReadWait::Input => previous_was_resize = false,
+                other => panic!("unexpected wait outcome on Windows: {other:?}"),
+            }
+        }
     }
 
     #[test]

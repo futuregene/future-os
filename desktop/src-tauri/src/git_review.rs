@@ -940,19 +940,146 @@ mod tests {
 
     #[test]
     fn review_cache_clears_when_full() {
-        let _ = git_repo("cache-full");
-        let mut cache = REVIEW_CACHE
+        let _home = HomeGuard::new("git-review-cache-full");
+        crate::store::initialize_app_store().unwrap();
+        let dir = git_repo("cache-full");
+        let ws = crate::store::create_workspace(crate::store::CreateWorkspaceInput {
+            name: Some("cache-full".to_string()),
+            path: dir.display().to_string(),
+            description: None,
+            create_directory: Some(false),
+        })
+        .unwrap();
+        {
+            let mut cache = REVIEW_CACHE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            cache.clear();
+            for i in 0..REVIEW_CACHE_MAX {
+                cache.insert(
+                    (format!("ws{i}"), String::new(), String::new()),
+                    (format!("fp{i}"), dummy_review()),
+                );
+            }
+        }
+
+        // With the cache already at capacity, asking for a real workspace's
+        // review must drop the stale entries instead of growing past the bound.
+        let review = get_git_review(ws.id, None, None).unwrap();
+        assert!(review.is_git_workspace);
+        let cache = REVIEW_CACHE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for i in 0..REVIEW_CACHE_MAX {
-            cache.insert(
-                (format!("ws{i}"), String::new(), String::new()),
-                (format!("fp{i}"), dummy_review()),
+        let cached = cache.len();
+        assert!(
+            cached <= REVIEW_CACHE_MAX,
+            "the cache must never exceed its bound, was {cached}"
+        );
+    }
+
+    /// Every omission arm of the tracked-diff projection in one pass: a
+    /// credential file, a binary blob and a file whose patch exceeds the
+    /// per-file diff budget.
+    #[test]
+    fn tracked_diff_files_omits_sensitive_binary_and_oversized_blobs() {
+        let dir = git_repo("omissions");
+        let huge = "x\n".repeat(10_100);
+        std::fs::write(dir.join(".env"), "SECRET=1\n").unwrap();
+        std::fs::write(dir.join("blob.bin"), [0x00u8, 0x9fu8, 0x92u8, 0x00]).unwrap();
+        std::fs::write(dir.join("huge.txt"), &huge).unwrap();
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-qm", "seed"]);
+        // Modify all three so the work-tree diff against HEAD reports them.
+        std::fs::write(dir.join(".env"), "SECRET=2\n").unwrap();
+        std::fs::write(dir.join("blob.bin"), [0x00u8, 0x9fu8, 0x93u8, 0x01]).unwrap();
+        std::fs::write(dir.join("huge.txt"), huge.replace('x', "y")).unwrap();
+
+        let by_path = git_status_by_path(&dir);
+        let mut files = tracked_diff_files(&dir, &by_path, "HEAD");
+        let find = |files: &[GitReviewFile], path: &str| {
+            files
+                .iter()
+                .find(|file| file.path == path)
+                .unwrap_or_else(|| panic!("{path} missing from {files:?}"))
+                .clone()
+        };
+
+        let sensitive = find(&files, ".env");
+        assert_eq!(sensitive.omission_reason.as_deref(), Some("sensitive"));
+        assert!(
+            sensitive.diff.is_empty(),
+            "a credential file carries no diff"
+        );
+        assert!(!sensitive.diff_truncated);
+
+        let binary = find(&files, "blob.bin");
+        assert_eq!(binary.omission_reason.as_deref(), Some("binary"));
+        assert!(binary.binary);
+        assert!(binary.diff.is_empty());
+
+        let oversized = find(&files, "huge.txt");
+        assert_eq!(oversized.omission_reason.as_deref(), Some("too_large"));
+        assert!(oversized.diff.is_empty());
+        assert!(
+            oversized.diff_truncated,
+            "an oversized diff must be flagged as truncated for the UI"
+        );
+
+        // The total-budget pass must skip already-omitted files rather than
+        // counting (and re-labeling) them.
+        apply_total_diff_budget(&mut files);
+        for path in [".env", "blob.bin", "huge.txt"] {
+            assert_ne!(
+                find(&files, path).omission_reason.as_deref(),
+                Some("total_limit"),
+                "{path} was already omitted and must keep its own reason"
             );
         }
-        drop(cache);
-        // A subsequent get_git_review must clear the over-full cache rather than grow it.
-        let _ = get_git_review("nonexistent".to_string(), None, None);
+    }
+
+    #[test]
+    fn append_untracked_files_marks_an_oversized_file_truncated() {
+        let dir = git_repo("untracked-omission");
+        let huge = "x\n".repeat(10_100);
+        std::fs::write(dir.join("huge-untracked.txt"), &huge).unwrap();
+        let by_path = git_status_by_path(&dir);
+        let mut files: Vec<GitReviewFile> = Vec::new();
+        append_untracked_files(&dir, &mut files, &by_path);
+
+        let entry = files
+            .iter()
+            .find(|file| file.path == "huge-untracked.txt")
+            .expect("the untracked file must be listed");
+        assert_eq!(entry.omission_reason.as_deref(), Some("too_large"));
+        assert!(entry.diff.is_empty());
+        assert!(entry.diff_truncated);
+        assert_eq!(entry.status, "untracked");
+    }
+
+    /// A repository whose only branch is neither `main`, `master` nor
+    /// `origin/HEAD` must still produce a review — the diff base falls back to
+    /// `HEAD` instead of failing the whole review.
+    #[test]
+    fn branch_diff_base_falls_back_to_head_without_a_primary_branch() {
+        let _home = HomeGuard::new("git-review-branch-fallback");
+        crate::store::initialize_app_store().unwrap();
+        let dir = git_repo("branch-fallback");
+        run_git(&dir, &["branch", "-m", "main", "topic"]);
+        let ws = crate::store::create_workspace(crate::store::CreateWorkspaceInput {
+            name: Some("branch-fallback".to_string()),
+            path: dir.display().to_string(),
+            description: None,
+            create_directory: Some(false),
+        })
+        .unwrap();
+
+        let review = get_git_review(ws.id, Some("branch".to_string()), None).unwrap();
+        assert!(review.is_git_workspace);
+        assert_eq!(review.branch.as_deref(), Some("topic"));
+        // `topic` exists but is not a primary branch, so the base is HEAD and
+        // the label names it rather than inventing a branch that does not exist.
+        assert_eq!(review.diff_base.as_deref(), Some("HEAD"));
+        assert_eq!(review.diff_base_label.as_deref(), Some("HEAD"));
     }
 
     fn dummy_review() -> GitReview {

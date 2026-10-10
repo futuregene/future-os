@@ -1,6 +1,6 @@
 .PHONY: help version \
 	build build-cli build-desktop build-desktop-headless build-mobile-android build-mobile-ios desktop-sidecars \
-	test test-agent test-channels test-cli test-tui test-cli-diff test-tui-diff test-tui-tmux \
+	test test-agent test-channels test-cli test-app-settings test-tui test-cli-diff test-tui-diff test-tui-tmux \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
 	check-docs test-docs-check \
@@ -197,7 +197,7 @@ build-mobile-ios:
 # The unit tests are the CI regression gate. The *-diff / *-tmux targets are
 # manual TS→Rust migration-acceptance gates (pre-release only).
 
-test: test-agent test-channels test-cli test-tui test-desktop test-desktop-rust test-mobile
+test: test-agent test-channels test-cli test-app-settings test-tui test-desktop test-desktop-rust test-mobile
 
 test-agent:
 	cargo test -p future-agent
@@ -207,6 +207,9 @@ test-channels:
 
 test-cli:
 	cargo test -p future-cli
+
+test-app-settings:
+	cargo test -p future-app-settings
 
 test-tui:
 	cargo test -p future-tui
@@ -317,21 +320,21 @@ ifeq ($(OS),windows)
 	@if not exist profile-results mkdir profile-results
 	@where blondie >NUL 2>NUL || (echo. & echo  blondie is required for CPU profiling on Windows. & echo  Install: cargo install blondie --features inferno & echo  CPU profiling also requires administrator privileges. & exit /b 1)
 	@echo Starting profile run (port 50052, 90s)...
-	set "PROFILE_DURATION=90" && python scripts/profile-isolated.py powershell -ExecutionPolicy Bypass -File scripts/agent-profile-bench.ps1
+	set "PROFILE_DURATION=90" && python scripts/measure/profile-isolated.py powershell -ExecutionPolicy Bypass -File scripts/measure/agent-profile-bench.ps1
 else
 	@mkdir -p profile-results
 	@echo "Starting profile run (port 50052, 90s)..."
-	PROFILE_DURATION=90 python3 scripts/profile-isolated.py bash scripts/agent-profile-bench.sh
+	PROFILE_DURATION=90 python3 scripts/measure/profile-isolated.py bash scripts/measure/agent-profile-bench.sh
 	@echo "Flamegraph: $$(ls -t profile-results/agent-profile-*.svg | head -1)"
 endif
 
 # Quick CPU profile: run agent N seconds. Usage: make profile-quick PROFILE_SECS=30
 profile-quick: profile-agent-build
 ifeq ($(OS),windows)
-	python scripts/profile-isolated.py powershell -ExecutionPolicy Bypass -File scripts/profile-quick.ps1 -Duration $(or $(PROFILE_SECS),30)
+	python scripts/measure/profile-isolated.py powershell -ExecutionPolicy Bypass -File scripts/measure/profile-quick.ps1 -Duration $(or $(PROFILE_SECS),30)
 else
 	@mkdir -p profile-results
-	python3 scripts/profile-isolated.py ./target/release/future-agent \
+	python3 scripts/measure/profile-isolated.py ./target/release/future-agent \
 		--grpc-addr 127.0.0.1:50052 \
 		--profile profile-results/quick-profile.svg \
 		--profile-seconds $(or $(PROFILE_SECS),30) \
@@ -351,7 +354,7 @@ else
 		--config 'profile.release.debug="line-tables-only"' --config 'profile.release.strip="none"'
 	@mkdir -p profile-results
 endif
-	$(if $(filter windows,$(OS)),python,python3) scripts/profile-isolated.py ./target/release/future-agent$(EXE_SUFFIX) \
+	$(if $(filter windows,$(OS)),python,python3) scripts/measure/profile-isolated.py ./target/release/future-agent$(EXE_SUFFIX) \
 		--grpc-addr 127.0.0.1:50052 \
 		--profile-heap profile-results/heap-profile.json \
 		--profile-seconds $(or $(PROFILE_SECS),30) \
@@ -361,20 +364,20 @@ endif
 # ─── Generate ───────────────────────────────────────────────────────────────
 
 generate-models:
-	python3 scripts/generate_models.py
+	python3 scripts/docs/generate_models.py
 
 # Documentation gate. Not wired into `make lint` or CI on purpose: nothing runs
 # it automatically yet, so it is a deliberate, separate decision to add it to a
 # pipeline. Run it before touching docs/.
 check-docs:
-	python3 scripts/check-docs.py
-	python3 scripts/check-docs.py --strict-pending
-	python3 scripts/check-channel-matrix.py
+	python3 scripts/docs/check-docs.py
+	python3 scripts/docs/check-docs.py --strict-pending
+	python3 scripts/docs/check-channel-matrix.py
 
 # Regression tests for the documentation gate itself (includes negative
 # controls, so a checker that stopped detecting violations would fail here).
 test-docs-check:
-	PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-check-docs.py
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test-check-docs.py
 
 # Wire codegen owners: packages/rpc (future.proto) + channels (feishu_ws pbbp2).
 generate-proto:

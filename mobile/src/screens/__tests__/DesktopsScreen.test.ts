@@ -180,6 +180,21 @@ test("saving an unchanged name does not rewrite storage", async () => {
   expect(mockRemote.renameDesktop).not.toHaveBeenCalled();
 });
 
+test("a startup picker lets the system own the back gesture", async () => {
+  act(() => tree.unmount());
+  const subscribe = jest.spyOn(BackHandler, "addEventListener").mockReturnValue({ remove: jest.fn() });
+  try {
+    await act(async () => {
+      tree = create(createElement(DesktopsScreen, { onAdd }));
+    });
+    const handler = subscribe.mock.calls.at(-1)![1];
+    // Nothing to go back to: reporting "handled" would swallow the OS back
+    // gesture and leave the user stuck on the picker.
+    expect(handler({ type: "hardwareBackPress", timeStamp: 1 })).toBe(false);
+    expect(onBack).not.toHaveBeenCalled();
+  } finally { subscribe.mockRestore(); }
+});
+
 test("reports a failed rename", async () => {
   mockRemote.renameDesktop.mockRejectedValueOnce(new Error("storage full"));
   act(() => pressables("desktops.rename")[1]!.props.onPress());
@@ -195,4 +210,33 @@ test("confirms removal of only the chosen desktop", async () => {
   expect(mockRemote.removeDesktop).not.toHaveBeenCalled();
   await act(async () => { modal.props.onDismiss(); });
   expect(mockRemote.removeDesktop).toHaveBeenCalledWith("desktop-2");
+});
+
+test("a refused removal is reported instead of silently leaving the desktop paired", async () => {
+  mockRemote.removeDesktop.mockRejectedValueOnce(new Error("bridge unreachable"));
+  act(() => pressables("sessions.unpair")[1]!.props.onPress());
+  const modal = tree.root.findAllByType(Modal).find(node => node.props.visible)!;
+  act(() => modal.findAllByType(Button).find(node => node.props.variant === "danger")!.props.onPress());
+  await act(async () => { modal.props.onDismiss(); });
+  expect(mockRemote.removeDesktop).toHaveBeenCalledWith("desktop-2");
+  expect(tree.root.findAll(node => node.props.accessibilityRole === "alert").length).toBeGreaterThan(0);
+  expect(texts()).toContain("desktops.actionFailed");
+});
+
+test("the keyboard's done key saves the rename, and cancelling abandons it", async () => {
+  act(() => pressables("desktops.rename")[1]!.props.onPress());
+  const input = () => tree.root.findByType(TextInput);
+  act(() => input().props.onChangeText("From keyboard"));
+  await act(async () => { input().props.onSubmitEditing(); });
+  expect(mockRemote.renameDesktop).toHaveBeenCalledWith("desktop-2", "From keyboard");
+  expect(tree.root.findAllByType(Modal).some(node => node.props.visible)).toBe(false);
+});
+
+test("cancelling a rename abandons the typed name", async () => {
+  act(() => pressables("desktops.rename")[1]!.props.onPress());
+  act(() => tree.root.findByType(TextInput).props.onChangeText("Never saved"));
+  act(() => button("chat.cancel").props.onPress());
+  expect(tree.root.findAllByType(Modal).some(node => node.props.visible)).toBe(false);
+  // The abandoned text never reaches storage.
+  expect(mockRemote.renameDesktop).not.toHaveBeenCalled();
 });

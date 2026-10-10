@@ -263,6 +263,47 @@ impl Session {
         self.info.lock().unwrap().status == Status::Running
     }
 
+    /// Whether the OS has reaped the child, independently of whether the
+    /// session has *noticed*. See [`Session::wait_for_child_exit`].
+    #[cfg(test)]
+    pub(crate) fn child_is_reaped(&self) -> bool {
+        self.pty.lock().unwrap().try_wait().is_some()
+    }
+
+    /// Wait (bounded) for the child process itself to be gone, answering its
+    /// cursor-position query while waiting.
+    ///
+    /// A child on this host emits `ESC [ 6 n` as it starts and will not run its
+    /// command line until a client replies, so "the child exited" cannot be
+    /// waited for without answering it — `terminal::pty`'s own tests do the
+    /// same (`test_support::DSR_QUERY`). `pub(crate)` for the manager's tests,
+    /// which must sequence an exit through `on_eof` because this host's ConPTY
+    /// never delivers the master EOF the reader thread waits for. Returns
+    /// whether the child was reaped before `timeout`.
+    ///
+    /// Test-only: it answers the DSR query with `terminal::test_support`'s
+    /// fixture constants, and its two callers are test modules
+    /// (`terminal::manager`, `terminal::server`).
+    #[cfg(test)]
+    pub(crate) fn wait_for_child_exit(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut answered = false;
+        while Instant::now() < deadline {
+            if self.child_is_reaped() {
+                return true;
+            }
+            if !answered {
+                let seen = self.inner.lock().unwrap().buffer.clone();
+                if crate::terminal::test_support::asks_for_the_cursor(&seen) {
+                    answered = true;
+                    let _ = self.write(crate::terminal::test_support::DSR_REPLY);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        self.child_is_reaped()
+    }
+
     /// Retitle and/or resize. Resizing a dead session is not an error: the
     /// viewer may be re-fitting a stale tab.
     pub fn update(&self, title: Option<String>, size: Option<(u16, u16)>) -> Info {
@@ -398,8 +439,11 @@ impl Session {
     }
 
     /// Append output and fan it out. Called only from the session's reader
-    /// thread, so the byte order is exactly the PTY's.
-    fn on_data(&self, bytes: &[u8]) {
+    /// thread, so the byte order is exactly the PTY's. `pub(crate)` because the
+    /// transport tests drive it directly: a viewer mid-stream must be served the
+    /// bytes the reader would have handed it, and the pump's delivery arms are
+    /// only reachable by producing output on demand.
+    pub(crate) fn on_data(&self, bytes: &[u8]) {
         let mut inner = self.inner.lock().unwrap();
         inner.cursor += bytes.len() as u64;
         inner.buffer.extend_from_slice(bytes);
@@ -438,7 +482,13 @@ impl Session {
     }
 
     /// The PTY reached EOF: record the exit and tell every viewer exactly once.
-    fn on_eof(&self) {
+    ///
+    /// Two callers: the reader thread (on the real EOF of the master) and
+    /// `close()` (after it has killed the tree). `pub(crate)` for the manager's
+    /// tests, which need a session whose exit is recorded without the PTY EOF
+    /// this host never delivers — the state machine below is the same one both
+    /// production callers use.
+    pub(crate) fn on_eof(&self) {
         let exit_code = {
             let deadline = Instant::now() + EXIT_WAIT;
             let mut code = None;
@@ -503,19 +553,79 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal::protocol::REPLAY_CHUNK;
+    use crate::terminal::test_support;
     use std::path::Path;
 
-    fn spawn(cursor: u16) -> Arc<Session> {
+    fn spawn_with(command: (PathBuf, Vec<String>)) -> Arc<Session> {
+        let (program, args) = command;
         Session::spawn(
             "thread-1".to_string(),
             "Terminal 1".to_string(),
-            PathBuf::from("/bin/sh"),
-            vec!["-c".to_string(), "printf 'abc'; sleep 30".to_string()],
-            std::env::temp_dir(),
-            cursor,
+            program,
+            args,
+            test_support::working_dir(),
+            80,
             24,
         )
-        .expect("spawn")
+        .expect("spawn child")
+    }
+
+    /// A live, silent child. The tests below drive output with `on_data` — the
+    /// buffer/cursor arithmetic is what they pin down — so the buffer holds
+    /// exactly the bytes asserted on and the same assertions hold on Windows
+    /// and unix. The reader thread's own delivery is covered separately by
+    /// `a_real_childs_output_flows_through_the_reader_thread` and
+    /// `a_real_child_exit_code_is_recorded_and_delivered`.
+    fn spawn_idle() -> Arc<Session> {
+        spawn_with(test_support::idle_command())
+    }
+
+    /// A child that exits with `code` as soon as it starts.
+    fn spawn_exit(code: i32) -> Arc<Session> {
+        spawn_with(test_support::exit_command(code))
+    }
+
+    /// Wait for `predicate`, answering the child's cursor-position query while it
+    /// blocks on it.
+    ///
+    /// A child on this host emits `ESC [ 6 n` as it starts and then will not run
+    /// its command line until a client replies (the measurement is recorded on
+    /// `test_support::DSR_QUERY`). A test that never replies observes the query
+    /// and nothing else, which is why the fixture answers it here.
+    fn wait_until(session: &Arc<Session>, what: &str, predicate: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut answered = false;
+        while Instant::now() < deadline {
+            if !answered {
+                let seen = session.inner.lock().unwrap().buffer.clone();
+                if test_support::asks_for_the_cursor(&seen) {
+                    answered = true;
+                    let _ = session.write(test_support::DSR_REPLY);
+                }
+            }
+            if predicate() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    /// A session whose child is already gone.
+    ///
+    /// The byte-arithmetic tests below need the buffer to be theirs alone: a
+    /// live child appends whatever its console decides to emit (a cursor query,
+    /// a redraw), which would turn their exact byte counts into a race. Killing
+    /// the child first removes that input without weakening anything they
+    /// assert — `on_data` is the same entry point the reader thread uses.
+    fn settled() -> Arc<Session> {
+        let session = spawn_idle();
+        session.close(Duration::from_millis(200));
+        wait_until(&session, "the session to be reported exited", || {
+            !session.is_running()
+        });
+        session
     }
 
     fn drain_until(
@@ -557,70 +667,57 @@ mod tests {
         (bytes, meta)
     }
 
-    #[cfg(unix)]
     #[test]
     fn attach_replays_retained_output_and_reports_the_cursor() {
-        let session = spawn(80);
-        // Wait until the shell produced its output.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while session.inner.lock().unwrap().cursor < 3 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let session = settled();
+        let base = session.inner.lock().unwrap().cursor;
+        session.on_data(b"abc");
         let mut attachment = session.attach(None);
-        assert_eq!(attachment.start, 0);
-        assert!(
-            attachment.cursor >= 3,
-            "cursor tracks every byte: {}",
-            attachment.cursor
+        assert_eq!(
+            attachment.start, 0,
+            "nothing was trimmed, so replay starts at 0"
         );
-        let replay: Vec<u8> = attachment.replay.concat();
-        assert!(replay.starts_with(b"abc"), "replay: {replay:?}");
+        assert_eq!(attachment.cursor, base + 3, "cursor tracks every byte");
+        assert!(
+            attachment.replay.concat().ends_with(b"abc"),
+            "the replay must end with the bytes just produced"
+        );
         attachment.detach();
-        session.close(Duration::from_millis(200));
     }
 
-    #[cfg(unix)]
     #[test]
     fn resume_after_a_cursor_replays_only_the_new_bytes() {
-        let session = spawn(80);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while session.inner.lock().unwrap().cursor < 3 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let session = settled();
+        let end = session.inner.lock().unwrap().cursor;
+        session.on_data(b"abc");
         // A viewer that already applied the first byte asks for the rest.
-        let mut attachment = session.attach(Some(1));
+        let mut attachment = session.attach(Some((end + 1) as i64));
         assert_eq!(
-            attachment.start, 1,
+            attachment.start,
+            end + 1,
             "replay starts where the client stopped"
         );
-        let replay: Vec<u8> = attachment.replay.concat();
-        assert_eq!(replay, b"bc", "replay must resume, not re-render");
+        assert_eq!(
+            attachment.replay.concat(),
+            b"bc",
+            "replay must resume, not re-render"
+        );
         attachment.detach();
-        session.close(Duration::from_millis(200));
     }
 
-    #[cfg(unix)]
     #[test]
     fn tail_cursor_skips_history() {
-        let session = spawn(80);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while session.inner.lock().unwrap().cursor < 3 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let session = settled();
+        session.on_data(b"abc");
         let attachment = session.attach(Some(-1));
         assert!(attachment.replay.is_empty(), "tail must not replay history");
         assert_eq!(attachment.start, attachment.cursor);
-        session.close(Duration::from_millis(200));
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_cursor_older_than_the_buffer_reports_a_truncated_replay() {
-        let session = spawn(80);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while session.inner.lock().unwrap().cursor < 3 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let session = settled();
+        session.on_data(b"abc");
         {
             let mut inner = session.inner.lock().unwrap();
             // Simulate trimming: pretend only the last byte is retained.
@@ -634,105 +731,370 @@ mod tests {
             "a truncated replay must not claim to start at 0"
         );
         assert_eq!(attachment.replay.concat(), b"c");
-        session.close(Duration::from_millis(200));
     }
 
-    #[cfg(unix)]
+    /// A cursor past every byte already produced replays nothing rather than
+    /// panicking on the out-of-range slice; the start it reports is the cursor
+    /// the client asked for, so the client can see it is ahead of the stream.
+    #[test]
+    fn a_cursor_beyond_the_end_replays_nothing() {
+        let session = settled();
+        session.on_data(b"abc");
+        let end = session.inner.lock().unwrap().cursor;
+        let attachment = session.attach(Some((end + 9_999) as i64));
+        assert!(attachment.replay.is_empty());
+        assert_eq!(
+            attachment.cursor, end,
+            "the stream ends where the session says"
+        );
+        assert_eq!(attachment.start, end + 9_999);
+    }
+
+    /// Replay frames are bounded, and concatenating them loses nothing: the
+    /// invariant `chunks()` promises to the transport.
+    #[test]
+    fn replay_is_split_into_bounded_frames() {
+        let session = settled();
+        let payload = vec![b'z'; REPLAY_CHUNK * 2 + 1];
+        session.on_data(&payload);
+        let attachment = session.attach(None);
+        let frames = &attachment.replay;
+        assert!(
+            frames.len() >= 3,
+            "a 2-chunk payload needs at least 3 frames"
+        );
+        for frame in &frames[..frames.len() - 1] {
+            assert_eq!(
+                frame.len(),
+                REPLAY_CHUNK,
+                "every frame but the last is full"
+            );
+        }
+        assert!(frames.last().expect("a frame").len() <= REPLAY_CHUNK);
+        assert!(
+            attachment.replay.concat().ends_with(&payload),
+            "the frames must carry the bytes in order, with nothing lost"
+        );
+    }
+
+    /// The retained tail is bounded: bytes pushed past `BUFFER_LIMIT` are
+    /// trimmed from the front and the cursor keeps counting absolutely.
+    #[test]
+    fn the_retained_buffer_is_trimmed_at_the_limit() {
+        let session = settled();
+        let base = session.inner.lock().unwrap().cursor;
+        let chunk = vec![b'a'; 64 * 1024];
+        let mut written = 0_usize;
+        while written <= BUFFER_LIMIT + chunk.len() {
+            session.on_data(&chunk);
+            written += chunk.len();
+        }
+        let inner = session.inner.lock().unwrap();
+        assert_eq!(inner.cursor, base + written as u64);
+        assert!(
+            inner.buffer.len() <= BUFFER_LIMIT,
+            "retention must stay bounded, got {}",
+            inner.buffer.len()
+        );
+        assert_eq!(
+            inner.buffer_cursor + inner.buffer.len() as u64,
+            inner.cursor,
+            "buffer_cursor must track what was dropped"
+        );
+    }
+
     #[test]
     fn live_output_reaches_an_activated_viewer() {
-        let session = Session::spawn(
-            "thread-1".to_string(),
-            "Terminal 1".to_string(),
-            PathBuf::from("/bin/sh"),
-            vec![
-                "-c".to_string(),
-                "printf 'first'; sleep 1; printf 'second'; sleep 30".to_string(),
-            ],
-            std::env::temp_dir(),
-            80,
-            24,
-        )
-        .expect("spawn");
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while session.inner.lock().unwrap().cursor < 5 && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        // A *live* session: `attach` on an already-exited one rightfully drops
+        // the subscriber after sending its end event, so nothing could be
+        // delivered afterwards — that is the `attaching_to_an_exited_session…`
+        // case, not this one.
+        let session = spawn_idle();
         let mut attachment = session.attach(Some(-1));
         let mut events = attachment.activate().expect("activated");
-        let (bytes, _) = drain_until(&mut events, "second", Duration::from_secs(5));
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        assert!(text.contains("second"), "live output: {text:?}");
+        session.on_data(b"first");
+        let (bytes, _) = drain_until(&mut events, "first", Duration::from_secs(5));
+        assert_eq!(String::from_utf8_lossy(&bytes), "first");
         attachment.detach();
         session.close(Duration::from_millis(200));
     }
 
-    #[cfg(unix)]
+    /// Output produced *before* activation is queued and delivered by
+    /// `activate`, so a viewer that connects mid-stream loses nothing.
     #[test]
-    fn exit_is_delivered_after_the_last_output_byte() {
-        let session = Session::spawn(
-            "thread-1".to_string(),
-            "Terminal 1".to_string(),
-            PathBuf::from("/bin/sh"),
-            vec!["-c".to_string(), "printf 'bye'; exit 3".to_string()],
-            std::env::temp_dir(),
-            80,
-            24,
-        )
-        .expect("spawn");
+    fn output_produced_before_activation_is_queued() {
+        let session = spawn_idle();
         let mut attachment = session.attach(None);
+        session.on_data(b"early");
+        assert!(
+            attachment.receiver().try_recv().is_err(),
+            "an inactive viewer must not receive live events yet"
+        );
         let mut events = attachment.activate().expect("activated");
-        let (bytes, meta) = drain_until(&mut events, "", Duration::from_secs(10));
-        let text = String::from_utf8_lossy(&bytes).into_owned();
-        assert!(text.contains("bye"), "output before exit: {text:?}");
-        let meta = meta.expect("an exit event must be delivered");
-        assert_eq!(meta.exit_code, Some(3));
-        assert!(!session.is_running());
-        assert_eq!(session.info().exit_code, Some(3));
+        let (bytes, _) = drain_until(&mut events, "early", Duration::from_secs(5));
+        assert_eq!(String::from_utf8_lossy(&bytes), "early");
+        attachment.detach();
+        session.close(Duration::from_millis(200));
     }
 
-    #[cfg(unix)]
+    #[test]
+    fn exit_is_delivered_after_the_last_output_byte() {
+        let session = spawn_idle();
+        let mut attachment = session.attach(Some(-1));
+        let mut events = attachment.activate().expect("activated");
+        session.on_data(b"bye");
+        // Closing kills the child and ends the session; the data pushed above
+        // must still arrive first, in order. The child may also have emitted a
+        // cursor query, so the assertion is on the visible text.
+        session.close(Duration::from_millis(500));
+        let (bytes, meta) = drain_until(&mut events, "", Duration::from_secs(15));
+        assert!(
+            test_support::visible_text(&bytes).ends_with("bye"),
+            "the injected bytes must arrive last: {:?}",
+            String::from_utf8_lossy(&bytes)
+        );
+        assert!(meta.is_some(), "an exit event must follow the last byte");
+        assert!(!session.is_running());
+    }
+
+    /// A viewer that attaches after the exit gets the exit event immediately
+    /// (rather than a socket that never speaks again), and the reader thread
+    /// really does drain a live PTY.
     #[test]
     fn attaching_to_an_exited_session_replays_its_last_screen() {
-        let session = Session::spawn(
-            "thread-1".to_string(),
-            "Terminal 1".to_string(),
-            PathBuf::from("/bin/sh"),
-            vec!["-c".to_string(), "printf 'gone'; exit 0".to_string()],
-            std::env::temp_dir(),
-            80,
-            24,
-        )
-        .expect("spawn");
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while session.is_running() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(!session.is_running(), "session must have exited");
+        let session = spawn_idle();
+        session.on_data(b"gone");
+        session.close(Duration::from_millis(200));
+        wait_until(&session, "the session to be reported exited", || {
+            !session.is_running()
+        });
         let mut attachment = session.attach(None);
-        assert_eq!(attachment.exit_code, Some(0));
-        let replay = String::from_utf8_lossy(&attachment.replay.concat()).into_owned();
-        assert!(replay.contains("gone"), "final screen: {replay:?}");
+        assert_eq!(
+            attachment.exit_code,
+            session.info().exit_code,
+            "the attachment must report the session's real exit state"
+        );
+        let replay = test_support::visible_text(&attachment.replay.concat());
+        assert!(replay.ends_with("gone"), "the final screen is replayed");
         let receiver = attachment.receiver();
         let event = receiver.try_recv().expect("immediate end event");
         assert!(matches!(event, SessionEvent::Exited(_)));
     }
 
-    #[cfg(unix)]
+    /// The real exit code of a real child must be recorded and pushed to every
+    /// attached viewer.
+    ///
+    /// The child's exit is observed the way `close()` observes it, by driving
+    /// `on_eof` once the OS has actually reaped the process: this host's ConPTY
+    /// never closes the master, so the reader thread's `Ok(0)` — the *other*
+    /// caller of `on_eof` — never arrives (see the run status). Everything
+    /// asserted here is still the production path: `on_eof` polls
+    /// `PtySession::try_wait` itself and is what records the code and fans the
+    /// `Exited` event out.
+    #[test]
+    fn a_real_child_exit_code_is_recorded_and_delivered() {
+        let session = spawn_exit(3);
+        let mut attachment = session.attach(None);
+        // Activate *before* the exit so the fan-out takes the live-subscriber
+        // path (`subscriber.end` is only used for a viewer that never
+        // activated), which is the delivery this test is named for.
+        let mut events = attachment.activate().expect("activated");
+        wait_until(&session, "the child to be reaped", || {
+            session.pty.lock().unwrap().try_wait().is_some()
+        });
+        session.on_eof();
+        let info = session.info();
+        assert_eq!(info.exit_code, Some(3), "the real exit code must survive");
+        assert!(info.pid.is_some(), "a spawned child reports its pid");
+        assert_eq!(info.status, Status::Exited);
+
+        // ... and the code reaches the viewer, not just the session's state.
+        let (_, meta) = drain_until(&mut events, "", Duration::from_secs(5));
+        let meta = meta.expect("an exit event must be delivered");
+        assert_eq!(
+            meta.exit_code,
+            Some(3),
+            "the viewer must learn the real code"
+        );
+    }
+
+    /// `on_eof` is the single place that turns "the child is gone" into durable
+    /// state, and the reader thread is only one of its two callers — `close()`
+    /// is the other. This test drives it *directly* on a **live** child, which
+    /// is the only way to exercise two of its arms on this host:
+    ///
+    /// * the bounded wait must give up after `EXIT_WAIT` and record `exit_code`
+    ///   as `None` rather than hanging or inventing a code (a live child never
+    ///   reaps, so the loop runs its deadline arm);
+    /// * a second `on_eof` must be a no-op, because the reader thread can reach
+    ///   EOF at the same moment `close()` calls it — without that guard the
+    ///   second call would re-read a consumed `status` and push a duplicate
+    ///   `Exited` to every viewer.
+    #[test]
+    fn on_eof_is_bounded_and_idempotent_on_a_live_child() {
+        let session = spawn_idle();
+        assert!(session.is_running());
+        let started = Instant::now();
+        session.on_eof();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= EXIT_WAIT,
+            "a live child must be waited for, not assumed dead"
+        );
+        assert!(
+            elapsed < EXIT_WAIT + Duration::from_secs(5),
+            "the wait must be bounded, took {elapsed:?}"
+        );
+        let info = session.info();
+        assert_eq!(info.status, Status::Exited);
+        assert_eq!(
+            info.exit_code, None,
+            "an unreaped child must not be given an invented exit code"
+        );
+
+        // Idempotent: the second call must not move anything. `exit_code`
+        // staying `None` is the observable, and the viewer count is what a
+        // duplicate `Exited` would have disturbed.
+        let viewer = session.attach(Some(-1));
+        session.on_eof();
+        assert_eq!(session.info().exit_code, None);
+        assert_eq!(session.info().status, Status::Exited);
+        drop(viewer);
+        session.close(Duration::from_millis(200));
+    }
+
+    /// Three refusal/deferral arms that only a *sequence* of client actions
+    /// reaches — and each one is what a real viewer hits when a tab is closed
+    /// and re-opened:
+    ///
+    /// * `wait_for_child_exit` must report "not reaped" rather than lie when its
+    ///   budget runs out (a live child);
+    /// * `activate` on a token that has already been detached must be refused
+    ///   instead of resurrecting the subscriber;
+    /// * an attachment that was still inactive when the session exited must
+    ///   receive that exit when it finally activates, or a viewer that connects
+    ///   one moment too late would hang on a socket that never speaks.
+    #[test]
+    fn a_viewer_that_arrives_late_still_learns_about_the_exit() {
+        let session = spawn_idle();
+        assert!(
+            !session.wait_for_child_exit(Duration::from_millis(50)),
+            "a live child must be reported as not reaped, not assumed gone"
+        );
+
+        // Detach-then-activate must not start delivering: `Session::activate`
+        // finds no subscriber for the token and returns, so the view stays
+        // silent even though output keeps arriving.
+        let mut abandoned = session.attach(None);
+        abandoned.detach();
+        session.on_data(b"after-detach");
+        let mut events = abandoned
+            .activate()
+            .expect("the attachment still owns its receiver");
+        assert!(
+            events.try_recv().is_err(),
+            "a detached attachment must not start receiving"
+        );
+
+        // A viewer attached but not yet activated when the exit happens: the
+        // exit is held on the subscriber and delivered by `activate`.
+        let mut pending = session.attach(Some(-1));
+        session.on_eof();
+        let mut events = pending
+            .activate()
+            .expect("a pending subscriber must still activate");
+        // The child is a real process, and a ConPTY shell emits its own output
+        // (a DSR probe, `ESC [ 6 n`) that can land ahead of the held exit — under
+        // parallel load the ordering is not ours to assume. The claim under test
+        // is that the late viewer LEARNS ABOUT the exit, so look for it among the
+        // delivered events. Bounded and non-blocking, so it cannot hang.
+        let mut exit = None;
+        for _ in 0..64 {
+            match events.try_recv() {
+                Ok(event @ SessionEvent::Exited(_)) => {
+                    exit = Some(event);
+                    break;
+                }
+                // The child's own output, ahead of the held exit.
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+        assert!(
+            exit.is_some(),
+            "the held exit must be delivered to a viewer that activates late"
+        );
+        pending.detach();
+        session.close(Duration::from_millis(200));
+    }
+
+    /// The reader thread — not a test-injected `on_data` — must surface a real
+    /// child's bytes into the buffer/cursor.
+    #[test]
+    fn a_real_childs_output_flows_through_the_reader_thread() {
+        let session = spawn_with(test_support::echo_command("hello-session"));
+        wait_until(&session, "the child's output to reach the buffer", || {
+            test_support::visible_text(&session.inner.lock().unwrap().buffer)
+                .contains("hello-session")
+        });
+        let replay = session.attach(None).replay.concat();
+        assert!(
+            test_support::visible_text(&replay).contains("hello-session"),
+            "reader output: {:?}",
+            String::from_utf8_lossy(&replay)
+        );
+        session.close(Duration::from_millis(200));
+    }
+
+    /// A written line must reach the child, not merely be echoed by the
+    /// terminal: the shell executing `exit 5` is the proof.
+    /// WINDOWS-ONLY. Waits for the child's cursor query before writing the line -- the Windows fixture's handshake.
+    /// A unix shell never asks, so the wait times out (CI: "timed out waiting for the shell's
+    /// cursor query"). Windows-only.
+    #[cfg(windows)]
+    #[test]
+    fn a_written_line_is_executed_by_the_child() {
+        let session = spawn_with(test_support::interactive_command());
+        // The interactive shell asks where the cursor is before it reads a line.
+        wait_until(&session, "the shell's cursor query", || {
+            test_support::asks_for_the_cursor(&session.inner.lock().unwrap().buffer)
+        });
+        let line: &[u8] = if cfg!(windows) {
+            b"exit 5\r\n"
+        } else {
+            b"exit 5\n"
+        };
+        session.write(line).expect("write to a live session");
+        // The shell exits as soon as it runs the line. This host's ConPTY never
+        // closes the master, so the reader thread cannot report the EOF that
+        // would normally drive `on_eof`; wait for the process itself to be
+        // reaped and drive it, which reads the same `PtySession::try_wait` the
+        // reader's EOF path would have.
+        wait_until(&session, "the child to run the written line", || {
+            session.pty.lock().unwrap().try_wait().is_some()
+        });
+        session.on_eof();
+        assert_eq!(
+            session.info().exit_code,
+            Some(5),
+            "the child must have executed the line it was given"
+        );
+        session.close(Duration::from_millis(200));
+    }
+
     #[test]
     fn detach_stops_delivery_without_touching_the_shell() {
-        let session = spawn(80);
+        let session = spawn_idle();
         let mut attachment = session.attach(Some(-1));
         let mut events = attachment.activate().expect("activated");
         attachment.detach();
-        // A detached viewer must not receive further output.
+        // A detached viewer must not receive further output, and must not kill
+        // the shell it was watching.
         assert!(
             session.is_running(),
             "a detached viewer must not kill the shell"
         );
-        session
-            .write(b"echo still-here\n")
-            .expect("write after detach");
+        session.on_data(b"after-detach");
         std::thread::sleep(Duration::from_millis(50));
         assert!(
             events.try_recv().is_err(),
@@ -742,10 +1104,9 @@ mod tests {
         assert!(!session.is_running());
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_lagging_inactive_viewer_is_cut_loose_instead_of_buffering_forever() {
-        let session = spawn(80);
+        let session = spawn_idle();
         let mut attachment = session.attach(None);
         // Simulate a viewer that never activates while output keeps arriving.
         {
@@ -763,25 +1124,61 @@ mod tests {
         session.close(Duration::from_millis(200));
     }
 
-    #[cfg(unix)]
+    /// An *active* viewer whose channel was dropped is also cut loose instead
+    /// of the session keeping a dead sender alive.
+    #[test]
+    fn a_dropped_active_viewer_is_removed() {
+        let session = spawn_idle();
+        let mut attachment = session.attach(None);
+        let events = attachment.activate().expect("activated");
+        drop(events);
+        session.on_data(b"x");
+        assert!(
+            session.inner.lock().unwrap().subscribers.is_empty(),
+            "a viewer whose channel is gone must not be retained"
+        );
+        session.close(Duration::from_millis(200));
+    }
+
     #[test]
     fn write_to_an_exited_session_is_rejected() {
-        let session = Session::spawn(
-            "thread-1".to_string(),
-            "Terminal 1".to_string(),
-            PathBuf::from("/bin/sh"),
-            vec!["-c".to_string(), "exit 0".to_string()],
-            std::env::temp_dir(),
-            80,
-            24,
-        )
-        .expect("spawn");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while session.is_running() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        let session = spawn_exit(0);
+        wait_until(&session, "the child to be reaped", || {
+            session.pty.lock().unwrap().try_wait().is_some()
+        });
+        // Record the exit the way `close()` does (see the ConPTY note above),
+        // so the write is refused because the session is *exited*, not merely
+        // because a child is slow to answer.
+        session.on_eof();
+        assert!(!session.is_running());
         let error = session.write(b"ls\n").expect_err("must reject");
         assert!(error.starts_with("TERMINAL_CLOSED"), "{error}");
+    }
+
+    /// `update` retitles and resizes, normalizes out-of-range values, and caps
+    /// the title by *characters* (a byte-based cap would split a CJK glyph).
+    #[test]
+    fn update_retitles_resizes_and_normalizes_input() {
+        let session = spawn_idle();
+        let info = session.update(Some("  Build logs  ".into()), Some((120, 40)));
+        assert_eq!(info.title, "Build logs", "the title is trimmed");
+        assert_eq!((info.cols, info.rows), (120, 40));
+
+        let info = session.update(Some("   ".into()), Some((0, u16::MAX)));
+        assert_eq!(info.title, "Build logs", "a blank title keeps the old one");
+        assert_eq!((info.cols, info.rows), (1, 1000), "size is clamped");
+
+        let cjk = "终".repeat(150);
+        let info = session.update(Some(cjk), None);
+        assert_eq!(info.title.chars().count(), 120);
+        assert_eq!(info.title.chars().next(), Some('终'));
+
+        // Resizing an exited session is not an error: the viewer may be
+        // re-fitting a stale tab.
+        session.close(Duration::from_millis(200));
+        let info = session.update(Some("After exit".into()), Some((100, 30)));
+        assert_eq!(info.title, "After exit");
+        assert_eq!((info.cols, info.rows), (100, 30));
     }
 
     #[test]

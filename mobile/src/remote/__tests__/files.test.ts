@@ -1,30 +1,42 @@
 import { createHash } from "crypto";
 import * as Crypto from "expo-crypto";
 import * as FS from "expo-file-system";
-import { hashFile as nativeFileSha256 } from "future-file-handler";
+import { hashFile as nativeFileSha256, listAlbumImages, resolveImagePickRoutes, supportsAlbumGrid } from "future-file-handler";
+import type { ImagePickRoutes } from "future-file-handler";
 import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import { Image, Platform } from "react-native";
 import type { RemoteClient } from "../client";
 import type { DownloadInfo, HistoryAttachment, MobileAttachment } from "../types";
 import {
+  MAX_ATTACHMENTS,
+  MAX_IMAGES,
+  albumSource,
   cachedDownload,
   cachedPreviewForAttachment,
   deleteTemporaryAttachment,
   downloadPrepared,
   fileSha256,
   namedExternalFile,
+  loadAlbumImages,
   pickAttachments,
   pickFromAlbum,
+  prepareAlbumImages,
   prepareDownload,
   prepareSharedAttachments,
   recoverPendingImagePickerAttachments,
   rememberPreparedPreview,
+  remainingImageSlots,
   takePhoto,
   uploadAttachments,
 } from "../files";
 
-jest.mock("future-file-handler", () => ({ hashFile: jest.fn(async () => null) }));
+jest.mock("future-file-handler", () => ({
+  hashFile: jest.fn(async () => null),
+  resolveImagePickRoutes: jest.fn(async () => null),
+  listAlbumImages: jest.fn(async () => []),
+  supportsAlbumGrid: jest.fn(() => true),
+}));
 
 jest.mock("expo-file-system", () => {
   const store = new Map<
@@ -218,6 +230,9 @@ const mockedLaunchCamera = ImagePicker.launchCameraAsync as jest.Mock;
 const mockedRequestLibrary = ImagePicker.requestMediaLibraryPermissionsAsync as jest.Mock;
 const mockedLaunchLibrary = ImagePicker.launchImageLibraryAsync as jest.Mock;
 const mockedPendingResult = ImagePicker.getPendingResultAsync as jest.Mock;
+const mockedResolveRoutes = resolveImagePickRoutes as jest.Mock;
+const mockedListAlbumImages = listAlbumImages as jest.Mock;
+const mockedSupportsAlbumGrid = supportsAlbumGrid as jest.Mock;
 const mockedDigest = Crypto.digest as jest.Mock;
 const mockedGetSize = Image.getSize as jest.Mock;
 
@@ -254,6 +269,17 @@ function attachment(overrides: Partial<MobileAttachment> = {}): MobileAttachment
     originalSize: 8,
     transferSize: 8,
     ...overrides,
+  };
+}
+
+/** An image as the native album listing reports it. */
+function albumImage(index: number, name: string, mimeType: string) {
+  return {
+    uri: `content://media/external/images/media/${index}`,
+    name,
+    mimeType,
+    size: 10,
+    modified: 1_700_000_000_000 + index,
   };
 }
 
@@ -455,7 +481,7 @@ describe("pickAttachments", () => {
   });
 
   test("rejects a batch over the image count quota", async () => {
-    const files = Array.from({ length: 5 }, (_, i) =>
+    const files = Array.from({ length: MAX_IMAGES + 1 }, (_, i) =>
       fsFile(`file:///docs/f${i}.png`, { bytes: new Uint8Array(1), type: "image/png" }),
     );
     mockFS.File.pickFileAsync.mockResolvedValue({ canceled: false, result: files });
@@ -678,24 +704,58 @@ describe("takePhoto", () => {
 describe("pickFromAlbum", () => {
   afterEach(() => {
     Platform.OS = "ios";
+    Object.assign(Platform, { Version: 0 });
+    mockedResolveRoutes.mockResolvedValue(null);
+    mockedSupportsAlbumGrid.mockReturnValue(true);
   });
+
+  /** API 33+ always has the system photo picker; older versions may not. */
+  function useSystemPhotoPickerDevice(): void {
+    Platform.OS = "android";
+    Object.assign(Platform, { Version: 33 });
+  }
+
+  /** A phone that cannot host a real photo picker (the Huawei report). */
+  function useAlbumOnlyDevice(): void {
+    Platform.OS = "android";
+    Object.assign(Platform, { Version: 31 });
+  }
+
+  /** What the native probe reports for this device's pick handlers. */
+  function deviceResolves(overrides: Partial<ImagePickRoutes> = {}): void {
+    mockedResolveRoutes.mockResolvedValue({
+      sdkInt: Number(Platform.Version),
+      album: [],
+      imageContent: [],
+      photoPicker: [],
+      photoPickerFallback: [],
+      photoPickerPlayServices: [],
+      document: [],
+      ...overrides,
+    });
+  }
+
+  function handler(name: string): { package: string; activity: string } {
+    return { package: name, activity: `${name}.PickerActivity` };
+  }
 
   test.each(["ios", "android"] as const)(
     "%s opens the system album without requesting full-library access",
     async os => {
-      Platform.OS = os;
+      if (os === "android") useSystemPhotoPickerDevice();
+      else Platform.OS = os;
       mockedRequestLibrary.mockResolvedValue({ granted: false });
       mockedLaunchLibrary.mockResolvedValue({ canceled: true, assets: [] });
       await pickFromAlbum([]);
       expect(mockedRequestLibrary).not.toHaveBeenCalled();
       expect(mockedLaunchLibrary).toHaveBeenCalledWith(
-        expect.objectContaining({ legacy: false, defaultTab: "albums", selectionLimit: 4 }),
+        expect.objectContaining({ legacy: false, defaultTab: "albums", selectionLimit: MAX_IMAGES }),
       );
     },
   );
 
   test("Android delegates backport/fallback selection to the native photo contract, never an app resolver", async () => {
-    Platform.OS = "android";
+    useSystemPhotoPickerDevice();
     mockedLaunchLibrary.mockResolvedValue({ canceled: false, assets: [
       { uri: "file:///album/one.png", mimeType: "image/png" },
       { uri: "file:///album/two.png", mimeType: "image/png" },
@@ -708,14 +768,227 @@ describe("pickFromAlbum", () => {
     expect(mockedRequestLibrary).not.toHaveBeenCalled();
   });
 
+  test("Android below 33 opens the phone's gallery instead of the document picker", async () => {
+    useAlbumOnlyDevice();
+    deviceResolves({ imageContent: [handler("com.huawei.photos")] });
+    mockedLaunchLibrary.mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: "content://media/external/images/media/42", mimeType: "image/png" }],
+    });
+    mockFS.__set("content://media/external/images/media/42", {
+      bytes: new Uint8Array(10),
+      type: "image/png",
+    });
+
+    const result = await pickFromAlbum([]);
+
+    // The gallery contract is the legacy one (ACTION_GET_CONTENT): the photo
+    // picker's own contract is the one that can resolve to a document picker.
+    expect(mockedLaunchLibrary).toHaveBeenCalledWith(
+      expect.objectContaining({ legacy: true, allowsMultipleSelection: true, selectionLimit: MAX_IMAGES }),
+    );
+    expect(mockedRequestLibrary).not.toHaveBeenCalled();
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      kind: "image",
+      mimeType: "image/png",
+      temporary: true,
+    });
+  });
+
+  test("a gallery the system would pick keeps the album off the document picker", async () => {
+    useAlbumOnlyDevice();
+    // A file manager also advertises the pick, but only a gallery answers the
+    // intent the app actually launches (the image content intent).
+    deviceResolves({
+      album: [handler("com.huawei.hidisk"), handler("com.huawei.photos")],
+      imageContent: [handler("com.huawei.photos")],
+      document: [handler("com.huawei.hidisk")],
+    });
+    mockedLaunchLibrary.mockResolvedValue({ canceled: true, assets: [] });
+
+    await pickFromAlbum([]);
+
+    expect(mockedLaunchLibrary).toHaveBeenCalledWith(expect.objectContaining({ legacy: true }));
+  });
+
+  test.each([
+    ["a file manager that advertises the pick", { album: [handler("com.huawei.hidisk")] }],
+    ["no handler at all", {}],
+  ])("reports the album as unavailable when only %s answers on Android", async (_label, routes) => {
+    useAlbumOnlyDevice();
+    mockedSupportsAlbumGrid.mockReturnValue(false);
+    deviceResolves({
+      document: [handler("com.huawei.hidisk")],
+      ...routes,
+    });
+
+    await expect(pickFromAlbum([])).rejects.toThrow("attachment_album_unavailable");
+
+    // Never a document picker under the album label — that is "Choose files".
+    expect(mockedLaunchLibrary).not.toHaveBeenCalled();
+  });
+
+  test("hands an app-drawn album back to the caller when nothing can present one", async () => {
+    useAlbumOnlyDevice();
+    deviceResolves({ album: [handler("com.huawei.hidisk")], document: [handler("com.huawei.hidisk")] });
+
+    expect(await albumSource()).toBe("inApp");
+    // The grid is the caller's surface; a pick cannot start it.
+    await expect(pickFromAlbum([])).rejects.toThrow("attachment_album_unavailable");
+    expect(mockedLaunchLibrary).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["a gallery", { imageContent: [handler("com.huawei.photos")] }, "system"],
+    ["a photo picker", { photoPicker: [handler("com.android.providers.media.module")] }, "system"],
+    ["the Play-services photo picker", { photoPickerPlayServices: [handler("com.google.android.gms")] }, "system"],
+    ["only a file manager", { album: [handler("com.android.documentsui")], imageContent: [handler("com.android.documentsui")] }, "inApp"],
+  ])("%s makes the album source %s", async (_label, routes, expected) => {
+    useAlbumOnlyDevice();
+    deviceResolves(routes);
+    expect(await albumSource()).toBe(expected);
+  });
+
+  test("an older app binary keeps the API-level default", async () => {
+    useAlbumOnlyDevice();
+    mockedResolveRoutes.mockResolvedValue(null);
+    expect(await albumSource()).toBe("system");
+  });
+
+  test("iOS never needs the probe", async () => {
+    Platform.OS = "ios";
+    expect(await albumSource()).toBe("system");
+    expect(mockedResolveRoutes).not.toHaveBeenCalled();
+  });
+
+  test("a gallery that only answers the image content intent still opens", async () => {
+    useAlbumOnlyDevice();
+    deviceResolves({ imageContent: [handler("com.miui.gallery")] });
+    mockedLaunchLibrary.mockResolvedValue({
+      canceled: false,
+      assets: [
+        { uri: "content://media/external/images/media/9", mimeType: "image/png" },
+        { uri: "content://media/external/images/media/10", mimeType: "image/jpeg", fileName: "IMG_10.jpg" },
+      ],
+    });
+    for (const id of [9, 10]) {
+      mockFS.__set(`content://media/external/images/media/${id}`, {
+        bytes: new Uint8Array(10),
+        type: "image/png",
+      });
+    }
+    mockedManipulate.mockResolvedValue({ uri: "file:///cache/re-encoded.jpg" });
+    mockFS.__set("file:///cache/re-encoded.jpg", { bytes: new Uint8Array(5) });
+
+    const result = await pickFromAlbum([]);
+
+    expect(mockedLaunchLibrary).toHaveBeenCalledWith(expect.objectContaining({ legacy: true }));
+    expect(result).toHaveLength(2);
+  });
+
+  test.each([
+    ["com.huawei.photos", true],
+    ["com.android.gallery3d", true],
+    ["com.miui.gallery", true],
+    ["com.google.android.apps.photos", true],
+    ["com.sec.android.gallery3d", true],
+    ["com.android.documentsui", false],
+    ["com.google.android.documentsui", false],
+    ["com.coloros.filemanager", false],
+    ["com.android.fileexplorer", false],
+    ["com.huawei.hidisk", false],
+  ])("classifies %s as an album app: %s", async (app, isAlbum) => {
+    useAlbumOnlyDevice();
+    deviceResolves({ imageContent: [handler(app)] });
+    mockedLaunchLibrary.mockResolvedValue({ canceled: true, assets: [] });
+
+    const attempt = pickFromAlbum([]);
+
+    if (isAlbum) {
+      await attempt;
+      expect(mockedLaunchLibrary).toHaveBeenCalledWith(expect.objectContaining({ legacy: true }));
+    } else {
+      await expect(attempt).rejects.toThrow("attachment_album_unavailable");
+      expect(mockedLaunchLibrary).not.toHaveBeenCalled();
+    }
+  });
+  test("Android 13 keeps the system photo picker when the device has it", async () => {
+    useSystemPhotoPickerDevice();
+    deviceResolves({
+      photoPicker: [handler("com.google.android.providers.media.module")],
+      album: [handler("com.google.android.apps.photos")],
+    });
+    mockedLaunchLibrary.mockResolvedValue({ canceled: true, assets: [] });
+
+    await pickFromAlbum([]);
+
+    expect(mockedLaunchLibrary).toHaveBeenCalledWith(
+      expect.objectContaining({ allowsMultipleSelection: true, legacy: false }),
+    );
+  });
+
+  test("falls back to the photo-picker backport, not the document picker", async () => {
+    useAlbumOnlyDevice();
+    deviceResolves({
+      photoPickerFallback: [handler("com.android.providers.media.module")],
+      album: [handler("com.huawei.hidisk")],
+      document: [handler("com.huawei.hidisk")],
+    });
+    mockedLaunchLibrary.mockResolvedValue({ canceled: true, assets: [] });
+
+    await pickFromAlbum([]);
+
+    expect(mockedLaunchLibrary).toHaveBeenCalledWith(
+      expect.objectContaining({ legacy: false, defaultTab: "albums" }),
+    );
+  });
+
+  test("returns existing attachments when the gallery is cancelled", async () => {
+    useAlbumOnlyDevice();
+    deviceResolves({ imageContent: [handler("com.huawei.photos")] });
+    mockedLaunchLibrary.mockResolvedValue({ canceled: true, assets: [] });
+    const existing = [attachment()];
+    expect(await pickFromAlbum(existing)).toBe(existing);
+  });
+
+  test("reports the album as unavailable when the gallery cannot be launched", async () => {
+    useAlbumOnlyDevice();
+    deviceResolves({ imageContent: [handler("com.huawei.photos")] });
+    mockedLaunchLibrary.mockRejectedValue(new Error("No activity found to handle Intent"));
+
+    await expect(pickFromAlbum([])).rejects.toThrow("No activity found");
+  });
+
   test("propagates native picker errors without trying a different app", async () => {
     mockedLaunchLibrary.mockRejectedValueOnce(new Error("No activity found"));
     await expect(pickFromAlbum([])).rejects.toThrow("No activity found");
   });
 
+  test("a message can be filled with ten images", async () => {
+    useSystemPhotoPickerDevice();
+    const assets = Array.from({ length: MAX_IMAGES }, (_, index) => ({
+      uri: `file:///album/${index}.png`,
+      mimeType: "image/png",
+    }));
+    for (let index = 0; index < MAX_IMAGES; index += 1) {
+      mockFS.__set(`file:///album/${index}.png`, { bytes: new Uint8Array(10), type: "image/png" });
+    }
+    mockedLaunchLibrary.mockResolvedValue({ canceled: false, assets });
+
+    const result = await pickFromAlbum([]);
+
+    expect(result).toHaveLength(MAX_IMAGES);
+    // The picker is asked for the same number, so the OS cannot return more
+    // than the message accepts.
+    expect(mockedLaunchLibrary).toHaveBeenCalledWith(
+      expect.objectContaining({ selectionLimit: MAX_IMAGES }),
+    );
+  });
+
   test("does not open a picker when the image quota is full", async () => {
     await expect(
-      pickFromAlbum(Array.from({ length: 4 }, () => attachment({ kind: "image" }))),
+      pickFromAlbum(Array.from({ length: MAX_IMAGES }, () => attachment({ kind: "image" }))),
     ).rejects.toThrow("attachment_image_count");
     expect(mockedLaunchLibrary).not.toHaveBeenCalled();
   });
@@ -745,6 +1018,112 @@ describe("pickFromAlbum", () => {
   });
 });
 
+describe("loadAlbumImages", () => {
+  test("asks for the media permission before reading the library", async () => {
+    mockedRequestLibrary.mockResolvedValue({ granted: false });
+    await expect(loadAlbumImages()).rejects.toThrow("attachment_album_permission");
+    expect(mockedListAlbumImages).not.toHaveBeenCalled();
+  });
+
+  test("returns what the phone reports, newest first", async () => {
+    mockedRequestLibrary.mockResolvedValue({ granted: true });
+    mockedListAlbumImages.mockResolvedValue([
+      { uri: "content://media/external/images/media/2", name: "b.jpg", mimeType: "image/jpeg", size: 20, modified: 2 },
+      { uri: "content://media/external/images/media/1", name: "a.jpg", mimeType: "image/jpeg", size: 10, modified: 1 },
+    ]);
+
+    expect((await loadAlbumImages(5)).map(image => image.name)).toEqual(["b.jpg", "a.jpg"]);
+    expect(mockedListAlbumImages).toHaveBeenCalledWith(5);
+  });
+});
+
+describe("prepareAlbumImages", () => {
+  test("copies the chosen images into the cache and keeps their reported names", async () => {
+    mockFS.__set("content://media/external/images/media/7", {
+      bytes: new Uint8Array(10),
+      type: "image/jpeg",
+    });
+    // A JPEG is re-encoded by the shared pipeline; the album name still wins.
+    mockedManipulate.mockResolvedValue({ uri: "file:///cache/re-encoded.jpg" });
+    mockFS.__set("file:///cache/re-encoded.jpg", { bytes: new Uint8Array(5) });
+
+    const result = await prepareAlbumImages([], [
+      albumImage(7, "IMG_20250925_203012.jpg", "image/jpeg"),
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      kind: "image",
+      mimeType: "image/jpeg",
+      name: "IMG_20250925_203012.jpg",
+      temporary: true,
+    });
+  });
+
+  test("keeps every image the user batched in the album", async () => {
+    for (const index of [1, 2]) {
+      mockFS.__set(`content://media/external/images/media/${index}`, {
+        bytes: new Uint8Array(10),
+        type: "image/png",
+      });
+    }
+
+    const result = await prepareAlbumImages(
+      [],
+      [1, 2].map(index => albumImage(index, `shot-${index}.png`, "image/png")),
+    );
+
+    expect(result.map(item => item.name)).toEqual(["shot-1.png", "shot-2.png"]);
+  });
+
+  test("rejects a batch past the image quota before copying anything", async () => {
+    const existing = Array.from({ length: MAX_IMAGES }, () => attachment({ kind: "image" }));
+    await expect(
+      prepareAlbumImages(existing, [albumImage(1, "one.jpg", "image/jpeg")]),
+    ).rejects.toThrow("attachment_image_count");
+  });
+
+  test("a conversion failure removes the copy it just made of a granted library photo", async () => {
+    // `ACTION_PICK` grants read access to one photo, not a durable file, so the
+    // pick is copied into the cache first. If the pipeline then fails, that copy
+    // must not be left behind: it is a full-size photo the user never chose to
+    // keep, and nothing else knows its generated name.
+    mockFS.__set("content://media/external/images/media/7", {
+      bytes: new Uint8Array(10),
+      type: "image/jpeg",
+    });
+    const cached: string[] = [];
+    const originalCopy = mockFS.File.prototype.copy;
+    const copy = jest.spyOn(mockFS.File.prototype, "copy")
+      .mockImplementation(async function (this: FS.File, destination: unknown) {
+        cached.push((destination as FS.File).uri);
+        return originalCopy.call(this, destination as FS.File);
+      } as never);
+    mockedManipulate.mockRejectedValue(new Error("converter boom"));
+    try {
+      await expect(
+        prepareAlbumImages([], [albumImage(7, "IMG_0001.jpg", "image/jpeg")]),
+      ).rejects.toThrow("attachment_image_decode");
+      expect(cached).toHaveLength(1);
+      expect(new mockFS.File(cached[0] as never).exists).toBe(false);
+    } finally {
+      copy.mockRestore();
+    }
+  });
+});
+
+describe("remainingImageSlots", () => {
+  test("counts both the image cap and the attachment cap", () => {
+    expect(remainingImageSlots([])).toBe(MAX_IMAGES);
+    expect(remainingImageSlots([attachment({ kind: "image" })])).toBe(MAX_IMAGES - 1);
+    expect(
+      remainingImageSlots([
+        ...Array.from({ length: MAX_IMAGES }, () => attachment({ kind: "image" })),
+        ...Array.from({ length: MAX_ATTACHMENTS - MAX_IMAGES }, () => attachment()),
+      ]),
+    ).toBe(0);
+  });
+});
+
 describe("recoverPendingImagePickerAttachments", () => {
   test("returns existing attachments when Android has no pending result", async () => {
     mockedPendingResult.mockResolvedValue(null);
@@ -771,6 +1150,198 @@ describe("recoverPendingImagePickerAttachments", () => {
     mockedPendingResult.mockResolvedValue({ code: "E_PICKER", message: "picker failed" });
     await expect(recoverPendingImagePickerAttachments([])).rejects.toThrow("attachment_failed");
   });
+
+  test("a pending result that carries no asset is a cancel, not a failure", async () => {
+    // Android can answer with an explicit cancel, or with a result whose asset
+    // list is empty. Neither is an error, and neither may start a prepare.
+    mockedPendingResult.mockResolvedValue({ canceled: true, assets: [] });
+    const existing = [attachment()];
+    expect(await recoverPendingImagePickerAttachments(existing)).toBe(existing);
+    mockedPendingResult.mockResolvedValue({ canceled: false, assets: [] });
+    expect(await recoverPendingImagePickerAttachments(existing)).toBe(existing);
+  });
+});
+
+/**
+ * Guards that only fire for inputs the happy path never produces: an SVG the
+ * phone must not treat as an image, a file whose real length disagrees with its
+ * reported size, a batch over the shared quota, and a cache entry left over
+ * from a previous version of the same file.
+ */
+describe("limit and integrity guards", () => {
+  test("an SVG is a file, never an inline image", async () => {
+    // SVG can carry script, so it must not take the image path (which would
+    // hand it to the preview renderer) even when it is declared as one.
+    const file = fsFile("file:///docs/logo.svg", {
+      bytes: new Uint8Array(10),
+      type: "image/svg+xml",
+    });
+    const result = await prepareOne(file);
+    expect(result[0]).toMatchObject({ kind: "file", mimeType: "image/svg+xml" });
+    expect(mockedManipulate).not.toHaveBeenCalled();
+  });
+
+  test("a png whose reported size runs past its real bytes is static, not a hang", async () => {
+    // The chunk walk advances by the length each chunk declares. A file shorter
+    // than it claims must end the walk at the first short read instead of
+    // looping on a non-advancing offset.
+    const file = fsFile("file:///docs/short.png", {
+      bytes: concat(PNG_SIGNATURE, PNG_IHDR),
+      size: 100,
+      type: "image/png",
+    });
+    const result = await prepareOne(file);
+    expect(result[0]).toMatchObject({ kind: "image", mobilePreviewUnsupported: false });
+  });
+
+  test("an upload batch over the shared quota is refused before anything is sent", async () => {
+    const client = mockClient();
+    const many = Array.from({ length: MAX_ATTACHMENTS + 1 }, (_, i) =>
+      attachment({ localUri: `file:///docs/${i}.txt`, name: `${i}.txt` }),
+    );
+    await expect(uploadAttachments(client as unknown as RemoteClient, many))
+      .rejects.toThrow("attachment_count");
+    // The quota check exists to avoid a partial upload the desktop would then
+    // have to roll back, so no init may have been sent.
+    expect(client.request).not.toHaveBeenCalled();
+  });
+
+  test("an upload batch over the total byte quota is refused before anything is sent", async () => {
+    const client = mockClient();
+    const huge = [
+      attachment({ localUri: "file:///docs/a.bin", name: "a.bin", originalSize: 11 * 1024 * 1024, transferSize: 11 * 1024 * 1024 }),
+      attachment({ localUri: "file:///docs/b.bin", name: "b.bin", originalSize: 11 * 1024 * 1024, transferSize: 11 * 1024 * 1024 }),
+    ];
+    await expect(uploadAttachments(client as unknown as RemoteClient, huge))
+      .rejects.toThrow("attachment_total_size");
+    expect(client.request).not.toHaveBeenCalled();
+  });
+
+  test("the album reports itself unavailable when nothing here can present a photo picker", async () => {
+    Platform.OS = "android";
+    Object.assign(Platform, { Version: 31 });
+    mockedResolveRoutes.mockResolvedValue({
+      sdkInt: 31,
+      album: [{ package: "com.huawei.hidisk", activity: "a" }],
+      imageContent: [{ package: "com.huawei.hidisk", activity: "a" }],
+      photoPicker: [],
+      photoPickerFallback: [],
+      photoPickerPlayServices: [],
+      document: [{ package: "com.huawei.hidisk", activity: "a" }],
+    });
+    // No gallery answers the intent, no photo picker exists and this build has
+    // no in-app grid: the caller has to be told so it can offer "Choose files".
+    mockedSupportsAlbumGrid.mockReturnValue(false);
+    try {
+      expect(await albumSource()).toBe("unavailable");
+    } finally {
+      Platform.OS = "ios";
+      Object.assign(Platform, { Version: 0 });
+      mockedResolveRoutes.mockResolvedValue(null);
+      mockedSupportsAlbumGrid.mockReturnValue(true);
+    }
+  });
+
+  test("a gallery photo in an unsupported format is refused before it is copied", async () => {
+    Platform.OS = "android";
+    Object.assign(Platform, { Version: 31 });
+    mockedResolveRoutes.mockResolvedValue({
+      sdkInt: 31,
+      album: [],
+      imageContent: [{ package: "com.miui.gallery", activity: "g" }],
+      photoPicker: [],
+      photoPickerFallback: [],
+      photoPickerPlayServices: [],
+      document: [],
+    });
+    mockedLaunchLibrary.mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: "content://photos/1", mimeType: "image/tiff", fileName: "scan.tiff" }],
+    });
+    mockFS.__set("content://photos/1", { bytes: new Uint8Array(10), type: "image/tiff" });
+    try {
+      // Without a known encoder there is no size to declare and no bytes to
+      // send, so the pick fails loudly rather than producing a 0-byte item.
+      await expect(pickFromAlbum([])).rejects.toThrow("attachment_image_format");
+      expect(mockedManipulate).not.toHaveBeenCalled();
+    } finally {
+      Platform.OS = "ios";
+      Object.assign(Platform, { Version: 0 });
+      mockedResolveRoutes.mockResolvedValue(null);
+    }
+  });
+
+  test("prepareDownload exhausts its bounded retry ladder instead of looping", async () => {
+    const client = mockClient();
+    client.request.mockRejectedValue(new Error("timeout"));
+    const waiting = jest.fn();
+    await expect(
+      prepareDownload(
+        client as unknown as RemoteClient,
+        "s1",
+        { path: "/tmp/a.jpg", name: "a.jpg" },
+        "preview",
+        undefined,
+        waiting,
+      ),
+    ).rejects.toThrow("timeout");
+    // Two timeouts, two attempts, one waiting notification between them: the
+    // ladder must end rather than re-arming itself on every failure.
+    expect(client.request).toHaveBeenCalledTimes(2);
+    expect(waiting).toHaveBeenCalledTimes(1);
+  });
+
+  test("a file too large to hash is rejected before any read", async () => {
+    const file = fsFile("/huge.bin", { size: 10 * 1024 * 1024 + 1 });
+    await expect(fileSha256(file)).rejects.toThrow("invalid_hash_size");
+  });
+
+  test("a native hash that is not a sha256 digest is rejected rather than trusted", async () => {
+    const file = fsFile("/native.bin", { bytes: new Uint8Array([1, 2, 3]) });
+    jest.mocked(nativeFileSha256).mockResolvedValueOnce("not-a-digest");
+    // The value goes on the wire as the transfer's identity; a truncated or
+    // non-hex answer would make the desktop verify a hash nobody computed.
+    await expect(fileSha256(file)).rejects.toThrow("invalid_native_hash");
+    jest.mocked(nativeFileSha256).mockResolvedValueOnce(sha256Hex(new Uint8Array([1, 2, 3])).toUpperCase());
+    await expect(fileSha256(file)).rejects.toThrow("invalid_native_hash");
+  });
+
+  test("a js hash read that returns nothing is rejected instead of hashing a short file", async () => {
+    // The native path is unavailable, and the JS reader answers with zero bytes
+    // while the file claims a length: the digest would then cover a prefix.
+    const file = fsFile("/stalled.bin", { bytes: new Uint8Array(0), size: 10 });
+    jest.mocked(nativeFileSha256).mockResolvedValueOnce(null);
+    await expect(fileSha256(file)).rejects.toThrow("hash_read_size_mismatch");
+  });
+
+  test("a stale cache entry of another size is removed before the download is written", async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    const i: DownloadInfo = {
+      transferId: "t1",
+      name: "result.jpg",
+      mimeType: "image/jpeg",
+      size: bytes.length,
+      contentHash: sha256Hex(bytes),
+      previewKind: "image",
+      variant: "preview",
+      chunkBytes: 4,
+    };
+    // A previous, larger file sits at the content-addressed path (its size no
+    // longer matches, so it is not a cache hit). Writing into it would leave a
+    // file longer than the hash describes — the size check would then reject a
+    // download that actually succeeded.
+    mockedDigest.mockImplementation(async (_alg: unknown, data: Uint8Array) =>
+      new Uint8Array(createHash("sha256").update(Buffer.from(data)).digest()),
+    );
+    jest.mocked(nativeFileSha256).mockResolvedValue(null);
+    mockFS.__set(`/mock/cache/futureos-previews/${i.contentHash}.jpg`, { size: 4096 });
+    const client = mockClient();
+    client.downloadChunk.mockResolvedValue(bytes);
+    client.request.mockResolvedValue({ success: true, data: {} });
+    const file = await downloadPrepared(client as unknown as RemoteClient, i);
+    expect(file.size).toBe(bytes.length);
+    expect(await file.bytes()).toEqual(bytes);
+  });
 });
 
 describe("prepareSharedAttachments", () => {
@@ -778,7 +1349,7 @@ describe("prepareSharedAttachments", () => {
     mockFS.__set("file:///share/new.png", { bytes: new Uint8Array(10), type: "image/png" });
     await expect(prepareSharedAttachments(
       [{ uri: "file:///share/new.png", name: "new.png", mimeType: "image/png" }],
-      Array.from({ length: 4 }, () => attachment({ kind: "image" })),
+      Array.from({ length: MAX_IMAGES }, () => attachment({ kind: "image" })),
     )).rejects.toThrow("attachment_image_count");
     expect(mockedManipulate).not.toHaveBeenCalled();
   });
@@ -931,7 +1502,7 @@ describe("uploadAttachments", () => {
 
   test("rejects a batch over the image count quota", async () => {
     const client = mockClient();
-    const images = Array.from({ length: 5 }, (_, i) =>
+    const images = Array.from({ length: MAX_IMAGES + 1 }, (_, i) =>
       attachment({ kind: "image", localUri: `file:///img/${i}.png` }),
     );
     await expect(uploadAttachments(client as unknown as RemoteClient, images)).rejects.toThrow(
@@ -1276,6 +1847,30 @@ describe("download & preview cache", () => {
     client.request.mockResolvedValue({ success: true, data: {} });
     await expect(downloadPrepared(client as unknown as RemoteClient, i)).rejects.toThrow(
       "download_size_mismatch",
+    );
+  });
+
+  test("downloadPrepared rejects a file that lands short even when every chunk was the right length", async () => {
+    // The per-chunk length check cannot catch a writer that drops bytes: this is
+    // the final integrity check on what actually reached the disk. Without it a
+    // short file would be cached, hashed, and served as if it were complete.
+    const i: DownloadInfo = { ...info, size: 8, contentHash: "x" };
+    const client = mockClient();
+    client.downloadChunk.mockImplementation(async () => {
+      // First wave settles, then the file on disk is shorter than what the
+      // chunks claimed to carry (a lying or truncated write).
+      mockFS.__set(cacheUri(i), { bytes: new Uint8Array(8), size: 3 });
+      return new Uint8Array(4);
+    });
+    client.request.mockResolvedValue({ success: true, data: {} });
+    await expect(downloadPrepared(client as unknown as RemoteClient, i)).rejects.toThrow(
+      "download_size_mismatch",
+    );
+    // The short file is removed and the transfer released on the desktop.
+    expect(new mockFS.File(cacheUri(i) as never).exists).toBe(false);
+    expect(client.request).toHaveBeenCalledWith(
+      { type: "download_cancel", transferId: "t1" },
+      "transfer",
     );
   });
 

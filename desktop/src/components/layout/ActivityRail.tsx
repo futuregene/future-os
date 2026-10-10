@@ -1,5 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import type { DeviceFilter, MergedConversation } from "../../features/remote-peer/mergeConversations";
+import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { FutureSessionStatus } from "./hooks/useFutureAccount";
 import type { RemoteIndicator } from "./hooks/useRemoteStatus";
@@ -9,16 +11,18 @@ import {
   ChevronDown,
   ChevronRight,
   Folder,
+  ListChecks,
   MessageSquare,
+  MonitorSmartphone,
   PanelLeft,
   Pin,
   Plus,
-  Smartphone,
   Sparkles,
   SquarePen,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { mergeConversations } from "../../features/remote-peer/mergeConversations";
 import { SkillIntroBubble } from "../../features/skills/SkillIntroBubble";
 import { listInstalledSkills } from "../../integrations/skills/skillsClient";
 import { cn } from "../../lib/cn";
@@ -32,13 +36,15 @@ import { IconButton } from "../ui/IconButton";
 import { ActivityRailAccountFooter } from "./ActivityRailAccountFooter";
 import { ChatSectionMenu, WorkspaceHeaderMenu } from "./ActivityRailMenus";
 import { ActivityRailSelectionToolbar } from "./ActivityRailSelectionToolbar";
+import { DeviceSelector } from "./DeviceSelector";
 import { useCollapsedWorkspaces } from "./hooks/useCollapsedWorkspaces";
 import { usePendingApprovalCounts } from "./hooks/usePendingApprovalCounts";
 import { useRailSelection } from "./hooks/useRailSelection";
+import { MergedRows } from "./MergedRows";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, visibleThreadRows } from "./threadTree";
 
-export type ActivitySection = "chat" | "workspace" | "skill" | "remote" | "settings";
+export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote" | "settings";
 
 interface ActivityRailProps {
   active: ActivitySection;
@@ -68,6 +74,23 @@ interface ActivityRailProps {
   onToggleExpanded: () => void;
   /** Remote bridge connection state for the nav indicator dot. */
   remoteIndicator?: RemoteIndicator;
+  /** The remote desktops this machine is paired with (client role). */
+  remotePeers?: RemotePeer[];
+  /** Each connected remote desktop's session snapshot. */
+  remoteCatalogs?: import("../../features/remote-peer/mergeConversations").RemoteCatalog[];
+  /** Which machines the conversation list shows. */
+  deviceFilter?: DeviceFilter;
+  onChangeDeviceFilter?: (filter: DeviceFilter) => void;
+  /** Open a conversation that lives on another machine. */
+  onOpenRemoteConversation?: (conversation: MergedConversation) => void;
+  /** Rename a conversation on the machine that owns it. */
+  onRenameRemoteConversation?: (conversation: MergedConversation) => void;
+  /** Re-read paired hosts and their catalogues (after a remote row action). */
+  onRemoteConversationsChanged?: () => void;
+  /** Jump to the Remote Desktops screen. */
+  onManageDesktops?: () => void;
+  /** The remote conversation currently open (client role), if any. */
+  activeRemoteKey?: string | null;
   /** FutureOS credit balance (null when signed out). */
   futureBalance?: number | null;
   /** Signed-in FutureOS email (null when signed out). Drives the account menu. */
@@ -118,9 +141,17 @@ export function ActivityRail({
   onTogglePinThread,
   onToggleExpanded,
   remoteIndicator,
+  remotePeers = [],
+  remoteCatalogs = [],
+  deviceFilter = { kind: "all" },
+  onChangeDeviceFilter,
+  onOpenRemoteConversation,
+  onRenameRemoteConversation,
+  onRemoteConversationsChanged,
+  onManageDesktops,
+  activeRemoteKey = null,
   futureBalance,
   userEmail,
-  futureSessionStatus,
   communityEdition,
   onRecharge,
   onOpenUpdate,
@@ -133,11 +164,6 @@ export function ActivityRail({
   const pendingApprovalCounts = usePendingApprovalCounts();
   // Shared overlay scrollbar for the conversation list, matching the chat view.
   const listScrollbar = useFloatingScrollbar();
-  // Remote pairing issues its code through the FutureOS service, so it needs a
-  // sign-in. Hide the nav entry while signed out.
-  const showRemote = futureSessionStatus === "authenticated"
-    || futureSessionStatus === "unavailable"
-    || (futureSessionStatus === "checking" && userEmail != null);
   // Connection indicator overlaid on the Remote nav icon: blue when connected,
   // amber while a connection is being attempted, red when remote access is disconnected,
   // and nothing before pairing.
@@ -281,6 +307,84 @@ export function ActivityRail({
   }, [workspaceRoots, workspaces, expandedThreads, visibleThreads]);
   const visibleWorkspaceGroups = workspaceSectionCollapsed ? [] : workspaceGroups;
   const visibleChatThreads = chatSectionCollapsed ? [] : chatThreads;
+
+  /**
+   * The merged mode, and the one rule that turns it on.
+   *
+   * A user with no remote desktops keeps today's list *exactly*: grouped by
+   * workspace, chat section, selection mode. Only once a remote session is
+   * actually present does the list become the flat, time-ordered merged view,
+   * because that view is a different information architecture — the workspace
+   * grouping stops being meaningful when a group name can exist on two
+   * machines at once.
+   */
+  const remoteRows = useMemo(
+    () => mergeConversations(
+      visibleThreads.map(thread => ({
+        id: thread.id,
+        title: thread.title,
+        mode: thread.mode,
+        pinned: thread.pinned,
+        status: thread.status,
+        workspaceId: thread.workspaceId,
+        lastMessageAt: thread.lastMessageAt,
+        updatedAt: thread.updatedAt,
+        createdAt: thread.createdAt,
+      })),
+      remoteCatalogs,
+      deviceFilter,
+    ),
+    [visibleThreads, remoteCatalogs, deviceFilter],
+  );
+  const hasRemoteRows = remoteRows.some(row => row.desktopId !== null);
+  const mergedMode = hasRemoteRows || (deviceFilter.kind === "device" && deviceFilter.desktopId !== null);
+  const visibleRemoteRows = mergedMode ? remoteRows : [];
+  /**
+   * Which row is "current". A local thread is current while the chat section is
+   * open; a remote row is current once its conversation is the one on screen.
+   */
+  const activeConversationKey = active === "chat" && activeThreadId
+    ? `local::${activeThreadId}`
+    : activeRemoteKey;
+
+  /**
+   * One local row, built once and reused by both list modes. Extracted rather
+   * than duplicated so a future row prop cannot be added to one list and
+   * forgotten in the other.
+   */
+  function renderLocalRow(thread: StoredThread, depth = 0, hasChildren = false): React.ReactNode {
+    return (
+      <ThreadListItem
+        active={thread.id === activeThreadId && active === "chat"}
+        archived={thread.status === "archived"}
+        key={thread.id}
+        menuOpen={openThreadMenuId === thread.id}
+        pendingApprovalCount={pendingApprovalCounts.get(thread.id)}
+        runStatus={threadRunStatuses[thread.id]}
+        isStreaming={threadStreamingStatuses[thread.id]}
+        selected={selectedThreadIds.has(thread.id)}
+        selectionMode={threadSelectionMode(thread)}
+        thread={thread}
+        depth={depth}
+        hasChildren={hasChildren}
+        expanded={expandedThreads.has(thread.id)}
+        onToggleExpanded={toggleThreadExpanded}
+        unread={unreadThreadIds.has(thread.id)}
+        onDeleteThread={onDeleteThread}
+        onMenuOpenChange={handleThreadMenuOpenChange}
+        onRenameThread={onRenameThread}
+        onRestoreThread={onRestoreThread}
+        onSelectThread={handleRowSelect}
+        onTogglePinThread={onTogglePinThread}
+        onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
+      />
+    );
+  }
+
+  const threadById = useMemo(
+    () => new Map(visibleThreads.map(thread => [thread.id, thread])),
+    [visibleThreads],
+  );
   const toggleLabel = floating
     ? t("activityRail.pinSidebar")
     : expanded
@@ -353,9 +457,28 @@ export function ActivityRail({
                         )
                       : null}
                   </div>
-                  {showRemote
-                    ? <NavButton icon={Smartphone} indicator={remoteDot} label={t("activityRail.remote")} active={active === "remote"} onClick={() => onChange("remote")} />
-                    : null}
+                  {/* Task sits with the other standing entries: it is something
+                      you set up and keep, like the remote connection below. */}
+                  <NavButton icon={ListChecks} label={t("activityRail.tasks")} active={active === "tasks"} onClick={() => onChange("tasks")} />
+                  {/* One entry for both directions of remote.
+
+                      They used to be two, and the labels were the problem:
+                      "Phone Control" and "Remote Desktops" are a word apart,
+                      neither says which way the connection goes, and neither is
+                      even accurate now that a *computer* can be either side.
+                      The page inside separates the directions in words.
+
+                      Always shown, unlike the old host-only entry which needed a
+                      FutureOS sign-in: the client half does not, so hiding the
+                      entry hid a feature that was usable. The section that does
+                      need a sign-in says so itself. */}
+                  <NavButton
+                    active={active === "remote"}
+                    icon={MonitorSmartphone}
+                    indicator={remoteDot}
+                    label={t("activityRail.remote")}
+                    onClick={() => onChange("remote")}
+                  />
                 </div>
                 {featureItems.length > 0
                   ? (
@@ -372,6 +495,18 @@ export function ActivityRail({
                       </div>
                     )
                   : null}
+                {onChangeDeviceFilter && remotePeers.length > 0
+                  ? (
+                      <div className="mb-2 shrink-0">
+                        <DeviceSelector
+                          filter={deviceFilter}
+                          onChange={onChangeDeviceFilter}
+                          onManage={() => onManageDesktops?.()}
+                          peers={remotePeers}
+                        />
+                      </div>
+                    )
+                  : null}
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="group relative -mx-2 flex min-h-0 flex-1">
                     <div
@@ -381,133 +516,32 @@ export function ActivityRail({
                       onScroll={listScrollbar.handleScroll}
                     >
                       <div ref={listScrollbar.contentRef} className="flex min-h-full flex-col" data-activity-rail-content="true">
-                        {pinnedThreads.length > 0
+                        {mergedMode
                           ? (
-                              <div className="mb-3 space-y-0.5">
-                                <div className="sticky top-0 z-20 flex h-6 items-center bg-surface px-2 text-xs font-medium text-ink-muted">
-                                  <span>{t("activityRail.pinnedHeader")}</span>
-                                </div>
-                                {pinnedThreads.map(({ thread, depth, hasChildren }) => (
-                                  <ThreadListItem
-                                    active={thread.id === activeThreadId}
-                                    archived={thread.status === "archived"}
-                                    key={thread.id}
-                                    menuOpen={openThreadMenuId === thread.id}
-                                    pendingApprovalCount={pendingApprovalCounts.get(thread.id)}
-                                    runStatus={threadRunStatuses[thread.id]}
-                                    selected={selectedThreadIds.has(thread.id)}
-                                    selectionMode={threadSelectionMode(thread)}
-                                    thread={thread}
-                                    depth={depth}
-                                    hasChildren={hasChildren}
-                                    expanded={expandedThreads.has(thread.id)}
-                                    onToggleExpanded={toggleThreadExpanded}
-                                    isStreaming={threadStreamingStatuses[thread.id]}
-                                    unread={unreadThreadIds.has(thread.id)}
-                                    onDeleteThread={onDeleteThread}
-                                    onMenuOpenChange={handleThreadMenuOpenChange}
-                                    onRenameThread={onRenameThread}
-                                    onRestoreThread={onRestoreThread}
-                                    onSelectThread={handleRowSelect}
-                                    onTogglePinThread={onTogglePinThread}
-                                    onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
-                                  />
-                                ))}
-                              </div>
+                              <MergedRows
+                                activeKey={activeConversationKey}
+                                filter={deviceFilter}
+                                onChangedRemote={() => onRemoteConversationsChanged?.()}
+                                onOpenRemote={conversation => onOpenRemoteConversation?.(conversation)}
+                                onRenameRemote={conversation => onRenameRemoteConversation?.(conversation)}
+                                peers={remotePeers}
+                                renderLocalRow={renderLocalRow}
+                                rows={visibleRemoteRows}
+                                threadById={threadById}
+                              />
                             )
                           : null}
-                        <div className="space-y-0.5">
-                          <div className="sticky top-0 z-20 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
-                            <span>{t("activityRail.workspace")}</span>
-                            <div className="flex items-center gap-0.5">
-                              <SectionToggle
-                                collapsed={workspaceSectionCollapsed}
-                                label={workspaceSectionCollapsed
-                                  ? t("activityRail.expandWorkspaceSection")
-                                  : t("activityRail.collapseWorkspaceSection")}
-                                onToggle={() => setWorkspaceSectionCollapsed(value => !value)}
-                              />
-                              <button
-                                aria-label={t("activityRail.newWorkspace")}
-                                className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
-                                onClick={onNewWorkspace}
-                                title={t("activityRail.newWorkspace")}
-                                type="button"
-                              >
-                                <Plus className="size-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                          {!workspaceSectionCollapsed && workspaceGroups.length === 0
-                            ? (
-                                <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noWorkspaceThreads")}</div>
-                              )
-                            : null}
-                          {visibleWorkspaceGroups.map(({ workspace, threads: groupThreads, rows }) => {
-                            const collapsed = collapsedWorkspaces.has(workspace.id);
-                            return (
-                              <div key={workspace.id} className="space-y-0.5">
-                                {/* Group header: hover only, no selected state (req 4).
-                                Right-click anywhere on the row opens the same
-                                actions menu as the `...` button. */}
-                                <div
-                                  className="group flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle"
-                                  onContextMenu={(event) => {
-                                    event.preventDefault();
-                                    setOpenWorkspaceMenuId(workspace.id);
-                                  }}
-                                >
-                                  <button
-                                    aria-label={collapsed ? t("activityRail.expandWorkspace") : t("activityRail.collapseWorkspace")}
-                                    className="inline-flex size-4 shrink-0 items-center justify-center text-ink-muted transition-colors hover:text-ink-soft"
-                                    onClick={() => toggleWorkspaceCollapsed(workspace.id)}
-                                    type="button"
-                                  >
-                                    {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
-                                  </button>
-                                  {/* gap-1 (not gap-2): the workspace name then lands on
-                                      the same 48px column as its first-level titles,
-                                      matching the folder icon's role as this header's
-                                      version of the row toggle column. */}
-                                  <button
-                                    className="flex min-w-0 flex-1 items-center gap-1 text-left"
-                                    onClick={() => onSelectWorkspace(workspace, groupThreads)}
-                                    type="button"
-                                  >
-                                    <Folder className="size-4 shrink-0 text-ink-soft" />
-                                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-soft" title={workspace.name}>
-                                      {workspace.name}
-                                    </span>
-                                    {/* A pinned group leads the list; the marker
-                                        stays visible on hover like the row's own
-                                        pin state, without a second control. */}
-                                    {workspace.pinned
-                                      ? <Pin aria-hidden className="size-3.5 shrink-0 text-accent" />
-                                      : null}
-                                  </button>
-                                  <WorkspaceHeaderMenu
-                                    open={openWorkspaceMenuId === workspace.id}
-                                    workspace={workspace}
-                                    onDelete={onDeleteWorkspace}
-                                    onOpenChange={open => setOpenWorkspaceMenuId(open ? workspace.id : null)}
-                                    onRename={onRenameWorkspace}
-                                    onTogglePin={onTogglePinWorkspace}
-                                    onSelect={selectionMode ? undefined : () => enterSelectionMode(workspace.id)}
-                                  />
-                                  <button
-                                    aria-label={t("activityRail.newChatInWorkspace", { name: workspace.name })}
-                                    className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover:opacity-100"
-                                    onClick={() => onNewChat(workspace.id)}
-                                    title={t("activityRail.newChatInWorkspace", { name: workspace.name })}
-                                    type="button"
-                                  >
-                                    <Plus className="size-3.5" />
-                                  </button>
-                                </div>
-                                {!collapsed && groupThreads.length > 0
+                        {mergedMode
+                          ? null
+                          : (
+                              <>
+                                {pinnedThreads.length > 0
                                   ? (
-                                      <div className="space-y-0.5">
-                                        {rows.map(({ thread, depth, hasChildren }) => (
+                                      <div className="mb-3 space-y-0.5">
+                                        <div className="sticky top-0 z-20 flex h-6 items-center bg-surface px-2 text-xs font-medium text-ink-muted">
+                                          <span>{t("activityRail.pinnedHeader")}</span>
+                                        </div>
+                                        {pinnedThreads.map(({ thread, depth, hasChildren }) => (
                                           <ThreadListItem
                                             active={thread.id === activeThreadId}
                                             archived={thread.status === "archived"}
@@ -524,7 +558,6 @@ export function ActivityRail({
                                             onToggleExpanded={toggleThreadExpanded}
                                             isStreaming={threadStreamingStatuses[thread.id]}
                                             unread={unreadThreadIds.has(thread.id)}
-                                            compact
                                             onDeleteThread={onDeleteThread}
                                             onMenuOpenChange={handleThreadMenuOpenChange}
                                             onRenameThread={onRenameThread}
@@ -537,73 +570,171 @@ export function ActivityRail({
                                       </div>
                                     )
                                   : null}
-                              </div>
-                            );
-                          })}
-                        </div>
-                        <div className="mt-3 flex flex-1 flex-col space-y-0.5">
-                          <div className="sticky top-0 z-20 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
-                            <span>{t("activityRail.chatHeader")}</span>
-                            <div className="flex items-center gap-0.5">
-                              <SectionToggle
-                                collapsed={chatSectionCollapsed}
-                                label={chatSectionCollapsed
-                                  ? t("activityRail.expandChatSection")
-                                  : t("activityRail.collapseChatSection")}
-                                onToggle={() => setChatSectionCollapsed(value => !value)}
-                              />
-                              {!selectionMode
-                                ? (
-                                    <ChatSectionMenu
-                                      open={chatSectionMenuOpen}
-                                      onOpenChange={setChatSectionMenuOpen}
-                                      onSelect={() => enterSelectionMode("chat")}
-                                    />
-                                  )
-                                : null}
-                              <button
-                                aria-label={t("activityRail.newChatShort")}
-                                className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
-                                onClick={() => onNewChat()}
-                                title={t("activityRail.newChatShort")}
-                                type="button"
-                              >
-                                <Plus className="size-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                          {!chatSectionCollapsed && chatThreads.length === 0
-                            ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noChats")}</div>
-                            : null}
-                          <div className="shrink-0 space-y-0.5">
-                            {visibleChatThreads.map(({ thread, depth, hasChildren }) => (
-                              <ThreadListItem
-                                active={thread.id === activeThreadId && active === "chat"}
-                                archived={thread.status === "archived"}
-                                key={thread.id}
-                                menuOpen={openThreadMenuId === thread.id}
-                                pendingApprovalCount={pendingApprovalCounts.get(thread.id)}
-                                runStatus={threadRunStatuses[thread.id]}
-                                isStreaming={threadStreamingStatuses[thread.id]}
-                                selected={selectedThreadIds.has(thread.id)}
-                                selectionMode={threadSelectionMode(thread)}
-                                thread={thread}
-                                depth={depth}
-                                hasChildren={hasChildren}
-                                expanded={expandedThreads.has(thread.id)}
-                                onToggleExpanded={toggleThreadExpanded}
-                                unread={unreadThreadIds.has(thread.id)}
-                                onDeleteThread={onDeleteThread}
-                                onMenuOpenChange={handleThreadMenuOpenChange}
-                                onRenameThread={onRenameThread}
-                                onRestoreThread={onRestoreThread}
-                                onSelectThread={handleRowSelect}
-                                onTogglePinThread={onTogglePinThread}
-                                onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
-                              />
-                            ))}
-                          </div>
-                        </div>
+                                <div className="space-y-0.5">
+                                  <div className="sticky top-0 z-20 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
+                                    <span>{t("activityRail.workspace")}</span>
+                                    <div className="flex items-center gap-0.5">
+                                      <SectionToggle
+                                        collapsed={workspaceSectionCollapsed}
+                                        label={workspaceSectionCollapsed
+                                          ? t("activityRail.expandWorkspaceSection")
+                                          : t("activityRail.collapseWorkspaceSection")}
+                                        onToggle={() => setWorkspaceSectionCollapsed(value => !value)}
+                                      />
+                                      <button
+                                        aria-label={t("activityRail.newWorkspace")}
+                                        className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                                        onClick={onNewWorkspace}
+                                        title={t("activityRail.newWorkspace")}
+                                        type="button"
+                                      >
+                                        <Plus className="size-3.5" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                  {!workspaceSectionCollapsed && workspaceGroups.length === 0
+                                    ? (
+                                        <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noWorkspaceThreads")}</div>
+                                      )
+                                    : null}
+                                  {visibleWorkspaceGroups.map(({ workspace, threads: groupThreads, rows }) => {
+                                    const collapsed = collapsedWorkspaces.has(workspace.id);
+                                    return (
+                                      <div key={workspace.id} className="space-y-0.5">
+                                        {/* Group header: hover only, no selected state (req 4).
+                                Right-click anywhere on the row opens the same
+                                actions menu as the `...` button. */}
+                                        <div
+                                          className="group flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle"
+                                          onContextMenu={(event) => {
+                                            event.preventDefault();
+                                            setOpenWorkspaceMenuId(workspace.id);
+                                          }}
+                                        >
+                                          <button
+                                            aria-label={collapsed ? t("activityRail.expandWorkspace") : t("activityRail.collapseWorkspace")}
+                                            className="inline-flex size-4 shrink-0 items-center justify-center text-ink-muted transition-colors hover:text-ink-soft"
+                                            onClick={() => toggleWorkspaceCollapsed(workspace.id)}
+                                            type="button"
+                                          >
+                                            {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+                                          </button>
+                                          {/* gap-1 (not gap-2): the workspace name then lands on
+                                      the same 48px column as its first-level titles,
+                                      matching the folder icon's role as this header's
+                                      version of the row toggle column. */}
+                                          <button
+                                            className="flex min-w-0 flex-1 items-center gap-1 text-left"
+                                            onClick={() => onSelectWorkspace(workspace, groupThreads)}
+                                            type="button"
+                                          >
+                                            <Folder className="size-4 shrink-0 text-ink-soft" />
+                                            <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-soft" title={workspace.name}>
+                                              {workspace.name}
+                                            </span>
+                                            {/* A pinned group leads the list; the marker
+                                        stays visible on hover like the row's own
+                                        pin state, without a second control. */}
+                                            {workspace.pinned
+                                              ? <Pin aria-hidden className="size-3.5 shrink-0 text-accent" />
+                                              : null}
+                                          </button>
+                                          <WorkspaceHeaderMenu
+                                            open={openWorkspaceMenuId === workspace.id}
+                                            workspace={workspace}
+                                            onDelete={onDeleteWorkspace}
+                                            onOpenChange={open => setOpenWorkspaceMenuId(open ? workspace.id : null)}
+                                            onRename={onRenameWorkspace}
+                                            onTogglePin={onTogglePinWorkspace}
+                                            onSelect={selectionMode ? undefined : () => enterSelectionMode(workspace.id)}
+                                          />
+                                          <button
+                                            aria-label={t("activityRail.newChatInWorkspace", { name: workspace.name })}
+                                            className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover:opacity-100"
+                                            onClick={() => onNewChat(workspace.id)}
+                                            title={t("activityRail.newChatInWorkspace", { name: workspace.name })}
+                                            type="button"
+                                          >
+                                            <Plus className="size-3.5" />
+                                          </button>
+                                        </div>
+                                        {!collapsed && groupThreads.length > 0
+                                          ? (
+                                              <div className="space-y-0.5">
+                                                {rows.map(({ thread, depth, hasChildren }) => (
+                                                  <ThreadListItem
+                                                    active={thread.id === activeThreadId}
+                                                    archived={thread.status === "archived"}
+                                                    key={thread.id}
+                                                    menuOpen={openThreadMenuId === thread.id}
+                                                    pendingApprovalCount={pendingApprovalCounts.get(thread.id)}
+                                                    runStatus={threadRunStatuses[thread.id]}
+                                                    selected={selectedThreadIds.has(thread.id)}
+                                                    selectionMode={threadSelectionMode(thread)}
+                                                    thread={thread}
+                                                    depth={depth}
+                                                    hasChildren={hasChildren}
+                                                    expanded={expandedThreads.has(thread.id)}
+                                                    onToggleExpanded={toggleThreadExpanded}
+                                                    isStreaming={threadStreamingStatuses[thread.id]}
+                                                    unread={unreadThreadIds.has(thread.id)}
+                                                    compact
+                                                    onDeleteThread={onDeleteThread}
+                                                    onMenuOpenChange={handleThreadMenuOpenChange}
+                                                    onRenameThread={onRenameThread}
+                                                    onRestoreThread={onRestoreThread}
+                                                    onSelectThread={handleRowSelect}
+                                                    onTogglePinThread={onTogglePinThread}
+                                                    onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
+                                                  />
+                                                ))}
+                                              </div>
+                                            )
+                                          : null}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                                <div className="mt-3 flex flex-1 flex-col space-y-0.5">
+                                  <div className="sticky top-0 z-20 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
+                                    <span>{t("activityRail.chatHeader")}</span>
+                                    <div className="flex items-center gap-0.5">
+                                      <SectionToggle
+                                        collapsed={chatSectionCollapsed}
+                                        label={chatSectionCollapsed
+                                          ? t("activityRail.expandChatSection")
+                                          : t("activityRail.collapseChatSection")}
+                                        onToggle={() => setChatSectionCollapsed(value => !value)}
+                                      />
+                                      {!selectionMode
+                                        ? (
+                                            <ChatSectionMenu
+                                              open={chatSectionMenuOpen}
+                                              onOpenChange={setChatSectionMenuOpen}
+                                              onSelect={() => enterSelectionMode("chat")}
+                                            />
+                                          )
+                                        : null}
+                                      <button
+                                        aria-label={t("activityRail.newChatShort")}
+                                        className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                                        onClick={() => onNewChat()}
+                                        title={t("activityRail.newChatShort")}
+                                        type="button"
+                                      >
+                                        <Plus className="size-3.5" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                  {!chatSectionCollapsed && chatThreads.length === 0
+                                    ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noChats")}</div>
+                                    : null}
+                                  <div className="shrink-0 space-y-0.5">
+                                    {visibleChatThreads.map(({ thread, depth, hasChildren }) => renderLocalRow(thread, depth, hasChildren))}
+                                  </div>
+                                </div>
+                              </>
+                            )}
                       </div>
                     </div>
                     <FloatingScrollbar
@@ -639,21 +770,6 @@ export function ActivityRail({
                   active={false}
                   onClick={onOpenModels}
                 />
-                {showRemote
-                  ? (
-                      <IconButton
-                        icon={(
-                          <span className="relative inline-flex">
-                            <Smartphone className="size-4" />
-                            {remoteDot}
-                          </span>
-                        )}
-                        label={t("activityRail.remote")}
-                        active={active === "remote"}
-                        onClick={() => onChange("remote")}
-                      />
-                    )
-                  : null}
                 {featureItems.map((item) => {
                   const Icon = item.icon;
                   return (
@@ -666,6 +782,26 @@ export function ActivityRail({
                     />
                   );
                 })}
+                <IconButton
+                  icon={<ListChecks className="size-4" />}
+                  label={t("activityRail.tasks")}
+                  active={active === "tasks"}
+                  onClick={() => onChange("tasks")}
+                />
+                {/* Always shown, and the same for both directions of remote:
+                    the client half needs no sign-in, so gating this on one hid
+                    a feature that was usable. */}
+                <IconButton
+                  icon={(
+                    <span className="relative inline-flex">
+                      <MonitorSmartphone className="size-4" />
+                      {remoteDot}
+                    </span>
+                  )}
+                  label={t("activityRail.remote")}
+                  active={active === "remote"}
+                  onClick={() => onChange("remote")}
+                />
                 <IconButton
                   icon={<Folder className="size-4" />}
                   label={t("activityRail.workspace")}

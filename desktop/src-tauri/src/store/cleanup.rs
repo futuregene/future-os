@@ -257,6 +257,77 @@ fn orphan_thread_ids(
     Ok(orphans)
 }
 
+/// How long a mirrored conversation must exist before it can be pronounced
+/// empty. A remote prompt binds its Agent session a moment before the message
+/// is persisted, so a thread created just now can be message-less for a few
+/// hundred milliseconds while it is very much alive.
+const EMPTY_CONVERSATION_GRACE_MS: i64 = 10 * 60 * 1000;
+
+/// Sweep conversations the GUI mirrors for a session that has no message at all.
+///
+/// Sessions are announced when they are *created*, so builds that imported every
+/// announcement ended up with a row for sessions nobody had prompted yet: an
+/// empty conversation in every list, plus the throw-away temp workspace the
+/// mirror allocated for it. Import no longer does that; this heals the rows that
+/// are already stored, so an existing list converges without hand deletion.
+///
+/// Only threads that never produced a run are candidates — a thread with runs
+/// always had something to show — and only when the Agent itself answers that
+/// the session holds no message. An unreachable Agent, an unreadable journal, or
+/// a partially read one all leave the row alone (see
+/// [`crate::agent_bridge::session_has_messages`]), and a thread created within
+/// [`EMPTY_CONVERSATION_GRACE_MS`] is skipped so a conversation being started
+/// right now is never caught mid-bind. Returns the number of threads deleted.
+pub async fn reconcile_empty_conversations() -> Result<usize, crate::AppError> {
+    let candidates = {
+        let conn = connect()?;
+        empty_thread_candidates(&conn, now_millis() - EMPTY_CONVERSATION_GRACE_MS)?
+    };
+    let mut removed = 0;
+    for (thread_id, session_id) in candidates {
+        match crate::agent_bridge::session_has_messages(&session_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                // The Agent keeps the session: this drops only the local
+                // projection, without queuing an Agent delete or tombstoning
+                // the id the next discovery pass has to re-import.
+                crate::store::forget_thread_mirror(&thread_id)?;
+                removed += 1;
+            }
+            Err(crate::AppError::AgentUnavailable(error)) => {
+                // Nothing left in this pass can be judged while the Agent is
+                // away; the next one re-runs it.
+                eprintln!("FutureOS: empty-conversation reconcile stopped: {error}");
+                break;
+            }
+            Err(error) => {
+                eprintln!("FutureOS: empty-conversation probe failed for {session_id}: {error}")
+            }
+        }
+    }
+    Ok(removed)
+}
+
+/// The `(thread, agent session)` pairs worth probing for emptiness: threads
+/// bound to a session that never produced a run and are past the bind grace.
+fn empty_thread_candidates(
+    conn: &Connection,
+    created_before: i64,
+) -> Result<Vec<(String, String)>, crate::AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, agent_session_id FROM threads
+          WHERE status != 'deleted'
+            AND COALESCE(TRIM(agent_session_id), '') != ''
+            AND created_at < ?1
+            AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.thread_id = threads.id)",
+    )?;
+    let rows = stmt.query_map([created_before], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::AppError::from)
+}
+
 /// Reclaim per-thread image directories (`~/.future/app/images/<tid>`) whose
 /// thread no longer lives in the DB. This is the primary reclamation path for
 /// attachment thumbnails and workspace-mode originals: there is no per-delete
@@ -1112,5 +1183,180 @@ mod tests {
         assert!(crate::store::get_thread("t_none").expect("get").is_some());
 
         script_mock_agent(MockScript::default());
+    }
+
+    // ── reconcile_empty_conversations against the shared mock agent ─────────
+
+    /// A thread mirrored for an agent session that never produced a run — the
+    /// shape older builds left behind for sessions announced at creation and
+    /// never prompted.
+    fn seed_message_less_threads(conn: &Connection, threads: &[(&str, &str, i64)]) {
+        conn.execute_batch(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws_empty', 'WS', 'temporary', '/tmp/ws-empty', 'active', 1, 1);",
+        )
+        .expect("seed workspace");
+        for (id, session_id, created_at) in threads {
+            conn.execute(
+                "INSERT INTO threads (
+                     id, workspace_id, mode, title, agent_session_id, created_at, updated_at
+                 ) VALUES (?1, 'ws_empty', 'chat', 'T', ?2, ?3, ?3)",
+                rusqlite::params![id, session_id, created_at],
+            )
+            .expect("seed thread");
+        }
+    }
+
+    fn script_entries(page: serde_json::Value) -> MockScript {
+        MockScript {
+            data: std::collections::HashMap::from([(
+                "get_session_entries".to_string(),
+                page.to_string(),
+            )]),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn reconcile_empty_conversations_removes_a_session_without_messages() {
+        let _lock = mock_agent_lock();
+        ensure_mock_agent();
+        script_mock_agent(script_entries(
+            serde_json::json!({"entries": [], "hasMore": false}),
+        ));
+
+        let (_home, conn) = guarded_conn("reconcile_empty");
+        seed_message_less_threads(&conn, &[("t_empty", "sess_empty", 1)]);
+        drop(conn);
+
+        assert_eq!(reconcile_empty_conversations().await.expect("reconcile"), 1);
+        assert!(crate::store::get_thread("t_empty").expect("get").is_none());
+        assert!(
+            !crate::store::is_agent_session_tombstoned("sess_empty").expect("tombstone"),
+            "the sweep owns no Agent session: it stays importable"
+        );
+        assert!(
+            crate::store::pending_agent_session_deletes()
+                .expect("outbox")
+                .is_empty(),
+            "an empty mirror is not a user delete"
+        );
+
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn reconcile_empty_conversations_keeps_a_session_with_a_message() {
+        let _lock = mock_agent_lock();
+        ensure_mock_agent();
+        script_mock_agent(script_entries(serde_json::json!({"entries": [
+            {"id":"u1","role":"user","kind":"user","blocks":[],"createdAtMs":1000}
+        ]})));
+
+        let (_home, conn) = guarded_conn("reconcile_empty_msg");
+        seed_message_less_threads(&conn, &[("t_full", "sess_full", 1)]);
+        drop(conn);
+
+        assert_eq!(reconcile_empty_conversations().await.expect("reconcile"), 0);
+        assert!(crate::store::get_thread("t_full").expect("get").is_some());
+
+        script_mock_agent(MockScript::default());
+    }
+
+    /// A page that stops mid-journal proves nothing about the entries it left
+    /// out, so the row must survive.
+    #[tokio::test]
+    async fn reconcile_empty_conversations_keeps_a_partial_page() {
+        let _lock = mock_agent_lock();
+        ensure_mock_agent();
+        script_mock_agent(script_entries(
+            serde_json::json!({"entries": [], "hasMore": true}),
+        ));
+
+        let (_home, conn) = guarded_conn("reconcile_empty_more");
+        seed_message_less_threads(&conn, &[("t_more", "sess_more", 1)]);
+        drop(conn);
+
+        assert_eq!(reconcile_empty_conversations().await.expect("reconcile"), 0);
+        assert!(crate::store::get_thread("t_more").expect("get").is_some());
+
+        script_mock_agent(MockScript::default());
+    }
+
+    /// An unreadable journal is not an empty one: the pass keeps the row.
+    #[tokio::test]
+    async fn reconcile_empty_conversations_keeps_rows_it_cannot_read() {
+        let _lock = mock_agent_lock();
+        ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: std::collections::HashMap::from([(
+                "get_session_entries".to_string(),
+                "journal unreadable".to_string(),
+            )]),
+            ..Default::default()
+        });
+
+        let (_home, conn) = guarded_conn("reconcile_empty_err");
+        seed_message_less_threads(&conn, &[("t_err", "sess_err", 1)]);
+        drop(conn);
+
+        assert_eq!(reconcile_empty_conversations().await.expect("reconcile"), 0);
+        assert!(crate::store::get_thread("t_err").expect("get").is_some());
+
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn reconcile_empty_conversations_skips_when_the_agent_is_unreachable() {
+        let _lock = mock_agent_lock();
+        ensure_mock_agent();
+        script_mock_agent(MockScript {
+            down: true,
+            ..Default::default()
+        });
+
+        let (_home, conn) = guarded_conn("reconcile_empty_down");
+        seed_message_less_threads(&conn, &[("t_down", "sess_down", 1)]);
+        drop(conn);
+
+        assert_eq!(reconcile_empty_conversations().await.expect("reconcile"), 0);
+        assert!(crate::store::get_thread("t_down").expect("get").is_some());
+
+        script_mock_agent(MockScript::default());
+    }
+
+    /// Only a session-bound thread with no run at all, past the bind grace, is
+    /// worth probing: a thread that produced a run has something to show, an
+    /// unbound one is a local draft, and a fresh one may be mid-bind.
+    #[test]
+    fn empty_thread_candidates_are_unrun_bound_threads_past_the_grace() {
+        let (_home, conn) = guarded_conn("reconcile_empty_candidates");
+        seed_message_less_threads(
+            &conn,
+            &[
+                ("t_old", "sess_old", 1),
+                ("t_fresh", "sess_fresh", 5_000),
+                ("t_blank", "   ", 1),
+            ],
+        );
+        conn.execute_batch(
+            "INSERT INTO threads (
+                 id, workspace_id, mode, title, created_at, updated_at
+             ) VALUES ('t_draft', 'ws_empty', 'chat', 'T', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, agent_session_id, created_at, updated_at
+             ) VALUES ('t_old2', 'ws_empty', 'chat', 'T', 'sess_run', 1, 1);
+             INSERT INTO runs (
+                 id, thread_id, status, created_at, updated_at
+             ) VALUES ('r_any', 't_old2', 'completed', 1, 1);",
+        )
+        .expect("seed filtered shapes");
+
+        let candidates = empty_thread_candidates(&conn, 1_000).expect("candidates");
+        assert_eq!(
+            candidates,
+            vec![("t_old".to_string(), "sess_old".to_string())]
+        );
     }
 }

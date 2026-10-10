@@ -6,7 +6,15 @@ import { useAttachmentPicker } from "../useAttachmentPicker";
 import { ActionMenu } from "../../../components/ActionMenu";
 import { pickAttachments, pickFromAlbum, takePhoto } from "../../../remote/files";
 
-jest.mock("../../../remote/files", () => ({ pickAttachments: jest.fn(async () => []), pickFromAlbum: jest.fn(async () => []), takePhoto: jest.fn(async () => []) }));
+jest.mock("../../../remote/files", () => ({
+  albumSource: jest.fn(async () => "system"),
+  loadAlbumImages: jest.fn(async () => []),
+  pickAttachments: jest.fn(async () => []),
+  pickFromAlbum: jest.fn(async () => []),
+  prepareAlbumImages: jest.fn(async () => []),
+  remainingImageSlots: jest.fn(() => 4),
+  takePhoto: jest.fn(async () => []),
+}));
 jest.mock("../utils", () => ({ showToast: jest.fn() }));
 jest.mock("lucide-react-native", () => ({ Camera: () => null, Images: () => null, File: () => null, X: () => null }));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));

@@ -8,7 +8,7 @@ use super::workspaces::{
     get_or_create_chat_workspace_in, get_or_create_user_workspace_in, get_workspace_in,
 };
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadRecord {
     pub id: String,
@@ -378,19 +378,6 @@ pub fn record_thread_message_activity(
 }
 
 /// Move a thread to a different workspace (e.g. when cwd changes).
-pub fn move_thread_to_workspace(
-    thread_id: &str,
-    workspace_id: &str,
-) -> Result<(), crate::AppError> {
-    let now = now_millis();
-    const SQL: &str = "UPDATE threads SET workspace_id = ?1, updated_at = ?2
-         WHERE id = ?3 AND status != 'deleted'";
-    let conn = connect()?;
-    conn.execute(SQL, params![workspace_id, now, thread_id])?;
-    mark_catalog_dirty();
-    Ok(())
-}
-
 pub fn pin_thread(input: PinThreadInput) -> Result<ThreadRecord, crate::AppError> {
     // `updated_at` is deliberately untouched: pinning is an ordering flag, not
     // an activity event. If it stamped `updated_at`, unpinning a thread would
@@ -494,85 +481,261 @@ pub(super) fn delete_thread_children_in(
 /// When `delete_files` is true and the thread is chat-mode, the temporary
 /// workspace directory on disk is removed immediately instead of being flagged
 /// for background cleanup. Workspace-mode threads are never touched.
+///
+/// One thread only — its descendants are left in place, because a child is a
+/// projection of its own Agent session and outlives a parent that disappeared
+/// (the orphan sweep and an externally deleted session both come through here).
+/// A user deleting a conversation wants the whole conversation gone: that is
+/// [`delete_thread_tree`].
 pub fn delete_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
-    delete_thread_inner(thread_id, false)
+    delete_thread_inner(thread_id, false, false)
 }
 
-/// Like [`delete_thread`] but also removes the temporary chat workspace
-/// directory on disk when `delete_files` is true. Workspace-mode threads
-/// are never touched on disk regardless of this flag.
-pub fn delete_thread_with_files(
+/// Recursive conversation delete: the thread and every descendant it parents go
+/// together, so the tree cannot keep a child whose lineage is a session the
+/// user just removed. `delete_files` gives every deleted chat thread the same
+/// treatment as a single delete (its own temporary workspace directory).
+pub fn delete_thread_tree(
     thread_id: &str,
     delete_files: bool,
 ) -> Result<ThreadRecord, crate::AppError> {
-    delete_thread_inner(thread_id, delete_files)
+    delete_thread_inner(thread_id, delete_files, true)
 }
 
-/// Internal helper with the `delete_files` flag (see [`delete_thread`]).
+/// The threads a recursive delete of `thread_id` removes: the thread itself plus
+/// every descendant, resolved through the Agent lineage. Loaded before anything
+/// is deleted, so a caller can release each one's resources (shells, active
+/// runs) first. Errors when the thread does not exist.
+pub fn thread_delete_closure(thread_id: &str) -> Result<Vec<ThreadRecord>, crate::AppError> {
+    let conn = connect()?;
+    let ids = thread_delete_ids_in(&conn, thread_id)?;
+    let mut threads = Vec::with_capacity(ids.len());
+    for id in &ids {
+        threads.push(loaded(get_thread_in(&conn, id)?, "Thread")?);
+    }
+    Ok(threads)
+}
+
+/// `thread_id` and every thread below it in the Agent's session lineage (the
+/// thread itself is always included, so a delete never has an empty target set).
+///
+/// Lineage is keyed by Agent session id, not local thread id:
+/// `parent_session_id` holds the *parent's* session id, so a child of this
+/// thread is a row whose `parent_session_id` equals this thread's effective
+/// session id (`agent_session_id`, else the thread id for an unbound thread).
+/// Every row is returned regardless of status — a cascade that skipped an
+/// archived or legacy soft-deleted child would leave a mirror behind. `UNION`
+/// (not `UNION ALL`) dedupes, which also makes a malformed lineage cycle
+/// terminate instead of recursing forever.
+fn thread_delete_ids_in(
+    conn: &Connection,
+    thread_id: &str,
+) -> Result<Vec<String>, crate::AppError> {
+    const SQL: &str = "WITH RECURSIVE subtree(id, session_key) AS (
+             SELECT id, COALESCE(NULLIF(TRIM(agent_session_id), ''), id)
+               FROM threads WHERE id = ?1
+           UNION
+             SELECT t.id, COALESCE(NULLIF(TRIM(t.agent_session_id), ''), t.id)
+               FROM threads t JOIN subtree s ON t.parent_session_id = s.session_key
+         )
+         SELECT id FROM subtree";
+    let mut stmt = conn.prepare(SQL)?;
+    let ids = stmt
+        .query_map(params![thread_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
+
+/// Internal helper with the `delete_files` and `cascade_children` flags (see
+/// [`delete_thread`] / [`delete_thread_tree`]).
 pub(crate) fn delete_thread_inner(
     thread_id: &str,
     delete_files: bool,
+    cascade_children: bool,
 ) -> Result<ThreadRecord, crate::AppError> {
-    let now = now_millis();
     let mut conn = connect()?;
-    let thread = loaded(get_thread(thread_id)?, "Thread")?;
-    // One transaction: the child cascade, the temp-workspace cleanup flag, and
-    // the thread delete must land together — a crash between them would leak the
-    // chat workspace directory forever (mirrors delete_workspace).
-    let tx = conn.transaction()?;
-    let session_id = thread
-        .agent_session_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .unwrap_or(&thread.id);
-    // Non-empty Agent session bindings are unique. Keep the count guard for
-    // the unbound-thread-id fallback: a legacy Agent id could theoretically
-    // equal another local thread id, and only the final effective owner may
-    // tombstone that source session.
-    const OWNER_SQL: &str = "SELECT COUNT(*) FROM threads
-         WHERE COALESCE(NULLIF(TRIM(agent_session_id), ''), id) = ?1";
-    let owner_count: i64 = tx.query_row(OWNER_SQL, [session_id], |row| row.get(0))?;
-    if owner_count == 1 {
-        super::deletions::enqueue_agent_session_delete_in(&tx, session_id)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let deleted = delete_thread_tree_in(&tx, thread_id, cascade_children)?;
+    tx.commit()?;
+    mark_catalog_dirty();
+    if delete_files {
+        remove_deleted_chat_files(&conn, &deleted.targets)?;
     }
-    delete_thread_children_in(&tx, thread_id)?;
+    Ok(deleted.root)
+}
 
+struct DeletedThreadTree {
+    root: ThreadRecord,
+    targets: Vec<ThreadRecord>,
+}
+
+fn delete_thread_tree_in(
+    conn: &Connection,
+    thread_id: &str,
+    cascade_children: bool,
+) -> Result<DeletedThreadTree, crate::AppError> {
+    let now = now_millis();
+    let root = loaded(get_thread_in(conn, thread_id)?, "Thread")?;
+    let targets = if cascade_children {
+        thread_delete_ids_in(conn, thread_id)?
+            .iter()
+            .map(|id| loaded(get_thread_in(conn, id)?, "Thread"))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        vec![root.clone()]
+    };
+    for thread in &targets {
+        let session_id = thread
+            .agent_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .unwrap_or(&thread.id);
+        // Preserve the legacy unbound-id fallback, including whitespace, while
+        // using the effective-session expression index and stopping at one owner.
+        const OWNER_SQL: &str = "SELECT EXISTS(SELECT 1 FROM threads
+             WHERE COALESCE(NULLIF(TRIM(agent_session_id), ''), id) = ?1 AND id != ?2)";
+        let shared: bool =
+            conn.query_row(OWNER_SQL, params![session_id, thread.id], |row| row.get(0))?;
+        if !shared {
+            super::deletions::enqueue_agent_session_delete_in(conn, session_id)?;
+        }
+        delete_thread_rows_in(conn, thread, now)?;
+    }
+    Ok(DeletedThreadTree { root, targets })
+}
+
+fn remove_deleted_chat_files(
+    conn: &Connection,
+    targets: &[ThreadRecord],
+) -> Result<(), crate::AppError> {
+    for thread in targets.iter().filter(|thread| thread.mode == "chat") {
+        let dir = super::db::chat_workspace_path(&thread.id)?;
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir)?;
+        }
+        conn.execute(
+            "UPDATE workspaces SET cleanup_status = 'cleaned', cleaned_at = ?1, updated_at = ?1
+             WHERE id = ?2 AND kind = 'temporary'",
+            params![now_millis(), thread.workspace_id],
+        )?;
+    }
+    Ok(())
+}
+
+/// Bounded transactions share the connection and WAL commit. A savepoint per
+/// selected tree isolates failures; descendant selections count as already gone.
+/// Physical file cleanup follows the commit and retains retryable cleanup intent.
+pub fn delete_thread_trees(
+    thread_ids: &[String],
+    delete_files: bool,
+) -> Result<super::records::BatchDeleteResult, crate::AppError> {
+    let mut conn = connect()?;
+    let mut result = super::records::BatchDeleteResult {
+        deleted_count: 0,
+        failed: Vec::new(),
+    };
+    let mut cascaded = std::collections::HashSet::new();
+    for batch in thread_ids.chunks(future_rpc::session_deletion::MAX_DELETE_SESSIONS) {
+        let mut tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut batch_cascaded = std::collections::HashSet::new();
+        let mut deleted = Vec::new();
+        let mut already_gone = 0;
+        let mut failed_ids = std::collections::HashSet::new();
+        for thread_id in batch {
+            if cascaded.contains(thread_id) || batch_cascaded.contains(thread_id) {
+                already_gone += 1;
+                continue;
+            }
+            let tree = (|| {
+                let savepoint = tx.savepoint()?;
+                let tree = delete_thread_tree_in(&savepoint, thread_id, true)?;
+                savepoint.commit()?;
+                Ok::<_, crate::AppError>(tree)
+            })();
+            match tree {
+                Ok(tree) => {
+                    batch_cascaded.extend(tree.targets.iter().map(|thread| thread.id.clone()));
+                    deleted.push(tree);
+                }
+                Err(error) => {
+                    failed_ids.insert(thread_id);
+                    result.failed.push(format!("{thread_id}: {error}"));
+                }
+            }
+        }
+        if let Err(error) = tx.commit() {
+            // Every successful savepoint was rolled back with the outer commit.
+            for thread_id in batch {
+                if !cascaded.contains(thread_id) && !failed_ids.contains(thread_id) {
+                    result.failed.push(format!("{thread_id}: {error}"));
+                }
+            }
+            result.deleted_count += batch.iter().filter(|id| cascaded.contains(*id)).count();
+            continue;
+        }
+        cascaded.extend(batch_cascaded);
+        result.deleted_count += already_gone;
+        mark_catalog_dirty();
+        for tree in deleted {
+            let cleanup = if delete_files {
+                remove_deleted_chat_files(&conn, &tree.targets)
+            } else {
+                Ok(())
+            };
+            match cleanup {
+                Ok(()) => result.deleted_count += 1,
+                Err(error) => result.failed.push(format!("{}: {error}", tree.root.id)),
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// The local half of a conversation delete: children, the chat scratch
+/// directory's cleanup intent, and the row itself. Whatever the caller owes the
+/// Agent is its own business — only a *user* delete owns the session (see
+/// [`forget_thread_mirror`]).
+fn delete_thread_rows_in(
+    conn: &Connection,
+    thread: &ThreadRecord,
+    now: i64,
+) -> rusqlite::Result<()> {
+    delete_thread_children_in(conn, &thread.id)?;
     if thread.mode == "chat" {
         // Keep durable cleanup intent until physical removal succeeds. A file
         // error after this transaction is therefore retryable by the cleanup
         // reconciler and can never be recorded as already cleaned.
         const PENDING_SQL: &str = "UPDATE workspaces
-             SET cleanup_status = 'pending_cleanup',
-                 cleanup_requested_at = COALESCE(cleanup_requested_at, ?1),
-                 updated_at = ?1
-             WHERE id = ?2
-               AND kind = 'temporary'
-               AND cleanup_status = 'active'";
-        tx.execute(PENDING_SQL, params![now, thread.workspace_id])?;
-    }
-    tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
-    tx.commit()?;
-    mark_catalog_dirty();
-
-    if delete_files && thread.mode == "chat" {
-        let dir = super::db::chat_workspace_path(thread_id)?;
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir)?;
-        }
-        let conn = connect()?;
-        conn.execute(
-            "UPDATE workspaces
-                 SET cleanup_status = 'cleaned',
-                     cleaned_at = ?1,
+                 SET cleanup_status = 'pending_cleanup',
+                     cleanup_requested_at = COALESCE(cleanup_requested_at, ?1),
                      updated_at = ?1
                  WHERE id = ?2
-                   AND kind = 'temporary'",
-            params![now_millis(), thread.workspace_id],
-        )?;
+                   AND kind = 'temporary'
+                   AND cleanup_status = 'active'";
+        conn.execute(PENDING_SQL, params![now, thread.workspace_id])?;
     }
+    conn.execute("DELETE FROM threads WHERE id = ?1", params![thread.id])?;
+    Ok(())
+}
 
-    Ok(thread)
+/// Drop this side's projection of a conversation **the Agent still owns**.
+///
+/// [`delete_thread`] is a user delete: it queues the Agent-side session
+/// deletion and tombstones the id, so the conversation can never come back. A
+/// reconciliation that removes a row it can prove holds no conversation must do
+/// neither — the session stays, its owner may still prompt it, and the import
+/// that mirrors it again once it has a message must not be fenced out. Only the
+/// local rows go, with the same bookkeeping as a delete.
+pub fn forget_thread_mirror(thread_id: &str) -> Result<(), crate::AppError> {
+    let mut conn = connect()?;
+    let root = loaded(get_thread_in(&conn, thread_id)?, "Thread")?;
+    let now = now_millis();
+    let tx = conn.transaction()?;
+    delete_thread_rows_in(&tx, &root, now)?;
+    tx.commit()?;
+    mark_catalog_dirty();
+    Ok(())
 }
 
 /// Batch-delete multiple threads. For each thread:
@@ -588,24 +751,7 @@ pub(crate) fn delete_thread_inner(
 pub fn batch_delete_threads(
     input: &super::records::BatchDeleteThreadsInput,
 ) -> Result<super::records::BatchDeleteResult, crate::AppError> {
-    let mut deleted_count = 0usize;
-    let mut failed: Vec<String> = Vec::new();
-
-    for thread_id in &input.thread_ids {
-        match delete_thread_inner(thread_id, input.delete_files) {
-            Ok(_) => {
-                deleted_count += 1;
-            }
-            Err(error) => {
-                failed.push(format!("{thread_id}: {error}"));
-            }
-        }
-    }
-
-    Ok(super::records::BatchDeleteResult {
-        deleted_count,
-        failed,
-    })
+    delete_thread_trees(&input.thread_ids, input.delete_files)
 }
 
 /// Defensive / one-time sweep: hard-delete any threads still parked in the
@@ -1116,13 +1262,6 @@ mod tests {
             .expect("some");
         assert_eq!(found.id, "t2");
 
-        // move_thread_to_workspace
-        move_thread_to_workspace("t2", "ws2").expect("move");
-        assert_eq!(
-            get_thread("t2").expect("get").expect("some").workspace_id,
-            "ws2"
-        );
-
         // pin / archive / restore
         let pinned = pin_thread(PinThreadInput {
             thread_id: "t2".to_string(),
@@ -1167,7 +1306,7 @@ mod tests {
             agent_session_id: None,
         })
         .expect("workspace thread");
-        delete_thread_with_files(&ws_thread.id, true).expect("delete ws thread");
+        delete_thread_tree(&ws_thread.id, true).expect("delete ws thread");
         assert!(get_workspace("ws1").expect("get").is_some());
 
         // A chat thread with files: the temp workspace dir is removed and the
@@ -1178,7 +1317,7 @@ mod tests {
             .join(&chat.id);
         std::fs::create_dir_all(&chat_dir).expect("create chat dir");
         std::fs::write(chat_dir.join("scratch.txt"), b"x").expect("write");
-        delete_thread_with_files(&chat.id, true).expect("delete with files");
+        delete_thread_tree(&chat.id, true).expect("delete with files");
         assert!(!chat_dir.exists(), "chat workspace dir removed");
         let ws = get_workspace(&chat.workspace_id)
             .expect("get")
@@ -1191,12 +1330,13 @@ mod tests {
         let (_home, _conn) = guarded_conn("threads_delete_file_failure");
         let chat = create_thread(chat_input()).expect("chat thread");
         let chat_path = super::super::db::chat_workspace_path(&chat.id).expect("chat path");
-        if chat_path.exists() {
-            std::fs::remove_dir_all(&chat_path).expect("remove generated directory");
-        }
+        // Whatever a previous run left at this path must go: the assertion below
+        // needs a *file* here, so the removal cannot be conditional on the
+        // directory existing (a leftover directory would make the write fail).
+        let _ = std::fs::remove_dir_all(&chat_path);
         std::fs::write(&chat_path, b"not a directory").expect("create blocker");
 
-        assert!(delete_thread_with_files(&chat.id, true).is_err());
+        assert!(delete_thread_tree(&chat.id, true).is_err());
         let workspace = get_workspace(&chat.workspace_id)
             .expect("workspace")
             .expect("workspace row remains for cleanup");
@@ -1222,6 +1362,200 @@ mod tests {
             crate::store::is_agent_session_tombstoned("sess_unique").expect("check"),
             "the sole owner tombstones the session"
         );
+    }
+
+    #[test]
+    fn deletion_ownership_preserves_blank_and_trimmed_legacy_bindings() {
+        let (_home, conn) = guarded_conn("threads_delete_fallback_owner");
+        conn.execute_batch(
+            "INSERT INTO workspaces(id,name,kind,path,created_at,updated_at)
+             VALUES ('legacy-ws','W','user','/tmp/legacy',1,1);
+             INSERT INTO threads(id,workspace_id,mode,title,agent_session_id,created_at,updated_at)
+             VALUES ('alias','legacy-ws','workspace','Alias',' fallback ',1,1),
+                    ('fallback','legacy-ws','workspace','Fallback','   ',1,1);",
+        )
+        .unwrap();
+        drop(conn);
+        delete_thread_tree("alias", false).unwrap();
+        assert!(!crate::store::is_agent_session_tombstoned("fallback").unwrap());
+        delete_thread_tree("fallback", false).unwrap();
+        assert!(crate::store::is_agent_session_tombstoned("fallback").unwrap());
+    }
+
+    #[test]
+    fn batch_delete_counts_descendants_selected_in_a_later_batch() {
+        let (_home, _conn) = guarded_conn("threads_batch_cross_boundary");
+        let parent = session_chat_thread("batch-parent", None);
+        let child = session_chat_thread("batch-child", Some("batch-parent"));
+        let mut ids = vec![parent.id.clone()];
+        ids.extend((0..31).map(|i| format!("missing-{i}")));
+        ids.push(child.id.clone());
+        let result = delete_thread_trees(&ids, false).unwrap();
+        assert_eq!(result.deleted_count, 2);
+        assert_eq!(result.failed.len(), 31);
+        assert!(get_thread(&parent.id).unwrap().is_none());
+        assert!(get_thread(&child.id).unwrap().is_none());
+    }
+
+    /// The mirror removal a reconciliation uses must leave the Agent session
+    /// untouched: no queued Agent delete, no tombstone that would fence out the
+    /// import that mirrors the session again once it has a message.
+    #[test]
+    fn forgetting_a_mirror_never_touches_the_agent_session() {
+        let (_home, _conn) = guarded_conn("threads_forget_mirror");
+        let thread = session_chat_thread("sess_mirror", None);
+
+        forget_thread_mirror(&thread.id).expect("forget");
+
+        assert!(get_thread(&thread.id).expect("thread lookup").is_none());
+        assert!(
+            !crate::store::is_agent_session_tombstoned("sess_mirror").expect("check"),
+            "the session stays importable"
+        );
+        assert!(
+            crate::store::pending_agent_session_deletes()
+                .expect("outbox")
+                .is_empty(),
+            "nothing is queued for the Agent to delete"
+        );
+        // The local bookkeeping of a delete still happens: a chat thread's
+        // scratch directory is released.
+        let workspace = get_workspace(&thread.workspace_id)
+            .expect("workspace")
+            .expect("workspace row remains for cleanup");
+        assert_eq!(workspace.cleanup_status, "pending_cleanup");
+    }
+
+    /// A chat thread bound to `session`, optionally parented to another Agent
+    /// session. Lineage is projected by session id, so an unbound thread cannot
+    /// be given a parent through `sync_thread_parent_session`.
+    fn session_chat_thread(session: &str, parent_session: Option<&str>) -> ThreadRecord {
+        let mut input = chat_input();
+        input.agent_session_id = Some(session.to_string());
+        let thread = create_thread(input).expect("create bound chat thread");
+        if let Some(parent) = parent_session {
+            sync_thread_parent_session(session, parent).expect("project lineage");
+        }
+        thread
+    }
+
+    #[test]
+    fn delete_thread_tree_removes_every_descendant_and_tombstones_each_session() {
+        let (_home, _conn) = guarded_conn("threads_cascade");
+        let parent = session_chat_thread("sess_cascade_parent", None);
+        let child = session_chat_thread("sess_cascade_child", Some("sess_cascade_parent"));
+        let grandchild = session_chat_thread("sess_cascade_grand", Some("sess_cascade_child"));
+        let unrelated = session_chat_thread("sess_cascade_other", None);
+        // Pinning moves a child in the sidebar, not in the lineage: the cascade
+        // still takes it.
+        pin_thread(PinThreadInput {
+            thread_id: child.id.clone(),
+            pinned: true,
+        })
+        .expect("pin child");
+
+        let deleted = delete_thread_tree(&parent.id, false).expect("delete parent");
+
+        assert_eq!(deleted.id, parent.id);
+        for (id, session) in [
+            (&parent.id, "sess_cascade_parent"),
+            (&child.id, "sess_cascade_child"),
+            (&grandchild.id, "sess_cascade_grand"),
+        ] {
+            assert!(get_thread(id).expect("get").is_none(), "{id} is gone");
+            assert!(
+                crate::store::is_agent_session_tombstoned(session).expect("tombstone"),
+                "{session} gets delete delivery intent"
+            );
+        }
+        assert!(
+            get_thread(&unrelated.id).expect("get").is_some(),
+            "a thread outside the lineage is kept"
+        );
+    }
+
+    #[test]
+    fn delete_thread_leaves_descendants_alone() {
+        // The orphan sweep and an externally deleted Agent session both come
+        // through `delete_thread`: a child is its own Agent session and outlives
+        // a parent that disappeared from the Agent's side.
+        let (_home, _conn) = guarded_conn("threads_delete_single");
+        let parent = session_chat_thread("sess_single_parent", None);
+        let child = session_chat_thread("sess_single_child", Some("sess_single_parent"));
+
+        delete_thread(&parent.id).expect("delete parent");
+
+        assert!(get_thread(&parent.id).expect("get").is_none());
+        let survivor = get_thread(&child.id)
+            .expect("get")
+            .expect("the child survives and re-roots in the tree");
+        assert_eq!(
+            survivor.parent_session_id.as_deref(),
+            Some("sess_single_parent"),
+            "the lineage projection is the Agent's to rewrite, not the delete's"
+        );
+    }
+
+    #[test]
+    fn delete_thread_tree_removes_each_chat_workspace_directory() {
+        let (_home, _conn) = guarded_conn("threads_cascade_files");
+        let parent = session_chat_thread("sess_files_parent", None);
+        let child = session_chat_thread("sess_files_child", Some("sess_files_parent"));
+
+        let mut dirs = Vec::new();
+        for thread in [&parent, &child] {
+            let dir = super::super::db::chat_workspace_path(&thread.id).expect("chat path");
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir).expect("clear generated directory");
+            }
+            std::fs::create_dir_all(&dir).expect("create chat dir");
+            std::fs::write(dir.join("scratch.txt"), b"x").expect("write scratch");
+            dirs.push((dir, thread.workspace_id.clone()));
+        }
+
+        delete_thread_tree(&parent.id, true).expect("delete with files");
+
+        for (dir, workspace_id) in dirs {
+            assert!(!dir.exists(), "{} removed", dir.display());
+            let workspace = get_workspace(&workspace_id)
+                .expect("get")
+                .expect("workspace row remains");
+            assert_eq!(workspace.cleanup_status, "cleaned");
+        }
+    }
+
+    #[test]
+    fn delete_thread_tree_terminates_on_a_malformed_lineage_cycle() {
+        let (_home, _conn) = guarded_conn("threads_cascade_cycle");
+        let a = session_chat_thread("sess_cycle_a", Some("sess_cycle_b"));
+        let b = session_chat_thread("sess_cycle_b", Some("sess_cycle_a"));
+
+        delete_thread_tree(&a.id, false).expect("delete terminates");
+
+        assert!(get_thread(&a.id).expect("get").is_none());
+        assert!(
+            get_thread(&b.id).expect("get").is_none(),
+            "the other side of the cycle is reachable, so it goes too"
+        );
+    }
+
+    #[test]
+    fn batch_delete_isolates_failed_tree_and_its_outbox_intent() {
+        let (_home, conn) = guarded_conn("threads_batch_savepoint");
+        seed_two_threads(&conn);
+        conn.execute_batch(
+            "CREATE TRIGGER reject_thread_delete BEFORE DELETE ON threads
+            WHEN OLD.id='t1' BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;",
+        )
+        .unwrap();
+        drop(conn);
+        let result = delete_thread_trees(&["t1".into(), "t2".into()], false).unwrap();
+        assert_eq!(result.deleted_count, 1);
+        assert_eq!(result.failed.len(), 1);
+        assert!(get_thread("t1").unwrap().is_some());
+        assert!(get_thread("t2").unwrap().is_none());
+        assert!(!super::super::is_agent_session_tombstoned("sess1").unwrap());
+        assert!(super::super::is_agent_session_tombstoned("t2").unwrap());
     }
 
     #[test]
@@ -1262,5 +1596,35 @@ mod tests {
         assert_eq!(runs, 0, "child rows of the purged thread are gone");
 
         assert_eq!(purge_soft_deleted_threads().expect("purge again"), 0);
+    }
+
+    #[test]
+    fn inheriting_an_asset_root_for_a_missing_thread_is_an_error() {
+        let (_home, _conn) = guarded_conn("threads_asset_root_missing");
+        let error = inherit_thread_asset_root("no-such-thread", "parent-thread")
+            .expect_err("a thread that does not exist cannot inherit an asset root")
+            .to_string();
+        assert!(error.contains("Thread could not be loaded"), "{error}");
+    }
+
+    #[test]
+    fn binding_a_session_to_a_thread_that_is_out_of_service_is_refused() {
+        let (_home, conn) = guarded_conn("threads_bind_deleted");
+        let thread = create_thread(chat_input()).expect("chat thread");
+        // A soft-deleted row still exists — the cleanup reconciler works from
+        // exactly that state — but it is out of service, so the bind statement
+        // matches nothing and the caller gets the explicit refusal.
+        conn.execute(
+            "UPDATE threads SET status = 'deleted' WHERE id = ?1",
+            params![thread.id],
+        )
+        .expect("soft delete");
+        let error = bind_thread_session_id(&thread.id, "session-1")
+            .expect_err("a thread that is out of service cannot take a session")
+            .to_string();
+        assert!(
+            error.contains("Thread is not available for session binding"),
+            "{error}"
+        );
     }
 }

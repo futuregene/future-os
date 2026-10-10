@@ -35,6 +35,59 @@ describe("Markdown syntax fidelity", () => {
     });
   });
 
+  // Written Chinese has no space before punctuation, so a bare URL used to run
+  // on into the rest of the sentence — and when it was wrapped in `**`, the
+  // closing marker went into the link target and the emphasis never closed.
+  test.each([
+    ["见 https://x.com/a。下一句", "https://x.com/a", "。下一句"],
+    ["见 https://x.com/a，然后", "https://x.com/a", "，然后"],
+    ["链接：https://x.com/a）", "https://x.com/a", "）"],
+    ["见\u3000https://x.com/a\u3000下一句", "https://x.com/a", "\u3000下一句"],
+    ["地址：https://x.com/a**（说明）", "https://x.com/a", "**（说明）"],
+  ])("ends a bare URL where the author stopped writing it: %s", (source, href, tail) => {
+    expect(parseFutureMarkdown(source).nodes[0]).toMatchObject({
+      type: "paragraph", children: [{ type: "text" }, { type: "link", href }, { type: "text", text: tail }],
+    });
+  });
+
+  test("keeps bold, code and the link apart when the URL is glued to both", () => {
+    expect(parseFutureMarkdown("**https://github.com/huichen/futureos-wechat-articles**（PRIVATE，`huichen` 账号下）").nodes[0])
+      .toMatchObject({
+        type: "paragraph",
+        children: [
+          { type: "strong", children: [{ type: "link", href: "https://github.com/huichen/futureos-wechat-articles" }] },
+          { type: "text", text: "（PRIVATE，" },
+          { type: "code", code: "huichen" },
+          { type: "text", text: " 账号下）" },
+        ],
+      });
+  });
+
+  test("still links a URL written straight after Chinese, as the tokenizer did", () => {
+    for (const source of ["网页https://x.com/a，后面", "网页www.x.com/a 后面", "影片https://www.youtube.com/watch?v=abc&t=1，不错"]) {
+      expect(JSON.stringify(parseFutureMarkdown(source).nodes)).toContain('"type":"link"');
+    }
+    // An ASCII alphanumeric before the URL is not a link (GFM stays in charge there).
+    expect(JSON.stringify(parseFutureMarkdown("abchttps://x.com/a").nodes)).not.toContain('"type":"link"');
+  });
+
+  test("leaves Latin autolink behavior alone", () => {
+    expect(parseFutureMarkdown("See (https://en.wikipedia.org/wiki/Foo_(bar)) here.").nodes[0]).toMatchObject({
+      type: "paragraph",
+      children: [
+        { type: "text", text: "See (" },
+        { type: "link", href: "https://en.wikipedia.org/wiki/Foo_(bar)" },
+        { type: "text", text: ") here." },
+      ],
+    });
+    expect(parseFutureMarkdown("www.example.com/path?q=1#frag").nodes[0])
+      .toMatchObject({ children: [{ type: "link", href: "http://www.example.com/path?q=1#frag" }] });
+    expect(parseFutureMarkdown("contact mail@example.com please").nodes[0])
+      .toMatchObject({ children: [{ type: "text" }, { type: "link", href: "mailto:mail@example.com" }, { type: "text" }] });
+    expect(parseFutureMarkdown("[链接](https://x.com/a)。").nodes[0])
+      .toMatchObject({ children: [{ type: "link", href: "https://x.com/a" }, { type: "text", text: "。" }] });
+  });
+
   test("preserves escapes, code, destinations and ordinary delimiter rules", () => {
     expect(parseFutureMarkdown(String.raw`\*\*注意：\*\*正文`).nodes[0]).toMatchObject({
       children: [{ type: "text", text: "**注意：**正文" }],
@@ -132,6 +185,9 @@ describe("Markdown syntax fidelity", () => {
     "[reference][r]\n\n> [r]: https://example.com\n\n![alt](https://example.com/a.png)",
     "Equation $x^2$ and \\(y_1\\).\n\n\\[\n\\frac{a}{b}\n\\]\n\n```ts\nconst a = 1;\n```",
     "**复现：**10 轮对话，每轮 assistant 内容 150 KB：\n\n- **原逻辑：**返回约 450 KB / 6 条记录。",
+    "**https://github.com/huichen/futureos-wechat-articles**（PRIVATE，`huichen` 账号下）",
+    "见 https://x.com/a。下一句，再看 https://y.com/b（后面）。",
+    "网页https://x.com/a，后面还有 https://y.com/b**（重点）",
     "note[^a]\n\n[^a]: body\n\n    more body",
   ])("every streaming prefix matches a fresh parse: %s", source => {
     const project = createStreamingMarkdownParser();

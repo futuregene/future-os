@@ -6,6 +6,7 @@ import type {
 import { matchesSettledRun } from "@future-os/thread-projection";
 import { useCallback, useEffect, useRef } from "react";
 import { abortRun, getRun } from "../../integrations/storage/threadStore";
+import { useCommittedRef } from "../../lib/useCommittedRef";
 import { usePolling } from "../../lib/usePolling";
 import { useRunReattach } from "./useRunReattach";
 import { useSendMessage } from "./useSendMessage";
@@ -68,7 +69,7 @@ export function useAgentThreadState({
     messages,
     recentRun,
     renderWorkspace,
-    reloadMessagesQuiet,
+    reloadThreadHistory,
     refreshRecentRun,
     setMessages,
     setRecentRun,
@@ -83,8 +84,7 @@ export function useAgentThreadState({
   // bubble without depending on `messages` — the array changes identity on
   // every streaming push, and handleAbort feeds the memoized Composer, so a
   // fresh identity per push would defeat the memo.
-  const messagesRef = useRef(messages);
-  messagesRef.current = messages;
+  const messagesRef = useCommittedRef(messages);
 
   // The run this thread is currently executing, if any. Runs stream server-side
   // and persist their events regardless of which thread is in the foreground, so
@@ -130,7 +130,7 @@ export function useAgentThreadState({
     sendingRef,
     setMessages,
     refreshRecentRun,
-    reloadMessagesQuiet,
+    reloadThreadHistory,
   });
 
   // ── Settle watchdog ────────────────────────────────────────────────────
@@ -164,8 +164,8 @@ export function useAgentThreadState({
     }
     abandonSend();
     setRecentRun(latest);
-    void reloadMessagesQuiet(threadId, true);
-  }, [abandonSend, localSendRef, reloadMessagesQuiet, sendingRef, setRecentRun, setMessages, threadId]);
+    void reloadThreadHistory(threadId, true);
+  }, [abandonSend, localSendRef, reloadThreadHistory, sendingRef, setRecentRun, setMessages, threadId]);
 
   usePolling(
     () => {
@@ -214,9 +214,9 @@ export function useAgentThreadState({
     catch {
       // The run may already have finished; the refresh below still reconciles.
     }
-    await refreshRecentRun(threadId, workspaceId);
+    await refreshRecentRun(threadId);
     onThreadActivity();
-  }, [onThreadActivity, recentRun, refreshRecentRun, workspaceId, threadId]);
+  }, [threadId, recentRun, messagesRef, refreshRecentRun, onThreadActivity]);
 
   useEffect(() => {
     if (!thread || loadingThread || loadingStore || !pendingPrompt)
@@ -262,7 +262,7 @@ export function useAgentThreadState({
     loadAllHistoryForSearch,
     historyError,
     sessionChanged,
-    retryHistory: () => threadId && reloadMessagesQuiet(threadId, true),
+    retryHistory: () => threadId && reloadThreadHistory(threadId, true),
     messages,
     recentRun,
     renderWorkspace,

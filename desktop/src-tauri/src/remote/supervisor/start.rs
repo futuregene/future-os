@@ -83,7 +83,7 @@ pub(in crate::remote) async fn start_generation(
     let Some(shared) = SUPERVISOR
         .access
         .commit(epoch, || -> Result<_, crate::AppError> {
-            let shared = shared_runtime(&creds.pair_id, pairing_code.is_none(), false);
+            let shared = shared_runtime(&creds, pairing_code.is_none(), false);
             if shared.pairing_confirmed.load(Ordering::Acquire) {
                 pairing::save_creds(&creds)?;
             }
@@ -165,6 +165,9 @@ pub(in crate::remote) async fn start_generation(
     }
 
     let status = RemoteStatus {
+        // A fresh start has been told nothing yet: the client declares itself on
+        // `secure_ready`, which happens after this.
+        client: None,
         phase: RemotePhase::Ready,
         reason: None,
         recovery: None,

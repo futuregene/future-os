@@ -9,7 +9,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use rand::RngCore;
+use future_app_workspaces as app_workspaces;
 
 /// Prefix each column in a `", "`-separated `*_COLUMNS` constant with a table
 /// alias, e.g. `qualify_columns("r", "id, status")` → `"r.id, r.status"`. Used
@@ -31,70 +31,26 @@ pub(super) fn normalize_mode(mode: &str) -> Result<String, crate::AppError> {
     }
 }
 
+/// `~`/`~/…` expansion, shared with `future workspace add` through
+/// `future-app-workspaces` (the same rule, so a path a user types means the same
+/// directory in both writers).
 pub(super) fn expand_tilde(path: &str) -> Result<PathBuf, crate::AppError> {
-    if path == "~" {
-        return Ok(PathBuf::from(
-            crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?,
-        ));
-    }
-
-    if let Some(rest) = path.strip_prefix("~/") {
-        return Ok(PathBuf::from(
-            crate::home_dir().ok_or("HOME/USERPROFILE environment variable is not set.")?,
-        )
-        .join(rest));
-    }
-
-    Ok(PathBuf::from(path))
+    Ok(app_workspaces::expand_tilde(path)?)
 }
 
-/// Identity spelling of a workspace directory.
-///
-/// One directory must resolve to one workspace row, but clients spell the same
-/// directory differently: `/tmp/x` and `/private/tmp/x` on macOS (symlinked
-/// root), a path with a trailing separator, or a symlinked project directory.
-/// Clients report the spelling their own shell gave them, so identity is the
-/// canonical path resolved here rather than the text a client happened to send.
-///
-/// Falls back to the given path when it cannot be resolved — a workspace may be
-/// created for a directory that does not exist yet.
-pub(super) fn normalize_workspace_path(path: &Path) -> PathBuf {
-    match path.canonicalize() {
-        Ok(canonical) => strip_verbatim_prefix(canonical),
-        Err(_) => path.to_path_buf(),
-    }
-}
-
-/// Windows `Path::canonicalize` returns the extended-length spelling
-/// (`\\?\D:\...`), which no other tool prints; store the ordinary form instead
-/// (`\\?\UNC\server\share` → `\\server\share`). A canonical POSIX path never
-/// carries the prefix, so this is purely textual and a no-op off Windows.
+/// Extended-length (`\\?\`) prefix removal, shared with the CLI's workspace
+/// writes: a stored workspace path is handed to shells and to the UI, so it is
+/// always the spelling those tools print.
 pub(crate) fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
-    let text = path.to_string_lossy();
-    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
-        return PathBuf::from(format!(r"\\{rest}"));
-    }
-    match text.strip_prefix(r"\\?\") {
-        Some(rest) => PathBuf::from(rest),
-        None => path,
-    }
+    app_workspaces::strip_verbatim_prefix(path)
 }
 
 pub(super) fn workspace_name_from_path(path: &Path) -> String {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("Workspace")
-        .to_string()
+    app_workspaces::name_from_path(path)
 }
 
 pub fn create_id(prefix: &str) -> String {
-    let now = chrono::Local::now();
-    let ts = now.format("%Y%m%d-%H%M%S").to_string();
-    let mut rng = rand::thread_rng();
-    let mut buf = [0u8; 3];
-    rng.fill_bytes(&mut buf);
-    let hex: String = buf.iter().map(|b| format!("{:02x}", b)).collect();
-    format!("{prefix}-{ts}-{hex}")
+    app_workspaces::new_id(prefix)
 }
 
 pub fn now_millis() -> i64 {
@@ -336,6 +292,21 @@ mod tests {
             count_files_under(vec![dir.clone(), dir.clone()]).unwrap(),
             1
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn count_files_under_descends_into_subdirectories() {
+        let dir = std::env::temp_dir().join(format!("futureos-count-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("nested").join("deeper")).unwrap();
+        fs::write(dir.join("top.txt"), b"x").unwrap();
+        fs::write(dir.join("nested").join("one.txt"), b"x").unwrap();
+        fs::write(dir.join("nested").join("deeper").join("two.txt"), b"x").unwrap();
+
+        // Nested directories are pushed onto the frontier (not recursed), and
+        // only regular files are counted.
+        assert_eq!(count_files_under(vec![dir.clone()]).unwrap(), 3);
         let _ = fs::remove_dir_all(&dir);
     }
 }

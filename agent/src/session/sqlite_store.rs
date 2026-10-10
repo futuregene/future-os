@@ -6,23 +6,14 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use std::path::Path;
 
-/// Free pages at or above which a delete is worth reclaiming (1024 × 4 KiB =
-/// 4 MiB). Below it the gain is invisible and the hot paths stay a header read.
-const FREELIST_RECLAIM_PAGES: i64 = 1024;
-
-/// How many pages one delete may reclaim. Each page costs a separate
-/// `incremental_vacuum` call (~90 µs), so this bounds the worst case at roughly
-/// a third of a second; the remainder is drained by later deletes, or by the
-/// compaction at startup if the file stays bloated.
-const RECLAIM_STEP_PAGES: i64 = 4096;
-
-struct StoredEvent {
+pub(super) struct StoredEvent {
     session_id: String,
     run_id: String,
     epoch: i64,
     idx: i64,
     event_id: Option<String>,
-    payload: String,
+    pub(super) payload: String,
+    pub(super) sequence: i64,
 }
 
 #[derive(Clone)]
@@ -87,9 +78,15 @@ impl SqliteStore {
         let session = session.to_owned();
         self.db.call(move |db| {
             let mut stmt = db.prepare(
-                "SELECT payload FROM run_events WHERE session_id=?1 \
-                 AND json_extract(payload,'$.event_type') IN ('usage','model_changed') \
-                 ORDER BY sequence",
+                "SELECT payload FROM (
+                    SELECT sequence,payload FROM run_events WHERE session_id=?1
+                      AND json_extract(payload,'$.event_type') IN ('usage','model_changed')
+                      AND NOT EXISTS(SELECT 1 FROM run_snapshots s WHERE s.session_id=run_events.session_id AND s.run_id=run_events.run_id)
+                    UNION ALL
+                    SELECT json_extract(j.value,'$.sequence') AS sequence,
+                           json_extract(j.value,'$.payload') AS payload
+                      FROM run_snapshots s,json_each(s.pricing_payloads) j WHERE s.session_id=?1
+                 ) ORDER BY sequence",
             )?;
             let rows = stmt
                 .query_map([&session], |row| row.get(0))?
@@ -115,6 +112,8 @@ impl SqliteStore {
                 tx.execute("DELETE FROM runs WHERE session_id=?1", [&session])?;
                 tx.execute("UPDATE sessions SET current_metadata_json=NULL WHERE id=?1", [&session])?;
                 insert_entries(&tx, &session, entries)?;
+                tx.execute("DELETE FROM run_events WHERE session_id=?1 AND run_id IN (SELECT run_id FROM run_snapshots WHERE session_id=?1 AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.session_id=run_snapshots.session_id AND r.run_id=run_snapshots.run_id))", [&session])?;
+                tx.execute("DELETE FROM run_snapshots WHERE session_id=?1 AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.session_id=run_snapshots.session_id AND r.run_id=run_snapshots.run_id)", [&session])?;
                 tx.commit()?;
                 Ok(())
             }
@@ -126,17 +125,9 @@ impl SqliteStore {
         result
     }
 
-    /// Hand pages freed by a delete back to the filesystem.
-    ///
-    /// Never fails the operation it follows: a machine without room (or with a
-    /// database opened read-only) should still delete the session, and the free
-    /// pages are reclaimed on the next delete that succeeds.
     fn reclaim_after(&self, operation_succeeded: bool) {
-        if !operation_succeeded {
-            return;
-        }
-        if let Err(error) = self.db.reclaim(FREELIST_RECLAIM_PAGES, RECLAIM_STEP_PAGES) {
-            tracing::warn!(%error, "could not reclaim freed pages");
+        if operation_succeeded {
+            self.db.request_reclaim();
         }
     }
 
@@ -190,14 +181,21 @@ impl SqliteStore {
     }
 
     pub fn delete(&self, session: &str) -> Result<()> {
-        let session = session.to_owned();
+        self.delete_many(vec![session.to_owned()])
+    }
+
+    /// One durability boundary and one reclamation pass for a bounded batch.
+    /// A failed commit leaves every session retryable, including import tombstones.
+    pub(crate) fn delete_many(&self, sessions: Vec<String>) -> Result<()> {
         let result = self.db.call(move |db| {
             let tx = crate::session::database::begin_immediate(db)?;
-            tx.execute("DELETE FROM sessions WHERE id=?1", [&session])?;
-            tx.execute(
-                "UPDATE legacy_imports SET status='deleted' WHERE session_id=?1",
-                [&session],
-            )?;
+            for session in sessions {
+                tx.execute("DELETE FROM sessions WHERE id=?1", [&session])?;
+                tx.execute(
+                    "UPDATE legacy_imports SET status='deleted' WHERE session_id=?1",
+                    [&session],
+                )?;
+            }
             tx.commit()?;
             Ok(())
         });
@@ -217,18 +215,36 @@ impl SqliteStore {
         run: &str,
     ) -> Result<Vec<T>> {
         let (session, run) = (session.to_owned(), run.to_owned());
-        let rows = self.db.call(move |db| {
-            let sql = if run.is_empty() {
-                "SELECT session_id,run_id,epoch,idx,event_id,payload FROM run_events WHERE session_id=?1 AND run_id=?2 ORDER BY sequence"
-            } else {
-                "SELECT session_id,run_id,epoch,idx,event_id,payload FROM run_events WHERE session_id=?1 AND run_id=?2 ORDER BY epoch,idx"
+        let expected_run = run.clone();
+        let (rows,snapshot) = self.db.call(move |db| {
+            let tx = db.transaction()?;
+            let snapshot: Option<(i64,String)> = tx.query_row(
+                "SELECT cursor,payload FROM run_snapshots WHERE session_id=?1 AND run_id=?2 AND version=1",
+                params![session,run], |r| Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let rows = if snapshot.is_some() {Vec::new()} else {
+                let sql = if run.is_empty() {
+                    "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events WHERE session_id=?1 AND run_id=?2 ORDER BY sequence"
+                } else {
+                    "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events WHERE session_id=?1 AND run_id=?2 ORDER BY epoch,idx"
+                };
+                let mut statement = tx.prepare(sql)?;
+                let rows = statement.query_map(params![session,run], stored_event)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
             };
-            let mut statement = db.prepare(sql)?;
-            let rows = statement
-                .query_map(params![session,run], stored_event)?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
+            tx.commit()?;
+            Ok((rows,snapshot))
         })?;
+        if let Some((cursor, payload)) = snapshot {
+            let snapshot: super::journal_compaction::CompactRunSnapshot =
+                serde_json::from_str(&payload)?;
+            snapshot.validate(&expected_run, cursor)?;
+            return snapshot
+                .events
+                .into_iter()
+                .map(|event| Ok(serde_json::from_value(serde_json::to_value(event)?)?))
+                .collect();
+        }
         rows.into_iter().map(decode_event).collect()
     }
 
@@ -245,6 +261,7 @@ impl SqliteStore {
         self.typed_events_page(session, run, since, session_scope, None)
     }
 
+    #[cfg(test)]
     pub(crate) fn typed_events_page<T: serde::de::DeserializeOwned>(
         &self,
         session: &str,
@@ -258,24 +275,10 @@ impl SqliteStore {
             let tx = db.transaction()?;
             let known = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM run_events WHERE session_id=?1 AND run_id=?2)",
-                params![session,run], |row| row.get::<_, bool>(0),
+                params![session, run],
+                |row| row.get::<_, bool>(0),
             )?;
-            let sql = if session_scope && since >= -1 {
-                "SELECT session_id,run_id,epoch,idx,event_id,payload FROM run_events WHERE session_id=?1 AND run_id=?2 AND epoch=-1 AND idx>?3 ORDER BY sequence"
-            } else if session_scope {
-                // Non-session events have session_idx=-1; preserve the legacy
-                // behavior for callers supplying a cursor below -1.
-                "SELECT session_id,run_id,epoch,idx,event_id,payload FROM run_events WHERE session_id=?1 AND run_id=?2 AND ((epoch=-1 AND idx>?3) OR (epoch>=0 AND ?3 < -1)) ORDER BY sequence"
-            } else {
-                "SELECT session_id,run_id,epoch,idx,event_id,payload FROM run_events WHERE session_id=?1 AND run_id=?2 AND idx>?3 ORDER BY epoch,idx"
-            };
-            let rows = {
-                let mut statement = tx.prepare(&format!("{sql} LIMIT ?4"))?;
-                let limit = limit.map(|n| i64::try_from(n).unwrap_or(i64::MAX)).unwrap_or(-1);
-                let rows = statement.query_map(params![session,run,since,limit], stored_event)?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                rows
-            };
+            let rows = event_page_rows(&tx, &session, &run, since, session_scope, limit)?;
             tx.commit()?;
             Ok((known, rows))
         })?;
@@ -331,7 +334,7 @@ impl SqliteStore {
         let (session, run) = (session.to_owned(), run.to_owned());
         self.db.call(move |db| {
             Ok(db.query_row(
-                "SELECT EXISTS(SELECT 1 FROM run_events WHERE session_id=?1 AND run_id=?2)",
+                "SELECT EXISTS(SELECT 1 FROM run_events WHERE session_id=?1 AND run_id=?2) OR EXISTS(SELECT 1 FROM run_snapshots WHERE session_id=?1 AND run_id=?2)",
                 params![session, run],
                 |r| r.get(0),
             )?)
@@ -344,6 +347,10 @@ impl SqliteStore {
             let tx = crate::session::database::begin_immediate(db)?;
             tx.execute(
                 "DELETE FROM run_events WHERE session_id=?1 AND run_id=?2",
+                params![session, run],
+            )?;
+            tx.execute(
+                "DELETE FROM run_snapshots WHERE session_id=?1 AND run_id=?2",
                 params![session, run],
             )?;
             tx.commit()?;
@@ -598,8 +605,16 @@ pub(crate) fn insert_event(db: &Connection, session: &str, mut value: Value) -> 
         .unwrap_or(&identity)
         .to_owned();
     value["event_id"] = Value::String(event_id.clone());
+    let compacted: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM run_snapshots WHERE session_id=?1 AND run_id=?2)",
+        params![session, run],
+        |r| r.get(0),
+    )?;
+    if compacted {
+        bail!("cannot append to a compacted settled run");
+    }
     let existing: Option<StoredEvent> = db.query_row(
-        "SELECT session_id,run_id,epoch,idx,event_id,payload FROM run_events WHERE session_id=?1 AND run_id=?2 AND idx=?3 AND epoch=?4",
+        "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events WHERE session_id=?1 AND run_id=?2 AND idx=?3 AND epoch=?4",
         params![session,run,idx,epoch],
         stored_event,
     ).optional()?;
@@ -617,10 +632,61 @@ pub(crate) fn insert_event(db: &Connection, session: &str, mut value: Value) -> 
     object.remove("run_id");
     object.remove("event_id");
     db.execute(
-        "INSERT INTO run_events(session_id,run_id,epoch,idx,event_id,payload) VALUES (?1,?2,?3,?4,?5,?6)",
+        "INSERT INTO run_events(sequence,session_id,run_id,epoch,idx,event_id,payload)
+         VALUES (max(coalesce((SELECT max(sequence) FROM run_events),0),
+                     coalesce((SELECT CAST(value AS INTEGER) FROM storage_meta WHERE key='event_sequence'),0))+1,
+                 ?1,?2,?3,?4,?5,?6)",
         params![session, run, epoch, idx, stored_event_id, value.to_string()],
     )?;
     Ok(())
+}
+
+pub(super) fn event_page_rows(
+    db: &Connection,
+    session: &str,
+    run: &str,
+    since: i64,
+    session_scope: bool,
+    limit: Option<usize>,
+) -> Result<Vec<StoredEvent>> {
+    let sql = if session_scope && since >= -1 {
+        "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events WHERE session_id=?1 AND run_id=?2 AND epoch=-1 AND idx>?3 ORDER BY sequence"
+    } else if session_scope {
+        "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events WHERE session_id=?1 AND run_id=?2 AND ((epoch=-1 AND idx>?3) OR (epoch>=0 AND ?3 < -1)) ORDER BY sequence"
+    } else {
+        "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events WHERE session_id=?1 AND run_id=?2 AND idx>?3 ORDER BY epoch,idx"
+    };
+    let mut statement = db.prepare(&format!("{sql} LIMIT ?4"))?;
+    let limit = limit
+        .map(|n| i64::try_from(n).unwrap_or(i64::MAX))
+        .unwrap_or(-1);
+    let rows = statement
+        .query_map(params![session, run, since, limit], stored_event)?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+/// Index-ordered keyset pages for maintenance. Include epoch in the cursor so
+/// duplicate indices across epochs cannot hide at a page boundary.
+pub(super) fn compaction_page_rows(
+    db: &Connection,
+    session: &str,
+    run: &str,
+    idx: i64,
+    epoch: i64,
+    limit: usize,
+) -> Result<Vec<StoredEvent>> {
+    let mut statement = db.prepare(
+        "SELECT session_id,run_id,epoch,idx,event_id,payload,sequence FROM run_events
+        WHERE session_id=?1 AND run_id=?2 AND (idx,epoch)>(?3,?4) ORDER BY idx,epoch LIMIT ?5",
+    )?;
+    let rows = statement
+        .query_map(
+            params![session, run, idx, epoch, limit as i64],
+            stored_event,
+        )?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
 }
 
 fn stored_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredEvent> {
@@ -631,10 +697,11 @@ fn stored_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredEvent> {
         idx: row.get(3)?,
         event_id: row.get(4)?,
         payload: row.get(5)?,
+        sequence: row.get(6)?,
     })
 }
 
-fn decode_event<T: serde::de::DeserializeOwned>(row: StoredEvent) -> Result<T> {
+pub(super) fn decode_event<T: serde::de::DeserializeOwned>(row: StoredEvent) -> Result<T> {
     let identity = if row.epoch == -1 {
         format!("{}:session:{}", row.session_id, row.idx)
     } else {
@@ -832,8 +899,12 @@ mod reclamation_tests {
     }
 
     fn event(idx: i64) -> Value {
+        event_for("run", idx)
+    }
+
+    fn event_for(run: &str, idx: i64) -> Value {
         serde_json::json!({
-            "run_id": "run",
+            "run_id": run,
             "idx": idx,
             "epoch": 1,
             "timestamp": "2026-01-01T00:00:00Z",
@@ -842,10 +913,9 @@ mod reclamation_tests {
         })
     }
 
-    /// Opening a database switches it to incremental auto-vacuum, which is what
-    /// makes later deletes reclaimable at all.
+    /// New databases enable incremental reclamation without a full rewrite.
     #[test]
-    fn opening_enables_incremental_auto_vacuum() {
+    fn opening_new_database_enables_incremental_auto_vacuum() {
         let directory = tempfile::tempdir().unwrap();
         let store = SqliteStore::open(&directory.path().join("agent.db")).unwrap();
         let mode: i64 = store
@@ -855,8 +925,11 @@ mod reclamation_tests {
         assert_eq!(mode, 2, "INCREMENTAL");
     }
 
-    /// Page counts read with a raw connection: opening a `SqliteStore` now
-    /// compacts, so measuring through it would hide the very state under test.
+    /// Explicitly drain freed pages when verifying incremental reclamation.
+    fn drain_reclaim(store: &SqliteStore) {
+        store.db.reclaim(1, i64::MAX).unwrap();
+    }
+
     fn pages_raw(path: &std::path::Path) -> (i64, i64) {
         let connection = Connection::open(path).unwrap();
         (
@@ -889,63 +962,21 @@ mod reclamation_tests {
             .unwrap();
     }
 
-    /// A database written before this change (`auto_vacuum = 0`) is bloated with
-    /// free pages, and only a `VACUUM` can both reclaim them and switch on
-    /// incremental reclamation. Both have to happen on the next open.
-    ///
-    /// Asserted on the logical page count: `VACUUM` writes through the WAL, so the
-    /// bytes on disk only follow once the last connection closes.
+    /// Existing NONE-mode databases keep their layout and reusable free pages.
     #[test]
-    fn opening_compacts_a_database_written_before_this_change() {
+    fn opening_old_database_preserves_layout_and_free_pages() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("agent.db");
         bloat(&path, 20_000, 400, "NONE");
-        let (pages_before, free_before) = pages_raw(&path);
-        assert!(free_before > 2_000, "fixture freelist: {free_before}");
-
+        let before = pages_raw(&path);
+        assert!(before.1 > 2_000, "fixture freelist: {}", before.1);
         let reopened = SqliteStore::open(&path).unwrap();
-        let (pages_after, free_after) = pages(&reopened);
-        assert!(
-            pages_after < pages_before / 2,
-            "reopening compacts: {pages_before} → {pages_after} pages"
-        );
-        assert!(
-            free_after < FREELIST_RECLAIM_PAGES,
-            "{free_after} still free"
-        );
+        assert_eq!(pages(&reopened), before);
         let mode: i64 = reopened
             .db
             .call(|db| Ok(db.pragma_query_value(None, "auto_vacuum", |row| row.get(0))?))
             .unwrap();
-        assert_eq!(mode, 2, "and leaves incremental reclamation on");
-    }
-
-    /// A database that is *already* incremental but disproportionately free pages
-    /// (a big delete before the incremental drain finished) is compacted on the
-    /// next open, rather than draining a page at a time over minutes.
-    #[test]
-    fn opening_compacts_a_bloated_incremental_database() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("agent.db");
-        // Over COMPACT_MIN_FREE_BYTES, and more than a quarter of the file.
-        bloat(&path, 20_000, 4_000, "INCREMENTAL");
-        let (pages_before, free_before) = pages_raw(&path);
-        let mode: i64 = Connection::open(&path)
-            .unwrap()
-            .pragma_query_value(None, "auto_vacuum", |row| row.get(0))
-            .unwrap();
-        assert_eq!(mode, 2, "the fixture is already incremental");
-        assert!(
-            free_before * 4_096 > 64 * 1024 * 1024,
-            "fixture should exceed the compaction floor: {free_before} pages"
-        );
-
-        let reopened = SqliteStore::open(&path).unwrap();
-        let (pages_after, _) = pages(&reopened);
-        assert!(
-            pages_after < pages_before / 2,
-            "reopening compacts: {pages_before} → {pages_after} pages"
-        );
+        assert_eq!(mode, 0, "opening must not rebuild an old database");
     }
 
     /// The reported symptom: a session delete freed its events but the file kept
@@ -960,16 +991,17 @@ mod reclamation_tests {
             .append_events("doomed", (0..24_000).map(event).collect())
             .unwrap();
         let (with_session, free_before) = pages(&store);
-        assert!(free_before < FREELIST_RECLAIM_PAGES);
+        assert!(free_before < 1024);
 
         store.delete("doomed").unwrap();
+        drain_reclaim(&store);
         let (after, free_after) = pages(&store);
         assert!(
             after < with_session,
             "the file must shrink: {with_session} → {after} pages"
         );
         assert!(
-            free_after < FREELIST_RECLAIM_PAGES,
+            free_after < 1024,
             "and not just hand the pages to the freelist: {free_after} free"
         );
     }
@@ -986,12 +1018,13 @@ mod reclamation_tests {
         let (peak, _) = pages(&store);
 
         store.prune_events("keeps", "run").unwrap();
+        drain_reclaim(&store);
         let (after, free) = pages(&store);
         assert!(
             after < peak,
             "pruning must shrink the file: {peak} → {after}"
         );
-        assert!(free < FREELIST_RECLAIM_PAGES, "{free} pages still free");
+        assert!(free < 1024, "{free} pages still free");
     }
 
     /// The failure from the log. `replace` reads `legacy_imports` before it
@@ -1036,5 +1069,142 @@ mod reclamation_tests {
         // And it really landed, rather than being dropped along the way.
         let entries: Vec<Value> = store.entries("session").unwrap();
         assert_eq!(entries.len(), 1);
+    }
+}
+
+/// Two SQL-level decisions the store owns: which journal events a pricing
+/// backfill reads, and how a refreshed metadata record keeps its position.
+#[cfg(test)]
+mod journal_selection_paths {
+    use super::*;
+    use serde_json::json;
+
+    fn event(kind: &str, index: i64) -> serde_json::Value {
+        json!({"event_type":kind,"data":"{\"synthetic\":true}","session_id":"s","run_id":"r",
+            "epoch":1,"idx":index,"session_idx":-1,"run_sequence":1,
+            "timestamp":"2026-01-01T00:00:00Z"})
+    }
+
+    fn one_session(store: &SqliteStore) {
+        store
+            .replace(
+                "s",
+                vec![json!({"id":"e","type":"user","role":"user",
+                    "timestamp":"2026-01-01T00:00:00Z","content":"question"})],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn only_pricing_events_are_read_back_and_identical_appends_are_no_ops() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+        one_session(&store);
+        store.append_event("s", event("usage", 0)).unwrap();
+        store.append_event("s", event("model_changed", 1)).unwrap();
+        store.append_event("s", event("text_chunk", 2)).unwrap();
+        let payloads = store.pricing_event_payloads("s").unwrap();
+        assert_eq!(payloads.len(), 2);
+        assert!(
+            !payloads
+                .iter()
+                .any(|payload| payload.contains("text_chunk")),
+            "{payloads:?}"
+        );
+
+        // Re-appending the identical event is accepted silently, not a conflict.
+        store.append_event("s", event("usage", 0)).unwrap();
+        assert_eq!(store.events("s", "r").unwrap().len(), 3);
+        assert!(store.has_events("s", "r").unwrap());
+        assert!(!store.has_events("s", "other-run").unwrap());
+    }
+
+    #[test]
+    fn refreshing_a_session_info_keeps_one_record_with_the_latest_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+        let info = |name: &str, id: &str| {
+            json!({"id":id,"type":"session_info","role":"system",
+                "timestamp":"2026-01-01T00:00:00Z",
+                "content":{"session_name":name,"model":"mock","tokens_in":0}})
+        };
+        store.replace("s", vec![info("first", "info-1")]).unwrap();
+        store.append("s", vec![info("second", "info-2")]).unwrap();
+        let entries = store.entries("s").unwrap();
+        let infos: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry["type"] == "session_info")
+            .collect();
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0]["content"]["session_name"], "second");
+    }
+}
+
+#[cfg(test)]
+mod batch_delete_tests {
+    use super::*;
+
+    #[test]
+    fn batch_delete_rolls_back_sessions_events_and_import_tombstones_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open(&dir.path().join("agent.db")).unwrap();
+        for session in ["good", "bad"] {
+            store
+                .replace(
+                    session,
+                    vec![serde_json::json!({
+                        "id": "user", "type": "user", "timestamp": "2026-01-01T00:00:00Z",
+                        "content": "synthetic", "role": "user"
+                    })],
+                )
+                .unwrap();
+            store
+                .append_event(
+                    session,
+                    serde_json::json!({
+                        "run_id": "run", "epoch": 1, "idx": 0,
+                        "event_type": "text_chunk", "data": "{}"
+                    }),
+                )
+                .unwrap();
+        }
+        store.db.call(|db| {
+            db.execute_batch("INSERT INTO legacy_imports(session_id,status,fingerprint) VALUES ('good','imported','synthetic');
+                CREATE TRIGGER reject_batch_delete BEFORE DELETE ON sessions WHEN OLD.id='bad'
+                BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;")?;
+            Ok(())
+        }).unwrap();
+        assert!(store
+            .delete_many(vec!["good".into(), "bad".into()])
+            .is_err());
+        assert!(store.contains("good").unwrap());
+        assert_eq!(store.events("good", "run").unwrap().len(), 1);
+        let status: String = store
+            .db
+            .call(|db| {
+                Ok(db.query_row(
+                    "SELECT status FROM legacy_imports WHERE session_id='good'",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(status, "imported");
+        store
+            .db
+            .call(|db| {
+                db.execute_batch("DROP TRIGGER reject_batch_delete")?;
+                Ok(())
+            })
+            .unwrap();
+        store
+            .delete_many(vec!["good".into(), "bad".into(), "missing".into()])
+            .unwrap();
+        assert!(!store.contains("good").unwrap());
+        assert!(!store.contains("bad").unwrap());
+        assert!(store.events("good", "run").unwrap().is_empty());
+        store
+            .delete_many(vec!["good".into(), "bad".into()])
+            .unwrap();
     }
 }

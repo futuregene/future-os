@@ -697,6 +697,93 @@ mod tests {
     }
 
     #[test]
+    fn responses_config_rejects_every_malformed_compat_value() {
+        let mut model = crate::models::Model {
+            id: "gpt-5.6-sol".into(),
+            provider: "openai".into(),
+            api: "openai-responses".into(),
+            ..Default::default()
+        };
+        // Key, rejected value, and the fragment of the message that has to name
+        // both the offending compat key and its expected JSON type.
+        let cases: Vec<(&str, Value, &str)> = vec![
+            (
+                "responsesReasoningContext",
+                Value::Bool(true),
+                "compat.responsesReasoningContext must be a string",
+            ),
+            (
+                "responsesReasoningMode",
+                json!(7),
+                "compat.responsesReasoningMode must be a string",
+            ),
+            (
+                "supportsReasoningSummary",
+                json!("yes"),
+                "compat.supportsReasoningSummary must be a boolean",
+            ),
+            (
+                "responsesReasoningContext",
+                json!("sometimes"),
+                "unsupported compat.responsesReasoningContext `sometimes`",
+            ),
+            (
+                "responsesReasoningMode",
+                json!("turbo"),
+                "unsupported compat.responsesReasoningMode `turbo`",
+            ),
+            (
+                "responsesPromptCacheOptions",
+                json!("explicit"),
+                "compat.responsesPromptCacheOptions must be an object",
+            ),
+        ];
+        for (key, value, needle) in cases {
+            model.compat.insert(key.into(), value);
+            let error = ResolvedModelTarget::from_model(&model, "key".into(), None, None)
+                .expect_err("a malformed compat value must fail the model, not be ignored");
+            let message = error.to_string();
+            assert!(message.contains(needle), "{key}: {message}");
+            // The operator has to be able to find the offending model from the
+            // message alone — several providers ship the same compat key.
+            assert!(
+                message.contains("openai") && message.contains("gpt-5.6-sol"),
+                "{key} error does not name the model: {message}"
+            );
+            model.compat.remove(key);
+        }
+        // ... and with every bad value removed the same model resolves again.
+        let target = ResolvedModelTarget::from_model(&model, "key".into(), None, None).unwrap();
+        assert_eq!(expect_responses(target.protocol).reasoning_context, None);
+    }
+
+    #[test]
+    fn finish_reason_wire_names_are_stable_and_distinct() {
+        let named = [
+            (FinishReason::Stop, "stop"),
+            (FinishReason::ToolCalls, "tool_calls"),
+            (FinishReason::Length, "length"),
+            (FinishReason::ContentFilter, "content_filter"),
+            (FinishReason::Refusal, "refusal"),
+            (FinishReason::Cancelled, "cancelled"),
+            (FinishReason::Paused, "pause_turn"),
+            (FinishReason::Incomplete, "truncated"),
+            (FinishReason::Error, "error"),
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for (reason, wire) in named {
+            assert_eq!(reason.as_str(), wire, "{reason:?} changed its wire name");
+            assert!(seen.insert(wire), "{wire} is claimed by two finish reasons");
+        }
+        // A provider-specific reason survives verbatim rather than collapsing
+        // into one of the known names.
+        assert_eq!(
+            FinishReason::Unknown("max_tokens".into()).as_str(),
+            "max_tokens"
+        );
+    }
+
+    #[test]
     fn anthropic_thinking_mode_rejects_non_string_value() {
         let mut model = crate::models::Model {
             id: "m".into(),
@@ -860,6 +947,12 @@ mod tests {
     #[should_panic(expected = "Anthropic protocol expected")]
     fn expect_anthropic_rejects_other_protocols() {
         expect_anthropic(ProtocolConfig::OpenAiChat(OpenAiChatConfig::default()));
+    }
+
+    #[test]
+    #[should_panic(expected = "Responses protocol expected")]
+    fn expect_responses_rejects_other_protocols() {
+        expect_responses(ProtocolConfig::OpenAiChat(OpenAiChatConfig::default()));
     }
 
     #[test]

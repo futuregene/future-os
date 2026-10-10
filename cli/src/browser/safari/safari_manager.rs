@@ -19,6 +19,27 @@ const SAFARIDRIVER_PATH: &str = "/usr/bin/safaridriver";
 #[cfg(test)]
 static SAFARIDRIVER_PATH_OVERRIDE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
+/// Test-only: point `safaridriver_path()` at a path the test owns, with a guard
+/// that restores it. Module-level (not inside `mod tests`) so the launch tests
+/// below can use it on every platform — the unix-only `set_driver_override`
+/// variant exists only because its callers spawn real fixtures.
+#[cfg(test)]
+fn set_driver_path_for_tests(path: &str) -> DriverPathReset {
+    *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = Some(path.to_string());
+    DriverPathReset
+}
+
+/// Guard returned by [`set_driver_path_for_tests`].
+#[cfg(test)]
+struct DriverPathReset;
+
+#[cfg(test)]
+impl Drop for DriverPathReset {
+    fn drop(&mut self) {
+        *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = None;
+    }
+}
+
 /// The safaridriver executable path (honors the test override). Single
 /// definition so no cfg(not(test))-only copy goes unexecuted in the
 /// integration-test (non-cfg-test) build.
@@ -39,6 +60,33 @@ fn safaridriver_path() -> String {
 /// uncoverable on the macOS coverage host).
 #[cfg(test)]
 static SAFARI_PLATFORM_OVERRIDE: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
+
+/// Test-only: force the macOS gate on, so the Safari webdriver path is
+/// reachable on **every** platform and from other modules' tests (which cannot
+/// see the private static). Restores the real platform when dropped.
+///
+/// This exists because the gate is a *runtime* value here (`is_macos`), not a
+/// compile-time one: the three Safari integration tests in
+/// `commands::browser_tools` used to be `#[cfg(target_os = "macos")]` with the
+/// note "safari webdriver path errors out pre-network elsewhere" — true only
+/// while nothing could flip the gate. With the seam, those tests run on
+/// Windows and Linux too.
+#[cfg(test)]
+pub(crate) fn force_macos_gate() -> MacosGate {
+    *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
+    MacosGate
+}
+
+/// Guard returned by [`force_macos_gate`]; restores the platform on drop.
+#[cfg(test)]
+pub(crate) struct MacosGate;
+
+#[cfg(test)]
+impl Drop for MacosGate {
+    fn drop(&mut self) {
+        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = None;
+    }
+}
 
 fn is_macos() -> bool {
     #[cfg(test)]
@@ -343,6 +391,202 @@ mod tests {
         assert_eq!(err.as_deref(), Some("Timed out"));
     }
 
+    /// `safari_start`'s success path: the driver is spawned, does not answer
+    /// immediately, and the CLI's readiness poll then finds it and creates a
+    /// WebDriver session.
+    ///
+    /// The driver is a script that records that it ran; the mock WebDriver
+    /// endpoint is brought up only once that marker appears, which proves the
+    /// spawn step is behind us. An endpoint that answered earlier would take
+    /// the already-running branch instead (the endpoint is probed before the
+    /// driver is launched), so the marker — not a sleep — is what puts the
+    /// appearance inside the poll's 10 s / 250 ms window.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn launch_then_become_reachable_reports_started() {
+        let _guard = crate::test_env::lock_env().await;
+        let _macos = force_macos_gate();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let marker = dir.path().join("driver-ran.txt");
+        let script = driver_script(dir.path(), &marker);
+        let _driver = set_driver_path_for_tests(&script.display().to_string());
+
+        let port = free_port().await;
+        let started = tokio::spawn(async move { safari_start(port, None).await });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the driver was never spawned, so the poll was never reached"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let server = serve_webdriver(port).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(30), started)
+            .await
+            .expect("safari_start is bounded by its own 10 s window")
+            .expect("the task does not panic")
+            .expect("a driver that answers in the window is a success");
+        server.abort();
+
+        assert_eq!(result.status, "started");
+        assert_eq!(result.port, port);
+        assert_eq!(result.launcher, SAFARIDRIVER_PATH);
+        assert_eq!(result.connection.protocol(), "webdriver");
+        assert_eq!(result.connection.session_id(), Some("sid-start"));
+        assert!(
+            matches!(
+                result.connection,
+                BrowserConnectionConfig::Webdriver {
+                    driver_pid: Some(pid),
+                    ..
+                } if pid > 0
+            ),
+            "the spawned driver's pid is reported for cleanup"
+        );
+    }
+
+    /// `safari_status`'s non-timeout transport error: a peer that accepts and
+    /// closes without a complete response is reported as the transport error
+    /// itself, not as "Timed out" (the deadline arm has its own slow-server
+    /// test). A refused port would not do: this host's loopback silently drops
+    /// a connect to a closed port, which the 2 s deadline turns into a timeout
+    /// and would test the wrong arm.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn status_reports_a_non_timeout_transport_error() {
+        let _guard = crate::test_env::lock_env().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind closing peer");
+        let port = listener.local_addr().expect("addr").port();
+        let peer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept");
+            // Half a response, then gone: not a deadline, a broken exchange.
+            drop(socket);
+        });
+        let config = BrowserConnectionConfig::Webdriver {
+            browser_kind: "safari".to_string(),
+            endpoint: format!("http://127.0.0.1:{port}"),
+            session_id: "s1".to_string(),
+            driver_pid: None,
+        };
+        let (ok, data, err) = safari_status(&config).await;
+        peer.await.expect("peer task");
+        assert!(!ok);
+        assert!(data.is_none());
+        let err = err.expect("a broken exchange is reported");
+        assert_ne!(err, "Timed out", "a closed peer is not a deadline");
+        assert!(!err.is_empty());
+    }
+
+    /// `safari_status`'s outer deadline: a peer that accepts and then never
+    /// answers must be reported as "Timed out" rather than hanging the command.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn status_times_out_when_the_peer_never_answers() {
+        let _guard = crate::test_env::lock_env().await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind silent peer");
+        let port = listener.local_addr().expect("addr").port();
+        // Accept and hold: the request is read but never answered.
+        let held = std::sync::Arc::new(tokio::sync::Notify::new());
+        let peer = tokio::spawn({
+            let held = held.clone();
+            async move {
+                let (socket, _) = listener.accept().await.expect("accept");
+                held.notify_one();
+                // Hold the socket open well past the client's 2 s deadline.
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                drop(socket);
+            }
+        });
+        let config = BrowserConnectionConfig::Webdriver {
+            browser_kind: "safari".to_string(),
+            endpoint: format!("http://127.0.0.1:{port}"),
+            session_id: "s1".to_string(),
+            driver_pid: None,
+        };
+        let (ok, data, err) = safari_status(&config).await;
+        // Let the peer run to its end (it drops the socket after its hold)
+        // rather than aborting it: its completion is what proves nothing was
+        // left writing to a half-read response.
+        peer.await.expect("peer task");
+        assert!(!ok);
+        assert!(data.is_none());
+        assert_eq!(err.as_deref(), Some("Timed out"));
+    }
+
+    /// A launcher/driver script that records that it ran and exits.
+    ///
+    /// Windows cannot start a `.sh` and this host cannot create a symlink, so
+    /// the script is written in whatever dialect the platform executes — a
+    /// `.cmd` (started through `cmd.exe` by both `Start-Process` and Rust's
+    /// `Command`, both probed on this host) or a POSIX shell script.
+    fn driver_script(dir: &std::path::Path, marker: &std::path::Path) -> std::path::PathBuf {
+        #[cfg(windows)]
+        {
+            let script = dir.join("fake-driver.cmd");
+            std::fs::write(
+                &script,
+                format!(
+                    "@echo off\r\n> \"{}\" echo ran\r\nexit /b 0\r\n",
+                    marker.display()
+                ),
+            )
+            .expect("write driver script");
+            script
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let script = dir.join("fake-driver.sh");
+            std::fs::write(
+                &script,
+                format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+            )
+            .expect("write driver script");
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod driver script");
+            script
+        }
+    }
+
+    /// A minimal WebDriver endpoint on `port`: `/status` and `/session` both
+    /// answer 200, which is what the readiness poll and
+    /// `create_session_with_translation` need.
+    async fn serve_webdriver(port: i64) -> tokio::task::JoinHandle<()> {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port as u16))
+            .await
+            .expect("the resolved port is still free");
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = [0u8; 2048];
+                    let read = socket.read(&mut buf).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buf[..read]);
+                    let body = if request.contains("/session") {
+                        r#"{"sessionId":"sid-start","value":{}}"#
+                    } else {
+                        r#"{"ready":true}"#
+                    };
+                    let mut response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .into_bytes();
+                    response.extend_from_slice(body.as_bytes());
+                    let _ = socket.write_all(&response).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        })
+    }
+
     // ── safari_start: already-running + error translation ─────────────
 
     #[tokio::test]
@@ -590,5 +834,82 @@ socketserver.TCPServer(("127.0.0.1", port), H).serve_forever()
         // Non-2xx is not reachable.
         let base = spawn_http(vec![HttpRoute::json("/status", 500, "{}")]).await;
         assert!(!endpoint_reachable(&base).await);
+    }
+
+    // ── The launch path on Windows ──────────────────────────────────────
+
+    /// The overrides themselves, on any host: the driver-path override wins
+    /// when set, and without it the `cfg(test)` default (`/bin/sh`) is used so
+    /// no test can ever spawn the real safaridriver.
+    #[tokio::test]
+    async fn the_driver_path_override_wins_over_the_test_default() {
+        let _guard = crate::test_env::lock_env().await;
+        // Reset first: the override is process-global, so a value left by an
+        // earlier test in this binary is not this test's starting state.
+        *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = None;
+        assert_eq!(safaridriver_path(), "/bin/sh");
+        *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = Some("X".to_string());
+        assert_eq!(safaridriver_path(), "X");
+        *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = None;
+        // The launcher reported on success is the real constant, not the
+        // test default — one is the binary that runs, the other what the
+        // caller is told about it.
+        assert_eq!(SAFARIDRIVER_PATH, "/usr/bin/safaridriver");
+    }
+
+    /// The macOS gate is driven by the override, so both answers are reachable
+    /// on a non-macOS host — and with no override it is this host's own
+    /// `cfg!(target_os = "macos")`.
+    #[tokio::test]
+    async fn the_platform_override_decides_the_macos_gate() {
+        let _guard = crate::test_env::lock_env().await;
+        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
+        assert!(is_macos());
+        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(false);
+        assert!(!is_macos());
+        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = None;
+        assert_eq!(is_macos(), cfg!(target_os = "macos"));
+    }
+
+    /// A safaridriver that cannot be started is reported as a launch failure
+    /// (the spawn error is the message), and one that starts but never serves
+    /// is reported as the readiness timeout rather than hanging forever.
+    ///
+    /// Windows-only because the unix tests use a fake driver that *does* serve
+    /// (a python HTTP server); this host has no safaridriver, so the same two
+    /// arms are reached by making the process fail instead. Neither case starts
+    /// a browser: the first path does not exist and the second is `where.exe`,
+    /// which prints a usage error and exits.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn launch_failure_and_readiness_timeout_are_both_reported() {
+        let _guard = crate::test_env::lock_env().await;
+        *SAFARI_PLATFORM_OVERRIDE.lock().unwrap() = Some(true);
+        let _reset = PlatformReset;
+
+        // 1. The driver does not exist → the spawn error is reported. (The
+        //    message is the OS error; Windows' `CreateProcess` failure does not
+        //    carry the missing path, so only the launcher is named.)
+        *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() =
+            Some("C:\\future-clitui-no-such-driver.exe".to_string());
+        let err = safari_start(free_port().await, None)
+            .await
+            .map(|_| ())
+            .expect_err("a missing driver cannot start");
+        assert!(err.contains("Failed to launch safaridriver"), "{err}");
+
+        // 2. The driver starts but never serves → the 10 s readiness budget
+        //    expires with the endpoint named. `where` exists on every Windows
+        //    host and exits immediately on an unknown option.
+        *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = Some("where".to_string());
+        let port = free_port().await;
+        let err = safari_start(port, None)
+            .await
+            .map(|_| ())
+            .expect_err("a driver that never serves must time out");
+        assert!(err.contains("did not respond"), "{err}");
+        assert!(err.contains(&format!("127.0.0.1:{port}")), "{err}");
+        assert!(err.contains("within 10s"), "{err}");
+        *SAFARIDRIVER_PATH_OVERRIDE.lock().unwrap() = None;
     }
 }

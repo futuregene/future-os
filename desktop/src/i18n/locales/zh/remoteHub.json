@@ -1,0 +1,9 @@
+{
+  "title": "远程",
+  "lead": "这台电脑自己的会话在「对话」里，工具也在本机执行。下面是与其他设备的远程连接，分两个方向。",
+  "hostTitle": "让别的设备连接本机",
+  "clientTitle": "连接别的电脑",
+  "pairedDevices": "已连接的设备：{{count}} 台",
+  "autoConnectTitle": "打开应用后自动连接",
+  "autoConnectDescription": "已配对设备时，每次打开应用自动连接到该设备；你仍可随时手动断开。"
+}

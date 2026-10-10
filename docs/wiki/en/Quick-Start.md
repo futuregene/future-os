@@ -8,13 +8,12 @@ Already installed FutureOS? If not, start with [[Install FutureOS|Installation]]
 
 ## 1. Open and sign in
 
-To use the built-in models, connect your FutureGene account:
+To use the built-in models, connect your FutureOS account:
 
-1. Click the **gear icon** (Settings) at the bottom-left of the window.
-2. Go to the **Providers** page.
-3. Under **Built-in**, find **FutureGene** and click **Sign in**.
-4. Your browser opens for authorization. If it doesn't open automatically, the app shows a **verification code** and a **copyable link** — open the link in any browser and enter the code.
-5. Once authorized, the app confirms you're connected.
+1. On first launch, with no provider configured, FutureOS shows its welcome screen.
+2. Click **Sign in / Sign up**. Later you can sign in again from **Settings → Providers → Built-in → Future → Sign in**.
+3. Your browser opens the authorization page. Current builds open it automatically; they no longer show a separate verification code.
+4. Once authorized, the app loads the model catalog and installs its skills. If several recommended models are available, it asks you to pick a default one.
 
 > Prefer your own model provider? You can add an OpenAI-compatible or Anthropic-compatible provider instead. See [[Settings]].
 

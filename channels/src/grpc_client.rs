@@ -1117,4 +1117,20 @@ mod tests {
         let err = stream.message().await.unwrap_err();
         assert!(err.to_string().contains("event stream failed"), "{err}");
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_closed_global_event_stream_reports_the_connection_lost() {
+        // The disconnect monitor exists so the channel supervisor can rebuild
+        // the bridge; it resolves when the agent's event stream ends. The
+        // mock's global stream otherwise pings forever, so this is the only
+        // way to reach the "connection closed" return.
+        let mut state = MockState::default();
+        state.global_events_end = true;
+        let (mut c, _) = connect_to(state).await;
+        let err = c
+            .wait_for_disconnect()
+            .await
+            .expect_err("an ended stream is a disconnect");
+        assert!(err.to_string().contains("Agent connection closed"), "{err}");
+    }
 }

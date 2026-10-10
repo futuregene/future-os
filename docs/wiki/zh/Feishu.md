@@ -92,7 +92,9 @@ Bridge 与飞书维持一条长连接 WebSocket。当有人给你的机器人发
 | `feishu.enabled` | 设为 `true` 启动飞书 Bridge |
 | `feishu.app_id` | 飞书开发者控制台中的 App ID |
 | `feishu.app_secret` | 飞书开发者控制台中的 App Secret |
-| `feishu.domain` | `"feishu"`（飞书）或 `"lark"`（Lark，使用 `open.larksuite.com`） |
+| `feishu.domain` | 与飞书通信的地址：`"feishu"`（默认，`open.feishu.cn`）、`"lark"`（`open.larksuite.com`），或原样使用的完整 `http(s)://` URL（自建网关或测试 mock） |
+
+> 飞书与钉钉也接受 `providers.feishu` / `providers.dingtalk` 块；两种写法同时存在时以 `providers.<id>` 为准。完整字段参考见[渠道配置指南](../../guide/channels-config.zh-CN.md)。
 
 ### 权限策略配置
 
@@ -126,22 +128,25 @@ Bridge 与飞书维持一条长连接 WebSocket。当有人给你的机器人发
 |---|---|---|
 | `streaming` | `true` | 通过 CardKit 实时流式更新卡片 |
 | `resolve_sender_names` | `true` | 将 open_id 解析为显示名称（更友好，但稍慢） |
-| `max_image_mb` | `10` | 机器人下载图片的最大 MB 数 |
+| `max_image_mb` | `10` | 机器人下载图片或文件的最大体积（MiB） |
 | `typing_indicator` | `false` | 处理中显示输入状态 |
 
 ---
 
 ## 启动 Bridge
 
-已安装发布版可直接运行 `future channel`。新渠道会话默认权限为 `all`，不会主动开启桌面沙箱策略；请严格限制可操作机器人的用户。
+```bash
+future channel
+```
+
+Bridge 是**独立服务**——桌面应用不管理它。需要飞书桥接时运行 `future channel`。从源码检出也可以直接构建运行：
 
 ```bash
-# 构建并运行 Channel Bridge
 cargo build -p future-channel --release
 ./target/release/future-channel
 ```
 
-Bridge 是**独立服务**——桌面应用不管理它。需要飞书桥接时，用 `future channel` 或直接运行 `future-channel` 二进制（或通过 `make run-channels`）。
+（或 `make run-channels`）。新渠道会话默认权限为 `all`，不会主动开启桌面沙箱策略；请严格限制可操作机器人的用户。
 
 Bridge 启动时加载 `~/.future/channels/config.json`。如果文件不存在，会自动创建模板并退出——编辑模板后重新启动即可。
 
@@ -178,7 +183,7 @@ Bridge 启动时加载 `~/.future/channels/config.json`。如果文件不存在�
 
 ### 机器人不回复
 
-1. 检查 Bridge 是否运行：`future-channel` 进程应存在（macOS/Linux 用 `ps aux | grep future-channel`，Windows 用任务管理器）
+1. 先运行 `future channel status`（Bridge 未运行时也可用），再检查 `future channel`（或 `future-channel`）进程是否存在（macOS/Linux 用 `ps aux | grep future`，Windows 用任务管理器）
 2. 检查 `config.json` 中 `feishu.enabled` 是否为 `true`
 3. 检查 DM/群聊策略——机器人可能在拒绝访问，拒绝消息中会包含你的 open_id 或 chat_id。
 4. 查看 Bridge 日志中的 WebSocket 连接错误。
@@ -189,7 +194,7 @@ Bridge 启动时加载 `~/.future/channels/config.json`。如果文件不存在�
 
 ### 图片无法处理
 
-确认已授权 `im:resource` 权限，并检查图片大小是否超过 `max_image_mb` 限制（默认 10 MB）。
+确认已授权 `im:resource` 权限，并检查图片或文件是否超过 `max_image_mb` 限制（默认 10 MiB）。
 
 ---
 

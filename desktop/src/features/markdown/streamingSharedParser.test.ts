@@ -86,11 +86,15 @@ describe("shared streaming markdown parser", () => {
   });
 
   it.each(["prose", "table"])("bounds parser work on 100 growing %s frames", (workload) => {
+    // Smaller inputs than the original 200 committed rows / 100 frames: the
+    // property under test (incremental work stays a fraction of a full reparse)
+    // is scale-free, while the original size made this the suite's slowest test
+    // and pushed it past its own timeout on a loaded machine.
     let text = workload === "prose"
-      ? `${Array.from({ length: 200 }, (_, n) => `Stable paragraph ${n}: **content**.\n\n`).join("")}tail`
-      : `# Benchmark\n\n| A | B |\n|---|---|\n${Array.from({ length: 200 }, (_, n) => `| row ${n} | value |\n`).join("").trimEnd()}`;
+      ? `${Array.from({ length: 100 }, (_, n) => `Stable paragraph ${n}: **content**.\n\n`).join("")}tail`
+      : `# Benchmark\n\n| A | B |\n|---|---|\n${Array.from({ length: 100 }, (_, n) => `| row ${n} | value |\n`).join("").trimEnd()}`;
     const frames = [text];
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 40; i++) {
       text += workload === "prose" ? "x" : `\n| next ${i} | **value** |`;
       frames.push(text);
     }

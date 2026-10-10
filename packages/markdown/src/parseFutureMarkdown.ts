@@ -3,7 +3,6 @@ import type {
   Code,
   Definition,
   Emphasis,
-  Html,
   Image,
   ImageReference,
   InlineCode,
@@ -34,10 +33,17 @@ import remarkMath from "remark-math";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
 import { localFilePath } from "./localPath";
+import { htmlBlockToNodes } from "./htmlBlocks";
 import { remarkLatexMath } from "./remarkLatexMath";
+import { remarkMathFence } from "./remarkMathFence";
 import { remarkCjkEmphasis } from "./remarkCjkEmphasis";
+import { remarkAutolinkBoundary } from "./remarkAutolinkBoundary";
+import { remarkUnclosedLink } from "./remarkUnclosedLink";
 
-const markdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkGfm).use(remarkLatexMath).use(remarkCjkEmphasis);
+// `remarkAutolinkBoundary` is registered before `remarkGfm` on purpose: its
+// text-node pass must see the source before GFM's own autolink pass turns a URL
+// into a link node (see the plugin).
+const markdownProcessor = unified().use(remarkParse).use(remarkMath).use(remarkMathFence).use(remarkAutolinkBoundary).use(remarkGfm).use(remarkLatexMath).use(remarkCjkEmphasis).use(remarkUnclosedLink);
 
 // Cross-instance parse cache: `useMemo([content])` in MarkdownContent only
 // survives within one mounted component, so a thread switch re-parses every
@@ -203,7 +209,10 @@ function blockToFutureNode(
         },
       ];
     case "html":
-      return htmlToSafeParagraph(node);
+      // A raw HTML block is opaque to CommonMark (a single `html` node), so the
+      // usual markdown image/link/text nodes never form. Parse it with a narrow
+      // presentation whitelist instead; anything outside it stays inert text.
+      return htmlBlockToNodes(node.value);
     case "math":
       return [{ code: node.value, type: "mathBlock" }];
     /* v8 ignore start -- remark never emits phrasing nodes as block children */
@@ -488,13 +497,6 @@ function tableRowToCells(
     [],
   ) as InlineNode[][];
   return [...parsedCells, ...emptyCells];
-}
-
-function htmlToSafeParagraph(node: Html): MarkdownNode[] {
-  const trimmed = node.value.trim();
-  /* v8 ignore next 2 -- remark html nodes always have non-whitespace content */
-  if (!trimmed) return [];
-  return [{ children: [{ text: trimmed, type: "text" }], type: "paragraph" }];
 }
 
 function parseFutureEmbed(node: Code): FutureReference | null {

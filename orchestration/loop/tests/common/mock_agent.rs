@@ -40,6 +40,19 @@ pub struct MockState {
     pub events: Vec<StreamEvent>,
     /// Command types that answer success=false with a mock error.
     pub fail_commands: HashSet<String>,
+    /// Command types that fail **exactly once** with the given error text, then
+    /// succeed. Lets a test drive a retry path (the executor retries a prompt
+    /// after `duplicate_request_conflict`) without failing every later call.
+    pub fail_once: HashMap<String, String>,
+    /// Command types whose next N calls fail, one queued message per call — the
+    /// generalization of `fail_once` that lets a test drive a retry which FAILS
+    /// TOO (the executor's second prompt).
+    pub fail_queue: HashMap<String, Vec<String>>,
+    /// How long `stream_events` waits before it starts yielding. Lets a test make a
+    /// TURN exceed a wall-clock window (the no-progress idle threshold) without a real
+    /// slow provider: the loop's `TurnProgressTracker` timestamps the turn start, so
+    /// only genuine elapsed time can trip that window.
+    pub stream_delay: Option<std::time::Duration>,
     /// Command types that answer success=true with a non-JSON payload.
     pub invalid_json: HashSet<String>,
     /// ExecuteCommand fails at the transport level (tonic::Status error).
@@ -73,6 +86,9 @@ pub struct MockState {
     pub new_session_parents: Vec<String>,
     /// (session_id, busy_policy) of every prompt command, in order.
     pub prompt_calls: Vec<(String, String)>,
+    /// The `client_request_id` of every `prompt` command, in order — lets a test
+    /// assert the retry key differs from the original (the dedup contract).
+    pub prompt_request_ids: Vec<String>,
     /// The `message` text of every prompt command, in order.
     pub prompt_messages: Vec<String>,
 }
@@ -126,6 +142,15 @@ impl FutureAgent for MockAgent {
         if st.grpc_error {
             return Err(tonic::Status::unavailable("mock transport failure"));
         }
+        if let Some(message) = st.fail_once.remove(&cmd.r#type) {
+            return Ok(response(&cmd, false, String::new(), message));
+        }
+        if let Some(queue) = st.fail_queue.get_mut(&cmd.r#type) {
+            if !queue.is_empty() {
+                let message = queue.remove(0);
+                return Ok(response(&cmd, false, String::new(), message));
+            }
+        }
         if st.fail_commands.contains(&cmd.r#type) {
             return Ok(response(
                 &cmd,
@@ -177,6 +202,7 @@ impl FutureAgent for MockAgent {
                 st.prompts += 1;
                 st.prompt_calls
                     .push((cmd.session_id.clone(), cmd.busy_policy.clone()));
+                st.prompt_request_ids.push(cmd.client_request_id.clone());
                 st.prompt_messages.push(cmd.message.clone());
                 format!("{{\"run_id\":\"mock-run-{}\"}}", st.prompts)
             }
@@ -207,6 +233,15 @@ impl FutureAgent for MockAgent {
         request: tonic::Request<StreamRequest>,
     ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
         let req = request.into_inner();
+        // Read the delay in its own scope so the guard is not held across the await
+        // (a `MutexGuard` is not `Send`, and this future must be).
+        let delay = {
+            let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            st.stream_delay
+        };
+        if let Some(delay) = delay {
+            tokio::time::sleep(delay).await;
+        }
         let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         st.attach_after_idx.push(req.after_idx);
         if !st.stream_attach_plan.is_empty() {

@@ -495,4 +495,18 @@ mod tests {
         // Mismatching tree → None.
         assert_eq!(reuse_commit(&s.run_id, "after", "tree2").unwrap(), None);
     }
+
+    #[test]
+    fn filter_ignored_surfaces_a_git_failure() {
+        let s = setup("filter-ignored-err");
+        let index = s.repo.prepare_temp_index("filter-ignored-err").unwrap();
+        // A directory where the index file belongs makes git fail with a code
+        // other than 0 (success) or 1 (nothing ignored) — a real failure that
+        // must be surfaced instead of being read as "nothing is ignored".
+        std::fs::create_dir_all(&index).unwrap();
+        let error = filter_ignored(&s.repo, &index, &["some-file.txt".to_string()])
+            .expect_err("a failing check-ignore must not look like an empty ignore set")
+            .to_string();
+        assert!(error.contains("shadow git check-ignore failed"), "{error}");
+    }
 }

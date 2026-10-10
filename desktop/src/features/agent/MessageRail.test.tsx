@@ -44,33 +44,44 @@ function messageRow(patch: Partial<AgentMessage> = {}, hovered = false) {
   return <MessageBlock message={{ ...message, ...patch }} hovered={hovered} onHover={vi.fn()} onLeave={vi.fn()} />;
 }
 
-it("keeps settled stats visible but hides assistant copy until hover", async () => {
+it("hides settled stats and assistant copy until hover", async () => {
   await render(messageRow());
   const copy = container.querySelector(`button[aria-label="${i18n.t("common:copy")}"]`)!;
   const footer = copy.parentElement!;
-  expect(footer.classList.contains("justify-end")).toBe(true);
+  expect(footer.classList.contains("justify-start")).toBe(true);
   expect(copy.classList.contains("opacity-0")).toBe(true);
   expect(copy.classList.contains("pointer-events-none")).toBe(true);
   expect(footer.textContent).toContain("20s · 590 tokens");
   const stats = footer.lastElementChild!;
   expect(stats.classList.contains("text-ink-muted")).toBe(true);
-  expect(stats.classList.contains("opacity-0")).toBe(false);
+  expect(stats.classList.contains("opacity-0")).toBe(true);
+  expect(stats.classList.contains("pointer-events-none")).toBe(true);
 
   await render(messageRow({}, true));
   expect(copy.classList.contains("opacity-100")).toBe(true);
   expect(copy.classList.contains("pointer-events-none")).toBe(false);
+  expect(stats.classList.contains("opacity-100")).toBe(true);
+  expect(stats.classList.contains("pointer-events-none")).toBe(false);
+
+  await render(messageRow());
+  expect(stats.classList.contains("opacity-0")).toBe(true);
+  expect(copy.classList.contains("opacity-0")).toBe(true);
 });
 
-it("keeps the live dot and ticking timer on the same right rail until completion", async () => {
+it("keeps the live dot visible and reveals the ticking timer on hover until completion", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-09-17T00:00:20Z"));
   await render(messageRow({ status: "streaming", runStartedAt: Date.now() - 20_000, outputTokens: null }));
   const status = container.querySelector("[role=status]")!;
   const footer = status.parentElement!;
-  expect(footer.classList.contains("justify-end")).toBe(true);
+  expect(footer.classList.contains("justify-start")).toBe(true);
   expect(status.querySelector(".bg-generating")).not.toBeNull();
   expect(footer.textContent).toBe("20s");
   expect(footer.querySelector("button")).toBeNull();
+  const stats = footer.lastElementChild!;
+  expect(stats.classList.contains("opacity-0")).toBe(true);
+  await render(messageRow({ status: "streaming", runStartedAt: Date.now() - 20_000, outputTokens: null }, true));
+  expect(stats.classList.contains("opacity-100")).toBe(true);
   await act(async () => {
     vi.advanceTimersByTime(1000);
   });
@@ -78,6 +89,7 @@ it("keeps the live dot and ticking timer on the same right rail until completion
   await render(messageRow());
   expect(container.querySelector("[role=status]")).toBeNull();
   expect(footer.textContent).toContain("20s · 590 tokens");
+  expect(stats.classList.contains("opacity-0")).toBe(true);
 });
 
 it("preserves the user message's hover-only copy behavior", async () => {
@@ -88,14 +100,14 @@ it("preserves the user message's hover-only copy behavior", async () => {
   expect(copy.parentElement!.textContent).not.toContain("tokens");
 });
 
-it.each(["running", "completed", "failed"] as const)("right-aligns a %s tool header and opens a wrapping, left-aligned target", async (status) => {
+it.each(["running", "completed", "failed"] as const)("left-aligns a %s tool header and opens a wrapping, left-aligned target", async (status) => {
   const target = "printf 'a long command with spaces'";
   const inspect = vi.fn();
   const unsubscribe = onFutureEvent("inspect-tool", inspect);
   try {
     await render(<AgentActivityLine item={{ id: "tool", kind: "shell", status, target }} runId="run" />);
     const button = container.querySelector("button")!;
-    expect(button.parentElement!.classList.contains("self-end")).toBe(true);
+    expect(button.parentElement!.classList.contains("self-start")).toBe(true);
     expect(container.firstElementChild!.classList.contains("text-ink-muted")).toBe(true);
     expect(button.getAttribute("aria-expanded")).toBe("false");
     expect(container.textContent).not.toContain(target);
@@ -116,14 +128,14 @@ it.each(["running", "completed", "failed"] as const)("right-aligns a %s tool hea
   }
 });
 
-it("moves an opened same-kind group into the reading column, including legacy rows without a run", async () => {
+it("keeps a same-kind group in the reading column when toggled, including legacy rows without a run", async () => {
   const children: AgentActivityItem[] = [
     { id: "read-1", kind: "read", status: "completed", target: "/workspace/src/one.ts" },
     { id: "read-2", kind: "read", status: "completed", target: "/workspace/src/two.ts" },
   ];
   await render(<AgentActivityLine item={{ id: "group", kind: "read", status: "completed", count: 2, children }} workspacePath="/workspace" />);
   const button = container.querySelector("button")!;
-  expect(button.classList.contains("self-end")).toBe(true);
+  expect(button.classList.contains("self-start")).toBe(true);
   expect(container.textContent).not.toContain("src/one.ts");
   await act(async () => button.click());
   expect(button.classList.contains("self-start")).toBe(true);

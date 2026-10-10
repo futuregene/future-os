@@ -13,7 +13,7 @@
     "newChat": "新对话",
     "models": "模型",
     "skills": "技能",
-    "remote": "手机遥控",
+    "remote": "远程",
     "workspace": "工作区",
     "chat": "对话",
     "pinSidebar": "固定侧边栏",
@@ -53,7 +53,8 @@
     "deselectAll": "取消全选",
     "chatSectionActions": "对话区操作",
     "threadsSelected": "已选择 {{count}} 个",
-    "deleteSelected": "删除"
+    "deleteSelected": "删除",
+    "tasks": "任务"
   },
   "appShell": {
     "storeInitFailed": "FutureOS 本地存储初始化失败：",

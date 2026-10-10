@@ -48,6 +48,8 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   desktops: PairedDesktop[];
   switchDesktop(desktopId: string): Promise<void>;
   renameDesktop(desktopId: string, name: string): Promise<void>;
+  /** Set a desktop's local name/icon. Local-only; never leaves this phone. */
+  labelDesktop(desktopId: string, patch: { name?: string; icon?: string }): Promise<void>;
   removeDesktop(desktopId: string): Promise<void>;
   presence: Presence | null;
   desktopOnline: boolean;
@@ -92,8 +94,22 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   refreshSessions(): Promise<void>;
   refreshWorkspaces(): Promise<void>;
   selectSession(sessionId: string): Promise<void>;
+  /**
+   * Open a conversation on the desktop that owns it, switching the active
+   * connection when the row came from another machine.
+   *
+   * The phone runs one active connection, so a row merged in from a second
+   * desktop cannot be read where it lives: selecting it through the current
+   * connection would address a machine that has never heard of it. The merged
+   * list would be a list of rows that only work on whichever machine you
+   * happen to be connected to, so the switch is what makes the row mean what it
+   * says.
+   */
+  openSessionOnDesktop(desktopId: string, sessionId: string): Promise<void>;
   retryTimeline(): Promise<void>;
   loadOlderTimeline(): Promise<false | string[]>;
+  /** Pull-to-refresh: rebuild the visible timeline from durable history. */
+  reloadTimeline(): void;
   newConversation(mode?: "chat" | "workspace", workspaceId?: string): Promise<void>;
   closeConversation(): void;
   sendMessage(
@@ -112,6 +128,13 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   ): Promise<import("./types").CompactionOutcome>;
   listSessionFiles(path?: string): Promise<SessionFileListing>;
   listSkills(): Promise<RemoteSkill[]>;
+  /**
+   * Fetch a tool call's display target on demand — the arguments a lean
+   * history page omitted — and cache it for this conversation. Resolves null
+   * when the call has no target; rejects on transport/route failure, which the
+   * row treats as "leave the row as it was".
+   */
+  resolveToolCallTarget(toolCallId: string, runId: string): Promise<string | null>;
   prepareAttachment(
     attachment: HistoryAttachment,
     variant?: "preview" | "original",
@@ -136,8 +159,16 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   generateTitle(sessionId: string, language: string): Promise<string>;
   deleteSession(sessionId: string, threadId: string): Promise<void>;
   deleteWorkspace(workspaceId: string): Promise<void>;
+  /**
+   * Register an existing directory on the desktop as a workspace. Resolves the
+   * created row (a path that already names a workspace reopens it); rejects
+   * with the desktop's reason when the directory does not exist.
+   */
+  createWorkspace(path: string, name: string): Promise<import("./types").RemoteWorkspace>;
   setSessionPinned(sessionId: string, threadId: string, pinned: boolean): Promise<void>;
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
+  /** Fork the open conversation at a persisted user entry and open the child. */
+  forkConversation(sourceEntryId: string): Promise<void>;
   decideApproval(id: string, decision: "approved" | "rejected"): Promise<void>;
   clearError(): void;
   continueRun(sessionId: string, runId: string): Promise<void>;
@@ -186,6 +217,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     applySessionSnapshot,
     observeRunEvent,
     refreshSessions,
+    noteCatalogRevisions,
     refreshModels,
     refreshSettings,
     refreshWorkspaces,
@@ -193,6 +225,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     generateTitle,
     deleteSession: removeSession,
     deleteWorkspace: removeWorkspace,
+    createWorkspace,
     setSessionPinned,
     setWorkspacePinned,
     reset: resetCatalog,
@@ -224,6 +257,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     canLoadOlderTimeline,
     loadingOlderTimeline,
     loadOlderTimeline,
+    reloadTimeline,
     prepareTimelineOpen,
     syncEngineRef,
     streamingRef,
@@ -290,6 +324,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     desktops,
     switchDesktop,
     renameDesktop,
+    labelDesktop,
     removeDesktop,
     presence,
     desktopOnline,
@@ -317,6 +352,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     refreshSessions,
     refreshSettings,
     refreshWorkspaces,
+    noteCatalogRevisions,
     closeConversation,
     resetConversation,
     resetCatalog,
@@ -333,6 +369,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     selectSession,
     newConversation,
     listSessionFiles,
+    resolveToolCallTarget,
     listSkills,
     prepareAttachment,
     cachedAttachment,
@@ -345,6 +382,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     deleteSession,
     deleteWorkspace,
     decideApproval,
+    forkConversation,
   } = useConversationController({
     clientRef,
     selectedRef,
@@ -362,6 +400,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     recordError,
     removeSession,
     removeWorkspace,
+    refreshSessions,
     closeConversation,
   });
 
@@ -369,6 +408,28 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     settingsSink.current = { applySessionSettings, handleSessionSettingsEvent };
     return () => { settingsSink.current = null; };
   }, [applySessionSettings, handleSessionSettingsEvent]);
+
+  /**
+   * Open a conversation on the desktop that owns it.
+   *
+   * A row merged in from a second desktop belongs to a machine this connection
+   * is not talking to; selecting it here would address the active desktop with
+   * an id it does not have. So the switch comes first — the same switch the
+   * device picker performs — and the conversation opens on its own machine.
+   * A row on the active desktop (or one with no recorded source) is the plain
+   * selection it always was.
+   */
+  const openSessionOnDesktop = useCallback(
+    async (desktopId: string, sessionId: string) => {
+      if (!desktopId || desktopId === credentialsRef.current?.expectedDesktopId) {
+        await selectSession(sessionId);
+        return;
+      }
+      await switchDesktop(desktopId);
+      await selectSession(sessionId);
+    },
+    [selectSession, switchDesktop],
+  );
 
   const { sending, sendMessage, continueRun } = usePromptOutbox({
     clientRef,
@@ -431,6 +492,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       desktops,
       switchDesktop,
       renameDesktop,
+      labelDesktop,
       removeDesktop,
       presence,
       desktopOnline,
@@ -464,8 +526,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       refreshSessions,
       refreshWorkspaces,
       selectSession,
+      openSessionOnDesktop,
       retryTimeline,
       loadOlderTimeline,
+      reloadTimeline,
       newConversation,
       closeConversation,
       sendMessage,
@@ -473,6 +537,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       awaitCompactionOutcome,
       listSkills,
       listSessionFiles,
+    resolveToolCallTarget,
       prepareAttachment,
       cachedAttachment,
       downloadAttachment,
@@ -484,9 +549,11 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       generateTitle,
       deleteSession,
       deleteWorkspace,
+      createWorkspace,
       setSessionPinned,
       setWorkspacePinned,
       decideApproval,
+      forkConversation,
       clearError,
       continueRun,
     }),
@@ -505,12 +572,15 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       desktops,
       switchDesktop,
       renameDesktop,
+      labelDesktop,
       removeDesktop,
       closeConversation,
       clearError,
       connectionPresentation,
       continueRun,
+      createWorkspace,
       decideApproval,
+      forkConversation,
       desktopOnline,
       hasConnectedContent,
       catalogSync,
@@ -535,6 +605,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       rename,
       generateTitle,
       selectSession,
+      openSessionOnDesktop,
       selectedSessionId,
       selectedTitle,
       sendMessage,
@@ -542,6 +613,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setWorkspacePinned,
       listSkills,
       listSessionFiles,
+    resolveToolCallTarget,
       prepareAttachment,
       cachedAttachment,
       downloadAttachment,
@@ -559,6 +631,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       unpair,
       retryTimeline,
       loadOlderTimeline,
+      reloadTimeline,
     ],
   );
 

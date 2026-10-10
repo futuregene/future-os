@@ -56,7 +56,7 @@ function Harness({ threadId }: { threadId: string }) {
     sendingRef,
     setMessages: messages.setMessages,
     refreshRecentRun: messages.refreshRecentRun,
-    reloadMessagesQuiet: messages.reloadMessagesQuiet,
+    reloadThreadHistory: messages.reloadThreadHistory,
   });
   current = messages;
   sending = sendingRef;

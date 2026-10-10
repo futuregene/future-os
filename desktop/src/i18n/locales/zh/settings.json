@@ -15,7 +15,8 @@
       "sandbox": "命令在 macOS 沙箱中运行，必要时请求批准。",
       "sandboxWindows": "命令启用 Windows 写保护，必要时请求批准。",
       "sandboxLinux": "命令在 Linux 沙箱中运行，必要时请求批准。",
-      "off": "全部放开，不再询问，也不启用沙箱。"
+      "off": "全部放开，不再询问，也不启用沙箱。",
+      "auto": "自动判断是否放行，保留沙箱保护。"
     },
     "fallbackNotice": "沙箱保护不可用（诊断码：{{code}}）。已切换为手动审批：获批或白名单命令在没有 OS 沙箱的情况下运行。",
     "linuxUnavailable": {
@@ -35,7 +36,11 @@
         "probeTransportError": "暂时无法连接 Agent 检测 Linux 沙箱，请稍后再试或重启 FutureOS。（{{code}}）",
         "unknown": "Linux 沙箱当前不可用，请运行 future doctor 查看详情，修复后重启 FutureOS。（{{code}}）"
       }
-    }
+    },
+    "auto": "自动审批",
+    "autoUnavailable": "此主机的沙箱不可用，当前按人工审批执行；自动审批设置会保留。",
+    "autoSignInRequired": "自动审批（需登录）",
+    "autoChecking": "自动审批（检查登录中）"
   },
   "autoUpgradeSkills": {
     "title": "自动升级技能",
@@ -52,12 +57,6 @@
   "bellOnComplete": {
     "title": "完成提示音",
     "description": "智能体任务完成时播放提示音并吸引窗口注意力"
-  },
-  "remote": {
-    "autoConnect": {
-      "title": "打开软件后自动连接手机",
-      "description": "已配对手机时，每次打开软件自动连接到该设备，你仍可随时手动断开。"
-    }
   },
   "update": {
     "sectionTitle": "软件更新",
@@ -89,7 +88,6 @@
     },
     "tabs": {
       "general": "通用",
-      "remote": "手机遥控",
       "account": "账号",
       "update": "检查更新",
       "about": "关于",
@@ -277,6 +275,13 @@
     "website": "官网",
     "websiteLabel": "www.future-os.cn",
     "openSource": "开源软件",
-    "builtWith": "基于以下开源软件构建：{{projects}}"
+    "builtWith": "基于以下开源软件构建：{{projects}}",
+    "follow": "微信公众号",
+    "followDescription": "关注 {{name}} 公众号，获取版本更新、功能说明与研究技巧。",
+    "followHint": "用微信扫描二维码，或在微信中搜索「{{name}}」。",
+    "followQrAlt": "{{name}} 公众号二维码",
+    "followCopyName": "复制公众号名",
+    "followCopied": "已复制",
+    "followReadArticle": "阅读文章"
   }
 }

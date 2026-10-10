@@ -13,8 +13,10 @@ or headless entrypoint starts its agent via future agent when needed.
 Published GUI packages require glibc >= 2.39 (roughly Ubuntu 24.04+) and WebKitGTK:
     Debian/Ubuntu: sudo apt install libwebkit2gtk-4.1-0
     Fedora:        sudo dnf install webkit2gtk4.1
-Official Linux CI builds future as a static musl CLI, usable without GUI libraries.
-Local source builds use their selected host target and are not necessarily static.
+Official Linux CI builds future and futureos-headless as fully static musl
+binaries — no GUI libraries and no glibc requirement (they run on CentOS 7 /
+Rocky 8-era hosts). Local source builds use their selected host target and are
+not necessarily static.
 On a headless host, download the matching official CLI-only tarball and use
 ./future config and ./future tui, or ./future agent for other CLI clients.
 For server phone access, run ./futureos-headless. It is an independent foreground

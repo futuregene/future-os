@@ -444,6 +444,54 @@ mod tests {
     /// `HttpShutdown::stop` ends the accept loop: the server task observes
     /// the notify, breaks, and runs to completion (its end lines count).
     #[tokio::test(flavor = "multi_thread")]
+    async fn http_binary_and_sse_routes_serve_their_content_types() {
+        // `HttpRoute::binary` is the ZIP-download route: octet-stream, exact
+        // bytes, no text interpretation.
+        let payload: Vec<u8> = (0u8..=255).collect();
+        let base = spawn_http(vec![HttpRoute::binary("/pkg.zip", 200, payload.clone())]).await;
+        let response = reqwest::get(format!("{base}/pkg.zip")).await.unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("application/octet-stream")
+        );
+        assert_eq!(response.bytes().await.unwrap().as_ref(), payload.as_slice());
+
+        // `HttpRoute::sse` is the MCP stream: text/event-stream plus the
+        // session header the client has to echo back.
+        let base = spawn_http(vec![HttpRoute::sse(
+            "/mcp",
+            "data: {}\n\n",
+            Some("session-1"),
+        )])
+        .await;
+        let response = reqwest::get(format!("{base}/mcp")).await.unwrap();
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("text/event-stream")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("mcp-session-id")
+                .and_then(|v| v.to_str().ok()),
+            Some("session-1")
+        );
+        assert_eq!(response.text().await.unwrap(), "data: {}\n\n");
+
+        // An SSE route without a session id omits the header entirely.
+        let base = spawn_http(vec![HttpRoute::sse("/mcp", "data: x\n\n", None)]).await;
+        let response = reqwest::get(format!("{base}/mcp")).await.unwrap();
+        assert!(response.headers().get("mcp-session-id").is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_shutdown_stops_accept_loop() {
         let (base, shutdown) =
             spawn_http_shutdownable(vec![HttpRoute::json("/s", 200, "{}")]).await;

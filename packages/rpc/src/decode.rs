@@ -78,6 +78,9 @@ fn typed_response_data(resp: &proto::RpcResponse) -> Option<Value> {
         Kind::Prompt(ack) => serde_json::to_value(prompt_ack_from_proto(ack)).ok(),
         Kind::ListModels(response) => serde_json::to_value(list_models_from_proto(response)).ok(),
         Kind::GetAgentInfo(info) => serde_json::to_value(agent_info_from_proto(info)).ok(),
+        Kind::GetAgentReadiness(info) => {
+            serde_json::to_value(agent_readiness_from_proto(info)).ok()
+        }
         Kind::GetCommands(response) => serde_json::to_value(commands_from_proto(response)).ok(),
         Kind::Compact(result) => serde_json::to_value(compact_from_proto(result)).ok(),
         Kind::Shell(result) => serde_json::to_value(shell_from_proto(result)).ok(),
@@ -346,6 +349,7 @@ pub(crate) fn session_state_from_proto(state: &proto::SessionState) -> GetStateP
             .iter()
             .map(approval_card_from_proto)
             .collect(),
+        sandbox_tier: state.sandbox_tier.clone(),
     }
 }
 
@@ -638,10 +642,27 @@ fn model_entry_from_proto(model: &proto::ModelEntry) -> crate::payloads_ext::Mod
 // ── get_agent_info ───────────────────────────────────────────────────────────
 
 fn agent_info_from_proto(info: &proto::AgentInfo) -> crate::payloads_ext::AgentInfoPayload {
+    // Empty proto strings mean \"not reported\" for the optional identity
+    // fields, so they map back to None rather than to an empty string.
+    let present = |value: &str| (!value.is_empty()).then(|| value.to_string());
     crate::payloads_ext::AgentInfoPayload {
         version: info.version.clone(),
         agent_instance_id: info.agent_instance_id.clone(),
         skills_count: info.skills_count as usize,
+        git_commit: present(&info.git_commit),
+        git_commit_short: present(&info.git_commit_short),
+        git_dirty: info.git_dirty,
+        build_target: present(&info.build_target),
+        build_profile: present(&info.build_profile),
+    }
+}
+
+fn agent_readiness_from_proto(
+    info: &proto::AgentReadiness,
+) -> crate::payloads_ext::AgentReadinessPayload {
+    crate::payloads_ext::AgentReadinessPayload {
+        version: info.version.clone(),
+        agent_instance_id: info.agent_instance_id.clone(),
     }
 }
 
@@ -929,8 +950,22 @@ fn typed_event_json_inner(kind: &proto::event_payload::Kind) -> Option<serde_jso
             exit_code: data.exit_code,
             is_soft_fail: data.is_soft_fail,
             target_path: data.target_path.clone(),
+            shell_result: data
+                .shell_result_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str(json).ok()),
         })
         .ok(),
+        K::ApprovalAssessment(data) => {
+            let reported = data.reported.as_ref().map(|v| serde_json::json!({"risk":v.risk,"authorization":v.authorization,"reason_code":v.reason_code}));
+            let effective = data
+                .effective
+                .as_ref()
+                .map(|v| serde_json::json!({"risk":v.risk,"authorization":v.authorization}));
+            Some(
+                serde_json::json!({"assessment_id":data.assessment_id,"approval_request_id":data.approval_request_id,"tool_call_id":data.tool_call_id,"reviewer":data.reviewer,"status":data.status,"reported":reported,"effective":effective,"confidence":data.confidence,"probabilities":serde_json::from_str::<Value>(&data.probabilities_json).ok(),"model":data.model,"provider_request_id":data.provider_request_id,"error_code":data.error_code,"action":serde_json::from_str::<Value>(&data.action_json).ok(),"action_digest":data.action_digest,"attempt":data.attempt,"prompt_version":data.prompt_version,"reason_catalog_version":data.reason_catalog_version,"policy_version":data.policy_version,"duration_ms":data.duration_ms,"input_context":data.input_context_json.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok())}),
+            )
+        }
         K::ApprovalRequest(info) => Some(approval_card_from_proto(info)),
         K::ApprovalDecision(data) => serde_json::to_value(ev::ApprovalDecisionData {
             approval_request_id: data.approval_request_id.clone(),
@@ -978,6 +1013,7 @@ fn inflate_optional_json(raw: &str) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::encode;
     use crate::proto::response_payload::Kind;
 
     fn resp_with_payload(kind: Kind) -> proto::RpcResponse {
@@ -1254,6 +1290,48 @@ mod tests {
         assert_eq!(value["events"].as_array().unwrap().len(), 1);
     }
 
+    /// The desktop and the mobile relay both parse the recommendation out of
+    /// this payload, and neither sends a session: the agent's handler answers
+    /// `{"skill": {...}}` for a hit and `{"skill": null}` for every
+    /// non-answer (refused, timed out, not signed in) — the client's
+    /// `Option<SkillCandidate>` depends on the null being present rather than
+    /// the field going missing.
+    ///
+    /// No test covered this pair until now, so a rename on either side would
+    /// have surfaced only as "the card never appears".
+    #[test]
+    fn suggest_skill_round_trips_between_typed_payload_and_json() {
+        let hit = json!({
+            "skill": {"name": "future-image", "description": "Generate and edit images"}
+        });
+        let payload = encode::response_payload("suggest_skill", &hit)
+            .expect("a hit encodes to a typed payload");
+        let decoded = response_data(&resp_with_payload(payload.kind.unwrap()));
+        assert_eq!(decoded["skill"]["name"], json!("future-image"));
+        assert_eq!(
+            decoded["skill"]["description"],
+            json!("Generate and edit images")
+        );
+    }
+
+    #[test]
+    fn suggest_skill_round_trips_an_empty_answer_as_a_null_skill() {
+        let none = json!({"skill": null});
+        let payload = encode::response_payload("suggest_skill", &none)
+            .expect("an empty answer still encodes");
+        let decoded = response_data(&resp_with_payload(payload.kind.unwrap()));
+        // `null`, not an absent key: the client's `#[serde(default)] Option`
+        // tolerates either, but the contract is the null the handler writes.
+        assert!(
+            decoded.get("skill").is_some(),
+            "skill key must be present: {decoded}"
+        );
+        assert!(
+            decoded["skill"].is_null(),
+            "skill must decode as null: {decoded}"
+        );
+    }
+
     #[test]
     fn inflate_json_value_handles_empty_invalid_and_valid() {
         assert_eq!(inflate_json_value(""), Value::Null);
@@ -1453,5 +1531,155 @@ mod tests {
         let bare = proto::ReplayEvent::default();
         assert_eq!(replay_event_data(&bare), Value::Null);
         assert_eq!(replay_event_data_json(&bare), "");
+    }
+
+    /// The legacy JSON fallback for `list_sessions`. A peer that has not adopted the
+    /// typed payload (or a cached page) still sends `{"sessions": [...]}`, and the
+    /// rows must decode to the same structure the typed path produces.
+    #[test]
+    fn json_fallback_decodes_list_sessions_rows() {
+        let row = |id: &str, name: Option<&str>| {
+            let mut v = json!({
+                "id": id,
+                "model": "m1",
+                "cwd": "/work",
+                "updatedAtMs": 1_700_000_000_000i64,
+                "queryCount": 3,
+                "isStreaming": false,
+            });
+            if let Some(n) = name {
+                v["sessionName"] = json!(n);
+            }
+            v
+        };
+        let data = json!({ "sessions": [row("s1", Some("Demo")), row("s2", None)] }).to_string();
+        let rows = decode_list_sessions(&resp_with_data(&data)).expect("both rows must decode");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "s1");
+        assert_eq!(rows[0].session_name.as_deref(), Some("Demo"));
+        assert_eq!(rows[0].query_count, 3);
+        assert_eq!(rows[1].id, "s2");
+        assert!(
+            rows[1].session_name.is_none(),
+            "a session without a name stays unnamed"
+        );
+
+        // An empty list is a valid page (a session with no runs), not a decode failure.
+        let empty = decode_list_sessions(&resp_with_data(r#"{"sessions":[]}"#)).unwrap();
+        assert!(empty.is_empty());
+
+        // A response that is not JSON at all: the fallback yields None rather than
+        // panicking, and the caller sees "no typed payload and no data".
+        assert!(decode_list_sessions(&resp_with_data("not json")).is_none());
+        // Right JSON, wrong shape: the `sessions` key is required and must be an array.
+        assert!(decode_list_sessions(&resp_with_data(r#"{"rows":[]}"#)).is_none());
+        assert!(decode_list_sessions(&resp_with_data(r#"{"sessions":{}}"#)).is_none());
+        // A `payload` without a `kind` is not a typed payload, so it falls through too.
+        let empty_payload = proto::RpcResponse {
+            payload: Some(proto::ResponsePayload { kind: None }),
+            data: json!({ "sessions": [row("s3", None)] }).to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            decode_list_sessions(&empty_payload).unwrap()[0].id,
+            "s3",
+            "a payload with no kind must fall back to the JSON data"
+        );
+        // A COMPLETE typed payload wins over the data: the typed form is authoritative,
+        // so a stale `data` string cannot override it.
+        let typed = proto::RpcResponse {
+            payload: Some(proto::ResponsePayload {
+                kind: Some(Kind::ListSessions(proto::ListSessionsResponse {
+                    sessions: vec![proto::SessionSummary {
+                        id: "typed".to_string(),
+                        ..Default::default()
+                    }],
+                })),
+            }),
+            data: json!({ "sessions": [row("from-data", None)] }).to_string(),
+            ..Default::default()
+        };
+        assert_eq!(decode_list_sessions(&typed).unwrap()[0].id, "typed");
+    }
+
+    /// The fallback's all-or-nothing rule: one row that does not deserialize makes the
+    /// WHOLE page undecodable (`out.push(serde_json::from_value(row).ok()?)`). That is
+    /// the deliberate fail-closed choice - a partial list would hide a session from the
+    /// UI while looking complete - so it is pinned rather than left to a later reader's
+    /// assumption.
+    #[test]
+    fn json_fallback_is_all_or_nothing_on_a_bad_row() {
+        // A row missing a REQUIRED field (no `id`), and a row with a wrongly-typed
+        // field (`queryCount` as a string), each nuking the page.
+        let no_id = resp_with_data(
+            r#"{"sessions":[{"id":"good","model":"m","cwd":"/w","updatedAtMs":1,
+                              "queryCount":0,"isStreaming":false},{"no_id":true}]}"#,
+        );
+        assert!(
+            decode_list_sessions(&no_id).is_none(),
+            "one undeserializable row must fail the whole page, not truncate it"
+        );
+        let wrong_type = resp_with_data(
+            r#"{"sessions":[{"id":"good","model":"m","cwd":"/w","updatedAtMs":1,
+                              "queryCount":0,"isStreaming":false},
+                             {"id":"bad","model":"m","cwd":"/w","updatedAtMs":1,
+                              "queryCount":"many","isStreaming":false}]}"#,
+        );
+        assert!(decode_list_sessions(&wrong_type).is_none());
+    }
+
+    /// `projection_from_value` is reached only through `events_since_from_value`'s
+    /// optional `projection` field. Its contract: `events` is required, `runId`
+    /// defaults to empty and `cursor` to `-1` (the "no cursor yet" sentinel).
+    #[test]
+    fn events_since_decodes_the_optional_projection() {
+        let with_projection = resp_with_data(
+            r#"{"runId":"r1","events":[],"truncated":true,"hasMore":true,
+                "projection":{"runId":"r1","cursor":7,
+                              "events":[{"type":"text_chunk","data":"{\"text\":\"x\"}"}]}}"#,
+        );
+        let payload = decode_events_since(&with_projection).expect("the page must decode");
+        assert_eq!(payload.run_id, "r1");
+        assert!(payload.truncated, "truncated must survive the decode");
+        assert!(payload.has_more, "hasMore must survive the decode");
+        let projection = payload.projection.expect("the projection must decode");
+        assert_eq!(projection.run_id, "r1");
+        assert_eq!(projection.cursor, 7);
+        assert_eq!(projection.events.len(), 1);
+        assert_eq!(projection.events[0].event_type, "text_chunk");
+
+        // Defaults: no projection at all is `None` (not an empty projection), and a
+        // projection with no cursor/runId takes the documented sentinels.
+        let bare = resp_with_data(r#"{"events":[]}"#);
+        let payload = decode_events_since(&bare).expect("a page with no projection decodes");
+        assert!(payload.projection.is_none());
+        assert!(payload.run_id.is_empty());
+        assert!(!payload.truncated);
+        assert!(!payload.has_more);
+
+        let sparse = resp_with_data(r#"{"events":[],"projection":{"events":[]}}"#);
+        let projection = decode_events_since(&sparse)
+            .and_then(|p| p.projection)
+            .expect("a projection with no cursor is still a projection");
+        assert_eq!(projection.cursor, -1, "an absent cursor is the -1 sentinel");
+        assert!(projection.run_id.is_empty());
+        assert!(projection.events.is_empty());
+
+        // A projection without `events` is not a projection: it is dropped rather than
+        // surfaced as an empty one, so the caller can tell "none" from "empty".
+        let no_events = resp_with_data(r#"{"events":[],"projection":{"cursor":3}}"#);
+        assert!(
+            decode_events_since(&no_events)
+                .unwrap()
+                .projection
+                .is_none(),
+            "a projection missing its `events` key must be dropped"
+        );
+        // ...and a non-object projection too.
+        let wrong_type = resp_with_data(r#"{"events":[],"projection":"nope"}"#);
+        assert!(decode_events_since(&wrong_type)
+            .unwrap()
+            .projection
+            .is_none());
     }
 }

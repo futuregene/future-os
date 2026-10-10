@@ -32,6 +32,21 @@ fn agent_is_singleton_per_user_even_on_different_ports() {
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
+    let metadata_path = home.path().join(".future/agent/agent-instance.json");
+    while !metadata_path.exists() {
+        assert!(
+            first.try_wait().expect("poll first agent").is_none(),
+            "first agent exited before publishing instance metadata"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "first agent did not publish instance metadata"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let identity: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&metadata_path).unwrap()).unwrap();
+    assert_eq!(identity["pid"], first.id());
 
     let second = Command::new(env!("CARGO_BIN_EXE_future-agent"))
         .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
@@ -60,6 +75,10 @@ fn agent_is_singleton_per_user_even_on_different_ports() {
 
     first.kill().expect("force-stop first agent");
     first.wait().expect("reap first agent");
+    assert!(
+        metadata_path.exists(),
+        "a force kill may leave stale metadata"
+    );
     let replacement = Command::new(env!("CARGO_BIN_EXE_future-agent"))
         .args(["--grpc-addr", "127.0.0.1:0", "--profile-seconds", "0"])
         .env("HOME", home.path())
@@ -70,6 +89,10 @@ fn agent_is_singleton_per_user_even_on_different_ports() {
         replacement.status.success(),
         "replacement agent could not acquire released lock: {}",
         String::from_utf8_lossy(&replacement.stderr)
+    );
+    assert!(
+        !metadata_path.exists(),
+        "the replacement must remove its own metadata on normal exit"
     );
 }
 
@@ -191,6 +214,88 @@ fn agent_default_mode_binds_per_user_local_socket() {
             & 0o777,
         0o700,
         "local socket directory must be private to the user"
+    );
+}
+
+/// The default transport — no `--grpc-addr` — is per-user local IPC, and the
+/// profile timer is the one shutdown path a test can drive without delivering a
+/// console interrupt. Run the real binary on that default endpoint and assert
+/// the whole graceful sequence: it binds the local endpoint (not a TCP
+/// fallback), shuts itself down through the timer, exits 0 — not killed, not
+/// 130 — and releases the instance lock and the endpoint so the same home can
+/// start again immediately. `--home` gives the instance its own endpoint, so the
+/// test never touches the developer's own agent socket/pipe.
+#[test]
+fn agent_default_ipc_shuts_down_gracefully_and_releases_its_endpoint() {
+    let home = isolated_home();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_future-agent"))
+            .arg("--home")
+            .arg(home.path())
+            .args(["--profile-seconds", "0"])
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("RUST_LOG", "info")
+            .env_remove("FUTURE_HOME")
+            .env_remove("FUTURE_AGENT_SOCKET")
+            .env_remove("XDG_RUNTIME_DIR")
+            .output()
+            .expect("spawn future-agent on its default local endpoint")
+    };
+
+    let output = run();
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the default endpoint did not shut down cleanly: {log}"
+    );
+    // The local-IPC arm ran and bound the isolated instance's own endpoint.
+    assert!(
+        log.contains("gRPC server listening on local IPC"),
+        "the default transport must be local IPC: {log}"
+    );
+    #[cfg(unix)]
+    assert!(
+        log.contains(&format!(
+            "unix://{}",
+            home.path().join("run/agent.sock").display()
+        )),
+        "the isolated instance owns its socket: {log}"
+    );
+    #[cfg(windows)]
+    assert!(
+        log.contains("npipe://"),
+        "the isolated instance owns its pipe: {log}"
+    );
+    // The timer path finished instead of the process being torn down mid-flight:
+    // the shutdown flag was set, live sessions were aborted, and the select arm
+    // returned after the drain.
+    assert!(log.contains("Profile timer expired"), "{log}");
+    assert!(log.contains("Profile timer completed"), "{log}");
+    // A graceful exit runs the drop guards: the advisory metadata file is gone,
+    // so no later instance is told a dead process still owns the lock.
+    assert!(
+        !home.path().join("agent/agent-instance.json").exists(),
+        "graceful exit removed its own instance metadata"
+    );
+    #[cfg(unix)]
+    assert!(
+        !home.path().join("run/agent.sock").exists(),
+        "graceful exit removed the socket it bound"
+    );
+    // Nothing residual holds the lock or the endpoint.
+    let second = run();
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "the endpoint and lock were released: {}{}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
     );
 }
 

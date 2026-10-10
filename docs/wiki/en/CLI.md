@@ -53,7 +53,7 @@ future init
 
 Installs all built-in skills. On macOS and Linux, also links `future` (and `future-agent` when available) into `~/.future/bin/` and prints a PATH setup hint.
 
-### `config` — configure a model provider
+### `config` — configure a model provider, and read/write global settings
 
 ```bash
 future config
@@ -65,6 +65,23 @@ Interactively select **FutureOS** or a **custom provider**:
 - Custom: prompts for the provider ID, API protocol, base URL, API key, model ID, context window, and related settings. API key input is not echoed.
 
 Configuration is written to `~/.future/agent/models.json` and `~/.future/agent/auth.json`. If the agent is running, the command writes through its RPC and refreshes the model registry immediately; otherwise the changes take effect the next time the agent starts.
+
+The same group reads and changes the agent's global settings, with no subcommand
+needed to stay interactive:
+
+```bash
+future config get                                   # effective settings, defaults included
+future config get defaultPermissionLevel            # one value, for scripts
+future config set defaultPermissionLevel workspace  # change one key
+future config set compaction.reserve_tokens 8192
+```
+
+`future config get --help` lists every settable key and its accepted values.
+Writes are validated first, so a bad value or an unknown key leaves
+`settings.json` untouched. Neither direction needs a running agent; a change
+applies to the next new session (`defaultModel`, `defaultPermissionLevel`) or the
+next agent start (`compaction.*`, `retry.*`, `maxTurns`). See
+[Self-inspection](../../guide/self-inspection.md) for the full picture.
 
 ### `auth` — sign in and out
 
@@ -81,6 +98,25 @@ future auth logout      # sign out
 future account profile  # email, user ID, verification status, creation date
 future account balance  # credit balance (--json for machine output)
 ```
+
+Both commands are free. They are the only CLI reads that leave the machine: they
+call the Future platform over the network and need a login (`future auth login`).
+The CLI reads the stored API key itself, so no key ever needs to be passed — and
+seeing a low balance is information to report, not a reason to create a recharge
+order.
+
+### `version` — which build is this
+
+```bash
+future version            # same string as `future --version`
+future version --json     # version, commit, dirty state, target, profile
+```
+
+`--json` reports what the version string cannot: `gitCommit` (the full object
+name this binary was built from), `gitDirty`, `buildTarget` and `buildProfile`.
+Release and coordinated test/nightly builds carry **no** commit in their version
+at all, so this is the only way to check whether the binary you are running is
+the commit you are reading.
 
 ### `run` — send a one-off prompt and print the answer
 
@@ -99,9 +135,13 @@ Useful options and forms:
 | `--session <id>` | Connect to an existing session by ID. |
 | `--fork <entry-id>` | Fork a new session from a specific entry in the current session. |
 | `--permission <level>` | `all` (fresh-session default, unrestricted), `workspace` (approval-gated access), or `none` (deny all tool calls). This does not select an OS sandbox; see [[Sandbox]]. |
+| `--tools, -t <names>` | Comma-separated tool names to enable (e.g. `read,shell`); `--no-tools` / `--no-builtin-tools` disable them. |
 | `--steer` | Interrupt the session's current run; without it, the prompt queues behind a busy run. |
+| `--system-prompt`, `--append-system-prompt` | Replace or extend the system prompt. |
 | `--cwd <dir>` | Set the working directory. |
 | `--mode json` | Print the answer as JSON instead of text. |
+| `--verbose` | Write progress and tool calls to stderr. |
+| `--grpc-addr <addr>` | Explicit agent TCP address (default: per-user local IPC; also `FUTURE_AGENT_GRPC_ADDR`). |
 | `--no-session` | Don't save this exchange as a session. |
 
 Examples:
@@ -109,8 +149,10 @@ Examples:
 ```bash
 future run --model sonnet:high "Review the changes"
 future run @README.md "Summarize this file"
-echo "some text" | future run "Clean up this text"
+future run --tools read,shell "Read the README and list files"
 ```
+
+Run `future run --help` for every option.
 
 ### `skills` — manage capability packs
 
@@ -176,19 +218,69 @@ future loop status        # loop control plane: goals/todos/gates
 future session list
 future session set <id> [--parent <id>] [--title <name>] [--cwd <dir>]
                         [--model <id>] [--thinking <level>]
-future session info <id>
+future session info <id> [--json]
+future session status <id> [--json]     # live state: permission, sandbox, context, runs
+future session transcript --help # filter and window one session's records
+future session history --help   # search and read original history
+future session compact --help   # request manual context compaction
 future session rename <id> <name>
+future session new [--cwd <dir>] [--name <text>]
+future session forks <id>                # turns this session can be branched at
+future session fork <id> --entry <id>
+future session clone <id>
+future session title <id> [--apply]      # generate a title (a model call)
+future session export <id> [--out <path>]
+future session abort <id>                # stop the active run, clear the queue
+future session cancel <id> --run <run-id>
+future session approvals <id>
+future session approve <id> <request-id> [--allow <glob>]
+future session reject <id> <request-id>
 future session delete <id>
 ```
+
+`session info` reads the persisted journal (what the conversation contains and
+what it has cost); `session status` reads the live agent (how the session is
+configured *now*: the effective tool permission, the sandbox tier, context
+occupancy, loaded context files and skills, active and queued runs, and pending
+approvals). Only the second can answer a question about a session whose settings
+differ from the global defaults. `session set` writes both groups — the recorded
+options (`--model`, `--thinking`, `--cwd`, `--title`, `--parent`) and the live
+ones (`--tools`, `--no-tools`, `--no-builtin-tools`, `--system-prompt`,
+`--append-system-prompt`, `--permission`, `--sandbox`, `--context-files`,
+`--auto-compact`, `--auto-retry`) — and `session status` reads the live ones
+back. `abort`/`cancel`/`approve`/`reject` are the CLI counterpart of the TUI's
+`/stop`, `/cancel` and `/approve`, so a run started from a script can also be
+stopped from one.
+
+`future session history search --all --query "<text>"` searches across sessions
+instead of one, so "have we ever discussed this" does not require knowing which
+session first. It scans the most recently updated `--sessions` sessions (default
+50) and reports `scannedSessions` and `truncated`, so a partial scan is visible
+rather than silently reported as "never discussed". See
+[Self-inspection](../../guide/self-inspection.md).
+
+`future session transcript --session <id>` processes a whole conversation rather
+than finding one passage: `--select` picks the slices (user, assistant, thinking,
+tool-call, tool-result, session, compaction), `--tool` a single tool, `--input` /
+`--output` a tool's arguments versus its result, `--paths` just the file paths
+either mentions, and `--cursor` / `--limit` / `--max-bytes` window the output for
+paging. `--counts` is the cheap first look at an unfamiliar session. Both
+`session info` and `transcript` answer `--json`.
 
 `set` changes those settings on an existing session — only the options you pass are
 touched (`--parent ""` detaches). A parent records lineage only: no history is
 copied (that is `fork`), and the parent must be an existing session.
 
-Title and cwd are written to the session record immediately; the model and thinking
-level apply to the running session at once and reach the session record with the next run.
+A title or cwd set on a session that already has a record is written immediately;
+for a session that has never run, it is stored with the session's first run. The
+model and thinking level take effect on the running session at once and reach the
+session record with the next run (they are part of the run snapshot). `future run`
+applies its own `--cwd` (the current directory by default) when a run starts, so a
+cwd set here stays in effect only until the next run overrides it.
 
-Session data lives in `~/.future/agent/sessions/`.
+Session data is stored in the agent's SQLite database, `~/.future/agent/agent.db`.
+The `~/.future/agent/sessions/` directory is retained only as a legacy JSONL import
+source.
 
 ### `doctor` — environment diagnostics
 

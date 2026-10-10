@@ -1,5 +1,12 @@
 import Prism from "prismjs";
-import { CODE_LANGUAGE_BY_SUFFIX, codeLanguageForFile, codeTokenRows, highlightCode } from "../codeHighlight";
+import {
+  CODE_LANGUAGE_BY_NAME,
+  CODE_LANGUAGE_BY_SUFFIX,
+  codeLanguageForFile,
+  codeStyleForFile,
+  codeTokenRows,
+  highlightCode,
+} from "../codeHighlight";
 import { codePreviewRows } from "../codePreviewRows";
 import { codeColors } from "../../theme/tokens";
 
@@ -88,6 +95,7 @@ describe("previewed file names pick a grammar", () => {
     ["App.tsx", "tsx"],
     ["types.d.ts", "typescript"],
     ["index.mjs", "javascript"],
+    ["index.mts", "typescript"],
     ["main.go", "go"],
     ["deploy.sh", "bash"],
     ["setup.ps1", "powershell"],
@@ -98,15 +106,40 @@ describe("previewed file names pick a grammar", () => {
     ["init.el", "lisp"],
     ["build.gradle", "groovy"],
     ["main.tf", "hcl"],
+    ["prod.tfvars", "hcl"],
     ["style.scss", "scss"],
     ["server.conf", "ini"],
     ["run.bat", "batch"],
     ["Program.vb", "vbnet"],
+    ["values.yaml", "yaml"],
+    ["layout.xml", "xml"],
+    ["page.xhtml", "html"],
+    ["rows.ndjson", "json"],
+    ["api.proto", "protobuf"],
+    ["schema.graphql", "graphql"],
+    ["Main.elm", "elm"],
+    ["AppDelegate.mm", "objectivec"],
+    ["legacy.f", "fortran"],
+    ["review.diff", "diff"],
+    ["changes.patch", "diff"],
+    ["build.mk", "makefile"],
+    // Suffix-less files match on the whole name.
+    ["Makefile", "makefile"],
+    ["GNUmakefile", "makefile"],
+    ["Dockerfile", "docker"],
+    ["Dockerfile.dev", "docker"],
+    ["Jenkinsfile", "groovy"],
+    ["Gemfile", "ruby"],
+    ["Podfile", "ruby"],
+    [".gitignore", "git"],
+    [".bashrc", "bash"],
+    [".npmrc", "ini"],
+    [".env.local", "ini"],
   ])("maps %s to %s", (name, language) => {
     expect(codeLanguageForFile(name)).toBe(language);
   });
 
-  test.each(["notes.txt", "server.log", "a.out", "Makefile", "boot.asm", "Widget.vue", "App.svelte", "report.xlsx", ".bashrc"])(
+  test.each(["notes.txt", "server.log", "a.out", "boot.asm", "Widget.vue", "App.svelte", "report.xlsx", "Cargo.lock", "go.mod", "meson.build"])(
     "leaves non-source %s as plain text",
     name => expect(codeLanguageForFile(name)).toBeNull(),
   );
@@ -115,14 +148,31 @@ describe("previewed file names pick a grammar", () => {
     expect(codeLanguageForFile("  MAIN.PY ")).toBe("python");
     expect(codeLanguageForFile("app.test.tsx")).toBe("tsx");
     expect(codeLanguageForFile("a.tar.gz.ts")).toBe("typescript");
+    expect(codeLanguageForFile("C:\\w\\MAKEFILE")).toBe("makefile");
+    // Only the base name decides: a directory part is not the file's type.
+    expect(codeLanguageForFile("/w/notes.md/scratch")).toBeNull();
   });
 
-  test("every mapped suffix has a loaded grammar that colors its source", () => {
-    for (const [suffix, language] of Object.entries(CODE_LANGUAGE_BY_SUFFIX)) {
-      const tokens = highlightCode("const x = 1; # comment\ndef main(): pass\n", language);
-      expect([suffix, language, tokens !== null]).toEqual([suffix, language, true]);
-      expect(tokens!.map(token => token.text).join(""))
-        .toBe("const x = 1; # comment\ndef main(): pass\n");
+  test("lays code, config and data out monospace and prose proportional", () => {
+    for (const name of ["main.py", "Makefile", "Cargo.lock", "table.csv", "meson.build", "boot.asm", "Widget.vue", "go.mod"])
+      expect([name, codeStyleForFile(name)]).toEqual([name, true]);
+    for (const name of ["notes.txt", "server.log", "LICENSE", "README"])
+      expect([name, codeStyleForFile(name)]).toEqual([name, false]);
+  });
+
+  test("every mapped suffix and name has a loaded grammar that colors its source", () => {
+    // The sample carries one trigger for each family: a line-leading `#` (git's
+    // ignore-file comments, makefile recipes), an added/removed diff line, a
+    // tag (markup), a number and a `def`. A grammar that colors nothing at all
+    // would render as plain text and no screenshot would flag it.
+    const sample = "# comment\n+added\n-removed\n<x>text</x>\nconst x = 1;\ndef main(): pass\n";
+    for (const [key, language] of [
+      ...Object.entries(CODE_LANGUAGE_BY_SUFFIX),
+      ...Object.entries(CODE_LANGUAGE_BY_NAME),
+    ]) {
+      const tokens = highlightCode(sample, language);
+      expect([key, language, tokens !== null]).toEqual([key, language, true]);
+      expect(tokens!.map(token => token.text).join("")).toBe(sample);
       expect(tokens!.some(token => token.color)).toBe(true);
     }
   });

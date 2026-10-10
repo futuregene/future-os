@@ -117,7 +117,8 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 | `pinned` | 是否置顶 |
 | `readonly` | 是否只读 |
 | `agent_session_id` | GUI Thread ↔ Agent SQLite session 映射；非空值全局唯一，一个 Agent session 只能绑定一个 Desktop Thread；通过 RPC 查询，不跨数据库建立外键（`store/schema.rs`） |
-| `parent_session_id` | 父 Agent session ID 的本地投影；为空表示根对话。由启动同步、运行时发现和分叉写入；不设外键，允许父会话晚于子会话导入或已删除。Agent 仍是关系真源。 |
+| `parent_session_id` | 父 Agent session ID 的本地投影；为空表示根对话。由启动同步、运行时发现和分叉写入；不设外键，允许父会话晚于子会话导入或已删除。Agent 仍是关系真源。用户删除对话时沿该谱系递归删除（`store::threads::delete_thread_tree`）；孤儿清扫与外部删除反应走单线程删除，保留存活子对话。 |
+| `asset_root_id` | 共享附件原件/缩略图的稳定归属；分叉继承它，删除祖先不会使子会话历史失效（已发布迁移 `v1.1.9-thread-asset-root`） |
 | `last_message_at` | 最近消息时间 |
 | `last_opened_at` | 最近打开时间 |
 | `created_at` | 创建时间 |
@@ -135,6 +136,7 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 - 一个 Thread 可以产生多个 Review Changeset。
 - 一个 Thread 可以由另一个 Thread 分叉（fork）或通过 loop 派生执行产生。`parent_session_id` 经 `agent_session_id` 解析为父 Thread，GUI 最多展示三层；不存在的父节点将子节点提升为根。`v1.1.6-thread-parent-session` 迁移为已发布数据库增列；关系同步不改变活动时间，重新绑定另一 Agent session 时清除旧关系。
 - 一个 Agent session 最多映射到一个 Thread；数据库唯一索引是并发导入时的最终约束，通知、事件流重连与低频完整 reconciliation 复用同一个 get-or-create 语义。
+- 只有日志里已经有消息的 session 才会被镜像。客户端是在**创建** session 时广播 `session_created` 的，此时第一条 prompt 还没有产生，所以广播本身不等于一个对话：镜像这段空窗只会在所有列表里多出一行空对话（以及它占用的临时 Workspace）。低频完整对账会在消息出现的下一次导入它；同一条规则也会清掉旧版本为「创建后从未提问」的 session 留下的行。
 - Desktop 的安装级 `device_id` 是 `session_created.creatorId` 的来源；它独立于远程配对并在 Debug Reset 后保留。`createdBy` 只表示客户端类别，未来的 `clientId` 应表示进程或连接实例。
 
 说明：
@@ -185,6 +187,7 @@ Run 表示一次 Agent 执行，通常由用户消息触发。
 | `ended_at` | 结束时间 |
 | `error_message` | 错误信息 |
 | `error_type` | 结构化错误分类（`stream_interrupted`、`command_failed`、`model_failed`、`abort_requested`、`timeout`、`interrupted`、`unknown` 等；配套 `run_error.rs`，未失败时为 NULL） |
+| `remote_accepted_at` | Agent 持久接受远程（手机）prompt 的时间点；只有越过该边界，远程回执才可见或可恢复（`store/runs.rs` 的 `mark_remote_prompt_accepted`，索引 `idx_runs_remote_prompt_receipt`） |
 | `archived_at` | 归档时间；非空时不在右侧「运行」列表展示，但保留记录和 Agent 事件，供中间信息流的命令详情跳转使用 |
 | `created_at` | 创建时间 |
 | `updated_at` | 更新时间 |
@@ -213,6 +216,8 @@ Run Event 表示 Run 过程中的结构化事件。
 
 **GUI 存储：`run_events` 表已删除（`DROPPED_TABLES` 在旧库清除）。** Agent SQLite
 仍有自己的 `run_events` 表，为事件恢复真源；GUI 经 `get_events_since` 按游标读取。
+仅在新运行结束时将完整日志转为持久语义快照，旧游标通过现有 projection 替换恢复。
+运行中、不完整或过大的日志保留原始分页回放；会话正文独立完整保存。
 高频 delta 使用 100 ms / 128 条 / 64 KiB 微批，语义事件、读取和关闭先刷盘。
 没有 GUI JSONL 兼容读取或运行时回退；未提交 delta 的异常退出边界见 §7。
 
@@ -304,7 +309,7 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 | `thread_id` | 所属 Thread |
 | `run_id` | 来源 Run |
 | `tool_call_id` | 来源 Tool Call，可为空 |
-| `kind` | `shell_command`、`file_read`、`file_write`、`file_delete`、`network_access`、`data_access`、`batch_operation`、`outside_workspace_write` |
+| `kind` | 当前实现产出：`shell_command`、`file_read`、`file_write`、`outside_workspace_write`、`sandbox_escalation`（macOS/Linux 脱沙盒升级）、`windows_write_capability`（Windows 前置写路径）；`file_delete`、`network_access`、`data_access`、`batch_operation` 是设计草案值，实现从不产出；`outside_workspace_read` 为已废弃变体（见下方 v2 说明） |
 | `status` | `pending`、`approved`、`rejected`、`cancelled` |
 | `title` | 标题 |
 | `summary` | 摘要 |
@@ -313,6 +318,7 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 | `action_category` | P2 结构化字段：操作类别 |
 | `action_payload` | P2 结构化字段：完整 action JSON |
 | `sandbox_boundary` | P2 结构化字段：沙盒边界信息 JSON |
+| `save_suggestion` | v2 结构化字段：审批卡「在本工作区 / 本对话允许」背后的建议规则 JSON（`{path, access, action}`）；敏感文件为 null，只能允许一次 |
 | `reviewer` | 审查者，`user` 或 `auto_review`（预留） |
 | `decision_scope` | 决策范围，`once`、`session`、`always`（预留），当前仅 `once` |
 | `decision_source` | 决策来源，`user`、`rule`（预留）、`sandbox`（预留） |
@@ -342,6 +348,16 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
   - `approval_requests` 新增 `save_suggestion`（TEXT，JSON）——审批卡片“本工作区/对话允许”的建议规则 `{path, access, action}`；敏感文件为空（只能允许一次）。
   - **三张预留配置表 `sandbox_config` / `approval_policy_config` / `approval_rules` 已删除**（2026-07-05）——规则迁到文件后它们成为死结构；对应 `store/approval_config.rs` 模块与三个 record 类型一并移除。旧库里遗留的空表无害（无代码引用），新库不再创建。Phase 2 曾短暂用 `approval_rules` 存规则并经 gRPC 下发，v2 已拆除该链路。
   - `kind` 扩展 `sandbox_escalation`（bash 越界失败的升级审批）；`outside_workspace_read` 是已废弃的旧枚举，不再由当前实现产生。
+
+#### 自动审批审计
+
+`approval_assessments` 保存不可变模型评估：`id`、`approval_request_id`（级联外键）、
+`run_id`（级联外键）、`tool_call_id`、`status`、`payload`（版本化 JSON）、`created_at`。
+索引为 `(run_id, created_at)`。payload 保存 reported/effective 分类、概率与置信度、
+脱敏动作及 digest、模型归属、版本、耗时和错误码。自动请求直接写终态
+approved/rejected/cancelled，reviewer=model、decision_source=auto_review、scope=once，
+不进入 pending 队列、不改变 Run 为 waiting。迁移版本为 `v1.2.2-auto-approval`。
+详见[自动审批](AUTO_APPROVAL.zh-CN.md)。
 
 ### 4.9 Review Changeset
 
@@ -381,7 +397,7 @@ Review Changeset 表示一组可供用户 review 的变更集合。
 - 普通 Chat 不展示 Review，文件产物进入 Artifact 管理；Workspace 对话不展示 Artifacts，避免同一文件同时进入 Review 和 Artifact 两套语义。
 - 用户可以在 Review 中查看代码 diff、文件变更，以及后续文本类 artifact 的变更摘要。
 - `files_changed`、`additions`、`deletions` 用于展示类似 Git / Codex 的本轮变更汇总，例如 `2 个文件 +204 -90`。
-- `status` 列（`draft`/`ready`/`viewed`/`applied`/`discarded`）属于早期的 apply/discard 决策流；该流程前端已移除，`run_snapshot` changeset **不使用**该列，其状态改由 `completeness` / `confidence` 表达（见 4.10）。`StoredReviewChangeset` 类型保留，仅 markdown `futureos://` 引用仍在用。
+- `status` 列（`draft`/`ready`/`viewed`/`applied`/`discarded`）属于早期的 apply/discard 决策流；该流程前端已移除，`run_snapshot` changeset 写入 `status = 'n/a'`，其状态改由 `completeness` / `confidence` 表达（见 4.10）。`StoredReviewChangeset` 类型保留，仅 markdown `futureos://` 引用仍在用。
 
 ### 4.10 Review File Change
 
@@ -393,10 +409,10 @@ Review File Change 表示某个文件或 artifact 的具体变更。
 | --- | --- |
 | `id` | Review File Change 唯一标识 |
 | `changeset_id` | 所属 Review Changeset |
-| `target_type` | `workspace_file` 或 `artifact` |
+| `target_type` | 影子管线写入 `file`；`workspace_file` / `artifact` 是影子 Review 之前的设计草案值（已移除的 apply/discard 流程） |
 | `target_id` | 目标对象 id，可为空 |
 | `path` | 文件路径或 artifact 路径 |
-| `change_type` | `create`、`modify`、`delete`、`rename` |
+| `change_type` | git name-status 代码：`A` / `M` / `D` / `R` / `C`（新增 / 修改 / 删除 / 重命名 / 复制）；`create`、`modify`、`delete`、`rename` 是影子 Review 之前的设计草案值 |
 | `before_ref` | 变更前内容引用，可为空 |
 | `after_ref` | 变更后内容引用，可为空 |
 | `diff` | 小型文本 diff，可为空 |
@@ -491,8 +507,8 @@ Artifact 表示工作过程中产生的可复用产物。
 - 普通 Chat 产生的 Artifact 存在临时 Workspace 下。
 - 清理普通 Chat 时，用户可以下载 Artifact。
 - 对话输入框附件不自动登记为 Artifact，也不复制到普通 Chat / Workspace 的工作目录。Artifacts 面板的主动上传是独立流程。
-- **附件持久化目录**（不属于 Artifact/SQLite，纯文件树）：`~/.future/app/images/<threadId>/` 下 `thumb/` 保存所有图片附件的缩略图，`origin/` 保存粘贴图片及手机上传等没有稳定桌面原始路径的附件。附件元数据（`path` / `kind` / `name` / `thumbnail`）存在 Agent SQLite entry 元数据中，经 RPC `metadata.attachments` 返回；GUI 无消息副本，**无独立附件表**。
-- **回收**：`images/<tid>` 无逐删执行器,靠启动时 `reconcile_orphan_images` 孤儿清扫——`threads` 表中 `status='deleted'` 或无行的 tid 其目录被删（无软删撤销）；整库 reset 额外清 `images/` 整棵。覆盖 GUI 删、TUI/CLI 外部删 session、reset 三种来源。
+- **附件持久化目录**（不属于 Artifact/SQLite，纯文件树）：`~/.future/app/images/<assetRootId>/`（即线程自身的 `asset_root_id`；fork 后代共享祖先的根，见 4.2）下 `thumb/` 保存所有图片附件的缩略图，`origin/` 保存粘贴图片及手机上传等没有稳定桌面原始路径的附件。附件元数据（`path` / `kind` / `name` / `thumbnail`）存在 Agent SQLite entry 元数据中，经 RPC `metadata.attachments` 返回；GUI 无消息副本，**无独立附件表**。
+- **回收**：`images/<assetRootId>` 无逐删执行器，靠启动时 `reconcile_orphan_images` 孤儿清扫——当没有任何未删除线程解析到该根（`COALESCE(NULLIF(asset_root_id, ''), id)`）时其目录被删，即拥有者不存在或已软删（无软删撤销）；fork 后代让祖先的根保持存活。整库 reset 额外清 `images/` 整棵。覆盖 GUI 删、TUI/CLI 外部删 session、reset 三种来源。
 
 ### 4.12–4.13 Research Collection / Research Resource（已移除，未建表）
 
@@ -599,8 +615,9 @@ Object Reference 表示某个对象引用了另一个对象。
 - `workspace_files`
 - `reference_targets`
 - `object_references`
-- `app_settings`（应用级设置，键值表：`approval_tier`（`manual`/`sandbox`/`off`）、`hidden_models`、`remote_pair_id`，见 `store/app_settings.rs`；已退役的 `show_thinking` 键允许留在旧数据库中，但不再读取、写入或通过设置 API 返回，无需破坏性迁移；旧 `remote_enabled` / `remote_nats_url` 键不再读取，运行状态驻内存、地址由平台环境派生）
+- `app_settings`（应用级设置键值表；缺键时取以下默认值，见 `store/app_settings.rs:64-77,212-262`）：`approval_tier`（默认 `off`，另可 `manual`/`sandbox`；未知值收敛为 `off`）、`hidden_models`、`title_language`（`en`/`zh`，默认 `en`，由 Desktop UI 镜像给后台标题生成）、`auto_compact_first_turn`（保留的存储键名，用于「首个回答后生成标题」；默认 true，从不触发压缩）、`auto_upgrade_skills`（true）、`auto_connect_remote`（false，仅非 release 构建消费）、`bell_on_complete`（true）、`skill_recommend`（true）、`skill_guide_dismissed` / `skill_intro_dismissed`（false）、`community_edition`（false，仅呈现层）以及内部 `device_id`。全部走既有键值表与缺键默认，无需结构性迁移。已退役的 `show_thinking` 键允许留在旧数据库中，但不再读取、写入或通过设置 API 返回，无需破坏性迁移；旧 `remote_enabled` / `remote_nats_url` 键同样不再读取，运行状态驻内存、地址由平台环境派生。
 - `agent_delete_outbox`（删除 Thread 时登记的 Agent 会话删除投递队列，后台重试直至 Agent 确认，见 `store/deletions.rs`）
+- `skill_reco_events`（每次真正展示给用户的技能推荐一行：`day`、`skill_id`、`message_hash`——回答「今天推荐了几次 / 该技能今天是否展示过 / 该消息是否已产生过推荐」；没有可推荐项的调用不写行，见 `store/skill_reco.rs` 与 `store/schema.rs:249-254` 的 DDL）
 
 > `messages`、`run_events`、`tool_calls`、`tool_outputs` 已从 GUI schema 删除（`DROPPED_TABLES` 在旧库清除）；其数据由独立 Agent SQLite 持久化，详见 §4.3、§4.5–4.7、§7。
 >
@@ -698,6 +715,17 @@ Provider、模型与登录凭证不进 GUI 的 SQLite，而是读写 agent 的�
 - **模型可见性**：GUI 用应用设置里的 `hiddenModels`（opt-out）控制展示；agent 的 `enabledModels`（opt-in 白名单）非空时会限制 `list_models` 返回集——两者叠加时新登录 provider 的模型可能被旧白名单挡住（见 PLAN.md 待办）。
 - **字段校验**：自定义 provider 的 id（小写 `[a-z0-9_-]`）/ 名称（ASCII，禁中文 / emoji / 全角）/ Base URL（http(s)）/ 模型 等规则见 PLAN.md「自定义 Provider 字段校验」，前端即时 + 后端权威。
 
+### 6.10 任务用独立存储，不落 GUI SQLite
+
+任务（可复用提示词 + 触发器，全权限运行）由 `future-tasks` crate 拥有，持久化在 `<home>/.future/tasks/tasks.db`——是 `agent.db`、`app.db` 之外的第三份存储，GUI、CLI（`future task`）与远程桥以完全相同的方式读写它。不放进 `app.db` 的原因有两条：
+
+- **CLI 不该打开 GUI 数据库。** `app.db` 有已发布 schema 与自己的版本化迁移、单一所有者；`future desktop settings` 能写它，是因为 `future-app-settings` 持有共享 schema。任务是第一等的 CLI 能力，需要的是两端共享的所有者，而不是给 GUI 的库再加第二个写者。
+- **TUI 与无头桌面要能跑同一批任务。** 存储根由 FutureOS home 解析（`FUTURE_HOME` 替换整根），因此同一份任务列表对所有客户端可见，执行器可以寄宿在任意一端。
+
+所以 GUI **没有任何任务表、也没有任务迁移**。任务会话就是普通 Thread：按任务标题出现在侧栏，任务 → 会话的关联是任务库里的 `task_runs.thread_id`（经任务面板/运行记录查询）。用于侧栏徽标的 `threads.task_id` 列**刻意延后**——它需要一条 `app.db` 版本化迁移，而标题已经满足「会话出现在列表里」。
+
+执行只发生在 desktop（或无头 desktop）的 tick 循环里，它是唯一写者：CLI 与手机只写 `pending_request_at`、只读运行台账。`task_runs` 是审计轨迹——kind、origin、actor、状态、时间、提示词版本与截断后的结果摘要。
+
 ## 7. Agent SQLite 存储
 
 ### 7.1 所有权与事务边界
@@ -731,6 +759,9 @@ erDiagram
 | `history_display` | PK `(session_id,ordinal)`；`source_position/is_user/payload` | 外键级联到 session；`history_users(session_id,is_user,ordinal)` 支持倒序整轮分页。source_position 可空，表示合成占位；不是第二份正文 |
 | `legacy_imports` | PK `session_id`；`status/fingerprint/error_file/error_line/error_kind/warnings` | status 限 imported/skipped/deleted；每会话导入结果及防复活墓碑，无正文 |
 | `storage_meta` | PK `key`；`value` | 库级控制标记，例如一次性导入完成状态 |
+| `compaction_operations` | PK `(session_id,input_key)`；`input_digest/operation_id/state/result_json` | 外键级联到 session；state 限 started/completed/failed。让手动与自动压缩跨重启幂等：同 key 成功直接复用已记录结果，不重新计算；摘要正文不存这里 |
+| `fork_operations` | PK `request_id`；`request_fingerprint/parent_session_id/child_session_id/created_at_ms` | `child_session_id` 唯一且级联；`fork_operations_parent` 服务父会话查找。记录已完成的 fork，重试请求复用子会话而非再建一个 |
+| `skills`、`skills_meta`、`skill_installations`、`skill_operations` | `skills` PK `name`（`version/deleted/installed_at_ms/updated_at_ms`）；`skills_meta` PK `key`；`skill_installations` PK `location`（`name/scope/source/version/package_sha256/observed_at_ms`；scope `app`/`global`，source `managed`/`external`）；`skill_operations` PK `name`（`kind` install/uninstall，`phase` prepared/replaced） | Agent 的已安装技能注册表（`agent/src/skills/registry.rs`，随同一 schema 批次创建，使先于 Agent 启动的 mutator 也能留下 Agent 接受的文件）。`skill_installations_name` 服务按名查找；`~/.future/agent/skills` 下的文件仍是事实来源 |
 
 JSON 的保留边界：
 
@@ -738,7 +769,7 @@ JSON 的保留边界：
 - Entry 的非块内容（如 checkpoint、运行标记）保留 `content_json`；块数组使用 `[]` 标记，重建时从块表读取，不重复保存正文。`session_info` 内容只从 sessions 当前设置重建。
 - Entry metadata 保留扩展、附件引用及精确来源时间字面值，后者用于重复身份核验；查询和公开消息时间使用毫秒。供应商签名、未知块不能当作“无用字段”丢弃。
 - `entry_records` / `block_records` 是普通 SQL VIEW，不占第二份正文存储。它们重建 Agent 内部记录，不是对外 JSONL 兼容接口。
-- 事件 payload 是归一化事件，不是供应商原始网络字节；session/run 身份从列恢复，确定性 event_id 不重复存储。事件与完成正文存在有意的内容重叠，用于断线恢复；本期不清理事件、不改变过期游标协议。
+- 事件 payload 是归一化事件，不是供应商原始网络字节；session/run 身份从列恢复，确定性 event_id 不重复存储。事件与完成正文存在有意的内容重叠，用于断线恢复；已结束且完整的运行可以转为持久快照，过期游标通过现有 projection 替换恢复。
 
 ### 7.3 写入、分页与性能边界
 
@@ -754,6 +785,53 @@ Delta 按 100 ms / 128 条 / 64 KiB 微批写入；非 delta 语义事件、读�
 
 Agent 与 Desktop/Mobile/TUI/CLI 同步发布，不支持新旧 RPC 混搭。现有历史/消息/分叉接口统一使用 `id/kind/role/runId/createdAtMs/blocks/metadata/usage/run`；状态接口集中返回 `usage`、`requestedRun`，列表使用 `updatedAtMs`；缺少父会话用 null。原始实时事件的恢复协议独立保留，不新增旧字段别名或双格式响应。Desktop 内部 Tauri UI 记录仍按其职责映射，不冒充 Agent 公共 RPC。
 
-Agent 当前 `application_id` 为 `0x46555452`，`user_version=2` 只是本库 schema 标识，不是 RPC 版本，也不代表存在需要支持的已发布 v1。开发布局不保留升级链，未知库/不支持布局明确拒绝，绝不自动重建。正式发布后必须维护 schema 迁移；Desktop 已发布的 migrations 继续遵守 §1 的不可修改边界。
+Agent 当前 `application_id` 为 `0x46555452`，`user_version=5` 只是本库 schema 标识，不是 RPC 版本，也不代表存在需要支持的已发布 v1。`user_version` 2 和 3 是更早的布局；2 只在列形状与当前一致时才被接受，否则启动即拒绝（`agent/src/session/database.rs:285-319`）。开发布局不保留升级链，未知库/不支持布局明确拒绝，绝不自动重建。正式发布后必须维护 schema 迁移；Desktop 已发布的 migrations 继续遵守 §1 的不可修改边界。
 
 旧 JSONL 仅由一次性导入器读取、原文件保留；损坏会话隔离跳过，全局存储错误阻止启动。运维、隐私及备份边界见 [SQLite 迁移](../../architecture/sqlite-migration.zh-CN.md)。
+
+### 会话批量删除与索引
+
+`delete_session` 保留单会话响应；`delete_sessions` 接收 1..32 个不同的
+`session_ids`，逐会话返回 `sessionId/deleted/error/errorCode/errorData`。忙碌会话
+继续保留重试意图；可删除会话及导入墓碑在 Agent 同一事务中提交，提交后才移除内存
+会话、发布删除事件，每批统一通知后台执行有页数和时间预算的空间回收。Desktop 复用客户端
+分批发送 outbox，验证完整响应后统一提交确认和重试错误；并发队列处理合并。
+本地会话树删除使用有界事务，每个选中会话树通过保存点隔离失败。
+
+`v1.2.3-session-delete-indexes` 在新库和旧库上都于所需列存在后执行，事务化、
+幂等地增加 `review_snapshots(thread_id)`、`artifacts(run_id)`、
+`artifacts(thread_id)`、`approval_assessments(approval_request_id)`、
+`threads(parent_session_id)`、有效会话表达式
+`COALESCE(NULLIF(TRIM(agent_session_id), ''), id)` 和
+`agent_delete_outbox(requested_at, session_id)` 的索引。归属查询使用索引化
+`EXISTS` 判断其他线程是否仍引用会话，保留空白字符和线程 ID 回退语义。
+
+
+### 已结束运行的快照与后台回收
+
+Agent schema 5 增加会话所有的 `run_snapshots`，删除会话时级联删除。
+运行中仍以原始日志为准；终态正文和 `agent_end` 都持久化后，后台按每页
+256 条事件构建快照，验证序号连续、epoch 一致，并合并同一流的连续分片。
+思考块、工具身份、替换式分片及语义事件顺序保持正确。构建在数据库工作
+线程之外进行，提交前在 `BEGIN IMMEDIATE` 下重新核验来源水位。
+
+完整快照发布与该运行全部原始记录删除在一个 FULL 同步事务中提交。
+构建、校验、删除或提交失败时完整保留原始日志，不自动重试。提交前崩溃
+保留原日志；提交后读取完整快照。读取快照或原始日志的选择也在同一个
+读事务中完成，避免竞态空窗。历史快照接口直接读取持久快照；旧游标的
+事件回放和订阅返回现有 projection 替换状态。重启恢复快照水位，不再把
+合并后的非连续序号当成原始日志缺口。
+
+有界结束通知队列是唯一整理触发条件。启动和定时维护都不扫描历史运行；
+整理失败、终态不完整、损坏或超过 4 MiB 快照预算的日志继续使用原始
+分页回放，重启或其他运行结束不会触发重试。超过 65,536 条原始事件的
+运行也保留原日志，以限制单次原子删除事务的规模。退出时在分页边界取消构建。
+用量和模型信息保留原序号供费用统计使用；持久序号高水位防止清理后
+SQLite 重用 rowid 导致历史费用顺序变化。未整理的历史对话仍可正常使用。
+
+删除仅通知后台回收已释放空间。空闲数据库任务不删除日志记录，包括
+旧版本已发布快照的冗余原始分片；每次最多尝试 128 个空闲页，并在页
+操作之间检查 10 ms 时间预算。单次 SQLite/系统操作不受该预算硬性限制。
+WAL 截断不等待读锁，未完成则重试。启动和后台均不自动执行全库 VACUUM。
+新库启用增量回收；已有 NONE 模式的库保持原布局，释放的空间由 SQLite
+内部复用。旧程序明确拒绝 schema 5，避免把已整理的历史误判为空日志。

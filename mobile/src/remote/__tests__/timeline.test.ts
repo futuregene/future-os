@@ -4,6 +4,7 @@ import {
   commitAcknowledgedUserMessage,
   dropSupersededCompactionDividers,
   emptyTimeline,
+  foldLiveCompactionPlaceholdersIntoHistory,
   markApprovalDecision,
   mergeHistoryAttachments,
   normalizeReplayEvents,
@@ -12,6 +13,7 @@ import {
   timelineFromHistory,
   timelineFromProjection,
 } from "../timeline";
+import { messageToItems } from "../projection";
 import type { HistoryEntry } from "../types";
 
 describe("history reducer", () => {
@@ -39,6 +41,64 @@ describe("history reducer", () => {
       expect.objectContaining({ kind: "message", role: "user", text: "hi" }),
       expect.objectContaining({ kind: "message", role: "assistant", text: "done" }),
     ]);
+  });
+
+  test("a message that is neither a user bubble nor an assistant reply renders nothing", () => {
+    // System/tool rows travel in the same projection envelope; they have no
+    // bubble in this UI and must not appear as an empty one.
+    expect(messageToItems({ id: "sys", role: "system", content: "you are an agent" } as never))
+      .toEqual([]);
+    // An assistant row with no text, no segments and no outcome carries nothing
+    // to say: not even a placeholder bubble.
+    expect(messageToItems({ id: "a", role: "assistant", content: "", segments: [] } as never))
+      .toEqual([]);
+    // …but an outcome without text still has to be visible (a failed or stopped
+    // turn is exactly the case the user needs to see).
+    expect(messageToItems({ id: "a", role: "assistant", content: "", segments: [], stopped: true } as never))
+      .toHaveLength(1);
+    expect(messageToItems({ id: "a", role: "assistant", content: "", segments: [], durationMs: 12 } as never))
+      .toHaveLength(1);
+  });
+
+  test("a live bubble that already carries its attachments keeps them", () => {
+    const live = appendUserMessage(emptyTimeline(), "look", [
+      { path: "file:///live.jpg", name: "live.jpg", kind: "image" },
+    ]);
+    const durable = appendUserMessage(emptyTimeline(), "look", [
+      { path: "file:///durable.jpg", name: "durable.jpg", kind: "file" },
+    ]);
+    const merged = mergeHistoryAttachments(live, durable);
+    // The live row's chips came from the composer the user actually used;
+    // replacing them with the durable copy would swap a photo for a file.
+    expect(merged.items[0]).toMatchObject({ attachments: [{ name: "live.jpg" }] });
+  });
+
+  test("a settled live placeholder for a durable checkpoint is folded away", () => {
+    const divider = (id: string, status: "running" | "completed") => ({
+      id,
+      kind: "message" as const,
+      role: "assistant" as const,
+      text: "",
+      segments: [{ id: `seg_${id}`, kind: "compaction" as const, checkpointId: "cp-1", status }],
+    });
+    // The live placeholder never got its terminal, so it still carries the
+    // operation id while the durable divider carries the checkpoint id. When
+    // both rows exist, the placeholder must go — including any copy of it that
+    // the durable window still holds.
+    const live = [divider("compaction:op-1", "completed")];
+    const history = [divider("compaction:op-1", "completed"), divider("m_cp-1", "completed")];
+    const folded = foldLiveCompactionPlaceholdersIntoHistory(history, live);
+    expect(folded.live).toEqual([]);
+    expect(folded.history.map(item => item.id)).toEqual(["m_cp-1"]);
+    // A placeholder whose terminal is still running is not an alias: the durable
+    // copy of that same row stays, because only a settled placeholder proves the
+    // running marker is stale.
+    const running = foldLiveCompactionPlaceholdersIntoHistory(
+      [divider("compaction:op-2", "running")],
+      [divider("compaction:op-2", "running")],
+    );
+    expect(running.live).toEqual([]);
+    expect(running.history.map(item => item.id)).toEqual(["compaction:op-2"]);
   });
 });
 
@@ -124,6 +184,9 @@ describe("entry reducer", () => {
         kind: "message",
         role: "user",
         text: "check this",
+        // The persisted entry identity is what a fork points at, so it must
+        // survive the shared projection into the mobile render contract.
+        sourceEntryId: "e1",
         attachments: [
           { path: "/tmp/a.png", name: "a.png", kind: "image" },
           { path: "/tmp/b.pdf", name: "b.pdf", kind: "file" },
@@ -158,6 +221,144 @@ describe("entry reducer", () => {
       role: "assistant",
       runId: "run-failed",
       failed: true,
+    });
+  });
+
+  /**
+   * A lean history page carries reasoning blocks with no body (the desktop trims
+   * them for a client that declared `lean_events_v1`). The row still has to
+   * appear — it is the only indication that the model reasoned — so the segment
+   * is produced from the block's presence, not from its text. The full-feed case
+   * in the same assertion is what keeps the rendered body working.
+   */
+  test("a reasoning block produces a thinking row with or without a body", () => {
+    const user: HistoryEntry = {
+      id: "u1", kind: "user", role: "user", createdAtMs: 0,
+      blocks: [{ kind: "text", text: "question" }],
+    };
+    const withText = timelineFromEntries([
+      user,
+      {
+        id: "a1",
+        kind: "assistant",
+        role: "assistant",
+        createdAtMs: 1,
+        blocks: [
+          { kind: "reasoning", text: "considered the options" },
+          { kind: "text", text: "answer" },
+        ],
+      },
+    ]);
+    const full = withText.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!full || full.kind !== "message") throw new Error("reply bubble missing");
+    expect(full.segments?.map(segment => segment.kind)).toEqual(["thinking", "text"]);
+    expect(full.segments?.[0]).toMatchObject({ kind: "thinking", text: "considered the options" });
+
+    // The same entry as a lean page delivers it: the block is there, the body is
+    // not. Both an absent key and an empty string count as "no body".
+    for (const block of [{ kind: "reasoning" }, { kind: "reasoning", text: "" }]) {
+      const lean = timelineFromEntries([
+        user,
+        {
+          id: "a1",
+          kind: "assistant",
+          role: "assistant",
+          createdAtMs: 1,
+          blocks: [block, { kind: "text", text: "answer" }],
+        },
+      ]);
+      const reply = lean.items.find(item => item.kind === "message" && item.role === "assistant");
+      if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+      expect(reply.segments?.map(segment => segment.kind)).toEqual(["thinking", "text"]);
+      expect(reply.segments?.[0]).toMatchObject({ kind: "thinking", text: "" });
+      // And the visible answer is unaffected either way.
+      expect(reply.segments?.[1]).toMatchObject({ kind: "text", text: "answer" });
+    }
+  });
+
+  /**
+   * The argument list a lean page delivers holds only the file-path keys, and a
+   * shell call's arguments are dropped whole, so the row must still render its
+   * label without inventing a target — and keep the identity that lets it fetch
+   * the command when opened. This is the client half of the desktop's
+   * `path`/`file_path`/`filePath` trim; if the two ever disagree, tool rows go
+   * blank on a real phone with nothing failing here.
+   */
+  test("a trimmed argument list still renders the tool row's label", () => {
+    // Every key the desktop keeps has to be one this derivation can actually
+    // use, or the trim silently strands it and a real phone shows a blank row.
+    // All four spellings are listed on purpose: an alias that only one side
+    // knows about is exactly the drift this test exists to catch.
+    const cases: { name: string; arguments: Record<string, unknown>; target: string }[] = [
+      { name: "shell", arguments: { command: "ls -la /tmp" }, target: "ls -la /tmp" },
+      { name: "read", arguments: { path: "/a/b.txt" }, target: "/a/b.txt" },
+      { name: "read", arguments: { file_path: "/a/b.txt" }, target: "/a/b.txt" },
+      { name: "read", arguments: { filePath: "/a/b.txt" }, target: "/a/b.txt" },
+      // A tool name the client does not know is treated as shell.
+      { name: "future_tool", arguments: { command: "do the thing" }, target: "do the thing" },
+    ];
+    for (const { name, arguments: args, target } of cases) {
+      const timeline = timelineFromEntries([
+        {
+          id: "u1", kind: "user", role: "user", createdAtMs: 0,
+          blocks: [{ kind: "text", text: "go" }],
+        },
+        {
+          id: "a1",
+          kind: "assistant",
+          role: "assistant",
+          createdAtMs: 1,
+          runId: "r9",
+          blocks: [
+            { kind: "tool_call", name, toolCallId: "c1", arguments: args },
+          ],
+        },
+      ]);
+      const reply = timeline.items.find(item => item.kind === "message" && item.role === "assistant");
+      if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+      const tool = reply.segments?.find(segment => segment.kind === "tool");
+      if (!tool || tool.kind !== "tool") throw new Error(`tool row missing for ${name}`);
+      expect(tool.tool.detail).toBe(target);
+      // Identity comes along for every row: it is what an on-open fetch needs,
+      // and the page's `runId` is where it comes from.
+      expect(tool.tool).toMatchObject({ toolCallId: "c1", runId: "r9" });
+    }
+  });
+
+  /**
+   * The lean shape of a shell row: no arguments at all, so no target — but the
+   * call identity and run survive, which is the whole contract the on-open
+   * fetch depends on. A row that lost them would be permanently blank.
+   */
+  test("a shell row trimmed of its arguments keeps the identity to fetch them", () => {
+    const timeline = timelineFromEntries([
+      {
+        id: "u1", kind: "user", role: "user", createdAtMs: 0, runId: "r9",
+        blocks: [{ kind: "text", text: "go" }],
+      },
+      {
+        id: "a1", kind: "assistant", role: "assistant", createdAtMs: 1, runId: "r9",
+        blocks: [
+          { kind: "tool_call", name: "shell", toolCallId: "c1" },
+          { kind: "tool_call", name: "read", toolCallId: "c2", arguments: { path: "/a/b" } },
+        ],
+      },
+    ]);
+    const reply = timeline.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    const tools = reply.segments?.filter(segment => segment.kind === "tool") ?? [];
+    const shell = tools[0];
+    if (!shell || shell.kind !== "tool") throw new Error("shell row missing");
+    expect(shell.tool).toMatchObject({ name: "shell", toolCallId: "c1", runId: "r9" });
+    expect(shell.tool.detail).toBeUndefined();
+    // The file row still carries its target from the page.
+    const file = tools[1];
+    if (!file || file.kind !== "tool") throw new Error("file row missing");
+    expect(file.tool).toMatchObject({
+      name: "read",
+      detail: "/a/b",
+      toolCallId: "c2",
+      runId: "r9",
     });
   });
 
@@ -443,7 +644,15 @@ describe("entry reducer", () => {
       {
         id: expect.any(String),
         kind: "tool",
-        tool: { name: "read", status: "completed", complete: true, detail: "/tmp/x" },
+        tool: {
+          name: "read",
+          status: "completed",
+          complete: true,
+          detail: "/tmp/x",
+          // The call's identity rides the row, so a target the page omitted can
+          // be fetched on open (this entry carries no runId, so none is set).
+          toolCallId: "call_0",
+        },
       },
       { id: expect.any(String), kind: "text", text: "done" },
     ]);
@@ -498,7 +707,13 @@ describe("projection reducer", () => {
       {
         id: expect.any(String),
         kind: "tool",
-        tool: { name: "read", status: "completed", complete: true },
+        tool: {
+          name: "read",
+          status: "completed",
+          complete: true,
+          toolCallId: "t1",
+          runId: "run-1",
+        },
       },
       { id: expect.any(String), kind: "text", text: "answer" },
     ]);
@@ -959,6 +1174,45 @@ describe("stream event reducer", () => {
     expect(answer.segments?.map(segment => segment.kind)).toEqual(["thinking", "tool", "text"]);
   });
 
+  /**
+   * The lean live lane drops a shell call's arguments, so the row has no target
+   * to show until it is opened. What keeps it from being permanently blank is
+   * the identity the activity carries from the event: `get_tool_call_args` is
+   * answered by (session, run, call), and the row passes the run it streamed
+   * under. A row that lost either would render a dead affordance.
+   */
+  test("a live shell row keeps the identity to fetch a command the lane dropped", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "agent_start",
+      data: "{}",
+      runId: "run-7",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_start",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "shell", phase: "execution" }),
+      runId: "run-7",
+      idx: 1,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_end",
+      data: JSON.stringify({ tool_id: "t1", exit_code: 0 }),
+      runId: "run-7",
+      idx: 2,
+    });
+    const reply = state.items.find(item => item.kind === "message" && item.role === "assistant");
+    if (!reply || reply.kind !== "message") throw new Error("assistant message missing");
+    const tool = reply.segments?.find(segment => segment.kind === "tool");
+    if (!tool || tool.kind !== "tool") throw new Error("tool row missing");
+    expect(tool.tool).toMatchObject({
+      name: "shell",
+      complete: true,
+      toolCallId: "t1",
+      runId: "run-7",
+    });
+    expect(tool.tool.detail).toBeUndefined();
+  });
+
   test("keeps tool rows in stream order when text streams before the first tool call", () => {
     // Regression: a model may stream an interim remark ahead of its first tool
     // call; the tool row must sit between the two text blocks inside the
@@ -1042,7 +1296,16 @@ describe("stream event reducer", () => {
       {
         id: expect.any(String),
         kind: "tool",
-        tool: { name: "shell", status: "running", complete: false, detail: "ls -la" },
+        tool: {
+          name: "shell",
+          status: "running",
+          complete: false,
+          detail: "ls -la",
+          // The call's identity travels with the row on the live lane too: it is
+          // what an on-open fetch of a dropped target is answered by.
+          toolCallId: "t1",
+          runId: "run-1",
+        },
       },
     ]);
     state = applyStreamEvent(state, {
@@ -1057,12 +1320,26 @@ describe("stream event reducer", () => {
       {
         id: expect.any(String),
         kind: "tool",
-        tool: { name: "shell", status: "running", complete: false, detail: "ls -la" },
+        tool: {
+          name: "shell",
+          status: "running",
+          complete: false,
+          detail: "ls -la",
+          toolCallId: "t1",
+          runId: "run-1",
+        },
       },
       {
         id: expect.any(String),
         kind: "tool",
-        tool: { name: "read", status: "running", complete: false, detail: "/tmp/x" },
+        tool: {
+          name: "read",
+          status: "running",
+          complete: false,
+          detail: "/tmp/x",
+          toolCallId: "t2",
+          runId: "run-1",
+        },
       },
     ]);
   });
@@ -1157,6 +1434,232 @@ describe("shared-projection semantic flags", () => {
     const reply = state.items.find(item => item.kind === "message");
     if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
     expect(reply.failed).toBeUndefined();
+  });
+
+  /**
+   * The lean feed (declared as `lean_events_v1`) sends no captured tool output,
+   * so the `[exit: N]` footer these two tests above rely on is simply absent.
+   * The agent's structured outcome has to carry the verdict on its own —
+   * otherwise every failing command would render as completed.
+   */
+  test("a structured exit code fails the row with no output text at all", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "tool_start",
+      data: JSON.stringify({
+        tool_id: "t1",
+        tool_name: "shell",
+        tool_args: { command: "future nosuch" },
+      }),
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_end",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "shell", exit_code: 127 }),
+      runId: "run-1",
+      idx: 1,
+    });
+    const reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    const toolSegment = reply.segments?.find(segment => segment.kind === "tool");
+    expect(toolSegment && toolSegment.kind === "tool" && toolSegment.tool.status).toBe("failed");
+  });
+
+  test("a zero structured exit code completes the row", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "tool_start",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "shell", tool_args: { command: "ls" } }),
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_end",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "shell", exit_code: 0 }),
+      runId: "run-1",
+      idx: 1,
+    });
+    const reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    const toolSegment = reply.segments?.find(segment => segment.kind === "tool");
+    expect(toolSegment && toolSegment.kind === "tool" && toolSegment.tool.status).toBe("completed");
+  });
+
+  test("the soft-fail exemption survives the structured path", () => {
+    const run = (end: Record<string, unknown>) => {
+      let state = applyStreamEvent(emptyTimeline(), {
+        type: "tool_start",
+        data: JSON.stringify({
+          tool_id: "t1",
+          tool_name: "shell",
+          tool_args: { command: "grep foo file" },
+        }),
+        runId: "run-1",
+        idx: 0,
+      });
+      state = applyStreamEvent(state, {
+        type: "tool_end",
+        data: JSON.stringify({ tool_id: "t1", tool_name: "shell", ...end }),
+        runId: "run-1",
+        idx: 1,
+      });
+      const reply = state.items.find(item => item.kind === "message");
+      if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+      const segment = reply.segments?.find(candidate => candidate.kind === "tool");
+      return segment && segment.kind === "tool" ? segment.tool.status : undefined;
+    };
+    // Bare `grep` exits 1 when it simply finds nothing — not a failure.
+    expect(run({ exit_code: 1 })).toBe("completed");
+    // Any other code, or a piped command whose code is ambiguous, is a failure.
+    expect(run({ exit_code: 2 })).toBe("failed");
+    // The agent's own verdict is honoured when it is present.
+    expect(run({ exit_code: 1, is_soft_fail: true })).toBe("completed");
+  });
+
+  /**
+   * The same verdicts on the lane as it now ships: the shell command is not on
+   * the wire at all, so a row's exemption can only come from the agent's own
+   * `is_soft_fail`. That is the whole signal in practice — over 20,332 real
+   * shell results, every `exit_code: 1` without the flag was a genuine failure
+   * (a piped/`&&` chain or a program outside the soft-fail set), and the bare
+   * soft-fail case carries the flag. A row whose command the lane dropped and
+   * whose outcome lacks the flag therefore reads as failed: the documented
+   * price of not shipping the command, reachable only from an agent predating
+   * the flag (see `FETCHED_LABEL_TOOLS` in the desktop's lean trim).
+   */
+  test("a lean shell row's verdict comes from the agent, not from a command", () => {
+    const run = (end: Record<string, unknown>) => {
+      let state = applyStreamEvent(emptyTimeline(), {
+        type: "tool_start",
+        data: JSON.stringify({ tool_id: "t1", tool_name: "shell", phase: "execution" }),
+        runId: "run-1",
+        idx: 0,
+      });
+      state = applyStreamEvent(state, {
+        type: "tool_end",
+        data: JSON.stringify({ tool_id: "t1", tool_name: "shell", ...end }),
+        runId: "run-1",
+        idx: 1,
+      });
+      const reply = state.items.find(item => item.kind === "message");
+      if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+      const segment = reply.segments?.find(candidate => candidate.kind === "tool");
+      return segment && segment.kind === "tool" ? segment.tool.status : undefined;
+    };
+    // The agent judged it a soft failure: no command needed.
+    expect(run({ exit_code: 1, is_soft_fail: true })).toBe("completed");
+    // No flag and no command: the exemption cannot be evaluated, and a real
+    // failure must not be hidden. This is also every real exit-1 row.
+    expect(run({ exit_code: 1 })).toBe("failed");
+    expect(run({ exit_code: 2 })).toBe("failed");
+    expect(run({ exit_code: 0 })).toBe("completed");
+  });
+
+  /**
+   * The other two halves of the lean contract: a reasoning row has to exist from
+   * its boundary alone (the deltas never arrive), and a tool's target has to come
+   * from `tool_start`'s complete arguments, since `tool_delta` is not sent.
+   */
+  test("a reasoning row is projected from its boundary alone", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "thinking_start",
+      data: JSON.stringify({ block_id: "b1" }),
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "thinking_end",
+      data: JSON.stringify({ block_id: "b1" }),
+      runId: "run-1",
+      idx: 1,
+    });
+    state = applyStreamEvent(state, {
+      type: "text_chunk",
+      data: JSON.stringify({ text: "answer" }),
+      runId: "run-1",
+      idx: 2,
+    });
+    const reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    expect(reply.segments?.map(segment => segment.kind)).toEqual(["thinking", "text"]);
+    const thinking = reply.segments?.[0];
+    expect(thinking && thinking.kind === "thinking" && thinking.text).toBe("");
+  });
+
+  /**
+   * A lean feed opens a reasoning block *after* work has already started: the
+   * tool calls streamed first, then the model thinks again. The block carries no
+   * body (its deltas are not published), so its boundary is the only thing that
+   * can render the row — the tool run's "hop over whitespace-only text" must not
+   * mistake the empty reasoning slot for that whitespace and swallow it, nor may
+   * it glue the tools on either side into one burst.
+   */
+  test("a reasoning row after a tool call survives with no body (lean feed)", () => {
+    const leanRow = (events: [string, Record<string, unknown>][]) => {
+      let state = applyStreamEvent(emptyTimeline(), {
+        type: "agent_start",
+        data: "{}",
+        runId: "run-1",
+        idx: 0,
+      });
+      events.forEach(([type, data], index) => {
+        state = applyStreamEvent(state, {
+          type,
+          data: JSON.stringify(data),
+          runId: "run-1",
+          idx: index + 1,
+        });
+      });
+      const reply = state.items.find(item => item.kind === "message" && item.role === "assistant");
+      if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+      return reply.segments?.map(segment => segment.kind);
+    };
+    const read = (id: string) => ([
+      "tool_start",
+      { tool_id: id, tool_name: "read", tool_args: { path: "/tmp/a" } },
+    ] as [string, Record<string, unknown>]);
+    const readEnd = (id: string) => ([
+      "tool_end",
+      { tool_id: id, tool_name: "read", exit_code: 0 },
+    ] as [string, Record<string, unknown>]);
+    const thinking = (blockId: string) => ([
+      "thinking_start",
+      { type: "thinking_start", block_id: blockId },
+    ] as [string, Record<string, unknown>]);
+
+    // Tool, then a fresh reasoning block, then nothing else yet (the live tail).
+    expect(leanRow([read("t1"), readEnd("t1"), thinking("b2")])).toEqual(["tool", "thinking"]);
+    // The reasoning boundary also separates two tool calls into their own rows.
+    expect(leanRow([
+      read("t1"), readEnd("t1"), thinking("b2"), read("t2"), readEnd("t2"),
+    ])).toEqual(["tool", "thinking", "tool"]);
+  });
+
+  test("a tool target comes from tool_start, with no argument stream", () => {
+    let state = applyStreamEvent(emptyTimeline(), {
+      type: "tool_start",
+      data: JSON.stringify({
+        tool_id: "t1",
+        tool_name: "shell",
+        tool_args: { command: "ls -la /tmp" },
+      }),
+      runId: "run-1",
+      idx: 0,
+    });
+    state = applyStreamEvent(state, {
+      type: "tool_end",
+      data: JSON.stringify({ tool_id: "t1", tool_name: "shell", exit_code: 0 }),
+      runId: "run-1",
+      idx: 1,
+    });
+    const reply = state.items.find(item => item.kind === "message");
+    if (!reply || reply.kind !== "message") throw new Error("reply bubble missing");
+    const toolSegment = reply.segments?.find(segment => segment.kind === "tool");
+    if (!toolSegment || toolSegment.kind !== "tool") throw new Error("tool row missing");
+    // The mobile bubble renders the row's text from `detail`; the projection
+    // takes it from `tool_start`'s complete `tool_args`, which is why dropping
+    // the argument stream does not cost the row its label.
+    expect(toolSegment.tool.detail).toBe("ls -la /tmp");
+    expect(toolSegment.tool.status).toBe("completed");
   });
 
   test("a cancelled run marks the bubble stopped (G15)", () => {

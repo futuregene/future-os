@@ -101,3 +101,33 @@ pub fn render_heartbeat_prompt(goal: &Goal, packet: &ShouldRunPacket) -> String 
     out.push_str("- `loopx quota spend-slot --goal G` (validated work only)\n");
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::Todo;
+
+    /// A goal whose objective trips the public/private scan must say so in the
+    /// heartbeat — a host that never sees the leak warning would happily paste
+    /// the boundary-violating text into public evidence.
+    #[test]
+    fn heartbeat_reports_boundary_leaks_and_stays_public_safe_when_clean() {
+        // `token=` is one of the scanned markers; a clean objective is not.
+        let mut leaky = Goal::new("g-leak", "rotate the token=abc123 for the host", "/tmp");
+        leaky.add(Todo::advancement("T1", "work"));
+        let packet = crate::decision::decide(&leaky, std::time::SystemTime::now());
+        assert!(!packet.boundary.public_safe, "fixture must trip the scan");
+        let text = render_heartbeat_prompt(&leaky, &packet);
+        assert!(text.contains("boundary leaks:"), "{text}");
+        assert!(text.contains("token="), "the leak must be named: {text}");
+        assert!(!text.contains("public-safe"), "{text}");
+
+        let mut clean = Goal::new("g-clean", "ship the adapter", "/tmp");
+        clean.add(Todo::advancement("T1", "work"));
+        let packet = crate::decision::decide(&clean, std::time::SystemTime::now());
+        assert!(packet.boundary.public_safe);
+        let text = render_heartbeat_prompt(&clean, &packet);
+        assert!(text.contains("public-safe"), "{text}");
+        assert!(!text.contains("boundary leaks:"), "{text}");
+    }
+}

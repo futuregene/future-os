@@ -88,10 +88,13 @@ Edit `~/.future/channels/config.json`:
 | `agent.cwd` | Default working directory for new sessions |
 | `agent.model` | Default model for channel sessions (e.g. `future/deepseek-v4-pro`) |
 | `agent.thinking_level` | Default thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `agent.permission_level` | Default permission level: `all`, `workspace`, `none` |
 | `feishu.enabled` | Set to `true` to start the Feishu bridge |
 | `feishu.app_id` | App ID from the Feishu Developer Console |
 | `feishu.app_secret` | App Secret from the Feishu Developer Console |
-| `feishu.domain` | `"feishu"` for Feishu, `"lark"` for Lark (Lark uses `open.larksuite.com`) |
+| `feishu.domain` | Where the bridge talks to Feishu: `"feishu"` (default, `open.feishu.cn`), `"lark"` (`open.larksuite.com`), or a full `http(s)://` URL used verbatim (self-hosted gateway or test mock) |
+
+> Feishu and DingTalk also accept a `providers.feishu` / `providers.dingtalk` block; when both exist, `providers.<id>` wins. See [the channel configuration guide](../../guide/channels-config.md) for the full field reference.
 
 ### Policy Configuration
 
@@ -125,7 +128,7 @@ Control who can talk to your bot:
 |---|---|---|
 | `streaming` | `true` | Stream responses via CardKit in real time |
 | `resolve_sender_names` | `true` | Resolve open_ids to display names (slower but friendlier) |
-| `max_image_mb` | `10` | Maximum image size in MB the bot will download |
+| `max_image_mb` | `10` | Maximum size in MiB of an image or file the bot will download |
 | `typing_indicator` | `false` | Show typing indicator while processing |
 
 ---
@@ -133,14 +136,17 @@ Control who can talk to your bot:
 ## Start the Bridge
 
 ```bash
-# Build and run the channel bridge
+future channel
+```
+
+The bridge is a **standalone service** — the desktop app doesn't manage it. Run `future channel` whenever you want the Feishu bridge up. From a source checkout you can also build and run it directly:
+
+```bash
 cargo build -p future-channel --release
 ./target/release/future-channel
 ```
 
-For an installed release, simply run `future channel`. New channel sessions default to permission `all` and do not independently enable the desktop sandbox policy; restrict bot access carefully.
-
-The bridge is a **standalone service** — the desktop app doesn't manage it. Start it with `future channel`, or run the `future-channel` binary directly (or via `make run-channels`) whenever you want the Feishu bridge up.
+(or `make run-channels`). New channel sessions default to permission `all` and do not independently enable the desktop sandbox policy; restrict bot access carefully.
 
 The bridge loads `~/.future/channels/config.json` on startup. If the file doesn't exist, a template is created and the bridge exits — edit the template and restart.
 
@@ -177,7 +183,7 @@ Commands like `/new`, `/status`, `/model`, `/models`, `/effort`, `/compact`, `/c
 
 ### Bot doesn't respond
 
-1. Check that the bridge is running: the `future-channel` process should be up (`ps aux | grep future-channel` on macOS/Linux, Task Manager on Windows)
+1. Run `future channel status` (it works even when no bridge is running), then check that the `future channel` (or `future-channel`) process is up (`ps aux | grep future` on macOS/Linux, Task Manager on Windows)
 2. Check that `feishu.enabled` is `true` in `config.json`
 3. Check the DM/group policy — the bot may be denying access. Look for the denial message with your open_id or chat_id.
 4. Check the bridge logs for WebSocket connection errors.
@@ -188,7 +194,7 @@ This is expected Feishu WebSocket behavior. The bridge sends a keepalive ping ev
 
 ### Images aren't working
 
-Ensure `im:resource` permission is granted. Check that images are under the `max_image_mb` limit (default 10 MB).
+Ensure `im:resource` permission is granted. Check that the image or file is under the `max_image_mb` limit (default 10 MiB).
 
 ---
 

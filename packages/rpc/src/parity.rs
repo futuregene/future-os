@@ -34,6 +34,11 @@ fn assert_command_parity(command: &str, fixture: Value) {
 /// semantics on the interrupted run, an object source_meta, a full approval
 /// card and a completed run_terminal.
 ///
+/// The requested run's `usage` carries only the members the run set:
+/// `MessageUsage` omits an unset member rather than spelling it as `null`, and
+/// an explicit-null peer payload still decodes to the same value (pinned in
+/// `message.rs`).
+///
 /// Parsed from a raw string: the fixture is too nested for the `json!`
 /// macro's default recursion limit.
 fn get_state_fixture() -> Value {
@@ -93,7 +98,7 @@ fn get_state_fixture() -> Value {
             "requestedRun": {
                 "runId": "r0",
                 "status": "completed",
-                "usage": {"inputTokens":null,"outputTokens":123,"cacheReadTokens":null,"cacheWriteTokens":null},
+                "usage": {"outputTokens":123},
                 "durationMs": 4567,
                 "error":null
             },
@@ -454,6 +459,17 @@ fn get_agent_info_wire_parity() {
             "version": "1.0.5",
             "agentInstanceId": "agent-1",
             "skillsCount": 4
+        }),
+    );
+}
+
+#[test]
+fn get_agent_readiness_wire_parity() {
+    assert_command_parity(
+        "get_agent_readiness",
+        json!({
+            "version": "1.0.5",
+            "agentInstanceId": "agent-1"
         }),
     );
 }
@@ -935,4 +951,20 @@ fn text_chunk_encode_stays_within_budget() {
         per_event < std::time::Duration::from_micros(5),
         "text_chunk encode too slow: {per_event:?}/event"
     );
+}
+
+#[test]
+fn shell_attempts_event_and_history_metadata_survive_typed_transport() {
+    let facts = json!({"command":"action", "cwd":"/repo", "duration_ms":8,
+        "status":"exited", "exit_code":2, "is_soft_fail":false, "is_error":true,
+        "attempts":[{"status":"exited","exit_code":7,"duration_ms":4,"output":"original [exit: 0]","output_truncated":false,"escalated":false},
+        {"status":"exited","exit_code":2,"duration_ms":4,"output":"retry","output_truncated":false,"escalated":true}],
+        "approval":"approved","note":null});
+    assert_event_parity(
+        "tool_end",
+        json!({"tool_id":"command", "tool_name":"shell", "shell_result":facts}),
+    );
+    // History metadata shares the existing typed JSON metadata transport.
+    let typed: crate::shell_result::ShellResult = serde_json::from_value(facts.clone()).unwrap();
+    assert_eq!(serde_json::to_value(typed).unwrap(), facts);
 }

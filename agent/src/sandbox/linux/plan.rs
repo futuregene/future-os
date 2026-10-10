@@ -335,7 +335,7 @@ pub(crate) fn expand_globs(
     super::glob_scan::scan(patterns, phase, cancelled).map_err(LinuxSandboxPlanError::GlobScan)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn expand_glob(pattern: &str) -> Result<Vec<PathBuf>, LinuxSandboxPlanError> {
     Ok(expand_globs(&[pattern.into()], "test", &|| false)?
         .remove(pattern)
@@ -472,8 +472,10 @@ fn normalize_exact(paths: &mut Vec<PathBuf>) {
 }
 
 // Linux helper protocol semantics: the fixtures are POSIX absolute paths and
-// glob expansions the helper performs on the host filesystem.
-#[cfg(all(test, unix))]
+// glob expansions the helper performs on the host filesystem. The plan itself
+// is a pure path computation, so the suite runs on every platform; only the
+// fixtures that need POSIX-only filesystem behaviour stay `cfg(unix)`.
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::sandbox::rules::{RuleLayerSnapshot, RuleSetSnapshot};
@@ -865,6 +867,12 @@ mod tests {
         assert_eq!(plan.unsupported_dynamic_globs, [pattern]);
     }
 
+    // The glob scanner matches a pattern's literal text against walked path
+    // strings, and this fixture's pattern spells its last segment with a POSIX
+    // `/` (`work/*.pem`). Windows spells the walked path with `\`, so the
+    // matcher cannot see the same path spelling the Linux helper sees. The
+    // glob grammar is a Linux-helper contract, so this stays a unix fixture.
+    #[cfg(unix)]
     #[test]
     fn narrow_glob_allow_shadows_the_lower_glob_mount() {
         let root = root();
@@ -905,6 +913,10 @@ mod tests {
         assert!(plan.reopened_paths.contains(&allowed));
     }
 
+    // Same POSIX path-spelling requirement as
+    // `narrow_glob_allow_shadows_the_lower_glob_mount`: a mixed-separator
+    // pattern cannot match a Windows-spelled walk path.
+    #[cfg(unix)]
     #[test]
     fn glob_match_limit_fails_closed() {
         let root = root();
@@ -912,10 +924,15 @@ mod tests {
             std::fs::write(root.join("work").join(format!("{index}.pem")), "x").unwrap();
         }
         let pattern = root.join("work/*.pem").to_string_lossy().into_owned();
-        assert!(matches!(
-            expand_glob(&pattern),
-            Err(LinuxSandboxPlanError::GlobScan(error)) if error.code == "glob_scan_match_limit"
-        ));
+        let outcome = expand_glob(&pattern);
+        assert!(
+            matches!(
+                outcome,
+                Err(LinuxSandboxPlanError::GlobScan(ref error))
+                    if error.code == "glob_scan_match_limit"
+            ),
+            "expected match-limit failure, got {outcome:?}"
+        );
     }
 
     #[test]

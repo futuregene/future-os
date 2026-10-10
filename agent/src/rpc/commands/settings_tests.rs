@@ -681,6 +681,32 @@ fn set_model_fails_while_loop_is_locked() {
 }
 
 #[test]
+fn shell_timeout_is_clamped_to_the_documented_bounds() {
+    // `0` means "policy default"; anything else is clamped into 5 s … 30 min so
+    // a client cannot ask for an unbounded or sub-second shell RPC. Both clamp
+    // directions must still run the command.
+    let state = make_app_state();
+    std::fs::create_dir_all(&state.welcome_cwd).unwrap();
+    let exit_ok = if cfg!(windows) { "exit 0" } else { "true" };
+    for timeout_ms in [1_u64, 60_000, u64::MAX] {
+        let mut cmd = make_cmd("shell");
+        cmd.command = exit_ok.to_string();
+        cmd.shell_timeout_ms = timeout_ms;
+        let resp = parse_response(&handle_command_internal(&state, cmd));
+        assert_eq!(resp["success"], true, "timeout_ms={timeout_ms}: {resp}");
+        assert_eq!(resp["data"]["exitCode"], 0, "timeout_ms={timeout_ms}");
+    }
+
+    // The zero case takes the shared RPC policy timeout instead of clamping.
+    let mut cmd = make_cmd("shell");
+    cmd.command = exit_ok.to_string();
+    cmd.shell_timeout_ms = 0;
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    assert_eq!(resp["data"]["exitCode"], 0);
+}
+
+#[test]
 fn shell_fails_with_missing_cwd() {
     let state = make_app_state(); // test_workspace() is never created
     let mut cmd = make_cmd("shell");
@@ -878,6 +904,7 @@ fn set_sandbox_policy_applies_tier() {
     let mut cmd = make_cmd("set_sandbox_policy");
     cmd.sandbox_policy = Some(crate::sandbox::SandboxPolicy {
         tier: crate::sandbox::SandboxTier::Off,
+        model_reviewer: false,
     });
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
@@ -903,4 +930,24 @@ fn set_cwd_persists_successfully_on_disk_session() {
     let resp = parse_response(&handle_command_internal(&state, cmd));
     assert_eq!(resp["success"], true);
     assert_eq!(resp["data"]["cwd"], "/tmp/persisted-cwd");
+}
+
+#[test]
+fn set_sandbox_policy_downgrades_automatic_review_without_future_account() {
+    let _home = TestHome::new();
+    let state = make_app_state();
+    let mut cmd = make_cmd("set_sandbox_policy");
+    cmd.sandbox_policy = Some(crate::sandbox::SandboxPolicy::from_mode("auto"));
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["configuredMode"], "auto");
+    assert_eq!(resp["data"]["reviewer"], "user");
+    assert_ne!(resp["data"]["effectiveMode"], "auto");
+    let expected = if resp["data"]["sandboxAvailable"] == true {
+        "sandbox"
+    } else {
+        "manual"
+    };
+    assert_eq!(resp["data"]["tier"], expected);
+    assert_eq!(resp["data"]["fallback"], expected);
 }

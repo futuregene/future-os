@@ -232,12 +232,24 @@ mod tests {
                 .await
             })
         };
-        tokio::time::sleep(Duration::from_millis(40)).await;
+        // Wait for the *observed* second attempt rather than sleeping a fixed
+        // 40 ms first. The health window is zero, so the reset is immediate —
+        // but when the loop gets to make its next attempt is the scheduler's
+        // business, and a mutation run on a saturated machine starved this task
+        // past 40 ms and reported "a clean close must still reconnect" as a
+        // catch for a mutant of `policy.rs`, which cannot affect it. The claim
+        // is unchanged; only the premise is observed instead of guessed.
+        let reconnected = crate::test_support::wait_until(
+            || calls.load(std::sync::atomic::Ordering::SeqCst) > 1,
+            Duration::from_secs(10),
+        )
+        .await;
         shutdown.trigger();
         let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        let attempts = calls.load(std::sync::atomic::Ordering::SeqCst);
         assert!(
-            calls.load(std::sync::atomic::Ordering::SeqCst) > 1,
-            "a clean close must still reconnect"
+            attempts > 1,
+            "a clean close must still reconnect (attempts={attempts}, waited for it: {reconnected})"
         );
     }
 

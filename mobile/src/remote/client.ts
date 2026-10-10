@@ -3,7 +3,7 @@ import type { Msg, NatsConnection, Subscription } from "@nats-io/nats-core";
 import { wsconnect, jwtAuthenticator } from "@nats-io/nats-core";
 import { classifyNatsError } from "./natsErrors";
 import { SecureChannel, SecureHandshake, replyContext, type SecureIdentity } from "./secureChannel";
-import { ensureFreshCredentials, refreshCredentials } from "./pairing";
+import { deviceName, ensureFreshCredentials, refreshCredentials } from "./pairing";
 import { jwtExpiry, randomId, encodeBase64Url, decodeBase64Url } from "./codec";
 import { backoffDelayMs, classifyError, transition, type ConnectionState } from "./connectionState";
 import { decodeRemoteJson, decodeRemoteJsonAsync } from "./remoteJson";
@@ -1242,11 +1242,36 @@ export class RemoteClient {
     //   reply_gzip_v1 — replies may be gzip-compressed; `decodeRemoteJson`
     //     detects the magic bytes. An older client does not have that check and
     //     would fail to parse a compressed reply, hence the declaration.
+    //   lean_events_v1 — the desktop may omit reasoning text, streamed tool
+    //     arguments and captured tool output. This client renders a reasoning
+    //     row from its `thinking_start`/`thinking_end` boundary alone, takes a
+    //     tool's target from `tool_start`'s complete arguments, and reads a
+    //     tool's outcome from `exit_code`/`error` instead of parsing an
+    //     `[exit: N]` footer out of the output. An older client does all three
+    //     from the text, so it must keep receiving the full lane.
     await this.requestWithConnection(
       connection,
-      { type: "secure_ready", features: ["event_coalescing_v1", "reply_gzip_v1"] },
+      {
+        type: "secure_ready",
+        features: ["event_coalescing_v1", "reply_gzip_v1", "lean_events_v1"],
+        // Not a capability: the desktop shows the user what is connected, and it
+        // cannot say "a phone" about something that never told it so. An older
+        // desktop ignores both fields.
+        deviceName: deviceName(),
+        deviceKind: "mobile",
+      },
       "handshake",
     );
+  }
+
+  /**
+   * Whether the Desktop acked a feed that omits source indices for this
+   * connection (`lean_events_v1`). Integrity checks must not demand the slices
+   * it leaves out: they are omitted by design, and asking for them back would
+   * retry a range the peer will never send.
+   */
+  feedsOmittedIndices(): boolean {
+    return this.negotiatedFeatures.has("lean_events_v1");
   }
 
   private async secureRequest(connection: NatsConnection, subject: string, plaintext: Uint8Array, timeout: number): Promise<Pick<Msg, "data">> {
@@ -1263,7 +1288,16 @@ export class RemoteClient {
     const exchange = async (body: Record<string, unknown>) => {
       const response = await connection.request(`p.${this.credentials.pairId}.cmd.handshake`, encoder.encode(JSON.stringify(body)), { timeout: 10_000 });
       const parsed = decodeRemoteJson<RpcResponse<{ message?: string; id?: string; confirmation?: string }>>(response.data);
-      if (!parsed.success) throw new Error("pairing_signature_invalid");
+      // Keep the desktop's own refusal detail appended to the stable
+      // `pairing_signature_invalid` token (which the credential classifier and
+      // the connection presentation both match on): `invitation_already_used`,
+      // `invitation_expired`, `peer_mismatch`, ... It is the only statement of
+      // *why* a code the phone holds was turned down, and discarding it left
+      // both the user and the phone console with nothing to act on.
+      if (!parsed.success) {
+        const detail = (parsed.error ?? "unknown").trim() || "unknown";
+        throw new Error(`pairing_signature_invalid:${detail}`);
+      }
       return parsed.data;
     };
     const run = async (secret?: string): Promise<HandshakeConfirmation> => {

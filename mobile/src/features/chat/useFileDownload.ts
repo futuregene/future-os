@@ -46,11 +46,16 @@ export interface PreviewState {
 export interface FileDownloadApi {
   activeDownload: ActiveDownload | null;
   activeDownloadFraction: number;
+  /** Every open preview, oldest first. The last one is on screen. */
+  previews: PreviewState[];
+  /** The preview on screen, or null when the preview surface is closed. */
   preview: PreviewState | null;
   fileAction: FileAction | null;
   setFileAction: (action: FileAction | null) => void;
   openAttachment: (attachment: HistoryAttachment) => Promise<void>;
   openFileLink: (path: string, refresh?: boolean) => Promise<void>;
+  /** A local-file link inside a previewed document: keeps it, opens the target. */
+  openLinkedFile: (path: string) => Promise<void>;
   downloadOriginal: (attachment: HistoryAttachment, operation?: FileOperation) => Promise<void>;
   openOrShare: (
     info: DownloadInfo,
@@ -58,7 +63,10 @@ export interface FileDownloadApi {
     operation: FileOperation,
     existingHandle?: DownloadHandle,
   ) => Promise<void>;
+  /** Leave the whole preview surface, back to the conversation. */
   closePreview: () => void;
+  /** Leave the document on top, back to the one that linked to it. */
+  popPreview: () => void;
   dismissPreviewThen: (action: () => void) => void;
   cancelActiveDownload: () => void;
   flushPendingPreviewAction: () => void;
@@ -80,7 +88,12 @@ export function useFileDownload(
   const pendingDownloadModalRef = useRef<(() => void) | null>(null);
   const pendingDownloadHandleRef = useRef<DownloadHandle | null>(null);
   const pendingPreviewActionRef = useRef<(() => void) | null>(null);
-  const [preview, setPreview] = useState<PreviewState | null>(null);
+  // A document can link another document, so previews stack. Only the top one
+  // is visible; the ones below stay mounted, which is what keeps their scroll
+  // position while the reader follows a link and comes back.
+  const [previews, setPreviews] = useState<PreviewState[]>([]);
+  const hasPreview = previews.length > 0;
+  const preview = hasPreview ? previews[previews.length - 1]! : null;
   // Choosing an operation is independent of installed file readers. A device
   // without a PDF reader must still be able to save or share the PDF.
   const [fileAction, setFileAction] = useState<FileAction | null>(null);
@@ -184,6 +197,48 @@ export function useFileDownload(
     if (!handle?.controller.signal.aborted) present?.();
   }, []);
 
+  // The confirmation dialog and the progress Modal cannot share the screen: on
+  // Android the Modal is its own window that covers the dialog, and a reveal
+  // that fires while the question is up does the same on both platforms. Take
+  // the progress surface off screen and resolve once it is really gone, without
+  // releasing the transfer — the handle stays the active one, so the dialog
+  // comes back and the transfer resumes when the user accepts.
+  const hideDownload = useCallback(
+    (handle: DownloadHandle): Promise<void> => {
+      if (activeDownloadRef.current?.id !== handle.id) return Promise.resolve();
+      const onScreen = handle.visible;
+      if (handle.revealTimer !== null) {
+        clearTimeout(handle.revealTimer);
+        handle.revealTimer = null;
+      }
+      handle.visible = false;
+      setActiveDownload(null);
+      if (!onScreen) return Promise.resolve();
+      // `onDismiss` is iOS-only. Android continues after the state commit.
+      return new Promise<void>(resolve => {
+        pendingDownloadModalRef.current = () => resolve();
+        pendingDownloadHandleRef.current = handle;
+        if (Platform.OS !== "ios") deferPresentation(flushPendingDownloadModal);
+      });
+    },
+    [flushPendingDownloadModal],
+  );
+
+  /** `confirmDownload`, with the progress dialog out of the way for the answer. */
+  const confirmDownloadFor = useCallback(
+    async (
+      handle: DownloadHandle | undefined,
+      title: string,
+      message: string,
+      cancel: string,
+      accept: string,
+    ) => {
+      if (handle) await hideDownload(handle);
+      return confirmDownload(title, message, cancel, accept);
+    },
+    [hideDownload],
+  );
+
   const handoffDownloadModal = useCallback(
     (handle: DownloadHandle, present: () => void) => {
       if (handle.controller.signal.aborted || activeDownloadRef.current !== handle) return;
@@ -230,19 +285,30 @@ export function useFileDownload(
     finishDownload(handle, true);
   }, [finishDownload]);
 
+  // Opening from the conversation starts a new stack: whatever was being read
+  // before is no longer what the reader asked for. A link inside a preview
+  // keeps the document that linked to it.
+  const showPreview = useCallback((state: PreviewState, nested = false) => {
+    setPreviews(current => (nested ? [...current, state] : [state]));
+  }, []);
+
   const closePreview = useCallback(() => {
     pendingPreviewActionRef.current = null;
-    setPreview(null);
+    setPreviews([]);
+  }, []);
+
+  const popPreview = useCallback(() => {
+    setPreviews(current => (current.length > 1 ? current.slice(0, -1) : current));
   }, []);
 
   const dismissPreviewThen = useCallback(
     (action: () => void) => {
-      if (!preview) {
+      if (!hasPreview) {
         action();
         return;
       }
       pendingPreviewActionRef.current = action;
-      setPreview(null);
+      setPreviews([]);
       if (Platform.OS !== "ios") {
         deferPresentation(() => {
           if (pendingPreviewActionRef.current !== action) return;
@@ -251,7 +317,7 @@ export function useFileDownload(
         });
       }
     },
-    [preview],
+    [hasPreview],
   );
 
   const flushPendingPreviewAction = useCallback(() => {
@@ -276,7 +342,7 @@ export function useFileDownload(
         if (/^[a-z][a-z0-9+.-]*:\/\//i.test(attachment.path)) {
           const local = new File(attachment.path);
           if (fileType.route === "image" && !attachment.mobilePreviewUnsupported) {
-            setPreview({
+            showPreview({
               info: {
                 transferId: "local",
                 name: attachment.name,
@@ -313,7 +379,7 @@ export function useFileDownload(
             const { text: previewText, truncated } = content;
             const markdown = fileType.route === "markdown";
             const richJson = mobilePreviewRoute(attachment.name, local.size) === "json";
-            setPreview({
+            showPreview({
               info: {
                 transferId: "local",
                 name: attachment.name,
@@ -364,7 +430,8 @@ export function useFileDownload(
           const warning = await downloadWarning(info.size);
           if (handle.controller.signal.aborted) throw new TransferCancelledError();
           if (warning) {
-            const accepted = await confirmDownload(
+            const accepted = await confirmDownloadFor(
+              handle,
               t("attachment.downloadTitle"),
               t(warning, { size: formatBytes(info.size) }),
               t("chat.cancel"),
@@ -406,14 +473,14 @@ export function useFileDownload(
         }
         if (info.previewKind === "image") {
           handoffDownloadModal(handle, () => {
-            setPreview({ attachment, info, uri: file.uri });
+            showPreview({ attachment, info, uri: file.uri });
           });
         } else {
           const content = await readPreviewText(file, handle.controller.signal);
           if (!content) throw new Error("invalid_text_preview");
           const { text: previewText, truncated } = content;
           handoffDownloadModal(handle, () =>
-            setPreview({
+            showPreview({
               attachment,
               info,
               uri: file.uri,
@@ -442,11 +509,13 @@ export function useFileDownload(
     },
     [
       beginDownload,
+      confirmDownloadFor,
       finishDownload,
       handoffDownloadAlert,
       handoffDownloadModal,
       remote,
       showDownload,
+      showPreview,
       t,
       updateDownload,
     ],
@@ -464,7 +533,8 @@ export function useFileDownload(
       const warning = await downloadWarning(info.size);
       if (handle?.controller.signal.aborted) throw new TransferCancelledError();
       if (warning) {
-        const accepted = await confirmDownload(
+        const accepted = await confirmDownloadFor(
+          handle,
           t("attachment.downloadTitle"),
           t(warning, { size: formatBytes(info.size) }),
           t("chat.cancel"),
@@ -507,7 +577,7 @@ export function useFileDownload(
         },
       );
     },
-    [remote, setTransferProgress, showDownload, t, updateDownload],
+    [confirmDownloadFor, remote, setTransferProgress, showDownload, t, updateDownload],
   );
 
   // Distinct native open/save/share operations on both platforms. Older iOS
@@ -688,8 +758,11 @@ export function useFileDownload(
   // A local-file markdown link/image target: prepare, then dispatch by size and
   // preview kind. Over 10 MB → desktop; image/markdown/text/JSON → in-app preview;
   // anything else → open/save/share action sheet.
-  const openFileLink = useCallback(
-    async (path: string, _refresh = true) => {
+  //
+  // `nested` marks a link followed from inside a previewed document: the
+  // document that linked here is kept below, so the reader can go back to it.
+  const openLocalPath = useCallback(
+    async (path: string, nested: boolean) => {
       const attachment: HistoryAttachment = { path, name: basename(path) };
       const fileType = mobileFileType(attachment.name);
       if (!fileType) {
@@ -722,22 +795,26 @@ export function useFileDownload(
           info.previewKind === "markdown" ||
           info.previewKind === "text" ||
           info.previewKind === "json";
+        const showActions = () =>
+          setFileAction({ info, cachedFile: cachedPreview?.file ?? null });
         if (!previewable) {
-          handoffDownloadModal(handle, () =>
-            setFileAction({ info, cachedFile: cachedPreview?.file ?? null }),
-          );
+          // A file that needs an external reader takes over the screen the way
+          // the preview's own menu actions do. The stack closes first: the
+          // action sheet is a second Modal, and iOS will not present it while
+          // the preview is still on screen.
+          handoffDownloadModal(handle, nested ? () => dismissPreviewThen(showActions) : showActions);
           return;
         }
         const file = await fetchDownload(info, cachedPreview?.file ?? null, handle);
         if (!file) return;
         if (info.previewKind === "image") {
-          handoffDownloadModal(handle, () => setPreview({ attachment, info, uri: file.uri }));
+          handoffDownloadModal(handle, () => showPreview({ attachment, info, uri: file.uri }, nested));
         } else {
           const content = await readPreviewText(file, handle.controller.signal);
           if (!content) throw new Error("invalid_text_preview");
           const { text: previewText, truncated } = content;
           handoffDownloadModal(handle, () =>
-            setPreview({
+            showPreview({
               attachment,
               info,
               uri: file.uri,
@@ -745,7 +822,7 @@ export function useFileDownload(
                 ? { markdown: previewText }
                 : { text: previewText }),
               truncated,
-            }),
+            }, nested),
           );
         }
       } catch (error) {
@@ -762,14 +839,28 @@ export function useFileDownload(
     },
     [
       beginDownload,
+      dismissPreviewThen,
       fetchDownload,
       finishDownload,
       handoffDownloadAlert,
       handoffDownloadModal,
       remote,
+      showPreview,
       t,
       updateDownload,
     ],
+  );
+
+  const openFileLink = useCallback(
+    (path: string, _refresh = true) => openLocalPath(path, false),
+    [openLocalPath],
+  );
+
+  // A link inside a previewed document. The document stays open underneath, so
+  // following a link is reversible without losing the reading position.
+  const openLinkedFile = useCallback(
+    (path: string) => openLocalPath(path, true),
+    [openLocalPath],
   );
 
   const onDownloadModalShow = useCallback(() => {
@@ -795,14 +886,17 @@ export function useFileDownload(
   return {
     activeDownload,
     activeDownloadFraction,
+    previews,
     preview,
     fileAction,
     setFileAction,
     openAttachment,
     openFileLink,
+    openLinkedFile,
     downloadOriginal,
     openOrShare,
     closePreview,
+    popPreview,
     dismissPreviewThen,
     cancelActiveDownload,
     flushPendingPreviewAction,

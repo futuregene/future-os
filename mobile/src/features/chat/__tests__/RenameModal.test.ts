@@ -1,5 +1,5 @@
 import { createElement } from "react";
-import { StyleSheet, Text, TextInput } from "react-native";
+import { StyleSheet, Text, TextInput, Platform } from "react-native";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import type { TFunction } from "i18next";
 import { Button } from "../../../components/Button";
@@ -88,3 +88,84 @@ test("errors keep the old draft and release the generate button", async () => {
   expect(button("chat.generateTitle").props.disabled).toBe(false);
   expect(tree.root.findAll(node => node.props.accessibilityRole === "alert")).not.toHaveLength(0);
 });
+
+/** The rename sheet: the node that owns the native dismissal callback. */
+function modal() {
+  const found = tree.root.findAll(node =>
+    typeof node.props.onDismiss === "function" && node.props.visible !== undefined);
+  expect(found.length).toBeGreaterThan(0);
+  return found.at(-1)!;
+}
+
+test("on Android the deferred save flushes even when no dismiss callback arrives", () => {
+  // Android's Modal does not reliably deliver onDismiss, so the save is also
+  // flushed from a zero-delay timer. iOS relies on the callback instead, which
+  // is why this branch never runs on the iOS test platform.
+  const platform = Platform as unknown as { OS: string };
+  const original = platform.OS;
+  platform.OS = "android";
+  jest.useFakeTimers();
+  try {
+    act(() => button("chat.save").props.onPress());
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(submitRename).not.toHaveBeenCalled();
+    act(() => { jest.advanceTimersByTime(0); });
+    expect(submitRename).toHaveBeenCalledTimes(1);
+    // The timer must be a one-shot: a stray onDismiss afterwards finds nothing
+    // left to flush.
+    act(() => modal().props.onDismiss());
+    expect(submitRename).toHaveBeenCalledTimes(1);
+  } finally {
+    jest.useRealTimers();
+    platform.OS = original;
+  }
+});
+
+test("saving submits once, closes, and defers the submit until the sheet has dismissed", async () => {
+  jest.useFakeTimers();
+  try {
+    act(() => button("chat.save").props.onPress());
+    // The dialog closes first; submitting while UIKit still owns the screen
+    // would race the next presentation.
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(submitRename).not.toHaveBeenCalled();
+    act(() => modal().props.onDismiss());
+    expect(submitRename).toHaveBeenCalledTimes(1);
+    // The deferred action runs exactly once: a duplicate onDismiss must not
+    // rename twice.
+    act(() => modal().props.onDismiss());
+    expect(submitRename).toHaveBeenCalledTimes(1);
+    // …and the Android fallback timer fires with nothing left to do.
+    act(() => jest.advanceTimersByTime(0));
+    expect(submitRename).toHaveBeenCalledTimes(1);
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test.each(["", "   "])("a blank title (%j) is not submitted at all", value => {
+  act(() => tree.update(createElement(RenameModal, { ...props, renameValue: value })));
+  act(() => button("chat.save").props.onPress());
+  expect(onClose).not.toHaveBeenCalled();
+  expect(submitRename).not.toHaveBeenCalled();
+});
+
+test("a second save tap cannot queue a second rename", () => {
+  act(() => button("chat.save").props.onPress());
+  // The sheet is already dismissing; a repeat tap must not arm another submit.
+  act(() => button("chat.save").props.onPress());
+  expect(onClose).toHaveBeenCalledTimes(1);
+  act(() => modal().props.onDismiss());
+  expect(submitRename).toHaveBeenCalledTimes(1);
+});
+
+test("a deferred save survives a cancel tap, because the rename was already committed", () => {
+  act(() => button("chat.save").props.onPress());
+  // Save already closed the sheet and queued the rename; `close()` (what the
+  // cancel button and Android back both call) does not clear the queue, so the
+  // rename still lands. Pinned here because it is the behaviour, not a plan.
+  act(() => button("chat.cancel").props.onPress());
+  act(() => modal().props.onDismiss());
+  expect(submitRename).toHaveBeenCalledTimes(1);
+});
+

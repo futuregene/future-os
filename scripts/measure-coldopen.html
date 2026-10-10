@@ -1,9 +1,0 @@
-<!doctype html>
-<meta charset="utf-8">
-<title>Mobile cold-open traffic probe</title>
-<style>body{font:16px system-ui;max-width:1000px;margin:40px auto;padding:0 20px}pre{font:13px monospace;white-space:pre-wrap}aside{background:#fff5d6;padding:16px}</style>
-<h1>Mobile cold open: bytes and round trips</h1>
-<aside>Production mobile SyncEngine, read paging and projector against the real DesktopHost → isolated Agent → private SQLite snapshot. Loopback HTTP replaces NATS/E2EE. Reports per-read response bytes (what the socket carries) and reassembled payload bytes, plus page vs chunk round trips. Runs automatically; results are POSTed back to the probe. Not a native phone UI / cellular measurement.</aside>
-<p id="status">Ready</p>
-<pre></pre>
-<script src="/bundle.js"></script>
