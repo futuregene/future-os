@@ -121,7 +121,15 @@ impl PeerSession {
     > {
         let events = subscribe(&self.client, format!("p.{}.evt.>", self.pair_id)).await?;
         let presence = subscribe(&self.client, format!("p.{}.presence", self.pair_id)).await?;
-        let transfers = subscribe(&self.client, format!("p.{}.xfer.down.>", self.pair_id)).await?;
+        // Chunks only, by shape: `xfer.down.*.chunk.*` is exactly the subject the
+        // host publishes a pulled chunk on. The wildcard is what makes the
+        // receive path's parse total — a delivery that is not a chunk cannot
+        // arrive, so there is no "what else could this be" to answer.
+        let transfers = subscribe(
+            &self.client,
+            format!("p.{}.xfer.down.*.chunk.*", self.pair_id),
+        )
+        .await?;
         Ok((events, presence, transfers))
     }
 

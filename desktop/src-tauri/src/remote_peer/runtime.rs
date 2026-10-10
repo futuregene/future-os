@@ -198,8 +198,21 @@ pub(crate) async fn supervisor_count() -> usize {
     runtime().lock().await.supervisors.len()
 }
 
-/// Close a live connection's socket without touching the retry state.
+/// Stop a host's stream task while leaving the connection in place.
 ///
+/// The state a wedged or dead reader leaves behind: commands still work (the
+/// host answers on the reply subject through this client's own request path),
+/// but nothing is delivered from the subscriptions. That is exactly what a chunk
+/// pull's timeout exists for, and it cannot be produced from outside.
+#[cfg(test)]
+pub(crate) async fn stop_stream_for_test(desktop_id: &str) {
+    let task = runtime().lock().await.tasks.remove(desktop_id);
+    if let Some(task) = task {
+        task.abort();
+    }
+}
+
+/// Close a live connection's socket without touching the retry state.///
 /// The state a process shutting down leaves behind: the subscription streams
 /// end, so a test can drive the stream task's own exit instead of racing a
 /// broker shutdown (a reconnecting client keeps its subscriptions open).
@@ -645,12 +658,19 @@ fn spawn_event_stream(
                 return;
             };
             if kind == "chunk" {
+                // Parsed before decrypting: a malformed subject is dropped without
+                // spending a decryption (and the traffic-key lock) on it, and a
+                // relay that spams the transfer prefix cannot make this client
+                // work to throw the messages away.
+                let Some((transfer_id, index)) = parse_chunk_subject(&message.subject) else {
+                    continue;
+                };
                 let Some(bytes) = open_bytes(&channel, &message.subject, &message.payload) else {
                     // Unauthenticated: a relay can inject one at will, and the
                     // connection is not at fault, so drop it.
                     continue;
                 };
-                deliver_chunk(&desktop_id, &message.subject, bytes).await;
+                deliver_chunk(&desktop_id, transfer_id, index, bytes).await;
                 continue;
             }
             let Some(payload) = open(&channel, &message.subject, &message.payload) else {
@@ -672,10 +692,7 @@ fn spawn_event_stream(
 /// sends bytes in answer to a pull, so an unmatched one is either a duplicate
 /// from a retry or a reply to a pull that already timed out. Buffering it would
 /// keep file bytes in memory for a download the caller has abandoned.
-async fn deliver_chunk(desktop_id: &str, subject: &str, bytes: Vec<u8>) {
-    let Some((transfer_id, index)) = parse_chunk_subject(subject) else {
-        return;
-    };
+async fn deliver_chunk(desktop_id: &str, transfer_id: String, index: u64, bytes: Vec<u8>) {
     let waiter =
         runtime()
             .lock()
@@ -799,21 +816,33 @@ pub(crate) async fn request(
         .request(&subject, command, session::COMMAND_TIMEOUT)
         .await;
     if let Err(error) = &result {
-        // A dead socket must not keep looking connected on the next poll.
-        if matches!(error, crate::AppError::RemoteTransport(_)) {
-            live.errors
-                .insert(desktop_id.to_string(), error.to_string());
-            live.live.remove(desktop_id);
-            // The connection was healthy and then was not: exactly the case
-            // automatic recovery is for. An explicit disconnect takes the
-            // supervisor with it, so this cannot resurrect a stopped link.
-            if !live.supervisors.contains_key(desktop_id) {
-                let supervisor = spawn_supervisor(desktop_id.to_string(), None);
-                live.supervisors.insert(desktop_id.to_string(), supervisor);
-            }
-        }
+        on_transport_failure(&mut live, desktop_id, error);
     }
     result
+}
+
+/// Note a transport failure and make sure the link is being retried.
+///
+/// Shared by the session-keyed command lane and the transfer lane: both talk to
+/// the same socket, so both have to leave the same state behind when it dies. A
+/// second copy is a second place for the recovery to drift.
+fn on_transport_failure(live: &mut Runtime, desktop_id: &str, error: &crate::AppError) {
+    // Only a transport fault means the socket is gone. A host that answered and
+    // refused is still connected.
+    if !matches!(error, crate::AppError::RemoteTransport(_)) {
+        return;
+    }
+    // A dead socket must not keep looking connected on the next poll.
+    live.errors
+        .insert(desktop_id.to_string(), error.to_string());
+    live.live.remove(desktop_id);
+    // The connection was healthy and then was not: exactly the case automatic
+    // recovery is for. An explicit disconnect takes the supervisor with it, so
+    // this cannot resurrect a stopped link.
+    if !live.supervisors.contains_key(desktop_id) {
+        let supervisor = spawn_supervisor(desktop_id.to_string(), None);
+        live.supervisors.insert(desktop_id.to_string(), supervisor);
+    }
 }
 
 /// Where a chunk pull is requested. Built from the live session so the subject
@@ -872,28 +901,38 @@ pub(crate) async fn pull_chunk(
             return Err(error);
         }
     };
-    if let Err(error) = request_at(desktop_id, json!({}), &subject, CHUNK_PULL_TIMEOUT).await {
+    if let Err(error) = request_at(desktop_id, json!({}), &subject, chunk_pull_timeout()).await {
         forget_chunk(desktop_id, transfer_id, index).await;
         return Err(error);
     }
-    match tokio::time::timeout(CHUNK_PULL_TIMEOUT, receiver).await {
+    match tokio::time::timeout(chunk_pull_timeout(), receiver).await {
         Ok(Ok(bytes)) => Ok(bytes),
-        // The sender was dropped rather than used: the connection went away, or
-        // the runtime was cleared.
-        Ok(Err(_)) => Err(crate::AppError::RemoteTransport(
-            "remote_download_chunk_cancelled".into(),
-        )),
-        Err(_) => {
+        // Nothing arrived: either the sender was dropped (the connection went
+        // away, or the runtime was cleared) or the host acknowledged a publish
+        // that never reached this subscription. The two are indistinguishable
+        // from here and both are transient, so they share one message — and the
+        // caller retries either way.
+        _ => {
             forget_chunk(desktop_id, transfer_id, index).await;
             Err(crate::AppError::RemoteTransport(
-                "remote_download_chunk_timeout".into(),
+                "remote_download_chunk_missing".into(),
             ))
         }
     }
 }
 
 /// The timeout for one chunk pull, matching the phone's own.
-const CHUNK_PULL_TIMEOUT: Duration = Duration::from_secs(15);
+///
+/// Milliseconds under test, so the suite does not spend 15 s per attempt waiting
+/// out an arm that exists to catch a host which acknowledged a publish that
+/// never arrived. The *shape* being exercised is the real one either way.
+fn chunk_pull_timeout() -> Duration {
+    #[cfg(test)]
+    const TIMEOUT: Duration = Duration::from_millis(50);
+    #[cfg(not(test))]
+    const TIMEOUT: Duration = Duration::from_secs(15);
+    TIMEOUT
+}
 
 /// One command on an explicit subject, for the routes that are not the
 /// session-keyed command lane (file transfer addresses a transfer id).
@@ -910,20 +949,20 @@ pub(crate) async fn request_at(
             .or_insert_with(|| json!(crate::store::create_id("cmd")));
     }
     let mut live = runtime().lock().await;
+    #[cfg(test)]
+    if INJECT_CONNECTION_LOST.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        // The same interleaving the session-keyed lane guards against: a
+        // concurrent command's transport failure, or the user pressing
+        // Disconnect, removes the entry between the connect above and the
+        // lookup below.
+        live.live.remove(desktop_id);
+    }
     let Some(session) = live.live.get_mut(desktop_id) else {
         return Err(crate::AppError::Message("peer_not_connected".into()));
     };
     let result = session.request(subject, command, timeout).await;
     if let Err(error) = &result {
-        if matches!(error, crate::AppError::RemoteTransport(_)) {
-            live.errors
-                .insert(desktop_id.to_string(), error.to_string());
-            live.live.remove(desktop_id);
-            if !live.supervisors.contains_key(desktop_id) {
-                let supervisor = spawn_supervisor(desktop_id.to_string(), None);
-                live.supervisors.insert(desktop_id.to_string(), supervisor);
-            }
-        }
+        on_transport_failure(&mut live, desktop_id, error);
     }
     result
 }

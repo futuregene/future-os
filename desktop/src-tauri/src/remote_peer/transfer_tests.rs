@@ -347,6 +347,78 @@ fn writing_a_file_leaves_no_partial_neighbour() {
     assert_eq!(std::fs::read(&destination).expect("read back"), b"second");
 }
 
+/// A declaration that disagrees with the bytes is caught before hashing.
+///
+/// Reachable with a real host by declaring a size the host does not serve: the
+/// host slices by its *own* record, so a smaller declaration pulls fewer chunks
+/// and the total comes up short. This is the check that makes a lying or buggy
+/// declaration fail rather than produce a plausible-looking file.
+#[tokio::test]
+async fn a_declaration_that_disagrees_with_the_bytes_is_refused() {
+    let (_home, fx) = fixture("peer-xfer-size-mismatch").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect_with_stream(&desktop_id).await;
+
+    // A declaration smaller than the file: one chunk is asked for and the host
+    // serves all ten bytes, against a declared six. The chunk size stays the
+    // host's own, because the host validates an index against its own
+    // boundaries — doctoring it would produce a different refusal entirely.
+    let (_transfer_id, mut info) = serve(&scratch("size-mismatch").join("ten.bin"), b"0123456789");
+    info.size = 6;
+
+    let error = transfer::fetch(&desktop_id, &info)
+        .await
+        .expect_err("a short delivery must not pass as a download");
+
+    assert!(
+        error.to_string().contains("remote_download_size_mismatch"),
+        "got: {error}"
+    );
+
+    teardown().await;
+}
+
+/// A destination that cannot be written is reported.
+#[test]
+fn an_unwritable_destination_is_reported() {
+    // The parent directory does not exist, which is the ordinary way this fails
+    // (a stale path from a dialog, a directory removed in the meantime).
+    let error = transfer::write_to_path("/futureos-no-such-directory/file.txt", b"x")
+        .expect_err("a missing parent cannot be written into");
+    assert!(
+        error.to_string().contains("remote_download_write_failed"),
+        "got: {error}"
+    );
+}
+
+/// The rename is the last step, and its failure must not leave the partial copy
+/// beside the destination: a `.part` file is debris from a failure that already
+/// happened, and it looks like something the user can open.
+#[test]
+fn a_failed_rename_leaves_no_partial_file() {
+    let dir = scratch("rename-fails");
+    // A directory where the file should go: the temporary writes fine, then the
+    // rename onto a directory fails.
+    let destination = dir.join("occupied.txt");
+    std::fs::create_dir_all(&destination).expect("create the occupying directory");
+
+    let error = transfer::write_atomically(&destination, b"contents")
+        .expect_err("a directory cannot be replaced by a file");
+
+    assert!(
+        error.to_string().contains("remote_download_write_failed"),
+        "got: {error}"
+    );
+    assert!(
+        !dir.join(".occupied.txt.part").exists(),
+        "the temporary must be removed when the rename fails"
+    );
+    assert!(
+        destination.is_dir(),
+        "and the destination must be left alone"
+    );
+}
+
 #[test]
 fn a_destination_with_no_file_name_is_refused() {
     let error = transfer::write_atomically(std::path::Path::new("/"), b"x")
@@ -357,4 +429,200 @@ fn a_destination_with_no_file_name_is_refused() {
             .contains("remote_download_bad_destination"),
         "got: {error}"
     );
+}
+
+// ── the arms a healthy host never produces ──────────────────────────────────
+
+/// A pull with no connection behind it is refused, and refused *by the client*:
+/// a user who clicks download after a host dropped gets a reason rather than a
+/// request that goes nowhere.
+#[tokio::test]
+async fn a_pull_without_a_connection_is_refused() {
+    let (_home, fx) = fixture("peer-xfer-no-connection").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect_with_stream(&desktop_id).await;
+    let (_transfer_id, info) = serve(&scratch("no-connection").join("f.txt"), b"bytes");
+
+    // The pairing stays; only the live connection is dropped, as the user's own
+    // Disconnect leaves it.
+    runtime::disconnect(&desktop_id).await;
+
+    let error = transfer::fetch(&desktop_id, &info)
+        .await
+        .expect_err("a pull needs a connection");
+    assert!(
+        error.to_string().contains("peer_not_connected"),
+        "the refusal must name the reason, got: {error}"
+    );
+
+    teardown().await;
+}
+
+/// A chunk that never arrives fails rather than hanging.
+///
+/// The host acknowledges the pull *after* publishing, so a chunk that does not
+/// turn up is the host having published somewhere this client is not listening —
+/// a wedged or dead subscription. The pull has to give up on its own rather than
+/// leave the user with a download that never finishes.
+#[tokio::test]
+async fn a_chunk_that_never_arrives_gives_up() {
+    let (_home, fx) = fixture("peer-xfer-no-chunk").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect_with_stream(&desktop_id).await;
+    let (_transfer_id, info) = serve(&scratch("no-chunk").join("f.txt"), b"bytes");
+
+    // Everything still works except delivery: the host will publish the chunk
+    // and acknowledge the pull, and nothing will hand it to the waiter.
+    runtime::stop_stream_for_test(&desktop_id).await;
+
+    let error = transfer::fetch(&desktop_id, &info)
+        .await
+        .expect_err("a chunk that never arrives cannot be reported as a download");
+    assert!(
+        error.to_string().contains("remote_download_chunk_missing"),
+        "got: {error}"
+    );
+
+    teardown().await;
+}
+
+/// A connection that dies between the lookup and the request is recorded, not
+/// reported as a stalled download.
+#[tokio::test]
+async fn a_request_on_a_vanished_connection_is_recorded() {
+    use std::sync::atomic::Ordering;
+    let (_home, fx) = fixture("peer-xfer-vanished").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect_with_stream(&desktop_id).await;
+
+    // A command that is not an object: the lane stamps an id onto one, so it has
+    // to tolerate anything the caller passes rather than assuming.
+    let not_an_object = runtime::request_at(
+        &desktop_id,
+        serde_json::json!("not an object"),
+        "p.unused.xfer.up.t.pull.0",
+        std::time::Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        not_an_object.is_err(),
+        "a command the host cannot answer must fail"
+    );
+
+    // The interleaving: the entry is removed after the connect at the top of the
+    // request, which cannot be produced from outside without racing.
+    runtime::INJECT_CONNECTION_LOST.store(true, Ordering::Relaxed);
+    let error = runtime::request_at(
+        &desktop_id,
+        serde_json::json!({}),
+        "p.unused.xfer.up.t.pull.0",
+        std::time::Duration::from_secs(1),
+    )
+    .await
+    .expect_err("a vanished connection has nobody to ask");
+
+    assert!(
+        error.to_string().contains("peer_not_connected"),
+        "got: {error}"
+    );
+
+    teardown().await;
+}
+
+/// Forged bytes on a chunk subject are dropped, not handed to a waiting pull.
+///
+/// A relay can inject anything on the transfer subscription, and the failure
+/// this guards is not "an extra message" but *substituted file bytes*: a chunk
+/// accepted without authenticating would be written into the download, and the
+/// hash check would then reject the whole file. The assertion is therefore about
+/// the waiter — it must still be waiting after the forgery — because a waiter
+/// consumed by garbage is exactly how that substitution would begin.
+///
+/// The bytes are raw, not sealed: sealing needs the host's own traffic key, and
+/// what is being tested is that *unsigned* input is refused.
+#[tokio::test]
+async fn forged_chunk_bytes_are_not_handed_to_a_waiting_pull() {
+    let (_home, fx) = fixture("peer-xfer-forged-chunk").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect_with_stream(&desktop_id).await;
+
+    let (transfer_id, info) = serve(&scratch("forged-chunk").join("real.txt"), b"real bytes");
+    let (sender, mut receiver) = tokio::sync::oneshot::channel();
+    runtime::register_chunk(&desktop_id, &transfer_id, 0, sender).await;
+
+    // Waited for before injecting: `subscribe()` returning only means the command
+    // was sent, and injecting earlier would race the broker's own bookkeeping.
+    fx.nats
+        .wait_for_sub(
+            &format!("p.{}.xfer.down.*.chunk.*", fx.pair_id),
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+    fx.nats.inject(
+        &format!("p.{}.xfer.down.{transfer_id}.chunk.0", fx.pair_id),
+        None,
+        b"substituted bytes".to_vec(),
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    assert!(
+        receiver.try_recv().is_err(),
+        "unauthenticated bytes must not satisfy a pull"
+    );
+
+    // And the real transfer is unaffected: the forgery did not wedge the stream.
+    let bytes = transfer::fetch(&desktop_id, &info)
+        .await
+        .expect("a forged chunk must not break a real download");
+    assert_eq!(bytes, b"real bytes");
+
+    teardown().await;
+}
+
+/// A chunk subject with a non-numeric index is dropped before anything is
+/// decrypted, and does not satisfy a waiting pull.
+///
+/// The subscription matches any final token, so a malformed index can arrive. It
+/// must be dropped on its shape alone: a parser that defaulted the index (or
+/// searched for "the last number") would map this to chunk 0 of the named
+/// transfer and consume the waiter a real download is parked on.
+///
+/// The bytes are raw here rather than sealed — and that is the point of the
+/// ordering this asserts: the shape is rejected before the message is ever
+/// offered to the crypto layer.
+#[tokio::test]
+async fn a_chunk_subject_that_is_not_shaped_like_one_is_dropped() {
+    let (_home, fx) = fixture("peer-xfer-bad-index").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect_with_stream(&desktop_id).await;
+
+    let (transfer_id, info) = serve(&scratch("bad-index").join("real.txt"), b"real bytes");
+    let (sender, mut receiver) = tokio::sync::oneshot::channel();
+    runtime::register_chunk(&desktop_id, &transfer_id, 0, sender).await;
+
+    fx.nats
+        .wait_for_sub(
+            &format!("p.{}.xfer.down.*.chunk.*", fx.pair_id),
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+    fx.nats.inject(
+        &format!("p.{}.xfer.down.{transfer_id}.chunk.abc", fx.pair_id),
+        None,
+        b"payload".to_vec(),
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    assert!(
+        receiver.try_recv().is_err(),
+        "a malformed index must not consume the waiter for chunk 0"
+    );
+
+    // The stream is still reading: a real transfer completes afterwards.
+    assert_eq!(
+        transfer::fetch(&desktop_id, &info).await.expect("fetch"),
+        b"real bytes"
+    );
+
+    teardown().await;
 }

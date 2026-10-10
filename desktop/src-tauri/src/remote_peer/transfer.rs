@@ -236,6 +236,16 @@ async fn pull_chunk(
     Err(last.unwrap_or_else(|| crate::AppError::Message("remote_download_chunk_failed".into())))
 }
 
+/// Write a downloaded file to a path the caller chose, atomically.
+///
+/// Takes the path as a string because that is what arrives from the UI, and
+/// keeps the call site short enough to stay on one line — a wrapped call would
+/// put its `?` alone on a line that then reads as uncovered whatever the tests
+/// do.
+pub(crate) fn write_to_path(destination: &str, bytes: &[u8]) -> Result<(), crate::AppError> {
+    write_atomically(std::path::Path::new(destination), bytes)
+}
+
 /// Write a downloaded file to `destination`, atomically.
 ///
 /// A partial file that looks complete is the one failure a download must not

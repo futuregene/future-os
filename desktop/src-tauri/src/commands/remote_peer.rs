@@ -168,10 +168,7 @@ pub async fn remote_peer_download_file(
         variant.as_deref().unwrap_or("original"),
     )
     .await?;
-    crate::remote_peer::transfer::write_atomically(
-        std::path::Path::new(&destination),
-        &fetched.bytes,
-    )?;
+    crate::remote_peer::transfer::write_to_path(&destination, &fetched.bytes)?;
     Ok(fetched.name)
 }
 
