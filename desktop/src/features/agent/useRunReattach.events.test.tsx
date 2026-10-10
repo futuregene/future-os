@@ -30,7 +30,7 @@ const resetProjection = vi.mocked(resetRunProjection);
 
 function setup(overrides: Partial<Parameters<typeof useRunReattach>[0]> = {}) {
   const refreshRecentRun = vi.fn(async () => {});
-  const reloadMessagesQuiet = vi.fn(async () => {});
+  const reloadThreadHistory = vi.fn(async () => {});
   const setMessages = vi.fn();
   let sending!: MutableRefObject<boolean>;
   const harness = renderHook(() => {
@@ -45,11 +45,11 @@ function setup(overrides: Partial<Parameters<typeof useRunReattach>[0]> = {}) {
       sendingRef,
       setMessages,
       refreshRecentRun,
-      reloadMessagesQuiet,
+      reloadThreadHistory,
       ...overrides,
     });
   });
-  return { harness, refreshRecentRun, reloadMessagesQuiet, setMessages, sending: () => sending };
+  return { harness, refreshRecentRun, reloadThreadHistory, setMessages, sending: () => sending };
 }
 
 /** Deliver a Tauri event to every subscriber of `name`. */
@@ -97,15 +97,15 @@ describe("useRunReattach runtime updates", () => {
   it.each(["completed", "failed", "cancelled"] as const)(
     "stops previewing and force-reloads when the run reports %s",
     async (status) => {
-      const { harness, refreshRecentRun, reloadMessagesQuiet } = setup();
+      const { harness, refreshRecentRun, reloadThreadHistory } = setup();
       const baseline = await settleTicks();
 
       emit("thread-runtime-updated", running({ status }));
       await settleTicks();
 
-      expect(refreshRecentRun).toHaveBeenCalledWith("T1", "W1");
+      expect(refreshRecentRun).toHaveBeenCalledWith("T1");
       // `true` = force: the persisted message must replace the synthetic bubble.
-      expect(reloadMessagesQuiet).toHaveBeenCalledWith("T1", true);
+      expect(reloadThreadHistory).toHaveBeenCalledWith("T1", true);
       // A settled run never projects another preview.
       expect(project.mock.calls.length).toBe(baseline);
       harness.unmount();
@@ -113,7 +113,7 @@ describe("useRunReattach runtime updates", () => {
   );
 
   it("ignores pushes for another thread or another run", async () => {
-    const { harness, refreshRecentRun, reloadMessagesQuiet } = setup();
+    const { harness, refreshRecentRun, reloadThreadHistory } = setup();
     const baseline = await settleTicks();
 
     emit("thread-runtime-updated", { updates: [{ threadId: "T2", runId: "R1", status: "completed" }] });
@@ -122,7 +122,7 @@ describe("useRunReattach runtime updates", () => {
     await settleTicks();
 
     expect(refreshRecentRun).not.toHaveBeenCalled();
-    expect(reloadMessagesQuiet).not.toHaveBeenCalled();
+    expect(reloadThreadHistory).not.toHaveBeenCalled();
     expect(project.mock.calls.length).toBe(baseline);
     harness.unmount();
   });
@@ -134,7 +134,7 @@ describe("useRunReattach runtime updates", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30_000);
     });
-    expect(refreshRecentRun).toHaveBeenCalledWith("T1", "W1");
+    expect(refreshRecentRun).toHaveBeenCalledWith("T1");
 
     // While this view's own send owns the stream the pass is redundant.
     refreshRecentRun.mockClear();
@@ -147,7 +147,7 @@ describe("useRunReattach runtime updates", () => {
   });
 
   it("picks up a remote-driven run from the remote-activity signal", async () => {
-    const { harness, refreshRecentRun, reloadMessagesQuiet } = setup();
+    const { harness, refreshRecentRun, reloadThreadHistory } = setup();
     await settleTicks();
 
     // Another conversation's activity is none of this view's business.
@@ -155,21 +155,21 @@ describe("useRunReattach runtime updates", () => {
     expect(refreshRecentRun).not.toHaveBeenCalled();
 
     emit("remote-activity", "T1");
-    expect(refreshRecentRun).toHaveBeenCalledWith("T1", "W1");
+    expect(refreshRecentRun).toHaveBeenCalledWith("T1");
     // No force: the phone's user bubble must show without discarding the
     // streaming baseline this view may already hold.
-    expect(reloadMessagesQuiet).toHaveBeenCalledWith("T1");
+    expect(reloadThreadHistory).toHaveBeenCalledWith("T1");
     harness.unmount();
   });
 
   it("ignores remote activity while a local send owns the view", async () => {
-    const { harness, refreshRecentRun, reloadMessagesQuiet, sending } = setup();
+    const { harness, refreshRecentRun, reloadThreadHistory, sending } = setup();
     await act(async () => {});
     sending().current = true;
 
     emit("remote-activity", "T1");
     expect(refreshRecentRun).not.toHaveBeenCalled();
-    expect(reloadMessagesQuiet).not.toHaveBeenCalled();
+    expect(reloadThreadHistory).not.toHaveBeenCalled();
     harness.unmount();
   });
 
@@ -179,11 +179,11 @@ describe("useRunReattach runtime updates", () => {
     const attached = { activeRunId: "R1" as string | null };
     const previewed = setup(attached);
     await settleTicks();
-    expect(previewed.reloadMessagesQuiet).not.toHaveBeenCalled();
+    expect(previewed.reloadThreadHistory).not.toHaveBeenCalled();
 
     attached.activeRunId = null;
     previewed.harness.rerender();
-    expect(previewed.reloadMessagesQuiet).toHaveBeenCalledWith("T1", true);
+    expect(previewed.reloadThreadHistory).toHaveBeenCalledWith("T1", true);
     previewed.harness.unmount();
 
     // While this view's own send owns the stream, the send path renders the
@@ -194,19 +194,19 @@ describe("useRunReattach runtime updates", () => {
     owned.activeRunId = null;
     sending.sending().current = true;
     sending.harness.rerender();
-    expect(sending.reloadMessagesQuiet).not.toHaveBeenCalled();
+    expect(sending.reloadThreadHistory).not.toHaveBeenCalled();
     sending.harness.unmount();
   });
 
   it("registers no listeners at all without a thread", async () => {
     // boundary: no conversation is open yet, so every effect must bail out.
-    const { harness, refreshRecentRun, reloadMessagesQuiet } = setup({ threadId: null, activeRunId: null });
+    const { harness, refreshRecentRun, reloadThreadHistory } = setup({ threadId: null, activeRunId: null });
     await act(async () => {});
 
     expect(listeners.get("remote-activity")).toBeUndefined();
     expect(listeners.get("thread-runtime-updated")).toBeUndefined();
     expect(refreshRecentRun).not.toHaveBeenCalled();
-    expect(reloadMessagesQuiet).not.toHaveBeenCalled();
+    expect(reloadThreadHistory).not.toHaveBeenCalled();
     harness.unmount();
   });
 

@@ -41,7 +41,8 @@ vi.mock("../../integrations/agent/agentClient", async original => ({
   ...await original<typeof import("../../integrations/agent/agentClient")>(),
   savePastedImage: h.savePastedImage,
 }));
-vi.mock("../../integrations/skills/skillsClient", () => ({
+vi.mock("../../integrations/skills/skillsClient", async original => ({
+  ...await original<typeof import("../../integrations/skills/skillsClient")>(),
   listAvailableSkills: h.listAvailableSkills,
   listInstalledSkills: h.listInstalledSkills,
   loadSkillCatalog: () => ({

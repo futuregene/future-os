@@ -11,11 +11,9 @@ import { toolCommand } from "../runs/toolInput";
  */
 export function buildContinuePrompt({
   message,
-  runId: _runId,
   summary,
 }: {
   message?: AgentMessage;
-  runId?: string;
   summary?: string;
 }) {
   const lines = ["继续上一个任务。"];

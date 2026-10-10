@@ -63,7 +63,6 @@ describe("buildContinuePrompt", () => {
     // boundary: no message, no summary, and whitespace-only values are all the
     // same case — the prompt must not gain an empty section.
     expect(buildContinuePrompt({})).toBe("继续上一个任务。");
-    expect(buildContinuePrompt({ runId: "run-1" })).toBe("继续上一个任务。");
     expect(buildContinuePrompt({ message: user("u1", "   \n  ") })).toBe("继续上一个任务。");
     expect(buildContinuePrompt({ summary: "\t " })).toBe("继续上一个任务。");
   });

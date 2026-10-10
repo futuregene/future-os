@@ -122,14 +122,17 @@ describe("switch", () => {
 
 describe("dialog", () => {
   it("renders title, description and footer with a labelled dialog role", () => {
-    const html = renderToStaticMarkup(createElement(Dialog, {
-      onClose: () => {},
-      open: true,
-      title: "Delete thread",
-      description: "This cannot be undone",
-      footer: createElement("button", { type: "button" }, "Confirm"),
-      children: createElement("p", null, "body"),
-    }));
+    const html = renderToStaticMarkup(
+      <Dialog
+        onClose={() => {}}
+        open
+        title="Delete thread"
+        description="This cannot be undone"
+        footer={<button type="button">Confirm</button>}
+      >
+        <p>body</p>
+      </Dialog>,
+    );
     expect(html).toContain("role=\"dialog\"");
     expect(html).toContain("aria-modal=\"true\"");
     expect(html).toContain("Delete thread");
@@ -141,9 +144,9 @@ describe("dialog", () => {
 
   it("renders nothing while closed and closes on Escape", () => {
     const onClose = vi.fn();
-    const view = mount(createElement(Dialog, { children: "x", onClose, open: false, title: "Hidden" }));
+    const view = mount(<Dialog onClose={onClose} open={false} title="Hidden">x</Dialog>);
     expect(view.container.textContent).toBe("");
-    view.rerender(createElement(Dialog, { children: "x", onClose, open: true, title: "Shown" }));
+    view.rerender(<Dialog onClose={onClose} open={true} title="Shown">x</Dialog>);
     expect(view.container.textContent).toContain("Shown");
     act(() => {
       window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
@@ -155,7 +158,7 @@ describe("dialog", () => {
 
 describe("field and empty state", () => {
   it("wraps children in a label with the given label text", () => {
-    const html = renderToStaticMarkup(createElement(Field, { children: createElement("input", { "aria-label": "inner" }), label: "Name" }));
+    const html = renderToStaticMarkup(<Field label="Name"><input aria-label="inner" /></Field>);
     expect(html.startsWith("<label")).toBe(true);
     expect(html).toContain("Name");
     expect(html).toContain("aria-label=\"inner\"");
@@ -246,46 +249,40 @@ describe("copy button and copyable pre", () => {
 });
 
 describe("select menu", () => {
-  const row = () => createElement(SelectMenuItem, { children: "Choose me", onSelect: () => {}, selected: true });
+  const row = () => <SelectMenuItem onSelect={() => {}} selected={true}>Choose me</SelectMenuItem>;
 
   it("renders nothing until open, then anchors the panel per align", () => {
-    const closed = renderToStaticMarkup(createElement(SelectMenu, {
-      children: row(),
-      onDismiss: () => {},
-      open: false,
-      trigger: createElement("button", { type: "button" }, "open"),
-    }));
+    const closed = renderToStaticMarkup(
+      <SelectMenu onDismiss={() => {}} open={false} trigger={<button type="button">open</button>}>
+        {row()}
+      </SelectMenu>,
+    );
     expect(closed).not.toContain("Choose me");
 
-    const right = renderToStaticMarkup(createElement(SelectMenu, {
-      children: row(),
-      onDismiss: () => {},
-      open: true,
-      trigger: createElement("button", { type: "button" }, "open"),
-    }));
+    const right = renderToStaticMarkup(
+      <SelectMenu onDismiss={() => {}} open trigger={<button type="button">open</button>}>
+        {row()}
+      </SelectMenu>,
+    );
     expect(right).toContain("Choose me");
     expect(right).toContain("right-0");
 
-    const left = renderToStaticMarkup(createElement(SelectMenu, {
-      align: "left",
-      children: row(),
-      onDismiss: () => {},
-      open: true,
-      panelClassName: "w-40",
-      trigger: createElement("button", { type: "button" }, "open"),
-    }));
+    const left = renderToStaticMarkup(
+      <SelectMenu align="left" onDismiss={() => {}} open panelClassName="w-40" trigger={<button type="button">open</button>}>
+        {row()}
+      </SelectMenu>,
+    );
     expect(left).toContain("left-0");
     expect(left).toContain("w-40");
   });
 
   it("dismisses on an outside pointerdown but not from inside the menu", () => {
     const onDismiss = vi.fn();
-    const view = mount(createElement(SelectMenu, {
-      children: row(),
-      onDismiss,
-      open: true,
-      trigger: createElement("button", { type: "button" }, "open"),
-    }));
+    const view = mount(
+      <SelectMenu onDismiss={onDismiss} open trigger={<button type="button">open</button>}>
+        {row()}
+      </SelectMenu>,
+    );
     const inside = [...view.container.querySelectorAll("button")].slice(-1)[0]!;
     act(() => {
       inside.dispatchEvent(new Event("pointerdown", { bubbles: true }));
@@ -300,12 +297,11 @@ describe("select menu", () => {
 
   it("dismisses on Escape", () => {
     const onDismiss = vi.fn();
-    const view = mount(createElement(SelectMenu, {
-      children: row(),
-      onDismiss,
-      open: true,
-      trigger: createElement("button", { type: "button" }, "open"),
-    }));
+    const view = mount(
+      <SelectMenu onDismiss={onDismiss} open trigger={<button type="button">open</button>}>
+        {row()}
+      </SelectMenu>,
+    );
     act(() => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
@@ -315,7 +311,7 @@ describe("select menu", () => {
 
   it("disables a menu item and shows its check only when selected", () => {
     const onSelect = vi.fn();
-    const view = mount(createElement(SelectMenuItem, { children: "Row", disabled: true, onSelect, selected: false, title: "tip" }));
+    const view = mount(<SelectMenuItem disabled={true} onSelect={onSelect} selected={false} title="tip">Row</SelectMenuItem>);
     const item = view.container.querySelector("button")!;
     expect(item.disabled).toBe(true);
     expect(item.getAttribute("title")).toBe("tip");
@@ -323,7 +319,7 @@ describe("select menu", () => {
     act(() => item.click());
     expect(onSelect).not.toHaveBeenCalled();
 
-    view.rerender(createElement(SelectMenuItem, { children: "Row", onSelect, selected: true }));
+    view.rerender(<SelectMenuItem onSelect={onSelect} selected={true}>Row</SelectMenuItem>);
     expect(view.container.querySelector("svg")!.classList.contains("lucide-check")).toBe(true);
     view.unmount();
   });

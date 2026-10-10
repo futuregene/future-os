@@ -179,7 +179,7 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
       cancelled = true;
       dispose?.();
     };
-  }, [enabled]);
+  }, [enabled, refresh]);
 
   return useMemo(
     () => ({ peers, catalogs, loading, error, refresh }),

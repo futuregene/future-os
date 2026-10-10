@@ -4,6 +4,7 @@ import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { Composer } from "./Composer";
+import { clearComposerDraft } from "./composerDraft";
 
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }),
@@ -267,5 +268,49 @@ it("sends the original draft unchanged on dismiss", async () => {
   }
   finally {
     act(() => host.remove());
+  }
+});
+
+it.each(["unmount", "switch", "disabled", "streaming"])("does not send a delayed evaluation after %s", async (scenario) => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const onSend = vi.fn();
+  let resolve!: (card: null) => void;
+  const evaluation = new Promise<null>((release) => {
+    resolve = release;
+  });
+  const skillRecommendation = recommendationProps(() => evaluation);
+  const props = { onSend, modelOptions: [], skillRecommendation, draftKey: "evaluation-a" };
+  let unmounted = false;
+  clearComposerDraft("evaluation-a");
+  clearComposerDraft("evaluation-b");
+  try {
+    await act(async () => root.render(<Composer {...props} />));
+    typeInto(host, "please search the web for this");
+    await submit(host);
+    expect(onSend).not.toHaveBeenCalled();
+    if (scenario === "unmount") {
+      act(() => root.unmount());
+      unmounted = true;
+    }
+    else if (scenario === "switch") {
+      act(() => root.render(<Composer {...props} draftKey="evaluation-b" />));
+      typeInto(host, "a new conversation draft");
+    }
+    else {
+      act(() => root.render(<Composer {...props} disabled={scenario === "disabled"} sending={scenario === "streaming"} />));
+    }
+    await act(async () => resolve(null));
+    expect(onSend).not.toHaveBeenCalled();
+    if (scenario === "switch")
+      expect(host.querySelector("[role=textbox]")?.textContent).toBe("a new conversation draft");
+  }
+  finally {
+    if (!unmounted)
+      act(() => root.unmount());
+    host.remove();
+    clearComposerDraft("evaluation-a");
+    clearComposerDraft("evaluation-b");
   }
 });

@@ -1,3 +1,4 @@
+import { onFutureEvent } from "../../lib/futureEvents";
 import { invokeCommand } from "../tauri/invoke";
 
 /** A skill the agent currently loads (source of the "Installed" tab). */
@@ -42,6 +43,25 @@ export interface AvailableSkill {
  */
 let catalog: { installed: Promise<InstalledSkill[]>; catalogue: Promise<AvailableSkill[]> } | null
   = null;
+let catalogRevision = 0;
+const catalogListeners = new Set<() => void>();
+let stopCatalogEvents: (() => void) | null = null;
+
+export function subscribeSkillCatalog(listener: () => void) {
+  catalogListeners.add(listener);
+  stopCatalogEvents ??= onFutureEvent("skills-changed", invalidateSkillCatalog);
+  return () => {
+    catalogListeners.delete(listener);
+    if (catalogListeners.size === 0) {
+      stopCatalogEvents?.();
+      stopCatalogEvents = null;
+    }
+  };
+}
+
+export function getSkillCatalogRevision() {
+  return catalogRevision;
+}
 
 /** Installed skills, as reconciled by the Agent SkillManager. */
 export function listInstalledSkills(): Promise<InstalledSkill[]> {
@@ -82,6 +102,8 @@ export function loadSkillCatalog(): {
 /** Drop the cached lists. Called by every mutation, so no caller can forget. */
 export function invalidateSkillCatalog(): void {
   catalog = null;
+  catalogRevision += 1;
+  for (const listener of catalogListeners) listener();
 }
 
 /**
@@ -197,5 +219,5 @@ export function recordSkillReco(skillId: string, messageHash: string): Promise<v
 
 /** Force-run the built-in skill bootstrap (installs platform skills via CLI). */
 export function bootstrapBuiltinSkills(): Promise<void> {
-  return invokeCommand<void>("bootstrap_builtin_skills");
+  return invalidateAfter(invokeCommand<void>("bootstrap_builtin_skills"));
 }

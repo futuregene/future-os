@@ -1,20 +1,21 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import { useTranslation } from "react-i18next";
+import { cn } from "../../lib/cn";
 import { formatDuration } from "../../lib/date";
 import { formatNumber } from "../../lib/format";
 import { useNow } from "../../lib/useNow";
 
 interface MessageMetaProps {
   message: AgentMessage;
+  hovered: boolean;
 }
 
 /**
- * Faint per-reply footer: `time · N tokens`. While the reply streams it stays
- * visible and the elapsed time ticks live; once the run settles it stays visible
- * on the same right rail. Tokens are the real provider
- * usage, which only lands when the run ends.
+ * Hover-only reply stats: `time · N tokens`. The elapsed time ticks live while
+ * streaming. Tokens are the real provider usage, which lands when the run ends.
+ * Keep the stats mounted so hover changes never shift the footer layout.
  */
-export function MessageMeta({ message }: MessageMetaProps) {
+export function MessageMeta({ message, hovered }: MessageMetaProps) {
   const { t, i18n } = useTranslation("agent");
   const streaming = message.status === "streaming";
 
@@ -41,7 +42,11 @@ export function MessageMeta({ message }: MessageMetaProps) {
     return null;
 
   return (
-    <div className="select-none text-xs text-ink-muted">
+    <div className={cn(
+      "select-none text-xs text-ink-muted will-change-[opacity] transition-opacity duration-200",
+      hovered ? "opacity-100" : "pointer-events-none opacity-0",
+    )}
+    >
       {parts.join(" · ")}
     </div>
   );

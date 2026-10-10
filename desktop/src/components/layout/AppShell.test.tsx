@@ -537,7 +537,7 @@ beforeEach(() => {
     setSelectedModelId: vi.fn(),
     startNewConversation: vi.fn(async () => {}),
     toggleTerminal: vi.fn(),
-    useAgentStatus: () => ({ agentVersion: null, desktopVersion: "1.0", phase: "ready", showWait: false }),
+    useAgentStatus: vi.fn(() => ({ agentVersion: null, desktopVersion: "1.0", phase: "ready", showWait: false })),
   };
   mocks.remoteStatus = { phase: "idle" };
   mocks.remotePeers = undefined;
@@ -550,7 +550,7 @@ beforeEach(() => {
 
 describe("app shell readiness gate", () => {
   it("shows the agent status page until the agent is ready", () => {
-    mocks.hooks.useAgentStatus = () => ({ agentVersion: null, desktopVersion: "1.0", phase: "starting", showWait: true });
+    mocks.hooks.useAgentStatus = vi.fn(() => ({ agentVersion: null, desktopVersion: "1.0", phase: "starting", showWait: true }));
     const view = mount(<AppShell />);
     const gate = view.container.querySelector("[data-child=\"agent-status-gate\"]")!;
     expect(gate.getAttribute("data-phase")).toBe("starting");
@@ -1717,8 +1717,10 @@ describe("app shell collapsed-panel affordances", () => {
       view.unmount();
     });
 
-    /** A draft has no conversation on the host, so there is no context to
-     * compact and nothing to address the request with. */
+    /**
+     * A draft has no conversation on the host, so there is no context to
+     * compact and nothing to address the request with.
+     */
     it("does not ask a host to compact a conversation that does not exist yet", async () => {
       const view = mount(<AppShell />);
       act(() => rail().onManageDesktops?.());

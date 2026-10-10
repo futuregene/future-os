@@ -49,16 +49,16 @@ afterEach(async () => {
   await i18n.changeLanguage("en");
 });
 
-it.each(["en", "zh"])("folds mixed steps into a muted right-aligned glyph/count summary with an accessible failure label (%s)", async (language) => {
+it.each(["en", "zh"])("folds mixed steps into a muted left-aligned glyph/count summary with an accessible failure label (%s)", async (language) => {
   await i18n.changeLanguage(language);
   await render([prose, thought, tool, failed, running], { streaming: true });
   const button = summary();
   expect(button.textContent).toBe("×2·×1");
   expect(button.getAttribute("aria-label")).toBe(language === "zh" ? "工具调用 2 次 · 思考 1 次 · 1 次失败" : "Tool calls 2× · Thought 1× · 1 failed");
   expect(button.getAttribute("aria-expanded")).toBe("false");
-  expect(button.classList.contains("self-end")).toBe(true);
+  expect(button.classList.contains("self-start")).toBe(true);
   expect(button.parentElement!.classList.contains("text-ink-muted")).toBe(true);
-  expect(button.querySelector(".lucide-triangle-alert")).not.toBeNull();
+  expect(button.querySelector(".lucide-triangle-alert")).toBeNull();
   expect(container.textContent).toContain("Visible response");
   expect(container.textContent).toContain(i18n.t("agent:activity.runningCommand"));
   expect(container.textContent).not.toContain("Full reasoning content");
@@ -69,7 +69,7 @@ it("expands steps in timeline order on the left and keeps each detail independen
   await render([thought, tool, failed]);
   const button = summary();
   await click(button);
-  expect(button.classList.contains("self-end")).toBe(true);
+  expect(button.classList.contains("self-start")).toBe(true);
   expect(button.getAttribute("aria-expanded")).toBe("true");
   const children = button.nextElementSibling!;
   const headers = Array.from(children.querySelectorAll("button"));
@@ -119,7 +119,7 @@ it("keeps live reasoning outside the group, collapsed but expandable", async () 
   await render([tool, failed, liveThought], { streaming: true });
   expect(summary().textContent).toBe("×2");
   const thinkingButton = Array.from(container.querySelectorAll("button")).find(button => button.textContent === i18n.t("agent:activity.thinking"))!;
-  expect(thinkingButton.classList.contains("self-end")).toBe(true);
+  expect(thinkingButton.classList.contains("self-start")).toBe(true);
   expect(container.textContent).not.toContain("Currently reasoning");
   await click(thinkingButton);
   expect(container.textContent).toContain("Currently reasoning");

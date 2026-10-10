@@ -52,7 +52,8 @@ vi.mock("../../integrations/storage/files", async original => ({
   ...await original<typeof import("../../integrations/storage/files")>(),
   deleteTempAttachment: h.deleteTempAttachment,
 }));
-vi.mock("../../integrations/skills/skillsClient", () => ({
+vi.mock("../../integrations/skills/skillsClient", async original => ({
+  ...await original<typeof import("../../integrations/skills/skillsClient")>(),
   loadSkillCatalog: h.loadSkillCatalog,
   listAvailableSkills: vi.fn(async () => []),
   listInstalledSkills: vi.fn(async () => []),

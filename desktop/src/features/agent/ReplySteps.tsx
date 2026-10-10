@@ -1,11 +1,11 @@
 import type { StepSegment } from "./replyBlocks";
-import { Brain, ChevronDown, ChevronUp, TriangleAlert, Wrench } from "lucide-react";
+import { Brain, ChevronDown, ChevronUp, Wrench } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AgentActivityLine } from "./AgentActivityList";
 import { ThinkingBlock } from "./ThinkingBlock";
 
-/** A single quiet summary on the right; revealed steps return to the reading column. */
+/** A quiet summary aligned with the reading column and its revealed steps. */
 export function ReplySteps({ segments, workspaceId, workspacePath, runId }: {
   segments: StepSegment[];
   workspaceId?: string | null;
@@ -37,7 +37,7 @@ export function ReplySteps({ segments, workspaceId, workspacePath, runId }: {
       <button
         aria-label={summary}
         aria-expanded={expanded}
-        className="flex max-w-full cursor-pointer flex-wrap items-center justify-end gap-1 self-end text-left hover:text-ink"
+        className="flex max-w-full cursor-pointer flex-wrap items-center justify-start gap-1 self-start text-left hover:text-ink"
         onClick={() => setExpanded(value => !value)}
         type="button"
       >
@@ -58,15 +58,14 @@ export function ReplySteps({ segments, workspaceId, workspacePath, runId }: {
               </span>
             )
           : null}
-        {failed > 0 ? <TriangleAlert aria-hidden="true" className="size-3.5 shrink-0" /> : null}
         <Chevron aria-hidden="true" className="size-3 shrink-0" />
       </button>
       {expanded
         ? (
             <div className="min-w-0 space-y-1 pl-6">
               {segments.map(segment => segment.kind === "thinking"
-                ? <ThinkingBlock key={segment.id} text={segment.text} workspaceId={workspaceId} inSteps />
-                : <AgentActivityLine key={segment.id} item={segment.item} workspacePath={workspacePath} runId={runId} inSteps />)}
+                ? <ThinkingBlock key={segment.id} text={segment.text} workspaceId={workspaceId} />
+                : <AgentActivityLine key={segment.id} item={segment.item} workspacePath={workspacePath} runId={runId} />)}
             </div>
           )
         : null}

@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useCommittedRef } from "../../lib/useCommittedRef";
 
 import { mayContainThreadSearch } from "./threadSearchCache";
 import { useStickyAutoScroll } from "./useStickyAutoScroll";
@@ -261,8 +262,7 @@ export function useMessagePaging({
     setWindowStartId(visibleMessages[0]?.id ?? null);
   }, [visibleMessages]);
   const canLoadOlder = effectivePageStart > 0 || hasOlderHistory;
-  const searchStateRef = useRef({ messages, visibleMessages });
-  searchStateRef.current = { messages, visibleMessages };
+  const searchStateRef = useCommittedRef({ messages, visibleMessages });
   const prepareSearch = useCallback(async (query: string, signal: AbortSignal) => {
     const all = loadAllHistoryForSearch
       ? await loadAllHistoryForSearch(signal)
@@ -283,7 +283,7 @@ export function useMessagePaging({
         break;
       }
     }
-  }, [loadAllHistoryForSearch, preserveViewport]);
+  }, [loadAllHistoryForSearch, preserveViewport, searchStateRef]);
 
   const revealSearchMatch = useCallback((range: Range) => {
     const container = scrollRef.current;
