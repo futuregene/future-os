@@ -24,12 +24,14 @@ export function RemoteConversationView({
   approvals,
   approvalErrors,
   approvalPending,
+  compacting,
   composer,
   entries,
   error,
   hasMore,
   loading,
   loadingOlder,
+  onCompact,
   onDecideApproval,
   onFork,
   onLoadOlder,
@@ -42,12 +44,16 @@ export function RemoteConversationView({
   approvals: RemoteApproval[];
   approvalErrors: Record<string, string>;
   approvalPending: string | null;
+  /** The host reports a compaction in flight for this conversation. */
+  compacting: boolean;
   composer: React.ReactNode;
   entries: RemoteEntry[];
   error: string | null;
   hasMore: boolean;
   loading: boolean;
   loadingOlder: boolean;
+  /** Ask the host to compact this conversation's context. */
+  onCompact: () => void;
   onDecideApproval: (approval: RemoteApproval, decision: "allow" | "deny") => void;
   /**
    * Branch the conversation at the turn that produced an assistant reply, and
@@ -75,6 +81,21 @@ export function RemoteConversationView({
             {t("runsOn", { name: peer ? peerBadgeText(peer, peer.desktopId) : "" })}
           </div>
         </div>
+        {/* Compact is a conversation-level action on the host, next to the run
+            state it is mutually exclusive with: a host answering a prompt does
+            not also compact, and a host compacting refuses a prompt. */}
+        {compacting
+          ? <span className="shrink-0 text-xs text-ink-muted">{t("compacting")}</span>
+          : (
+              <Button
+                disabled={streaming || loading || error !== null || entries.length === 0}
+                onClick={onCompact}
+                size="sm"
+                variant="ghost"
+              >
+                {t("compact")}
+              </Button>
+            )}
         {streaming
           ? <span className="shrink-0 text-xs text-accent">{t("statusRunning")}</span>
           : null}

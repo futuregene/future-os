@@ -91,5 +91,8 @@
   "newConversationHint": "Starts on the remote desktop.",
   "fork": "Branch from here",
   "forkFailed": "Could not branch the conversation: {{message}}",
-  "forkNotSaved": "That reply's turn is not saved on the remote desktop yet. Reopen the conversation and try again."
+  "forkNotSaved": "That reply's turn is not saved on the remote desktop yet. Reopen the conversation and try again.",
+  "compact": "Compact context",
+  "compacting": "Compacting…",
+  "compactFailed": "Could not compact the conversation: {{message}}"
 }

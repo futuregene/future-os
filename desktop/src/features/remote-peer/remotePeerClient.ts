@@ -247,6 +247,35 @@ export async function forkRemoteConversation(
 }
 
 /**
+ * Ask the host to compact a conversation's context.
+ *
+ * The answer is an *acknowledgement*, not a result: the host accepts the
+ * request and then commits, fails, or finds nothing to do, and reports which
+ * only through its own events. So a promise that resolves means "the host took
+ * it", and the caller waits on the timeline's `compacting` rather than treating
+ * this as done.
+ *
+ * An ack that carries no `operationId` is not a real acceptance — the host uses
+ * it to correlate the events that follow — and is rejected rather than reported
+ * as success.
+ */
+export async function compactRemoteConversation(
+  desktopId: string,
+  sessionId: string,
+): Promise<void> {
+  const ack = await requestRemotePeer<Record<string, unknown>>(
+    desktopId,
+    { type: "compact_context", sessionId },
+    sessionId,
+  );
+  const accepted = ack?.accepted === true
+    && typeof ack.operationId === "string"
+    && ack.operationId.length > 0;
+  if (!accepted)
+    throw new Error("remote_compaction_not_accepted");
+}
+
+/**
  * Run one command on one host. The lane is the session the command addresses
  * (`list` for catalogue reads) — the backend builds the subject, so no subject
  * string is ever assembled in the frontend.

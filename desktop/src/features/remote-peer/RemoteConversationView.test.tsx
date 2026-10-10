@@ -39,12 +39,15 @@ const peer = {
 };
 
 async function mount(props: {
+  compacting?: boolean;
   entries: SessionEntry[];
+  onCompact?: () => void;
   onFork?: (sourceEntryId: string, forkable: boolean) => void;
   persistedEntryIds?: string[];
   streaming?: boolean;
 }) {
   const onFork = props.onFork ?? vi.fn();
+  const onCompact = props.onCompact ?? vi.fn();
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -54,12 +57,14 @@ async function mount(props: {
         approvals={[]}
         approvalErrors={{}}
         approvalPending={null}
+        compacting={props.compacting ?? false}
         composer={<div data-testid="composer" />}
         entries={props.entries}
         error={null}
         hasMore={false}
         loading={false}
         loadingOlder={false}
+        onCompact={onCompact}
         onDecideApproval={() => {}}
         onFork={onFork}
         onLoadOlder={() => {}}
@@ -73,9 +78,12 @@ async function mount(props: {
   });
   return {
     container,
+    onCompact,
     // Revealed on hover in the product, but always mounted so it is reachable
     // by keyboard — which is also what makes it addressable here.
     forkButtons: () => [...container.querySelectorAll<HTMLButtonElement>("button[aria-label='Branch from here']")],
+    compactButton: () => [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(node => node.textContent === "Compact context"),
     unmount: async () => {
       await act(async () => root.unmount());
       container.remove();
@@ -184,9 +192,81 @@ it("offers fork per reply, not once for the conversation", async () => {
 });
 
 /**
- * The control fades in on hover but is never unmounted, so it stays reachable
- * without a pointer. Both halves of that are asserted: a control removed from
- * the tree on mouse-out is invisible to a keyboard user.
+ * Compact is offered on the conversation's header and gated by the host's own
+ * state: a host answering a prompt does not also compact, and a host compacting
+ * refuses a prompt.
+ */
+it("offers compact and reports the click", async () => {
+  const onCompact = vi.fn();
+  const view = await mount({
+    entries: [entry("u1", "user", "hello"), entry("a1", "assistant", "hi")],
+    onCompact,
+  });
+
+  const button = view.compactButton();
+  expect(button).toBeTruthy();
+  await act(async () => button!.click());
+  expect(onCompact).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
+it("replaces the compact action with progress while the host compacts", async () => {
+  const view = await mount({
+    compacting: true,
+    entries: [entry("u1", "user", "hello")],
+  });
+
+  expect(view.compactButton()).toBeUndefined();
+  expect(view.container.textContent).toContain("Compacting");
+  await view.unmount();
+});
+
+it("withholds compact while a run is in flight", async () => {
+  const view = await mount({
+    entries: [entry("u1", "user", "hello")],
+    streaming: true,
+  });
+
+  expect(view.compactButton()!.disabled).toBe(true);
+  await view.unmount();
+});
+
+/** Nothing to compact in an empty conversation. */
+it("withholds compact on a conversation with no entries", async () => {
+  const view = await mount({ entries: [] });
+
+  expect(view.compactButton()!.disabled).toBe(true);
+  await view.unmount();
+});
+
+/**
+ * The fork control on a conversation, and the two controls in the header, must
+ * not be confused with each other: they are different actions on different
+ * things.
+ */
+it("keeps compact separate from the per-reply fork", async () => {
+  const onCompact = vi.fn();
+  const onFork = vi.fn();
+  const view = await mount({
+    entries: [entry("u1", "user", "hello"), entry("a1", "assistant", "hi")],
+    onCompact,
+    onFork,
+  });
+
+  await act(async () => view.compactButton()!.click());
+  expect(onCompact).toHaveBeenCalledTimes(1);
+  expect(onFork).not.toHaveBeenCalled();
+
+  await act(async () => view.forkButtons()[0]!.click());
+  expect(onFork).toHaveBeenCalledWith("u1", true);
+  expect(onCompact).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
+/**
+ * The fork control fades in on hover but is never unmounted, so it stays
+ * reachable without a pointer. Both halves of that are asserted: a control
+ * removed from the tree on mouse-out is invisible to a keyboard user.
  */
 it("reveals the fork control on hover and keeps it mounted when not hovering", async () => {
   const view = await mount({
