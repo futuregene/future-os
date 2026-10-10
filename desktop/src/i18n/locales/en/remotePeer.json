@@ -119,5 +119,6 @@
   "skillsNoneInstalled": "Nothing installed on that computer yet.",
   "skillsWorking": "Working…",
   "skillsInstall": "Install",
-  "skillsRemove": "Remove"
+  "skillsRemove": "Remove",
+  "toolRan": "{{name}} ran"
 }

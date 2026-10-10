@@ -69,6 +69,7 @@ async function mount(props: {
         approvalErrors={{}}
         approvalPending={null}
         compacting={props.compacting ?? false}
+        desktopId="desktop_a"
         composer={<div data-testid="composer" />}
         entries={props.entries}
         error={null}
@@ -84,6 +85,7 @@ async function mount(props: {
         onRetry={() => {}}
         peer={peer}
         persistedEntryIds={new Set(props.persistedEntryIds ?? props.entries.map(item => item.id))}
+        sessionId="sess_1"
         streaming={props.streaming ?? false}
         title="Remote conversation"
       />,
