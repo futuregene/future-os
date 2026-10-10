@@ -592,6 +592,8 @@ export interface RemoteSkillInfo {
   nameZh?: string | null;
   descriptionZh?: string | null;
   version?: string | null;
+  /** The version a *catalogue* would install; only the installable list carries it. */
+  latestVersion?: string | null;
 }
 
 /** One skill that host could install. */

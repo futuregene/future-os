@@ -4,21 +4,25 @@ import type { FutureAuthState, ProvidersView } from "../../integrations/agent/pr
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { ContextTab } from "./ContextPanel";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
 import { saveComposerDraft } from "../../features/agent/composerDraft";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { sessionMentionOptions } from "../../features/agent/sessionMention";
+import { useSkillRecommendation } from "../../features/agent/useSkillRecommendation";
 import { peerBadgeText } from "../../features/remote-peer/peerIcons";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemoteFilesDialog } from "../../features/remote-peer/RemoteFilesDialog";
-import { compactRemoteConversation, continueRemoteRun, forkRemoteConversation } from "../../features/remote-peer/remotePeerClient";
+import { compactRemoteConversation, continueRemoteRun, forkRemoteConversation, installRemoteSkill } from "../../features/remote-peer/remotePeerClient";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
+import { remoteSkillRecoSource } from "../../features/remote-peer/remoteSkillRecoSource";
 import { useRemoteApprovals } from "../../features/remote-peer/useRemoteApprovals";
 import { useRemoteConversationSettings } from "../../features/remote-peer/useRemoteConversationSettings";
+import { useRemoteSkillCatalog } from "../../features/remote-peer/useRemoteSkillCatalog";
+import { useRemoteSkillRecommend } from "../../features/remote-peer/useRemoteSkillRecommend";
 import { useRemoteTimeline } from "../../features/remote-peer/useRemoteTimeline";
 import { startRemote, stopRemote } from "../../features/remote/remoteClient";
 import { RemoteHubView } from "../../features/remote/RemoteHubView";
@@ -671,6 +675,73 @@ function ReadyAppShell({
     activeRemote?.sessionId ?? null,
     activeRemote !== null && activeRemote.sessionId !== "",
   );
+
+  /**
+   * Skill recommendation for a remote conversation, from that host.
+   *
+   * The same hook this app's own composer uses, with the data pointed at the
+   * host and the catalogue read from there — so the trigger rules are the ones
+   * that were tuned, not a second set written for this path.
+   *
+   * `sessionStatus: "unavailable"` / `balance: null` is this hook's own way of
+   * saying "the account state is not knowable here": it is the paired
+   * computer's account that matters, this machine cannot read it, and the host
+   * answers "no recommendation" when its own account cannot produce one.
+   */
+  const remoteSkillRecommend = useRemoteSkillRecommend(activeRemote?.desktopId ?? "");
+  const remoteCatalog = useRemoteSkillCatalog(
+    activeRemote?.desktopId ?? "",
+    remoteSkillRecommend,
+  );
+  const remoteSkillSource = useMemo(
+    () => remoteSkillRecoSource(activeRemote?.desktopId ?? ""),
+    [activeRemote?.desktopId],
+  );
+  const remoteSkillReco = useSkillRecommendation({
+    balance: null,
+    catalog: remoteCatalog,
+    enabled: remoteSkillRecommend,
+    sessionStatus: "unavailable",
+    source: remoteSkillSource,
+  });
+  /**
+   * The card's install, on the machine the card is about.
+   *
+   * The recommender names a skill but never a version, so the version comes
+   * from that host's own catalogue — and a catalogue that does not publish one
+   * cannot be installed from here.
+   */
+  const installRecommended = useCallback((card: { name: string }) => {
+    const desktopId = activeRemote?.desktopId;
+    const version = desktopId
+      ? remoteCatalog.catalogue.find(entry => entry.id === card.name)?.version
+      : undefined;
+    if (!desktopId || !version)
+      return Promise.resolve(false);
+    return installRemoteSkill(desktopId, card.name, version)
+      .then(() => {
+        // The card was chosen from a candidate set that no longer exists once it
+        // is installed, so the catalogue is re-read.
+        remoteCatalog.reload();
+        return true;
+      })
+      .catch(() => {
+        // The card stays up and the draft is not sent: the message was written
+        // for a skill that is not there.
+        return false;
+      });
+  }, [activeRemote, remoteCatalog]);
+  const remoteSkillRecommendation = useMemo(() => ({
+    card: remoteSkillReco.state.recommendation,
+    onDismiss: remoteSkillReco.dismiss,
+    onEvaluate: remoteSkillReco.evaluate,
+    onInstall: installRecommended,
+  }), [
+    remoteSkillReco.state.recommendation,
+    remoteSkillReco.dismiss,
+    remoteSkillReco.evaluate,
+    installRecommended,
+  ]);
   const activeRemotePeer = activeRemote
     ? remotePeers.find(peer => peer.desktopId === activeRemote.desktopId)
     : undefined;
@@ -958,6 +1029,7 @@ function ReadyAppShell({
                                 }}
                                 peer={activeRemotePeer}
                                 sessionId={activeRemote.sessionId}
+                                skillRecommendation={remoteSkillRecommendation}
                                 streaming={remoteTimeline.streaming}
                               />
                             )}

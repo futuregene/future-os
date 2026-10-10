@@ -4,7 +4,7 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { ContextToolOption, MentionEditorHandle, SkillMentionOption } from "./MentionEditor";
 import type { SessionMentionOption } from "./sessionMention";
-import { Loader2, Paperclip, TriangleAlert, X } from "lucide-react";
+import { Paperclip, TriangleAlert, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { modelKey, modelOption } from "../../integrations/agent/agentClient";
@@ -18,6 +18,7 @@ import { ComposerControls } from "./composer/ComposerControls";
 import { useComposerAttachments } from "./composer/useComposerAttachments";
 import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "./composerDraft";
 import { MentionEditor } from "./MentionEditor";
+import { SkillRecommendCard } from "./SkillRecommendCard";
 
 export interface ComposerSendPayload {
   attachments: MessageAttachment[];
@@ -534,39 +535,13 @@ function ComposerImpl({
     >
       {skillRecommendation?.card
         ? (
-            <div className="mb-2 flex items-start gap-3 rounded-md border border-focus/40 bg-focus-soft px-3 py-2.5">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5 text-xs font-medium text-ink">
-                  <span className="text-focus">{t("composer.skillRecommend.cardTitle")}</span>
-                  <span className="font-mono text-ink">
-                    /
-                    {skillRecommendation.card.name}
-                  </span>
-                </div>
-                <p className="mt-0.5 line-clamp-2 text-xs text-ink-muted">
-                  {skillRecommendation.card.description}
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-1.5">
-                <button
-                  className="inline-flex items-center gap-1 rounded-md bg-focus px-2.5 py-1 text-xs font-medium text-on-accent transition hover:opacity-90 disabled:opacity-60"
-                  type="button"
-                  disabled={installingSkill}
-                  onClick={() => void installRecommendedSkill()}
-                >
-                  {installingSkill ? <Loader2 className="size-3 animate-spin" /> : null}
-                  {t("composer.skillRecommend.installAndUse")}
-                </button>
-                <button
-                  className="rounded-md border border-line px-2.5 py-1 text-xs text-ink-muted transition hover:bg-surface-raised disabled:opacity-60"
-                  type="button"
-                  disabled={installingSkill}
-                  onClick={dismissRecommendedSkill}
-                >
-                  {t("composer.skillRecommend.dismissAndSend")}
-                </button>
-              </div>
-            </div>
+            <SkillRecommendCard
+              description={skillRecommendation.card.description}
+              installing={installingSkill}
+              name={skillRecommendation.card.name}
+              onDismiss={dismissRecommendedSkill}
+              onInstall={() => void installRecommendedSkill()}
+            />
           )
         : null}
       {drawOwnHighlight && dragState === "reject"
