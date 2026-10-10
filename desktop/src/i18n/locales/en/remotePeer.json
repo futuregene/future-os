@@ -136,5 +136,8 @@
     "sandbox": "Commands run in that computer's sandbox and ask for approval when needed.",
     "auto": "Automatically reviews actions with sandbox protection.",
     "off": "No prompts, no sandbox — everything runs."
-  }
+  },
+  "tasksManage": "Manage",
+  "tasksRunGone": "That run's conversation is no longer there.",
+  "tasksOnHost": "Tasks on {{name}}"
 }

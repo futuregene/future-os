@@ -76,11 +76,13 @@ function answerHost(overrides: Partial<Record<string, unknown>> = {}): void {
 
 async function mount(props: {
   onChanged?: () => void;
+  onOpenTasks?: () => void;
   onUnpair?: () => void;
   onUpdateLabel?: (patch: { name?: string; icon?: string }) => void;
   peer?: RemotePeer;
 } = {}) {
   const onChanged = props.onChanged ?? vi.fn();
+  const onOpenTasks = props.onOpenTasks ?? vi.fn();
   const onUnpair = props.onUnpair ?? vi.fn();
   const onUpdateLabel = props.onUpdateLabel ?? vi.fn();
   const container = document.createElement("div");
@@ -91,6 +93,7 @@ async function mount(props: {
       <RemotePeerSettings
         onBack={vi.fn()}
         onChanged={onChanged}
+        onOpenTasks={onOpenTasks}
         onUnpair={onUnpair}
         onUpdateLabel={onUpdateLabel}
         peer={props.peer ?? peer()}
@@ -101,6 +104,7 @@ async function mount(props: {
   return {
     container,
     onChanged,
+    onOpenTasks,
     onUnpair,
     onUpdateLabel,
     input: () => container.querySelector<HTMLInputElement>("input")!,
@@ -133,11 +137,40 @@ it("reads the host's own settings and counts", async () => {
 
   expect(request).toHaveBeenCalledWith("desktop_a", { type: "get_desktop_settings" }, "list");
   expect(request).toHaveBeenCalledWith("desktop_a", { type: "list_settings_models" }, "list");
-  expect(request).toHaveBeenCalledWith("desktop_a", { type: "list_tasks" }, "list");
+  expect(request).toHaveBeenCalledWith("desktop_a", { type: "list_providers" }, "list");
+  // Tasks are not counted here: the page that manages them reads them itself,
+  // and a count read on this page would be a second, staler answer.
+  expect(request).not.toHaveBeenCalledWith("desktop_a", { type: "list_tasks" }, "list");
 
-  // Two models, one provider, three tasks — as the host reported them.
+  // Two models, one provider — as the host reported them.
   expect(view.text()).toContain("2");
-  expect(view.text()).toContain("3");
+  await view.unmount();
+});
+
+/**
+ * Tasks are managed in place rather than counted.
+ *
+ * The count was a dead end: it named a number the user could do nothing about,
+ * on a page that already knows how to reach the machine.
+ */
+it("opens that host's tasks from the host-content section", async () => {
+  const view = await mount({ peer: peer({ connected: true }) });
+  const manage = [...view.container.querySelectorAll("button")]
+    .find(node => node.textContent === "Manage")!;
+
+  await act(async () => manage.click());
+
+  expect(view.onOpenTasks).toHaveBeenCalled();
+  await view.unmount();
+});
+
+/** An unreachable host cannot be asked for its tasks, so the entry is closed. */
+it("refuses to open tasks while the host is offline", async () => {
+  const view = await mount({ peer: peer({ connected: false }) });
+  const manage = [...view.container.querySelectorAll("button")]
+    .find(node => node.textContent === "Manage")!;
+
+  expect(manage.disabled).toBe(true);
   await view.unmount();
 });
 

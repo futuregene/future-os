@@ -35,6 +35,7 @@ vi.mock("./RemotePeerSettings", () => ({
   RemotePeerSettings: (props: {
     onBack: () => void;
     onChanged: () => void;
+    onOpenTasks: () => void;
     onUnpair: () => void;
     onUpdateLabel: (patch: Record<string, unknown>) => void;
   }) => (
@@ -45,6 +46,7 @@ vi.mock("./RemotePeerSettings", () => ({
           this section owns only appears from there. */}
       <button onClick={props.onUnpair} type="button">settings-unpair</button>
       <button onClick={props.onChanged} type="button">settings-changed</button>
+      <button onClick={props.onOpenTasks} type="button">settings-tasks</button>
     </div>
   ),
 }));
@@ -75,13 +77,14 @@ function peer(overrides: Partial<RemotePeer> = {}): RemotePeer {
 }
 
 async function mount() {
+  const onOpenTasks = vi.fn();
   const onStartConversation = vi.fn();
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <RemoteClientSection onStartConversation={onStartConversation} />,
+      <RemoteClientSection onOpenTasks={onOpenTasks} onStartConversation={onStartConversation} />,
     );
   });
   await act(async () => {
@@ -90,6 +93,7 @@ async function mount() {
   return {
     container,
     input: () => container.querySelector<HTMLInputElement>("input")!,
+    onOpenTasks,
     onStartConversation,
     button: (label: string) => [...container.querySelectorAll("button")]
       .find(node => node.textContent === label),
@@ -145,6 +149,20 @@ it("offers a new conversation on a reachable host, and names it", async () => {
 
   await act(async () => view.button("New conversation")!.click());
   expect(view.onStartConversation).toHaveBeenCalledWith("desktop_a");
+  await view.unmount();
+});
+
+/**
+ * A host's tasks are opened from that host's settings page, and the section
+ * passes the peer it is showing rather than the one the caller happens to hold.
+ */
+it("opens the settings page's own host's tasks", async () => {
+  const view = await mount();
+  await act(async () => view.button("Settings")!.click());
+
+  await act(async () => view.button("settings-tasks")!.click());
+
+  expect(view.onOpenTasks).toHaveBeenCalledWith(expect.objectContaining({ desktopId: "desktop_a" }));
   await view.unmount();
 });
 

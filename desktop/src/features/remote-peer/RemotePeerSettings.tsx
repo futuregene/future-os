@@ -28,12 +28,15 @@ import { RemoteSkillsPanel } from "./RemoteSkillsPanel";
 export function RemotePeerSettings({
   onBack,
   onChanged,
+  onOpenTasks,
   onUnpair,
   onUpdateLabel,
   peer,
 }: {
   onBack: () => void;
   onChanged: () => void;
+  /** Open that host's tasks: the editor needs the whole column. */
+  onOpenTasks: () => void;
   onUnpair: () => void;
   onUpdateLabel: (patch: { name?: string; icon?: string }) => void;
   peer: RemotePeer;
@@ -43,7 +46,6 @@ export function RemotePeerSettings({
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
   const [models, setModels] = useState<string[]>([]);
   const [providers, setProviders] = useState<string[]>([]);
-  const [tasks, setTasks] = useState<string[]>([]);
   const [approval, setApproval] = useState<{ approvalTier: string; sandboxAvailable: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +63,6 @@ export function RemotePeerSettings({
         requestRemotePeer<Record<string, unknown>>(peer.desktopId, { type: "get_desktop_settings" }, "list"),
         readList(peer.desktopId, { type: "list_settings_models" }, "models"),
         readList(peer.desktopId, { type: "list_providers" }, "providers"),
-        readList(peer.desktopId, { type: "list_tasks" }, "tasks"),
         supportsApprovalTier
           ? getRemoteApprovalSettings(peer.desktopId)
           : Promise.resolve(null),
@@ -69,8 +70,7 @@ export function RemotePeerSettings({
       setSettings(values[0]);
       setModels(values[1]);
       setProviders(values[2]);
-      setTasks(values[3]);
-      setApproval(values[4]);
+      setApproval(values[3]);
     }
     catch (err) {
       // One machine's settings page can fail as a whole (the host went away);
@@ -256,7 +256,9 @@ export function RemotePeerSettings({
             <span className="text-xs text-ink-muted">{providers.length}</span>
           </SettingsRow>
           <SettingsRow description={t("tasksHint")} title={t("tasks")}>
-            <span className="text-xs text-ink-muted">{tasks.length}</span>
+            <Button disabled={!available} onClick={onOpenTasks} size="sm" variant="ghost">
+              {t("tasksManage")}
+            </Button>
           </SettingsRow>
         </SettingsList>
       </SettingsSection>

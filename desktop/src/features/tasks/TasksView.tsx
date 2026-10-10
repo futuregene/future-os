@@ -1,4 +1,5 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
+import type { TaskBackend } from "./taskBackend";
 import type { TaskDepView, TaskInput, TaskView } from "./useTasks";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, ChevronLeft, ChevronRight, FolderOpen, Play, Plus, RotateCcw, Trash2 } from "lucide-react";
@@ -205,11 +206,17 @@ function summarizeTrigger(
 
 /** Left-nav "Tasks" panel: list, edit, runs, revisions. */
 export function TasksView({
+  backend,
   leftPanelExpanded,
   modelOptions,
   onToggleLeftPanel,
   onOpenThread,
 }: {
+  /**
+   * Which machine's tasks these are. Defaults to this app's own store, so the
+   * local panel and this one are the same screen.
+   */
+  backend?: TaskBackend;
   leftPanelExpanded: boolean;
   /** Models the user has enabled (Settings → Models), the same list the composer offers. */
   modelOptions: AgentModelOption[];
@@ -218,7 +225,7 @@ export function TasksView({
 }) {
   const { t, i18n } = useTranslation("tasks");
   const locale = i18n.language;
-  const store = useTasks();
+  const store = useTasks(backend);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Draft>({ ...emptyDraft });

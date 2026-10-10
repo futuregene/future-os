@@ -40,6 +40,17 @@ vi.mock("../remote-peer/RemotePeersView", async () => {
     },
   };
 });
+vi.mock("../remote-peer/RemoteTasksView", async () => {
+  const { createElement } = await import("react");
+  return {
+    RemoteTasksView: (props: { onBack: () => void; peer: { desktopId: string } }) =>
+      createElement(
+        "div",
+        { "data-child": "tasks-view", "data-peer": props.peer.desktopId },
+        createElement("button", { "data-back": "1", "onClick": props.onBack }),
+      ),
+  };
+});
 
 const startWindowDrag = vi.fn();
 vi.mock("../../lib/windowDrag", () => ({
@@ -75,6 +86,7 @@ async function mount(overrides: Partial<Parameters<typeof RemoteHubView>[0]> = {
     autoConnect: false,
     leftPanelExpanded: true,
     onRefreshRemote: vi.fn(async () => {}),
+    onOpenRemoteSession: vi.fn(),
     onStartConversation: vi.fn(),
     onToggleAutoConnect: vi.fn(),
     onToggleLeftPanel: vi.fn(),
@@ -183,4 +195,28 @@ it("carries the page shell: the title and the window drag", async () => {
     container.querySelector("header")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
   });
   expect(startWindowDrag).toHaveBeenCalledTimes(1);
+});
+
+/**
+ * A host's tasks take the whole column.
+ *
+ * They are a list and a detail side by side, and this page's own content sits in
+ * a narrow scrolling pane — so the editor replaces the page rather than being
+ * nested inside it, and the back control returns to the page it came from.
+ */
+it("hands the whole column to a host's tasks, and gives it back", async () => {
+  await mount();
+
+  await act(async () => {
+    (sections.client as { onOpenTasks: (peer: { desktopId: string }) => void })
+      .onOpenTasks({ desktopId: "desk_a" });
+  });
+  expect(container.querySelector("[data-child='tasks-view']")!.getAttribute("data-peer")).toBe("desk_a");
+  // The page's own sections are gone while the editor is open.
+  expect(container.querySelector("[data-child='client-section']")).toBeNull();
+
+  await act(async () => {
+    container.querySelector<HTMLButtonElement>("[data-back='1']")!.click();
+  });
+  expect(container.querySelector("[data-child='client-section']")).not.toBeNull();
 });

@@ -1,9 +1,12 @@
 import type { ReactNode } from "react";
+import type { RemotePeer } from "../remote-peer/remotePeerClient";
 import type { RemoteStatus } from "../remote/remoteClient";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { RemoteClientSection } from "../remote-peer/RemotePeersView";
+import { RemoteTasksView } from "../remote-peer/RemoteTasksView";
 import { RemoteHostSection } from "../remote/RemoteView";
 
 /**
@@ -28,6 +31,7 @@ import { RemoteHostSection } from "../remote/RemoteView";
 export function RemoteHubView({
   autoConnect,
   leftPanelExpanded,
+  onOpenRemoteSession,
   onStartConversation,
   onToggleAutoConnect,
   onToggleLeftPanel,
@@ -37,6 +41,8 @@ export function RemoteHubView({
   /** This machine's auto-connect preference for its paired devices. */
   autoConnect: boolean;
   leftPanelExpanded: boolean;
+  /** Open one of a paired computer's conversations by its session id. */
+  onOpenRemoteSession: (desktopId: string, sessionId: string) => void;
   /** Open a new conversation on a paired computer; owned by the shell. */
   onStartConversation: (desktopId: string) => void;
   onToggleAutoConnect: (value: boolean) => void;
@@ -47,6 +53,26 @@ export function RemoteHubView({
   const { t } = useTranslation("remoteHub");
   const { t: tRemote } = useTranslation("remote");
   const { t: tPeer } = useTranslation("remotePeer");
+  /**
+   * The host whose tasks are open, if any.
+   *
+   * Held here rather than inside the client section because the task editor
+   * needs the whole column — it is a list and a detail side by side, and the
+   * section lives in a narrow scrolling pane.
+   */
+  const [tasksPeer, setTasksPeer] = useState<RemotePeer | null>(null);
+
+  if (tasksPeer) {
+    return (
+      <RemoteTasksView
+        leftPanelExpanded={leftPanelExpanded}
+        onBack={() => setTasksPeer(null)}
+        onOpenSession={onOpenRemoteSession}
+        onToggleLeftPanel={onToggleLeftPanel}
+        peer={tasksPeer}
+      />
+    );
+  }
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
@@ -82,7 +108,7 @@ export function RemoteHubView({
             testId="remote-hub-client"
             title={t("clientTitle")}
           >
-            <RemoteClientSection onStartConversation={onStartConversation} />
+            <RemoteClientSection onOpenTasks={setTasksPeer} onStartConversation={onStartConversation} />
           </Direction>
         </div>
       </div>

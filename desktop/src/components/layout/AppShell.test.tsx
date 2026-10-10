@@ -1523,6 +1523,26 @@ describe("app shell collapsed-panel affordances", () => {
     });
 
     /**
+     * A task run names its conversation by ids rather than by a row, and the
+     * shell is what turns either into "the conversation you are looking at".
+     */
+    it("opens a remote conversation from the ids a task run gave", () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onManageDesktops?.());
+      const hub = children.remoteHub as {
+        onOpenRemoteSession: (desktopId: string, sessionId: string) => void;
+      };
+
+      act(() => hub.onOpenRemoteSession("desktop_a", "sess_task"));
+
+      // The same destination as opening a row: the chat column, on that
+      // conversation, addressed to the host it belongs to.
+      expect(children.remoteConversationView).not.toBeNull();
+      expect(composer().sessionId).toBe("sess_task");
+      view.unmount();
+    });
+
+    /**
      * A draft is addressed with an empty session id — the host's own signal to
      * create the conversation. The shell must *adopt* the ids in the ack, or the
      * next prompt would create a second conversation.
