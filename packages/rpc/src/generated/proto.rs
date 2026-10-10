@@ -73,6 +73,10 @@ pub struct RpcCommand {
     /// caller can tell that older sessions were left unsearched.
     #[prost(int64, optional, tag = "147")]
     pub max_sessions: ::core::option::Option<i64>,
+    /// delete_sessions: 1..32 distinct session IDs, with per-session outcomes.
+    /// The single-session delete_session command remains supported.
+    #[prost(string, repeated, tag = "148")]
+    pub session_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
     /// Session name (set by /name command).  Used with set_session_name, and
     /// accepted by new_session as the initial human-readable session title.
     #[prost(string, tag = "93")]

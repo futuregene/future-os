@@ -788,3 +788,20 @@ Agent 与 Desktop/Mobile/TUI/CLI 同步发布，不支持新旧 RPC 混搭。现
 Agent 当前 `application_id` 为 `0x46555452`，`user_version=4` 只是本库 schema 标识，不是 RPC 版本，也不代表存在需要支持的已发布 v1。`user_version` 2 和 3 是更早的布局；2 只在列形状与当前一致时才被接受，否则启动即拒绝（`agent/src/session/database.rs:285-319`）。开发布局不保留升级链，未知库/不支持布局明确拒绝，绝不自动重建。正式发布后必须维护 schema 迁移；Desktop 已发布的 migrations 继续遵守 §1 的不可修改边界。
 
 旧 JSONL 仅由一次性导入器读取、原文件保留；损坏会话隔离跳过，全局存储错误阻止启动。运维、隐私及备份边界见 [SQLite 迁移](../../architecture/sqlite-migration.zh-CN.md)。
+
+### 会话批量删除与索引
+
+`delete_session` 保留单会话响应；`delete_sessions` 接收 1..32 个不同的
+`session_ids`，逐会话返回 `sessionId/deleted/error/errorCode/errorData`。忙碌会话
+继续保留重试意图；可删除会话及导入墓碑在 Agent 同一事务中提交，提交后才移除内存
+会话、发布删除事件，每批统一执行一次有页数预算的空间回收。Desktop 复用客户端
+分批发送 outbox，验证完整响应后统一提交确认和重试错误；并发队列处理合并。
+本地会话树删除使用有界事务，每个选中会话树通过保存点隔离失败。
+
+`v1.2.3-session-delete-indexes` 在新库和旧库上都于所需列存在后执行，事务化、
+幂等地增加 `review_snapshots(thread_id)`、`artifacts(run_id)`、
+`artifacts(thread_id)`、`approval_assessments(approval_request_id)`、
+`threads(parent_session_id)`、有效会话表达式
+`COALESCE(NULLIF(TRIM(agent_session_id), ''), id)` 和
+`agent_delete_outbox(requested_at, session_id)` 的索引。归属查询使用索引化
+`EXISTS` 判断其他线程是否仍引用会话，保留空白字符和线程 ID 回退语义。

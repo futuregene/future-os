@@ -108,6 +108,7 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         "new_session" => return session_lifecycle::cmd_new_session(state, &cmd, id),
         "switch_session" => return session_lifecycle::cmd_switch_session(state, &cmd, id),
         "delete_session" => return session_lifecycle::cmd_delete_session(state, &cmd, id),
+        "delete_sessions" => return session_lifecycle::cmd_delete_sessions(state, &cmd, id),
         "get_fork_messages" => return session_lifecycle::cmd_get_fork_messages(state, &cmd, id),
         "get_commands" => return session_lifecycle::cmd_get_commands(id),
         "list_installed_skills"

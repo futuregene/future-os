@@ -571,8 +571,14 @@ impl Manager {
     }
 
     pub fn delete(&self, id: &str) -> Result<()> {
-        self.storage()?.delete(id)?;
-        self.invalidate_display_entries(id);
+        self.delete_many(&[id.to_owned()])
+    }
+
+    pub(crate) fn delete_many(&self, ids: &[String]) -> Result<()> {
+        self.storage()?.delete_many(ids.to_vec())?;
+        for id in ids {
+            self.invalidate_display_entries(id);
+        }
         Ok(())
     }
 }

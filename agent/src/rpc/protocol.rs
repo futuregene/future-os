@@ -62,6 +62,8 @@ pub struct RpcCommand {
     #[serde(default)]
     pub session_id: String,
     #[serde(default)]
+    pub session_ids: Vec<String>,
+    #[serde(default)]
     pub entry_id: String,
     #[serde(default)]
     pub tool_call_id: Option<String>,
