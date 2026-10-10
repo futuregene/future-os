@@ -46,6 +46,7 @@ const children = vi.hoisted(() => ({
   agentThread: null as unknown,
   appShellDialogs: null as unknown,
   contextPanel: null as unknown,
+  conversationSettings: null as unknown,
   filesDialog: null as unknown,
   newConversation: null as unknown,
   onboardingGate: null as unknown,
@@ -125,6 +126,16 @@ vi.mock("../../features/remote-peer/RemoteComposer", async () => {
     RemoteComposer: (props: unknown) => {
       children.remoteComposer = props;
       return createElement("div", { "data-child": "remote-composer" });
+    },
+  };
+});
+vi.mock("../../features/remote-peer/RemoteConversationSettings", async () => {
+  const { createElement } = await import("react");
+  return {
+    // Stubbed so the shell's wiring, not the picker, is what this file measures.
+    RemoteConversationSettings: (props: unknown) => {
+      children.conversationSettings = props;
+      return createElement("div", { "data-child": "remote-settings" });
     },
   };
 });
@@ -1777,6 +1788,34 @@ describe("app shell collapsed-panel affordances", () => {
       act(() => (children.remoteConversationView as { onOpenFiles: () => void }).onOpenFiles());
 
       expect(view.container.querySelector("[data-child='remote-files']")).toBeNull();
+      view.unmount();
+    });
+
+    /**
+     * A conversation's settings control is given the *open conversation's*
+     * settings: a picker wired to another one would change a conversation the
+     * user is not looking at.
+     */
+    it("hands a settings control to the open conversation's transcript", () => {
+      const view = mount(<AppShell />);
+      expect(children.remoteConversationView).toBeNull();
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+
+      // The transcript renders it in its header; what the shell owns is that it
+      // is given one for the conversation that is open.
+      const props = children.remoteConversationView as { settings?: unknown };
+      expect(props.settings).not.toBeNull();
+      expect(props.settings).toBeDefined();
+      view.unmount();
+    });
+
+    /** A draft has no conversation on the host, so it has no settings to change. */
+    it("offers no settings for a conversation that does not exist yet", () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onManageDesktops?.());
+      act(() => (children.remoteHub as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
+
+      expect(children.conversationSettings).toBeNull();
       view.unmount();
     });
 

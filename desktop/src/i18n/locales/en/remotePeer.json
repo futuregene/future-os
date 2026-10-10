@@ -103,5 +103,14 @@
   "filesSaved": "Saved as {{name}}",
   "attach": "Attach",
   "attaching": "Uploading…",
-  "removeAttachment": "Remove {{name}}"
+  "removeAttachment": "Remove {{name}}",
+  "modelLabel": "Model for this conversation (on that computer)",
+  "thinkingLevelLabel": "Thinking level (on that computer)",
+  "thinkingLevel.off": "Off",
+  "thinkingLevel.minimal": "Minimal",
+  "thinkingLevel.low": "Low",
+  "thinkingLevel.medium": "Medium",
+  "thinkingLevel.high": "High",
+  "thinkingLevel.xhigh": "Extra high",
+  "settingsSaveFailed": "Could not change it: {{message}}"
 }

@@ -22,10 +22,16 @@ const {
   downloadRemoteFile,
   fetchRemoteSessions,
   forkRemoteConversation,
+  getRemoteConversationSettings,
+  listRemoteModels,
   listRemoteSessionFiles,
   pinRemoteConversation,
   promptRemoteConversation,
+  remoteModelProvider,
+  remoteModelReference,
   renameRemoteConversation,
+  setRemoteConversationModel,
+  setRemoteConversationThinkingLevel,
   uploadRemoteFile,
 } = await import("./remotePeerClient");
 
@@ -503,5 +509,141 @@ describe("uploadRemoteFile", () => {
     await expect(uploadRemoteFile({ desktopId: "desktop_a", path: "/local/big.bin" }))
       .rejects
       .toThrow("10 MiB");
+  });
+});
+
+describe("remote model references", () => {
+  /**
+   * A catalogue id is provider-local, even when it contains a slash — there are
+   * models whose id *is* `openrouter/auto`. Inferring the provider from the id
+   * would then read that id as provider `openrouter`, model `auto`, and select a
+   * different model than the one the user picked.
+   */
+  it("prefixes the provider rather than reading one out of the id", () => {
+    expect(remoteModelReference({ id: "gpt-5", provider: "openai" })).toBe("openai/gpt-5");
+    expect(remoteModelReference({ id: "auto", provider: "openrouter" })).toBe("openrouter/auto");
+    expect(remoteModelProvider("openrouter/auto")).toBe("openrouter");
+
+    // An id that itself starts with a provider name keeps its directory: the
+    // reference is the prefix plus the whole id.
+    expect(remoteModelReference({ id: "openrouter/auto", provider: "future" })).toBe("future/openrouter/auto");
+    // And a slash inside with no provider is still just the id.
+    expect(remoteModelReference({ id: "vendor/model" })).toBe("vendor/model");
+  });
+
+  it("has no provider for a bare id", () => {
+    expect(remoteModelProvider("gpt-5")).toBeUndefined();
+    // A leading slash is not a provider: there is nothing before it.
+    expect(remoteModelProvider("/gpt-5")).toBeUndefined();
+  });
+});
+
+describe("listRemoteModels", () => {
+  it("asks on the catalogue lane and keeps the rows a picker can use", async () => {
+    invokeMock.mockResolvedValue({
+      models: [
+        { id: "gpt-5", label: "GPT-5", provider: "openai", isDefault: true },
+        { id: "auto", provider: "openrouter" },
+      ],
+    });
+
+    const models = await listRemoteModels("desktop_a");
+
+    expect(lastCall().args).toEqual({ desktopId: "desktop_a", command: { type: "list_models" }, lane: "list" });
+    expect(models).toEqual([
+      { id: "gpt-5", label: "GPT-5", provider: "openai", isDefault: true },
+      { id: "auto", provider: "openrouter" },
+    ]);
+  });
+
+  it("drops rows that name no model and tolerates a malformed payload", async () => {
+    invokeMock.mockResolvedValue({ models: [null, "nope", { label: "orphan" }, { id: "" }, { id: "ok" }] });
+    expect(await listRemoteModels("desktop_a")).toEqual([{ id: "ok" }]);
+
+    invokeMock.mockResolvedValue({});
+    expect(await listRemoteModels("desktop_a")).toEqual([]);
+
+    invokeMock.mockResolvedValue(null);
+    expect(await listRemoteModels("desktop_a")).toEqual([]);
+  });
+});
+
+describe("conversation settings", () => {
+  it("reads the model and thinking level on the conversation's lane", async () => {
+    invokeMock.mockResolvedValue({ model: "openai/gpt-5", thinkingLevel: "medium" });
+
+    expect(await getRemoteConversationSettings("desktop_a", "sess_1")).toEqual({
+      model: "openai/gpt-5",
+      thinkingLevel: "medium",
+    });
+    expect(lastCall().args).toEqual({
+      desktopId: "desktop_a",
+      command: { type: "get_state", sessionId: "sess_1" },
+      lane: "sess_1",
+    });
+  });
+
+  /** A host that omits them is "did not say", not an empty model. */
+  it("reads an omitted setting as null", async () => {
+    invokeMock.mockResolvedValue({});
+    expect(await getRemoteConversationSettings("desktop_a", "sess_1")).toEqual({
+      model: null,
+      thinkingLevel: null,
+    });
+
+    invokeMock.mockResolvedValue({ model: "", thinkingLevel: 7 });
+    expect(await getRemoteConversationSettings("desktop_a", "sess_1")).toEqual({
+      model: null,
+      thinkingLevel: null,
+    });
+  });
+});
+
+describe("setting a remote conversation's model", () => {
+  it("sends the reference and its provider, on the conversation's lane", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    await setRemoteConversationModel("desktop_a", "sess_1", "openrouter/auto");
+
+    expect(lastCall().args).toEqual({
+      desktopId: "desktop_a",
+      command: {
+        type: "set_model",
+        sessionId: "sess_1",
+        modelId: "openrouter/auto",
+        providerId: "openrouter",
+      },
+      lane: "sess_1",
+    });
+  });
+
+  /** A bare id has no provider to send, so the field is left out rather than empty. */
+  it("omits the provider for a bare id", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    await setRemoteConversationModel("desktop_a", "sess_1", "gpt-5");
+
+    const { command } = lastCall().args as { command: Record<string, unknown> };
+    expect(command.modelId).toBe("gpt-5");
+    expect(command).not.toHaveProperty("providerId");
+  });
+
+  it("sends a thinking-level change", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    await setRemoteConversationThinkingLevel("desktop_a", "sess_1", "xhigh");
+
+    expect(lastCall().args).toEqual({
+      desktopId: "desktop_a",
+      command: { type: "set_thinking_level", sessionId: "sess_1", level: "xhigh" },
+      lane: "sess_1",
+    });
+  });
+
+  it("propagates a refused change", async () => {
+    invokeMock.mockRejectedValue(new Error("model_not_available"));
+    await expect(setRemoteConversationModel("desktop_a", "sess_1", "openai/gpt-5"))
+      .rejects
+      .toThrow("model_not_available");
   });
 });

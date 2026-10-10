@@ -12,11 +12,13 @@ import { NewConversation } from "../../features/agent/NewConversation";
 import { sessionMentionOptions } from "../../features/agent/sessionMention";
 import { peerBadgeText } from "../../features/remote-peer/peerIcons";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
+import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemoteFilesDialog } from "../../features/remote-peer/RemoteFilesDialog";
 import { compactRemoteConversation, forkRemoteConversation } from "../../features/remote-peer/remotePeerClient";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { useRemoteApprovals } from "../../features/remote-peer/useRemoteApprovals";
+import { useRemoteConversationSettings } from "../../features/remote-peer/useRemoteConversationSettings";
 import { useRemoteTimeline } from "../../features/remote-peer/useRemoteTimeline";
 import { startRemote, stopRemote } from "../../features/remote/remoteClient";
 import { RemoteHubView } from "../../features/remote/RemoteHubView";
@@ -663,6 +665,12 @@ function ReadyAppShell({
     activeRemote?.desktopId ?? null,
     activeRemote?.sessionId ?? null,
   );
+  // The conversation's model and thinking level, which the *host* owns.
+  const remoteSettings = useRemoteConversationSettings(
+    activeRemote?.desktopId ?? null,
+    activeRemote?.sessionId ?? null,
+    activeRemote !== null && activeRemote.sessionId !== "",
+  );
   const activeRemotePeer = activeRemote
     ? remotePeers.find(peer => peer.desktopId === activeRemote.desktopId)
     : undefined;
@@ -938,6 +946,7 @@ function ReadyAppShell({
                             onRetry={() => void remoteTimeline.refresh()}
                             peer={activeRemotePeer}
                             persistedEntryIds={remoteTimeline.persistedEntryIds}
+                            settings={(<RemoteConversationSettings settings={remoteSettings} />)}
                             streaming={remoteTimeline.streaming}
                             compacting={remoteTimeline.compacting}
                             title={titleOfRemote(remoteCatalogs, activeRemote)}

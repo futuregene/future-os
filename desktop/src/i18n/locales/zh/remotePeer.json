@@ -103,5 +103,14 @@
   "filesSaved": "已保存为 {{name}}",
   "attach": "添加附件",
   "attaching": "上传中…",
-  "removeAttachment": "移除 {{name}}"
+  "removeAttachment": "移除 {{name}}",
+  "modelLabel": "该会话使用的模型（在那台电脑上）",
+  "thinkingLevelLabel": "思考等级（在那台电脑上）",
+  "thinkingLevel.off": "关闭",
+  "thinkingLevel.minimal": "极少",
+  "thinkingLevel.low": "低",
+  "thinkingLevel.medium": "中",
+  "thinkingLevel.high": "高",
+  "thinkingLevel.xhigh": "极高",
+  "settingsSaveFailed": "未能修改：{{message}}"
 }
