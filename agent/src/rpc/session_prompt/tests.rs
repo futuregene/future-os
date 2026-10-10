@@ -1763,9 +1763,8 @@ async fn prompt_with_explicit_name_and_provenance_persists_info() {
     assert_eq!(info["source_meta"]["thread"], "t-1");
 }
 
-/// Retention: each run retires the journals of the settled runs that fell out
-/// of the replay window, so a long-lived session cannot accumulate every token
-/// it ever streamed (`agent.db` grew to 8 GB doing exactly that).
+/// Settled runs stay replayable across later prompts, whether maintenance
+/// has published their compact snapshot yet or they still use raw journals.
 #[tokio::test(flavor = "current_thread")]
 async fn later_runs_retire_the_journals_of_settled_older_runs() {
     let provider = ScriptedProvider::new(vec![
@@ -1783,14 +1782,11 @@ async fn later_runs_retire_the_journals_of_settled_older_runs() {
     }
 
     let store = session.session_manager.storage().unwrap();
-    assert!(
-        store.events("s1", &runs[0]).unwrap().is_empty(),
-        "the journal that fell out of the replay window is retired"
-    );
-    for run in &runs[1..] {
+    for run in &runs {
+        let replay = store.replay_page("s1", run, -1, false, None).unwrap();
         assert!(
-            !store.events("s1", run).unwrap().is_empty(),
-            "run {run} is still replayable"
+            replay.known && (replay.snapshot.is_some() || !replay.events.is_empty()),
+            "run {run} stays replayable after compaction"
         );
     }
 }

@@ -4,13 +4,9 @@
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::Connection;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
-
-/// A database is worth a full rewrite when more than a quarter of it is free
-/// pages and that is at least this many bytes (over this, incremental
-/// reclamation would take tens of seconds).
-const COMPACT_MIN_FREE_BYTES: i64 = 64 * 1024 * 1024;
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send>;
 
@@ -20,6 +16,7 @@ pub(crate) struct Database {
 }
 
 struct Worker {
+    reclaim_requested: Arc<AtomicBool>,
     sender: Option<mpsc::SyncSender<Job>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -81,98 +78,22 @@ pub(crate) fn begin_immediate(connection: &Connection) -> Result<rusqlite::Trans
     }
 }
 
-/// Deleting a session (or pruning a run) frees pages, and without incremental
-/// auto-vacuum those pages stay in the file forever: `agent.db` had reached
-/// 7.4 GB holding 1.5 GB of live rows, 79% of it free pages, which is also what
-/// makes writes slow enough to lose the write-lock race above.
-///
-/// `auto_vacuum` only takes effect after a `VACUUM`, so the migration runs once
-/// per database. It is deliberately not fatal: a machine without room to
-/// rewrite the file keeps working exactly as before and retries next start.
-fn ensure_incremental_auto_vacuum(connection: &Connection) {
-    const INCREMENTAL: i64 = 2;
-    let mode: i64 = match connection.pragma_query_value(None, "auto_vacuum", |row| row.get(0)) {
-        Ok(mode) => mode,
-        Err(error) => {
-            tracing::warn!(%error, "could not read auto_vacuum");
-            return;
-        }
-    };
-    if mode == INCREMENTAL {
-        return;
+/// Enable incremental reclamation only when no existing data needs rewriting.
+/// Existing NONE-mode databases keep freed pages available for SQLite reuse;
+/// startup never performs a full VACUUM or changes their storage layout.
+fn configure_incremental_auto_vacuum(connection: &Connection) -> Result<()> {
+    let mode: i64 = connection.pragma_query_value(None, "auto_vacuum", |row| row.get(0))?;
+    let empty: bool = connection.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%')",
+        [],
+        |row| row.get(0),
+    )?;
+    // FULL and INCREMENTAL share the pointer-map layout. Switching between
+    // them needs no rebuild; a NONE-mode populated database is left alone.
+    if empty || mode == 1 {
+        connection.pragma_update(None, "auto_vacuum", 2)?;
     }
-    let started = std::time::Instant::now();
-    let file_pages = |connection: &Connection| -> i64 {
-        connection
-            .query_row(
-                "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or_default()
-    };
-    let before = file_pages(connection);
-    // `VACUUM` cannot run inside a transaction, and this connection has none.
-    if let Err(error) = connection
-        .execute_batch("PRAGMA auto_vacuum = INCREMENTAL; VACUUM;")
-        .context("enable incremental auto-vacuum")
-    {
-        tracing::warn!(
-            %error,
-            "could not compact agent.db; deleted sessions will keep their space until this succeeds"
-        );
-        return;
-    }
-    let after = file_pages(connection);
-    tracing::info!(
-        before_mb = before / 1_048_576,
-        after_mb = after / 1_048_576,
-        took_ms = started.elapsed().as_millis() as u64,
-        "compacted agent.db once and enabled incremental reclamation"
-    );
-}
-
-/// Compact a database whose free pages dominate the file.
-///
-/// Incremental reclamation drains a freelist a page at a time, so a file that
-/// was already bloated when this shipped would take minutes to drain — and it
-/// is exactly the case in the field (7.4 GB holding 1.5 GB of rows). `VACUUM`
-/// rewrites it once instead, at the only moment nobody is waiting on the
-/// database: startup. Guarded by a ratio so a healthy database never pays for
-/// it, and non-fatal like the migration above.
-fn compact_if_bloated(connection: &Connection) {
-    let read = |name: &str| -> i64 {
-        connection
-            .pragma_query_value(None, name, |row| row.get(0))
-            .unwrap_or_default()
-    };
-    let (pages, free, page_size) = (
-        read("page_count"),
-        read("freelist_count"),
-        read("page_size"),
-    );
-    let free_bytes = free * page_size;
-    let bloated = pages > 0 && free * 4 > pages && free_bytes > COMPACT_MIN_FREE_BYTES;
-    if !bloated {
-        return;
-    }
-    let started = std::time::Instant::now();
-    match connection.execute_batch("VACUUM") {
-        Ok(()) => {
-            let after = read("page_count") * page_size;
-            tracing::info!(
-                before_mb = (pages * page_size) / 1_048_576,
-                after_mb = after / 1_048_576,
-                took_ms = started.elapsed().as_millis() as u64,
-                "compacted agent.db; most of it was free pages"
-            );
-        }
-        Err(error) => tracing::warn!(
-            %error,
-            free_mb = free_bytes / 1_048_576,
-            "could not compact agent.db; incremental reclamation will drain it over time"
-        ),
-    }
+    Ok(())
 }
 
 impl Database {
@@ -180,6 +101,8 @@ impl Database {
         let path = path.to_path_buf();
         let (sender, receiver) = mpsc::sync_channel::<Job>(256);
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let reclaim_requested = Arc::new(AtomicBool::new(true));
+        let worker_reclaim = reclaim_requested.clone();
         let thread = std::thread::Builder::new()
             .name("agent-sqlite".into())
             .spawn(move || {
@@ -193,8 +116,19 @@ impl Database {
                 if ready_tx.send(Ok(())).is_err() {
                     return;
                 }
-                for job in receiver {
-                    job(&mut connection);
+                loop {
+                    match receiver.recv_timeout(Duration::from_millis(50)) {
+                        Ok(job) => job(&mut connection),
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            if worker_reclaim.load(Ordering::Acquire) {
+                                match reclaim_idle_step(&mut connection) {
+                                    Ok(done) => worker_reclaim.store(!done, Ordering::Release),
+                                    Err(error) => tracing::debug!(%error, "background space maintenance will retry"),
+                                }
+                            }
+                        }
+                    }
                 }
             })
             .context("start SQLite worker")?;
@@ -205,6 +139,7 @@ impl Database {
             inner: Arc::new(Worker {
                 sender: Some(sender),
                 thread: Some(thread),
+                reclaim_requested,
             }),
         })
     }
@@ -228,17 +163,24 @@ impl Database {
         reply_rx.recv().context("SQLite operation interrupted")?
     }
 
+    /// Non-blocking hint. Idle worker slices give queued foreground writes
+    /// priority; startup may resume freed-page reclamation, never compaction
+    /// or deletion of journal records.
+    pub(crate) fn request_reclaim(&self) {
+        self.inner.reclaim_requested.store(true, Ordering::Release);
+    }
+
     /// Hand pages freed by a delete back to the filesystem.
     ///
     /// `incremental_vacuum` pops free pages **one at a time** off the end of the
     /// file and stops when the last page is in use — measured at 3291 calls to
     /// drain a 13 MB freelist (298 ms), while a 6 GB one would take minutes. So
     /// this loops up to `max_pages` to keep a delete's latency predictable, and
-    /// a database that stays bloated is compacted when it is next opened
-    /// ([`compact_if_bloated`]).
+    /// later idle slices reclaim what remains; startup never rewrites the file.
     ///
     /// `min_free_pages` keeps the hot paths cheap: below it there is nothing
     /// worth reclaiming, and the check is a header read.
+    #[cfg(test)]
     pub(crate) fn reclaim(&self, min_free_pages: i64, max_pages: i64) -> Result<()> {
         self.call(move |connection| {
             let free = |connection: &Connection| -> Result<i64> {
@@ -276,6 +218,42 @@ impl Database {
     }
 }
 
+/// Short idle slices, not a long job placed on the same ordered worker.
+/// Busy checkpoints are retried without the foreground 5-second lock wait.
+pub(super) fn reclaim_idle_step(connection: &mut Connection) -> Result<bool> {
+    let started = std::time::Instant::now();
+    connection.busy_timeout(Duration::ZERO)?;
+    let result = (|| -> Result<bool> {
+        // Space reclamation never changes journals. Snapshot construction
+        // and raw deletion happen only in the run-completion transaction.
+        let free = |connection: &Connection| -> Result<i64> {
+            Ok(connection.pragma_query_value(None, "freelist_count", |r| r.get(0))?)
+        };
+        let mode: i64 = connection.pragma_query_value(None, "auto_vacuum", |r| r.get(0))?;
+        let mut remaining = if mode == 2 { free(connection)? } else { 0 };
+        for _ in 0..128 {
+            if remaining == 0 || started.elapsed() >= Duration::from_millis(10) {
+                break;
+            }
+            connection.execute_batch("PRAGMA incremental_vacuum(1)")?;
+            let now = free(connection)?;
+            if now >= remaining {
+                break;
+            }
+            remaining = now;
+        }
+        // Reuse/truncate the WAL only when no reader needs it; never force a
+        // long reader to end. Failure leaves the retry hint set.
+        let (blocked, _, _): (i64, i64, i64) =
+            connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?;
+        Ok(remaining == 0 && blocked == 0)
+    })();
+    connection.busy_timeout(Duration::from_secs(5))?;
+    result
+}
+
 fn open_connection(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).context("create SQLite directory")?;
@@ -285,7 +263,7 @@ fn open_connection(path: &Path) -> Result<Connection> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let application: i64 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
-    if version != 0 && version != 2 && version != 3 && version != 4 {
+    if version != 0 && version != 2 && version != 3 && version != 4 && version != 5 {
         bail!("unsupported Agent database schema version {version}");
     }
     if application != 0 && application != 0x46555452 {
@@ -316,9 +294,7 @@ fn open_connection(path: &Path) -> Result<Connection> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
     connection.pragma_update(None, "wal_autocheckpoint", 1_000)?;
     connection.pragma_update(None, "journal_size_limit", 8 * 1024 * 1024)?;
-    // Before the schema batch: `VACUUM` needs to run with no transaction open.
-    ensure_incremental_auto_vacuum(&connection);
-    compact_if_bloated(&connection);
+    configure_incremental_auto_vacuum(&connection)?;
     let tx = connection.transaction()?;
     tx.execute_batch(
         "CREATE TABLE IF NOT EXISTS sessions (
@@ -426,6 +402,17 @@ fn open_connection(path: &Path) -> Result<Connection> {
             payload TEXT NOT NULL CHECK(json_valid(payload)),
             UNIQUE(session_id, run_id, idx, epoch)
         );
+        CREATE TABLE IF NOT EXISTS run_snapshots (
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            run_id TEXT NOT NULL,
+            version INTEGER NOT NULL CHECK(version=1),
+            cursor INTEGER NOT NULL CHECK(cursor>=0),
+            payload TEXT NOT NULL CHECK(json_valid(payload)),
+            pricing_payloads TEXT NOT NULL CHECK(json_valid(pricing_payloads)),
+            raw_pending INTEGER NOT NULL DEFAULT 0 CHECK(raw_pending IN (0,1)),
+            PRIMARY KEY(session_id,run_id)
+        );
+        CREATE INDEX IF NOT EXISTS run_snapshots_cleanup ON run_snapshots(session_id,run_id) WHERE raw_pending=1;
         CREATE TABLE IF NOT EXISTS legacy_imports (
             session_id TEXT PRIMARY KEY NOT NULL,
             status TEXT NOT NULL CHECK(status IN ('imported', 'skipped', 'deleted')),
@@ -456,8 +443,10 @@ fn open_connection(path: &Path) -> Result<Connection> {
         );
         CREATE INDEX IF NOT EXISTS history_users ON history_display(session_id,is_user,ordinal);
         PRAGMA application_id = 1179997266;
-        PRAGMA user_version = 4;",
+        PRAGMA user_version = 5;",
     )?;
+    tx.execute("INSERT INTO storage_meta(key,value) VALUES ('event_sequence',CAST(coalesce((SELECT max(sequence) FROM run_events),0) AS TEXT))
+        ON CONFLICT(key) DO UPDATE SET value=CAST(max(CAST(storage_meta.value AS INTEGER),CAST(excluded.value AS INTEGER)) AS TEXT)", [])?;
     tx.execute_batch(crate::skills::registry::SKILLS_TABLE_SQL)?;
     tx.execute_batch(super::records::VIEWS)?;
     tx.execute_batch(
@@ -662,7 +651,7 @@ mod tests {
                 connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
             let skills: i64 =
                 connection.query_row("SELECT count(*) FROM skills", [], |row| row.get(0))?;
-            assert_eq!((version, skills), (4, 0));
+            assert_eq!((version, skills), (5, 0));
             Ok(())
         })
         .unwrap();
@@ -788,6 +777,36 @@ mod open_and_reclaim_paths {
             Err(error) => error.to_string(),
         };
         assert!(error.contains("unrecognized database"), "{error}");
+    }
+
+    #[test]
+    fn opening_bloated_incremental_database_does_not_rewrite_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.db");
+        let connection = open_connection(&path).unwrap();
+        connection.execute_batch("CREATE TABLE bloat(payload BLOB); INSERT INTO bloat VALUES(zeroblob(80*1024*1024)); DELETE FROM bloat;").unwrap();
+        let pages: i64 = connection
+            .pragma_query_value(None, "page_count", |r| r.get(0))
+            .unwrap();
+        let free: i64 = connection
+            .pragma_query_value(None, "freelist_count", |r| r.get(0))
+            .unwrap();
+        assert!(free * 4096 > 64 * 1024 * 1024);
+        drop(connection);
+        // No idle worker is started here: this isolates the startup path.
+        let reopened = open_connection(&path).unwrap();
+        assert_eq!(
+            reopened
+                .pragma_query_value(None, "page_count", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            pages
+        );
+        assert_eq!(
+            reopened
+                .pragma_query_value(None, "freelist_count", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            free
+        );
     }
 
     #[test]
