@@ -12,7 +12,9 @@ import { RemoteRenameDialog } from "./RemoteRenameDialog";
  */
 
 const rename = vi.fn<(desktopId: string, address: unknown, name: string) => Promise<unknown>>();
+const generate = vi.fn<(desktopId: string, sessionId: string, language: string) => Promise<string>>();
 vi.mock("./remotePeerClient", () => ({
+  generateRemoteTitle: (...args: Parameters<typeof generate>) => generate(...args),
   renameRemoteConversation: (...args: Parameters<typeof rename>) => rename(...args),
 }));
 
@@ -79,6 +81,7 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   rename.mockReset().mockResolvedValue(undefined);
+  generate.mockReset().mockResolvedValue("A generated name");
 });
 
 it("starts from the current title and renames on the owning host", async () => {
@@ -161,5 +164,101 @@ it("cancels without sending anything", async () => {
 
   expect(rename).not.toHaveBeenCalled();
   expect(view.onClose).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
+/**
+ * A row that belongs to this machine has no host to name it.
+ *
+ * The merge type allows a local row (`desktopId: null`) even though this dialog
+ * is only opened for remote ones — and asking a null host would be a request
+ * against nothing.
+ */
+it("asks no host when the row has none", async () => {
+  const view = await mount(conversation({ desktopId: null }));
+  await act(async () => view.button("Auto-generate")!.click());
+
+  expect(generate).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+/**
+ * The same "auto-generate" action this app's own rename dialog has, pointed at
+ * the host that owns the conversation.
+ *
+ * It asks the host's own agent, with the conversation's own model — which is
+ * why it must be that host's request and not this machine's.
+ */
+it("asks the host to name the conversation, and fills the field", async () => {
+  const view = await mount();
+
+  await act(async () => view.button("Auto-generate")!.click());
+  await act(async () => {
+    for (let i = 0; i < 4; i += 1)
+      await Promise.resolve();
+  });
+
+  expect(generate).toHaveBeenCalledWith("desktop_a", "sess_1", expect.any(String));
+  expect((view.input as HTMLInputElement).value).toBe("A generated name");
+  // Nothing is saved: the local dialog behaves the same way, and a generated
+  // title usually needs a word changed first.
+  expect(rename).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+/**
+ * The host names the conversation in the language the user is reading, so the
+ * UI language is sent with the request rather than left to the host's own.
+ */
+it("asks for a title in the language the user is reading", async () => {
+  const view = await mount();
+  await act(async () => view.button("Auto-generate")!.click());
+  await act(async () => {
+    for (let i = 0; i < 4; i += 1)
+      await Promise.resolve();
+  });
+
+  const [, , language] = generate.mock.calls[0]!;
+  expect(["zh", "en"]).toContain(language);
+  await view.unmount();
+});
+
+/** A refused generation reports, and leaves what the user typed alone. */
+it("keeps the field when the host cannot name it", async () => {
+  generate.mockRejectedValue(new Error("empty_title"));
+  const view = await mount();
+  await view.setValue("my own name");
+
+  await act(async () => view.button("Auto-generate")!.click());
+  await act(async () => {
+    for (let i = 0; i < 4; i += 1)
+      await Promise.resolve();
+  });
+
+  expect(view.text()).toContain("empty_title");
+  expect((view.input as HTMLInputElement).value).toBe("my own name");
+  await view.unmount();
+});
+
+/**
+ * Enter while a title is being generated must not save.
+ *
+ * The Save button is disabled during generation, but Enter reaches `submit`
+ * directly — and saving here would store whatever the field held *before* the
+ * generated title arrived.
+ */
+it("refuses to save while a title is still being generated", async () => {
+  let settle: ((title: string) => void) | null = null;
+  generate.mockImplementation(() => new Promise((resolve) => {
+    settle = resolve;
+  }));
+  const view = await mount();
+
+  await act(async () => view.button("Auto-generate")!.click());
+  await view.pressEnter();
+
+  expect(rename).not.toHaveBeenCalled();
+
+  await act(async () => settle!("A generated name"));
   await view.unmount();
 });

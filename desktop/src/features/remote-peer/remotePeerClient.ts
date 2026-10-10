@@ -730,6 +730,112 @@ export async function setRemoteApprovalTier(
   return typeof raw?.approvalTier === "string" ? raw.approvalTier : tier;
 }
 
+/** One workspace on a host, as this machine may show it. */
+export interface RemoteWorkspaceRow {
+  id: string;
+  name: string;
+  path: string;
+  pinned: boolean;
+}
+
+/**
+ * That host's workspaces.
+ *
+ * A workspace is a directory on the host, so its path is meaningful only there —
+ * which is why this list is about naming and ordering that machine's folders,
+ * not about reaching into them.
+ */
+export async function listRemoteWorkspaces(desktopId: string): Promise<RemoteWorkspaceRow[]> {
+  const raw = await invokeCommand<{ workspaces?: unknown[] }>("remote_peer_workspaces", { desktopId });
+  return workspaceRows(raw?.workspaces);
+}
+
+function workspaceRows(items: unknown): RemoteWorkspaceRow[] {
+  if (!Array.isArray(items))
+    return [];
+  return items.flatMap((entry): RemoteWorkspaceRow[] => {
+    if (typeof entry !== "object" || entry === null)
+      return [];
+    const row = entry as Record<string, unknown>;
+    if (typeof row.id !== "string" || !row.id)
+      return [];
+    return [{
+      id: row.id,
+      name: typeof row.name === "string" && row.name ? row.name : (typeof row.path === "string" ? row.path : row.id),
+      path: typeof row.path === "string" ? row.path : "",
+      pinned: row.pinned === true,
+    }];
+  });
+}
+
+/**
+ * Register an existing directory on that host as a workspace.
+ *
+ * Typed by hand because this machine has no folder picker for the host's disk,
+ * and the directory must already exist there — the same rule the host's own
+ * create-workspace form follows.
+ */
+export async function createRemoteWorkspace(
+  desktopId: string,
+  path: string,
+  name: string,
+): Promise<RemoteWorkspaceRow> {
+  const raw = await requestRemotePeer<Record<string, unknown>>(
+    desktopId,
+    { type: "create_workspace", path: path.trim(), name: name.trim() },
+    "list",
+  );
+  const [created] = workspaceRows([raw?.workspace]);
+  if (!created)
+    throw new Error("invalid_workspace_snapshot");
+  return created;
+}
+
+/** Pin or unpin one of that host's workspaces. */
+export async function setRemoteWorkspacePinned(
+  desktopId: string,
+  workspaceId: string,
+  pinned: boolean,
+): Promise<void> {
+  await requestRemotePeer(desktopId, { type: "set_workspace_pinned", workspaceId, pinned }, "list");
+}
+
+/**
+ * Remove a workspace from that host.
+ *
+ * The host removes its conversations and threads with it, so this is not a
+ * cosmetic delete — which is why the panel confirms before asking.
+ */
+export async function deleteRemoteWorkspace(
+  desktopId: string,
+  workspaceId: string,
+): Promise<void> {
+  await requestRemotePeer(desktopId, { type: "delete_workspace", workspaceId }, "list");
+}
+
+/**
+ * Ask that host to name one of its conversations.
+ *
+ * The host runs this with the conversation's own model, and answers the title it
+ * produced. The title is returned rather than written: naming the conversation
+ * is still the user's decision, exactly as it is for one of this app's own.
+ */
+export async function generateRemoteTitle(
+  desktopId: string,
+  sessionId: string,
+  language: string,
+): Promise<string> {
+  const raw = await requestRemotePeer<Record<string, unknown>>(
+    desktopId,
+    { type: "generate_session_title", sessionId, mode: language },
+    sessionId,
+  );
+  const title = typeof raw?.title === "string" ? raw.title.trim() : "";
+  if (!title)
+    throw new Error("empty_title");
+  return title;
+}
+
 /**
  * This host's providers, as its own settings page sees them.
  *
