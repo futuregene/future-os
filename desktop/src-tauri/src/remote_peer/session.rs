@@ -139,6 +139,12 @@ impl PeerSession {
         format!("p.{}.xfer.up.{transfer_id}.pull.{index}", self.pair_id)
     }
 
+    /// Where one upload chunk is written. The host routes the trailing tokens
+    /// (`chunk`/`pull`) itself, so the two directions share this prefix.
+    pub(crate) fn transfer_chunk_subject(&self, transfer_id: &str, index: u64) -> String {
+        format!("p.{}.xfer.up.{transfer_id}.chunk.{index}", self.pair_id)
+    }
+
     /// A command subject for `session_key`: the host routes on the trailing
     /// token, and `list` / `new` are its two non-session lanes.
     pub(crate) fn command_subject(&self, session_key: &str) -> String {
@@ -163,11 +169,35 @@ impl PeerSession {
         }
         let plaintext = serde_json::to_vec(&payload)
             .map_err(|error| crate::AppError::Message(format!("encode command: {error}")))?;
+        self.exchange(subject, &plaintext, timeout).await
+    }
+
+    /// Send arbitrary bytes and decode the JSON reply.
+    ///
+    /// Split out because not every request body is a command document: an
+    /// upload chunk *is* its payload, and wrapping it in JSON would both inflate
+    /// it and lose the exact bytes the host hashes.
+    pub(crate) async fn request_bytes(
+        &mut self,
+        subject: &str,
+        plaintext: &[u8],
+        timeout: Duration,
+    ) -> Result<Value, crate::AppError> {
+        self.exchange(subject, plaintext, timeout).await
+    }
+
+    /// Seal a request, await its reply, and unwrap the host's envelope.
+    async fn exchange(
+        &mut self,
+        subject: &str,
+        plaintext: &[u8],
+        timeout: Duration,
+    ) -> Result<Value, crate::AppError> {
         let wire = self
             .channel
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .seal(subject, &plaintext)
+            .seal(subject, plaintext)
             .map_err(|_| crate::AppError::Message("remote_secure_channel_invalid".into()))?;
         let response = tokio::time::timeout(
             timeout,

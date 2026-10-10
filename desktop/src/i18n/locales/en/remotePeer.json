@@ -100,5 +100,8 @@
   "filesEmpty": "This folder is empty.",
   "filesDownload": "Download",
   "filesDownloading": "Downloading…",
-  "filesSaved": "Saved as {{name}}"
+  "filesSaved": "Saved as {{name}}",
+  "attach": "Attach",
+  "attaching": "Uploading…",
+  "removeAttachment": "Remove {{name}}"
 }

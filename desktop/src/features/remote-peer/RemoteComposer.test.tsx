@@ -10,11 +10,23 @@ import { RemoteComposer } from "./RemoteComposer";
  * not cost them the paragraph they wrote.
  */
 
-const prompt = vi.fn<(desktopId: string, sessionId: string, message: string) => Promise<{ sessionId: string; threadId: string }>>();
+const prompt = vi.fn<(
+  desktopId: string,
+  sessionId: string,
+  message: string,
+  attachments?: string[],
+) => Promise<{ sessionId: string; threadId: string }>>();
 const abort = vi.fn<(desktopId: string, sessionId: string) => Promise<unknown>>();
+const upload = vi.fn<(input: { desktopId: string; path: string }) => Promise<{ uploadId: string; name: string; contentHash: string }>>();
 vi.mock("./remotePeerClient", () => ({
   promptRemoteConversation: (...args: Parameters<typeof prompt>) => prompt(...args),
   abortRemoteRun: (...args: Parameters<typeof abort>) => abort(...args),
+  uploadRemoteFile: (...args: Parameters<typeof upload>) => upload(...args),
+}));
+
+const openDialog = vi.fn<(options: Record<string, unknown>) => Promise<string | null>>();
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: (...args: Parameters<typeof openDialog>) => openDialog(...args),
 }));
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -93,6 +105,8 @@ async function settle(): Promise<void> {
 beforeEach(() => {
   prompt.mockReset().mockResolvedValue({ sessionId: "sess_1", threadId: "thread_1" });
   abort.mockReset().mockResolvedValue(undefined);
+  upload.mockReset().mockResolvedValue({ uploadId: "upload_1", name: "notes.txt", contentHash: "abc" });
+  openDialog.mockReset().mockResolvedValue("/local/notes.txt");
 });
 
 it("prompts the conversation it belongs to and clears only on success", async () => {
@@ -101,7 +115,7 @@ it("prompts the conversation it belongs to and clears only on success", async ()
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "hello host");
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "hello host", []);
   expect(view.onSent).toHaveBeenCalledTimes(1);
   expect(view.input.value).toBe("");
   // An existing conversation was not created, so nothing adopts an id.
@@ -120,7 +134,7 @@ it("adopts the conversation the host created for a draft", async () => {
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "", "first message");
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "", "first message", []);
   expect(view.onCreated).toHaveBeenCalledWith("sess_new");
   expect(view.onSent).toHaveBeenCalledTimes(1);
   await view.unmount();
@@ -156,10 +170,21 @@ it("sends on Enter, but not on Shift+Enter", async () => {
   await view.unmount();
 });
 
-/** Whitespace alone is not a prompt. */
+/**
+ * Whitespace alone is not a prompt, and neither is nothing at all.
+ *
+ * Both ways in are asserted: the button is disabled, and Enter — which reaches
+ * `send` even while that button is disabled — does nothing either. The second is
+ * the one that would otherwise be covered by nothing at all.
+ */
 it("refuses to send an empty message", async () => {
   const view = await mount();
   expect(view.button("Send")!.disabled).toBe(true);
+
+  await view.press("Enter");
+  await settle();
+  expect(prompt).not.toHaveBeenCalled();
+
   await view.type("   ");
   await act(async () => view.button("Send")!.click());
   await settle();
@@ -223,5 +248,140 @@ it("ignores a second stop while one is in flight", async () => {
 it("names the machine the prompt runs on", async () => {
   const view = await mount();
   expect(view.text()).toContain("Studio iMac");
+  await view.unmount();
+});
+
+// ── attachments ─────────────────────────────────────────────────────────────
+
+/** A staged file is shown by the name the host gave it, not the local path. */
+it("stages a chosen file on the host and shows it", async () => {
+  upload.mockResolvedValue({ uploadId: "upload_7", name: "report.txt", contentHash: "h" });
+  const view = await mount();
+
+  await act(async () => view.button("Attach")!.click());
+  await settle();
+
+  expect(openDialog).toHaveBeenCalledWith(expect.objectContaining({ multiple: false }));
+  expect(upload).toHaveBeenCalledWith({ desktopId: "desktop_a", path: "/local/notes.txt" });
+  expect(view.text()).toContain("report.txt");
+  await view.unmount();
+});
+
+/** Cancelling the file picker must not reach the host at all. */
+it("uploads nothing when the picker is cancelled", async () => {
+  openDialog.mockResolvedValue(null);
+  const view = await mount();
+
+  await act(async () => view.button("Attach")!.click());
+  await settle();
+
+  expect(upload).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+it("reports a failed upload and stages nothing", async () => {
+  upload.mockRejectedValue(new Error("remote_upload_hash_mismatch:notes.txt"));
+  const view = await mount();
+
+  await act(async () => view.button("Attach")!.click());
+  await settle();
+
+  expect(view.text()).toContain("remote_upload_hash_mismatch");
+  await view.unmount();
+});
+
+/**
+ * The staged files travel as *references*, in the prompt's own field: the bytes
+ * are already on the host, and re-sending them would be a second copy that could
+ * disagree with the first.
+ */
+it("sends the staged files as attachment references", async () => {
+  upload.mockResolvedValue({ uploadId: "upload_7", name: "report.txt", contentHash: "h" });
+  const view = await mount();
+  await act(async () => view.button("Attach")!.click());
+  await settle();
+
+  await view.type("please read this");
+  await act(async () => view.button("Send")!.click());
+  await settle();
+
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please read this", ["upload_7"]);
+  // And the chips are gone: they now belong to the message, not the composer.
+  expect(view.text()).not.toContain("report.txt");
+  await view.unmount();
+});
+
+/** A file on its own is a message: the user should not have to write a prompt. */
+it("sends an attachment with no words", async () => {
+  upload.mockResolvedValue({ uploadId: "upload_7", name: "report.txt", contentHash: "h" });
+  const view = await mount();
+  await act(async () => view.button("Attach")!.click());
+  await settle();
+
+  expect(view.button("Send")!.hasAttribute("disabled")).toBe(false);
+  await act(async () => view.button("Send")!.click());
+  await settle();
+
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "", ["upload_7"]);
+  await view.unmount();
+});
+
+/** A file removed before sending must not be attached. */
+it("drops a removed attachment from the prompt", async () => {
+  upload.mockResolvedValue({ uploadId: "upload_7", name: "report.txt", contentHash: "h" });
+  const view = await mount();
+  await act(async () => view.button("Attach")!.click());
+  await settle();
+
+  await act(async () => {
+    view.container.querySelector<HTMLButtonElement>("button[aria-label='Remove report.txt']")!.click();
+  });
+  await view.type("no file after all");
+  await act(async () => view.button("Send")!.click());
+  await settle();
+
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "no file after all", []);
+  await view.unmount();
+});
+
+/**
+ * A prompt that failed keeps the staged file: the bytes are already on the host,
+ * so re-staging them would be wasted work, and the user's intent is preserved.
+ */
+it("keeps the staged file when the prompt fails", async () => {
+  upload.mockResolvedValue({ uploadId: "upload_7", name: "report.txt", contentHash: "h" });
+  prompt.mockRejectedValue(new Error("agent_unavailable"));
+  const view = await mount();
+  await act(async () => view.button("Attach")!.click());
+  await settle();
+
+  await view.type("hello");
+  await act(async () => view.button("Send")!.click());
+  await settle();
+
+  expect(view.text()).toContain("agent_unavailable");
+  expect(view.text()).toContain("report.txt");
+  await view.unmount();
+});
+
+/**
+ * While a file is uploading there is nothing to send yet, and the control says
+ * so rather than swallowing the click.
+ */
+it("holds the send back while a file is uploading", async () => {
+  let release: ((value: { uploadId: string; name: string; contentHash: string }) => void) | null = null;
+  upload.mockImplementation(() => new Promise((resolve) => {
+    release = resolve;
+  }));
+  const view = await mount();
+
+  await act(async () => view.button("Attach")!.click());
+  expect(view.button("Uploading…")).toBeTruthy();
+
+  await act(async () => {
+    release?.({ uploadId: "upload_7", name: "report.txt", contentHash: "h" });
+  });
+  await settle();
+  expect(view.text()).toContain("report.txt");
   await view.unmount();
 });

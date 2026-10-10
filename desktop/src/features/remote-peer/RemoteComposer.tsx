@@ -1,9 +1,12 @@
-import type { RemotePeer } from "./remotePeerClient";
+import type { RemotePeer, RemoteUpload } from "./remotePeerClient";
+import { open } from "@tauri-apps/plugin-dialog";
+import { Paperclip, X } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { TextInput } from "../../components/ui/TextInput";
-import { abortRemoteRun, promptRemoteConversation } from "./remotePeerClient";
+import { errorMessage } from "../../lib/errors";
+import { abortRemoteRun, promptRemoteConversation, uploadRemoteFile } from "./remotePeerClient";
 
 /**
  * The composer for a remote conversation.
@@ -44,20 +47,68 @@ export function RemoteComposer({
   const [busy, setBusy] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Files already staged on the host, waiting to be attached to a message.
+   *
+   * Held here rather than in the parent because they are not part of the
+   * conversation until they are sent: abandoning the composer abandons them,
+   * and the host discards an unreferenced upload by itself.
+   */
+  const [uploads, setUploads] = useState<RemoteUpload[]>([]);
+  const [uploading, setUploading] = useState(false);
+
+  /**
+   * Stage a file on the host.
+   *
+   * The bytes travel at *attach* time rather than at send time so a large upload
+   * is not made to share a click with the prompt: the user can see it land, and a
+   * failed transfer leaves their message intact.
+   *
+   * No in-flight guard: the control that calls this is disabled while an upload
+   * is outstanding, so a second call cannot be produced, and a guard no test can
+   * reach is a guard no test can trust.
+   */
+  async function attach() {
+    setUploading(true);
+    setError(null);
+    try {
+      const picked = await open({ multiple: false });
+      const path = typeof picked === "string" ? picked : null;
+      if (!path)
+        return;
+      const staged = await uploadRemoteFile({ desktopId, path });
+      setUploads(current => [...current, staged]);
+    }
+    catch (err) {
+      setError(errorMessage(err));
+    }
+    finally {
+      setUploading(false);
+    }
+  }
 
   async function send() {
     const message = text.trim();
-    if (!message || busy)
+    // An attachment with no words is still a message, which is how a file is
+    // handed over without writing a prompt around it.
+    if ((!message && uploads.length === 0) || busy)
       return;
     setBusy(true);
     setError(null);
     try {
       // The backend stamps the command id, and the host keys its durable
       // receipt on it, so a retry of a delivery cannot run the prompt twice.
-      const ack = await promptRemoteConversation(desktopId, sessionId, message);
+      const ack = await promptRemoteConversation(
+        desktopId,
+        sessionId,
+        message,
+        uploads.map(upload => upload.uploadId),
+      );
       // Cleared only after the host accepted it: a prompt that failed on the
-      // wire must not cost the user the paragraph they wrote.
+      // wire must not cost the user the paragraph they wrote or the file they
+      // staged.
       setText("");
+      setUploads([]);
       if (!sessionId)
         onCreated?.(ack.sessionId);
       onSent();
@@ -88,7 +139,36 @@ export function RemoteComposer({
   return (
     <div className="shrink-0 border-t border-line-soft px-4 py-3">
       {error ? <p className="mb-2 text-xs text-danger">{error}</p> : null}
+      {/* What is about to be sent, named, with a way back out: an attachment the
+          user cannot see is one they cannot remove. */}
+      {uploads.length > 0
+        ? (
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {uploads.map(upload => (
+                <span
+                  className="inline-flex items-center gap-1 rounded-md border border-line-soft bg-surface-subtle px-2 py-0.5 text-xs text-ink-soft"
+                  key={upload.uploadId}
+                >
+                  <Paperclip aria-hidden className="size-3" />
+                  <span className="max-w-48 truncate">{upload.name}</span>
+                  <button
+                    aria-label={t("removeAttachment", { name: upload.name })}
+                    className="text-ink-muted hover:text-ink"
+                    onClick={() => setUploads(current => current.filter(item => item.uploadId !== upload.uploadId))}
+                    type="button"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )
+        : null}
       <div className="flex items-end gap-2">
+        <Button disabled={uploading} onClick={() => void attach()} size="sm" variant="ghost">
+          <Paperclip className="size-3.5" />
+          {uploading ? t("attaching") : t("attach")}
+        </Button>
         <TextInput
           aria-label={t("composerLabel")}
           onChange={event => setText(event.target.value)}
@@ -108,14 +188,18 @@ export function RemoteComposer({
             prompt, and the host would refuse one. The button is disabled while
             the abort is outstanding, so `disabled` is the single guard against
             a second abort — there is no second in-flight check to make. */}
-        {streaming && !text.trim()
+        {streaming && !text.trim() && uploads.length === 0
           ? (
               <Button disabled={stopping} onClick={() => void stop()} variant="secondary">
                 {stopping ? t("stopping") : t("stop")}
               </Button>
             )
           : (
-              <Button disabled={!text.trim() || busy} onClick={() => void send()} variant="primary">
+              <Button
+                disabled={(!text.trim() && uploads.length === 0) || busy || uploading}
+                onClick={() => void send()}
+                variant="primary"
+              >
                 {busy ? t("sending") : t("send")}
               </Button>
             )}

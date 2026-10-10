@@ -100,5 +100,8 @@
   "filesEmpty": "此文件夹为空。",
   "filesDownload": "下载",
   "filesDownloading": "下载中…",
-  "filesSaved": "已保存为 {{name}}"
+  "filesSaved": "已保存为 {{name}}",
+  "attach": "添加附件",
+  "attaching": "上传中…",
+  "removeAttachment": "移除 {{name}}"
 }

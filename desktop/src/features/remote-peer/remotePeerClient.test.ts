@@ -26,6 +26,7 @@ const {
   pinRemoteConversation,
   promptRemoteConversation,
   renameRemoteConversation,
+  uploadRemoteFile,
 } = await import("./remotePeerClient");
 
 beforeEach(() => {
@@ -146,6 +147,36 @@ describe("promptRemoteConversation", () => {
     await expect(promptRemoteConversation("desktop_a", "", "hi"))
       .rejects
       .toThrow("remote_prompt_without_session_id");
+  });
+
+  /**
+   * Attachments travel as `[{uploadId}]`, which is the shape the host parses:
+   * `UploadReference` has exactly that one field. A bare string array would be
+   * silently dropped by the host, and the file would never be attached.
+   */
+  it("sends attachments as the references the host parses", async () => {
+    invokeMock.mockResolvedValue({ sessionId: "sess_1", threadId: "thread_1" });
+
+    await promptRemoteConversation("desktop_a", "sess_1", "look at these", [
+      "upload_1",
+      "upload_2",
+    ]);
+
+    expect(lastCall().args.command).toEqual({
+      type: "prompt",
+      sessionId: "sess_1",
+      message: "look at these",
+      attachments: [{ uploadId: "upload_1" }, { uploadId: "upload_2" }],
+    });
+  });
+
+  /** No attachments means no field at all, rather than an empty list. */
+  it("omits the attachments field when there are none", async () => {
+    invokeMock.mockResolvedValue({ sessionId: "sess_1", threadId: "thread_1" });
+
+    await promptRemoteConversation("desktop_a", "sess_1", "just words");
+
+    expect(lastCall().args.command).not.toHaveProperty("attachments");
   });
 
   /** A host that omits the thread id answers with an empty one, not `undefined`. */
@@ -446,5 +477,31 @@ describe("downloadRemoteFile", () => {
       name: "n",
       destination: "/d",
     })).rejects.toThrow("remote_download_hash_mismatch");
+  });
+});
+
+describe("uploadRemoteFile", () => {
+  it("sends the path, and the name only when there is one", async () => {
+    invokeMock.mockResolvedValue({ uploadId: "upload_1", name: "n.txt", contentHash: "h" });
+
+    await uploadRemoteFile({ desktopId: "desktop_a", path: "/local/n.txt" });
+    // Absent rather than empty: the host takes a *missing* name as "use the
+    // file's own", and an empty string as a name it then has to reject.
+    expect(lastCall().args).toEqual({ desktopId: "desktop_a", path: "/local/n.txt" });
+    expect(lastCall().args).not.toHaveProperty("name");
+
+    await uploadRemoteFile({ desktopId: "desktop_a", path: "/local/DSC.JPG", name: "Holiday.jpg" });
+    expect(lastCall().args).toEqual({
+      desktopId: "desktop_a",
+      path: "/local/DSC.JPG",
+      name: "Holiday.jpg",
+    });
+  });
+
+  it("propagates a refused upload", async () => {
+    invokeMock.mockRejectedValue(new Error("Original file exceeds the 10 MiB limit"));
+    await expect(uploadRemoteFile({ desktopId: "desktop_a", path: "/local/big.bin" }))
+      .rejects
+      .toThrow("10 MiB");
   });
 });
