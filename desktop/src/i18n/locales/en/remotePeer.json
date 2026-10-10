@@ -1,8 +1,7 @@
 {
-  "title": "Remote Desktops",
-  "description": "Connect this machine to another desktop's FutureOS. Its conversations appear in the shared conversation list, labelled with that machine's icon; tools run on that machine.",
+  "description": "Connect this computer to another one. Its conversations appear in the shared list, and its tools run there.",
   "addTitle": "Add a desktop",
-  "addHint": "On the other desktop, open Phone Remote Control and copy the pairing link, then paste it here.",
+  "addHint": "On the other computer, open Remote → Let other devices connect here, copy the pairing link, then paste it here.",
   "add": "Connect",
   "adding": "Connecting…",
   "slotWarning": "Pairing here replaces that desktop's current phone pairing. It can be re-added later with a new link.",

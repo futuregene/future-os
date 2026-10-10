@@ -1,0 +1,9 @@
+{
+  "title": "Remote",
+  "lead": "This computer's own conversations are in Chats, and their tools run here. Below are the remote connections to other devices, in both directions.",
+  "hostTitle": "Let other devices connect here",
+  "clientTitle": "Connect to another computer",
+  "pairedDevices": "Connected devices: {{count}}",
+  "autoConnectTitle": "Auto-connect on launch",
+  "autoConnectDescription": "When a device is already paired, connect to it automatically each time the app opens. You can still disconnect by hand."
+}

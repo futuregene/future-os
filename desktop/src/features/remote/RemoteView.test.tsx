@@ -1,11 +1,10 @@
 // @vitest-environment jsdom
 import type { Mock } from "vitest";
-import type { AppSettings } from "../../integrations/storage/appSettings";
 import type { RemoteStatus } from "./remoteClient";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RemoteView } from "./RemoteView";
+import { RemoteHostSection } from "./RemoteView";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -60,24 +59,22 @@ let root: ReturnType<typeof createRoot>;
 let refresh: Mock<() => Promise<void>>;
 
 interface Props {
-  appSettings?: AppSettings;
-  leftPanelExpanded?: boolean;
+  autoConnect?: boolean;
   onRefreshRemote?: () => Promise<void>;
+  onToggleAutoConnect?: (value: boolean) => void;
   remoteStatus?: RemoteStatus | null;
 }
 
 async function mount(overrides: Props = {}) {
   const props = {
-    appSettings: {} as AppSettings,
-    leftPanelExpanded: true,
-    onChangeSettings: vi.fn<(patch: Partial<AppSettings>) => void>(),
-    onToggleLeftPanel: vi.fn<() => void>(),
+    autoConnect: false,
     onRefreshRemote: refresh,
+    onToggleAutoConnect: vi.fn<(value: boolean) => void>(),
     remoteStatus: status(),
     ...overrides,
   };
   await act(async () => {
-    root.render(createElement(RemoteView, props));
+    root.render(createElement(RemoteHostSection, props));
   });
   await flush();
   return props;
@@ -125,7 +122,6 @@ describe("remoteView pairing lifecycle", () => {
       release = resolve;
     }));
     await mount();
-    expect(container.textContent).toContain("Phone Remote Control");
 
     await act(async () => {
       buttonByText("Pair & start")?.click();
@@ -417,19 +413,28 @@ describe("remoteView unpair", () => {
   });
 });
 
-describe("remoteView chrome", () => {
-  it("links to the mobile download and drags the window from the header", async () => {
+describe("remoteHostSection", () => {
+  it("links to the mobile app beside the note", async () => {
     await mount();
     await act(async () => {
       buttonByText("Download mobile app")?.click();
     });
     await flush();
     expect(openExternalUrl).toHaveBeenCalledWith("https://future-os.cn/#download-mobile");
+  });
 
-    await act(async () => {
-      container.querySelector("header")?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
-    });
-    expect(startWindowDrag).toHaveBeenCalledTimes(1);
+  /**
+   * The auto-connect preference lives here rather than in Settings: it belongs
+   * to *this* direction of remote, and two places for one value is two places to
+   * look when it is wrong.
+   */
+  it("carries the auto-connect preference and reports changes", async () => {
+    const props = await mount({ autoConnect: true });
+    const toggle = container.querySelector<HTMLButtonElement>("button[role='switch']")!;
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => toggle.click());
+    expect(props.onToggleAutoConnect).toHaveBeenCalledWith(false);
   });
 
   it("warns about a failed web listener without claiming the link is down", async () => {
@@ -437,24 +442,8 @@ describe("remoteView chrome", () => {
     expect(container.textContent).toContain("Some features are temporarily unavailable. Try again later. (LC002)");
   });
 
-  it("toggles the left panel when it is collapsed", async () => {
-    const props = await mount({ leftPanelExpanded: false });
-    const toggle = container.querySelector<HTMLButtonElement>("header button")!;
-    await act(async () => {
-      toggle.click();
-    });
-    expect(props.onToggleLeftPanel).toHaveBeenCalled();
-
-    // With the left panel expanded the affordance is hidden entirely.
-    act(() => root.unmount());
-    root = createRoot(container);
-    await mount({ leftPanelExpanded: true });
-    expect(container.querySelector("header button")).toBeNull();
-  });
-
   it("renders nothing pairing-specific for a null status", async () => {
     await mount({ remoteStatus: null });
-    expect(container.textContent).toContain("Phone Remote Control");
     expect(buttonByText("Pair & start")).toBeTruthy();
     expect(buttonByText("Unpair")).toBeUndefined();
   });
