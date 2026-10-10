@@ -627,6 +627,48 @@ async fn a_supervisor_reconnects_a_host_that_comes_back() {
     teardown().await;
 }
 
+/// A link that comes back must say so.
+///
+/// This is the client's only way to tell "the host is idle" from "the host is
+/// back, and everything sent while it was gone is missing" — a presence tick
+/// arrives on a healthy link too, so it cannot carry that meaning.
+#[tokio::test]
+async fn a_supervisor_reports_a_link_that_came_back() {
+    let (_home, fx) = start("peer-rt-supervisor-resumed").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect(&desktop_id).await.expect("connect");
+    forget_connection_for_test(&desktop_id).await;
+
+    let seen: Arc<std::sync::Mutex<Vec<PeerEvent>>> = Arc::default();
+    let recorder = seen.clone();
+    let emitter: Emitter = Arc::new(move |event: PeerEvent| {
+        recorder.lock().unwrap().push(event);
+    });
+
+    let handle = spawn_supervisor(desktop_id.clone(), Some(emitter));
+    tokio::time::timeout(std::time::Duration::from_secs(15), handle)
+        .await
+        .expect("the supervisor must finish once the host is back")
+        .expect("the supervisor task must not panic");
+
+    // Scoped so the guard is released before the await below: clippy rightly
+    // refuses a lock held across an await point, and `teardown` awaits.
+    {
+        let events = seen.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "resumed")
+                .count(),
+            1,
+            "exactly one resume signal, for the host that came back"
+        );
+        assert_eq!(events[0].desktop_id, desktop_id);
+    }
+
+    teardown().await;
+}
+
 /// The early-return arm: something else already reconnected, so the loop stops
 /// instead of opening a second connection to the same host.
 #[tokio::test]

@@ -62,7 +62,13 @@ pub(crate) type Emitter = std::sync::Arc<dyn Fn(PeerEvent) + Send + Sync>;
 pub struct PeerEvent {
     pub desktop_id: String,
     /// `event` for `evt.*` (a session event, which carries its own `sessionId`),
-    /// `presence` for a liveness tick.
+    /// `presence` for a liveness tick, `resumed` for a link that came back.
+    ///
+    /// `resumed` exists because the other two cannot express it: a presence tick
+    /// arrives on a healthy link as well, and a session event says nothing about
+    /// the link. Without a distinct signal, a client cannot tell "the host is
+    /// fine" from "the host is back, and everything sent while it was gone is
+    /// missing" — which is the whole reason the gap matters.
     pub kind: &'static str,
     pub payload: Value,
 }
@@ -493,7 +499,19 @@ pub(crate) fn spawn_supervisor(
                 return;
             }
             match resume(&desktop_id, emitter.clone()).await {
-                Ok(()) => return,
+                Ok(()) => {
+                    // Say so, and say it *after* the subscriptions are attached:
+                    // a client told to catch up before the stream is live can
+                    // still miss the events that arrive in between.
+                    if let Some(emitter) = &emitter {
+                        emitter(PeerEvent {
+                            desktop_id: desktop_id.clone(),
+                            kind: "resumed",
+                            payload: json!({}),
+                        });
+                    }
+                    return;
+                }
                 Err(error) => {
                     eprintln!("remote_peer: reconnect attempt for {desktop_id} failed: {error}");
                 }
