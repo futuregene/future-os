@@ -285,6 +285,93 @@ export async function compactRemoteConversation(
 }
 
 /**
+ * One entry in a session directory on a host.
+ *
+ * `path` is the host's own absolute path, and it is what a download request
+ * addresses — the client never joins paths itself, because the host's separator
+ * and case rules are the host's.
+ */
+export interface RemoteFileEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+}
+
+export interface RemoteFileListing {
+  /** The session root on the host, for showing where the user is. */
+  rootPath: string;
+  /** The directory listed, absolute on the host. */
+  path: string;
+  entries: RemoteFileEntry[];
+}
+
+/**
+ * List one directory inside a session on a host.
+ *
+ * An absent `path` means the session's own root; the backend turns that into the
+ * empty path the host reads as "the session directory".
+ */
+export async function listRemoteSessionFiles(
+  desktopId: string,
+  sessionId: string,
+  path?: string,
+): Promise<RemoteFileListing> {
+  const raw = await invokeCommand<Record<string, unknown>>("remote_peer_list_files", {
+    desktopId,
+    sessionId,
+    ...(path === undefined ? {} : { path }),
+  });
+  const entries = Array.isArray(raw?.entries) ? raw.entries : [];
+  return {
+    rootPath: typeof raw?.rootPath === "string" ? raw.rootPath : "",
+    path: typeof raw?.path === "string" ? raw.path : "",
+    // A row without a name or path could not be opened or downloaded, so it is
+    // dropped rather than rendered as a dead entry.
+    entries: entries.flatMap((entry): RemoteFileEntry[] => {
+      if (typeof entry !== "object" || entry === null)
+        return [];
+      const row = entry as Record<string, unknown>;
+      if (typeof row.name !== "string" || !row.name)
+        return [];
+      if (typeof row.path !== "string" || !row.path)
+        return [];
+      return [{
+        name: row.name,
+        path: row.path,
+        isDir: row.isDir === true,
+        size: typeof row.size === "number" ? row.size : 0,
+      }];
+    }),
+  };
+}
+
+/**
+ * Pull a file from a host and write it to a local path.
+ *
+ * Resolves to the name the *host* gave the file, which can differ from the one
+ * asked for (a preview variant is renamed on the host side). Reporting the name
+ * the user chose instead would leave them looking for a file that is not there.
+ */
+export function downloadRemoteFile(input: {
+  desktopId: string;
+  sessionId: string;
+  path: string;
+  name: string;
+  destination: string;
+  variant?: string;
+}): Promise<string> {
+  return invokeCommand<string>("remote_peer_download_file", {
+    desktopId: input.desktopId,
+    sessionId: input.sessionId,
+    path: input.path,
+    name: input.name,
+    destination: input.destination,
+    ...(input.variant === undefined ? {} : { variant: input.variant }),
+  });
+}
+
+/**
  * Run one command on one host. The lane is the session the command addresses
  * (`list` for catalogue reads) — the backend builds the subject, so no subject
  * string is ever assembled in the frontend.

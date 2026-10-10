@@ -10,8 +10,10 @@ import { AgentThread } from "../../features/agent/AgentThread";
 import { saveComposerDraft } from "../../features/agent/composerDraft";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { sessionMentionOptions } from "../../features/agent/sessionMention";
+import { peerBadgeText } from "../../features/remote-peer/peerIcons";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
+import { RemoteFilesDialog } from "../../features/remote-peer/RemoteFilesDialog";
 import { compactRemoteConversation, forkRemoteConversation } from "../../features/remote-peer/remotePeerClient";
 import { RemotePeersView } from "../../features/remote-peer/RemotePeersView";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
@@ -144,6 +146,8 @@ function ReadyAppShell({
   const [activeRemote, setActiveRemote] = useState<{ desktopId: string; sessionId: string } | null>(null);
   /** The remote conversation whose rename dialog is open, if any. */
   const [remoteRename, setRemoteRename] = useState<MergedConversation | null>(null);
+  /** Whether the open remote conversation's file browser is showing. */
+  const [remoteFilesOpen, setRemoteFilesOpen] = useState(false);
   const [leftExpanded, setLeftExpanded] = useState(true);
   const [leftOverlayOpen, setLeftOverlayOpen] = useState(false);
   const [rightExpanded, setRightExpanded] = useState(false);
@@ -938,6 +942,7 @@ function ReadyAppShell({
                                   forkable,
                                 )}
                               onLoadOlder={() => void remoteTimeline.loadOlder()}
+                              onOpenFiles={() => setRemoteFilesOpen(true)}
                               onRetry={() => void remoteTimeline.refresh()}
                               peer={activeRemotePeer}
                               persistedEntryIds={remoteTimeline.persistedEntryIds}
@@ -1055,6 +1060,20 @@ function ReadyAppShell({
               conversation={remoteRename}
               onClose={() => setRemoteRename(null)}
               onRenamed={() => void refreshRemotePeers()}
+            />
+          )
+        : null}
+      {/* Keyed on the conversation so switching to another one closes the
+          browser: the listing belongs to a session, and keeping it open across
+          a switch would show one conversation's files under another's title. */}
+      {remoteFilesOpen && activeRemote && activeRemote.sessionId
+        ? (
+            <RemoteFilesDialog
+              desktopId={activeRemote.desktopId}
+              key={`${activeRemote.desktopId}::${activeRemote.sessionId}`}
+              onClose={() => setRemoteFilesOpen(false)}
+              peerName={activeRemotePeer ? peerBadgeText(activeRemotePeer, activeRemotePeer.desktopId) : ""}
+              sessionId={activeRemote.sessionId}
             />
           )
         : null}

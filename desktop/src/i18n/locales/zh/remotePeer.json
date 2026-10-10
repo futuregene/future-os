@@ -94,5 +94,12 @@
   "forkNotSaved": "该回复所在的回合还没有保存到那台远程桌面。请重新打开会话后再试。",
   "compact": "压缩上下文",
   "compacting": "正在压缩…",
-  "compactFailed": "无法压缩该会话：{{message}}"
+  "compactFailed": "无法压缩该会话：{{message}}",
+  "filesTitle": "文件",
+  "filesOn": "{{name}} 上该会话的文件。",
+  "filesUp": "上一级",
+  "filesEmpty": "此文件夹为空。",
+  "filesDownload": "下载",
+  "filesDownloading": "下载中…",
+  "filesSaved": "已保存为 {{name}}"
 }

@@ -68,6 +68,7 @@ async function mount(props: {
         onDecideApproval={() => {}}
         onFork={onFork}
         onLoadOlder={() => {}}
+        onOpenFiles={() => {}}
         onRetry={() => {}}
         peer={peer}
         persistedEntryIds={new Set(props.persistedEntryIds ?? props.entries.map(item => item.id))}

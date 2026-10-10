@@ -35,6 +35,7 @@ export function RemoteConversationView({
   onDecideApproval,
   onFork,
   onLoadOlder,
+  onOpenFiles,
   onRetry,
   peer,
   persistedEntryIds,
@@ -55,6 +56,8 @@ export function RemoteConversationView({
   /** Ask the host to compact this conversation's context. */
   onCompact: () => void;
   onDecideApproval: (approval: RemoteApproval, decision: "allow" | "deny") => void;
+  /** Open the browser for the files this conversation's host holds for it. */
+  onOpenFiles: () => void;
   /**
    * Branch the conversation at the turn that produced an assistant reply, and
    * open the child. `forkable` is false when that turn is not persisted on the
@@ -81,6 +84,9 @@ export function RemoteConversationView({
             {t("runsOn", { name: peer ? peerBadgeText(peer, peer.desktopId) : "" })}
           </div>
         </div>
+        <Button onClick={onOpenFiles} size="sm" variant="ghost">
+          {t("filesTitle")}
+        </Button>
         {/* Compact is a conversation-level action on the host, next to the run
             state it is mutually exclusive with: a host answering a prompt does
             not also compact, and a host compacting refuses a prompt. */}

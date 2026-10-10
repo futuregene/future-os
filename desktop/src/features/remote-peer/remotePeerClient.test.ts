@@ -19,8 +19,10 @@ const {
   abortRemoteRun,
   compactRemoteConversation,
   deleteRemoteConversation,
+  downloadRemoteFile,
   fetchRemoteSessions,
   forkRemoteConversation,
+  listRemoteSessionFiles,
   pinRemoteConversation,
   promptRemoteConversation,
   renameRemoteConversation,
@@ -317,5 +319,132 @@ describe("fetchRemoteSessions", () => {
       streaming: true,
       lastMessageAt: 7,
     });
+  });
+});
+
+describe("listRemoteSessionFiles", () => {
+  it("asks the host for a session's root, and for a directory by its own path", async () => {
+    invokeMock.mockResolvedValue({ rootPath: "/root", path: "/root", entries: [] });
+
+    await listRemoteSessionFiles("desktop_a", "sess_1");
+    // An absent path is sent as absent, not as "": the backend turns it into the
+    // empty path the host reads as the session root, and sending "" from here
+    // would make that translation invisible.
+    expect(lastCall().args).toEqual({ desktopId: "desktop_a", sessionId: "sess_1" });
+
+    await listRemoteSessionFiles("desktop_a", "sess_1", "/root/nested");
+    expect(lastCall().args).toEqual({
+      desktopId: "desktop_a",
+      sessionId: "sess_1",
+      path: "/root/nested",
+    });
+  });
+
+  it("keeps the entries a user could actually open", async () => {
+    invokeMock.mockResolvedValue({
+      rootPath: "/root",
+      path: "/root",
+      entries: [
+        { name: "a.txt", path: "/root/a.txt", isDir: false, size: 12 },
+        { name: "src", path: "/root/src", isDir: true, size: 0 },
+      ],
+    });
+
+    const result = await listRemoteSessionFiles("desktop_a", "sess_1");
+    expect(result).toEqual({
+      rootPath: "/root",
+      path: "/root",
+      entries: [
+        { name: "a.txt", path: "/root/a.txt", isDir: false, size: 12 },
+        { name: "src", path: "/root/src", isDir: true, size: 0 },
+      ],
+    });
+  });
+
+  it("drops rows that could not be opened and tolerates a malformed payload", async () => {
+    invokeMock.mockResolvedValue({
+      entries: [
+        null,
+        "nope",
+        { name: "no-path.txt" },
+        { path: "/root/no-name.txt" },
+        { name: "", path: "/root/empty.txt" },
+        { name: "ok.txt", path: "/root/ok.txt", size: "12" },
+      ],
+    });
+
+    const result = await listRemoteSessionFiles("desktop_a", "sess_1");
+    // The one usable row survives, with the unusable `size` defaulted.
+    expect(result.entries).toEqual([
+      { name: "ok.txt", path: "/root/ok.txt", isDir: false, size: 0 },
+    ]);
+    expect(result.rootPath).toBe("");
+    expect(result.path).toBe("");
+
+    invokeMock.mockResolvedValue(null);
+    await expect(listRemoteSessionFiles("desktop_a", "sess_1")).resolves.toEqual({
+      rootPath: "",
+      path: "",
+      entries: [],
+    });
+  });
+});
+
+describe("downloadRemoteFile", () => {
+  it("addresses the file by the host's path and reports the host's name", async () => {
+    invokeMock.mockResolvedValue("report-preview.png");
+
+    const saved = await downloadRemoteFile({
+      desktopId: "desktop_a",
+      sessionId: "sess_1",
+      path: "/root/report.txt",
+      name: "report.txt",
+      destination: "/local/saved.png",
+    });
+
+    expect(lastCall().command).toBe("remote_peer_download_file");
+    expect(lastCall().args).toEqual({
+      desktopId: "desktop_a",
+      sessionId: "sess_1",
+      path: "/root/report.txt",
+      name: "report.txt",
+      destination: "/local/saved.png",
+    });
+    // The name to show is the one the host chose, not the one requested.
+    expect(saved).toBe("report-preview.png");
+  });
+
+  it("passes a variant only when one was asked for", async () => {
+    invokeMock.mockResolvedValue("n");
+
+    await downloadRemoteFile({
+      desktopId: "desktop_a",
+      sessionId: "sess_1",
+      path: "/p",
+      name: "n",
+      destination: "/d",
+    });
+    expect(lastCall().args).not.toHaveProperty("variant");
+
+    await downloadRemoteFile({
+      desktopId: "desktop_a",
+      sessionId: "sess_1",
+      path: "/p",
+      name: "n",
+      destination: "/d",
+      variant: "preview",
+    });
+    expect(lastCall().args).toHaveProperty("variant", "preview");
+  });
+
+  it("propagates a refused download", async () => {
+    invokeMock.mockRejectedValue(new Error("remote_download_hash_mismatch"));
+    await expect(downloadRemoteFile({
+      desktopId: "desktop_a",
+      sessionId: "sess_1",
+      path: "/p",
+      name: "n",
+      destination: "/d",
+    })).rejects.toThrow("remote_download_hash_mismatch");
   });
 });
