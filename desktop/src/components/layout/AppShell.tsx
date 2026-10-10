@@ -12,7 +12,7 @@ import { NewConversation } from "../../features/agent/NewConversation";
 import { sessionMentionOptions } from "../../features/agent/sessionMention";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
-import { forkRemoteConversation } from "../../features/remote-peer/remotePeerClient";
+import { compactRemoteConversation, forkRemoteConversation } from "../../features/remote-peer/remotePeerClient";
 import { RemotePeersView } from "../../features/remote-peer/RemotePeersView";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { useRemoteApprovals } from "../../features/remote-peer/useRemoteApprovals";
@@ -671,6 +671,30 @@ function ReadyAppShell({
     ? remotePeers.find(peer => peer.desktopId === activeRemote.desktopId)
     : undefined;
 
+  /**
+   * Ask a host to compact a conversation's context.
+   *
+   * Resolving here means the host *accepted* it. What follows — commit, failure,
+   * or nothing to do — arrives as the host's own events, which is why the
+   * transcript is re-read afterwards: the checkpoint that comes out of a
+   * committed compaction is content, and waiting for a later open to show it
+   * would make the action look like it did nothing.
+   */
+  async function compactRemoteConversationOn(desktopId: string, sessionId: string) {
+    if (!sessionId)
+      return;
+    try {
+      await compactRemoteConversation(desktopId, sessionId);
+      await remoteTimeline.refresh();
+    }
+    catch (error) {
+      emitFutureEvent("toast", {
+        message: tRemotePeer("compactFailed", { message: errorMessage(error) }),
+        tone: "error",
+      });
+    }
+  }
+
   function openRemoteConversation(conversation: MergedConversation) {
     if (conversation.desktopId === null)
       return;
@@ -904,6 +928,7 @@ function ReadyAppShell({
                               hasMore={remoteTimeline.hasMore}
                               loading={remoteTimeline.loading}
                               loadingOlder={remoteTimeline.loadingOlder}
+                              onCompact={() => void compactRemoteConversationOn(activeRemote.desktopId, activeRemote.sessionId)}
                               onDecideApproval={(approval, decision) => void remoteApprovals.decide(approval, decision)}
                               onFork={(sourceEntryId, forkable) =>
                                 void forkRemoteConversationAt(
@@ -917,6 +942,7 @@ function ReadyAppShell({
                               peer={activeRemotePeer}
                               persistedEntryIds={remoteTimeline.persistedEntryIds}
                               streaming={remoteTimeline.streaming}
+                              compacting={remoteTimeline.compacting}
                               title={titleOfRemote(remoteCatalogs, activeRemote)}
                             />
                           )

@@ -1679,5 +1679,61 @@ describe("app shell collapsed-panel affordances", () => {
       expect([...props.persistedEntryIds]).toEqual(["entry_u1"]);
       view.unmount();
     });
+
+    /**
+     * Compact is the host's operation, so the shell asks it and then re-reads:
+     * the checkpoint a committed compaction produces is content, and waiting for
+     * the next open to show it would make the action look like it did nothing.
+     */
+    it("asks the host to compact and re-reads the transcript", async () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+
+      mocks.invoke.mockResolvedValue({ accepted: true, operationId: "op_1" });
+      await act(async () => {
+        (children.remoteConversationView as { onCompact: () => void }).onCompact();
+        for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      });
+
+      const commands = mocks.invoke.mock.calls.map(([, args]) =>
+        (args as { command?: { type?: string } } | undefined)?.command?.type);
+      expect(commands).toContain("compact_context");
+      // The re-read is the second history read: one on open, one after the ack.
+      expect(commands.filter(type => type === "get_session_entries").length).toBeGreaterThan(1);
+      view.unmount();
+    });
+
+    it("reports a compaction the host did not accept", async () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+
+      mocks.invoke.mockResolvedValue({ accepted: false });
+      await act(async () => {
+        (children.remoteConversationView as { onCompact: () => void }).onCompact();
+        for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      });
+
+      expect(mocks.emit).toHaveBeenCalledWith("toast", expect.objectContaining({ tone: "error" }));
+      view.unmount();
+    });
+
+    /** A draft has no conversation on the host, so there is no context to
+     * compact and nothing to address the request with. */
+    it("does not ask a host to compact a conversation that does not exist yet", async () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onManageDesktops?.());
+      act(() => (children.peersView as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
+
+      await act(async () => {
+        (children.remoteConversationView as { onCompact: () => void }).onCompact();
+        for (let i = 0; i < 6; i += 1) await Promise.resolve();
+      });
+
+      const commands = mocks.invoke.mock.calls.map(([, args]) =>
+        (args as { command?: { type?: string } } | undefined)?.command?.type);
+      expect(commands).not.toContain("compact_context");
+      expect(mocks.emit).not.toHaveBeenCalledWith("toast", expect.objectContaining({ tone: "error" }));
+      view.unmount();
+    });
   });
 });

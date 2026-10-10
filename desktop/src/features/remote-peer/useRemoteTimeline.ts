@@ -29,6 +29,16 @@ export interface RemoteTimeline {
   /** The host has an in-flight run for this session. */
   streaming: boolean;
   /**
+   * The host is compacting this conversation's context.
+   *
+   * Advisory, and derived from the host's own events rather than from the fact
+   * that we asked: the command only *accepts* the request, and the host decides
+   * whether it commits, fails, or finds nothing to do. It gates the composer
+   * because a host answering one prompt at a time refuses a prompt sent while
+   * it is compacting.
+   */
+  compacting: boolean;
+  /**
    * The entry ids that came from the host's own history read — the only ones it
    * will accept as a persisted entry.
    *
@@ -71,6 +81,24 @@ const RUN_ACTIVITY = new Set([
 
 const RUN_SETTLED = new Set(["run_finished", "run_failed", "agent_end"]);
 
+/**
+ * The compaction lifecycle.
+ *
+ * `compaction_unchanged` is terminal too: the host decided there was nothing
+ * worth compacting, which ends the operation without a checkpoint. An operation
+ * that ends without one of these would leave the composer waiting forever, so a
+ * settled *run* clears it as well — nothing can still be compacting once a run
+ * has finished.
+ */
+const COMPACTION_ACTIVITY = new Set(["compaction_started"]);
+
+const COMPACTION_SETTLED = new Set([
+  "compaction_committed",
+  "compaction_failed",
+  "compaction_unchanged",
+  "compaction_end",
+]);
+
 interface EntriesPage {
   entries?: unknown[];
   hasMore?: boolean;
@@ -97,6 +125,7 @@ export function useRemoteTimeline(
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
+  const [compacting, setCompacting] = useState(false);
   const [persistedEntryIds, setPersistedEntryIds] = useState<ReadonlySet<string>>(() => new Set());
   /** The cursor for the next older page (`nextOffset`), or null at the start. */
   const cursorRef = useRef<number | null>(null);
@@ -177,6 +206,7 @@ export function useRemoteTimeline(
     setHasMore(false);
     setError(null);
     setStreaming(false);
+    setCompacting(false);
     setPersistedEntryIds(new Set());
     cursorRef.current = null;
     if (!enabled || !desktopId || !sessionId)
@@ -209,6 +239,13 @@ export function useRemoteTimeline(
         setStreaming(true);
       else if (RUN_SETTLED.has(type))
         setStreaming(false);
+      // A settled run also ends any compaction: neither can outlive the other,
+      // and a terminal compaction frame lost over at-most-once NATS must not
+      // leave the composer permanently waiting.
+      if (COMPACTION_ACTIVITY.has(type))
+        setCompacting(true);
+      else if (COMPACTION_SETTLED.has(type) || RUN_SETTLED.has(type))
+        setCompacting(false);
       const entry = entryFromEvent(payload, type);
       if (!entry)
         return;
@@ -238,9 +275,10 @@ export function useRemoteTimeline(
       loadOlder,
       refresh,
       streaming,
+      compacting,
       persistedEntryIds,
     }),
-    [entries, loading, loadingOlder, hasMore, error, loadOlder, refresh, streaming, persistedEntryIds],
+    [entries, loading, loadingOlder, hasMore, error, loadOlder, refresh, streaming, compacting, persistedEntryIds],
   );
 }
 

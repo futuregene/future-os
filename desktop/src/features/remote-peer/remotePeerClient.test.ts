@@ -17,6 +17,7 @@ vi.mock("../../integrations/tauri/invoke", () => ({
 
 const {
   abortRemoteRun,
+  compactRemoteConversation,
   deleteRemoteConversation,
   fetchRemoteSessions,
   forkRemoteConversation,
@@ -207,6 +208,42 @@ describe("forkRemoteConversation", () => {
     await expect(forkRemoteConversation("desktop_a", "sess_1", "entry_u1"))
       .resolves
       .toEqual({ sessionId: "sess_child", threadId: "" });
+  });
+});
+
+describe("compactRemoteConversation", () => {
+  it("asks the host to compact, on that conversation's lane", async () => {
+    invokeMock.mockResolvedValue({ accepted: true, operationId: "op_1" });
+
+    await compactRemoteConversation("desktop_a", "sess_1");
+
+    expect(lastCall().args).toEqual({
+      desktopId: "desktop_a",
+      command: { type: "compact_context", sessionId: "sess_1" },
+      lane: "sess_1",
+    });
+  });
+
+  /**
+   * An ack is an *acknowledgement*, not a result. One without an `operationId`
+   * is not a real acceptance — the host uses that id to correlate the events
+   * that follow — so resolving on it would report success for a request the
+   * host never took.
+   */
+  it("rejects an acknowledgement the host did not really take", async () => {
+    for (const ack of [
+      { accepted: false, operationId: "op_1" },
+      { accepted: true },
+      { accepted: true, operationId: "" },
+      { operationId: "op_1" },
+      {},
+      null,
+    ]) {
+      invokeMock.mockResolvedValue(ack);
+      await expect(compactRemoteConversation("desktop_a", "sess_1"))
+        .rejects
+        .toThrow("remote_compaction_not_accepted");
+    }
   });
 });
 

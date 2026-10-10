@@ -385,3 +385,89 @@ describe("precedingUserEntryId", () => {
     expect(precedingUserEntryId([say("u1", "user")], "missing")).toBeNull();
   });
 });
+
+/**
+ * `compacting` gates the composer, because a host that is compacting refuses a
+ * prompt. It is derived from the host's own lifecycle events, not from the fact
+ * that we asked — the command only acknowledges the request.
+ */
+describe("useRemoteTimeline compaction state", () => {
+  const event = (type: string) => ({
+    sessionId: "sess_1",
+    eventId: `e_${type}`,
+    timestamp: "2026-01-01T00:00:00Z",
+    type,
+    data: JSON.stringify({ operationId: "op_1" }),
+  });
+
+  async function openTimeline() {
+    requestMock.mockResolvedValue(page([]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    return hook;
+  }
+
+  it("tracks a compaction from its start to its commit", async () => {
+    const hook = await openTimeline();
+    expect(hook.current.compacting).toBe(false);
+
+    push(event("compaction_started"));
+    expect(hook.current.compacting).toBe(true);
+
+    push(event("compaction_committed"));
+    expect(hook.current.compacting).toBe(false);
+    hook.unmount();
+  });
+
+  /** "Nothing worth compacting" is still the end of the operation. */
+  it("treats every terminal compaction outcome as the end", async () => {
+    for (const type of ["compaction_failed", "compaction_unchanged", "compaction_end"]) {
+      const hook = await openTimeline();
+      push(event("compaction_started"));
+      expect(hook.current.compacting).toBe(true);
+
+      push(event(type));
+      expect(hook.current.compacting).toBe(false);
+      hook.unmount();
+    }
+  });
+
+  /**
+   * A compaction must not leave the composer waiting forever: the terminal frame
+   * can be lost over at-most-once NATS, and nothing can still be compacting once
+   * a run has settled.
+   */
+  it("clears a compaction when a run settles", async () => {
+    const hook = await openTimeline();
+    push(event("compaction_started"));
+    expect(hook.current.compacting).toBe(true);
+
+    push(event("run_finished"));
+    expect(hook.current.compacting).toBe(false);
+    hook.unmount();
+  });
+
+  /** A compaction is not a run, so it must not switch the composer to Stop. */
+  it("does not make a compaction look like a run", async () => {
+    const hook = await openTimeline();
+    push(event("compaction_started"));
+    expect(hook.current.compacting).toBe(true);
+    expect(hook.current.streaming).toBe(false);
+    hook.unmount();
+  });
+
+  it("forgets a compaction when another conversation is opened", async () => {
+    let session = "sess_1";
+    requestMock.mockResolvedValue(page([]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", session, true));
+    await settle();
+    push(event("compaction_started"));
+    expect(hook.current.compacting).toBe(true);
+
+    session = "sess_2";
+    hook.rerender();
+    await settle();
+    expect(hook.current.compacting).toBe(false);
+    hook.unmount();
+  });
+});
