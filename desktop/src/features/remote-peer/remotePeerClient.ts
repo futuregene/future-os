@@ -190,23 +190,26 @@ export function abortRemoteRun(desktopId: string, sessionId: string): Promise<un
 }
 
 /**
- * Send a prompt, optionally to *no* conversation yet.
+ * The two ids a host chooses for a conversation it created for us.
  *
- * An empty `sessionId` is the host's own signal for a new conversation: it
- * creates the thread and answers with the ids it chose. The client cannot mint
- * them (they are the host's), which is why the ack is the only way to learn the
- * conversation it just made.
+ * Both prompt-with-no-session and fork answer with these: the client cannot mint
+ * a host-side session id, so the ack is the only way to learn the conversation.
+ * `threadId` is empty only on a host that predates the field.
  */
-export interface RemotePromptAck {
+export interface RemoteConversationIds {
   sessionId: string;
   threadId: string;
 }
 
+/**
+ * Send a prompt to a conversation, or start one when `sessionId` is empty —
+ * which is the host's own signal to create the thread.
+ */
 export async function promptRemoteConversation(
   desktopId: string,
   sessionId: string,
   message: string,
-): Promise<RemotePromptAck> {
+): Promise<RemoteConversationIds> {
   const ack = await requestRemotePeer<Record<string, unknown>>(
     desktopId,
     { type: "prompt", sessionId, message },
@@ -215,6 +218,31 @@ export async function promptRemoteConversation(
   const created = ack?.sessionId;
   if (typeof created !== "string" || !created)
     throw new Error("remote_prompt_without_session_id");
+  return { sessionId: created, threadId: typeof ack.threadId === "string" ? ack.threadId : "" };
+}
+
+/**
+ * Fork a conversation at a settled turn, on the host that owns it.
+ *
+ * `sourceEntryId` must be the host's **persisted** user entry id (see
+ * `persistedEntryIds` on the timeline): the host resolves it against its own
+ * store, so an event id from a live push is refused. The host answers with the
+ * child's ids, which is the only way to learn them — the client cannot mint a
+ * host-side session id.
+ */
+export async function forkRemoteConversation(
+  desktopId: string,
+  sessionId: string,
+  sourceEntryId: string,
+): Promise<RemoteConversationIds> {
+  const ack = await requestRemotePeer<Record<string, unknown>>(
+    desktopId,
+    { type: "fork_session", sessionId, sourceEntryId },
+    sessionId,
+  );
+  const created = ack?.sessionId;
+  if (typeof created !== "string" || !created)
+    throw new Error("remote_fork_without_session_id");
   return { sessionId: created, threadId: typeof ack.threadId === "string" ? ack.threadId : "" };
 }
 

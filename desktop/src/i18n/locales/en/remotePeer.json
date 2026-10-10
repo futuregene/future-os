@@ -88,5 +88,8 @@
   "stop": "Stop",
   "stopping": "Stopping…",
   "newConversation": "New conversation",
-  "newConversationHint": "Starts on the remote desktop."
+  "newConversationHint": "Starts on the remote desktop.",
+  "fork": "Branch from here",
+  "forkFailed": "Could not branch the conversation: {{message}}",
+  "forkNotSaved": "That reply's turn is not saved on the remote desktop yet. Reopen the conversation and try again."
 }

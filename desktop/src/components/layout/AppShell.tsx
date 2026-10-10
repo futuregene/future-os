@@ -12,6 +12,7 @@ import { NewConversation } from "../../features/agent/NewConversation";
 import { sessionMentionOptions } from "../../features/agent/sessionMention";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
+import { forkRemoteConversation } from "../../features/remote-peer/remotePeerClient";
 import { RemotePeersView } from "../../features/remote-peer/RemotePeersView";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { useRemoteApprovals } from "../../features/remote-peer/useRemoteApprovals";
@@ -38,6 +39,7 @@ import {
   restoreThread,
 } from "../../integrations/storage/threadStore";
 import { invokeCommand } from "../../integrations/tauri/invoke";
+import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { useTauriEvent } from "../../lib/useTauriEvent";
 import { ToastHost } from "../ui/ToastHost";
@@ -120,6 +122,9 @@ function ReadyAppShell({
   initialProviders: ProvidersView;
 }) {
   const { t } = useTranslation("layout");
+  // The remote peer's own namespace: its strings describe another machine, and
+  // folding them into `layout` would put them where no other remote string is.
+  const { t: tRemotePeer } = useTranslation("remotePeer");
   const [section, setSection] = useState<ActivitySection>("chat");
   const [centerMode, setCenterMode] = useState<"thread" | "new-chat">("thread");
   /**
@@ -674,6 +679,34 @@ function ReadyAppShell({
   }
 
   /**
+   * Branch a remote conversation at a settled turn and open the child.
+   *
+   * The host owns the fork; the ack's ids are the only way to know the child, so
+   * the child is opened from them (not guessed). `forkable` is false when the
+   * turn is not persisted on that host yet — reported instead of sent, because
+   * the host would resolve the id against its store and refuse, and its refusal
+   * ("Fork source thread could not be loaded") describes a bug rather than the
+   * situation the user is in.
+   */
+  async function forkRemoteConversationAt(desktopId: string, sessionId: string, sourceEntryId: string, forkable: boolean) {
+    if (!forkable) {
+      emitFutureEvent("toast", { message: tRemotePeer("forkNotSaved"), tone: "error" });
+      return;
+    }
+    try {
+      const child = await forkRemoteConversation(desktopId, sessionId, sourceEntryId);
+      await refreshRemotePeers();
+      setActiveRemote({ desktopId, sessionId: child.sessionId });
+    }
+    catch (error) {
+      emitFutureEvent("toast", {
+        message: tRemotePeer("forkFailed", { message: errorMessage(error) }),
+        tone: "error",
+      });
+    }
+  }
+
+  /**
    * A conversation that does not exist yet on a host.
    *
    * The empty session id *is* the request: the host creates the thread and
@@ -872,9 +905,17 @@ function ReadyAppShell({
                               loading={remoteTimeline.loading}
                               loadingOlder={remoteTimeline.loadingOlder}
                               onDecideApproval={(approval, decision) => void remoteApprovals.decide(approval, decision)}
+                              onFork={(sourceEntryId, forkable) =>
+                                void forkRemoteConversationAt(
+                                  activeRemote.desktopId,
+                                  activeRemote.sessionId,
+                                  sourceEntryId,
+                                  forkable,
+                                )}
                               onLoadOlder={() => void remoteTimeline.loadOlder()}
                               onRetry={() => void remoteTimeline.refresh()}
                               peer={activeRemotePeer}
+                              persistedEntryIds={remoteTimeline.persistedEntryIds}
                               streaming={remoteTimeline.streaming}
                               title={titleOfRemote(remoteCatalogs, activeRemote)}
                             />

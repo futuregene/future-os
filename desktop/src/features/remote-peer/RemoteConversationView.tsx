@@ -1,10 +1,14 @@
 import type { RemotePeer } from "./remotePeerClient";
 import type { RemoteApproval } from "./useRemoteApprovals";
 import type { RemoteEntry } from "./useRemoteTimeline";
+import { GitBranch } from "lucide-react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
+import { cn } from "../../lib/cn";
 import { MarkdownContent } from "../markdown/MarkdownContent";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
+import { precedingUserEntryId } from "./useRemoteTimeline";
 
 /**
  * A remote conversation: the session's transcript plus a composer that sends to
@@ -27,9 +31,11 @@ export function RemoteConversationView({
   loading,
   loadingOlder,
   onDecideApproval,
+  onFork,
   onLoadOlder,
   onRetry,
   peer,
+  persistedEntryIds,
   streaming,
   title,
 }: {
@@ -43,9 +49,17 @@ export function RemoteConversationView({
   loading: boolean;
   loadingOlder: boolean;
   onDecideApproval: (approval: RemoteApproval, decision: "allow" | "deny") => void;
+  /**
+   * Branch the conversation at the turn that produced an assistant reply, and
+   * open the child. `forkable` is false when that turn is not persisted on the
+   * host yet, which the caller must report rather than send.
+   */
+  onFork: (sourceEntryId: string, forkable: boolean) => void;
   onLoadOlder: () => void;
   onRetry: () => void;
   peer: RemotePeer | undefined;
+  /** The entry ids the host will accept as a stored record (see the timeline). */
+  persistedEntryIds: ReadonlySet<string>;
   streaming: boolean;
   title: string;
 }) {
@@ -95,7 +109,21 @@ export function RemoteConversationView({
           : null}
 
         <div className="mx-auto w-full max-w-3xl space-y-4">
-          {entries.map(entry => <EntryRow entry={entry} key={entry.id} />)}
+          {entries.map((entry) => {
+            // Computed here, where the whole list is in scope: the fork point is
+            // a property of the entry's *position* in the conversation.
+            const forkSource = entry.role === "user" ? null : precedingUserEntryId(entries, entry.id);
+            return (
+              <EntryRow
+                entry={entry}
+                forkable={forkSource !== null && persistedEntryIds.has(forkSource)}
+                forkSource={forkSource}
+                key={entry.id}
+                onFork={onFork}
+                streaming={streaming}
+              />
+            );
+          })}
         </div>
       </div>
 
@@ -174,8 +202,22 @@ function ApprovalCard({
   );
 }
 
-function EntryRow({ entry }: { entry: RemoteEntry }) {
+function EntryRow({
+  entry,
+  forkable,
+  forkSource,
+  onFork,
+  streaming,
+}: {
+  entry: RemoteEntry;
+  /** False when the turn this reply rests on is not persisted on the host yet. */
+  forkable: boolean;
+  forkSource: string | null;
+  onFork: (sourceEntryId: string, forkable: boolean) => void;
+  streaming: boolean;
+}) {
   const { t } = useTranslation("remotePeer");
+  const [hovered, setHovered] = useState(false);
   const isUser = entry.role === "user";
   // `MessageBlock` (the projection package's own shape) names the discriminant
   // `kind`, so a tool block is `kind: "tool_call"` with a `name`.
@@ -188,7 +230,11 @@ function EntryRow({ entry }: { entry: RemoteEntry }) {
   const runError = entry.run?.error ?? null;
 
   return (
-    <div className={isUser ? "flex justify-end" : "flex justify-start"}>
+    <div
+      className={isUser ? "flex justify-end" : "flex justify-start"}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       <div
         className={
           isUser
@@ -215,6 +261,27 @@ function EntryRow({ entry }: { entry: RemoteEntry }) {
           {new Date(entry.createdAtMs).toLocaleString()}
         </div>
       </div>
+      {/* Hidden while a run is in flight, like the local Fork button: the turn
+          being forked is not settled yet, so its persisted identity may not
+          exist. */}
+      {forkSource && !streaming
+        ? (
+            <button
+              aria-label={t("fork")}
+              className={cn(
+                "ml-1 self-start rounded p-1 text-ink-muted transition-opacity duration-200 hover:text-ink focus-visible:opacity-100",
+                // Still reachable by keyboard: a control that only exists on
+                // hover is unreachable without a pointer.
+                hovered ? "opacity-100" : "pointer-events-none opacity-0",
+              )}
+              onClick={() => onFork(forkSource, forkable)}
+              title={t("fork")}
+              type="button"
+            >
+              <GitBranch className="size-3.5" />
+            </button>
+          )
+        : null}
     </div>
   );
 }
