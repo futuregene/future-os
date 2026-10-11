@@ -141,8 +141,9 @@ export function RemoteClientSection({
           )
         : (
             <div className="space-y-6">
-              <p className="text-sm text-ink-muted">{t("description")}</p>
-
+              {/* The paragraph that explains this direction lives on the hub, which
+                  renders it as this section's subtitle. Rendering it here too put
+                  the same sentence on screen twice. */}
               <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
                 <label className="text-sm font-medium text-ink" htmlFor="peer-invitation">
                   {t("addTitle")}

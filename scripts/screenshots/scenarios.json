@@ -503,7 +503,7 @@
             "wait": 900
           },
           {
-            "tap": "手机遥控"
+            "tap": "远程"
           },
           {
             "wait": 2500
@@ -537,8 +537,8 @@
                   "name": "技能"
                 },
                 {
-                  "at": "手机遥控",
-                  "name": "手机遥控"
+                  "at": "远程",
+                  "name": "远程"
                 }
               ]
             }
@@ -876,6 +876,162 @@
           },
           {
             "shot": "d-tasks-new.png"
+          }
+        ]
+      },
+      "remote-hub": {
+        "note": "The Remote page: both directions, and the machines this one connects out to.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "远程"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; const has = (s) => t.includes(s); if (!has('让别的设备连接本机')) throw new Error('the host direction is missing'); if (!has('连接别的电脑')) throw new Error('the client direction is missing'); if (!has('工作室 iMac')) throw new Error('the connected host is not listed'); if (!has('desktop_macmini')) throw new Error('an unnamed host should fall back to its id'); const buttons = [...document.querySelectorAll('button')].map(b => b.textContent || '').filter(x => x.includes('新建对话')); if (buttons.length !== 1) throw new Error('expected exactly one host to offer a new conversation, saw ' + buttons.length); const lead = '把这台电脑连到别的电脑。那台电脑的会话会出现在共用会话列表里，工具在那台电脑上执行。'; const first = t.indexOf(lead); if (first < 0) throw new Error('the client direction has no explanation'); if (t.indexOf(lead, first + 1) >= 0) throw new Error('the client direction explanation is rendered twice');})()"
+          },
+          {
+            "shot": "d-remote-hub.png"
+          }
+        ]
+      },
+      "remote-merged": {
+        "note": "The shared conversation list: this machine and the host interleaved, remote rows badged.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('重画森林图并核对置信区间')) throw new Error('the remote conversation is not in the shared list'); if (!t.includes('整理两篇文献的结论对比表')) throw new Error('the local conversation disappeared from the shared list'); const named = [...document.querySelectorAll('[title]')].some(node => (node.getAttribute('title') || '').includes('工作室 iMac')); if (!named) throw new Error('no row names its host: the list does not say which machine a conversation belongs to'); })()"
+          },
+          {
+            "shot": "d-remote-merged.png"
+          }
+        ]
+      },
+      "remote-device-picker": {
+        "note": "The device selector above the list: merged, this machine, or one host.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "全部设备"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('本机')) throw new Error('the selector does not offer this machine'); if (!t.includes('工作室 iMac')) throw new Error('the selector does not offer the connected host'); if (!t.includes('管理远程桌面')) throw new Error('the selector does not lead to managing the hosts'); })()"
+          },
+          {
+            "shot": "d-remote-device-picker.png"
+          }
+        ]
+      },
+      "remote-conversation": {
+        "note": "A remote conversation: the host's transcript, its tool targets, and a composer that says where it runs.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "重画森林图并核对置信区间"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('工作室 iMac')) throw new Error('the conversation does not name its host'); if (!t.includes('effect-size.R')) throw new Error('the tool row does not show what the tool acted on'); if (!t.includes('Rscript analysis/effect-size.R')) throw new Error('the shell command was not read back'); if (!t.includes('deepseek/deepseek-chat')) throw new Error('the host model is not in the picker'); })()"
+          },
+          {
+            "shot": "d-remote-conversation.png"
+          }
+        ]
+      },
+      "remote-host-settings": {
+        "note": "One host's settings: its workspaces, its tasks, and its approval mode.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "远程"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('图表脚本')) throw new Error('that host workspaces are not listed'); if (!t.includes('审批模式')) throw new Error('that host approval mode is not offered'); if (!t.includes('管理')) throw new Error('that host tasks are not reachable'); if (/sk-[A-Za-z0-9]{8}/.test(t)) throw new Error('an API key appears in the UI'); })()"
+          },
+          {
+            "shot": "d-remote-host-settings.png"
+          }
+        ]
+      },
+      "remote-host-tasks": {
+        "note": "Another computer tasks, edited with this app own task editor.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "远程"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "管理"
+          },
+          {
+            "wait": 2200
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('每周进展周报')) throw new Error('the host task list did not render'); const rows = [...document.querySelectorAll('button')].map(b => b.textContent || ''); if (!rows.some(x => x.includes('每周进展周报'))) throw new Error('the task row is not clickable'); })()"
+          },
+          {
+            "shot": "d-remote-host-tasks.png"
           }
         ]
       }

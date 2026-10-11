@@ -38,7 +38,12 @@ export function Button({
   return (
     <button
       className={cn(
-        "inline-flex items-center justify-center gap-2 rounded-md border font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+        // `whitespace-nowrap`: a control's label must not wrap. A two-character
+        // button in a squeezed flex row was rendering its label as two stacked
+        // lines (the host-settings "Save" button, 44px wide) — a button whose
+        // text is unreadable is not a button anyone can use, and the layout
+        // should make room instead.
+        "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md border font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50",
         sizes[size],
         variants[variant],
         className,

@@ -43,8 +43,18 @@ export interface RemotePeerEvent {
   payload: unknown;
 }
 
-export function listRemotePeers(): Promise<RemotePeer[]> {
-  return invokeCommand<RemotePeer[]>("remote_peer_list");
+/**
+ * This machine's paired hosts.
+ *
+ * Validated rather than trusted: a command a backend does not implement answers
+ * `null` (the harness mock logs `UNHANDLED COMMAND` and returns null), and a
+ * caller that puts that into state feeds `null` to every screen that renders the
+ * list — which throws during render and takes the whole application down, not
+ * just the remote screen. An empty list is the honest reading of "no answer".
+ */
+export async function listRemotePeers(): Promise<RemotePeer[]> {
+  const raw = await invokeCommand<RemotePeer[] | null>("remote_peer_list");
+  return Array.isArray(raw) ? raw : [];
 }
 
 export function pairRemotePeer(invitation: string): Promise<RemotePeer> {
