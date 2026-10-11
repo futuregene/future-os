@@ -114,7 +114,12 @@ export function useRemoteApprovals(
         type: "approval_decision",
         sessionId: approval.sessionId,
         entryId: approval.id,
-        decision,
+        // The wire field is `mode`, and its values are the host's approval
+        // statuses, not our UI's words: `allow`→`approved`, `deny`→`rejected`.
+        // Sending `decision: "allow"` silently deserialised to an empty `mode`
+        // on the host, which rejected it as an invalid approval status — the
+        // card was already removed locally, so the run just hung, unanswered.
+        mode: decision === "allow" ? "approved" : "rejected",
       }, approval.sessionId);
       // The host broadcasts `approval_decision`; that is what removes the card.
       // Dropping it locally too keeps the UI honest if the push is lost —

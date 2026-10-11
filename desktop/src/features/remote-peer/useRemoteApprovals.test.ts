@@ -104,18 +104,41 @@ describe("useRemoteApprovals", () => {
       await hook.current.decide(hook.current.approvals[0]!, "allow");
     });
 
+    // The exact wire body, not a subset: the host reads `mode` and accepts
+    // only its own approval statuses. A test that asserts a looser shape (or
+    // one that mirrors the implementation instead of the protocol) passes
+    // while the host rejects every decision.
     expect(requestMock).toHaveBeenCalledWith(
       "desktop_a",
-      expect.objectContaining({
+      {
         type: "approval_decision",
         sessionId: "sess_1",
         entryId: "ap1",
-        decision: "allow",
-      }),
+        mode: "approved",
+      },
       "sess_1",
     );
     // Answered cards leave the list so the user cannot answer twice.
     expect(hook.current.approvals).toEqual([]);
+    hook.unmount();
+  });
+
+  /** `deny` maps to the host's `rejected`, not a word the host does not read. */
+  it("maps deny to the host's rejected status", async () => {
+    const hook = renderHook(() => useRemoteApprovals("desktop_a", "sess_1"));
+    await settle();
+    emit(request("ap1"));
+    await settle();
+
+    await act(async () => {
+      await hook.current.decide(hook.current.approvals[0]!, "deny");
+    });
+
+    expect(requestMock).toHaveBeenCalledWith(
+      "desktop_a",
+      expect.objectContaining({ mode: "rejected" }),
+      "sess_1",
+    );
     hook.unmount();
   });
 
