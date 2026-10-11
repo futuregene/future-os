@@ -38,6 +38,21 @@ describe("button", () => {
     expect(html).toContain("data-icon");
     expect(html).toContain("aria-label=\"go\"");
   });
+
+  /**
+   * A button's label never wraps.
+   *
+   * A two-character label in a squeezed flex row wrapped into two stacked lines
+   * — measured in the host-settings page, where "保存" rendered as 保 over 存 in
+   * a 44px box. The class is the fix and this is the guard: a layout that cannot
+   * fit the label has to give it room rather than break the word.
+   */
+  it("keeps its label on one line", () => {
+    const html = renderToStaticMarkup(
+      createElement(Button, { "aria-label": "save" }, "保存"),
+    );
+    expect(html).toContain("whitespace-nowrap");
+  });
 });
 
 describe("iconButton", () => {

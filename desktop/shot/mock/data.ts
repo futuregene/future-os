@@ -1081,3 +1081,177 @@ export const taskRevisions: Record<string, Array<{ id: string; version: number; 
 };
 
 export const nowRef = now;
+
+// ── The client role: this Desktop's pairings *out* to other computers ───────
+//
+// The host-role data above answers "who connects to me". These answer the
+// opposite question, and they are what the Remote page's client half, the merged
+// conversation list, the device selector and a remote conversation render from.
+//
+// Two hosts, on purpose: one connected with conversations and one disconnected,
+// because "a host that is not reachable" is a state the list has to survive
+// (its rows drop out rather than going stale) and a single-host fixture cannot
+// show it.
+
+export interface MockPeer {
+  desktopId: string;
+  pairId: string;
+  name: string | null;
+  icon: string | null;
+  connected: boolean;
+  error: string | null;
+  bridgeInstanceId: string | null;
+  features: string[];
+  agentAvailable: boolean;
+}
+
+export const remotePeers: MockPeer[] = [
+  {
+    desktopId: "desktop_studio",
+    pairId: "pair_studio",
+    name: "工作室 iMac",
+    icon: "laptop",
+    connected: true,
+    error: null,
+    bridgeInstanceId: "bridge_studio",
+    // The capabilities the host advertises; the UI gates optional actions on
+    // these, so a fixture without them renders fewer rows than the app can.
+    features: [
+      "approval_tier_v1",
+      "auto_approval_v1",
+      "provider_management_v1",
+      "workspace_create_v1",
+      "workspace_pinning_v1",
+    ],
+    agentAvailable: true,
+  },
+  {
+    desktopId: "desktop_macmini",
+    pairId: "pair_macmini",
+    name: null,
+    icon: "desktop",
+    connected: false,
+    error: "peer_not_connected",
+    bridgeInstanceId: null,
+    features: [],
+    agentAvailable: false,
+  },
+];
+
+/** That host's conversations, as its own catalogue reports them. */
+export const remoteSessions: Record<string, unknown[]> = {
+  desktop_studio: [
+    {
+      sessionId: "rs_forest",
+      threadId: "th_forest",
+      title: "重画森林图并核对置信区间",
+      mode: "workspace",
+      workspaceId: "ws_figures",
+      pinned: false,
+      streaming: true,
+      lastMessageAt: Date.now() - 90_000,
+    },
+    {
+      sessionId: "rs_prisma",
+      threadId: "th_prisma",
+      title: "PRISMA 流程图的筛选数字对不上",
+      mode: "workspace",
+      workspaceId: "ws_figures",
+      pinned: true,
+      streaming: false,
+      lastMessageAt: Date.now() - 40 * 60_000,
+    },
+    {
+      sessionId: "rs_reviewer",
+      threadId: "th_reviewer",
+      title: "审稿意见逐条回复草稿",
+      mode: "chat",
+      workspaceId: null,
+      pinned: false,
+      streaming: false,
+      lastMessageAt: Date.now() - 3 * 60 * 60_000,
+    },
+  ],
+};
+
+/** A remote conversation's transcript, in the host's own entry shape. */
+export const remoteEntries: Record<string, unknown[]> = {
+  rs_forest: [
+    {
+      id: "re_1",
+      kind: "message",
+      role: "user",
+      createdAtMs: Date.now() - 6 * 60_000,
+      runId: "rrun_1",
+      blocks: [{
+        kind: "text",
+        text: "effect-size.R 里那张森林图，把 95% 置信区间画成了 90%，重新画一遍并核对数值。",
+      }],
+    },
+    {
+      id: "re_2",
+      kind: "message",
+      role: "assistant",
+      createdAtMs: Date.now() - 5 * 60_000,
+      // `runId` is what makes a tool row's arguments fetchable: the entry keeps
+      // the call id and the run, and the command is read back by both.
+      runId: "rrun_1",
+      run: { status: "completed", durationMs: 42_000 },
+      blocks: [
+        { kind: "text", text: "先看脚本里的置信区间是怎么算的。" },
+        { kind: "tool_call", toolCallId: "rtc_1", name: "read" },
+        {
+          kind: "text",
+          text: "问题在 `ci_level <- 0.90`：画的是 90% 区间，而正文写的是 95%。改成 0.95 之后重画。",
+        },
+        { kind: "tool_call", toolCallId: "rtc_2", name: "shell" },
+      ],
+    },
+    {
+      id: "re_3",
+      kind: "message",
+      role: "user",
+      createdAtMs: Date.now() - 3 * 60_000,
+      runId: "rrun_2",
+      blocks: [{ kind: "text", text: "再检查一下有没有别的图也用了这个变量。" }],
+    },
+    {
+      id: "re_4",
+      kind: "message",
+      role: "assistant",
+      createdAtMs: Date.now() - 90_000,
+      runId: "rrun_2",
+      run: { status: "running" },
+      blocks: [{
+        kind: "text",
+        text: "另外两张图（`fig2-forest.R`、`figS3.R`）各自硬编码了区间，不受影响；只有这一处。",
+      }],
+    },
+  ],
+};
+
+/**
+ * One tool call's arguments, fetched back because a lean history page strips
+ * them — the UI reads the target out of these.
+ */
+export const remoteToolArgs: Record<string, { name: string; arguments: Record<string, unknown> }> = {
+  rtc_1: { name: "read", arguments: { file_path: "analysis/effect-size.R" } },
+  rtc_2: { name: "shell", arguments: { command: "Rscript analysis/effect-size.R" } },
+};
+
+/** A remote conversation's model and thinking level (the host's settings). */
+export const remoteConversationState = {
+  model: "deepseek/deepseek-chat",
+  thinkingLevel: "medium",
+};
+
+/** That host's workspaces. */
+export const remoteWorkspaces = {
+  desktopId: "desktop_studio",
+  version: 1,
+  workspaces: [
+    { id: "ws_figures", kind: "user", name: "图表脚本", path: "/Users/studio/papers/figures", pinned: true },
+    { id: "ws_manuscript", kind: "user", name: "投稿稿件", path: "/Users/studio/papers/submission", pinned: false },
+  ],
+};
+

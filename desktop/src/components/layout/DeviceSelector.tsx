@@ -49,9 +49,13 @@ export function DeviceSelector({
 
   return (
     <div className="relative px-2">
+      {/* Named explicitly because the visible name starts with a decorative
+          glyph: without this the control's accessible name is the emoji, so
+          neither a screen reader nor a test can address it as "all devices". */}
       <button
         aria-expanded={open}
         aria-haspopup="listbox"
+        aria-label={label}
         className={cn(
           "flex h-8 w-full items-center gap-2 rounded-md border border-line-soft px-2 text-xs font-medium text-ink transition-colors hover:bg-surface-subtle",
           "truncate",

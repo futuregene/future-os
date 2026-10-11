@@ -210,6 +210,54 @@ export function RemoteConversationView({
  * wrongly: "allow" on a card that does not name the machine reads as a local
  * action, and the whole point of this feature is that it is not.
  */
+/**
+ * What one tool call did, as a row of its own.
+ *
+ * One component per call rather than one per turn, because the arguments are
+ * fetched per call and a hook cannot be called in a loop: a turn that ran three
+ * tools has three targets to fetch, and rendering only the first hid the rest of
+ * what the machine did.
+ *
+ * The fetch is skipped when the call cannot be addressed (no call id, no run) —
+ * a request the host would have to refuse.
+ */
+function RemoteToolRow({
+  desktopId,
+  name,
+  runId,
+  sessionId,
+  toolCallId,
+}: {
+  desktopId: string;
+  name: string;
+  runId: string;
+  sessionId: string;
+  toolCallId: string;
+}) {
+  const { t } = useTranslation("remotePeer");
+  // A tool row keeps its identity and can lose its arguments: a lean history
+  // page strips a shell call's command, keeping the call id and the run to fetch
+  // it back. Asked for on mount and cached in the module, because a transcript
+  // re-renders on every streaming push.
+  const target = useRemoteToolTarget({
+    desktopId,
+    enabled: toolCallId !== "" && runId !== "",
+    runId,
+    sessionId,
+    toolCallId,
+  });
+  return (
+    <div className="mb-1 text-xs text-ink-muted">
+      {t("toolRan", { name })}
+      {/* What it acted on. A shell command or a path is the difference between
+          "Bash ran" and knowing what it did. */}
+      {target
+        ? <div className="mt-0.5 font-mono text-[11px] wrap-break-word text-ink-soft">{target}</div>
+        : null}
+    </div>
+  );
+}
+
 function ApprovalCard({
   approval,
   error,
@@ -276,26 +324,20 @@ function EntryRow({
   const { t } = useTranslation("remotePeer");
   const [hovered, setHovered] = useState(false);
   const isUser = entry.role === "user";
+  // Every tool call of the turn, not the first one. A turn routinely runs
+  // several (`read` then `shell`), and rendering only the first hid the rest of
+  // what the machine actually did — found by rendering a real transcript, where
+  // one assistant turn makes two calls.
+  //
   // `MessageBlock` (the projection package's own shape) names the discriminant
   // `kind`, so a tool block is `kind: "tool_call"` with a `name`.
-  const tool = entry.blocks.find(block => block.kind === "tool_call" || block.kind === "tool");
+  const tools = entry.blocks.filter(block => block.kind === "tool_call" || block.kind === "tool");
   const text = entry.blocks
     .filter(block => block.kind === "text" && typeof block.text === "string")
     .map(block => block.text as string)
     .join("")
     .trim();
   const runError = entry.run?.error ?? null;
-  // A tool row keeps its identity and can lose its arguments: a lean history
-  // page strips a shell call's command, keeping the call id and the run to fetch
-  // it back. Asked for on mount and cached in the module, because a transcript
-  // re-renders on every streaming push.
-  const toolTarget = useRemoteToolTarget({
-    desktopId,
-    enabled: tool !== undefined && typeof entry.runId === "string" && entry.runId !== "",
-    runId: typeof entry.runId === "string" ? entry.runId : "",
-    sessionId,
-    toolCallId: typeof tool?.toolCallId === "string" ? tool.toolCallId : "",
-  });
 
   return (
     <div
@@ -310,18 +352,16 @@ function EntryRow({
             : "max-w-[85%] rounded-lg border border-line-soft bg-surface-subtle px-3 py-2"
         }
       >
-        {tool
-          ? (
-              <div className="mb-1 text-xs text-ink-muted">
-                {t("toolRan", { name: tool.name ?? "" })}
-                {/* What it acted on. A shell command or a path is the difference
-                    between "Bash ran" and knowing what it did. */}
-                {toolTarget
-                  ? <div className="mt-0.5 font-mono text-[11px] wrap-break-word text-ink-soft">{toolTarget}</div>
-                  : null}
-              </div>
-            )
-          : null}
+        {tools.map(tool => (
+          <RemoteToolRow
+            desktopId={desktopId}
+            key={toolKey(tool, tools)}
+            name={tool.name ?? ""}
+            runId={typeof entry.runId === "string" ? entry.runId : ""}
+            sessionId={sessionId}
+            toolCallId={typeof tool.toolCallId === "string" ? tool.toolCallId : ""}
+          />
+        ))}
         {text
           ? (isUser
               ? <div className="whitespace-pre-wrap wrap-break-word">{text}</div>
@@ -374,4 +414,19 @@ function EntryRow({
         : null}
     </div>
   );
+}
+
+/**
+ * A stable key for one tool call in a turn.
+ *
+ * The host's call id when it gave one; otherwise the tool's own name plus its
+ * place in the turn, which is stable because a turn's blocks do not reorder.
+ */
+function toolKey(
+  tool: RemoteEntry["blocks"][number],
+  all: RemoteEntry["blocks"],
+): string {
+  return typeof tool.toolCallId === "string" && tool.toolCallId !== ""
+    ? tool.toolCallId
+    : `${tool.name ?? "tool"}-${all.indexOf(tool)}`;
 }
