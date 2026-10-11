@@ -1254,4 +1254,3 @@ export const remoteWorkspaces = {
     { id: "ws_manuscript", kind: "user", name: "投稿稿件", path: "/Users/studio/papers/submission", pinned: false },
   ],
 };
-
