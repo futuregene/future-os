@@ -21,6 +21,12 @@ import {
   models,
   providersView,
   refreshedSessionUsage,
+  remoteConversationState,
+  remoteEntries,
+  remotePeers,
+  remoteSessions,
+  remoteToolArgs,
+  remoteWorkspaces,
   reviewFiles,
   runs,
   sessionUsage,
@@ -427,6 +433,114 @@ const handlers: Record<string, (args: any) => unknown> = {
   }),
   remote_stop: () => EMPTY_REMOTE_STATUS,
   remote_unpair: () => null,
+
+  // ── Remote, the client role: this Desktop connecting *out* ─────────────
+  //
+  // Everything here answers the opposite question to the host handlers above:
+  // what this machine is connected to, not what is connected to it. The two
+  // halves are separate screens reading separate commands, so a fixture that
+  // served both from one shape would hide a screen reading the wrong one.
+  remote_peer_list: () => remotePeers,
+  // A freshly claimed host has no name yet and is not connected until the
+  // supervisor gets there — which is the state the pairing screen shows.
+  remote_peer_pair: () => ({
+    ...remotePeers[0]!,
+    desktopId: "desktop_paired",
+    name: null,
+    pairId: "pair_paired",
+    connected: false,
+    error: null,
+    bridgeInstanceId: null,
+    features: [],
+    agentAvailable: false,
+  }),
+  remote_peer_connect: (args: { desktopId: string }) => ({
+    ...(remotePeers.find(peer => peer.desktopId === args.desktopId) ?? remotePeers[0]),
+    connected: true,
+    error: null,
+  }),
+  remote_peer_disconnect: () => null,
+  remote_peer_unpair: () => null,
+  remote_peer_set_label: () => null,
+  remote_peer_sessions: (args: { desktopId: string }) => ({
+    desktopId: args.desktopId,
+    sessions: remoteSessions[args.desktopId] ?? [],
+  }),
+  remote_peer_workspaces: (args: { desktopId: string }) => ({
+    ...remoteWorkspaces,
+    desktopId: args.desktopId,
+  }),
+  /**
+   * The command channel to a host.
+   *
+   * Routed by command type here exactly as the host routes it: a fixture that
+   * answered everything with one blob would not reveal a screen asking for the
+   * wrong command.
+   */
+  remote_peer_request: (args: { command?: { type?: string; [key: string]: unknown }; desktopId: string }) => {
+    const command = args.command ?? {};
+    switch (command.type) {
+      case "get_session_entries":
+        return {
+          entries: remoteEntries[String(command.sessionId)] ?? [],
+          hasMore: false,
+          nextOffset: 0,
+        };
+      case "get_state":
+        return remoteConversationState;
+      case "list_models":
+      case "get_available_models":
+        return { models };
+      case "get_desktop_settings":
+        return { ...appSettings };
+      case "get_settings":
+        return { approvalTier: "sandbox", sandboxAvailable: true };
+      case "list_workspaces":
+        return remoteWorkspaces;
+      case "get_tool_call_args":
+        return remoteToolArgs[String(command.toolCallId)] ?? null;
+      case "list_session_files":
+        return { files: [] };
+      case "list_skills":
+        return { skills: installedSkills };
+      case "list_available_skills":
+        return { skills: availableSkills };
+      case "list_tasks":
+        return { tasks: tasks.map(task => ({
+          id: task.id,
+          name: task.name,
+          enabled: task.enabled,
+          triggerKind: task.triggerKind,
+          trigger: task.trigger,
+          depCount: task.depCount,
+          nextDueAt: task.nextDueAt,
+          queued: task.queued,
+          latestRun: task.latestRun,
+        })) };
+      // The host's list row omits the prompt; its detail record is what carries
+      // it, which is why the client completes each row with this read.
+      case "get_task": {
+        const task = tasks.find(row => row.id === String(command.taskId));
+        return task ? { ...task } : null;
+      }
+      case "list_providers":
+        return providersView;
+      case "list_task_runs":
+        return { runs: taskRuns[String(command.taskId)] ?? [] };
+      case "list_task_deps":
+        return { deps: taskDeps[String(command.taskId)] ?? [] };
+      case "list_task_revisions":
+        return { revisions: taskRevisions[String(command.taskId)] ?? [] };
+      case "skill_reco_today":
+        return { today: { count: 0, skillIds: [], messageHashes: [] } };
+      case "suggest_skill":
+        return { skill: null };
+      case "generate_session_title":
+        return { title: "重画森林图并核对置信区间（已修正区间水平）" };
+      default:
+        return null;
+    }
+  },
 
   // ── Embedded terminal ──────────────────────────────────────────────────
   // Points at `shot/terminal-server.mjs`, a tiny stand-in for the loopback PTY

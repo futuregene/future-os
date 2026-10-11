@@ -363,3 +363,33 @@ it("hides the continuation while the host is running", async () => {
   expect(view.continueButton()).toBeUndefined();
   await view.unmount();
 });
+
+/**
+ * A turn that ran several tools shows every one of them.
+ *
+ * A host turn routinely makes two calls (a read, then a shell command), and the
+ * transcript rendered only the first — so the row that said what the machine
+ * actually ran was missing, and its arguments were never fetched. Found by
+ * rendering a real transcript in the screenshot harness; the fixtures in this
+ * file had one tool per turn, which is why the suite did not see it.
+ */
+it("shows every tool call of a turn, not just the first", async () => {
+  const twoTools: SessionEntry = {
+    id: "a1",
+    kind: "message",
+    role: "assistant",
+    createdAtMs: 1_000,
+    runId: "run_1",
+    blocks: [
+      { kind: "text", text: "looking" },
+      { kind: "tool_call", toolCallId: "c1", name: "read" },
+      { kind: "tool_call", toolCallId: "c2", name: "shell" },
+    ],
+  };
+  const view = await mount({ entries: [entry("u1", "user", "do it"), twoTools] });
+
+  const text = view.container.textContent ?? "";
+  expect(text).toContain("read");
+  expect(text).toContain("shell");
+  await view.unmount();
+});

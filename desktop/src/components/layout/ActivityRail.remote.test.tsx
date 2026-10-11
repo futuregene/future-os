@@ -244,3 +244,51 @@ describe("the rail's remote conversations", () => {
     view.unmount();
   });
 });
+
+/**
+ * A local conversation keeps its place in the tree while the list is merged.
+ *
+ * Merged mode is entered by merely *having* a connected host, so dropping the
+ * local tree there silently changed the rail for every user of the client role:
+ * a fork rendered as a root (no indent, no toggle) and a parent with thirty
+ * forks could not be folded away. The two things the tree gives a reader are
+ * asserted here — the toggle exists, and using it hides the forks.
+ */
+describe("the local tree in merged mode", () => {
+  const parent = thread("local_parent", { agentSessionId: "sess_parent", title: "Parent" });
+  const child = thread("local_child", {
+    agentSessionId: "sess_child",
+    parentSessionId: "sess_parent",
+    title: "Fork",
+  });
+
+  it("offers the fold toggle for a local conversation that has forks", async () => {
+    const view = await mountRail({
+      remoteCatalogs: [catalogRow("sess_a")],
+      remotePeers: [peer],
+      threads: [parent, child],
+    });
+
+    expect(view.container.querySelector("button[aria-label='Expand child conversations of Parent']")).not.toBeNull();
+    view.unmount();
+  });
+
+  it("hides a collapsed conversation's forks", async () => {
+    const view = await mountRail({
+      remoteCatalogs: [catalogRow("sess_a")],
+      remotePeers: [peer],
+      threads: [parent, child],
+    });
+
+    // Collapsed by default, exactly as the local list is.
+    expect(view.text()).not.toContain("Fork");
+
+    const toggle = view.container.querySelector<HTMLButtonElement>("button[aria-label='Expand child conversations of Parent']")!;
+    act(() => toggle.click());
+
+    // Expanding reveals it without disturbing the remote row.
+    expect(view.text()).toContain("Fork");
+    expect(view.text()).toContain("Remote conversation");
+    view.unmount();
+  });
+});

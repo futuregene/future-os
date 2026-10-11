@@ -31,6 +31,7 @@ const {
   listRemoteAvailableSkills,
   listRemoteInstalledSkills,
   listRemoteModels,
+  listRemotePeers,
   listRemoteSessionFiles,
   listRemoteWorkspaces,
   localizedSkill,
@@ -910,5 +911,29 @@ describe("a host's workspaces", () => {
       command: { type: "delete_workspace", workspaceId: "ws_1" },
       lane: "list",
     });
+  });
+});
+
+describe("the peer list", () => {
+  /**
+   * A command the backend does not answer must read as "no hosts", not `null`.
+   *
+   * The value goes straight into React state, and a screen that then renders it
+   * (`peers.map`, `peers.find`) throws during render — which takes the *whole
+   * application* down, not just the remote screen. That is not hypothetical: the
+   * screenshot harness's mock returns `null` for a command it does not
+   * implement, and this call blanked every screen of the desktop app.
+   */
+  it("reads an unanswered command as no hosts rather than null", async () => {
+    invokeMock.mockResolvedValue(null);
+    await expect(listRemotePeers()).resolves.toEqual([]);
+
+    invokeMock.mockResolvedValue(undefined);
+    await expect(listRemotePeers()).resolves.toEqual([]);
+  });
+
+  it("keeps the hosts the backend did report", async () => {
+    invokeMock.mockResolvedValue([{ desktopId: "desktop_a" }]);
+    await expect(listRemotePeers()).resolves.toEqual([{ desktopId: "desktop_a" }]);
   });
 });

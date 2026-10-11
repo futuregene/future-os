@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { MergedConversation } from "../../features/remote-peer/mergeConversations";
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread } from "../../integrations/storage/threadStore";
+import type { ThreadTreeRow } from "./threadTree";
 import { useTranslation } from "react-i18next";
 import { RemoteConversationRow } from "./RemoteConversationRow";
 
@@ -19,6 +20,7 @@ export function MergedRows({
   activeKey,
   onChangedRemote,
   onOpenRemote,
+  localRowMeta,
   onRenameRemote,
   peers,
   renderLocalRow,
@@ -30,6 +32,14 @@ export function MergedRows({
   /** Re-read a host's catalogue after one of its rows was acted on. */
   onChangedRemote: () => void;
   onOpenRemote: (conversation: MergedConversation) => void;
+  /**
+   * Where each local conversation sits in its own tree, keyed by thread id.
+   *
+   * The merged list is ordered by time, but a local conversation still has a
+   * parent — and without this a fork rendered as a root, with no indent and no
+   * fold toggle.
+   */
+  localRowMeta: Map<string, ThreadTreeRow>;
   onRenameRemote: (conversation: MergedConversation) => void;
   peers: RemotePeer[];
   renderLocalRow: (thread: StoredThread, depth?: number, hasChildren?: boolean) => ReactNode;
@@ -45,7 +55,10 @@ export function MergedRows({
       const thread = threadById.get(conversation.id);
       // A local row without a thread cannot happen (the merge is built from the
       // same list), but rendering nothing beats rendering a broken row.
-      return thread ? renderLocalRow(thread) : null;
+      if (!thread)
+        return null;
+      const meta = localRowMeta.get(thread.id);
+      return renderLocalRow(thread, meta?.depth ?? 0, meta?.hasChildren ?? false);
     }
     return (
       <RemoteConversationRow

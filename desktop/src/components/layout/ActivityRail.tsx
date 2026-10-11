@@ -6,6 +6,7 @@ import type { StoredThread, StoredWorkspace } from "../../integrations/storage/t
 import type { FutureSessionStatus } from "./hooks/useFutureAccount";
 import type { RemoteIndicator } from "./hooks/useRemoteStatus";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
+import type { ThreadTreeNode } from "./threadTree";
 import {
   Blocks,
   ChevronDown,
@@ -340,6 +341,20 @@ export function ActivityRail({
   const mergedMode = hasRemoteRows || (deviceFilter.kind === "device" && deviceFilter.desktopId !== null);
   const visibleRemoteRows = mergedMode ? remoteRows : [];
   /**
+   * Each local conversation's place in its tree, for the merged list.
+   *
+   * The merged list is flat — rows from every machine ordered by time — but a
+   * local conversation still *has* a parent, and rendering it as a root loses
+   * two things a reader relies on: the indent that says "this is a fork" and the
+   * toggle that folds a parent's forks away. Both were dropped when the merged
+   * list was introduced, so any user with a host connected lost their tree.
+   */
+  const localRowMeta = useMemo(
+    () => new Map(visibleThreadRows(threadTree, new Set()).map(row => [row.thread.id, row])),
+    [threadTree],
+  );
+
+  /**
    * Which row is "current". A local thread is current while the chat section is
    * open; a remote row is current once its conversation is the one on screen.
    */
@@ -352,7 +367,11 @@ export function ActivityRail({
    * than duplicated so a future row prop cannot be added to one list and
    * forgotten in the other.
    */
-  function renderLocalRow(thread: StoredThread, depth = 0, hasChildren = false): React.ReactNode {
+  function renderLocalRow(
+    thread: StoredThread,
+    depth = localRowMeta.get(thread.id)?.depth ?? 0,
+    hasChildren = localRowMeta.get(thread.id)?.hasChildren ?? false,
+  ): React.ReactNode {
     return (
       <ThreadListItem
         active={thread.id === activeThreadId && active === "chat"}
@@ -385,6 +404,31 @@ export function ActivityRail({
     () => new Map(visibleThreads.map(thread => [thread.id, thread])),
     [visibleThreads],
   );
+
+  /**
+   * Local conversations hidden because an ancestor is collapsed.
+   *
+   * In the local list the rail simply does not build the rows; the merged list
+   * interleaves them, so collapsed descendants have to be filtered out by id.
+   */
+  const collapsedLocalIds = useMemo(() => {
+    if (!mergedMode)
+      return new Set<string>();
+    const hidden = new Set<string>();
+    const walk = (nodes: ThreadTreeNode[]) => {
+      for (const node of nodes) {
+        if (!expandedThreads.has(node.thread.id)) {
+          for (const descendant of descendantsOf(node))
+            hidden.add(descendant);
+          continue;
+        }
+        walk(node.children);
+      }
+    };
+    walk(threadTree);
+    return hidden;
+  }, [expandedThreads, mergedMode, threadTree]);
+
   const toggleLabel = floating
     ? t("activityRail.pinSidebar")
     : expanded
@@ -525,8 +569,12 @@ export function ActivityRail({
                                 onOpenRemote={conversation => onOpenRemoteConversation?.(conversation)}
                                 onRenameRemote={conversation => onRenameRemoteConversation?.(conversation)}
                                 peers={remotePeers}
+                                localRowMeta={localRowMeta}
                                 renderLocalRow={renderLocalRow}
-                                rows={visibleRemoteRows}
+                                rows={visibleRemoteRows.filter(row =>
+                                  // A collapsed local parent takes its forks with
+                                  // it, exactly as it does in the local list.
+                                  row.desktopId !== null || !collapsedLocalIds.has(row.id))}
                                 threadById={threadById}
                               />
                             )
@@ -936,4 +984,9 @@ function NavButton({
         : null}
     </button>
   );
+}
+
+/** Every conversation below this node, at any depth. */
+function descendantsOf(node: ThreadTreeNode): string[] {
+  return node.children.flatMap(child => [child.thread.id, ...descendantsOf(child)]);
 }
