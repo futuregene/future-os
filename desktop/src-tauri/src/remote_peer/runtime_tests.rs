@@ -11,8 +11,8 @@ use super::creds;
 use super::runtime::{
     close_socket_for_test, connect, connect_with_emitter, disconnect, ensure_connected,
     forget_connection_for_test, install_supervisor_for_test, list, live_count, pair_with_emitter,
-    request, sessions, set_label, spawn_supervisor, stream_count, supervisor_count, unpair,
-    workspaces, Emitter, PeerEvent, PeerSummary, INJECT_CONNECTION_LOST,
+    request, sessions, set_label, set_visible_session, spawn_supervisor, stream_count,
+    supervisor_count, unpair, workspaces, Emitter, PeerEvent, PeerSummary, INJECT_CONNECTION_LOST,
 };
 use super::testing::{fixture, teardown, Fixture};
 use crate::remote::test_support::{HomeGuard, MockPlatform};
@@ -726,6 +726,276 @@ async fn a_lean_event_recovers_its_session_from_the_subject() {
         .find(|event| event.payload["sessionId"] == json!("sess_full_events"))
         .expect("the full feed is untouched");
     assert_eq!(full.payload["eventId"], json!("evt-full"));
+
+    teardown().await;
+}
+
+/// The `selective_events_v1` lane, end to end: the host confirms the capability,
+/// and once the UI says which conversation it is on the client re-subscribes to
+/// that one — and back to the whole host when the reader leaves.
+///
+/// The subscription itself is asserted (on the broker's own subscription table),
+/// not only the delivered events: "no event arrived" passes just as well when
+/// the lane never moved, and the whole point of the capability is which subject
+/// the `SUB` names.
+#[tokio::test]
+async fn opening_a_conversation_moves_the_event_lane_and_closing_it_moves_back() {
+    let (_home, fx) = start("peer-rt-selective").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    let (emitter, count) = counting_emitter();
+    let peer = connect_with_emitter(&desktop_id, Some(emitter))
+        .await
+        .expect("connect with a stream");
+
+    // The host's confirmation is what makes narrowing legal at all, so it is
+    // asserted before anything is moved on the strength of it.
+    assert!(
+        peer.features
+            .iter()
+            .any(|feature| feature == "selective_events_v1"),
+        "the host must confirm the selective lane: {:?}",
+        peer.features
+    );
+
+    let wide = format!("p.{}.evt.>", fx.pair_id);
+    let narrow = format!("p.{}.evt.sess_open", fx.pair_id);
+    fx.nats
+        .wait_for_sub(&wide, std::time::Duration::from_secs(10))
+        .await;
+
+    // The UI opens a conversation.
+    set_visible_session(&desktop_id, Some("sess_open")).await;
+    fx.nats
+        .wait_for_sub(&narrow, std::time::Duration::from_secs(10))
+        .await;
+
+    // Another conversation's event no longer arrives...
+    crate::remote::publish_event(
+        "sess_elsewhere",
+        "agent_text",
+        r#"{"text":"not mine"}"#,
+        "run-2",
+        1,
+        1,
+        "evt-other",
+        "2026-01-01T00:00:01Z",
+        1,
+        2,
+    );
+    // ...while the open one's does.
+    crate::remote::publish_event(
+        "sess_open",
+        "agent_text",
+        r#"{"text":"mine"}"#,
+        "run-1",
+        1,
+        1,
+        "evt-open",
+        "2026-01-01T00:00:00Z",
+        1,
+        1,
+    );
+    wait_for(
+        "the open conversation's event never reached the emitter",
+        || {
+            count
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| event.payload["sessionId"] == json!("sess_open"))
+        },
+    )
+    .await;
+    let seen: Vec<String> = count
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|event| event.payload["sessionId"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        !seen.contains(&"sess_elsewhere".to_string()),
+        "a narrowed lane must not carry another conversation: {seen:?}"
+    );
+
+    // The reader goes back to the list: the wide lane returns, and with it the
+    // other conversations.
+    set_visible_session(&desktop_id, None).await;
+    fx.nats
+        .wait_for_sub(&wide, std::time::Duration::from_secs(10))
+        .await;
+    crate::remote::publish_event(
+        "sess_elsewhere",
+        "agent_text",
+        r#"{"text":"now mine"}"#,
+        "run-2",
+        2,
+        1,
+        "evt-other-2",
+        "2026-01-01T00:00:02Z",
+        1,
+        3,
+    );
+    wait_for("the wide lane never came back", || {
+        count
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.payload["sessionId"] == json!("sess_elsewhere"))
+    })
+    .await;
+
+    teardown().await;
+}
+
+/// `state.events` is what keeps the host's cross-conversation notifications
+/// alive while the event lane is narrowed: an approval or a run's start for a
+/// conversation the reader is *not* on arrives only there, and all four UI
+/// listeners filter by `sessionId`, so a lane that dropped it would freeze the
+/// approval card and the peer list without an error anywhere.
+///
+/// It is read *only* while narrowed. On the wide lane the host publishes each of
+/// those events twice — once per conversation, once here — so reading both would
+/// deliver every approval card twice, which is the bug this test's second half
+/// pins.
+#[tokio::test]
+async fn the_host_wide_mirror_is_read_only_while_the_lane_is_narrow() {
+    let (_home, fx) = start("peer-rt-state-events").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    let (emitter, count) = counting_emitter();
+    connect_with_emitter(&desktop_id, Some(emitter))
+        .await
+        .expect("connect with a stream");
+    // The wildcard lane the client subscribes to, which is what carries the
+    // mirror; `state_event_subject` is what picks `state.events` out of it (and
+    // is unit-tested next to its reason for ignoring the others).
+    fx.nats
+        .wait_for_sub(
+            &format!("p.{}.state.>", fx.pair_id),
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+
+    // `agent_start` is a catalog event, so the host publishes it on both lanes.
+    // Wide: the conversation's own copy must be the only one delivered.
+    crate::remote::publish_event(
+        "sess_watch",
+        "agent_start",
+        "{}",
+        "run-1",
+        1,
+        1,
+        "evt-wide-start",
+        "2026-01-01T00:00:00Z",
+        1,
+        1,
+    );
+    wait_for("the wide lane never delivered the run's start", || {
+        count.lock().unwrap().len() == 1
+    })
+    .await;
+    // Give the mirror its chance to arrive as a duplicate.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(
+        count.lock().unwrap().len(),
+        1,
+        "the host-wide mirror must not double every host-wide event on the wide lane"
+    );
+
+    // Narrow: the conversation is one this client is not subscribed to, so the
+    // only lane left is the mirror.
+    set_visible_session(&desktop_id, Some("sess_open")).await;
+    fx.nats
+        .wait_for_sub(
+            &format!("p.{}.evt.sess_open", fx.pair_id),
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+    crate::remote::publish_event(
+        "sess_watch",
+        "agent_start",
+        "{}",
+        "run-2",
+        1,
+        1,
+        "evt-narrow-start",
+        "2026-01-01T00:00:01Z",
+        1,
+        2,
+    );
+    wait_for(
+        "the host-wide mirror was not read on the narrow lane",
+        || {
+            count
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| event.payload["eventId"] == json!("evt-narrow-start"))
+        },
+    )
+    .await;
+    let mirrored = count
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|event| event.payload["eventId"] == json!("evt-narrow-start"))
+        .cloned()
+        .expect("the mirrored event");
+    // The UI's listeners all address an event by conversation, so a mirror that
+    // arrived without one would be dropped by every one of them.
+    assert_eq!(mirrored.payload["sessionId"], json!("sess_watch"));
+    assert_eq!(mirrored.kind, "event");
+    assert_eq!(
+        mirrored.payload["type"],
+        json!("agent_start"),
+        "the mirror is read as a session event, not as a snapshot"
+    );
+
+    teardown().await;
+}
+
+/// Setting the same conversation twice must not re-open the subscription: the
+/// view re-renders for reasons that have nothing to do with navigation
+/// (a streaming push, a resize), and a drop-and-reopen there would lose every
+/// event published in the gap.
+#[tokio::test]
+async fn re_stating_the_same_conversation_keeps_the_lane_open() {
+    let (_home, fx) = start("peer-rt-visible-noop").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    let (emitter, count) = counting_emitter();
+    connect_with_emitter(&desktop_id, Some(emitter))
+        .await
+        .expect("connect with a stream");
+
+    set_visible_session(&desktop_id, Some("sess_open")).await;
+    fx.nats
+        .wait_for_sub(
+            &format!("p.{}.evt.sess_open", fx.pair_id),
+            std::time::Duration::from_secs(10),
+        )
+        .await;
+    set_visible_session(&desktop_id, Some("sess_open")).await;
+    set_visible_session(&desktop_id, Some("sess_open")).await;
+
+    crate::remote::publish_event(
+        "sess_open",
+        "agent_text",
+        r#"{"text":"still here"}"#,
+        "run-1",
+        1,
+        1,
+        "evt-still",
+        "2026-01-01T00:00:00Z",
+        1,
+        1,
+    );
+    wait_for("a restated conversation lost its events", || {
+        count
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.payload["eventId"] == json!("evt-still"))
+    })
+    .await;
 
     teardown().await;
 }

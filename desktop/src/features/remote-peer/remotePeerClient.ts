@@ -94,6 +94,32 @@ export function setRemotePeerLabel(
   });
 }
 
+/**
+ * Tell the backend which conversation the user is looking at, or `null` for
+ * none.
+ *
+ * The backend narrows its live subscription from "every conversation on this
+ * host" to that one — the `selective_events_v1` lane, which is most of the
+ * traffic on a host that is streaming a reply. A hint rather than a command: the
+ * wide lane is what runs when nothing is set, when the host did not confirm the
+ * capability, or when the id is not a plain token, so a failure here costs bytes
+ * and nothing else.
+ */
+export async function setRemotePeerVisibleSession(
+  desktopId: string,
+  sessionId: string | null,
+): Promise<void> {
+  try {
+    await invokeCommand<void>("remote_peer_set_visible_session", { desktopId, sessionId });
+  }
+  catch {
+    // Deliberately swallowed, and the only place in this module that does it:
+    // no view may break because a bandwidth hint could not be delivered, and the
+    // fallback (the wide lane) is what was running before this call existed —
+    // including on a backend that predates it.
+  }
+}
+
 interface RawCatalog {
   desktopId?: string;
   pairId?: string;

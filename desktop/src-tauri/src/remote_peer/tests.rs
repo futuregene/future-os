@@ -169,8 +169,12 @@ async fn a_host_event_reaches_a_subscriber_decrypted() {
     let paired = claim(&platform, &host_invitation, &pair_id, nats.url()).await;
 
     let connected = session::connect(&paired.creds).await.expect("pair");
-    let (mut events, mut presence, _transfers) =
-        connected.session.subscribe().await.expect("subscribe");
+    // The wide lane: no conversation is being viewed, so nothing narrows.
+    let session::Subscriptions {
+        mut events,
+        mut presence,
+        ..
+    } = connected.session.subscribe(None).await.expect("subscribe");
     let channel = connected.session.channel_for_stream();
 
     // The host publishes through its own event path, exactly as a run does.

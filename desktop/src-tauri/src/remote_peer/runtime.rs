@@ -62,8 +62,10 @@ pub(crate) type Emitter = std::sync::Arc<dyn Fn(PeerEvent) + Send + Sync>;
 #[serde(rename_all = "camelCase")]
 pub struct PeerEvent {
     pub desktop_id: String,
-    /// `event` for `evt.*` (a session event, which carries its own `sessionId`),
-    /// `presence` for a liveness tick, `resumed` for a link that came back.
+    /// `event` for a session event — one pushed on a conversation's `evt.`
+    /// subject, or the same event read off the host-wide `state.events` mirror
+    /// while the lane is narrowed to one conversation — `presence` for a
+    /// liveness tick, `resumed` for a link that came back.
     ///
     /// `resumed` exists because the other two cannot express it: a presence tick
     /// arrives on a healthy link as well, and a session event says nothing about
@@ -94,6 +96,18 @@ struct Runtime {
     /// Keyed by all three parts because a host serves several downloads with
     /// different transfer ids, and the same index appears in every one of them.
     chunks: HashMap<(String, String, u64), tokio::sync::oneshot::Sender<Vec<u8>>>,
+    /// Which conversation the UI is looking at, per host — the value the event
+    /// task watches to move its `evt.` subscription between the narrow lane and
+    /// the whole host.
+    ///
+    /// A `watch` rather than a plain field because the task is asleep on the
+    /// socket and has to be woken by the change, and a sender rather than a
+    /// value because the task owns the subscription: the runtime records the
+    /// intent, the task is what acts on it.
+    ///
+    /// Kept after a disconnect, so reconnecting comes back on the lane the user
+    /// left the window on rather than re-subscribing the whole host first.
+    visible: HashMap<String, tokio::sync::watch::Sender<Option<String>>>,
 }
 
 /// The retry schedule for a dropped connection, in seconds.
@@ -471,12 +485,29 @@ pub(crate) async fn connect_with_emitter(
     }
     let mut summary = paired_summary(desktop_id)?;
     summary.connected = true;
+    // What the UI is looking at, so a reconnection comes back on the lane the
+    // user left it on instead of re-subscribing the whole host. Read (and the
+    // receiver taken) before the subscribe below, which is the only ordering
+    // that makes the value the same one the subscription is built from. The lock
+    // is short and not held across a network round-trip.
+    let (visible_now, visible_changes) = {
+        let mut live = runtime().lock().await;
+        let changes = live
+            .visible
+            .entry(desktop_id.to_string())
+            .or_default()
+            .clone();
+        let now = changes.borrow().clone();
+        (now, changes.subscribe())
+    };
     // Subscribe before taking the runtime lock: subscription is a network
     // round-trip, and a failure there must not keep a usable connection out of
     // the map.
     let peer_session = connected.session;
     let stream = match emitter {
-        Some(emitter) => attach_stream(&peer_session, emitter, desktop_id).await,
+        Some(emitter) => {
+            attach_stream(&peer_session, emitter, desktop_id, visible_now.as_deref()).await
+        }
         None => None,
     };
     {
@@ -490,17 +521,16 @@ pub(crate) async fn connect_with_emitter(
         if let Some(previous) = live.tasks.remove(desktop_id) {
             previous.abort();
         }
-        if let Some((channel, events, presence, transfers, emitter)) = stream {
+        if let Some(parts) = stream {
             live.tasks.insert(
                 desktop_id.to_string(),
                 spawn_event_stream(
                     desktop_id.to_string(),
                     peer_session.pair_id().to_string(),
-                    channel,
-                    events,
-                    presence,
-                    transfers,
-                    emitter,
+                    peer_session.event_lane(),
+                    visible_now,
+                    visible_changes,
+                    parts,
                 ),
             );
         }
@@ -578,15 +608,14 @@ async fn resume(desktop_id: &str, emitter: Option<Emitter>) -> Result<(), crate:
     connect_with_emitter(desktop_id, emitter).await.map(|_| ())
 }
 
-/// The stream half of a connection: the traffic-key handle plus the
-/// subscriptions the event task drains (events, presence, file-transfer bytes).
-type StreamParts = (
-    std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
-    async_nats::Subscriber,
-    async_nats::Subscriber,
-    async_nats::Subscriber,
-    Emitter,
-);
+/// The stream half of a connection: the traffic-key handle, the subscriptions
+/// the event task drains and the sink they go to. Bundled rather than returned
+/// as a tuple now that a fourth lane (the host-wide `state.>`) is among them.
+struct StreamParts {
+    channel: std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
+    subscriptions: super::session::Subscriptions,
+    emitter: Emitter,
+}
 
 /// Subscribe to a host's pushes, or say why not.
 ///
@@ -599,15 +628,14 @@ async fn attach_stream(
     peer_session: &PeerSession,
     emitter: Emitter,
     desktop_id: &str,
+    visible: Option<&str>,
 ) -> Option<StreamParts> {
-    match peer_session.subscribe().await {
-        Ok((events, presence, transfers)) => Some((
-            peer_session.channel_for_stream(),
-            events,
-            presence,
-            transfers,
+    match peer_session.subscribe(visible).await {
+        Ok(subscriptions) => Some(StreamParts {
+            channel: peer_session.channel_for_stream(),
+            subscriptions,
             emitter,
-        )),
+        }),
         Err(error) => {
             eprintln!("remote_peer: could not subscribe for {desktop_id}: {error}");
             None
@@ -641,16 +669,19 @@ const EVENT_BACKLOG_CAPACITY: usize = 4096;
 /// The `PeerEvent.kind` a push is delivered under.
 ///
 /// `evt.*` is the only lane that carries a conversation; `presence` is the
-/// host's liveness tick. Chunks are not a `PeerEvent` kind at all — they go to
-/// the pull waiting for them ([`deliver_chunk`]).
+/// host's liveness tick; `state.*` is the host's host-wide lane, of which only
+/// `state.events` is read (as an event — see [`state_event_subject`]). Chunks are
+/// not a `PeerEvent` kind at all — they go to the pull waiting for them
+/// ([`deliver_chunk`]).
 const EVENT_LANE: &str = "event";
 const PRESENCE_LANE: &str = "presence";
+const STATE_LANE: &str = "state";
 const TRANSFER_LANE: &str = "chunk";
 
 /// One push taken off a subscription, before anything has been made of it.
 ///
 /// The lane is resolved where the message is taken, because from there the
-/// three subscriptions are one queue.
+/// four subscriptions are one queue.
 struct Push {
     kind: &'static str,
     message: async_nats::Message,
@@ -660,11 +691,13 @@ struct Push {
 async fn next_push(
     events: &mut async_nats::Subscriber,
     presence: &mut async_nats::Subscriber,
+    state: &mut async_nats::Subscriber,
     transfers: &mut async_nats::Subscriber,
 ) -> Option<Push> {
     let (kind, message) = tokio::select! {
         message = events.next() => (EVENT_LANE, message),
         message = presence.next() => (PRESENCE_LANE, message),
+        message = state.next() => (STATE_LANE, message),
         message = transfers.next() => (TRANSFER_LANE, message),
     };
     Some(Push {
@@ -681,6 +714,7 @@ async fn next_push(
 async fn ready_push(
     events: &mut async_nats::Subscriber,
     presence: &mut async_nats::Subscriber,
+    state: &mut async_nats::Subscriber,
     transfers: &mut async_nats::Subscriber,
 ) -> Option<Push> {
     if let std::task::Poll::Ready(Some(message)) = futures::poll!(events.next()) {
@@ -692,6 +726,12 @@ async fn ready_push(
     if let std::task::Poll::Ready(Some(message)) = futures::poll!(presence.next()) {
         return Some(Push {
             kind: PRESENCE_LANE,
+            message,
+        });
+    }
+    if let std::task::Poll::Ready(Some(message)) = futures::poll!(state.next()) {
+        return Some(Push {
+            kind: STATE_LANE,
             message,
         });
     }
@@ -818,13 +858,48 @@ impl<T> Backlog<T> {
 fn spawn_event_stream(
     desktop_id: String,
     pair_id: String,
-    channel: std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
-    mut events: async_nats::Subscriber,
-    mut presence: async_nats::Subscriber,
-    mut transfers: async_nats::Subscriber,
-    emitter: Emitter,
+    lane: super::session::EventLane,
+    // The value the subscription this task inherits was built for. Taken from
+    // the connect path rather than read from `visible` here: the receiver may
+    // already have moved on (the UI opens a conversation while a connection is
+    // being set up), and reading *its* value would describe a lane that was
+    // never subscribed — after which `changed()` reports nothing new and the
+    // conversation would be served by the wide lane indefinitely.
+    subscribed_with: Option<String>,
+    visible: tokio::sync::watch::Receiver<Option<String>>,
+    parts: StreamParts,
 ) -> crate::runtime::TaskHandle {
+    let StreamParts {
+        channel,
+        subscriptions:
+            super::session::Subscriptions {
+                mut events,
+                mut presence,
+                mut state,
+                mut transfers,
+            },
+        emitter,
+    } = parts;
     crate::runtime::spawn(async move {
+        let mut visible = visible;
+        // Which lane the events subscription is on, and therefore whether
+        // `state.events` has to be read: on the wide lane every host-wide event
+        // also arrives on its conversation's `evt.` subject, so reading both
+        // would deliver it twice. Taken from the same `EventLane` the initial
+        // `SUB` was built from, so the two cannot disagree.
+        let mut installed = lane.for_visible(subscribed_with.as_deref());
+        // Anything the UI asked for while this task was starting still has to be
+        // applied: it was sent after the subscription above, so it is pending
+        // here rather than waiting for the next change.
+        let pending = visible.borrow_and_update().clone();
+        apply_visible_lane(
+            &lane,
+            &mut installed,
+            &mut events,
+            pending.as_deref(),
+            &desktop_id,
+        )
+        .await;
         /// The decrypted bytes, whatever they are: events are JSON, transfer
         /// chunks are a slice of a file. Kept as bytes so the chunk path does
         /// not have to pretend a binary payload is a document.
@@ -861,6 +936,7 @@ fn spawn_event_stream(
             channel: &std::sync::Mutex<future_remote_crypto::Channel>,
             desktop_id: &str,
             pair_id: &str,
+            narrow: bool,
             emitter: &Emitter,
         ) {
             let Push { kind, message } = push;
@@ -880,18 +956,33 @@ fn spawn_event_stream(
                 deliver_chunk(desktop_id, transfer_id, index, bytes).await;
                 return;
             }
+            // The host-wide lane, read only while the narrow event lane is in
+            // use. On the wide lane every one of these events also arrives on
+            // its conversation's `evt.` subject, so handling both would deliver
+            // each approval card twice; while narrowed, this is the only lane a
+            // non-visible conversation's approval or activity can arrive on.
+            let kind = if kind == STATE_LANE {
+                if !narrow || !state_event_subject(&message.subject, pair_id) {
+                    return;
+                }
+                EVENT_LANE
+            } else {
+                kind
+            };
             let Some(mut payload) = open(channel, &message.subject, &message.payload) else {
                 // Unparsable or unauthenticated; same reasoning as above.
                 return;
             };
-            // Only an event: presence is not session-scoped, and a chunk left
-            // this branch above. The subject is the authority on which
-            // conversation a push belongs to — the host routes by it — so it is
-            // read back into the payload rather than trusted to the envelope,
-            // which a lean host trims to `type`/`data`/`runId`/`idx`. A payload
-            // that already names its session is left exactly as it came, so a
-            // client that declared nothing sees what it always did.
-            if kind == EVENT_LANE && payload.get("sessionId").and_then(Value::as_str).is_none() {
+            // Each push's conversation is recovered from the subject it arrived
+            // on when the payload does not carry one, because a lean host trims
+            // `sessionId` out of the event envelope. `state.events` is the one
+            // subject that cannot answer this — it names the host, not a
+            // conversation — so a payload without a session there is emitted
+            // as it came and dropped by the UI's own filter, which is the
+            // honest outcome. A payload that already names its session is left
+            // exactly as it came, so a client that declared nothing sees what it
+            // always did.
+            if payload.get("sessionId").and_then(Value::as_str).is_none() {
                 if let (Some(session), Some(object)) = (
                     event_session_id(&message.subject, pair_id),
                     payload.as_object_mut(),
@@ -910,11 +1001,31 @@ fn spawn_event_stream(
         let mut budget = BatchBudget::new(std::time::Instant::now());
         loop {
             // Park until something arrives: an idle link must cost nothing, and
-            // the first push of a batch is the only one worth waiting for.
-            let Some(first) = next_push(&mut events, &mut presence, &mut transfers).await else {
-                // Every stream ended: the socket is gone. The next status poll
-                // and the next command both notice; this task just stops.
-                return;
+            // the first push of a batch is the only one worth waiting for. The
+            // user opening another conversation wakes the same loop, because
+            // moving the events lane is the one thing that has to happen even
+            // when the host is silent.
+            let first = tokio::select! {
+                push = next_push(&mut events, &mut presence, &mut state, &mut transfers) => {
+                    let Some(push) = push else {
+                        // Every stream ended: the socket is gone. The next status
+                        // poll and the next command both notice; this task just
+                        // stops.
+                        return;
+                    };
+                    push
+                }
+                opened = visibility_change(&mut visible) => {
+                    apply_visible_lane(
+                        &lane,
+                        &mut installed,
+                        &mut events,
+                        opened.as_deref(),
+                        &desktop_id,
+                    )
+                    .await;
+                    continue;
+                }
             };
             backlog.push(first);
             // Take everything else the subscriptions have already buffered. Each
@@ -924,7 +1035,9 @@ fn spawn_event_stream(
             // publisher — and the queue's own ceiling is what stops a firehose
             // from growing it. (The mobile client's loop drains its subscription
             // the same way, until the SDK reports an empty queue.)
-            while let Some(push) = ready_push(&mut events, &mut presence, &mut transfers).await {
+            while let Some(push) =
+                ready_push(&mut events, &mut presence, &mut state, &mut transfers).await
+            {
                 backlog.push(push);
             }
             // Hand them over one at a time — the UI's contract is per event —
@@ -932,7 +1045,15 @@ fn spawn_event_stream(
             // else on the runtime.
             while let Some(push) = backlog.pop_front() {
                 let bytes = push.message.payload.len();
-                handle_push(push, &channel, &desktop_id, &pair_id, &emitter).await;
+                handle_push(
+                    push,
+                    &channel,
+                    &desktop_id,
+                    &pair_id,
+                    installed.narrow,
+                    &emitter,
+                )
+                .await;
                 if budget.record(bytes, std::time::Instant::now()) {
                     tokio::task::yield_now().await;
                     budget.reset(std::time::Instant::now());
@@ -957,6 +1078,61 @@ fn spawn_event_stream(
             }
         }
     })
+}
+
+/// Wait for the user to open a different conversation.
+///
+/// `changed()` answers `Err` once every sender is gone, which happens when the
+/// runtime (and with it the map holding the senders) is replaced by a test
+/// reset. Pending forever is the honest reading of that: the visibility can no
+/// longer change, and a loop that kept re-polling would spin.
+async fn visibility_change(
+    visible: &mut tokio::sync::watch::Receiver<Option<String>>,
+) -> Option<String> {
+    match visible.changed().await {
+        Ok(()) => visible.borrow_and_update().clone(),
+        Err(_) => std::future::pending().await,
+    }
+}
+
+/// Point the events lane at the conversation the UI is now on.
+///
+/// A new `SUB`, with the old subscriber dropped by the assignment: NATS Core has
+/// no "change the subject back", and dropping the old one is also what stops the
+/// previous conversation's pushes from arriving after the reader has moved on.
+///
+/// A no-op when the lane is already right, which is what makes a repeated
+/// `set_visible_session` (a view re-rendering for reasons that have nothing to
+/// do with navigation) harmless: re-subscribing would drop every event the host
+/// published in the gap. The comparison is on the *subject*, so the two lanes
+/// that both mean "the wide lane" cannot differ.
+///
+/// Events the host publishes for the new conversation between the old `SUB`
+/// ending and the new one landing are lost — the window the host cannot know
+/// about. The timeline re-reads the page when it opens a conversation, which is
+/// what makes moving the lane safe.
+async fn apply_visible_lane(
+    lane: &super::session::EventLane,
+    installed: &mut super::session::EventsSubscription,
+    events: &mut async_nats::Subscriber,
+    visible: Option<&str>,
+    desktop_id: &str,
+) {
+    let wanted = lane.for_visible(visible);
+    if wanted.subject == installed.subject {
+        return;
+    }
+    match lane.subscribe(visible).await {
+        Ok(subscriber) => {
+            *events = subscriber;
+            *installed = wanted;
+        }
+        Err(error) => {
+            // The old lane stays installed and the next `resumed`/reconnect
+            // rebuilds the stream; a failure here is not the connection's.
+            eprintln!("remote_peer: could not move the event lane for {desktop_id}: {error}");
+        }
+    }
 }
 
 /// Hand one decrypted chunk to whoever is waiting for it.
@@ -999,6 +1175,21 @@ pub(crate) fn event_session_id<'a>(subject: &'a str, pair_id: &str) -> Option<&'
     (!session.is_empty()).then_some(session)
 }
 
+/// Whether a `state.>` subject is the host-wide *event* mirror rather than one
+/// of the snapshots (`state.sessions`, `state.workspaces`, `state.version`).
+///
+/// Only `state.events` is read here. The snapshots are a second copy of what
+/// this client already gets from `list_sessions`/`list_workspaces` calls, and
+/// they are large; the peer list has its own catalogue poll
+/// (`useRemotePeers`'s 15 s refresh), so reading them would buy a duplicate
+/// delivery path rather than freshness.
+///
+/// Answered from the subject, before decrypting, for the same reason the chunk
+/// lane parses first: an unread snapshot must not cost an AEAD open.
+fn state_event_subject(subject: &str, pair_id: &str) -> bool {
+    subject == format!("p.{pair_id}.state.events")
+}
+
 /// `transfer_id` and chunk index from a `xfer.down` subject.
 ///
 /// Returns `None` for anything else, including a subject from another pair:
@@ -1013,6 +1204,30 @@ pub(crate) fn parse_chunk_subject(subject: &str) -> Option<(String, u64)> {
         .parse::<u64>()
         .ok()
         .map(|index| ((*transfer_id).to_string(), index))
+}
+
+/// Record which conversation the UI is looking at, so the live lane can be
+/// narrowed to it (`selective_events_v1`).
+///
+/// A hint, not a command: it returns as soon as the intent is recorded, whether
+/// or not a host is connected, and whether or not the host confirmed the
+/// capability. Nothing here fails, because there is nothing the UI could do
+/// about a failure — the wide lane is the fallback and it is already running.
+///
+/// `None` (or an id that is not a plain token, or a host that never confirmed
+/// the capability) means the wide lane, which is what keeps "no conversation is
+/// open" and "this host cannot narrow" the same case.
+pub(crate) async fn set_visible_session(desktop_id: &str, session_id: Option<&str>) {
+    let mut live = runtime().lock().await;
+    let changes = live.visible.entry(desktop_id.to_string()).or_default();
+    let next = session_id.map(str::to_string);
+    // No-op when it has not moved: a view that re-renders (the timeline hook
+    // re-runs its effect on every dependency change) must not make the event
+    // task drop and re-open its subscription for the conversation it is already
+    // on — that would lose the pushes published in between.
+    if *changes.borrow() != next {
+        changes.send_replace(next);
+    }
 }
 
 /// Drop the connection but keep the pairing (the user's "disconnect").
@@ -1590,7 +1805,7 @@ mod tests {
         let (_home, fx, desktop_id) = connected_fixture("peer-rt-attach-fresh").await;
         let session = take_session(&desktop_id).await;
         assert!(
-            attach_stream(&session, silent_emitter(), &desktop_id)
+            attach_stream(&session, silent_emitter(), &desktop_id, None)
                 .await
                 .is_some(),
             "a healthy socket must attach"
@@ -1610,7 +1825,7 @@ mod tests {
         // Let the close take effect before the subscribe is attempted.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         assert!(
-            attach_stream(&session, silent_emitter(), &desktop_id)
+            attach_stream(&session, silent_emitter(), &desktop_id, None)
                 .await
                 .is_none(),
             "a closed socket cannot carry a subscription"
@@ -1824,6 +2039,27 @@ mod tests {
                 None,
                 "subject {subject}"
             );
+        }
+    }
+
+    /// Only the `state.events` mirror of the host-wide lane is read, and read as
+    /// an event. The snapshots on the same wildcard are a second copy of what the
+    /// catalogue calls already answer, so decrypting them would be work spent to
+    /// throw the result away.
+    #[test]
+    fn only_the_state_events_mirror_is_read_from_the_host_wide_lane() {
+        assert!(state_event_subject("p.pair_1.state.events", "pair_1"));
+        for subject in [
+            "p.pair_1.state.sessions",
+            "p.pair_1.state.workspaces",
+            "p.pair_1.state.version",
+            // Another pairing's host-wide lane.
+            "p.pair_10.state.events",
+            // The events lane proper, which is read through its own subscription.
+            "p.pair_1.evt.sess_a",
+            "",
+        ] {
+            assert!(!state_event_subject(subject, "pair_1"), "subject {subject}");
         }
     }
 

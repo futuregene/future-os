@@ -22,6 +22,7 @@ vi.mock("./remoteToolTarget", () => ({
 }));
 vi.mock("./remotePeerClient", () => ({
   deleteRemoteWorkspace: vi.fn(async () => {}),
+  setRemotePeerVisibleSession: vi.fn(async () => {}),
   setRemoteWorkspacePinned: vi.fn(async () => {}),
 }));
 
