@@ -4,8 +4,8 @@ import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadTreeRow } from "./threadTree";
 import { useTranslation } from "react-i18next";
-import { iconGlyph, peerBadgeText } from "../../features/remote-peer/peerIcons";
 import { groupMergedRows } from "../../features/remote-peer/mergeConversations";
+import { iconGlyph, peerBadgeText } from "../../features/remote-peer/peerIcons";
 import { RemoteConversationRow } from "./RemoteConversationRow";
 
 /**
