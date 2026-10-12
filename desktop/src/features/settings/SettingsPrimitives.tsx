@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { Button } from "../../components/ui/Button";
 
 export { Switch } from "../../components/ui/Switch";
 
@@ -12,11 +13,19 @@ export { Switch } from "../../components/ui/Switch";
  * setting. The row states what is behind it and how much there is.
  */
 export function SettingsLinkRow({
+  ariaLabel,
   description,
   disabled,
   onClick,
   title,
 }: {
+  /**
+   * The control's accessible name, when the visible title alone does not say
+   * enough. A page of these inside one machine's settings repeats words the rail
+   * also uses ("Models", "Tasks", "Skills"), and a screen reader hears only the
+   * word: naming the machine says whose models these are.
+   */
+  ariaLabel?: string;
   description?: ReactNode;
   disabled?: boolean;
   onClick: () => void;
@@ -24,6 +33,7 @@ export function SettingsLinkRow({
 }) {
   return (
     <button
+      aria-label={ariaLabel}
       className="flex w-full items-center gap-4 py-3.5 text-left transition-colors hover:bg-surface-subtle disabled:cursor-default disabled:text-ink-muted disabled:hover:bg-transparent"
       disabled={disabled}
       onClick={onClick}
@@ -39,40 +49,42 @@ export function SettingsLinkRow({
 }
 
 /**
- * One of those pages: a way back to where the user came from, named, then the
- * page itself.
+ * A settings page: a header with the way back at the **top left**, then the page
+ * itself.
  *
- * The heading names the *page*, not just "back": a list of a machine's models
- * reached by a scroll and a click needs to say where it is, and the back control
- * needs to say where it goes — with several machines paired, "back" alone is
- * ambiguous.
+ * A full page rather than a section that swaps in place, because that is what
+ * navigating into a page means: the header sits in the page's own title-bar row,
+ * the back control is where a reader looks for it, and the content scrolls under
+ * it. Every level uses this shape — a machine's settings, and each long list
+ * inside them — so "back" always means the same thing and is always in the same
+ * place.
  */
-export function SettingsSubPage({
+export function SettingsPage({
   backLabel,
   children,
+  icon,
   onBack,
   title,
 }: {
   backLabel: string;
   children: ReactNode;
+  icon?: ReactNode;
   onBack: () => void;
-  title: string;
+  title: ReactNode;
 }) {
   return (
-    <div className="space-y-5">
-      <div className="flex items-center gap-2">
-        <button
-          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-accent transition-colors hover:bg-accent-soft"
-          onClick={onBack}
-          type="button"
-        >
-          <ChevronLeft aria-hidden className="size-3.5" />
+    <section className="flex h-full min-h-0 flex-col bg-surface">
+      <header className="flex h-12 shrink-0 select-none items-center gap-3 border-b border-line-soft/40 px-4">
+        <Button leftIcon={<ChevronLeft className="size-4" />} onClick={onBack} size="xs" variant="ghost">
           {backLabel}
-        </button>
-        <h2 className="min-w-0 truncate text-sm font-semibold text-ink">{title}</h2>
+        </Button>
+        {icon}
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-ink">{title}</span>
+      </header>
+      <div className="min-h-0 flex-1 overflow-y-auto p-8">
+        <div className="mx-auto w-full max-w-3xl space-y-6">{children}</div>
       </div>
-      {children}
-    </div>
+    </section>
   );
 }
 

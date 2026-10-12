@@ -237,7 +237,14 @@ export function groupMergedRows(rows: MergedConversation[]): {
     // the local rail shows one chat section for all of them, and a heading per
     // workspace would be a heading for something the row is not in.
     const grouped = row.mode === "workspace";
-    const key = grouped ? `${machine}::${row.workspaceId ?? ""}` : `${machine}::chat`;
+    // This machine's groups are keyed by the workspace id *alone*, which is the
+    // key the local list already folds by: the same workspace then folds and
+    // unfolds together in both lists, instead of two fold states disagreeing
+    // about one workspace depending on which list is drawn. A remote workspace
+    // needs the machine in the key — two machines can hold the same workspace id.
+    const key = grouped
+      ? (row.desktopId === null ? (row.workspaceId ?? "") : `${machine}::${row.workspaceId ?? ""}`)
+      : `${machine}::chat`;
     const existing = byKey.get(key);
     const group: MergedGroup = existing ?? {
       key,

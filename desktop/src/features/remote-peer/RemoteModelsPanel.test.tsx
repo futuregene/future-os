@@ -14,12 +14,12 @@ import { RemoteModelsPanel } from "./RemoteModelsPanel";
  * (turning a provider off must not save only the rows currently rendered).
  */
 
-const listRemoteModels = vi.fn<(desktopId: string) => Promise<unknown[]>>();
+const listRemoteSettingsModels = vi.fn<(desktopId: string) => Promise<unknown[]>>();
 vi.mock("./remotePeerClient", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./remotePeerClient")>();
   return {
     ...actual,
-    listRemoteModels: (...args: Parameters<typeof listRemoteModels>) => listRemoteModels(...args),
+    listRemoteSettingsModels: (...args: Parameters<typeof listRemoteSettingsModels>) => listRemoteSettingsModels(...args),
   };
 });
 
@@ -83,7 +83,7 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   document.body.innerHTML = "";
-  listRemoteModels.mockReset().mockResolvedValue([
+  listRemoteSettingsModels.mockReset().mockResolvedValue([
     { id: "gpt-5", label: "GPT-5", provider: "openai" },
     { id: "o3", provider: "openai" },
     { id: "claude-opus", label: "Opus", provider: "anthropic" },
@@ -191,12 +191,12 @@ it("disables the switches while the host cannot be reached", async () => {
 
 /** A failed read is reported, with a way to try again. */
 it("reports a failed read and offers a retry", async () => {
-  listRemoteModels.mockRejectedValueOnce(new Error("peer_not_connected"));
+  listRemoteSettingsModels.mockRejectedValueOnce(new Error("peer_not_connected"));
   const view = await mount();
 
   expect(view.text()).toContain("peer_not_connected");
 
-  listRemoteModels.mockResolvedValue([{ id: "gpt-5", provider: "openai" }]);
+  listRemoteSettingsModels.mockResolvedValue([{ id: "gpt-5", provider: "openai" }]);
   const retry = [...view.container.querySelectorAll("button")]
     .find(node => node.textContent === "Retry")!;
   await act(async () => retry.click());
@@ -207,9 +207,43 @@ it("reports a failed read and offers a retry", async () => {
 
 /** A host with no models says so, rather than rendering an empty page. */
 it("says so when the host offers no models", async () => {
-  listRemoteModels.mockResolvedValue([]);
+  listRemoteSettingsModels.mockResolvedValue([]);
   const view = await mount();
 
   expect(view.text()).toContain("No models are available");
+  await view.unmount();
+});
+
+/**
+ * The list this page reads is the *settings* one, and that is the fix for a real
+ * bug: the host strips hidden models out of `list_models` before replying, so a
+ * page fed from it could only ever show models that were already on. A model the
+ * user had turned off was not in the list at all — there was no switch to turn it
+ * back on, and the setting was one-way.
+ */
+it("reads the unfiltered settings list, not the picker's filtered one", async () => {
+  const view = await mount();
+
+  expect(listRemoteSettingsModels).toHaveBeenCalledWith("desktop_a");
+  await view.unmount();
+});
+
+/**
+ * And a hidden model is therefore reachable: it renders, with its switch off, so
+ * turning it back on writes the removal rather than being impossible.
+ */
+it("shows a hidden model with its switch off, and can turn it back on", async () => {
+  listRemoteSettingsModels.mockResolvedValue([
+    { id: "gpt-5", label: "GPT-5", provider: "openai" },
+    { id: "o3", label: "o3", provider: "openai" },
+  ]);
+  const view = await mount({ hidden: ["openai/o3"] });
+
+  // Present, and off — the state the picker's list could not represent.
+  expect(view.text()).toContain("o3");
+  expect(view.switchFor("o3")!.getAttribute("aria-checked")).toBe("false");
+
+  await act(async () => view.switchFor("o3")!.click());
+  expect(view.onChangeHidden).toHaveBeenCalledWith([]);
   await view.unmount();
 });

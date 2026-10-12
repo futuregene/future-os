@@ -81,8 +81,10 @@ async function mount(props: {
     );
   });
   const input = container.querySelector("input")!;
+  // By accessible name: the attach control is an icon button (as it is in this
+  // app's own composer), so it has an aria-label rather than text.
   const button = (label: string) => [...container.querySelectorAll("button")]
-    .find(node => node.textContent === label);
+    .find(node => node.textContent === label || node.getAttribute("aria-label") === label);
   return {
     button,
     container,
@@ -395,7 +397,7 @@ it("holds the send back while a file is uploading", async () => {
   const view = await mount();
 
   await act(async () => view.button("Attach")!.click());
-  expect(view.button("Uploading…")).toBeTruthy();
+  expect(view.button("Attach")!.disabled).toBe(true);
 
   await act(async () => {
     release?.({ uploadId: "upload_7", name: "report.txt", contentHash: "h" });

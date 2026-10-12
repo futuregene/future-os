@@ -329,10 +329,9 @@ describe("mergeConversations", () => {
         [],
       ));
 
-      expect(grouped.workspaces.map(group => group.key)).toEqual([
-        "local::ws_new",
-        "local::ws_old",
-      ]);
+      // Keyed by the workspace id alone for this machine, which is also the key
+      // the local list folds by (see `groupMergedRows`).
+      expect(grouped.workspaces.map(group => group.key)).toEqual(["ws_new", "ws_old"]);
     });
   });
 });

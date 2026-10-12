@@ -7,12 +7,13 @@ import { RemoteHubView } from "./RemoteHubView";
 
 /**
  * The Remote page's own contract: that it puts both directions in one place,
- * that it says in words which is which, and that each direction receives what it
- * needs.
+ * that it says in words which is which, that each direction receives what it
+ * needs, and that a machine's own pages (its settings, its tasks) replace this
+ * page rather than opening a window of their own.
  *
- * The two directions are stubbed because their internals are their own; what
- * belongs to *this* component is the page shell, the lead that distinguishes
- * local from remote, and the wiring.
+ * The sections and the two sub-pages are stubbed: their internals are their own
+ * concern. What belongs to *this* component is the page shell, the lead that
+ * distinguishes local from remote, the wiring, and the navigation.
  */
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -51,6 +52,52 @@ vi.mock("../remote-peer/RemoteTasksView", async () => {
       ),
   };
 });
+vi.mock("../remote-peer/RemotePeerSettings", async () => {
+  const { createElement } = await import("react");
+  return {
+    RemotePeerSettings: (props: {
+      onBack: () => void;
+      onOpenTasks: () => void;
+      onChanged: () => void;
+      onUnpair: () => void;
+      onUpdateLabel: (patch: { name?: string }) => void;
+      peer: { desktopId: string };
+    }) =>
+      createElement(
+        "div",
+        { "data-child": "peer-settings", "data-peer": props.peer.desktopId },
+        createElement("button", { "data-back": "1", "onClick": props.onBack }),
+        createElement("button", { "data-tasks": "1", "onClick": props.onOpenTasks }),
+        createElement("button", { "data-unpair": "1", "onClick": props.onUnpair }),
+        createElement("button", { "data-changed": "1", "onClick": props.onChanged }),
+        createElement("button", {
+          "data-rename": "1",
+          "onClick": () => props.onUpdateLabel({ name: "Renamed" }),
+        }),
+      ),
+  };
+});
+
+const setRemotePeerLabel = vi.fn<(desktopId: string, patch: Record<string, unknown>) => Promise<unknown>>();
+const unpairRemotePeer = vi.fn<(desktopId: string) => Promise<string | null>>();
+vi.mock("../remote-peer/remotePeerClient", () => ({
+  setRemotePeerLabel: (...args: Parameters<typeof setRemotePeerLabel>) => setRemotePeerLabel(...args),
+  unpairRemotePeer: (...args: Parameters<typeof unpairRemotePeer>) => unpairRemotePeer(...args),
+}));
+
+const toasts = vi.hoisted(() => [] as Array<{ message: string; tone?: string }>);
+vi.mock("../../lib/futureEvents", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../lib/futureEvents")>();
+  return {
+    ...actual,
+    emitFutureEvent: (name: string, detail: unknown) => {
+      if (name === "toast")
+        toasts.push(detail as { message: string; tone?: string });
+      else
+        actual.emitFutureEvent(name as never, detail as never);
+    },
+  };
+});
 
 const startWindowDrag = vi.fn();
 vi.mock("../../lib/windowDrag", () => ({
@@ -86,7 +133,7 @@ async function mount(overrides: Partial<Parameters<typeof RemoteHubView>[0]> = {
     autoConnect: false,
     leftPanelExpanded: true,
     onRefreshRemote: vi.fn(async () => {}),
-    onOpenRemoteSettings: vi.fn(),
+    onOpenRemoteSession: vi.fn(),
     onStartConversation: vi.fn(),
     onToggleAutoConnect: vi.fn(),
     onToggleLeftPanel: vi.fn(),
@@ -99,7 +146,16 @@ async function mount(overrides: Partial<Parameters<typeof RemoteHubView>[0]> = {
   return props;
 }
 
+/** Open a machine's settings the way its row does. */
+async function openSettings(desktopId = "desk_a") {
+  await act(async () => (sections.client as { onOpenSettings: (peer: { desktopId: string }) => void })
+    .onOpenSettings({ desktopId }));
+}
+
 beforeEach(() => {
+  toasts.length = 0;
+  setRemotePeerLabel.mockReset().mockResolvedValue(undefined);
+  unpairRemotePeer.mockReset().mockResolvedValue(null);
   sections.host = null;
   sections.client = null;
   startWindowDrag.mockClear();
@@ -178,10 +234,7 @@ it("gives each direction what it needs, and nothing crossed over", async () => {
     autoConnect: true,
     remoteStatus: { pairId: "pair_1" },
   });
-  expect(sections.client).toMatchObject({
-    onOpenSettings: props.onOpenRemoteSettings,
-    onStartConversation: props.onStartConversation,
-  });
+  expect(sections.client).toMatchObject({ onStartConversation: props.onStartConversation });
   // The host half has no machines to open conversations on, and the client half
   // has no pairing state: a prop on the wrong side would be invisible until it
   // misbehaved.
@@ -193,7 +246,6 @@ it("carries the page shell: the title and the window drag", async () => {
   await mount();
 
   expect(container.querySelector("header")!.textContent).toContain("Remote");
-
   await act(async () => {
     container.querySelector("header")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
   });
@@ -201,20 +253,156 @@ it("carries the page shell: the title and the window drag", async () => {
 });
 
 /**
- * The client section opens a machine's settings in its own window (see
- * `remote_peer_open_settings_window`) rather than stacking a page here, so the
- * page stays on the machines and the settings survive navigating away.
+ * A machine's settings open as a page *of this window*.
+ *
+ * They belong to that machine, but the user is still working in this one:
+ * leaving their window (its size, position and place) to change a setting is a
+ * bigger errand than it deserves. The page replaces the hub's content, and its
+ * own back control returns here.
  */
-it("opens a machine's settings in its own window, from the client section", async () => {
-  const onOpenRemoteSettings = vi.fn();
-  await mount({ onOpenRemoteSettings });
+it("opens a machine's settings as a page in this window, and comes back", async () => {
+  await mount();
+  await openSettings();
 
+  expect(container.querySelector("[data-child='peer-settings']")!.getAttribute("data-peer")).toBe("desk_a");
+  // One page at a time: the hub's content is gone, not behind it.
+  expect(container.querySelector("[data-testid='remote-hub-lead']")).toBeNull();
+  expect(container.querySelector("[data-child='client-section']")).toBeNull();
+
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-back='1']")!.click());
+
+  expect(container.querySelector("[data-child='peer-settings']")).toBeNull();
+  expect(container.querySelector("[data-child='client-section']")).not.toBeNull();
+});
+
+/**
+ * And that page opens the machine's tasks, which take the whole column — the
+ * task editor is a list and a detail side by side, which does not fit inside a
+ * settings column.
+ */
+it("hands the column to a machine's tasks, and gives it back to its settings", async () => {
+  await mount();
+  await openSettings();
+
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-tasks='1']")!.click());
+
+  expect(container.querySelector("[data-child='tasks-view']")!.getAttribute("data-peer")).toBe("desk_a");
+  expect(container.querySelector("[data-child='peer-settings']")).toBeNull();
+
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-back='1']")!.click());
+
+  // Back to the settings page it came from, not to the hub: a task editor is one
+  // level below the settings that offered it.
+  expect(container.querySelector("[data-child='tasks-view']")).toBeNull();
+  expect(container.querySelector("[data-child='peer-settings']")).not.toBeNull();
+});
+
+/** Unpairing is asked for from a machine's settings, and confirmed there. */
+it("asks before unpairing, from the settings page that requested it", async () => {
+  await mount();
+  await openSettings();
+
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-unpair='1']")!.click());
+
+  expect(container.querySelector("[role='dialog']")).not.toBeNull();
+  expect(container.textContent).toContain("Unpair this desktop?");
+});
+
+/**
+ * A rename is *local*: the name lives in the credential book, so nothing else
+ * would show it until the next catalogue read. What this test owns is that the
+ * hub forwards the write and re-reads the machines.
+ */
+it("writes a local rename from the settings page", async () => {
+  await mount();
+  await openSettings();
+
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-rename='1']")!.click());
+
+  expect(setRemotePeerLabel).toHaveBeenCalledWith("desk_a", { name: "Renamed" });
+});
+
+/** A rename the local store refuses is reported rather than swallowed. */
+it("reports a rename that could not be stored", async () => {
+  setRemotePeerLabel.mockRejectedValue(new Error("credential book is read-only"));
+  await mount();
+  await openSettings();
+
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-rename='1']")!.click());
   await act(async () => {
-    onOpenRemoteSettings({ desktopId: "desk_a" });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
   });
 
-  // The page is unchanged: the window is the backend's to open, and the hub only
-  // forwards the request.
-  expect(container.querySelector("[data-child='client-section']")).not.toBeNull();
-  expect(container.querySelector("[data-child='tasks-view']")).toBeNull();
+  expect(toasts.some(toast => toast.message.includes("credential book is read-only"))).toBe(true);
+});
+
+/**
+ * Unpairing asks first, and a revoke the platform never took is *reported*: the
+ * pairing is gone locally either way, so a clean removal would be a lie.
+ */
+it("unpairs from the settings page, and reports an undelivered revoke", async () => {
+  unpairRemotePeer.mockResolvedValue("pending");
+  await mount();
+  await openSettings();
+
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-unpair='1']")!.click());
+  const confirm = [...container.querySelectorAll<HTMLButtonElement>("[role='dialog'] button")]
+    .find(node => node.textContent === "Unpair")!;
+  await act(async () => confirm.click());
+  await act(async () => {
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+  });
+
+  expect(unpairRemotePeer).toHaveBeenCalledWith("desk_a");
+  expect(toasts.some(toast => toast.message.includes("could not be reached to revoke"))).toBe(true);
+  // The settings page goes with the pairing it described.
+  expect(container.querySelector("[data-child='peer-settings']")).toBeNull();
+});
+
+/** Cancelling leaves the pairing alone, and stays on the page. */
+it("cancels an unpair without touching the pairing", async () => {
+  await mount();
+  await openSettings();
+
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-unpair='1']")!.click());
+  const cancel = [...container.querySelectorAll<HTMLButtonElement>("[role='dialog'] button")]
+    .find(node => node.textContent === "Cancel")!;
+  await act(async () => cancel.click());
+
+  expect(unpairRemotePeer).not.toHaveBeenCalled();
+  expect(container.querySelector("[role='dialog']")).toBeNull();
+  expect(container.querySelector("[data-child='peer-settings']")).not.toBeNull();
+});
+
+/**
+ * A setting written on the page re-reads the machine list.
+ *
+ * The values live on the host, so nothing local would show what was just changed
+ * until the list is read again — and the list is what the user returns to.
+ */
+it("re-reads the machines when the settings page reports a change", async () => {
+  await mount();
+  await openSettings();
+  const before = (sections.client as { refreshNonce?: number }).refreshNonce;
+
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-changed='1']")!.click());
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-back='1']")!.click());
+
+  expect((sections.client as { refreshNonce?: number }).refreshNonce).not.toBe(before);
+});
+
+/** Escape dismisses the confirmation and leaves the pairing alone. */
+it("closes the unpair confirmation on Escape without unpairing", async () => {
+  await mount();
+  await openSettings();
+  await act(async () => container.querySelector<HTMLButtonElement>("[data-unpair='1']")!.click());
+
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+
+  expect(unpairRemotePeer).not.toHaveBeenCalled();
+  expect(container.querySelector("[role='dialog']")).toBeNull();
+  // Still on the machine's settings, where the request came from.
+  expect(container.querySelector("[data-child='peer-settings']")).not.toBeNull();
 });

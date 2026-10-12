@@ -1,10 +1,18 @@
 import type { ReactNode } from "react";
 import type { RemotePeer } from "../remote-peer/remotePeerClient";
 import type { RemoteStatus } from "../remote/remoteClient";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
+import { Button } from "../../components/ui/Button";
+import { Dialog } from "../../components/ui/Dialog";
+import { errorMessage } from "../../lib/errors";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { startWindowDrag } from "../../lib/windowDrag";
+import { setRemotePeerLabel, unpairRemotePeer } from "../remote-peer/remotePeerClient";
+import { RemotePeerSettings } from "../remote-peer/RemotePeerSettings";
 import { RemoteClientSection } from "../remote-peer/RemotePeersView";
+import { RemoteTasksView } from "../remote-peer/RemoteTasksView";
 import { RemoteHostSection } from "../remote/RemoteView";
 
 /**
@@ -25,11 +33,17 @@ import { RemoteHostSection } from "../remote/RemoteView";
  * the other does not, one is a server and the other a client, and either can be
  * used without the other. That independence is why each is a section that
  * carries its own state, rather than one merged control surface.
+ *
+ * A machine's tasks and its settings are **pages of this window** — they replace
+ * this page rather than opening a window of their own, because the user is still
+ * working in this one and leaving it (its size, position and place) is a bigger
+ * move than the errand deserves. Each carries a back control at the top left,
+ * which is where a reader looks for one.
  */
 export function RemoteHubView({
   autoConnect,
   leftPanelExpanded,
-  onOpenRemoteSettings,
+  onOpenRemoteSession,
   onStartConversation,
   onToggleAutoConnect,
   onToggleLeftPanel,
@@ -39,8 +53,8 @@ export function RemoteHubView({
   /** This machine's auto-connect preference for its paired devices. */
   autoConnect: boolean;
   leftPanelExpanded: boolean;
-  /** Open a paired computer's settings, which live in their own window. */
-  onOpenRemoteSettings: (peer: RemotePeer) => void;
+  /** Open one of a paired computer's conversations, by its session id. */
+  onOpenRemoteSession: (desktopId: string, sessionId: string) => void;
   /** Open a new conversation on a paired computer; owned by the shell. */
   onStartConversation: (desktopId: string) => void;
   onToggleAutoConnect: (value: boolean) => void;
@@ -51,7 +65,162 @@ export function RemoteHubView({
   const { t } = useTranslation("remoteHub");
   const { t: tRemote } = useTranslation("remote");
   const { t: tPeer } = useTranslation("remotePeer");
+  /** The machine whose settings page is open, if any. */
+  const [settingsFor, setSettingsFor] = useState<RemotePeer | null>(null);
+  /** The machine whose tasks are open, if any. They need the whole column. */
+  const [tasksFor, setTasksFor] = useState<RemotePeer | null>(null);
+  const [unpairTarget, setUnpairTarget] = useState<RemotePeer | null>(null);
+  /**
+   * Bumped whenever something outside the machine list changed it (a rename or
+   * an unpair), so the list re-reads when the user comes back instead of showing
+   * what it read when the page was first opened.
+   */
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
+  /** A rename that could not be stored locally: said out loud, not swallowed. */
+  function reportLabelFailure(error: unknown) {
+    emitFutureEvent("toast", { message: errorMessage(error), tone: "error" });
+  }
+
+  if (tasksFor) {
+    return (
+      <RemoteTasksView
+        leftPanelExpanded={leftPanelExpanded}
+        onBack={() => setTasksFor(null)}
+        onOpenSession={onOpenRemoteSession}
+        onToggleLeftPanel={onToggleLeftPanel}
+        peer={tasksFor}
+      />
+    );
+  }
+
+  if (settingsFor) {
+    return (
+      <>
+        <RemotePeerSettings
+          onBack={() => setSettingsFor(null)}
+          onChanged={() => setRefreshNonce(nonce => nonce + 1)}
+          onOpenTasks={() => setTasksFor(settingsFor)}
+          onUnpair={() => setUnpairTarget(settingsFor)}
+          onUpdateLabel={(patch) => {
+            void setRemotePeerLabel(settingsFor.desktopId, patch)
+              // The page describes the machine from the peer it was opened with;
+              // the name and icon live in the local credential book, so the page
+              // has to be told what it just became.
+              .then(() => setSettingsFor(current => (current ? { ...current, ...patch } : current)))
+              .then(() => setRefreshNonce(nonce => nonce + 1))
+              .catch(reportLabelFailure);
+          }}
+          peer={settingsFor}
+        />
+        {unpairDialog()}
+      </>
+    );
+  }
+
+  return (
+    <Shell
+      leftPanelExpanded={leftPanelExpanded}
+      onToggleLeftPanel={onToggleLeftPanel}
+      title={t("title")}
+    >
+      <div className="space-y-6">
+        <p className="text-sm text-ink-muted" data-testid="remote-hub-lead">{t("lead")}</p>
+
+        <Direction
+          subtitle={tRemote("description")}
+          testId="remote-hub-host"
+          title={t("hostTitle")}
+        >
+          <RemoteHostSection
+            autoConnect={autoConnect}
+            onRefreshRemote={onRefreshRemote}
+            onToggleAutoConnect={onToggleAutoConnect}
+            remoteStatus={remoteStatus}
+          />
+        </Direction>
+
+        <Direction
+          subtitle={tPeer("description")}
+          testId="remote-hub-client"
+          title={t("clientTitle")}
+        >
+          <RemoteClientSection
+            onOpenSettings={setSettingsFor}
+            onStartConversation={onStartConversation}
+            refreshNonce={refreshNonce}
+          />
+        </Direction>
+      </div>
+      {unpairDialog()}
+    </Shell>
+  );
+
+  /**
+   * Unpairing removes the pairing, so it asks first — and it is asked for from a
+   * machine's settings page, which is why the confirmation is built here (the
+   * page below it changes either way).
+   */
+  function unpairDialog() {
+    if (!unpairTarget)
+      return null;
+    return (
+      <Dialog
+        description={tPeer("unpairConfirmDesc", { name: unpairTarget.name ?? unpairTarget.desktopId })}
+        footer={(
+          <>
+            <Button onClick={() => setUnpairTarget(null)} variant="ghost">{tPeer("cancel")}</Button>
+            <Button
+              onClick={() => {
+                const target = unpairTarget;
+                setUnpairTarget(null);
+                // The pairing is gone locally whatever the platform says, so the
+                // settings page for it closes and the list is re-read; a revoke
+                // the platform never received comes back as a warning string and
+                // is reported rather than claimed as a clean removal.
+                void unpairRemotePeer(target.desktopId)
+                  .then((pending) => {
+                    setSettingsFor(null);
+                    setRefreshNonce(nonce => nonce + 1);
+                    if (pending)
+                      emitFutureEvent("toast", { message: tPeer("unpairPendingWarning"), tone: "info" });
+                  })
+                  .catch(reportLabelFailure);
+              }}
+              variant="danger"
+            >
+              {tPeer("unpair")}
+            </Button>
+          </>
+        )}
+        onClose={() => setUnpairTarget(null)}
+        open
+        title={tPeer("unpairConfirmTitle")}
+      >
+        <span />
+      </Dialog>
+    );
+  }
+}
+
+/**
+ * The hub's page shell: title bar, and a scrolling column for the content.
+ *
+ * Only the hub itself uses it — a machine's settings and its tasks are pages
+ * that bring their own header (with their own back control), which is what makes
+ * them read as pages rather than as sections of this one.
+ */
+function Shell({
+  children,
+  leftPanelExpanded,
+  onToggleLeftPanel,
+  title,
+}: {
+  children: ReactNode;
+  leftPanelExpanded: boolean;
+  onToggleLeftPanel: () => void;
+  title: string;
+}) {
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
       <header
@@ -60,38 +229,12 @@ export function RemoteHubView({
       >
         <div className="flex min-w-0 flex-1 items-center" data-tauri-drag-region>
           <LeftPanelTitlebarToggle expanded={leftPanelExpanded} onToggle={onToggleLeftPanel} />
-          <span className="truncate text-sm font-semibold text-ink">{t("title")}</span>
+          <span className="truncate text-sm font-semibold text-ink">{title}</span>
         </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-8">
-        <div className="mx-auto w-full max-w-3xl space-y-6">
-          <p className="text-sm text-ink-muted" data-testid="remote-hub-lead">{t("lead")}</p>
-
-          <Direction
-            subtitle={tRemote("description")}
-            testId="remote-hub-host"
-            title={t("hostTitle")}
-          >
-            <RemoteHostSection
-              autoConnect={autoConnect}
-              onRefreshRemote={onRefreshRemote}
-              onToggleAutoConnect={onToggleAutoConnect}
-              remoteStatus={remoteStatus}
-            />
-          </Direction>
-
-          <Direction
-            subtitle={tPeer("description")}
-            testId="remote-hub-client"
-            title={t("clientTitle")}
-          >
-            <RemoteClientSection
-              onOpenSettings={onOpenRemoteSettings}
-              onStartConversation={onStartConversation}
-            />
-          </Direction>
-        </div>
+        <div className="mx-auto w-full max-w-3xl">{children}</div>
       </div>
     </section>
   );

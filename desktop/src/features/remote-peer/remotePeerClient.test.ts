@@ -24,7 +24,7 @@ const {
   deleteRemoteWorkspace,
   downloadRemoteFile,
   fetchRemoteSessions,
-  openRemoteSettingsWindow,
+  listRemoteSettingsModels,
   forkRemoteConversation,
   generateRemoteTitle,
   getRemoteConversationSettings,
@@ -299,23 +299,6 @@ describe("compactRemoteConversation", () => {
   });
 });
 
-describe("openRemoteSettingsWindow", () => {
-  /**
-   * The window is the backend's (one per machine, raised if already open), so the
-   * frontend's whole part in it is this command and the id — and an id sent as
-   * anything other than `desktopId` would open the wrong machine's settings.
-   */
-  it("asks for one machine's settings window by id", async () => {
-    invokeMock.mockResolvedValue(null);
-
-    await openRemoteSettingsWindow("desktop_a");
-
-    expect(invokeMock).toHaveBeenCalledWith("remote_peer_open_settings_window", {
-      desktopId: "desktop_a",
-    });
-  });
-});
-
 describe("fetchRemoteSessions", () => {
   it("carries the host's thread id through to the merged row", async () => {
     invokeMock.mockResolvedValue({
@@ -587,6 +570,26 @@ describe("remote model references", () => {
     expect(remoteModelProvider("gpt-5")).toBeUndefined();
     // A leading slash is not a provider: there is nothing before it.
     expect(remoteModelProvider("/gpt-5")).toBeUndefined();
+  });
+});
+
+describe("listRemoteSettingsModels", () => {
+  /**
+   * The *settings* command, not the picker's. The host strips hidden models out
+   * of `list_models`, so a visibility page fed from that could only ever show
+   * models that are already on — a hidden one could not be switched back on.
+   */
+  it("asks the host for the unfiltered catalogue", async () => {
+    invokeMock.mockResolvedValue({ models: [{ id: "gpt-5", provider: "openai" }] });
+
+    const models = await listRemoteSettingsModels("desktop_a");
+
+    expect(invokeMock).toHaveBeenCalledWith("remote_peer_request", {
+      desktopId: "desktop_a",
+      command: { type: "list_settings_models" },
+      lane: "list",
+    });
+    expect(models).toEqual([{ id: "gpt-5", provider: "openai" }]);
   });
 });
 

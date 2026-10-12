@@ -1736,40 +1736,71 @@ describe("app shell collapsed-panel affordances", () => {
     });
 
     /**
-     * A task run names its conversation by ids rather than by a row, and a task
-     * run is opened from a machine's *settings window* — a different window —
-     * which asks for the conversation over a backend event. The shell is what
-     * turns that into "the conversation you are looking at".
+     * A remote conversation opened by ids — a task run names its conversation
+     * that way — lands in the chat column, addressed to the host it belongs to.
      */
-    it("opens a remote conversation a settings window asked for", () => {
+    it("opens a remote conversation from the ids a task run gave", () => {
       const view = mount(<AppShell />);
       act(() => rail().onManageDesktops?.());
+      const hub = children.remoteHub as {
+        onOpenRemoteSession: (desktopId: string, sessionId: string) => void;
+      };
 
-      act(() => tauri("remote-peer-open-session")({ desktopId: "desktop_a", sessionId: "sess_task" }));
+      act(() => hub.onOpenRemoteSession("desktop_a", "sess_task"));
 
-      // The same destination as opening a row: the chat column, on that
-      // conversation, addressed to the host it belongs to.
       expect(children.remoteConversationView).not.toBeNull();
       expect(composer().sessionId).toBe("sess_task");
       view.unmount();
     });
 
     /**
-     * 设置 opens that machine's settings in a *window*, which the backend owns:
-     * this window only asks for it, by id. A window opened for the wrong id would
-     * show (and write) another machine's settings.
+     * The two destinations are exclusive, and the remote one is checked first in
+     * the column — so opening a conversation of *this* machine has to leave the
+     * remote one. Without that, clicking a local row after looking at a remote
+     * conversation rendered the remote transcript for a local thread: the row
+     * highlighted on one side and the other machine's conversation on the other.
      */
-    it("asks the backend to open a machine's settings window", () => {
+    it("shows a local conversation after a remote one was open", () => {
       const view = mount(<AppShell />);
       act(() => rail().onManageDesktops?.());
-      mocks.invoke.mockClear();
+      const hub = children.remoteHub as {
+        onOpenRemoteSession: (desktopId: string, sessionId: string) => void;
+      };
+      act(() => hub.onOpenRemoteSession("desktop_a", "sess_remote"));
+      expect(children.remoteConversationView).not.toBeNull();
 
-      act(() => (children.remoteHub as { onOpenRemoteSettings: (peer: { desktopId: string }) => void })
-        .onOpenRemoteSettings({ desktopId: "desktop_a" }));
+      act(() => rail().onSelectThread(thread("th_local", { agentSessionId: "sess_local" })));
 
-      expect(mocks.invoke).toHaveBeenCalledWith("remote_peer_open_settings_window", {
-        desktopId: "desktop_a",
-      });
+      // Asserted on the rendered tree: the stubs above record their props when
+      // they render and are never cleared, so a stale record proves nothing.
+      expect(document.querySelector("[data-child='remote-conversation-view']")).toBeNull();
+      expect(document.querySelector("[data-child='agent-thread']")).not.toBeNull();
+      view.unmount();
+    });
+
+    /**
+     * And the other way round: opening a remote conversation while a draft is in
+     * the column must actually show it, rather than leaving the new-chat screen
+     * on top of it.
+     */
+    it("shows a remote conversation opened while a draft is up", () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onManageDesktops?.());
+      act(() => rail().onNewChat?.());
+      expect(document.querySelector("[data-child='new-conversation']")).not.toBeNull();
+
+      const hub = children.remoteHub as {
+        onStartConversation: (desktopId: string) => void;
+      };
+      act(() => hub.onStartConversation("desktop_a"));
+
+      // The machine's composer takes the column: the draft is addressed with an
+      // empty session id, which is the host's own signal to create one.
+      expect(document.querySelector("[data-child='new-conversation']")).toBeNull();
+      expect(composer().sessionId).toBe("");
+
+      act(() => composer().onCreated?.("sess_new"));
+      expect(composer().sessionId).toBe("sess_new");
       view.unmount();
     });
 

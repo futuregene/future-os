@@ -4,7 +4,6 @@ import type { FutureAuthState, ProvidersView } from "../../integrations/agent/pr
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { ContextTab } from "./ContextPanel";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
@@ -13,12 +12,11 @@ import { NewConversation } from "../../features/agent/NewConversation";
 import { sessionMentionOptions } from "../../features/agent/sessionMention";
 import { useSkillRecommendation } from "../../features/agent/useSkillRecommendation";
 import { peerBadgeText } from "../../features/remote-peer/peerIcons";
-import { OPEN_REMOTE_SESSION_EVENT } from "../../features/remote-peer/PeerSettingsWindow";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemoteFilesDialog } from "../../features/remote-peer/RemoteFilesDialog";
-import { compactRemoteConversation, continueRemoteRun, forkRemoteConversation, installRemoteSkill, openRemoteSettingsWindow } from "../../features/remote-peer/remotePeerClient";
+import { compactRemoteConversation, continueRemoteRun, forkRemoteConversation, installRemoteSkill } from "../../features/remote-peer/remotePeerClient";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { remoteSkillRecoSource } from "../../features/remote-peer/remoteSkillRecoSource";
 import { useRemoteApprovals } from "../../features/remote-peer/useRemoteApprovals";
@@ -510,17 +508,6 @@ function ReadyAppShell({
     void refreshStore();
   });
 
-  // A machine's settings window asked for one of its conversations to be shown.
-  // The settings window has no conversation pane on purpose (a second transcript
-  // with its own composer and approvals is a second source of truth), so the
-  // request comes here, and this window raises itself: the user asked for the
-  // conversation, and leaving the settings window in front would look like
-  // nothing happened.
-  useTauriEvent<{ desktopId: string; sessionId: string }>(OPEN_REMOTE_SESSION_EVENT, ({ desktopId, sessionId }) => {
-    openRemoteSession(desktopId, sessionId);
-    void getCurrentWindow().setFocus().catch(() => {});
-  });
-
   function handleSectionChange(nextSection: ActivitySection) {
     if (nextSection === "settings") {
       setSettingsTab("general");
@@ -552,6 +539,11 @@ function ReadyAppShell({
     setActiveThreadId(thread.id);
     setCenterMode("thread");
     setNewChatWorkspaceId(null);
+    // Opening a conversation of *this* machine leaves the remote one. Without
+    // this the remote conversation stays selected and the column keeps rendering
+    // it (the remote branch is checked first), so clicking a local row appeared
+    // to open the other machine's conversation — with the remote transcript.
+    setActiveRemote(null);
   }
 
   /// Open the conversation a task run produced (from the Tasks panel).
@@ -567,6 +559,8 @@ function ReadyAppShell({
     setActiveThreadId(threadId);
     setCenterMode("thread");
     setNewChatWorkspaceId(null);
+    // As in `handleSelectThread`: this is a local conversation.
+    setActiveRemote(null);
     void refreshStore();
   }
 
@@ -809,6 +803,12 @@ function ReadyAppShell({
       return;
     setActiveRemote({ desktopId: conversation.desktopId, sessionId: conversation.id });
     setSection("chat");
+    // The mirror of `handleSelectThread`: opening a remote conversation leaves
+    // the local one, and it has to actually be *shown* — a draft left in the
+    // column would otherwise keep the new-chat screen up over it.
+    setActiveThreadId(null);
+    setCenterMode("thread");
+    setNewChatWorkspaceId(null);
   }
 
   /**
@@ -820,6 +820,9 @@ function ReadyAppShell({
   function openRemoteSession(desktopId: string, sessionId: string) {
     setActiveRemote({ desktopId, sessionId });
     setSection("chat");
+    setActiveThreadId(null);
+    setCenterMode("thread");
+    setNewChatWorkspaceId(null);
   }
 
   /**
@@ -861,6 +864,12 @@ function ReadyAppShell({
   function startRemoteConversation(desktopId: string) {
     setActiveRemote({ desktopId, sessionId: "" });
     setSection("chat");
+    // A draft on a machine is still "a conversation in the column": without
+    // this, asking for one from the new-chat screen left that screen up and the
+    // machine's composer was never shown.
+    setActiveThreadId(null);
+    setCenterMode("thread");
+    setNewChatWorkspaceId(null);
   }
 
   const activityRailProps = {
@@ -1011,7 +1020,7 @@ function ReadyAppShell({
                         <RemoteHubView
                           autoConnect={appSettings.autoConnectRemote}
                           leftPanelExpanded={showLeftPanel}
-                          onOpenRemoteSettings={peer => void openRemoteSettingsWindow(peer.desktopId)}
+                          onOpenRemoteSession={openRemoteSession}
                           onRefreshRemote={refreshRemote}
                           onStartConversation={startRemoteConversation}
                           onToggleAutoConnect={value => void changeSettings({ autoConnectRemote: value })}
@@ -1046,12 +1055,14 @@ function ReadyAppShell({
                                 streaming={remoteTimeline.streaming}
                               />
                             )}
+                            leftPanelExpanded={showLeftPanel}
                             entries={remoteTimeline.entries}
                             error={remoteTimeline.error}
                             hasMore={remoteTimeline.hasMore}
                             loading={remoteTimeline.loading}
                             loadingOlder={remoteTimeline.loadingOlder}
                             onCompact={() => void compactRemoteConversationOn(activeRemote.desktopId, activeRemote.sessionId)}
+                            onToggleLeftPanel={handleToggleLeftPanel}
                             onContinueRun={runId => void continueRemoteRunOn(activeRemote.desktopId, activeRemote.sessionId, runId)}
                             onDecideApproval={(approval, decision) => void remoteApprovals.decide(approval, decision)}
                             onFork={(sourceEntryId, forkable) =>

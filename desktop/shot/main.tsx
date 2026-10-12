@@ -6,12 +6,6 @@
  * `docs/guide/screenshots.zh-CN.md` (or the .md next to it).
  *
  * URL parameters drive states a plain page load cannot reach:
- *   ?window=peer-settings&desktop=<id>
- *                          render a remote machine's settings *window* — the one
- *                          page of the app that is not the shell. Production
- *                          routes on exactly this (see `src/app/windowRoute.ts`),
- *                          and a harness that always mounted the shell would
- *                          capture the app for a URL that opens something else.
  *   ?press=meta+f          dispatch this shortcut at the real window listener
  *                          (the browser tool's key table has no letter keys)
  *   ?lang=en               render the English UI instead of Chinese
@@ -20,14 +14,11 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "../src/app/App";
-import { windowRoute } from "../src/app/windowRoute";
-import { PeerSettingsWindow } from "../src/features/remote-peer/PeerSettingsWindow";
 import { patchSettings } from "./mock/backend";
 import "../src/i18n";
 import "../src/styles/globals.css";
 
 const params = new URLSearchParams(location.search);
-const route = windowRoute(location.search);
 
 // The UI language is a user preference in the real app; pin it per capture.
 localStorage.setItem("future.language", params.get("lang") === "en" ? "en" : "zh");
@@ -46,9 +37,7 @@ if (settingsPatch) {
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    {route.kind === "peer-settings"
-      ? <PeerSettingsWindow desktopId={route.desktopId} />
-      : <App />}
+    <App />
   </React.StrictMode>,
 );
 

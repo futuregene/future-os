@@ -60,12 +60,17 @@ export function RemoteConversationRow({
     <div
       ref={itemRef}
       className={cn(
-        "group relative flex h-8 w-full items-center rounded-md text-sm transition-colors",
+        "group relative flex h-8 w-full items-center rounded-md pr-2 text-sm transition-colors",
         active ? "bg-surface-subtle text-ink" : "text-ink-soft hover:bg-surface-subtle hover:text-ink",
       )}
+      // The same 16px start as a local row (`ThreadListItem`) adds for its own
+      // depth-0 rows: a merged list holds both kinds side by side, and a remote
+      // title starting 8px further left than the local one reads as a second,
+      // wider column rather than as one list.
+      style={{ paddingLeft: 16 }}
     >
       <button
-        className="flex h-8 min-w-0 flex-1 items-center gap-2 px-2 text-left"
+        className="flex h-8 min-w-0 flex-1 items-center gap-2 text-left"
         onClick={() => onOpen(conversation)}
         title={`${conversation.title} · ${peer?.name ?? conversation.desktopId ?? ""}`}
         type="button"
