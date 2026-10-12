@@ -148,6 +148,7 @@ function SelectorOption({
 }) {
   return (
     <button
+      aria-label={label}
       aria-selected={active}
       className={cn(
         "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs",

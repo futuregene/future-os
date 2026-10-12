@@ -160,5 +160,15 @@
   "settingsWindowTitle": "远程桌面设置",
   "settingsWindowMissing": "这台电脑的配对已不存在。",
   "close": "关闭",
-  "loadingPeers": "正在读取远程桌面…"
+  "loadingPeers": "正在读取远程桌面…",
+  "backToSettings": "设置",
+  "workspacesTitle": "工作区",
+  "modelsHint": "那台电脑上可用的模型。可以在那里隐藏不想用的。",
+  "modelsHiddenHint": "关掉一个模型，那台电脑就不再提供它。这个开关改的是那台电脑自己的设置。",
+  "modelsSearch": "搜索模型",
+  "modelsLoading": "正在读取模型…",
+  "modelsEmpty": "没有可用的模型。",
+  "modelsCount": "{{count}} 个模型",
+  "modelsCountHidden": "{{count}} 个模型 · 已隐藏 {{hidden}} 个",
+  "modelsToggleProvider": "批量切换 {{name}} 下的模型"
 }

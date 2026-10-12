@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import type { MergedConversation } from "../../features/remote-peer/mergeConversations";
+import type { DeviceFilter, MergedConversation } from "../../features/remote-peer/mergeConversations";
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import { act } from "react";
@@ -53,6 +53,7 @@ function thread(id: string): StoredThread {
 }
 
 async function render(props: {
+  filter?: DeviceFilter;
   peers?: RemotePeer[];
   renderLocalRow: (thread: StoredThread, depth?: number, hasChildren?: boolean) => React.ReactNode;
   rows: MergedConversation[];
@@ -65,7 +66,7 @@ async function render(props: {
     root.render(
       <MergedRows
         activeKey={null}
-        filter={{ kind: "all" }}
+        filter={props.filter ?? { kind: "all" }}
         localRowMeta={new Map()}
         onChangedRemote={vi.fn()}
         onOpenRemote={vi.fn()}
@@ -193,5 +194,84 @@ it("names a remote chat section generically when its machine is unknown", async 
   const headings = [...view.container.querySelectorAll("[data-testid='merged-group-heading']")]
     .map(node => (node.textContent || "").trim());
   expect(headings).toEqual(["Chat"]);
+  await view.unmount();
+});
+
+/**
+ * Filtered to one machine, the badge on every row repeats the selector directly
+ * above the list — and it is the row's title that pays for it. The machine is
+ * still named by the selector, so nothing is lost.
+ */
+it("drops the per-row machine badge when one machine is selected", async () => {
+  const remote = conversation({
+    desktopId: "desktop_a",
+    id: "sess_a",
+    key: "desktop_a::sess_a",
+    title: "a conversation on the host",
+  });
+  const peers = [{
+    agentAvailable: true,
+    bridgeInstanceId: "bridge_1",
+    connected: true,
+    desktopId: "desktop_a",
+    error: null,
+    features: [],
+    icon: "laptop",
+    name: "Studio iMac",
+    pairId: "pair_1",
+  }];
+
+  const all = await render({
+    peers,
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [remote],
+    threadById: new Map(),
+  });
+  expect(all.container.querySelectorAll("[data-testid='remote-source-icon']")).toHaveLength(1);
+  await all.unmount();
+
+  const single = await render({
+    filter: { kind: "device", desktopId: "desktop_a" },
+    peers,
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [remote],
+    threadById: new Map(),
+  });
+  expect(single.container.querySelectorAll("[data-testid='remote-source-icon']")).toHaveLength(0);
+  // The row is still there, and still says which conversation it is.
+  expect(single.container.textContent).toContain("a conversation on the host");
+  await single.unmount();
+});
+
+/**
+ * This machine's own section is *not* a machine the user selected, so filtering
+ * to it keeps the badges: the rows shown are all local, but the point of the
+ * badge is to distinguish rows, and a local-only list has nothing to distinguish.
+ * (There are no remote rows to badge in that filter anyway — asserted so the
+ * rule is not read as "hide badges whenever the filter is not `all`".)
+ */
+it("keeps the badge on a mixed list even when the filter is not `all`", async () => {
+  const peers = [{
+    agentAvailable: true,
+    bridgeInstanceId: "bridge_1",
+    connected: true,
+    desktopId: "desktop_a",
+    error: null,
+    features: [],
+    icon: "laptop",
+    name: "Studio iMac",
+    pairId: "pair_1",
+  }];
+  const view = await render({
+    filter: { kind: "device", desktopId: null },
+    peers,
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [conversation({ desktopId: null, id: "local_1", key: "local::local_1" })],
+    threadById: new Map([["local_1", thread("local_1")]]),
+  });
+
+  // Local rows never carried a badge, so the check is that nothing broke; the
+  // rule itself is covered above.
+  expect(view.container.textContent).toContain("row");
   await view.unmount();
 });

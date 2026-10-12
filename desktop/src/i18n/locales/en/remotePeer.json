@@ -160,5 +160,15 @@
   "settingsWindowTitle": "Remote desktop settings",
   "settingsWindowMissing": "This computer is no longer paired.",
   "close": "Close",
-  "loadingPeers": "Loading remote desktops…"
+  "loadingPeers": "Loading remote desktops…",
+  "backToSettings": "Settings",
+  "workspacesTitle": "Workspaces",
+  "modelsHint": "The models that computer offers. Hide the ones you do not use there.",
+  "modelsHiddenHint": "Turning a model off stops that computer offering it. This switch writes that computer's own setting.",
+  "modelsSearch": "Search models",
+  "modelsLoading": "Loading models…",
+  "modelsEmpty": "No models are available.",
+  "modelsCount": "{{count}} models",
+  "modelsCountHidden": "{{count}} models · {{hidden}} hidden",
+  "modelsToggleProvider": "Toggle every model under {{name}}"
 }

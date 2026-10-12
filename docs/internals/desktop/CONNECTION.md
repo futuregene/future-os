@@ -349,7 +349,10 @@ stacked in the main window is lost the moment the user navigates. The window
 identifies itself through a URL parameter
 (`?window=peer-settings&desktop=<id>`), so it stays the same bundle with the same
 providers; a new window label must also be listed in the Tauri capability's
-`windows`, or its webview has no IPC and opens blank. The task editor is reached
+`windows`, or its webview has no IPC and opens blank. The window's root page is a short list of rows: the
+*long* ones — skills, models, providers, workspaces, tasks — are pages of their
+own (the longer a list is, the less it belongs in front of the settings below
+it). The task editor is reached
 from that window, and "open a conversation" is rendered by the main window — the
 one hand-off that has to cross windows, over a backend event, because the app's
 own event bus is per-window.

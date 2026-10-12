@@ -29,6 +29,13 @@ vi.mock("../../integrations/tauri/invoke", () => ({ invokeCommand: invoke }));
 // The icon picker and the skills panel are their own concerns; both are covered
 // where they live.
 vi.mock("./PeerIconPicker", () => ({ PeerIconPicker: () => <div data-testid="icon-picker" /> }));
+vi.mock("./RemoteModelsPanel", () => ({
+  RemoteModelsPanel: (props: { hidden: string[]; onChangeHidden: (next: string[]) => void }) => (
+    <div data-hidden={props.hidden.join(",")} data-testid="models-panel">
+      <button onClick={() => props.onChangeHidden(["openai/gpt-5"])} type="button">hide-model</button>
+    </div>
+  ),
+}));
 vi.mock("./RemoteSkillsPanel", () => ({
   RemoteSkillsPanel: (props: { available: boolean }) => (
     <div data-available={String(props.available)} data-testid="skills-panel" />
@@ -109,6 +116,9 @@ async function mount(props: {
     onUpdateLabel,
     input: () => container.querySelector<HTMLInputElement>("input")!,
     switchFor: (label: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`),
+    // A row on the settings page that opens a page of its own.
+    link: (title: string) => [...container.querySelectorAll("button")]
+      .find(node => node.textContent?.startsWith(title)),
     text: () => container.textContent ?? "",
     unmount: async () => {
       await act(async () => root.unmount());
@@ -132,18 +142,16 @@ beforeEach(() => {
 });
 
 /** The counts are the host's answer, not a guess from what this machine has. */
-it("reads the host's own settings and counts", async () => {
+it("reads the host's own settings, and only those", async () => {
   const view = await mount();
 
   expect(request).toHaveBeenCalledWith("desktop_a", { type: "get_desktop_settings" }, "list");
-  expect(request).toHaveBeenCalledWith("desktop_a", { type: "list_settings_models" }, "list");
-  // Providers and tasks are not counted here: both are managed in place, and a
-  // count read on this page would be a second, staler answer.
+  // The long lists are read by their own pages, not here: reading them on the
+  // settings page would make it wait for data it does not show.
+  expect(request).not.toHaveBeenCalledWith("desktop_a", { type: "list_settings_models" }, "list");
+  expect(request).not.toHaveBeenCalledWith("desktop_a", { type: "list_models" }, "list");
   expect(request).not.toHaveBeenCalledWith("desktop_a", { type: "list_tasks" }, "list");
   expect(request).not.toHaveBeenCalledWith("desktop_a", { type: "list_providers" }, "list");
-
-  // Two models — as the host reported them.
-  expect(view.text()).toContain("2");
   await view.unmount();
 });
 
@@ -155,10 +163,7 @@ it("reads the host's own settings and counts", async () => {
  */
 it("opens that host's tasks from the host-content section", async () => {
   const view = await mount({ peer: peer({ connected: true }) });
-  const manage = [...view.container.querySelectorAll("button")]
-    .find(node => node.textContent === "Manage")!;
-
-  await act(async () => manage.click());
+  await act(async () => view.link("Tasks")!.click());
 
   expect(view.onOpenTasks).toHaveBeenCalled();
   await view.unmount();
@@ -167,10 +172,7 @@ it("opens that host's tasks from the host-content section", async () => {
 /** An unreachable host cannot be asked for its tasks, so the entry is closed. */
 it("refuses to open tasks while the host is offline", async () => {
   const view = await mount({ peer: peer({ connected: false }) });
-  const manage = [...view.container.querySelectorAll("button")]
-    .find(node => node.textContent === "Manage")!;
-
-  expect(manage.disabled).toBe(true);
+  expect(view.link("Tasks")!.disabled).toBe(true);
   await view.unmount();
 });
 
@@ -249,13 +251,16 @@ it("renames the machine locally, without sending the name anywhere", async () =>
 });
 
 /** The skills panel is handed to the page, and told whether the host is reachable. */
-it("includes the skills panel, gated on the host being connected", async () => {
+it("reaches the skills page, and tells it whether the host is connected", async () => {
   const connected = await mount();
+  await act(async () => connected.link("Skills")!.click());
   expect(connected.container.querySelector("[data-testid='skills-panel']")!.getAttribute("data-available")).toBe("true");
   await connected.unmount();
 
   const offline = await mount({ peer: peer({ connected: false }) });
-  expect(offline.container.querySelector("[data-testid='skills-panel']")!.getAttribute("data-available")).toBe("false");
+  // The row is still offered, and disabled: a user who paired an older, or a
+  // disconnected, build should see the capability exists.
+  expect(offline.link("Skills")!.disabled).toBe(true);
   await offline.unmount();
 });
 
@@ -421,4 +426,133 @@ describe("the host's approval mode", () => {
     expect(select(view.container).value).toBe("manual");
     await view.unmount();
   });
+});
+
+/**
+ * The long sections are pages of their own.
+ *
+ * As sections in this column, a machine's skills, models, providers and
+ * workspaces sat between the settings above them and the settings below, and the
+ * user scrolled past a list they did not come for to reach the next switch.
+ */
+describe("the long sections are their own pages", () => {
+  it("offers a row for each, and no longer renders them inline", async () => {
+    const view = await mount({
+      peer: peer({ features: ["provider_management_v1", "workspace_create_v1"] }),
+    });
+
+    // The rows name what is behind them.
+    for (const title of ["Models", "Skills", "Providers and keys", "Workspaces", "Tasks"])
+      expect(view.link(title), title).toBeTruthy();
+
+    // And the page itself stays short: the skills panel is not here until asked
+    // for, and the models read is not made on its behalf.
+    expect(view.container.querySelector("[data-testid='skills-panel']")).toBeNull();
+    expect(request).not.toHaveBeenCalledWith("desktop_a", { type: "list_models" }, "list");
+    await view.unmount();
+  });
+
+  it("opens a section, and names the page it opened", async () => {
+    const view = await mount();
+
+    await act(async () => view.link("Skills")!.click());
+
+    // The heading says which page this is, so a list reached by a click is not a
+    // list with no name; the back control says where it goes.
+    expect(view.text()).toContain("Settings");
+    expect(view.container.querySelector("[data-testid='skills-panel']")).not.toBeNull();
+    // The settings the user just left are gone, so scrolling cannot mix the two.
+    expect(view.switchFor("Auto-upgrade skills")).toBeNull();
+    await view.unmount();
+  });
+
+  it("goes back to the settings it came from", async () => {
+    const view = await mount();
+
+    await act(async () => view.link("Skills")!.click());
+    const back = [...view.container.querySelectorAll("button")]
+      .find(node => node.textContent?.includes("Settings"))!;
+    await act(async () => back.click());
+
+    expect(view.container.querySelector("[data-testid='skills-panel']")).toBeNull();
+    expect(view.switchFor("Auto-upgrade skills")).toBeTruthy();
+    await view.unmount();
+  });
+
+  /** A host that cannot serve a section does not offer a page for it. */
+  it("offers only the sections the host advertises", async () => {
+    const view = await mount({ peer: peer({ features: ["workspace_create_v1"] }) });
+
+    expect(view.link("Workspaces")).toBeTruthy();
+    // Providers need the feature flag; without it the command would be refused.
+    // Absent, not disabled: there is no page to open at all.
+    expect(view.link("Providers and keys")).toBeUndefined();
+    await view.unmount();
+  });
+});
+
+/**
+ * The models page reads the host's visibility list from the settings this page
+ * already fetched, rather than making a second read of its own — and what it
+ * writes goes back through the same `update`, so there is one write path.
+ *
+ * A settings payload whose `hiddenModels` is not a list of strings (an older host,
+ * a hand-edited store) must not reach the page as one: it would render an entry
+ * per character.
+ */
+describe("the models page's wiring", () => {
+  it("opens it, hands it the host's hidden list, and writes back through update", async () => {
+    answerHost({ get_desktop_settings: { hiddenModels: ["openai/gpt-5", "anthropic/claude-opus"] } });
+    const view = await mount({ peer: peer({ features: [] }) });
+
+    await act(async () => view.link("Models")!.click());
+    expect(view.container.querySelector("[data-testid='models-panel']")!.getAttribute("data-hidden"))
+      .toBe("openai/gpt-5,anthropic/claude-opus");
+
+    await act(async () => {
+      [...view.container.querySelectorAll("button")]
+        .find(node => node.textContent === "hide-model")!
+        .click();
+    });
+
+    expect(request).toHaveBeenCalledWith(
+      "desktop_a",
+      { type: "update_desktop_settings", settings: { hiddenModels: ["openai/gpt-5"] } },
+      "list",
+    );
+    await view.unmount();
+  });
+
+  it("treats a hidden list that is not a list of strings as empty", async () => {
+    answerHost({ get_desktop_settings: { hiddenModels: "openai/gpt-5" } });
+    const view = await mount();
+
+    await act(async () => view.link("Models")!.click());
+
+    // A string would otherwise be spread into one entry per character.
+    expect(view.container.querySelector("[data-testid='models-panel']")!.getAttribute("data-hidden")).toBe("");
+    await view.unmount();
+  });
+});
+
+/** Providers and workspaces are pages too, opened by their own rows. */
+it("opens the providers page", async () => {
+  const view = await mount({ peer: peer({ features: ["provider_management_v1"] }) });
+
+  await act(async () => view.link("Providers and keys")!.click());
+
+  expect(view.text()).toContain("Providers and keys");
+  // The settings it came from are not rendered behind it.
+  expect(view.switchFor("Auto-upgrade skills")).toBeNull();
+  await view.unmount();
+});
+
+it("opens the workspaces page", async () => {
+  const view = await mount({ peer: peer({ features: ["workspace_create_v1"] }) });
+
+  await act(async () => view.link("Workspaces")!.click());
+
+  expect(view.text()).toContain("Workspaces");
+  expect(view.switchFor("Auto-upgrade skills")).toBeNull();
+  await view.unmount();
 });

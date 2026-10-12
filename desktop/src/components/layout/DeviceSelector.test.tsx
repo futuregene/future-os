@@ -67,3 +67,23 @@ it("shows the same icon for the selection as for the entry that selects it", asy
     await view.root.unmount();
   }
 });
+
+/**
+ * The entry carries the machine's name as its accessible name.
+ *
+ * Its visible name starts with the machine's decorative glyph, so without this
+ * the control is announced (and matched) as an emoji followed by a name — the
+ * same defect the collapsed button had.
+ */
+it("gives each entry the machine's name, not its glyph", async () => {
+  const view = await mount({ kind: "all" });
+  const button = view.container.querySelector("button[aria-haspopup='listbox']")!;
+  await act(async () => {
+    button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+
+  const named = [...view.container.querySelectorAll("[role='option']")]
+    .map(node => node.getAttribute("aria-label"));
+  expect(named).toContain("Studio iMac");
+  await view.root.unmount();
+});
