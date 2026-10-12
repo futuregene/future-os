@@ -25,11 +25,13 @@ vi.mock("@tauri-apps/api/window", () => ({
 
 // The command surface this view calls. `requestRemotePeer` stays in because the
 // shared item-target path asks through it, and a mock that dropped it would make
-// the transcript's own fetch fail rather than go unexercised.
-const setVisibleSession = vi.fn(async () => {});
+// the transcript's own fetch fail rather than go unexercised. The visible-session
+// reporter takes the view's own two arguments: it is called from an effect, so a
+// mock whose arity did not match would spread them into a zero-argument stub.
+const setVisibleSession = vi.fn(async (_desktopId: string, _sessionId: string | null) => {});
 vi.mock("./remotePeerClient", () => ({
   requestRemotePeer: vi.fn(async () => ({})),
-  setRemotePeerVisibleSession: (...args: unknown[]) => setVisibleSession(...(args as [string, string | null])),
+  setRemotePeerVisibleSession: (desktopId: string, sessionId: string | null) => setVisibleSession(desktopId, sessionId),
 }));
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
