@@ -44,12 +44,14 @@ vi.mock("@tauri-apps/api/window", () => ({
 vi.mock("./RemotePeerSettings", () => ({
   RemotePeerSettings: (props: {
     onBack: () => void;
+    onChanged: () => void;
     onOpenTasks: () => void;
     onUnpair: () => void;
     onUpdateLabel: (patch: { name?: string }) => void;
   }) => (
     <div data-testid="peer-settings">
       <button onClick={props.onUpdateLabel.bind(null, { name: "Renamed" })} type="button">rename</button>
+      <button onClick={props.onChanged} type="button">changed</button>
       <button onClick={props.onOpenTasks} type="button">open-tasks</button>
       <button onClick={props.onUnpair} type="button">ask-unpair</button>
     </div>
@@ -242,5 +244,74 @@ it("asks the main window to show a conversation, and goes back", async () => {
 
   await act(async () => view.button("tasks-back")!.click());
   expect(view.container.querySelector("[data-testid='peer-settings']")).toBeTruthy();
+  await view.unmount();
+});
+
+/** A read that fails is reported rather than showing an empty machine. */
+it("reports a failed read instead of pretending the machine is gone", async () => {
+  listRemotePeers.mockRejectedValue(new Error("the credential book is unreadable"));
+  const view = await mount();
+
+  expect(view.text()).toContain("the credential book is unreadable");
+  await view.unmount();
+});
+
+/**
+ * A rename the window writes re-reads the machine: the name lives in the local
+ * credential book, so nothing on this page would show it until the next read.
+ */
+it("re-reads the machine after a setting was written", async () => {
+  const view = await mount();
+  const before = listRemotePeers.mock.calls.length;
+
+  await act(async () => view.button("rename")!.click());
+  await act(async () => view.button("changed")!.click());
+  await view.refresh();
+
+  expect(listRemotePeers.mock.calls.length).toBeGreaterThan(before);
+  await view.unmount();
+});
+
+/** Cancelling the confirmation must leave the pairing alone. */
+it("cancels an unpair without touching the pairing", async () => {
+  const view = await mount();
+
+  await act(async () => view.button("ask-unpair")!.click());
+  await act(async () => view.dialogButton("Cancel")!.click());
+
+  expect(unpairRemotePeer).not.toHaveBeenCalled();
+  expect(view.container.querySelector("[role='dialog']")).toBeNull();
+  await view.unmount();
+});
+
+/** Escape dismisses it the same way, without unpairing. */
+it("closes the unpair confirmation on Escape without unpairing", async () => {
+  const view = await mount();
+
+  await act(async () => view.button("ask-unpair")!.click());
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+
+  expect(unpairRemotePeer).not.toHaveBeenCalled();
+  expect(view.container.querySelector("[role='dialog']")).toBeNull();
+  await view.unmount();
+});
+
+/**
+ * An unpair that failed on the wire keeps the pairing, so it must not close the
+ * window — the user would be left thinking the machine is gone while the
+ * credential book still holds it.
+ */
+it("keeps the window open and reports an unpair that failed", async () => {
+  unpairRemotePeer.mockRejectedValue(new Error("revoke failed"));
+  const view = await mount();
+
+  await act(async () => view.button("ask-unpair")!.click());
+  await act(async () => view.dialogButton("Unpair")!.click());
+  await view.refresh();
+
+  expect(view.text()).toContain("revoke failed");
+  expect(closeWindow).not.toHaveBeenCalled();
   await view.unmount();
 });

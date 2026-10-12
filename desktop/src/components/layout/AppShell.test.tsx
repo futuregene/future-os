@@ -1755,6 +1755,25 @@ describe("app shell collapsed-panel affordances", () => {
     });
 
     /**
+     * 设置 opens that machine's settings in a *window*, which the backend owns:
+     * this window only asks for it, by id. A window opened for the wrong id would
+     * show (and write) another machine's settings.
+     */
+    it("asks the backend to open a machine's settings window", () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onManageDesktops?.());
+      mocks.invoke.mockClear();
+
+      act(() => (children.remoteHub as { onOpenRemoteSettings: (peer: { desktopId: string }) => void })
+        .onOpenRemoteSettings({ desktopId: "desktop_a" }));
+
+      expect(mocks.invoke).toHaveBeenCalledWith("remote_peer_open_settings_window", {
+        desktopId: "desktop_a",
+      });
+      view.unmount();
+    });
+
+    /**
      * A draft is addressed with an empty session id — the host's own signal to
      * create the conversation. The shell must *adopt* the ids in the ack, or the
      * next prompt would create a second conversation.

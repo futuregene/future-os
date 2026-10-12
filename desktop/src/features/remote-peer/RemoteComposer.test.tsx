@@ -117,6 +117,11 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
+  saveFile.mockReset();
+  saveImage.mockReset();
+  nativePaths.mockReset().mockResolvedValue([]);
+  saveFile.mockResolvedValue({ path: "/tmp/pasted" });
+
   prompt.mockReset().mockResolvedValue({ sessionId: "sess_1", threadId: "thread_1" });
   abort.mockReset().mockResolvedValue(undefined);
   upload.mockReset().mockResolvedValue({ uploadId: "upload_1", name: "notes.txt", contentHash: "abc" });
@@ -467,6 +472,116 @@ it("leaves a text paste to the input", async () => {
   await view.unmount();
 });
 
+/**
+ * A clipboard carrying a file URI the platform cannot turn back into a path —
+ * the case where the user's paste yields nothing to send. It must not swallow the
+ * paste: the text they were copying is still theirs to paste.
+ */
+it("leaves a paste whose file could not be resolved to the field", async () => {
+  nativePaths.mockResolvedValue([]);
+  const view = await mount();
+
+  const event = pasteEvent({ files: [], uriList: "file:///Users/me/notes.txt" });
+  await act(async () => {
+    view.input.dispatchEvent(event);
+  });
+  await settle();
+
+  expect(upload).not.toHaveBeenCalled();
+  expect(event.defaultPrevented).toBe(false);
+  await view.unmount();
+});
+
+/** A copied file with no image type travels as bytes written to a temp file. */
+it("writes a copied non-image file to a temporary path before uploading it", async () => {
+  nativePaths.mockResolvedValue([]);
+  saveFile.mockResolvedValue({ path: "/tmp/copied-report.txt" });
+  upload.mockResolvedValue({ contentHash: "h", name: "report.txt", uploadId: "upload_11" });
+  const view = await mount();
+
+  const file = new File([new Uint8Array([7, 7])], "report.txt", { type: "text/plain" });
+  await act(async () => {
+    view.input.dispatchEvent(pasteEvent({ files: [file] }));
+  });
+  await settle();
+
+  expect(saveFile).toHaveBeenCalledWith({ bytes: [7, 7], name: "report.txt" });
+  expect(upload).toHaveBeenCalledWith({ desktopId: "desktop_a", path: "/tmp/copied-report.txt" });
+  await view.unmount();
+});
+
+/** A file that cannot be read is reported, and nothing half-staged is left. */
+it("reports a pasted file it could not read", async () => {
+  nativePaths.mockResolvedValue([]);
+  saveFile.mockRejectedValue(new Error("no permission"));
+  const view = await mount();
+
+  const file = new File([new Uint8Array([1])], "secret.txt", { type: "text/plain" });
+  await act(async () => {
+    view.input.dispatchEvent(pasteEvent({ files: [file] }));
+  });
+  await settle();
+
+  expect(view.text()).toContain("secret.txt");
+  expect(upload).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+/**
+ * A copy of more files than can be staged says so, and stages the limit rather
+ * than silently dropping the rest — an attachment the user cannot see is one they
+ * cannot remove.
+ */
+it("caps a large paste and says it did", async () => {
+  nativePaths.mockResolvedValue(["/tmp/a", "/tmp/b", "/tmp/c", "/tmp/d", "/tmp/e"]);
+  upload.mockResolvedValue({ contentHash: "h", name: "f", uploadId: "upload_12" });
+  const view = await mount();
+
+  await act(async () => {
+    view.input.dispatchEvent(pasteEvent({ files: [new File([], "a")] }));
+  });
+  await settle();
+
+  expect(upload).toHaveBeenCalledTimes(4);
+  expect(view.text()).toContain("At most 4");
+  await view.unmount();
+});
+
+/** More copied files than the limit: the extra ones are not read at all. */
+it("stops reading a copied batch once the limit is reached", async () => {
+  nativePaths.mockResolvedValue([]);
+  saveFile.mockResolvedValue({ path: "/tmp/copied" });
+  upload.mockResolvedValue({ contentHash: "h", name: "f", uploadId: "upload_13" });
+  const view = await mount();
+
+  const files = Array.from({ length: 6 }, (_, index) =>
+    new File([new Uint8Array([index])], `file-${index}.txt`, { type: "text/plain" }));
+  await act(async () => {
+    view.input.dispatchEvent(pasteEvent({ files }));
+  });
+  await settle();
+
+  // Four read and staged; the fifth and sixth are never turned into bytes.
+  expect(saveFile).toHaveBeenCalledTimes(4);
+  expect(upload).toHaveBeenCalledTimes(4);
+  await view.unmount();
+});
+
+/** A transfer that fails after the read is reported, not swallowed. */
+it("reports a pasted file the host refused", async () => {
+  nativePaths.mockResolvedValue(["/tmp/too-big.bin"]);
+  upload.mockRejectedValue(new Error("the host refused this file"));
+  const view = await mount();
+
+  await act(async () => {
+    view.input.dispatchEvent(pasteEvent({ files: [new File([], "x")] }));
+  });
+  await settle();
+
+  expect(view.text()).toContain("the host refused this file");
+  await view.unmount();
+});
+
 /** A clipboard carrying a file URI but no `File` is still a file copy. */
 function pasteEvent(input: { files?: File[]; uriList?: string } = {}): Event {
   const event = new Event("paste", { bubbles: true, cancelable: true });
@@ -478,3 +593,18 @@ function pasteEvent(input: { files?: File[]; uriList?: string } = {}): Event {
   Object.defineProperty(event, "clipboardData", { value: data });
   return event;
 }
+
+/** A paste event with no clipboard payload (some platforms fire one) is ignored. */
+it("ignores a paste that carries no clipboard data", async () => {
+  const view = await mount();
+
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  await act(async () => {
+    view.input.dispatchEvent(event);
+  });
+  await settle();
+
+  expect(upload).not.toHaveBeenCalled();
+  expect(event.defaultPrevented).toBe(false);
+  await view.unmount();
+});

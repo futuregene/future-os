@@ -340,6 +340,20 @@ this machine's embedded terminal, Review/diff, workspace file tree, and
 Reset/Debug describe local facts, so a remote conversation offers no entry to
 them.
 
+**Each machine's settings live in their own window.** "Settings" on a machine
+opens a separate native window (`remote_peer_open_settings_window`, one window per
+`desktop_id`; asking again *raises* the existing one rather than opening a
+second). Those settings belong to that machine: beside this machine's own state
+in the main window, "auto-upgrade skills" stops meaning one thing — and a page
+stacked in the main window is lost the moment the user navigates. The window
+identifies itself through a URL parameter
+(`?window=peer-settings&desktop=<id>`), so it stays the same bundle with the same
+providers; a new window label must also be listed in the Tauri capability's
+`windows`, or its webview has no IPC and opens blank. The task editor is reached
+from that window, and "open a conversation" is rendered by the main window — the
+one hand-off that has to cross windows, over a backend event, because the app's
+own event bus is per-window.
+
 **Capability alignment with mobile.** Every command the phone can use on a
 remote conversation now has a desktop entry point (reading and writing
 conversations; prompt/stop/approval; rename/pin/delete; fork/compact/continue;

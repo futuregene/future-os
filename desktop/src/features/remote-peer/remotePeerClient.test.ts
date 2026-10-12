@@ -24,6 +24,7 @@ const {
   deleteRemoteWorkspace,
   downloadRemoteFile,
   fetchRemoteSessions,
+  openRemoteSettingsWindow,
   forkRemoteConversation,
   generateRemoteTitle,
   getRemoteConversationSettings,
@@ -295,6 +296,23 @@ describe("compactRemoteConversation", () => {
         .rejects
         .toThrow("remote_compaction_not_accepted");
     }
+  });
+});
+
+describe("openRemoteSettingsWindow", () => {
+  /**
+   * The window is the backend's (one per machine, raised if already open), so the
+   * frontend's whole part in it is this command and the id — and an id sent as
+   * anything other than `desktopId` would open the wrong machine's settings.
+   */
+  it("asks for one machine's settings window by id", async () => {
+    invokeMock.mockResolvedValue(null);
+
+    await openRemoteSettingsWindow("desktop_a");
+
+    expect(invokeMock).toHaveBeenCalledWith("remote_peer_open_settings_window", {
+      desktopId: "desktop_a",
+    });
   });
 });
 

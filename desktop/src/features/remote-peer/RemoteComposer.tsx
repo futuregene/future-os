@@ -163,15 +163,19 @@ export function RemoteComposer({
     // Only now, with something to send: a paste of text or a link must still
     // reach the field it was aimed at.
     event.preventDefault();
-    if (paths.length > MAX_PASTED_FILES)
-      setError(t("pasteTooMany", { max: MAX_PASTED_FILES }));
+    // The count is decided before the uploads start, and the message is set with
+    // the reset rather than before it: setting it and then calling
+    // `setError(null)` wiped the warning in the same tick, so a paste of ten
+    // files staged four of them and said nothing at all about the other six.
+    const staged = paths.slice(0, MAX_PASTED_FILES);
+    const overLimit = paths.length > MAX_PASTED_FILES;
     setUploading(true);
-    setError(null);
+    setError(overLimit ? t("pasteTooMany", { max: MAX_PASTED_FILES }) : null);
     try {
-      const staged: RemoteUpload[] = [];
-      for (const path of paths.slice(0, MAX_PASTED_FILES))
-        staged.push(await uploadRemoteFile({ desktopId, path }));
-      setUploads(current => [...current, ...staged]);
+      const uploads: RemoteUpload[] = [];
+      for (const path of staged)
+        uploads.push(await uploadRemoteFile({ desktopId, path }));
+      setUploads(current => [...current, ...uploads]);
     }
     catch (err) {
       setError(errorMessage(err));

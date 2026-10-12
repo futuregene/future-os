@@ -168,3 +168,30 @@ it("renders nothing, rather than throwing, for a row whose thread is missing", a
   expect(view.container.textContent).not.toContain("row");
   await view.unmount();
 });
+
+/**
+ * A remote chat row whose machine is not in the peer list — a stale catalogue
+ * after a disconnect, or a caller that supplies rows without peers. Its section
+ * is the *machine's*, so with no machine to name it falls back to the generic
+ * heading rather than rendering an unnamed section or throwing.
+ */
+it("names a remote chat section generically when its machine is unknown", async () => {
+  const view = await render({
+    peers: [],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [
+      conversation({
+        desktopId: "desktop_gone",
+        id: "sess_gone",
+        key: "desktop_gone::sess_gone",
+        title: "a chat on a machine that is not listed",
+      }),
+    ],
+    threadById: new Map(),
+  });
+
+  const headings = [...view.container.querySelectorAll("[data-testid='merged-group-heading']")]
+    .map(node => (node.textContent || "").trim());
+  expect(headings).toEqual(["Chat"]);
+  await view.unmount();
+});
