@@ -61,6 +61,14 @@ interface ActivityRailProps {
   workspaces: StoredWorkspace[];
   onChange: (section: ActivitySection) => void;
   onBatchDeleteThreads: (threads: StoredThread[]) => void;
+  /**
+   * Delete a batch of conversations on the hosts that own them.
+   *
+   * The remote half of `onBatchDeleteThreads`: one selection can hold both
+   * machines' rows, and they are removed by different code — a local store here,
+   * a command per conversation there.
+   */
+  onDeleteRemoteConversations: (rows: MergedConversation[]) => void;
   onDeleteThread: (thread: StoredThread) => void;
   onNewChat: (workspaceId?: string) => void;
   onOpenModels: () => void;
@@ -137,6 +145,7 @@ export function ActivityRail({
   workspaces,
   onChange,
   onBatchDeleteThreads,
+  onDeleteRemoteConversations,
   onDeleteThread,
   onNewChat,
   onOpenModels,
@@ -275,19 +284,97 @@ export function ActivityRail({
     }
     return scopes;
   }, [threadTree, visibleThreads]);
+
+  /**
+   * This machine's pinned workspaces, by id.
+   *
+   * Read by the merged list's local rows, so a pinned workspace leads there too,
+   * and by the local heading's pin marker. One source for both: the merged list
+   * orders a group by the pin its *rows* carry, and this is what a row of this
+   * machine's carries.
+   */
+  const pinnedWorkspaceIds = useMemo(
+    () => new Set(workspaces.filter(workspace => workspace.pinned).map(workspace => workspace.id)),
+    [workspaces],
+  );
+
+  const remoteRows = useMemo(
+    () => mergeConversations(
+      visibleThreads.map(thread => ({
+        id: thread.id,
+        title: thread.title,
+        mode: thread.mode,
+        pinned: thread.pinned,
+        status: thread.status,
+        workspaceId: thread.workspaceId,
+        workspacePinned: pinnedWorkspaceIds.has(thread.workspaceId),
+        lastMessageAt: thread.lastMessageAt,
+        updatedAt: thread.updatedAt,
+        createdAt: thread.createdAt,
+      })),
+      remoteCatalogs,
+      deviceFilter,
+      // Group headings for the local half of the merged list.
+      new Map(workspaces.map(workspace => [workspace.id, workspace.name])),
+    ),
+    [visibleThreads, remoteCatalogs, deviceFilter, workspaces, pinnedWorkspaceIds],
+  );
+  const hasRemoteRows = remoteRows.some(row => row.desktopId !== null);
+  /**
+   * The merged mode, and the one rule that turns it on.
+   *
+   * A user with no remote desktops keeps today's list *exactly*: grouped by
+   * workspace, chat section, selection mode. Only once a remote row is actually
+   * present does the list become the flat, time-ordered merged view, because that
+   * view is a different information architecture — the workspace grouping stops
+   * being meaningful when a group name can exist on two machines at once.
+   */
+  const mergedMode = hasRemoteRows || (deviceFilter.kind === "device" && deviceFilter.desktopId !== null);
+  const visibleRemoteRows = useMemo(
+    () => (mergedMode ? remoteRows : []),
+    [mergedMode, remoteRows],
+  );
+  /**
+   * Which batch each listed remote row belongs to.
+   *
+   * The same scopes the local rows use, in the merged list's own vocabulary: the
+   * chat section is one scope and a workspace is one, keyed by the group key the
+   * list already groups and folds by. A batch is then "the rows under this
+   * heading" wherever they live.
+   */
+  const remoteScopes = useMemo(
+    () => new Map(visibleRemoteRows.map(row => [
+      row.key,
+      row.mode === "workspace" ? `${row.desktopId ?? ""}::${row.workspaceId ?? ""}` : "chat",
+    ])),
+    [visibleRemoteRows],
+  );
+
   const {
     deleteSelected,
     deselectAll,
     enterSelectionMode,
     exitSelectionMode,
     handleRowSelect,
+    isRemoteRowSelectable,
     isThreadInScope,
-    scopedThreads,
     selectAll,
+    selectedCount,
+    selectedRemoteKeys,
     selectedThreadIds,
     selectionMode,
+    toggleRemoteSelection,
     toggleThreadSelection,
-  } = useRailSelection({ onBatchDeleteThreads, onSelectThread, threadScopes, visibleThreads });
+    totalCount,
+  } = useRailSelection({
+    onBatchDeleteThreads,
+    onDeleteRemoteConversations,
+    onSelectThread,
+    remoteScopes,
+    threadScopes,
+    visibleRemoteRows,
+    visibleThreads,
+  });
 
   /** Whether this thread should show a selection checkbox. */
   function threadSelectionMode(thread: StoredThread): boolean {
@@ -319,39 +406,6 @@ export function ActivityRail({
   const visibleWorkspaceGroups = workspaceSectionCollapsed ? [] : workspaceGroups;
   const visibleChatThreads = chatSectionCollapsed ? [] : chatThreads;
 
-  /**
-   * The merged mode, and the one rule that turns it on.
-   *
-   * A user with no remote desktops keeps today's list *exactly*: grouped by
-   * workspace, chat section, selection mode. Only once a remote session is
-   * actually present does the list become the flat, time-ordered merged view,
-   * because that view is a different information architecture — the workspace
-   * grouping stops being meaningful when a group name can exist on two
-   * machines at once.
-   */
-  const remoteRows = useMemo(
-    () => mergeConversations(
-      visibleThreads.map(thread => ({
-        id: thread.id,
-        title: thread.title,
-        mode: thread.mode,
-        pinned: thread.pinned,
-        status: thread.status,
-        workspaceId: thread.workspaceId,
-        lastMessageAt: thread.lastMessageAt,
-        updatedAt: thread.updatedAt,
-        createdAt: thread.createdAt,
-      })),
-      remoteCatalogs,
-      deviceFilter,
-      // Group headings for the local half of the merged list.
-      new Map(workspaces.map(workspace => [workspace.id, workspace.name])),
-    ),
-    [visibleThreads, remoteCatalogs, deviceFilter, workspaces],
-  );
-  const hasRemoteRows = remoteRows.some(row => row.desktopId !== null);
-  const mergedMode = hasRemoteRows || (deviceFilter.kind === "device" && deviceFilter.desktopId !== null);
-  const visibleRemoteRows = mergedMode ? remoteRows : [];
   /**
    * Each local conversation's place in its tree, for the merged list.
    *
@@ -411,18 +465,6 @@ export function ActivityRail({
       />
     );
   }
-
-  /**
-   * This machine's pinned workspaces, by id.
-   *
-   * Read by the merged list so a pinned workspace leads there too. Without it
-   * the merged list ordered groups purely by recency, and a pin set in the local
-   * list showed its marker on a group that never moved.
-   */
-  const pinnedWorkspaceIds = useMemo(
-    () => new Set(workspaces.filter(workspace => workspace.pinned).map(workspace => workspace.id)),
-    [workspaces],
-  );
 
   const threadById = useMemo(
     () => new Map(visibleThreads.map(thread => [thread.id, thread])),
@@ -670,11 +712,16 @@ export function ActivityRail({
                                 onOpenRemote={conversation => onOpenRemoteConversation?.(conversation)}
                                 onRenameRemote={conversation => onRenameRemoteConversation?.(conversation)}
                                 onSelectChats={() => enterSelectionMode("chat")}
+                                onSelectWorkspaceChats={groupKey => enterSelectionMode(groupKey)}
                                 onToggleChatSection={() => setChatSectionCollapsed(value => !value)}
                                 onToggleWorkspace={toggleWorkspaceCollapsed}
                                 onToggleWorkspaceSection={() => setWorkspaceSectionCollapsed(value => !value)}
                                 peers={remotePeers}
-                                pinnedWorkspaces={pinnedWorkspaceIds}
+                                remoteSelection={{
+                                  selectable: isRemoteRowSelectable,
+                                  selected: row => selectedRemoteKeys.has(row.key),
+                                  toggle: toggleRemoteSelection,
+                                }}
                                 localRowMeta={localRowMeta}
                                 renderLocalGroupHeader={(workspaceId) => {
                                   const found = visibleWorkspaceGroups.find(item => item.workspace.id === workspaceId);
@@ -685,6 +732,7 @@ export function ActivityRail({
                                   // A collapsed local parent takes its forks with
                                   // it, exactly as it does in the local list.
                                   row.desktopId !== null || !collapsedLocalIds.has(row.id))}
+                                selectionMode={selectionMode}
                                 threadById={threadById}
                                 workspaceSectionCollapsed={workspaceSectionCollapsed}
                               />
@@ -848,11 +896,11 @@ export function ActivityRail({
                   {selectionMode
                     ? (
                         <ActivityRailSelectionToolbar
-                          selectedCount={selectedThreadIds.size}
-                          totalCount={scopedThreads.length}
+                          selectedCount={selectedCount}
+                          totalCount={totalCount}
                           onCancel={exitSelectionMode}
                           onDelete={deleteSelected}
-                          onToggleAll={selectedThreadIds.size === scopedThreads.length ? deselectAll : selectAll}
+                          onToggleAll={selectedCount === totalCount && totalCount > 0 ? deselectAll : selectAll}
                         />
                       )
                     : null}

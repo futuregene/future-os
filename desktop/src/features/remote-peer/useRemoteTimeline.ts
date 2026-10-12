@@ -98,6 +98,25 @@ export interface RemoteTimeline {
 const HISTORY_PAGE_USER_EXCHANGES = 3;
 
 /**
+ * The cursor that means "the page at the end of this session".
+ *
+ * A history read is *backward*: the host serves the `limit` user exchanges that
+ * end at `before`, and only that cursor can name the tail — there is no offset
+ * a client could pass to mean "last". Leaving `before` off does not mean the
+ * newest page; it is the host's other read (a forward page from offset 0), so
+ * the client was handed the *oldest* entries of a conversation as its first
+ * page: one question, its reply's first frames, and nothing else. The page
+ * after it then repeated the same ordinals, which is why "load earlier" showed
+ * the question and the reply a second time.
+ *
+ * `Number.MAX_SAFE_INTEGER`, the same value the phone opens with, and the same
+ * value the host documents as its first paint (`NEWEST_PAGE_CURSOR` in
+ * `desktop/src-tauri/src/remote_host/business/history.rs`): anything at or above
+ * it means "the end of the session", anything below it is a scrolled-up page.
+ */
+const HISTORY_TAIL_CURSOR = Number.MAX_SAFE_INTEGER;
+
+/**
  * The events that mean a run is in flight on the host, and the ones that settle
  * it.
  *
@@ -238,20 +257,31 @@ export function useRemoteTimeline(
       setLoadingOlder(true);
     }
     try {
-      const before = side === "older" ? cursorRef.current : null;
+      // The tail for a first/catch-up read, the previous response's
+      // `nextOffset` for a scrolled-up one. The host counts user exchanges, so
+      // a cursor it produced is the only valid one — and the tail cursor is the
+      // only value that means "not a scrolled-up read" to it.
+      const before = side === "older" ? cursorRef.current : HISTORY_TAIL_CURSOR;
       const page = await requestRemotePeer<EntriesPage>(desktop, {
         type: "get_session_entries",
         sessionId: session,
         limit: HISTORY_PAGE_USER_EXCHANGES,
-        // `before` is the *previous response's* `nextOffset`; the host counts
-        // user exchanges, so a cursor it produced is the only valid one.
         ...(before !== null && before !== undefined ? { before } : {}),
       }, session);
       if (epoch !== epochRef.current)
         return [];
       const parsed = normaliseEntries(page?.entries);
       const next = typeof page?.nextOffset === "number" ? page.nextOffset : null;
-      setEntries(current => (side === "history" ? parsed : [...parsed, ...current]));
+      // An older page is prepended, and never twice: an overlapping page (a
+      // cursor that did not advance, a host that re-sent what it already
+      // served) would otherwise draw the same question and reply a second time
+      // under a "load earlier" button that already had them.
+      setEntries((current) => {
+        if (side === "history")
+          return parsed;
+        const seen = new Set(current.map(item => item.id));
+        return [...parsed.filter(item => !seen.has(item.id)), ...current];
+      });
       // History is where persisted ids come from; a page replaces the window
       // (a `history` read resets to the newest page), so its ids reset with it
       // and an `older` page only adds.

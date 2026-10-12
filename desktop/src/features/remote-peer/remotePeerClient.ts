@@ -133,6 +133,10 @@ export async function fetchRemoteSessions(desktopId: string): Promise<RemoteCata
         ...(typeof row.workspaceName === "string" && row.workspaceName
           ? { workspaceName: row.workspaceName }
           : {}),
+        // Whether that workspace is pinned on the host. Carried like every other
+        // field — this parser is field-by-field, so a host field the parser does
+        // not name never reaches the merged list, and the group would never lead.
+        ...(typeof row.workspacePinned === "boolean" ? { workspacePinned: row.workspacePinned } : {}),
         pinned: row.pinned === true,
         streaming: row.streaming === true,
         ...(typeof row.status === "string" ? { status: row.status } : {}),
@@ -409,6 +413,40 @@ export function downloadRemoteFile(input: {
     name: input.name,
     destination: input.destination,
     ...(input.variant === undefined ? {} : { variant: input.variant }),
+  });
+}
+
+/**
+ * A file pulled from a host to preview in place, as this machine now has it.
+ *
+ * `path` is a *local* path into this app's preview cache — that is what the
+ * overlay's readers open — and `name` is the host's own name, which is what the
+ * overlay shows and what its renderer is chosen from.
+ */
+export interface RemotePreviewFile {
+  name: string;
+  path: string;
+}
+
+/**
+ * Fetch a file from a host so this app can show it, without a save dialog.
+ *
+ * The destination is this app's own cache rather than a path the user picks: a
+ * preview is a look at a file, not a copy of it, and asking where to put a copy
+ * every time someone clicks a file in a panel is the wrong question. Saving a
+ * copy is still `downloadRemoteFile`, behind its own control.
+ */
+export function previewRemoteFile(input: {
+  desktopId: string;
+  sessionId: string;
+  path: string;
+  name: string;
+}): Promise<RemotePreviewFile> {
+  return invokeCommand<RemotePreviewFile>("remote_peer_preview_file", {
+    desktopId: input.desktopId,
+    sessionId: input.sessionId,
+    path: input.path,
+    name: input.name,
   });
 }
 

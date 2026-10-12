@@ -296,6 +296,120 @@ fn only_a_transport_fault_is_worth_retrying() {
 
 use super::runtime::parse_chunk_subject;
 
+/**
+ * A preview pulled for the overlay lands under its own name, one entry per source.
+ *
+ * The name matters more than it looks: the overlay picks its renderer from the
+ * extension (`previewKindForPath`), so a cache entry spelled as an opaque digest
+ * would make every image arrive as an unreadable blob. The digest in front of the
+ * name is what keeps two files with one name apart and makes a second look at the
+ * same file reuse the entry instead of adding a copy.
+ */
+#[test]
+fn a_preview_is_cached_under_its_own_name_and_one_entry_per_source() {
+    let _home = crate::remote::test_support::HomeGuard::new("peer-xfer-preview-path");
+
+    let first =
+        transfer::preview_cache_path("desktop_a", "sess_1", "/tmp/a/forest.png", "forest.png")
+            .expect("cache path");
+    assert!(first.to_string_lossy().contains("remote-previews"));
+    assert!(
+        first
+            .file_name()
+            .expect("a name")
+            .to_string_lossy()
+            .ends_with("forest.png"),
+        "the extension is what the overlay reads: {first:?}"
+    );
+
+    // The same source is the same entry, which is the whole point of a cache.
+    let again =
+        transfer::preview_cache_path("desktop_a", "sess_1", "/tmp/a/forest.png", "forest.png")
+            .expect("cache path");
+    assert_eq!(first, again);
+
+    // Another file under another path is another entry even when the names match.
+    let other =
+        transfer::preview_cache_path("desktop_a", "sess_1", "/tmp/b/forest.png", "forest.png")
+            .expect("cache path");
+    assert_ne!(first, other);
+
+    // A host name that is a path fragment, or reserved, still lands somewhere
+    // writable — and a name with nothing usable left is still a file.
+    let odd =
+        transfer::preview_cache_path("desktop_a", "sess_1", "/tmp/a", "..").expect("cache path");
+    assert!(odd
+        .file_name()
+        .expect("a name")
+        .to_string_lossy()
+        .ends_with("preview"));
+}
+
+/**
+ * The cache keeps its newest entries and its age limit.
+ *
+ * A cache that only grows is a second copy of another machine's folder on this
+ * one, so both bounds are asserted: the count (the oldest entries go) and the age
+ * (an entry nothing has looked at for a week goes, whatever the count).
+ */
+#[test]
+fn the_preview_cache_drops_what_is_old_or_excess() {
+    use std::time::{Duration, SystemTime};
+    let _home = crate::remote::test_support::HomeGuard::new("peer-xfer-preview-prune");
+    let root = crate::store::remote_previews_dir().expect("previews dir");
+    std::fs::create_dir_all(&root).expect("create the cache root");
+
+    let entry = |index: usize, age: Duration| {
+        let path = root.join(format!("{index:016x}__note.md"));
+        std::fs::write(&path, b"contents").expect("write an entry");
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("open for the timestamp")
+            .set_modified(SystemTime::now() - age)
+            .expect("set the timestamp");
+    };
+    // 70 live entries, newest last, plus one long past its week.
+    for index in 0..70 {
+        entry(index, Duration::from_secs((70 - index) as u64));
+    }
+    let stale = root.join("00000000000000ff__stale.md");
+    std::fs::write(&stale, b"contents").expect("write the stale entry");
+    std::fs::File::options()
+        .write(true)
+        .open(&stale)
+        .expect("open the stale entry")
+        .set_modified(SystemTime::now() - Duration::from_secs(8 * 24 * 60 * 60))
+        .expect("set the stale timestamp");
+
+    transfer::prune_preview_cache();
+
+    let mut remaining: Vec<String> = std::fs::read_dir(&root)
+        .expect("read the cache")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    remaining.sort();
+    assert!(!stale.exists(), "an entry past its week is dropped");
+    assert_eq!(
+        remaining.len(),
+        64,
+        "the count bound is the newest 64: {remaining:?}"
+    );
+    assert!(
+        remaining
+            .iter()
+            .any(|name| name.starts_with(&format!("{:016x}", 69))),
+        "the newest entry is kept: {remaining:?}"
+    );
+    assert!(
+        !remaining
+            .iter()
+            .any(|name| name.starts_with(&format!("{:016x}", 0))),
+        "the oldest entry is dropped: {remaining:?}"
+    );
+}
+
 #[test]
 fn a_chunk_subject_yields_its_transfer_and_index() {
     assert_eq!(

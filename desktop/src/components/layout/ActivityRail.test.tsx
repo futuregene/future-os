@@ -60,6 +60,7 @@ function props(threads: StoredThread[]): ComponentProps<typeof ActivityRail> {
     onDismissSkillIntro: vi.fn(),
     onChange: vi.fn(),
     onBatchDeleteThreads: vi.fn(),
+    onDeleteRemoteConversations: vi.fn(),
     onDeleteThread: vi.fn(),
     onNewChat: vi.fn(),
     onOpenModels: vi.fn(),

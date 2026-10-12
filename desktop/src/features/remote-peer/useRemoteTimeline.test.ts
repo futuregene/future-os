@@ -86,6 +86,51 @@ describe("useRemoteTimeline", () => {
     hook.unmount();
   });
 
+  /**
+   * The first read asks for the *tail*.
+   *
+   * A history read is backward: the host serves the exchanges that end at
+   * `before`, and only that cursor can name the newest page. Omitting it is the
+   * host's *other* read (a forward page from offset 0), so opening a
+   * conversation showed its oldest entries — one question and the first frames
+   * of its reply — and the page after it repeated those same ordinals, which is
+   * the "load earlier" that showed the same question twice.
+   */
+  it("opens on the newest page, not the oldest", async () => {
+    requestMock.mockResolvedValue(page([entry("e1", "user", "newest")]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+
+    const [, command] = requestMock.mock.calls[0]!;
+    // `Number.MAX_SAFE_INTEGER`, the value the host documents as "the page at
+    // the end of the session" (and the phone opens with).
+    expect((command as { before?: number }).before).toBe(Number.MAX_SAFE_INTEGER);
+    hook.unmount();
+  });
+
+  /**
+   * An older page that overlaps what is already drawn adds nothing.
+   *
+   * The cursor is the host's, so an overlap is not supposed to happen — but a
+   * host that re-serves a range (a restarted session, a cursor that did not
+   * advance) would then draw the same question and reply a second time under
+   * the "load earlier" control the reader just used.
+   */
+  it("does not prepend an older page's entries twice", async () => {
+    requestMock
+      .mockResolvedValueOnce(page([entry("e2", "user", "newest")], { hasMore: true, nextOffset: 42 }))
+      .mockResolvedValueOnce(page([entry("e1", "user", "oldest"), entry("e2", "user", "newest")], { hasMore: false, nextOffset: 0 }));
+
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    await act(async () => {
+      await hook.current.loadOlder();
+    });
+
+    expect(hook.current.entries.map(item => item.id)).toEqual(["e1", "e2"]);
+    hook.unmount();
+  });
+
   /** Dropping malformed rows must not make a page look empty or throw. */
   it("keeps only renderable entries", async () => {
     requestMock.mockResolvedValue(page([
@@ -583,6 +628,25 @@ it("asks the host for three exchanges, not the whole conversation", async () => 
 
   const [, command] = requestMock.mock.calls[0]!;
   expect((command as { limit?: number }).limit).toBe(3);
+  hook.unmount();
+});
+
+/**
+ * The page size and the tail cursor are one contract with the phone's client.
+ *
+ * `mobile/src/remote/timeline/historyPaging.ts` holds the same two constants and
+ * this file's are asserted against the phone's values, because the two clients
+ * diverged once (100 exchanges against 3) precisely because neither could see the
+ * other's copy.
+ */
+it("opens with the phone's page size and tail cursor", async () => {
+  requestMock.mockResolvedValue(page([]));
+  const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+  await settle();
+
+  const [, command] = requestMock.mock.calls[0]!;
+  expect((command as { limit?: number }).limit).toBe(3);
+  expect((command as { before?: number }).before).toBe(Number.MAX_SAFE_INTEGER);
   hook.unmount();
 });
 

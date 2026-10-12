@@ -999,6 +999,64 @@ describe("app shell workspace handlers", () => {
     view.unmount();
   });
 
+  /**
+   * A local pin is a local write, and nothing else.
+   *
+   * A conversation's pin is this machine's ordering flag. It must not address a
+   * host — the host's own pin is set through its menu, from a row that carries
+   * its thread id — so the only write is the local store's, and the local list is
+   * what is re-read.
+   */
+  it("writes a pin to this machine's store and to no host", async () => {
+    const remoteRequests: string[] = [];
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command.startsWith("remote_peer"))
+        remoteRequests.push(command);
+      return undefined;
+    });
+    const view = mount(<AppShell />);
+    await act(async () => {
+      await rail().onTogglePinThread(chatThread);
+    });
+    expect(mocks.hooks.pinThread).toHaveBeenCalledWith({ pinned: true, threadId: "t1" });
+    expect(remoteRequests).toEqual([]);
+    view.unmount();
+  });
+
+  /**
+   * A batch that holds a host's conversations deletes them on that host.
+   *
+   * One command per conversation, because that is the host's own unit, and the
+   * catalogue is re-read afterwards: a deletion is only known to have happened
+   * when the host stops listing the row.
+   */
+  it("deletes a host's conversations on that host when a batch contains them", async () => {
+    const commands: Array<Record<string, unknown>> = [];
+    mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
+      if (command === "remote_peer_request")
+        commands.push((args as { command?: Record<string, unknown> })?.command ?? {});
+      return undefined;
+    });
+    const view = mount(<AppShell />);
+    await act(async () => {
+      await rail().onDeleteRemoteConversations([{
+        desktopId: "desktop_a",
+        id: "sess_1",
+        key: "desktop_a::sess_1",
+        lastMessageAt: 1,
+        mode: "chat",
+        pinned: false,
+        streaming: false,
+        threadId: "thread_1",
+        title: "a chat on the host",
+        workspaceId: null,
+      }]);
+    });
+    expect(commands).toContainEqual(expect.objectContaining({ type: "delete_session", threadId: "thread_1" }));
+    expect(mocks.hooks.refreshRemotePeers).toHaveBeenCalled();
+    view.unmount();
+  });
+
   it("restores an archived thread onto its section", async () => {
     (mocks.hooks.restoreThread as ReturnType<typeof vi.fn>).mockResolvedValue(thread("t3", { mode: "workspace" }));
     const view = mount(<AppShell />);

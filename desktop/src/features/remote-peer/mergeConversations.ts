@@ -28,6 +28,15 @@ export interface RemoteSessionRow {
   workspaceId?: string;
   /** The workspace's name on that host; absent on a host that predates it. */
   workspaceName?: string | null;
+  /**
+   * Whether the workspace this conversation sits in is pinned *on that host*.
+   *
+   * Carried per row rather than as a workspace list because it is what the
+   * merged list orders groups by, and a group exists only where a row does. A
+   * host that predates the field says nothing, and "unknown" must not order a
+   * group as pinned.
+   */
+  workspacePinned?: boolean | null;
   parentSessionId?: string | null;
   pinned?: boolean;
   streaming?: boolean;
@@ -76,6 +85,14 @@ export interface MergedConversation {
    * machine itself, which is still truthful, where an id would be noise.
    */
   workspaceName?: string | null;
+  /**
+   * Whether the workspace this row sits in is pinned at its source.
+   *
+   * Per row, because a group is only as pinned as the rows in it and the pin is
+   * the *owner's*: a workspace on another machine is pinned on that machine, and
+   * the group leads this list because the host said so.
+   */
+  workspacePinned?: boolean;
 }
 
 export interface LocalThreadLike {
@@ -85,6 +102,7 @@ export interface LocalThreadLike {
   pinned: boolean;
   status: "active" | "archived" | "deleted";
   workspaceId: string;
+  workspacePinned?: boolean;
   lastMessageAt?: number | null;
   updatedAt: number;
   createdAt: number;
@@ -147,6 +165,9 @@ export function mergeConversations(
         mode: thread.mode,
         workspaceId: thread.workspaceId,
         workspaceName: workspaceNames.get(thread.workspaceId) ?? null,
+        // A local row's workspace pin is passed in with its thread (the rail
+        // reads it from this machine's store); nothing is looked up here.
+        workspacePinned: thread.workspacePinned === true,
       });
     }
   }
@@ -176,6 +197,7 @@ export function mergeConversations(
         mode: session.mode === "workspace" ? "workspace" : "chat",
         workspaceId: session.workspaceId ?? null,
         workspaceName: session.workspaceName ?? null,
+        workspacePinned: session.workspacePinned === true,
       });
     }
   }
@@ -208,6 +230,13 @@ export interface MergedGroup {
   label: string | null;
   /** The workspace this group is, for this machine's own groups. */
   workspaceId: string | null;
+  /**
+   * Whether the workspace's owner pinned it, so the group leads the list.
+   *
+   * A workspace on another machine is pinned *there*: the pin is read from that
+   * host's own report. What is asserted here is the rule, not the source.
+   */
+  pinned: boolean;
   rows: MergedConversation[];
 }
 
@@ -222,20 +251,15 @@ export interface MergedGroup {
  *
  * Groups are ordered by their most recent row, so the list still reads
  * newest-first inside every heading and the headings themselves move with
- * activity rather than being pinned to an arbitrary machine order.
+ * activity rather than being pinned to an arbitrary machine order. A group whose
+ * workspace is pinned leads outright, whatever its recency — and the pin is read
+ * from the *row*, so a workspace on another machine leads this list on the same
+ * terms as one of this machine's. That is what makes a remote pin visible here at
+ * all: the merged list never reads this machine's workspace store for a row it
+ * does not own.
  */
 export function groupMergedRows(
   rows: MergedConversation[],
-  /**
-   * Which of this machine's workspaces the user pinned.
-   *
-   * Passed in rather than looked up: a workspace's pin state lives in this
-   * machine's workspace store, and this module knows nothing about stores. A
-   * remote workspace's pin is not here either — the catalogue does not carry it,
-   * so a remote group is never ordered as pinned, which is honest rather than
-   * guessing.
-   */
-  pinnedLocalWorkspaces: ReadonlySet<string> = new Set(),
 ): {
   chats: MergedConversation[];
   pinned: MergedConversation[];
@@ -269,13 +293,16 @@ export function groupMergedRows(
       kind: grouped ? "workspace" : "chat",
       label: row.workspaceName ?? null,
       workspaceId: grouped ? row.workspaceId : null,
+      pinned: grouped && row.workspacePinned === true,
       rows: [],
     };
     if (!existing)
       byKey.set(key, group);
-    // An older row whose host predates `workspaceName` must not blank a heading
-    // a newer row in the same group supplied.
+    // A host that predates the workspace *name* must not blank a heading a newer
+    // row in the same group supplied — and the same holds for its pin: one row
+    // reporting it is the group's answer.
     group.label ??= row.workspaceName ?? null;
+    group.pinned ||= grouped && row.workspacePinned === true;
     group.rows.push(row);
   }
 
@@ -284,14 +311,13 @@ export function groupMergedRows(
       (best, row) => Math.max(best, row.lastMessageAt ?? Number.NEGATIVE_INFINITY),
       Number.NEGATIVE_INFINITY,
     );
-  const isPinned = (group: MergedGroup) => isPinnedGroup(group, pinnedLocalWorkspaces);
 
   const groups = [...byKey.values()];
   groups.sort((a, b) => {
     // Pinned groups first, as in the local list; then newest, so the list still
     // reads newest-first inside each half.
-    if (isPinned(a) !== isPinned(b))
-      return isPinned(a) ? -1 : 1;
+    if (a.pinned !== b.pinned)
+      return a.pinned ? -1 : 1;
     const gap = newest(b) - newest(a);
     if (Number.isFinite(gap) && gap !== 0)
       return gap;
@@ -314,15 +340,4 @@ export function groupMergedRows(
     // scans for "what is current" into one list per machine to scan separately.
     chats: chats ? chats.rows.slice().sort(compareConversations) : [],
   };
-}
-
-/** Whether a group leads the list because the user pinned it. */
-export function isPinnedGroup(
-  group: MergedGroup,
-  pinnedLocalWorkspaces: ReadonlySet<string>,
-): boolean {
-  return group.kind === "workspace"
-    && group.desktopId === null
-    && group.workspaceId !== null
-    && pinnedLocalWorkspaces.has(group.workspaceId);
 }

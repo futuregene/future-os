@@ -63,6 +63,7 @@ function props(threads: StoredThread[], overrides: Partial<ComponentProps<typeof
     expanded: true,
     futureSessionStatus: "authenticated",
     onBatchDeleteThreads: vi.fn(),
+    onDeleteRemoteConversations: vi.fn(),
     onChange: vi.fn(),
     onDeleteThread: vi.fn(),
     onDeleteWorkspace: vi.fn(),

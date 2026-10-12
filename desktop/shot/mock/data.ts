@@ -1297,3 +1297,20 @@ export const remoteWorkspaces = {
     { id: "ws_manuscript", kind: "user", name: "投稿稿件", path: "/Users/studio/papers/submission", pinned: false },
   ],
 };
+
+/**
+ * One directory inside that host's conversation.
+ *
+ * Two files the overlay can render and one it cannot, which is the distinction the
+ * panel draws: `forest-plot.png` is a real PNG under `shot/assets/`, so the
+ * preview the panel opens paints an actual picture rather than a broken image.
+ */
+export const remoteFileListing = {
+  rootPath: "/Users/studio/papers/figures",
+  path: "/Users/studio/papers/figures",
+  entries: [
+    { name: "forest-plot.png", path: "/Users/studio/papers/figures/forest-plot.png", isDir: false, size: 184_320 },
+    { name: "effect-size.R", path: "/Users/studio/papers/figures/effect-size.R", isDir: false, size: 3_411 },
+    { name: "archive.zip", path: "/Users/studio/papers/figures/archive.zip", isDir: false, size: 2_048_576 },
+  ],
+};

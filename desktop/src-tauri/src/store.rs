@@ -43,7 +43,10 @@ pub use cleanup::{
     reconcile_orphan_images, reconcile_orphan_review_repos, reconcile_orphan_sessions,
     settle_interrupted_run_from_agent, ActiveRun,
 };
-pub use db::{app_images_root, future_dir, get_approval_request, get_run, thread_images_dir};
+pub use db::{
+    app_images_root, future_dir, get_approval_request, get_run, remote_previews_dir,
+    thread_images_dir,
+};
 // Test-only: lets a fake-HOME guard release pooled connections before deleting
 // its directory, since Windows cannot unlink an open database file.
 #[cfg(test)]

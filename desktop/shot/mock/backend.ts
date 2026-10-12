@@ -24,6 +24,7 @@ import {
   refreshedSessionUsage,
   remoteConversationState,
   remoteEntries,
+  remoteFileListing,
   remotePeers,
   remoteSessions,
   remoteToolArgs,
@@ -482,6 +483,21 @@ const handlers: Record<string, (args: any) => unknown> = {
   remote_peer_workspaces: (args: { desktopId: string }) => ({
     ...remoteWorkspaces,
     desktopId: args.desktopId,
+  }),
+  /**
+   * That host's directory listing, and a preview of one file in it.
+   *
+   * The preview answers a *local cache* path whose name is the host's, which is
+   * what the overlay is handed: the name is what selects a renderer, and the
+   * asset map turns these two demo names into real PNGs under `shot/assets/`.
+   */
+  remote_peer_list_files: (args: { desktopId: string; sessionId: string; path?: string }) => ({
+    ...remoteFileListing,
+    path: args?.path ?? remoteFileListing.path,
+  }),
+  remote_peer_preview_file: (args: { name?: string }) => ({
+    name: args?.name ?? "preview",
+    path: `${HOME}/.future/app/remote-previews/mock__${args?.name ?? "preview"}`,
   }),
   /**
    * The command channel to a host.

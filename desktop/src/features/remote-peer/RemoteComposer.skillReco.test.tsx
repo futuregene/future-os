@@ -89,16 +89,19 @@ async function mount(fake: {
   }
 
   await act(async () => root.render(<Harness />));
-  const input = container.querySelector("input")!;
+  const input = container.querySelector("textarea")!;
   return {
     container,
     input,
-    button: (text: string) =>
-      [...container.querySelectorAll("button")].find(node => node.textContent === text),
+    // By accessible name as well as by text: the send and stop controls are icon
+    // buttons now (the local composer's), so they carry an aria-label rather than
+    // a word.
+    button: (text: string) => [...container.querySelectorAll("button")]
+      .find(node => node.textContent === text || node.getAttribute("aria-label") === text),
     text: () => container.textContent ?? "",
     type: async (value: string) => {
       await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, value);
         input.dispatchEvent(new Event("input", { bubbles: true }));
       });
     },

@@ -36,6 +36,7 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 │   ├── app.db                 # SQLite 数据库（会话线程、run、审批等）
 │   ├── images/                # 每线程图片树（thumb/ + origin/）
 │   ├── review/                # 每个 workspace 的影子 git 评审仓库
+│   ├── remote-previews/       # 从已配对主机取回用于预览的文件（按时间与数量清理）
 │   └── run_events/            # 每个 run 的事件日志（JSONL）
 ├── workspaces/
 │   └── chat/                  # 每线程聊天工作区（agent 会话 / 线程 id）

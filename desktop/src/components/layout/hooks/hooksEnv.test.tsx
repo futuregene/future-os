@@ -346,14 +346,18 @@ describe("useRailSelection", () => {
 
   function mountHook() {
     const onBatchDeleteThreads = vi.fn();
+    const onDeleteRemoteConversations = vi.fn();
     const onSelectThread = vi.fn();
     const harness = renderHook(() => useRailSelection({
       onBatchDeleteThreads,
+      onDeleteRemoteConversations,
       onSelectThread,
+      remoteScopes: new Map(),
       threadScopes,
+      visibleRemoteRows: [],
       visibleThreads,
     }));
-    return { harness, onBatchDeleteThreads, onSelectThread };
+    return { harness, onBatchDeleteThreads, onDeleteRemoteConversations, onSelectThread };
   }
 
   it("selects a row normally when not in selection mode", () => {
@@ -437,8 +441,11 @@ describe("useRailSelection", () => {
     function SelectionProbe({ threads }: { threads: StoredThread[] }) {
       const selection = useRailSelection({
         onBatchDeleteThreads: () => {},
+        onDeleteRemoteConversations: () => {},
         onSelectThread: () => {},
+        remoteScopes: new Map(),
         threadScopes,
+        visibleRemoteRows: [],
         visibleThreads: threads,
       });
       return createElement("div", {
