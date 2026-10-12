@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import type { AgentMessage } from "@future-os/thread-projection";
+import type { AgentMessage, SessionEntry } from "@future-os/thread-projection";
+import { entriesToMessages } from "@future-os/thread-projection";
 import { act } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { flushAsync, renderHook } from "../../test/renderHook";
@@ -18,7 +19,7 @@ vi.mock("./remotePeerClient", () => ({
   requestRemotePeer: (...args: unknown[]) => request(...args),
 }));
 
-const { useRemoteActivityTargets } = await import("./remoteActivityTargets");
+const { pendingTargets, useRemoteActivityTargets, withRemoteTargets } = await import("./remoteActivityTargets");
 const { forgetRemoteToolTargets } = await import("./remoteToolTarget");
 
 beforeEach(() => {
@@ -141,5 +142,63 @@ it("drops an answer that arrives after the conversation changed", async () => {
 
   // The reply belonged to the conversation that was open when it was asked for.
   expect(hook.current.get("c1")).toBeUndefined();
+  hook.unmount();
+});
+
+/**
+ * The chain a lean feed leaves as the *only* way a shell command reaches the
+ * UI.
+ *
+ * `lean_entries` drops a shell call's whole `arguments` object, and the host
+ * refuses `get_tool_call_args` unless the client declared `lean_events_v1` — so
+ * the command a row shows comes from that one command or nowhere. This walks
+ * the real shape end to end: the page the host serves, the shared projection,
+ * the fetch, and the frame the transcript draws.
+ */
+it("fills a lean shell row's command through get_tool_call_args", async () => {
+  // Exactly what a lean history page serves for a shell call: identity, no
+  // arguments.
+  const entries: SessionEntry[] = [
+    {
+      id: "u1",
+      kind: "user",
+      role: "user",
+      createdAtMs: 1_000,
+      blocks: [{ kind: "text", text: "run it" }],
+    },
+    {
+      id: "a1",
+      kind: "assistant",
+      role: "assistant",
+      createdAtMs: 2_000,
+      runId: "r1",
+      blocks: [{ kind: "tool_call", name: "shell", toolCallId: "call_1" }],
+    },
+  ];
+  const messages = entriesToMessages(entries);
+  expect(pendingTargets(messages)).toEqual([{ runId: "r1", toolCallId: "call_1" }]);
+
+  request.mockResolvedValue({ arguments: { command: "Rscript x.R" }, name: "shell" });
+  const hook = renderHook(() => useRemoteActivityTargets("desktop_a", "sess_1", messages));
+  await flushAsync();
+
+  expect(request).toHaveBeenCalledWith(
+    "desktop_a",
+    expect.objectContaining({
+      type: "get_tool_call_args",
+      sessionId: "sess_1",
+      runId: "r1",
+      toolCallId: "call_1",
+    }),
+    "sess_1",
+  );
+  expect(hook.current.get("call_1")).toBe("Rscript x.R");
+
+  // And it lands where the renderer reads it, on the row itself.
+  const filled = withRemoteTargets(messages, hook.current);
+  const targets = filled.flatMap(message => (message.segments ?? [])
+    .filter(segment => segment.kind === "activity")
+    .map(segment => (segment.kind === "activity" ? segment.item.target : undefined)));
+  expect(targets).toEqual(["Rscript x.R"]);
   hook.unmount();
 });
