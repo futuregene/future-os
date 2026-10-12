@@ -295,7 +295,7 @@ pub(crate) async fn pair_with_emitter(
     let device_id = crate::device_identity::device_id()?;
     let claimed =
         super::platform::claim(&parsed, &device_id, &device.public_key(), &device_name()).await?;
-    let creds = PeerCreds {
+    let mut creds = PeerCreds {
         pair_id: claimed.pair_id,
         desktop_id: parsed.desktop_id.clone(),
         device_id,
@@ -304,7 +304,7 @@ pub(crate) async fn pair_with_emitter(
             .map_err(|error| crate::AppError::Message(format!("generate device NKey: {error}")))?,
         user_jwt: claimed.user_jwt,
         refresh_token: claimed.refresh_token,
-        nats_url: claimed.nats_url,
+        nats_url: claimed.nats_url.unwrap_or_default(),
         nats_ws_url: claimed.nats_ws_url,
         jwt_expires_at: claimed.jwt_expires_at,
         token_url: parsed.claim_url.replace("/pair/claim", "/auth/token"),
@@ -317,6 +317,19 @@ pub(crate) async fn pair_with_emitter(
             secret: Some(parsed.secret.clone()),
         }),
     };
+    // The client-role claim carries only `nats_ws_url` — the TCP endpoint this
+    // client needs is returned by the token endpoint alone. So a claim without
+    // it is the *normal* case, resolved here with one refresh. Doing it before
+    // the credential is stored, rather than lazily on connect, keeps what is on
+    // disk complete: a later launch then never has to re-derive the endpoint to
+    // reconnect.
+    if creds.nats_url.is_empty() {
+        let fresh = super::platform::refresh(&creds).await?;
+        creds.user_jwt = fresh.user_jwt;
+        creds.nats_url = fresh.nats_url;
+        creds.nats_ws_url = fresh.nats_ws_url;
+        creds.jwt_expires_at = fresh.jwt_expires_at;
+    }
     let desktop_id = creds.desktop_id.clone();
     creds::upsert(creds)?;
     connect_with_emitter(&desktop_id, emitter).await

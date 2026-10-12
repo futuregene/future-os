@@ -105,10 +105,15 @@ pub(crate) async fn claim(
             "pair_id": pair_id,
             "user_jwt": jwt(now_secs() + 3_600),
             "refresh_token": "refresh-token-1",
-            "nats_url": nats_url,
+            // No `nats_url`, because the real endpoint sends none: the
+            // platform's `ClaimPairResponse` carries only `nats_ws_url`, and
+            // the TCP endpoint comes from `/auth/token`. A fixture that
+            // included it here would let a client that cannot pair in
+            // production pass every test in this crate.
             "nats_ws_url": nats_url.replace("nats://", "ws://"),
         }),
     );
+    platform.respond_refresh(nats_url);
     let device = nkeys::KeyPair::new_user();
     let claimed = platform::claim(
         &invitation,
@@ -119,15 +124,20 @@ pub(crate) async fn claim(
     .await
     .expect("claim the invitation");
     assert_eq!(claimed.pair_id, pair_id);
+    assert!(
+        claimed.nats_url.is_none(),
+        "the real claim response has no TCP endpoint, so the fixture must not \
+         invent one: {claimed:?}"
+    );
     let (private, public) = future_remote_crypto::generate_identity().expect("identity");
-    let creds = creds::PeerCreds {
+    let mut creds = creds::PeerCreds {
         pair_id: claimed.pair_id,
         desktop_id: invitation.desktop_id.clone(),
         device_id: "dev_test".into(),
         nkey_seed: device.seed().expect("device seed"),
         user_jwt: claimed.user_jwt,
         refresh_token: claimed.refresh_token,
-        nats_url: claimed.nats_url,
+        nats_url: claimed.nats_url.unwrap_or_default(),
         nats_ws_url: claimed.nats_ws_url,
         jwt_expires_at: claimed.jwt_expires_at,
         token_url: claim_url.replace("/pair/claim", "/auth/token"),
@@ -138,6 +148,15 @@ pub(crate) async fn claim(
             secret: Some(invitation.secret.clone()),
         }),
     };
+    // Same step the runtime takes after a claim, so the fixture reaches a
+    // usable credential by the production route rather than a shortcut.
+    let fresh = platform::refresh(&creds)
+        .await
+        .expect("resolve the TCP endpoint");
+    creds.user_jwt = fresh.user_jwt;
+    creds.nats_url = fresh.nats_url;
+    creds.nats_ws_url = fresh.nats_ws_url;
+    creds.jwt_expires_at = fresh.jwt_expires_at;
     creds::upsert(creds.clone()).expect("store peer creds");
     Paired { creds }
 }

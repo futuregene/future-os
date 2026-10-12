@@ -12,9 +12,13 @@
 //!   *which* machine took the slot instead of showing an opaque id.
 //!
 //! The desktop connects over TCP with verified TLS, so it needs `nats_url`,
-//! not `nats_ws_url`. The platform returns both to every client, but a
-//! response without `nats_url` is an error rather than a silent downgrade to
-//! the WebSocket endpoint.
+//! not `nats_ws_url`. That endpoint is **not** on every response the client
+//! role receives: the platform's `ClaimPairResponse` carries only
+//! `nats_ws_url` (the phone connects over WebSocket, so only that was ever
+//! needed), while the TCP URL is only ever returned by `/auth/token`. A claim
+//! without it is therefore not a failure — it is one refresh, immediately,
+//! which is where the endpoint lives. Returning an error here instead would
+//! reject every pairing the real platform can produce.
 
 use super::creds::PeerCreds;
 use super::link::Invitation;
@@ -27,7 +31,10 @@ pub(crate) struct Claimed {
     pub pair_id: String,
     pub user_jwt: String,
     pub refresh_token: String,
-    pub nats_url: String,
+    /// **Absent on the real claim response.** The platform's `Pair/claim`
+    /// returns only `nats_ws_url`; the caller resolves the TCP endpoint with
+    /// one `refresh` (see the module docs).
+    pub nats_url: Option<String>,
     pub nats_ws_url: String,
     pub jwt_expires_at: i64,
 }
@@ -99,11 +106,12 @@ pub(crate) async fn claim(
         crate::remote_host::pairing::parse_response(response, "claim pairing").await?;
     // Platform endpoints are cached on the credential so a later refresh needs
     // no re-derivation; they are also where the revoke URL comes from.
-    let nats_url = required_endpoint(body.nats_url, "nats_url")?;
+    let nats_url = optional_endpoint(body.nats_url);
     let nats_ws_url = body
         .nats_ws_url
         .filter(|url| !url.trim().is_empty())
-        .unwrap_or_else(|| nats_url.clone());
+        .or_else(|| nats_url.clone())
+        .unwrap_or_default();
     let jwt_expires_at = crate::remote_host::pairing::jwt_expiry(&body.user_jwt)?;
     Ok(Claimed {
         pair_id: body.pair_id,
@@ -187,15 +195,22 @@ pub(crate) async fn revoke(creds: &PeerCreds) -> Result<(), crate::AppError> {
 /// The client role needs a TCP endpoint. Absent is an error, not a cue to fall
 /// back: silently using the WebSocket URL would connect over a transport whose
 /// TLS settings this client does not verify the way it does for TCP.
+///
+/// Used by `refresh`, which is the endpoint that *does* carry `nats_url`. The
+/// claim response is read with [`optional_endpoint`] instead.
 fn required_endpoint(value: Option<String>, field: &str) -> Result<String, crate::AppError> {
+    optional_endpoint(value).ok_or_else(|| {
+        crate::AppError::Message(format!(
+            "Remote server did not return a usable {field} for this client"
+        ))
+    })
+}
+
+/// A trimmed, non-empty endpoint, or `None`.
+fn optional_endpoint(value: Option<String>) -> Option<String> {
     value
         .map(|url| url.trim().to_string())
         .filter(|url| !url.is_empty())
-        .ok_or_else(|| {
-            crate::AppError::Message(format!(
-                "Remote server did not return a usable {field} for this client"
-            ))
-        })
 }
 
 #[cfg(test)]
@@ -324,7 +339,8 @@ mod tests {
 
     /// A response with no TCP endpoint is an error rather than a silent
     /// downgrade to the WebSocket one, whose TLS this client does not verify the
-    /// way it does for TCP.
+    /// way it does for TCP. `refresh` is the endpoint that *does* carry
+    /// `nats_url`, so its rule is the strict one.
     #[tokio::test]
     async fn a_refresh_without_a_tcp_endpoint_is_an_error() {
         let _home = HomeGuard::new("peer-platform-no-endpoint");
@@ -347,8 +363,6 @@ mod tests {
 
     /// The redaction is the whole point of the manual `Debug`: this value ends up
     /// in `expect`/`assert` output, and a bearer token in a panic message is a
-    /// The redaction is the whole point of the manual `Debug`: this value ends up
-    /// in `expect`/`assert` output, and a bearer token in a panic message is a
     /// token in a bug report.
     #[test]
     fn debug_redacts_the_claim_secrets() {
@@ -356,7 +370,7 @@ mod tests {
             pair_id: "pair_1".into(),
             user_jwt: "jwt-secret".into(),
             refresh_token: "refresh-secret".into(),
-            nats_url: "nats://host:4222".into(),
+            nats_url: Some("nats://host:4222".into()),
             nats_ws_url: "wss://host:4222".into(),
             jwt_expires_at: 42,
         };
@@ -369,10 +383,14 @@ mod tests {
         assert!(rendered.contains("nats://host:4222"), "{rendered}");
     }
 
-    /// The claim endpoint has the same rule, and is the one that matters most:
-    /// a claim *hands over* credentials.
+    /// The claim endpoint is the one that matters most for this rule, and it is
+    /// the one where the rule is *inverted*: the platform's `ClaimPairResponse`
+    /// has no `nats_url` at all (see the server's `routes/remote.rs`), so a
+    /// claim without it is the normal, successful case. Failing here rejects
+    /// every pairing the real platform can produce — the client then never
+    /// connects, however valid the invitation was.
     #[tokio::test]
-    async fn a_claim_without_a_tcp_endpoint_is_an_error() {
+    async fn a_claim_without_a_tcp_endpoint_is_not_an_error() {
         let _home = HomeGuard::new("peer-platform-claim-no-endpoint");
         let platform = MockPlatform::start().await;
         platform.push(
@@ -395,10 +413,46 @@ mod tests {
             claim_url: format!("{}/client/v1/remote/pair/claim", platform.url()),
             nonce: "nonce".into(),
         };
-        let error = claim(&invitation, "dev_1", "UDEV", "Test")
+        let claimed = claim(&invitation, "dev_1", "UDEV", "Test")
             .await
-            .expect_err("no nats_url is unusable");
-        assert!(error.to_string().contains("nats_url"), "{error}");
+            .expect("a claim without nats_url is the normal case");
+        assert!(claimed.nats_url.is_none(), "{claimed:?}");
+        // The WebSocket URL is still recorded, so the field is populated rather
+        // than lost: it is the only endpoint this response carries.
+        assert_eq!(claimed.nats_ws_url, "wss://example.invalid");
+    }
+
+    /// A claim with no endpoint at all still yields the WebSocket field as an
+    /// empty string rather than panicking on the missing TCP one.
+    #[tokio::test]
+    async fn a_claim_with_no_endpoints_at_all_still_yields_its_grant() {
+        let _home = HomeGuard::new("peer-platform-claim-bare");
+        let platform = MockPlatform::start().await;
+        platform.push(
+            "/client/v1/remote/pair/claim",
+            200,
+            serde_json::json!({
+                "pair_id": "pair_1",
+                "user_jwt": jwt(now_secs() + 3_600),
+                "refresh_token": "refresh",
+            }),
+        );
+        let invitation = super::super::link::Invitation {
+            code: "code".into(),
+            desktop_id: "desktop_1".into(),
+            desktop_key: "UKEY".into(),
+            secure_key: "key".into(),
+            secret: "secret".into(),
+            expires_at: None,
+            claim_url: format!("{}/client/v1/remote/pair/claim", platform.url()),
+            nonce: "nonce".into(),
+        };
+        let claimed = claim(&invitation, "dev_1", "UDEV", "Test")
+            .await
+            .expect("the grant itself is what makes a claim usable");
+        assert!(claimed.nats_url.is_none(), "{claimed:?}");
+        assert_eq!(claimed.nats_ws_url, "");
+        assert_eq!(claimed.pair_id, "pair_1");
     }
 
     /// A claim the platform answers with an error body must surface that body's
