@@ -12,10 +12,14 @@
 //!   onto another request;
 //! * the handshake pins the host's Noise key **before** any traffic: the key
 //!   arrives in the invitation, so the first handshake is authenticated by the
-//!   QR itself rather than by trust-on-first-use.
+//!   QR itself rather than by trust-on-first-use;
+//! * a command whose reply is lost is re-sent — up to three attempts, 250·2ⁿ ms
+//!   apart, always under the same command `id` — so the host's own reply cache
+//!   answers the retry instead of running the command a second time.
 //!
-//! Nothing here decides *policy* (when to connect, when to give up, what to do
-//! with an event). It performs one connection attempt and exposes it.
+//! Beyond that command bound, nothing here decides *policy* (when to connect,
+//! when to give up, what to do with an event). It performs one connection
+//! attempt and exposes it.
 
 use super::creds::PeerCreds;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -27,6 +31,42 @@ use std::time::Duration;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Ordinary commands default, matching the phone's request timeout.
 pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How many attempts a retryable command gets in total, and the base of the
+/// `250·2ⁿ ms` backoff between them. The phone's numbers
+/// (`mobile/src/remote/client.ts::requestRetry`), kept identical so the two
+/// clients fail, and recover, at the same pace.
+pub(crate) const COMMAND_ATTEMPTS: usize = 3;
+pub(crate) const RETRY_BACKOFF_BASE: Duration = Duration::from_millis(250);
+
+/// Whether a command may be re-sent after a transport failure.
+///
+/// The phone's whitelist, adopted as-is: reads (`get_*`, `list_`) and the two
+/// commands that extend a conversation (`prompt`, `continue_run`). A read has no
+/// side effect to duplicate; `prompt`/`continue_run` do, and are safe here only
+/// because the host deduplicates on the command `id` (`remote::commands`'
+/// `ReplySlots`, single-flight, 600 s TTL) — a re-send gets the cached reply
+/// rather than a second message. Everything else — the writes
+/// (`create_workspace`, `set_task_enabled`, …) — is left to the user to retry
+/// knowingly, because a re-send that the host cannot recognise as one would
+/// apply the write twice.
+pub(crate) fn retryable_command(payload: &Value) -> bool {
+    let Some(kind) = payload.get("type").and_then(Value::as_str) else {
+        return false;
+    };
+    kind.starts_with("get_")
+        || kind.starts_with("list_")
+        || kind == "upload_complete"
+        || matches!(kind, "prompt" | "continue_run")
+}
+
+/// A failure worth another attempt: the transport (a reply that never arrived,
+/// a socket that went away). A business failure is the host's *answer* — it
+/// would compute the same one again — so it is returned at once, exactly as
+/// `remote_peer::runtime` reads it.
+fn transient(error: &crate::AppError) -> bool {
+    matches!(error, crate::AppError::RemoteTransport(_))
+}
 
 /// Capabilities this client declares on `secure_ready`, in the order they are
 /// advertised. Kept as a named constant so the declaration is testable without
@@ -90,6 +130,30 @@ impl PeerSession {
     #[cfg(test)]
     pub(crate) fn client_for_test(&self) -> &async_nats::Client {
         &self.client
+    }
+
+    /// A session wired to a broker and a channel the *test* owns, with no
+    /// handshake in front of it.
+    ///
+    /// The retry is about re-sending, so a test of it wants to be the host: to
+    /// see each request and to choose whether to answer. `connect` cannot offer
+    /// that — its host always replies — and a broker that is up cannot lose one
+    /// reply on demand.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        pair_id: &str,
+        client: async_nats::Client,
+        channel: std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
+        bridge_instance_id: &str,
+    ) -> Self {
+        Self {
+            pair_id: pair_id.to_string(),
+            client,
+            channel,
+            bridge_instance_id: bridge_instance_id.to_string(),
+            features: Vec::new(),
+            presence: Value::Null,
+        }
     }
 
     /// Drain the connection: every subscription this session holds ends.
@@ -166,12 +230,19 @@ impl PeerSession {
     /// `bridge_instance_id` is attached when the caller is addressing an
     /// already-established conversation: a host that has since restarted
     /// refuses it instead of applying it to a session it never saw.
+    ///
+    /// A command on [`retryable_command`]'s whitelist is re-sent after a
+    /// transport failure (see [`Self::exchange_retrying`]); every other command
+    /// makes exactly one attempt.
     pub(crate) async fn request(
         &mut self,
         subject: &str,
         mut payload: Value,
         timeout: Duration,
     ) -> Result<Value, crate::AppError> {
+        // Read before the envelope fields are added: the whitelist is a property
+        // of the command, not of the lane it is sent on.
+        let retryable = retryable_command(&payload);
         if let Some(object) = payload.as_object_mut() {
             object
                 .entry("bridgeInstanceId")
@@ -179,7 +250,12 @@ impl PeerSession {
         }
         let plaintext = serde_json::to_vec(&payload)
             .map_err(|error| crate::AppError::Message(format!("encode command: {error}")))?;
-        self.exchange(subject, &plaintext, timeout).await
+        if retryable {
+            self.exchange_retrying(subject, &plaintext, timeout, COMMAND_ATTEMPTS)
+                .await
+        } else {
+            self.exchange(subject, &plaintext, timeout).await
+        }
     }
 
     /// Send arbitrary bytes and decode the JSON reply.
@@ -187,6 +263,9 @@ impl PeerSession {
     /// Split out because not every request body is a command document: an
     /// upload chunk *is* its payload, and wrapping it in JSON would both inflate
     /// it and lose the exact bytes the host hashes.
+    ///
+    /// Never retried here: a body with no `type` is not on the whitelist, and
+    /// the chunk lane has its own retry (`transfer::retrying`).
     pub(crate) async fn request_bytes(
         &mut self,
         subject: &str,
@@ -194,6 +273,37 @@ impl PeerSession {
         timeout: Duration,
     ) -> Result<Value, crate::AppError> {
         self.exchange(subject, plaintext, timeout).await
+    }
+
+    /// Re-send the same sealed plaintext while the failure is a transport one.
+    ///
+    /// The plaintext — not the `Value` — is what is re-sent, so the command `id`
+    /// and every other byte of the request are identical between attempts. That
+    /// is what makes the retry idempotent: the host keys its reply cache on the
+    /// `id` and refuses a reused id whose body differs (`command_id_conflict`),
+    /// so its second look-up replays the first answer instead of executing the
+    /// command again.
+    ///
+    /// The *last* error is the one returned, so a caller sees the failure that
+    /// exhausted the budget rather than the first one.
+    async fn exchange_retrying(
+        &mut self,
+        subject: &str,
+        plaintext: &[u8],
+        timeout: Duration,
+        attempts: usize,
+    ) -> Result<Value, crate::AppError> {
+        let mut attempt = 1;
+        loop {
+            match self.exchange(subject, plaintext, timeout).await {
+                Err(error) if attempt < attempts && transient(&error) => {
+                    // Between attempt n and n+1: 250 ms, then 500 ms.
+                    tokio::time::sleep(RETRY_BACKOFF_BASE * 2u32.pow(attempt as u32 - 1)).await;
+                    attempt += 1;
+                }
+                outcome => return outcome,
+            }
+        }
     }
 
     /// Seal a request, await its reply, and unwrap the host's envelope.
