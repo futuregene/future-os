@@ -1128,6 +1128,7 @@ dependencies = [
  "prost-build",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "tokio-stream",

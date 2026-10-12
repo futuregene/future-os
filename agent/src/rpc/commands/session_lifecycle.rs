@@ -580,7 +580,13 @@ pub(crate) fn cmd_read_session_entries(
     id: &str,
 ) -> String {
     if cmd.before.is_some() || cmd.offset.is_some() {
-        return match session_manager.history_page(session_id, cmd.before, cmd.offset, cmd.limit) {
+        return match session_manager.read_history_page(
+            session_id,
+            cmd.before,
+            cmd.offset,
+            cmd.limit,
+            cmd.fragment_offset,
+        ) {
             Ok(page) => RpcResponse::ok(id, "get_session_entries", page),
             Err(error) => RpcResponse::build_fail_code(
                 id,
@@ -598,10 +604,10 @@ pub(crate) fn cmd_read_session_entries(
             serde_json::json!({"entries": []}),
         );
     }
-    let version_before = session_manager.session_revision(session_id).ok();
-    let cached = version_before
+    let revision_before = session_manager.session_revision(session_id).ok();
+    let cached = revision_before
         .as_ref()
-        .and_then(|version| session_manager.cached_display_entries(session_id, version));
+        .and_then(|revision| session_manager.cached_display_projection(session_id, revision));
     let entries = if let Some(entries) = cached {
         entries
     } else {
@@ -617,12 +623,12 @@ pub(crate) fn cmd_read_session_entries(
                 );
             }
         };
-        let projected = crate::session::display::project_entries(&loaded.entries);
+        let projected = crate::session::history::project_entries(&loaded.entries);
         let projected = std::sync::Arc::new(projected);
-        let version_after = session_manager.session_revision(session_id).ok();
-        if let (Some(before), Some(after)) = (version_before.as_ref(), version_after) {
+        let revision_after = session_manager.session_revision(session_id).ok();
+        if let (Some(before), Some(after)) = (revision_before.as_ref(), revision_after) {
             if *before == after {
-                session_manager.cache_display_entries(session_id, after, projected.clone());
+                session_manager.cache_display_projection(session_id, after, projected.clone());
             }
         }
         projected

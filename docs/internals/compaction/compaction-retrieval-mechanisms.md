@@ -101,7 +101,7 @@ Relevant native Rust: `agent/src/agent/run_loop.rs`,
 `agent/src/rpc/session_prompt.rs`,
 `agent/src/tools/mod.rs`, `agent/src/sandbox/mod.rs`,
 `cli/src/commands/session_history.rs`, `cli/src/rpc.rs`,
-`agent/src/rpc/commands/mod.rs`, `agent/src/session/history_query.rs`.
+`agent/src/rpc/commands/mod.rs`, `agent/src/session/history/recall.rs`.
 
 ## Codex: local and hosted modes are not interchangeable
 

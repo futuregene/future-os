@@ -368,7 +368,7 @@ impl MockAgent {
     /// empty, so its screens (and goldens) are exactly what they were before the
     /// TUI read history through this pager instead of `get_messages`. The
     /// planted session is longer than one page, and the cursor arithmetic is the
-    /// agent's (`agent/src/session/history_index.rs::read_page`): `before` is an
+    /// agent's (`agent/src/session/history/paging.rs::read_display_page`): `before` is an
     /// exclusive backward cursor, `limit` counts *user exchanges*, and the page
     /// starts at the `limit`-th user row above `before` (or at zero).
     fn session_entries_response(&self, cmd: &RpcCommand) -> String {

@@ -7,7 +7,11 @@
 //! - [`projection`]: entries ↔ LLM-message mappings and `truncate_visible`
 //! - [`repair`]: in-memory healing of corrupted/legacy session histories
 //! - [`fork`]: typed fork-point resolution and independent snapshot creation
-//! - [`manager`]: SQLite session persistence and run recovery
+//! - [`database`]: ordered SQLite worker, schema, transactions and reclamation
+//! - [`sqlite_store`]: transactional transcript and event storage
+//! - [`entry_records`]: canonical entries and relational message-block encoding
+//! - [`history`]: display indexing/paging and original-text recall
+//! - [`manager`]: storage initialization, metadata, loading and fork coordination
 //! - [`summary`]: session listing from SQLite
 //! - [`persistence`]: the async `SessionPersistence` write pipeline
 //!
@@ -23,20 +27,19 @@ pub(crate) mod compaction_ops;
 #[cfg(test)]
 mod compaction_ops_tests;
 pub(crate) mod database;
-pub(crate) mod display;
-mod history_index;
-mod history_query;
+pub(crate) mod history;
 pub(crate) mod journal_compaction;
-pub(crate) use history_query::{HISTORY_DEFAULT_BYTES, HISTORY_DEFAULT_SESSIONS};
+mod journal_compactor;
+pub(crate) use history::{HISTORY_DEFAULT_BYTES, HISTORY_DEFAULT_SESSIONS};
 mod legacy_import;
 pub use legacy_import::ImportRecord;
 mod entry;
+mod entry_records;
 mod fork;
 mod manager;
 mod model;
 mod persistence;
 mod projection;
-mod records;
 mod repair;
 mod run_journal;
 pub mod sqlite_store;

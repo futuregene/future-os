@@ -295,19 +295,12 @@ pub async fn get_session_entries_before(
     before: i64,
     user_exchange_limit: i64,
 ) -> Result<serde_json::Value, crate::AppError> {
-    let mut client = connect_agent().await?;
-    let response = client
-        .execute_command(get_session_entries_before_command(
-            session_id,
-            before,
-            user_exchange_limit,
-        ))
-        .await
-        .map_err(|status| format!("get_session_entries failed: {status}"))?
-        .into_inner()
-        .ok_or_rpc_error("get_session_entries returned an error")?;
-    let page = future_rpc::decode::decode_session_entries_page(&response)
-        .ok_or_else(|| "get_session_entries typed page is missing or invalid".to_string())?;
+    let client = connect_agent().await?;
+    let page = read_history_page_with_client(
+        &client,
+        get_session_entries_before_command(session_id, before, user_exchange_limit),
+    )
+    .await?;
     Ok(serde_json::json!({
         "entries": page.entries,
         "hasMore": page.has_more,
@@ -323,18 +316,11 @@ pub(super) async fn fetch_all_session_entries_with_client(
     let mut offset = 0_i64;
     let mut entries = Vec::new();
     loop {
-        let response = client
-            .execute_command(get_session_entries_page_command(
-                session_id.to_string(),
-                offset,
-                PAGE_SIZE,
-            ))
-            .await
-            .map_err(|status| format!("get_session_entries failed: {status}"))?
-            .into_inner()
-            .ok_or_rpc_error("get_session_entries returned an error")?;
-        let page = future_rpc::decode::decode_session_entries_page(&response)
-            .ok_or_else(|| "get_session_entries typed page is missing or invalid".to_string())?;
+        let page = read_history_page_with_client(
+            client,
+            get_session_entries_page_command(session_id.to_string(), offset, PAGE_SIZE),
+        )
+        .await?;
         entries.extend(page.entries);
         if !page.has_more {
             return Ok(entries);
@@ -348,6 +334,30 @@ pub(super) async fn fetch_all_session_entries_with_client(
         }
         offset = page.next_offset;
     }
+}
+
+async fn read_history_page_with_client(
+    client: &crate::agent_proto::FutureAgentClient<tonic::transport::Channel>,
+    command: future_rpc::proto::RpcCommand,
+) -> Result<future_rpc::payloads::SessionEntriesPage, crate::AppError> {
+    future_rpc::history::read_page(command, |command| {
+        // Cloning a tonic client shares the existing channel/connection.
+        let mut client = client.clone();
+        async move {
+            let response = client
+                .execute_command(command)
+                .await
+                .map_err(|e| format!("get_session_entries failed: {e}"))?
+                .into_inner();
+            if !response.success {
+                return Err(response.error);
+            }
+            future_rpc::decode::decode_session_entries_page(&response)
+                .ok_or_else(|| "invalid history page".to_owned())
+        }
+    })
+    .await
+    .map_err(Into::into)
 }
 
 /// Fetch the session's current state (model, thinkingLevel, isStreaming, etc.)

@@ -491,7 +491,7 @@ async fn delete_run_conversation(thread_id: &str) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
-/// The inner run: session, pre-compact, prompt. Returns the final assistant
+/// The inner run: resolve the session and submit the prompt. Returns the final assistant
 /// text on success.
 async fn run_inner(
     store: Store,
@@ -687,9 +687,6 @@ fn bind_task_thread(store: &Store, task: &Task, thread_id: &str) -> Result<(), S
     store.update_task(&t).map_err(|e| e.to_string())
 }
 
-/// Pre-compact an existing session before the run. Compaction is asynchronous
-/// (accepted ack + worker events); we wait for it to settle before prompting.
-/// Failure fails the run (the user asked for compact-then-run, not run).
 /// Read the final assistant text of the last run in a session (the durable
 /// journal is the source of truth).
 async fn read_final_assistant_text(session_id: &str) -> Result<String, String> {
@@ -1198,7 +1195,7 @@ mod tests {
     // ─── the executor (mock agent) ────────────────────────────────────────
 
     /// Script the commands a run sends before its stream: session creation,
-    /// the permission/sandbox push, and the compaction probe.
+    /// the permission/sandbox push, and the idle probe.
     fn script_agent_setup(mock: &crate::agent_bridge::test_support::MockAgentGuard, session: &str) {
         mock.push_data("new_session", serde_json::json!({ "sessionId": session }));
         mock.push_data("set_permission_level", serde_json::json!({}));
@@ -1207,18 +1204,13 @@ mod tests {
             serde_json::json!({ "sandboxAvailable": true }),
         );
         // `get_state` must be typed: the idle probe decodes the typed payload.
-        // Several are queued because each phase (pre-compact idle, post-compact
-        // settle) probes again.
+        // Repeated idle probes may be needed when reusing a conversation.
         for _ in 0..4 {
             mock.push_typed_data(
                 "get_state",
                 crate::agent_bridge::test_support::get_state_payload(session, false),
             );
         }
-        mock.push_data(
-            "compact",
-            serde_json::json!({ "accepted": true, "operationId": "cmp_1" }),
-        );
         mock.push_data(
             "get_last_assistant_text",
             serde_json::json!({ "text": "the finished answer" }),
@@ -1621,8 +1613,7 @@ mod tests {
         assert!(finished.thread_id.is_none(), "no conversation was created");
     }
 
-    /// A reused conversation is compacted before the prompt, and a compaction
-    /// that fails fails the run rather than prompting with stale context.
+    /// A reused conversation is prompted in place, retaining earlier context.
     #[tokio::test]
     async fn a_reused_conversation_is_prompted_in_place_without_compacting() {
         let _home = crate::agent_bridge::test_support::TestHome::new("tasks-execute-reuse");

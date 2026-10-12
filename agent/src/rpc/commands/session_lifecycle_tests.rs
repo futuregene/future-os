@@ -709,7 +709,7 @@ fn repeated_entry_reads_are_served_from_the_cached_projection() {
     assert!(!entries.is_empty(), "{first}");
     assert!(state
         .session_manager
-        .cached_display_entries(
+        .cached_display_projection(
             "cache-me",
             &state.session_manager.session_revision("cache-me").unwrap()
         )
@@ -1134,7 +1134,7 @@ fn get_session_entries_paginates_only_when_offset_is_explicit() {
     assert!(
         state
             .session_manager
-            .cached_display_entries("default", &version)
+            .cached_display_projection("default", &version)
             .is_none(),
         "paged reads must not populate the full-history cache"
     );
@@ -1147,7 +1147,7 @@ fn get_session_entries_paginates_only_when_offset_is_explicit() {
     assert_eq!(second["data"]["nextOffset"], 4);
     assert!(state
         .session_manager
-        .cached_display_entries("default", &version)
+        .cached_display_projection("default", &version)
         .is_none());
 
     let legacy = parse_response(&handle_command_internal(
@@ -1168,7 +1168,7 @@ fn get_session_entries_paginates_only_when_offset_is_explicit() {
     );
     assert!(state
         .session_manager
-        .cached_display_entries("default", &version)
+        .cached_display_projection("default", &version)
         .is_none());
 }
 

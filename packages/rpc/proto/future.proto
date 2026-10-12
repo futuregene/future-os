@@ -127,6 +127,9 @@ message RpcCommand {
   // "start at the current tail"; the response next_offset walks toward zero.
   // In this mode limit counts user exchanges rather than raw journal rows.
   optional int64 before = 98;
+  // Byte offset in an oversized serialized history entry; clients reassemble
+  // its fragments before projecting messages. Absence starts at byte zero.
+  optional int64 fragment_offset = 149;
 
   // Upper bound on how many sessions `search_all_session_history` scans,
   // ordered by most recently updated first. Absent selects the server
@@ -493,6 +496,16 @@ message SessionEntriesResponse {
   repeated SessionEntry entries = 1;
   bool has_more = 2;
   int64 next_offset = 3;
+  optional HistoryEntryFragment fragment = 4;
+}
+
+message HistoryEntryFragment {
+  string entry_id = 1;
+  int64 ordinal = 2;
+  int64 offset = 3;
+  int64 total_bytes = 4;
+  string json = 5;
+  string sha256 = 6;
 }
 
 // Acknowledgement of an accepted prompt command. Field names mirror the

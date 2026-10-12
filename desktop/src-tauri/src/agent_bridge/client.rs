@@ -521,6 +521,7 @@ pub(super) fn base_command(command_type: &str, session_id: String) -> RpcCommand
         offset: None,
         limit: None,
         before: None,
+        fragment_offset: None,
         // Cross-session history search bound. The GUI has no UI for it yet, so
         // it stays absent (the Agent then applies its own default scan window).
         max_sessions: None,

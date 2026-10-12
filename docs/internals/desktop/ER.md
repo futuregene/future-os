@@ -1184,8 +1184,8 @@ session foreign key, to preserve deletion tombstones.
 
 ### 7.2 Tables, fields, and indexes
 
-Implementation source of truth: `agent/src/session/database.rs`; storage
-reconstruction view: `records.rs`. Business IDs are TEXT, sequence/UTC
+Implementation source of truth: `agent/src/session/database/schema.sql`; storage
+reconstruction view: `entry_records.rs`. Business IDs are TEXT, sequence/UTC
 milliseconds/counts are INTEGER, unknown optional values use SQL NULL.
 Internal event epoch/idx still follow the existing recovery coordinates and
 are not the same as the public history RPC's optional fields.
@@ -1270,15 +1270,20 @@ kept independently — no new legacy-field aliases or dual-format responses. The
 Desktop-internal Tauri UI records still map per their duties and do not pass
 for the Agent's public RPC.
 
-The Agent's current `application_id` is `0x46555452`; `user_version=5` is only
+The Agent's current `application_id` is `0x46555452`; `user_version=6` is only
 this database's schema identifier — not an RPC version, and it does not mean a
 published v1 exists that must be supported. `user_version` 2 and 3 are previous
 layouts; 2 is accepted only when its columns match the current shape, otherwise
-startup refuses it (`agent/src/session/database.rs:285-319`). Development
+startup refuses it (`agent/src/session/database/connection.rs`). Development
 layouts keep no upgrade chain; unknown databases/unsupported layouts are
 explicitly refused, never auto-rebuilt. After official release, schema
 migrations must be maintained; Desktop's released migrations keep following
 §1's non-modifiable boundary.
+
+Schema 6 removes the obsolete snapshot-cleanup index and omits `raw_pending`
+from new databases. Existing files may retain that unused column: startup does
+not rewrite snapshot payloads just to remove it. Snapshot payload format version
+remains 1, and cleanup never deletes existing raw journals.
 
 Old JSONL is read only by the one-time importer with originals kept; corrupt
 sessions are skipped in isolation, and global storage errors block startup.

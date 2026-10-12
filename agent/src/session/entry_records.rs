@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
 use serde_json::Value;
 
-pub(crate) fn canonical_entry(mut value: Value) -> Value {
+pub(crate) fn normalize_entry(mut value: Value) -> Value {
     if !matches!(
         value["type"].as_str(),
         Some("user" | "assistant" | "tool" | "system")
@@ -67,7 +67,12 @@ pub(crate) fn canonical_entry(mut value: Value) -> Value {
     value
 }
 
-pub(crate) fn insert(db: &Connection, session: &str, position: i64, value: &Value) -> Result<()> {
+pub(crate) fn insert_entry_record(
+    db: &Connection,
+    session: &str,
+    position: i64,
+    value: &Value,
+) -> Result<()> {
     let mut metadata = value
         .as_object()
         .cloned()
@@ -140,7 +145,7 @@ pub(crate) fn insert(db: &Connection, session: &str, position: i64, value: &Valu
             .and_then(Value::as_str)
         {
             db.execute("UPDATE sessions SET current_metadata_json=json_set(COALESCE(current_metadata_json,'{}'),'$.model',?2) WHERE id=?1",params![session,model])?;
-            db.execute("UPDATE history_shapes SET payload=json_set(payload,'$.content.model',?2) WHERE session_id=?1 AND json_extract(payload,'$.type')='session_info'",params![session,model])?;
+            db.execute("UPDATE history_shapes SET payload=json_set(payload,'$.content.model',?2) WHERE session_id=?1 AND position IN (SELECT position FROM entries WHERE session_id=?1 AND entry_type='session_info')",params![session,model])?;
         }
     }
     db.execute("INSERT INTO entries(session_id,position,entry_id,entry_type,role,run_id,timestamp_ms,metadata_json,content_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
@@ -213,7 +218,7 @@ pub(crate) fn insert(db: &Connection, session: &str, position: i64, value: &Valu
     Ok(())
 }
 
-pub(crate) const VIEWS: &str = "
+pub(crate) const ENTRY_RECORD_VIEWS_SQL: &str = "
 DROP VIEW IF EXISTS entry_records;
 DROP VIEW IF EXISTS block_records;
 CREATE VIEW block_records AS
@@ -337,12 +342,12 @@ mod canonical_paths {
 
     #[test]
     fn a_non_entry_value_is_passed_through_unchanged() {
-        assert_eq!(canonical_entry(json!(7)), json!(7));
+        assert_eq!(normalize_entry(json!(7)), json!(7));
     }
 
     #[test]
     fn error_prefixed_tool_text_becomes_an_error_result_block() {
-        let canonical = canonical_entry(json!({
+        let canonical = normalize_entry(json!({
             "id":"t","type":"tool","role":"tool","timestamp":"2026-01-01T00:00:00Z",
             "content":"Error: synthetic failure"
         }));

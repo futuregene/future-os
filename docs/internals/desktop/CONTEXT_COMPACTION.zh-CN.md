@@ -537,7 +537,7 @@ deterministic-emergency-v1
 
 下一阶段不修改 desktop SQLite schema，不新增 message、run-event、summary 或 checkpoint 表。模型切换状态、摘要中间结果和 retry 状态均属于单次运行内存；只有 final checkpoint 进入 agent JSONL。
 
-> 实际新增（2026-09-26）：**Agent** 数据库（不是 desktop SQLite）增加了 `compaction_operations`，用于让手动与自动压缩跨重启幂等——key、digest、operation id、state 与 result JSON（`agent/src/session/database.rs:336-343`）。摘要本身仍不存库；重放操作没有 result 时会重建确定性索引并重新生成模型摘要。
+> 实际新增（2026-09-26）：**Agent** 数据库（不是 desktop SQLite）增加了 `compaction_operations`，用于让手动与自动压缩跨重启幂等——key、digest、operation id、state 与 result JSON（`agent/src/session/database/schema.sql`）。摘要本身仍不存库；重放操作没有 result 时会重建确定性索引并重新生成模型摘要。
 
 ## 13. 下一阶段开发计划
 

@@ -1313,13 +1313,9 @@ impl ServerSession {
             };
             if !session.model.is_empty() {
                 self.model = session.model.clone();
-                tracing::debug!("[session] hydrated model={} for session={}", self.model, id,);
 
-                // Sync the agent loop's model identity + dynamic client so the
-                // next prompt uses the saved model, not a stale leftover from
-                // the previous session. set_model persists via update_session_info,
-                // which fails for legacy session files lacking a session_info
-                // entry — log and defer to an explicit /model.
+                // Restore the saved model and client before the next prompt.
+                // Report persistence failure so an explicit /model can retry.
                 let _ = self.set_model(&self.model.clone()).inspect_err(|e| {
                     tracing::warn!(
                         "[session] could not sync agent loop model during hydration: {e}"

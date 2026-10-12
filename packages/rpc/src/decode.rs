@@ -69,6 +69,10 @@ fn typed_response_data(resp: &proto::RpcResponse) -> Option<Value> {
                 value["hasMore"] = Value::Bool(response.has_more);
                 value["nextOffset"] = Value::Number(response.next_offset.into());
             }
+            if let Some(fragment) = &response.fragment {
+                value["fragment"] = json!({"entryId":fragment.entry_id,"ordinal":fragment.ordinal,
+                    "offset":fragment.offset,"totalBytes":fragment.total_bytes,"json":fragment.json,"sha256":fragment.sha256});
+            }
             Some(value)
         }
         Kind::GetEventsSince(events) => {
@@ -148,6 +152,17 @@ pub fn decode_session_entries_page(resp: &proto::RpcResponse) -> Option<SessionE
         resp.payload.as_ref().and_then(|p| p.kind.as_ref())
     {
         return Some(SessionEntriesPage {
+            fragment: response
+                .fragment
+                .as_ref()
+                .map(|f| crate::payloads::HistoryEntryFragment {
+                    entry_id: f.entry_id.clone(),
+                    ordinal: f.ordinal,
+                    offset: f.offset,
+                    total_bytes: f.total_bytes,
+                    json: f.json.clone(),
+                    sha256: f.sha256.clone(),
+                }),
             entries: response
                 .entries
                 .iter()
@@ -164,6 +179,12 @@ pub fn decode_session_entries_page(resp: &proto::RpcResponse) -> Option<SessionE
             entries.push(serde_json::from_value(row.clone()).ok()?);
         }
         Some(SessionEntriesPage {
+            fragment: value
+                .get("fragment")
+                .filter(|v| !v.is_null())
+                .map(|v| serde_json::from_value(v.clone()))
+                .transpose()
+                .ok()?,
             entries,
             has_more: value
                 .get("hasMore")
@@ -1134,6 +1155,7 @@ mod tests {
     #[test]
     fn final_entries_page_retains_pagination_metadata() {
         let response = resp_with_payload(Kind::GetSessionEntries(proto::SessionEntriesResponse {
+            fragment: None,
             entries: vec![],
             has_more: false,
             next_offset: 42,
@@ -1150,6 +1172,7 @@ mod tests {
             ..Default::default()
         };
         let response = resp_with_payload(Kind::GetSessionEntries(proto::SessionEntriesResponse {
+            fragment: None,
             entries: vec![crate::encode::session_entry_to_proto(&entry)],
             ..Default::default()
         }));
@@ -1186,6 +1209,7 @@ mod tests {
         };
         let expected = serde_json::to_value(&entry).unwrap();
         let resp = resp_with_payload(Kind::GetSessionEntries(proto::SessionEntriesResponse {
+            fragment: None,
             entries: vec![crate::encode::session_entry_to_proto(&entry)],
             has_more: true,
             next_offset: 7,

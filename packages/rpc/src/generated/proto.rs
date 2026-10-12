@@ -67,6 +67,10 @@ pub struct RpcCommand {
     /// In this mode limit counts user exchanges rather than raw journal rows.
     #[prost(int64, optional, tag = "98")]
     pub before: ::core::option::Option<i64>,
+    /// Byte offset in an oversized serialized history entry; clients reassemble
+    /// its fragments before projecting messages. Absence starts at byte zero.
+    #[prost(int64, optional, tag = "149")]
+    pub fragment_offset: ::core::option::Option<i64>,
     /// Upper bound on how many sessions `search_all_session_history` scans,
     /// ordered by most recently updated first. Absent selects the server
     /// default; the response reports `scannedSessions` and `truncated` so a
@@ -445,6 +449,23 @@ pub struct SessionEntriesResponse {
     pub has_more: bool,
     #[prost(int64, tag = "3")]
     pub next_offset: i64,
+    #[prost(message, optional, tag = "4")]
+    pub fragment: ::core::option::Option<HistoryEntryFragment>,
+}
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct HistoryEntryFragment {
+    #[prost(string, tag = "1")]
+    pub entry_id: ::prost::alloc::string::String,
+    #[prost(int64, tag = "2")]
+    pub ordinal: i64,
+    #[prost(int64, tag = "3")]
+    pub offset: i64,
+    #[prost(int64, tag = "4")]
+    pub total_bytes: i64,
+    #[prost(string, tag = "5")]
+    pub json: ::prost::alloc::string::String,
+    #[prost(string, tag = "6")]
+    pub sha256: ::prost::alloc::string::String,
 }
 /// Acknowledgement of an accepted prompt command. Field names mirror the
 /// on-disk/wire JSON spelling (snake_case).

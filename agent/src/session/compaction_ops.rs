@@ -108,7 +108,7 @@ impl Manager {
             if input_hash(&tx,&session)? != input { bail!("compaction_input_changed: original history changed during preparation"); }
             if let Some(entry)=entry {
                 tx.execute("UPDATE sessions SET revision=revision+1 WHERE id=?1",[&session])?;
-                super::sqlite_store::insert_entries(&tx,&session,vec![serde_json::to_value(entry)?])?;
+                super::sqlite_store::insert_transcript_entries(&tx,&session,vec![serde_json::to_value(entry)?])?;
             }
             tx.execute("UPDATE compaction_operations SET state='completed',result_json=?3 WHERE session_id=?1 AND input_key=?2",params![session,key,serde_json::to_string(&receipt)?])?;
             tx.commit()?;

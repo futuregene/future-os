@@ -335,7 +335,9 @@ Approval Request 表示需要用户批准或拒绝的高风险操作。
 说明：
 
 - 审批界面属于中间对话区的即时交互层，显示在 composer 上方；右侧上下文面板不承载审批操作，也不提供审批历史 tab。
-- UI 同时只展示一个 `pending` Approval Request。Agent 当前审批未决时应停在对应危险操作处等待用户明确允许或拒绝，不设置审批超时。
+- UI 同时只展示一个 `pending` Approval Request。Schema 6 移除废弃的快照清理索引，新库不再包含 `raw_pending`。旧库可保留该冗余列，启动时不会为了删列重写快照表。快照内容格式版本仍为 1，空间回收不会删除现有原始日志。
+
+Agent 当前审批未决时应停在对应危险操作处等待用户明确允许或拒绝，不设置审批超时。
 - 第一版审批界面需要展示操作类型、影响范围、修改摘要、拒绝、允许一次、查看详情。
 - 审批支持键盘快捷操作：`Esc` 拒绝，`Cmd/Ctrl + Enter` 允许一次。
 - `requested_action` 预览需要可读化展示；内容过长时 UI 内部滚动，最大高度不超过窗口高度的三分之一。
@@ -746,7 +748,7 @@ erDiagram
 
 ### 7.2 表、字段与索引
 
-实现真源：`agent/src/session/database.rs`；存储重建视图：`records.rs`。业务 ID 为 TEXT，顺序/UTC 毫秒/计数为 INTEGER，未知可选值用 SQL NULL。内部事件 epoch/idx 仍遵循已有恢复坐标，不等同于公开历史 RPC 的可选字段。
+实现真源：`agent/src/session/database/schema.sql`；存储重建视图：`entry_records.rs`。业务 ID 为 TEXT，顺序/UTC 毫秒/计数为 INTEGER，未知可选值用 SQL NULL。内部事件 epoch/idx 仍遵循已有恢复坐标，不等同于公开历史 RPC 的可选字段。
 
 | 表 | 主键及主要字段 | 职责与约束 |
 | --- | --- | --- |
@@ -785,7 +787,7 @@ Delta 按 100 ms / 128 条 / 64 KiB 微批写入；非 delta 语义事件、读�
 
 Agent 与 Desktop/Mobile/TUI/CLI 同步发布，不支持新旧 RPC 混搭。现有历史/消息/分叉接口统一使用 `id/kind/role/runId/createdAtMs/blocks/metadata/usage/run`；状态接口集中返回 `usage`、`requestedRun`，列表使用 `updatedAtMs`；缺少父会话用 null。原始实时事件的恢复协议独立保留，不新增旧字段别名或双格式响应。Desktop 内部 Tauri UI 记录仍按其职责映射，不冒充 Agent 公共 RPC。
 
-Agent 当前 `application_id` 为 `0x46555452`，`user_version=5` 只是本库 schema 标识，不是 RPC 版本，也不代表存在需要支持的已发布 v1。`user_version` 2 和 3 是更早的布局；2 只在列形状与当前一致时才被接受，否则启动即拒绝（`agent/src/session/database.rs:285-319`）。开发布局不保留升级链，未知库/不支持布局明确拒绝，绝不自动重建。正式发布后必须维护 schema 迁移；Desktop 已发布的 migrations 继续遵守 §1 的不可修改边界。
+Agent 当前 `application_id` 为 `0x46555452`，`user_version=6` 只是本库 schema 标识，不是 RPC 版本，也不代表存在需要支持的已发布 v1。`user_version` 2 和 3 是更早的布局；2 只在列形状与当前一致时才被接受，否则启动即拒绝（`agent/src/session/database/connection.rs`）。开发布局不保留升级链，未知库/不支持布局明确拒绝，绝不自动重建。正式发布后必须维护 schema 迁移；Desktop 已发布的 migrations 继续遵守 §1 的不可修改边界。
 
 旧 JSONL 仅由一次性导入器读取、原文件保留；损坏会话隔离跳过，全局存储错误阻止启动。运维、隐私及备份边界见 [SQLite 迁移](../../architecture/sqlite-migration.zh-CN.md)。
 
