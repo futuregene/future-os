@@ -62,7 +62,12 @@ async function mount(props: {
       />,
     );
   });
-  const scroller = () => container.querySelector<HTMLElement>("div[class*='overflow-y-auto']")!;
+  // The transcript viewport, addressed the way the app addresses it: the
+  // `data-chat-scroll` hook is what the composer-inset and sticky-scroll code
+  // key off, and it is the one contract the local and remote transcripts share.
+  // (This used to match the overflow class, which is a layout detail of
+  // whichever frame the transcript happens to sit in.)
+  const scroller = () => container.querySelector<HTMLElement>("[data-chat-scroll='true']")!;
   return {
     container,
     fork: () => container.querySelector<HTMLButtonElement>("button[title='Fork']")!,

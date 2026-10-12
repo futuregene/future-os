@@ -20,6 +20,7 @@ import {
   HOME,
   installedSkills,
   models,
+  pendingApproval,
   providersView,
   refreshedSessionUsage,
   remoteConversationState,
@@ -50,6 +51,44 @@ import {
 const log = (...args: unknown[]) => console.log("[mock]", ...args);
 
 let settings: typeof appSettings = { ...appSettings };
+
+/**
+ * Threads the harness has put into a *running* state.
+ *
+ * A plain page load has nothing running (`list_streaming_thread_ids` is empty),
+ * so the rail's reserved indicator slot could only ever show its placeholder:
+ * the spinning ring, the waiting-approval badge and the completed/failed dots
+ * were all unreachable in a capture. The seeding helpers below are the entry
+ * points the harness calls from `shot/main.tsx` — harness-only, never part of
+ * the fixture's default state.
+ */
+let harnessStreamingThreadIds: string[] = [];
+
+export interface HarnessState {
+  /** Thread ids the agent reports as streaming (drives the row's running ring). */
+  streaming?: string[];
+  /**
+   * Thread ids whose finished run is unread (drives the completed/failed dot).
+   *
+   * Written straight into `sessionStorage` because that is where the app keeps
+   * the set, and it is read at mount — seeding it from a React effect would be
+   * too late. Each id also needs a terminal run in `runs`, since the dot is
+   * gated on the run's own status.
+   */
+  unread?: string[];
+}
+
+export function seedHarnessState(state: HarnessState) {
+  harnessStreamingThreadIds = state.streaming ?? [];
+  if (state.unread) {
+    try {
+      sessionStorage.setItem("future.unreadThreads", JSON.stringify(state.unread));
+    }
+    catch {
+      // Best-effort, as in the app's own hook.
+    }
+  }
+}
 
 /**
  * The keys the fixture's host has hidden.
@@ -134,7 +173,10 @@ const handlers: Record<string, (args: any) => unknown> = {
     desktopVersion: buildInfo.version,
     agentVersion: buildInfo.version,
   }),
-  list_streaming_thread_ids: () => [],
+  // Seeded by the harness (`?streaming=`), so a row's *running* state — the
+  // reserved slot's spinning ring — is reachable in a capture. Empty by
+  // default: a plain page load has nothing running.
+  list_streaming_thread_ids: () => harnessStreamingThreadIds,
   check_app_update: () => ({ available: false, version: null, notes: null }),
   get_skill_guide: () => ({
     links: { help: "https://future-os.cn/docs" },
@@ -274,8 +316,8 @@ const handlers: Record<string, (args: any) => unknown> = {
       ? [{ id: `out_${args.toolCallId}`, toolCallId: args.toolCallId, kind: "text", content, createdAt: Date.now() }]
       : [];
   },
-  list_approval_requests: () => [],
-  list_pending_approval_requests: () => [],
+  list_approval_requests: args => (args?.threadId === pendingApproval.threadId ? [pendingApproval] : []),
+  list_pending_approval_requests: () => [pendingApproval],
   decide_approval_request: () => null,
   save_approval_rule: () => null,
   save_approval_rules: () => null,
@@ -476,6 +518,20 @@ const handlers: Record<string, (args: any) => unknown> = {
   remote_peer_disconnect: () => null,
   remote_peer_unpair: () => null,
   remote_peer_set_label: () => null,
+  /**
+   * Stage a file on the host.
+   *
+   * Absent until now, and its absence did not degrade gracefully: `attach()`
+   * awaited `null` and then pushed it into `uploads`, so the very next render
+   * read `upload.uploadId` off nothing and unmounted the whole page. Every
+   * capture that tried to show a staged attachment on the remote side
+   * therefore came out blank.
+   */
+  remote_peer_upload_file: (args: { path?: string; name?: string }) => {
+    const path = args?.path ?? "attachment";
+    const name = args?.name ?? path.split("/").pop() ?? path;
+    return { uploadId: `upl_${name}`, name, contentHash: `hash_${name}` };
+  },
   remote_peer_sessions: (args: { desktopId: string }) => ({
     desktopId: args.desktopId,
     sessions: remoteSessions[args.desktopId] ?? [],

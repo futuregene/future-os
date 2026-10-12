@@ -10,11 +10,19 @@
  *                          (the browser tool's key table has no letter keys)
  *   ?lang=en               render the English UI instead of Chinese
  *   ?settings=key:value    seed the fake backend's app settings before boot
+ *   ?streaming=id,id       report these threads as running (rail's ring)
+ *   ?unread=id,id          mark these threads' finished runs unread (rail's dot)
+ *
+ * `window.__shot` carries the two states a query parameter cannot express,
+ * because they only exist *after* a screen is mounted: pushing a pending
+ * approval onto the open remote conversation, and onto this machine's own.
  */
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { App } from "../src/app/App";
-import { patchSettings } from "./mock/backend";
+import { patchSettings, seedHarnessState } from "./mock/backend";
+import { remoteApproval } from "./mock/data";
+import { emit } from "./mock/event";
 import "../src/i18n";
 import "../src/styles/globals.css";
 
@@ -34,6 +42,42 @@ if (settingsPatch) {
   }
   patchSettings(patch);
 }
+
+// Rail states: `?streaming=th_longformer&unread=th_data,th_fig`. Comma-separated
+// lists, empty entries dropped, so a scenario can name one state without the
+// other.
+const list = (value: string | null): string[] => (value ?? "").split(",").filter(Boolean);
+seedHarnessState({
+  streaming: list(params.get("streaming")),
+  unread: list(params.get("unread")),
+});
+
+/**
+ * States that only exist once a screen is mounted.
+ *
+ * A pending approval is *pushed* to the client, not read from it: a local one
+ * arrives through the store, a remote one through the peer event stream. Both
+ * are therefore triggered by a scenario step rather than a URL parameter, so the
+ * capture controls when the card appears instead of racing a timer.
+ */
+(window as unknown as { __shot: unknown }).__shot = {
+  /** A pending approval on the host, for the open remote conversation. */
+  remoteApproval: () => emit("remote-peer-event", {
+    desktopId: "desktop_studio",
+    kind: "event",
+    payload: {
+      sessionId: remoteApproval.sessionId,
+      type: "approval_request",
+      data: JSON.stringify({
+        approval_request_id: remoteApproval.id,
+        tool_name: remoteApproval.toolName,
+        title: remoteApproval.title,
+        summary: remoteApproval.summary,
+        risk_level: remoteApproval.riskLevel,
+      }),
+    },
+  }),
+};
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

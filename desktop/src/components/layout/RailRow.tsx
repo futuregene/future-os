@@ -122,10 +122,19 @@ export function RailRowSpacer() {
  * The reservation is the point: without it a row with nothing to report is
  * narrower than one that is running, and every title in the list shifts the
  * moment a run starts or finishes.
+ *
+ * The reservation has to hold *while the pointer is over the row* too, which is
+ * when the row is busiest: the actions trigger takes the indicator's place on
+ * hover. Hiding only the glyph inside left this wrapper in the layout as a
+ * zero-width flex item, and its two gaps stayed — so the title, which is the
+ * row's flexible element, lost 4px and re-wrapped its last word under the
+ * pointer, while a remote row (whose title cannot flex) did not move at all.
+ * Hide the slot itself; the trailing width is then the same either way, and the
+ * trigger lands exactly where the indicator was.
  */
 export function RailRowIndicator({ status, unread }: { status?: ThreadRunInfo["status"]; unread?: boolean }) {
   return (
-    <span className="pointer-events-none flex shrink-0">
+    <span className="pointer-events-none flex shrink-0 group-hover/thread:hidden">
       <RunIndicator status={status} unread={unread} />
     </span>
   );
@@ -134,13 +143,13 @@ export function RailRowIndicator({ status, unread }: { status?: ThreadRunInfo["s
 export function RunIndicator({ status, unread }: { status?: ThreadRunInfo["status"]; unread?: boolean }) {
   const { t } = useTranslation("layout");
   // Reserved-width placeholder so idle rows (and the hover state) stay aligned.
-  const placeholder = <span className="size-5 shrink-0 group-hover/thread:hidden" />;
+  const placeholder = <span className="size-5 shrink-0" />;
 
   if (status === "queued" || status === "running" || status === "waiting_approval") {
     return (
       <span
         aria-label={t("activityRail.running")}
-        className="inline-flex size-5 shrink-0 items-center justify-center group-hover/thread:hidden"
+        className="inline-flex size-5 shrink-0 items-center justify-center"
         title={t("activityRail.running")}
       >
         <span className="size-3 animate-spin rounded-full border-2 border-accent-soft border-t-accent" />
@@ -158,7 +167,7 @@ export function RunIndicator({ status, unread }: { status?: ThreadRunInfo["statu
     return (
       <span
         aria-label={label}
-        className="inline-flex size-5 shrink-0 items-center justify-center group-hover/thread:hidden"
+        className="inline-flex size-5 shrink-0 items-center justify-center"
         title={label}
       >
         <span className={cn("size-2 rounded-full", failed ? "bg-danger" : "bg-success")} />

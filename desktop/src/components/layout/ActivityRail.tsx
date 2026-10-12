@@ -42,7 +42,7 @@ import { useCollapsedWorkspaces } from "./hooks/useCollapsedWorkspaces";
 import { usePendingApprovalCounts } from "./hooks/usePendingApprovalCounts";
 import { useRailSelection } from "./hooks/useRailSelection";
 import { MergedRows } from "./MergedRows";
-import { RailDisclosure } from "./RailChrome";
+import { RailDisclosure, RailHeaderButton } from "./RailChrome";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, visibleThreadRows } from "./threadTree";
 
@@ -437,12 +437,14 @@ export function ActivityRail({
     thread: StoredThread,
     depth = localRowMeta.get(thread.id)?.depth ?? 0,
     hasChildren = localRowMeta.get(thread.id)?.hasChildren ?? false,
+    compact = false,
   ): React.ReactNode {
     return (
       <ThreadListItem
         active={thread.id === activeThreadId && active === "chat"}
         archived={thread.status === "archived"}
         key={thread.id}
+        compact={compact}
         menuOpen={openThreadMenuId === thread.id}
         pendingApprovalCount={pendingApprovalCounts.get(thread.id)}
         runStatus={threadRunStatuses[thread.id]}
@@ -529,15 +531,17 @@ export function ActivityRail({
           onTogglePin={onTogglePinWorkspace}
           onSelect={selectionMode ? undefined : () => enterSelectionMode(workspace.id)}
         />
-        <button
-          aria-label={t("activityRail.newChatInWorkspace", { name: workspace.name })}
-          className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover:opacity-100"
+        <RailHeaderButton
+          icon={<Plus className="size-3.5" />}
+          label={t("activityRail.newChatInWorkspace", { name: workspace.name })}
           onClick={() => onNewChat(workspace.id)}
-          title={t("activityRail.newChatInWorkspace", { name: workspace.name })}
-          type="button"
-        >
-          <Plus className="size-3.5" />
-        </button>
+          // A group heading folds its controls away: the pointer crosses this
+          // heading on the way to the list, and the group is already named by
+          // the row below it. The remote workspace heading draws the same
+          // control from the same component, so the two can no longer disagree
+          // about whether it is visible.
+          revealOnHover
+        />
       </div>
     );
   }

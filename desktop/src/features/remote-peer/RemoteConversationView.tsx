@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import type { RemotePeer } from "./remotePeerClient";
 import type { RemoteApproval } from "./useRemoteApprovals";
-import { ArrowDown, ReceiptText } from "lucide-react";
+import { ArrowDown, Check, History, ReceiptText, X } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
@@ -154,7 +154,7 @@ export function RemoteConversationView({
   });
 
   return (
-    <section className="flex h-full min-h-0 flex-col bg-surface">
+    <section className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
       {/* Same header row as this app's own conversation (`ThreadHeader`): the
           panel toggle and the title at the left, the conversation's own actions
           at the right, same height and padding — a remote conversation is a
@@ -176,6 +176,11 @@ export function RemoteConversationView({
             draws the eye away from it. */}
         <IconButton
           aria-haspopup="dialog"
+          // The local header's own size and spacing (`ThreadHeader`): the button
+          // is one of the frame's fixed measurements, and a reader who moves
+          // between the two conversations sees the same control in the same
+          // place, at the same size.
+          className="mr-2 size-8"
           data-testid="remote-thread-usage"
           icon={<ReceiptText className="size-4" />}
           label={t("usageTitle")}
@@ -186,111 +191,137 @@ export function RemoteConversationView({
           : null}
       </header>
 
-      <div
-        className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
-        // One handler for both jobs, in the order that matters: this decides
-        // whether the reader is asking for older pages, then the hook settles
-        // where the viewport should be.
-        onScroll={(event) => {
-          loadOlderAtTop(event.currentTarget);
-          handleScroll();
-        }}
-        ref={scrollRef}
-      >
+      {/* The transcript, and the band of controls over its foot.
+
+The same two layers this app's own conversation uses (`AgentThread`):
+          the transcript scrolls the full height of the frame and the composer
+          rides *over* it behind a fade, rather than sitting under it behind a
+          rule. That is the difference a reader notices first when the two
+          conversations are put side by side — a hard edge under the last
+          message reads as a second panel, not as one conversation. */}
+      <div className="group relative min-h-0 flex-1 overflow-hidden">
+        {/* Reaching the top is what asks for older history (see
+            `loadOlderAtTop`); this is the same affordance the local transcript
+            floats over its top edge for the reader who would rather click. */}
         {hasMore
           ? (
-              <div className="mb-4 flex justify-center">
-                <Button disabled={loadingOlder} onClick={onLoadOlder} size="sm" variant="ghost">
+              <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center px-8 pt-5">
+                <button
+                  aria-busy={loadingOlder}
+                  aria-label={t("loadOlder")}
+                  className="pointer-events-auto flex animate-pop-in items-center gap-1.5 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink disabled:opacity-50"
+                  disabled={loadingOlder}
+                  onClick={onLoadOlder}
+                  title={t("loadOlder")}
+                  type="button"
+                >
+                  <History className="size-3.5" />
                   {loadingOlder ? t("loadingOlder") : t("loadOlder")}
-                </Button>
+                </button>
               </div>
             )
           : null}
 
-        {loading
-          ? <p className="text-center text-xs text-ink-muted">{t("loadingHistory")}</p>
-          : null}
+        <div
+          className="floating-scrollbar h-full overflow-auto overscroll-none px-8 pt-6"
+          data-chat-scroll="true"
+          style={{ overflowAnchor: "none" }}
+          // One handler for both jobs, in the order that matters: this decides
+          // whether the reader is asking for older pages, then the hook settles
+          // where the viewport should be.
+          onScroll={(event) => {
+            loadOlderAtTop(event.currentTarget);
+            handleScroll();
+          }}
+          ref={scrollRef}
+        >
+          {/* The reading column, at the same width the local transcript uses:
+              `max-w-4xl` here, the message list and the composer inside it
+              settling on `max-w-3xl`. */}
+          <div className="mx-auto w-full max-w-4xl">
+            {loading
+              ? <p className="text-center text-xs text-ink-muted">{t("loadingHistory")}</p>
+              : null}
 
-        {error
-          ? (
-              <div className="mx-auto max-w-3xl rounded-md border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger">
-                <div>{error}</div>
-                <Button className="mt-2" onClick={onRetry} size="sm" variant="ghost">{t("retry")}</Button>
-              </div>
-            )
-          : null}
+            {error
+              ? (
+                  <div className="mx-auto max-w-3xl rounded-md border border-danger-line bg-danger-soft px-3 py-2 text-sm text-danger">
+                    <div>{error}</div>
+                    <Button className="mt-2" onClick={onRetry} size="sm" variant="ghost">{t("retry")}</Button>
+                  </div>
+                )
+              : null}
 
-        {!loading && !error && rendered.length === 0
-          ? <p className="text-center text-xs text-ink-muted">{t("emptyConversation")}</p>
-          : null}
+            {!loading && !error && rendered.length === 0
+              ? <p className="text-center text-xs text-ink-muted">{t("emptyConversation")}</p>
+              : null}
 
-        <div className="space-y-4">
-          {rendered.map((message, index) => (
-            <MessageBlock
-              dataMessageId={message.id}
-              hovered={hoveredId === message.id}
-              isLast={index === rendered.length - 1}
-              key={message.id}
-              // The host refuses to continue anything that did not fail, so the
-              // affordance appears exactly where it would be accepted — and it
-              // is addressed by the host's own run id.
-              onContinue={message.status === "failed" && message.runId
-                ? () => onContinueRun(message.runId!)
-                : undefined}
-              onFork={() => forkAt(rendered, index, persistedEntryIds, onFork)}
-              onHover={setHoveredId}
-              onLeave={id => setHoveredId(current => (current === id ? null : current))}
-              message={streaming && index === rendered.length - 1 && message.role === "assistant"
-                // The host reports a run in flight; the reply's own status says
-                // whether *that* reply is the one still arriving.
-                ? { ...message, status: "streaming" }
-                : message}
-            />
-          ))}
+            <div className="space-y-5">
+              {rendered.map((message, index) => (
+                <MessageBlock
+                  dataMessageId={message.id}
+                  hovered={hoveredId === message.id}
+                  isLast={index === rendered.length - 1}
+                  key={message.id}
+                  // The host refuses to continue anything that did not fail, so the
+                  // affordance appears exactly where it would be accepted — and it
+                  // is addressed by the host's own run id.
+                  onContinue={message.status === "failed" && message.runId
+                    ? () => onContinueRun(message.runId!)
+                    : undefined}
+                  onFork={() => forkAt(rendered, index, persistedEntryIds, onFork)}
+                  onHover={setHoveredId}
+                  onLeave={id => setHoveredId(current => (current === id ? null : current))}
+                  message={streaming && index === rendered.length - 1 && message.role === "assistant"
+                    // The host reports a run in flight; the reply's own status says
+                    // whether *that* reply is the one still arriving.
+                    ? { ...message, status: "streaming" }
+                    : message}
+                />
+              ))}
+            </div>
+          </div>
         </div>
-      </div>
 
-      {/* Approvals sit above the composer, not inside the transcript: they are a
-          decision the user has to make now, and a card that scrolls away with
-          history is a card that gets missed while the host waits. */}
-      {approvals.length > 0
-        ? (
-            <div className="shrink-0 space-y-2 border-t border-line-soft bg-surface-subtle px-4 py-3">
-              {approvals.map(approval => (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-linear-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10">
+          <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
+            {/* Approvals sit above the composer, not inside the transcript: they
+                are a decision the user has to make now, and a card that scrolls
+                away with history is a card that gets missed while the host waits.
+                The same slot the local conversation gives them. */}
+            {approvals.map(approval => (
+              <div className="pointer-events-auto mx-auto w-full max-w-3xl" key={approval.id}>
                 <ApprovalCard
                   approval={approval}
                   error={approvalErrors[approval.id] ?? null}
-                  key={approval.id}
                   onDecide={onDecideApproval}
                   pending={approvalPending === approval.id}
                   peerName={peer ? peerBadgeText(peer, peer.desktopId) : ""}
                 />
-              ))}
-            </div>
-          )
-        : null}
+              </div>
+            ))}
 
-      {/* Reading history is not a fight with the view: once the reader has
-          scrolled away, following stops and this is how they come back. Kept
-          above the composer, where this app puts it. */}
-      {showJumpToLatest
-        ? (
-            <div className="pointer-events-none flex shrink-0 justify-center pb-1">
-              <button
-                aria-label={t("jumpToLatest")}
-                className="pointer-events-auto flex items-center gap-1 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
-                onClick={scrollToLatest}
-                title={t("jumpToLatest")}
-                type="button"
-              >
-                <ArrowDown className="size-3.5" />
-                {t("jumpToLatest")}
-              </button>
-            </div>
-          )
-        : null}
+            {/* Reading history is not a fight with the view: once the reader has
+                scrolled away, following stops and this is how they come back. */}
+            {showJumpToLatest
+              ? (
+                  <button
+                    aria-label={t("jumpToLatest")}
+                    className="pointer-events-auto mx-auto flex items-center gap-1 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
+                    onClick={scrollToLatest}
+                    title={t("jumpToLatest")}
+                    type="button"
+                  >
+                    <ArrowDown className="size-3.5" />
+                    {t("jumpToLatest")}
+                  </button>
+                )
+              : null}
 
-      {composer}
+            {composer}
+          </div>
+        </div>
+      </div>
     </section>
   );
 }
@@ -347,30 +378,59 @@ function ApprovalCard({
 }) {
   const { t } = useTranslation("remotePeer");
   return (
-    <div className="mx-auto w-full max-w-3xl rounded-lg border border-line-soft bg-surface p-3">
-      <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-ink">
+    // The local approval card's own frame (`ApprovalPrompt`): same border, same
+    // radius, same padding and shadow, and the same button row — deny at the
+    // left with its icon, allow at the right as the primary action, both at the
+    // size the local card uses. The two cards answer the same question on the
+    // same screen, so a reader should not be able to tell which machine the
+    // tool runs on from the card's shape alone.
+    <section className="rounded-lg border border-line bg-surface/95 p-4 shadow-panel backdrop-blur">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="size-2 shrink-0 rounded-full bg-warning" />
+          <h2 className="truncate text-base font-semibold text-ink">
             {approval.title || approval.toolName || t("approvalFallbackTitle")}
-          </div>
-          {approval.summary
-            ? <div className="mt-0.5 wrap-break-word text-xs text-ink-muted">{approval.summary}</div>
-            : null}
-          <div className="mt-1 text-xs text-ink-muted">
-            {t("runsOn", { name: peerName })}
-            {approval.riskLevel ? ` · ${approval.riskLevel}` : ""}
-          </div>
-          {error ? <div className="mt-1 text-xs text-danger">{error}</div> : null}
+          </h2>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button disabled={pending} onClick={() => onDecide(approval, "deny")} size="sm" variant="ghost">
-            {t("deny")}
-          </Button>
-          <Button disabled={pending} onClick={() => onDecide(approval, "allow")} size="sm" variant="primary">
+      </div>
+      {approval.summary
+        ? (
+            <pre className="mt-3 max-h-[33vh] overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-surface-subtle p-3 text-xs leading-5 text-ink-soft">
+              <code className="block min-w-0">{approval.summary}</code>
+            </pre>
+          )
+        : null}
+      {/* The one thing a remote approval has to say that a local one does not: the
+          machine the tool will run on. "Allow" on a card that did not name it
+          reads as a local action, and the whole point of this feature is that it
+          is not. */}
+      <div className="mt-3 text-xs leading-5 text-ink-muted">
+        {t("runsOn", { name: peerName })}
+        {approval.riskLevel ? ` · ${approval.riskLevel}` : ""}
+      </div>
+      {error ? <div className="mt-3 text-xs leading-5 text-danger">{error}</div> : null}
+      <div className="mt-4 flex items-center justify-between gap-3">
+        <Button
+          className="shadow-xs"
+          disabled={pending}
+          leftIcon={<X className="size-3.5" />}
+          onClick={() => onDecide(approval, "deny")}
+          variant="toolbar"
+        >
+          {t("deny")}
+        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            className="shadow-xs"
+            disabled={pending}
+            leftIcon={<Check className="size-3.5" />}
+            onClick={() => onDecide(approval, "allow")}
+            variant="primary"
+          >
             {t("allow")}
           </Button>
         </div>
       </div>
-    </div>
+    </section>
   );
 }

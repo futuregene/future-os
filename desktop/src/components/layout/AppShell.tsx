@@ -1089,6 +1089,10 @@ function ReadyAppShell({
                             composer={(
                               <RemoteComposer
                                 canCompact={remoteTimeline.canCompact}
+                                // The conversation frame places the composer: the
+                                // band over the transcript's foot, at the same
+                                // width the local composer is given.
+                                className="pointer-events-auto mx-auto w-full max-w-3xl"
                                 desktopId={activeRemote.desktopId}
                                 // The host-owned model and thinking level live in
                                 // the composer's control row, beside the send
