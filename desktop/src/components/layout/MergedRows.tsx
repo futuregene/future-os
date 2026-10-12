@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { DeviceFilter, MergedConversation } from "../../features/remote-peer/mergeConversations";
+import type { DeviceFilter, MergedConversation, RemoteWorkspaceTarget } from "../../features/remote-peer/mergeConversations";
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadTreeRow } from "./threadTree";
@@ -51,6 +51,7 @@ export function MergedRows({
   onNewWorkspace,
   onOpenRemote,
   onRenameRemote,
+  onRenameRemoteWorkspace,
   onSelectChats,
   onSelectWorkspaceChats,
   onToggleChatSection,
@@ -88,6 +89,13 @@ export function MergedRows({
   onRenameRemote: (conversation: MergedConversation) => void;
   /** Mark the chats section for a batch action. */
   onSelectChats?: () => void;
+  /**
+   * Rename a workspace on the machine that owns it.
+   *
+   * Addressed by host and workspace id, never by name: the name is what is being
+   * changed, and two machines can hold the same one.
+   */
+  onRenameRemoteWorkspace?: (target: RemoteWorkspaceTarget) => void;
   /**
    * Mark one workspace's conversations for a batch action, by group key.
    *
@@ -278,6 +286,16 @@ export function MergedRows({
                               desktopId={desktopId}
                               name={group.label ?? t("activityRail.workspace")}
                               onChanged={onChangedRemote}
+                              onRename={onRenameRemoteWorkspace
+                                ? () => onRenameRemoteWorkspace({
+                                    // The heading's *current* name, which is what the
+                                    // dialog opens with and what the host is
+                                    // addressed by id to replace.
+                                    desktopId,
+                                    name: group.label ?? "",
+                                    workspaceId,
+                                  })
+                                : undefined}
                               onSelect={selectionMode
                                 ? undefined
                                 : () => onSelectWorkspaceChats?.(group.key)}

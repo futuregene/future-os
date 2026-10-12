@@ -2,7 +2,7 @@ import type { AgentMessage } from "@future-os/thread-projection";
 import type { RemotePeer } from "./remotePeerClient";
 import type { RemoteApproval } from "./useRemoteApprovals";
 import { ArrowDown, Check, History, ReceiptText, X } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { Button } from "../../components/ui/Button";
@@ -37,6 +37,7 @@ export function RemoteConversationView({
   error,
   hasMore,
   leftPanelExpanded,
+  live,
   loading,
   loadingOlder,
   messages,
@@ -60,6 +61,15 @@ export function RemoteConversationView({
   desktopId: string;
   composer: React.ReactNode;
   messages: AgentMessage[];
+  /**
+   * The reply the host is writing right now, drawn after the transcript.
+   *
+   * The same `MessageBlock` and the same shape a local run's live reply has, so a
+   * reader watching another machine answer sees what they would see here: the
+   * text as it arrives, inline tool rows that resolve in place, reasoning, and the
+   * elapsed timer.
+   */
+  live: AgentMessage | null;
   error: string | null;
   hasMore: boolean;
   /** The panel toggle, as on this app's own conversation header. */
@@ -96,7 +106,19 @@ export function RemoteConversationView({
   const { t } = useTranslation("remotePeer");
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const targets = useRemoteActivityTargets(desktopId, sessionId, messages);
-  const rendered = withRemoteTargets(messages, targets);
+  const transcript = withRemoteTargets(messages, targets);
+  /**
+   * The reply being written, run through the same tool-target fetch as history.
+   *
+   * A live reply gets its targets from the pushed events, so this is a no-op for
+   * it in practice — but it is the same list the viewport keys on, and leaving the
+   * live reply out of it would make the transcript's own rendered form differ
+   * between a reply in flight and the same reply a second later.
+   */
+  const rendered = useMemo(
+    () => (live ? [...transcript, ...withRemoteTargets([live], targets)] : transcript),
+    [transcript, targets, live],
+  );
 
   /**
    * The transcript's viewport: this app's own sticky auto-scroll.
@@ -256,29 +278,44 @@ The same two layers this app's own conversation uses (`AgentThread`):
               ? <p className="text-center text-xs text-ink-muted">{t("emptyConversation")}</p>
               : null}
 
+            {/* `space-y-5`, the spacing this app's own message list uses: the two
+                transcripts put the same gap between turns. */}
             <div className="space-y-5">
-              {rendered.map((message, index) => (
-                <MessageBlock
-                  dataMessageId={message.id}
-                  hovered={hoveredId === message.id}
-                  isLast={index === rendered.length - 1}
-                  key={message.id}
-                  // The host refuses to continue anything that did not fail, so the
-                  // affordance appears exactly where it would be accepted — and it
-                  // is addressed by the host's own run id.
-                  onContinue={message.status === "failed" && message.runId
-                    ? () => onContinueRun(message.runId!)
-                    : undefined}
-                  onFork={() => forkAt(rendered, index, persistedEntryIds, onFork)}
-                  onHover={setHoveredId}
-                  onLeave={id => setHoveredId(current => (current === id ? null : current))}
-                  message={streaming && index === rendered.length - 1 && message.role === "assistant"
-                    // The host reports a run in flight; the reply's own status says
-                    // whether *that* reply is the one still arriving.
-                    ? { ...message, status: "streaming" }
-                    : message}
-                />
-              ))}
+              {rendered.map((message, index) => {
+                /**
+                 * Whether this turn is a settled point.
+                 *
+                 * The last row is the one still being written — the reply in flight
+                 * (a turn of its own) or, before its first frame, the reply the host
+                 * is about to replace. Nothing it offers can be acted on: a fork
+                 * branches at a settled turn, and the host answers one prompt at a
+                 * time, so a Retry would be refused. A settled earlier turn keeps
+                 * both, which is why this is per row and not a blanket `!streaming`.
+                 */
+                const settled = index !== rendered.length - 1 || !streaming;
+                return (
+                  <MessageBlock
+                    dataMessageId={message.id}
+                    hovered={hoveredId === message.id}
+                    isLast={index === rendered.length - 1}
+                    key={message.id}
+                    // The host refuses to continue anything that did not fail, so the
+                    // affordance appears exactly where it would be accepted — and it
+                    // is addressed by the host's own run id.
+                    onContinue={settled && message.status === "failed" && message.runId
+                      ? () => onContinueRun(message.runId!)
+                      : undefined}
+                    onFork={settled ? () => forkAt(rendered, index, persistedEntryIds, onFork) : undefined}
+                    onHover={setHoveredId}
+                    onLeave={id => setHoveredId(current => (current === id ? null : current))}
+                    // No status is stamped on: a reply's own status is what it is. The
+                    // view used to mark the *last settled* reply "streaming" while the
+                    // host reported a run in flight, which put a cursor on the previous
+                    // answer and left the new one invisible.
+                    message={message}
+                  />
+                );
+              })}
             </div>
           </div>
         </div>

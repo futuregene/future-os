@@ -792,7 +792,61 @@ pub(crate) async fn workspaces(desktop_id: &str) -> Result<Value, crate::AppErro
 /// `lane` is the fallback routing token; when the command carries a
 /// `sessionId`, that is what the host routes on, so a caller cannot address a
 /// conversation on a host it did not name.
+///
+/// **This client reads pages in chunks.** `chunkedRead` is set here rather than
+/// by each caller because it is a property of the client, not of a request: the
+/// host serves any reply over its page threshold as an immutable snapshot split
+/// into ≤192 KiB chunks ([`reassemble`] puts it back together), which is what
+/// keeps a page of any size deliverable. Without it every read has to fit one
+/// reply, and a conversation whose newest exchange is large — one long agent run
+/// is one exchange — is answered with `remote_reply_too_large` instead of
+/// opening.
 pub(crate) async fn request(
+    desktop_id: &str,
+    command: Value,
+    lane: &str,
+) -> Result<Value, crate::AppError> {
+    // Read before the command is consumed: the chunk fetches have to name the
+    // same session and run as the page they are completing.
+    let owner = ChunkOwner::from(&command);
+    let reply = send_request(desktop_id, command, lane).await?;
+    match read_chunk_of(&reply) {
+        // A chunked reply: put the page back together before returning it, so no
+        // caller has to know a page can arrive in pieces.
+        Some(chunk) => reassemble(desktop_id, lane, chunk, &owner).await,
+        None => Ok(reply),
+    }
+}
+
+/// The fields a chunk fetch has to repeat from the command that started the page.
+///
+/// The host scopes a page to the bridge, session and run that asked for it and
+/// refuses a chunk asked for by anything else (`remote_read_owner_mismatch`), so
+/// the fetch repeats them verbatim. A command that names neither — a catalogue
+/// read — is fetched with neither, which is exactly what the host recorded for
+/// it. The bridge instance is not here: it travels with the session itself, so
+/// every request on the same connection carries it.
+struct ChunkOwner {
+    session: Option<String>,
+    run: Option<String>,
+}
+
+impl ChunkOwner {
+    fn from(command: &Value) -> Self {
+        let field = |key: &str| command.get(key).and_then(Value::as_str).map(str::to_owned);
+        Self {
+            session: field("sessionId"),
+            run: field("runId"),
+        }
+    }
+}
+
+/// One round trip: the command and its reply, unreassembled.
+///
+/// Split from [`request`] because chunk fetching goes through it directly: a
+/// `get_read_chunk` reply *is* a chunk, and routing it back through the
+/// reassembling wrapper would make the two functions mutually recursive.
+async fn send_request(
     desktop_id: &str,
     mut command: Value,
     lane: &str,
@@ -802,6 +856,11 @@ pub(crate) async fn request(
         object
             .entry("id")
             .or_insert_with(|| json!(crate::store::create_id("cmd")));
+        // Never on the chunk fetch itself: the host pages the page-producing
+        // commands, and this one's reply *is* a chunk.
+        if object.get("type").and_then(Value::as_str) != Some("get_read_chunk") {
+            object.insert("chunkedRead".into(), json!(true));
+        }
     }
     let key = if lane == "list" {
         "list".to_string()
@@ -832,6 +891,149 @@ pub(crate) async fn request(
         on_transport_failure(&mut live, desktop_id, error);
     }
     result
+}
+
+/// The chunk a reply carries, when the host split the page it answered with.
+///
+/// The shape is the host's (`remote_host/read_pages.rs`): a page over the host's
+/// threshold is stored as an immutable snapshot and the reply names the first
+/// chunk. Its *presence* — not a flag this client set — is what says the reply is
+/// a fragment, which is also what makes an older host's un-paged reply pass
+/// through untouched.
+fn read_chunk_of(reply: &Value) -> Option<&Value> {
+    reply.get("readChunk").filter(|chunk| chunk.is_object())
+}
+
+/// How large a reassembled page may be.
+///
+/// The host's own snapshot ceiling (`MAX_SNAPSHOT_BYTES`), restated because this
+/// is the end that holds the bytes: a host that answered with more is refused
+/// rather than buffered.
+const MAX_PAGE_BYTES: u64 = 16 * 1024 * 1024;
+/// The host's chunk size, from which every offset is derived.
+const PAGE_CHUNK_BYTES: usize = 192 * 1024;
+/// How many chunks are fetched at once.
+///
+/// The host serves indexed chunks independently, so a large page costs one round
+/// trip per chunk however they are ordered. Sequential pulls make that latency
+/// visible — a 4 MiB page is twenty — and four in flight amortizes it without
+/// opening a burst the host has to buffer.
+const PAGE_CHUNK_CONCURRENCY: usize = 4;
+
+/// Fetch the rest of a page's chunks and decode it.
+async fn reassemble(
+    desktop_id: &str,
+    lane: &str,
+    first: &Value,
+    owner: &ChunkOwner,
+) -> Result<Value, crate::AppError> {
+    let id = chunk_string(first, "id")?;
+    let total = chunk_u64(first, "totalBytes")?;
+    if total > MAX_PAGE_BYTES {
+        return Err(crate::AppError::Message("remote_read_too_large".into()));
+    }
+    let total = usize::try_from(total).map_err(|_| page_shape_error())?;
+    let mut bytes = vec![0u8; total];
+    store_chunk(&mut bytes, first, &id, total, 0)?;
+    let mut next = chunk_u64(first, "nextOffset")? as usize;
+    while next < total {
+        let offsets: Vec<usize> = (0..PAGE_CHUNK_CONCURRENCY)
+            .map(|index| next + index * PAGE_CHUNK_BYTES)
+            .filter(|offset| *offset < total)
+            .collect();
+        let mut fetched = Vec::with_capacity(offsets.len());
+        for offset in offsets {
+            fetched.push((
+                offset,
+                fetch_chunk(desktop_id, lane, &id, offset, owner).await?,
+            ));
+        }
+        for (offset, reply) in fetched {
+            let chunk = read_chunk_of(&reply).ok_or_else(page_shape_error)?;
+            store_chunk(&mut bytes, chunk, &id, total, offset)?;
+            next = (offset + PAGE_CHUNK_BYTES).min(total);
+        }
+    }
+    serde_json::from_slice(&bytes).map_err(|_| page_shape_error())
+}
+
+/// One `get_read_chunk` round trip, on the lane of the page it belongs to.
+async fn fetch_chunk(
+    desktop_id: &str,
+    lane: &str,
+    id: &str,
+    offset: usize,
+    owner: &ChunkOwner,
+) -> Result<Value, crate::AppError> {
+    let mut command = json!({"type": "get_read_chunk", "replyId": id, "offset": offset});
+    if let Some(session) = &owner.session {
+        command["sessionId"] = json!(session);
+    }
+    if let Some(run) = &owner.run {
+        command["runId"] = json!(run);
+    }
+    send_request(desktop_id, command, lane).await
+}
+
+/// Copy a chunk's decoded bytes into the page, checking it is the chunk it claims.
+///
+/// Every field is verified against the snapshot the first reply pinned: a chunk
+/// from another snapshot (a re-read that raced this one), one at another offset,
+/// or a short one while the page continues would all leave the assembled bytes
+/// wrong — silently, because the result can still be valid JSON. Refusing is the
+/// only honest option: a half-page that decodes is worse than an error the reader
+/// can retry.
+fn store_chunk(
+    bytes: &mut [u8],
+    chunk: &Value,
+    id: &str,
+    total: usize,
+    expected_offset: usize,
+) -> Result<(), crate::AppError> {
+    if chunk_string(chunk, "id")? != id
+        || chunk_u64(chunk, "totalBytes")? as usize != total
+        || chunk_u64(chunk, "offset")? as usize != expected_offset
+    {
+        return Err(page_shape_error());
+    }
+    let part = URL_SAFE_NO_PAD
+        .decode(chunk_string(chunk, "data")?.as_bytes())
+        .map_err(|_| page_shape_error())?;
+    let next = chunk_u64(chunk, "nextOffset")? as usize;
+    if part.is_empty()
+        || part.len() > PAGE_CHUNK_BYTES
+        || next != expected_offset + part.len()
+        || next > total
+        // A short chunk with more page to come would leave a hole.
+        || (next < total && part.len() != PAGE_CHUNK_BYTES)
+    {
+        return Err(page_shape_error());
+    }
+    bytes
+        .get_mut(expected_offset..next)
+        .ok_or_else(page_shape_error)?
+        .copy_from_slice(&part);
+    Ok(())
+}
+
+fn chunk_string(chunk: &Value, key: &str) -> Result<String, crate::AppError> {
+    chunk
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(page_shape_error)
+}
+
+fn chunk_u64(chunk: &Value, key: &str) -> Result<u64, crate::AppError> {
+    chunk
+        .get(key)
+        .and_then(Value::as_u64)
+        .ok_or_else(page_shape_error)
+}
+
+fn page_shape_error() -> crate::AppError {
+    crate::AppError::Message("remote_read_invalid_chunk".into())
 }
 
 /// Note a transport failure and make sure the link is being retried.

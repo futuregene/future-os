@@ -25,6 +25,8 @@ function entry(id: string, role: "user" | "assistant", text: string): SessionEnt
 
 async function mount(props: {
   hasMore?: boolean;
+  /** The reply the host is writing, if the test is about streaming. */
+  live?: AgentMessage | null;
   messages: AgentMessage[];
   onFork?: (sourceEntryId: string, forkable: boolean) => void;
   onLoadOlder?: () => void;
@@ -44,6 +46,7 @@ async function mount(props: {
         error={null}
         hasMore={props.hasMore ?? false}
         leftPanelExpanded
+        live={props.live ?? null}
         loading={false}
         loadingOlder={false}
         messages={props.messages}

@@ -182,5 +182,8 @@
   "workspaceRemove": "从列表中移除工作区",
   "jumpToLatest": "跳到最新",
   "selectConversation": "选择 {{title}}",
-  "deleteFailed": "部分会话删除失败：{{message}}"
+  "deleteFailed": "部分会话删除失败：{{message}}",
+  "renameWorkspaceTitle": "重命名“{{name}}”",
+  "renameWorkspaceLabel": "工作区名称",
+  "renameWorkspaceHint": "名称只会改在拥有该目录的电脑上，不会移动任何文件，也不会影响其中的对话。"
 }

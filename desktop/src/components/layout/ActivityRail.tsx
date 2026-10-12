@@ -1,6 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
-import type { DeviceFilter, MergedConversation } from "../../features/remote-peer/mergeConversations";
+import type { DeviceFilter, MergedConversation, RemoteWorkspaceTarget } from "../../features/remote-peer/mergeConversations";
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { FutureSessionStatus } from "./hooks/useFutureAccount";
@@ -95,6 +95,8 @@ interface ActivityRailProps {
   onOpenRemoteConversation?: (conversation: MergedConversation) => void;
   /** Rename a conversation on the machine that owns it. */
   onRenameRemoteConversation?: (conversation: MergedConversation) => void;
+  /** Rename a workspace on the machine that owns it. */
+  onRenameRemoteWorkspace?: (target: RemoteWorkspaceTarget) => void;
   /** Re-read paired hosts and their catalogues (after a remote row action). */
   onRemoteConversationsChanged?: () => void;
   /**
@@ -166,6 +168,7 @@ export function ActivityRail({
   onChangeDeviceFilter,
   onOpenRemoteConversation,
   onRenameRemoteConversation,
+  onRenameRemoteWorkspace,
   onRemoteConversationsChanged,
   onNewChatOnRemote,
   onManageDesktops,
@@ -715,6 +718,7 @@ export function ActivityRail({
                                 onNewWorkspace={onNewWorkspace}
                                 onOpenRemote={conversation => onOpenRemoteConversation?.(conversation)}
                                 onRenameRemote={conversation => onRenameRemoteConversation?.(conversation)}
+                                onRenameRemoteWorkspace={target => onRenameRemoteWorkspace?.(target)}
                                 onSelectChats={() => enterSelectionMode("chat")}
                                 onSelectWorkspaceChats={groupKey => enterSelectionMode(groupKey)}
                                 onToggleChatSection={() => setChatSectionCollapsed(value => !value)}
