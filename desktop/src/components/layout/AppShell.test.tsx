@@ -48,6 +48,7 @@ const children = vi.hoisted(() => ({
   contextPanel: null as unknown,
   conversationSettings: null as unknown,
   filesPanel: null as unknown,
+  usageDialog: null as unknown,
   newConversation: null as unknown,
   onboardingGate: null as unknown,
   remoteComposer: null as unknown,
@@ -136,6 +137,15 @@ vi.mock("../../features/remote-peer/RemoteConversationSettings", async () => {
     RemoteConversationSettings: (props: unknown) => {
       children.conversationSettings = props;
       return createElement("div", { "data-child": "remote-settings" });
+    },
+  };
+});
+vi.mock("../../features/remote-peer/RemoteUsageDialog", async () => {
+  const { createElement } = await import("react");
+  return {
+    RemoteUsageDialog: (props: unknown) => {
+      children.usageDialog = props;
+      return createElement("div", { "data-child": "remote-usage" });
     },
   };
 });
@@ -2091,6 +2101,27 @@ describe("app shell collapsed-panel affordances", () => {
       act(() => (children.remoteHub as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
 
       expect((children.remoteComposer as { workspaceId?: string | null }).workspaceId).toBeNull();
+      view.unmount();
+    });
+
+    /**
+     * The conversation's account book is its own, on the host that spent it.
+     *
+     * Opened from the transcript's header, and quoting that host's figures: the
+     * tokens were spent there, so a dialog that recomputed them here would report
+     * a number the host never charged.
+     */
+    it("opens the conversation's usage from its transcript", () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+      expect(view.container.querySelector("[data-child='remote-usage']")).toBeNull();
+
+      act(() => (children.remoteConversationView as { onOpenUsage: () => void }).onOpenUsage());
+      expect(view.container.querySelector("[data-child='remote-usage']")).not.toBeNull();
+      expect(children.usageDialog).toMatchObject({ desktopId: "desktop_a", sessionId: "sess_1" });
+
+      act(() => (children.usageDialog as { onClose: () => void }).onClose());
+      expect(view.container.querySelector("[data-child='remote-usage']")).toBeNull();
       view.unmount();
     });
 

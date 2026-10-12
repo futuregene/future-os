@@ -94,7 +94,7 @@
   "filesOn": "{{name}} 上该会话的文件。",
   "filesUp": "上一级",
   "filesEmpty": "此文件夹为空。",
-  "filesDownload": "下载",
+  "filesDownload": "下载 {{name}}",
   "filesDownloading": "下载中…",
   "filesSaved": "已保存为 {{name}}",
   "attach": "添加附件",
@@ -170,5 +170,13 @@
   "modelsEmpty": "没有可用的模型。",
   "modelsCount": "{{count}} 个模型",
   "modelsCountHidden": "{{count}} 个模型 · 已隐藏 {{hidden}} 个",
-  "modelsToggleProvider": "批量切换 {{name}} 下的模型"
+  "modelsToggleProvider": "批量切换 {{name}} 下的模型",
+  "compactHint": "在那台电脑上压缩此对话的上下文。",
+  "filesClose": "收起文件",
+  "filesOpen": "显示此对话的文件",
+  "filesRefresh": "重新读取此目录",
+  "slashCommands": "命令",
+  "usageTitle": "Token 用量与金额",
+  "usageUnavailable": "无法从对端获取此对话的用量：{{message}}",
+  "workspaceRemove": "从列表中移除工作区"
 }

@@ -33,7 +33,7 @@ export function RemoteFilesPanel({
   sessionId: string;
 }) {
   const { t } = useTranslation("remotePeer");
-  const files = useRemoteFiles(desktopId, sessionId);
+  const files = useRemoteFiles(desktopId, sessionId, expanded);
 
   if (!expanded) {
     // Collapsed, this toggle floats over the conversation header instead of

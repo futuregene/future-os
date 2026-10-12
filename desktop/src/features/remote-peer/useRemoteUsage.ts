@@ -1,5 +1,5 @@
 import type { AgentSessionUsage } from "../../integrations/agent/agentStateCache";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { requestRemotePeer } from "./remotePeerClient";
 
 /**
@@ -21,12 +21,29 @@ export function useRemoteUsage(
   const [usage, setUsage] = useState<AgentSessionUsage | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Which conversation the figures on screen belong to.
+   *
+   * A conversation's usage is its own, so a figure that outlives the conversation
+   * it describes is one conversation's tokens under another's title — the same
+   * class of mistake as one machine's facts under another's. Cleared when the
+   * address changes, and kept while the *same* conversation is read again (a
+   * re-read that briefly said "not reported" would be a worse answer than the
+   * figure already on screen).
+   */
+  const addressedRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!enabled || !desktopId || !sessionId) {
       setUsage(undefined);
       setError(null);
       return;
+    }
+    const address = `${desktopId}::${sessionId}`;
+    if (addressedRef.current !== address) {
+      addressedRef.current = address;
+      setUsage(undefined);
+      setError(null);
     }
     let cancelled = false;
     setLoading(true);

@@ -120,14 +120,16 @@ export function RemoteApprovalMenu({
           {tierIcon(item, "size-4 shrink-0 text-ink-soft")}
           <span className="min-w-0 flex-1 space-y-0.5">
             <span className="block truncate font-medium leading-tight text-ink">
-              {t(`approvalTierLabel.${item}`, { defaultValue: item })}
+              {/* A mode this host cannot run says so in its own label, the words
+                  the settings page uses for the same state. */}
+              {item === "sandbox" && !sandboxAvailable
+                ? t("approvalTierLabel.sandboxUnavailable")
+                : item === "auto" && !supportsAuto
+                  ? t("approvalTierLabel.autoUnsupported")
+                  : t(`approvalTierLabel.${item}`, { defaultValue: item })}
             </span>
             <span className="block text-xs leading-tight text-ink-muted">
-              {item === "sandbox" && !sandboxAvailable
-                ? t("approvalTierUnavailable")
-                : item === "auto" && !supportsAuto
-                  ? t("approvalTierAutoUnsupported")
-                  : t(`approvalTierDescription.${item}`, { defaultValue: t("approvalTierDescription.default") })}
+              {t(`approvalTierDescription.${item}`, { defaultValue: t("approvalTierDescription.default") })}
             </span>
           </span>
         </SelectMenuItem>

@@ -32,7 +32,18 @@ export interface RemoteFilesState {
   entries: RemoteFileEntry[];
 }
 
-export function useRemoteFiles(desktopId: string, sessionId: string): RemoteFilesState {
+export function useRemoteFiles(
+  desktopId: string,
+  sessionId: string,
+  /**
+   * Whether anything is showing these files.
+   *
+   * The panel collapses to a toggle over the conversation header, and a listing
+   * read for a panel nobody opened is a request the reader did not ask for — on
+   * another machine, over the network, for a directory they may never look at.
+   */
+  enabled: boolean,
+): RemoteFilesState {
   // `null` until the host answers: the browser reads its own root rather than
   // making every caller pre-read one, and an empty state while that is in flight
   // would read as "this conversation has no files".
@@ -80,6 +91,11 @@ export function useRemoteFiles(desktopId: string, sessionId: string): RemoteFile
   // dependencies are the two it really uses, and so a view closed while the read
   // is in flight cannot set state on an unmounted component.
   useEffect(() => {
+    if (!enabled) {
+      setListing(null);
+      setError(null);
+      return;
+    }
     let cancelled = false;
     void (async () => {
       setLoading(true);
@@ -100,7 +116,7 @@ export function useRemoteFiles(desktopId: string, sessionId: string): RemoteFile
     return () => {
       cancelled = true;
     };
-  }, [desktopId, sessionId]);
+  }, [desktopId, sessionId, enabled]);
 
   /** No in-flight guard here either; see `open`. */
   const download = useCallback(async (entry: RemoteFileEntry) => {

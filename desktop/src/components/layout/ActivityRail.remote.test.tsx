@@ -372,3 +372,33 @@ it("renders this machine's workspace heading through the merged list", async () 
   expect(view.container.querySelector("button[aria-label='Expand workspace']")).not.toBeNull();
   view.unmount();
 });
+
+/**
+ * The rail's own wiring of the merged list's two new controls.
+ *
+ * The list renders them and the shell owns their handlers; what is asserted here
+ * is the arrow in between — a control whose handler is never reached is a control
+ * that does nothing.
+ */
+describe("the merged list's workspace controls", () => {
+  it("starts a conversation in a host's workspace, and marks chats for selection", async () => {
+    const onNewChatOnRemote = vi.fn();
+    const view = await mountRail({
+      onNewChatOnRemote,
+      remoteCatalogs: [catalogRow("sess_a", { mode: "workspace", workspaceId: "ws_9", workspaceName: "图表脚本" })],
+    });
+
+    // The heading's own "+" names the host and its workspace.
+    const add = view.container.querySelector<HTMLButtonElement>("button[aria-label^='New chat in']")!;
+    await act(async () => add.click());
+    expect(onNewChatOnRemote).toHaveBeenCalledWith("desktop_a", "ws_9");
+
+    // The chat section's menu enters selection mode, which is a local operation.
+    await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='Chat section actions']")!.click());
+    await act(async () => {
+      [...view.container.querySelectorAll("button")].find(node => node.textContent === "Select chats")!.click();
+    });
+    expect(view.container.querySelector("[data-child='selection-toolbar'], [role='toolbar']")).not.toBeNull();
+    view.unmount();
+  });
+});

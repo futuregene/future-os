@@ -378,6 +378,23 @@ export function RemoteComposer({
     command.run();
   }
 
+  /**
+   * What Enter means.
+   *
+   * One function for both paths that can produce it — the field's own handler and
+   * the form's submit — because they disagreed: the form knew about the slash
+   * menu and the field did not, so Enter while the menu was open sent the draft
+   * (including the word that opened it) instead of running the command.
+   */
+  function submit() {
+    const highlighted = slashGroups.commands[activeCommand];
+    if (highlighted) {
+      chooseCommand(highlighted);
+      return;
+    }
+    void send();
+  }
+
   return (
     // The same shell as this app's own composer (`Composer.tsx`), at the same
     // size and in the same place: `mx-auto max-w-3xl` in a `px-8 pb-5` band at
@@ -389,14 +406,7 @@ export function RemoteComposer({
         className="relative mx-auto w-full max-w-3xl rounded-lg border border-line bg-surface/95 p-2 shadow-panel backdrop-blur"
         onSubmit={(event) => {
           event.preventDefault();
-          // A chosen command is what Enter means while the menu is open: sending
-          // the draft would discard the slash word that opened it.
-          const first = slashGroups.commands[activeCommand];
-          if (first) {
-            chooseCommand(first);
-            return;
-          }
-          void send();
+          submit();
         }}
       >
         {query !== null
@@ -477,7 +487,7 @@ export function RemoteComposer({
               }
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
-                void send();
+                submit();
               }
             }}
             placeholder={t("composerPlaceholder", {

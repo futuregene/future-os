@@ -63,10 +63,13 @@ const peer = {
 };
 
 async function mount(props: {
+  canCompact?: boolean;
+  onCompact?: () => void;
   onCreated?: (sessionId: string) => void;
   onSent?: () => void;
   sessionId?: string;
   streaming?: boolean;
+  workspaceId?: string | null;
 } = {}) {
   const onCreated = props.onCreated ?? vi.fn();
   const onSent = props.onSent ?? vi.fn();
@@ -76,12 +79,15 @@ async function mount(props: {
   await act(async () => {
     root.render(
       <RemoteComposer
+        canCompact={props.canCompact ?? false}
         desktopId="desktop_a"
+        onCompact={props.onCompact}
         onCreated={onCreated}
         onSent={onSent}
         peer={peer}
         sessionId={props.sessionId ?? "sess_1"}
         streaming={props.streaming}
+        workspaceId={props.workspaceId ?? null}
       />,
     );
   });
@@ -620,5 +626,106 @@ it("ignores a paste that carries no clipboard data", async () => {
 
   expect(upload).not.toHaveBeenCalled();
   expect(event.defaultPrevented).toBe(false);
+  await view.unmount();
+});
+
+// ── the `/` commands ────────────────────────────────────────────────────────
+
+/**
+ * Compacting is a `/` command, not a header button.
+ *
+ * It is a conversation-level *request* — something you ask for while writing —
+ * and a button in the conversation header read as a mode switch on the whole
+ * conversation. It is offered only when the host would accept it, because a slash
+ * menu is a list of things you can ask for.
+ */
+it("runs a slash command and takes its word out of the draft", async () => {
+  const onCompact = vi.fn();
+  const view = await mount({ canCompact: true, onCompact });
+
+  await act(async () => view.type("/comp"));
+  const row = [...view.container.querySelectorAll("button")].find(node => node.textContent?.includes("Compact context"));
+  expect(row).toBeDefined();
+  await act(async () => row!.click());
+
+  expect(onCompact).toHaveBeenCalledTimes(1);
+  // The word the menu was opened by is gone; the message is not sent.
+  expect(view.input.value).toBe("");
+  expect(prompt).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+/** Enter chooses the highlighted command rather than sending the draft. */
+it("chooses the command with Enter while the menu is open", async () => {
+  const onCompact = vi.fn();
+  const view = await mount({ canCompact: true, onCompact });
+
+  await act(async () => view.type("/comp"));
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+  });
+
+  expect(onCompact).toHaveBeenCalledTimes(1);
+  expect(prompt).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+/** Escape closes the menu by taking its word back out of the draft. */
+it("closes the menu on Escape without running anything", async () => {
+  const onCompact = vi.fn();
+  const view = await mount({ canCompact: true, onCompact });
+
+  await act(async () => view.type("hello /comp"));
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+  });
+
+  expect(onCompact).not.toHaveBeenCalled();
+  expect(view.input.value).toBe("hello");
+  await view.unmount();
+});
+
+/** The arrows move the highlight, and wrap at both ends. */
+it("moves the highlight with the arrow keys", async () => {
+  const view = await mount({ canCompact: true });
+  await act(async () => view.type("/comp"));
+
+  const selected = () => [...view.container.querySelectorAll("[role='option']")].map(node => node.getAttribute("aria-selected"));
+  expect(selected()).toEqual(["true"]);
+
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }));
+  });
+  // One command, so the highlight wraps back onto it.
+  expect(selected()).toEqual(["true"]);
+
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowUp" }));
+  });
+  expect(selected()).toEqual(["true"]);
+  await view.unmount();
+});
+
+/** No command to offer means no menu, and Enter sends as usual. */
+it("sends normally when the host would not accept the command", async () => {
+  const onCompact = vi.fn();
+  const view = await mount({ canCompact: false, onCompact });
+
+  await act(async () => view.type("/comp"));
+  expect([...view.container.querySelectorAll("[role='option']")]).toHaveLength(0);
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+  });
+  expect(onCompact).not.toHaveBeenCalled();
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "/comp", [], null);
+  await view.unmount();
+});
+
+/** A draft started from a workspace heading names it to the host. */
+it("names the workspace when the draft belongs in one", async () => {
+  const view = await mount({ workspaceId: "ws_9" });
+  await act(async () => view.type("hello"));
+  await act(async () => view.button("Send")!.click());
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "hello", [], "ws_9");
   await view.unmount();
 });
