@@ -7,8 +7,9 @@ import { ArrowUp, Loader2, Paperclip, Square, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { readNativeClipboardFilePaths, savePastedFile, savePastedImage } from "../../integrations/storage/threadStore";
+import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
-import { imageExtensionFromMime } from "../agent/attachments";
+import { imageExtensionFromMime, splitFileName } from "../agent/attachments";
 import { SkillRecommendCard } from "../agent/SkillRecommendCard";
 import { RemoteApprovalMenu } from "./RemoteApprovalMenu";
 import { buildRemoteSlashMenu, slashQuery, withoutSlashWord } from "./remoteCommands";
@@ -92,6 +93,7 @@ export interface RemoteSkillRecommendation {
  */
 export function RemoteComposer({
   canCompact = false,
+  className,
   controls,
   desktopId,
   onCompact,
@@ -109,6 +111,15 @@ export function RemoteComposer({
    * also keeps beside the button that sends with them.
    */
   controls?: ReactNode;
+  /**
+   * Layout from the caller, as this app's own composer takes it.
+   *
+   * The conversation frame decides where the composer sits — the band over the
+   * transcript's foot owns the width and the padding — so the composer must not
+   * carry its own margins, or the two frames drift apart again the moment one of
+   * them moves.
+   */
+  className?: string;
   /**
    * Whether the host would accept a request to compact this conversation's
    * context: false for a draft (nothing to compact yet) and while a run is in
@@ -421,176 +432,191 @@ export function RemoteComposer({
   }
 
   return (
-    // The same shell as this app's own composer (`Composer.tsx`), at the same
-    // size and in the same place: `mx-auto max-w-3xl` in a `px-8 pb-5` band at
-    // the foot of the conversation. The width is the part that matters — the
-    // message column above it is `max-w-3xl`, and a composer wider than the text
-    // it sends puts the caret somewhere other than where the sentence is.
-    <div className="shrink-0 px-8 pb-5 pt-2">
-      <form
-        className="relative mx-auto w-full max-w-3xl rounded-lg border border-line bg-surface/95 p-2 shadow-panel backdrop-blur"
-        onSubmit={(event) => {
-          event.preventDefault();
-          submit();
-        }}
-      >
-        {query !== null
-          ? (
-              <RemoteSlashMenu
-                activeIndex={activeCommand}
-                groups={slashGroups}
-                onChoose={chooseCommand}
-              />
-            )
-          : null}
-        {error ? <p className="mb-2 text-xs text-danger">{error}</p> : null}
-        {/* The recommendation, above the box it is holding: it names a skill on
+    // The same shell as this app's own composer (`Composer.tsx`): the caller
+    // supplies the layout (`className`), and what is fixed here is the shell
+    // itself — `rounded-lg`/`border-line`/`p-2`/`shadow-panel`/`backdrop-blur`,
+    // which is the box a reader recognises as "where I type".
+    <form
+      className={cn(
+        "relative rounded-lg border border-line bg-surface/95 p-2 shadow-panel backdrop-blur",
+        className,
+      )}
+      onSubmit={(event) => {
+        event.preventDefault();
+        submit();
+      }}
+    >
+      {query !== null
+        ? (
+            <RemoteSlashMenu
+              activeIndex={activeCommand}
+              groups={slashGroups}
+              onChoose={chooseCommand}
+            />
+          )
+        : null}
+      {error ? <p className="mb-2 text-xs text-danger">{error}</p> : null}
+      {/* The recommendation, above the box it is holding: it names a skill on
           that computer and offers to install it there. */}
-        {skillRecommendation && recommendationCard
-          ? (
-              <SkillRecommendCard
-                description={recommendationCard.description}
-                installing={installingSkill}
-                name={recommendationCard.name}
-                onDismiss={() => {
-                  skillRecommendation.onDismiss();
-                  void sendNow(text.trim(), uploads);
-                }}
-                onInstall={() => void installRecommended(skillRecommendation, recommendationCard)}
-              />
-            )
-          : null}
-        {/* What is about to be sent, named, with a way back out: an attachment the
-          user cannot see is one they cannot remove. */}
-        {uploads.length > 0
-          ? (
-              <div className="mb-2 flex flex-wrap items-center gap-1.5 px-1">
-                {uploads.map(upload => (
+      {skillRecommendation && recommendationCard
+        ? (
+            <SkillRecommendCard
+              description={recommendationCard.description}
+              installing={installingSkill}
+              name={recommendationCard.name}
+              onDismiss={() => {
+                skillRecommendation.onDismiss();
+                void sendNow(text.trim(), uploads);
+              }}
+              onInstall={() => void installRecommended(skillRecommendation, recommendationCard)}
+            />
+          )
+        : null}
+      {/* What is about to be sent, named, with a way back out: an attachment the
+          user cannot see is one they cannot remove. The local composer's own
+          chip — same height, same radius, same transparent border (the chip is
+          not a control), the same 16px remove button, and the same
+          middle-truncation so the suffix stays visible while the stem shrinks. */}
+      {uploads.length > 0
+        ? (
+            <div className="mb-2 flex flex-wrap items-center gap-1.5 px-1">
+              {uploads.map((upload) => {
+                // Middle-truncate: the stem shrinks with an ellipsis while the
+                // extension stays pinned, so "pasted-…0000.png" keeps its suffix.
+                const { stem, ext } = splitFileName(upload.name);
+                return (
                   <span
-                    className="inline-flex items-center gap-1 rounded-md border border-line-soft bg-surface-subtle px-2 py-0.5 text-xs text-ink-soft"
+                    className="inline-flex max-w-64 items-center gap-1.5 rounded-md border border-transparent bg-surface-subtle px-2 py-1 text-xs text-ink-soft"
                     key={upload.uploadId}
+                    title={upload.name}
                   >
-                    <Paperclip aria-hidden className="size-3" />
-                    <span className="max-w-48 truncate">{upload.name}</span>
+                    <Paperclip aria-hidden className="size-3 shrink-0" />
+                    <span className="flex min-w-0 items-center">
+                      <span className="truncate">{stem}</span>
+                      {ext ? <span className="shrink-0">{ext}</span> : null}
+                    </span>
                     <button
                       aria-label={t("removeAttachment", { name: upload.name })}
-                      className="text-ink-muted hover:text-ink"
+                      className="inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface hover:text-ink"
                       onClick={() => setUploads(current => current.filter(item => item.uploadId !== upload.uploadId))}
                       type="button"
                     >
                       <X className="size-3" />
                     </button>
                   </span>
-                ))}
-              </div>
-            )
-          : null}
-        <div className="flex flex-col gap-1 px-1 pt-1">
-          {/* The field is the local composer's, wrapped around a plain textarea.
-              The local editor is a contenteditable div — it has the `@`, `/` and
-              `#` menus built into it — so the markup cannot be shared; what can
-              be shared is everything a reader sees: no inner border (the box's
-              own border is the shell's), the same padding and type, and the same
-              growth up to 40% of the window. A bordered `TextInput` inside a
-              bordered shell put a control inside a control and made the two
-              composers look like two different products. */}
-          <textarea
-            aria-label={t("composerLabel")}
-            className="max-h-[40vh] min-h-14 w-full resize-none overflow-y-auto whitespace-pre-wrap wrap-break-word bg-transparent px-2 py-1 text-sm leading-5 text-ink outline-none placeholder:text-ink-muted"
-            onChange={(event) => {
-              setText(event.target.value);
-              growToContent(event.currentTarget);
-            }}
-            onPaste={event => void pasteFiles(event)}
-            onKeyDown={(event) => {
-              // The slash menu owns the arrows and Enter while it is open: the
-              // word being typed is a command, not a sentence.
-              if (query !== null && slashGroups.commands.length > 0) {
-                if (event.key === "ArrowDown") {
-                  event.preventDefault();
-                  setActiveCommand(index => (index + 1) % slashGroups.commands.length);
-                  return;
-                }
-                if (event.key === "ArrowUp") {
-                  event.preventDefault();
-                  setActiveCommand(index => (index - 1 + slashGroups.commands.length) % slashGroups.commands.length);
-                  return;
-                }
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  setText(withoutSlashWord(text));
-                  return;
-                }
-              }
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                submit();
-              }
-            }}
-            placeholder={t("composerPlaceholder", {
-              name: peer?.name ?? peer?.desktopId ?? "",
-            })}
-            ref={textareaRef}
-            rows={1}
-            value={text}
-          />
-          {/* The control row, in this app's own arrangement: attachment and the
-            host's approval mode at the left, the host's model and thinking level
-            beside the send button at the right. The same slots in the same order
-            as the local composer, because these are the same four decisions —
-            what goes with the message, how much the host may do on its own, and
-            which model reasons about it. */}
-          <div className="flex flex-wrap items-center justify-between gap-y-1 pt-1">
-            <div className="flex min-w-0 items-center gap-1">
-              <button
-                aria-label={t("attach")}
-                className="inline-flex size-7 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-                disabled={uploading}
-                onClick={() => void attach()}
-                title={t("attach")}
-                type="button"
-              >
-                <Paperclip className="size-3.5" />
-              </button>
-              <RemoteApprovalMenu desktopId={desktopId} peer={peer} />
+                );
+              })}
             </div>
-            <div className="ms-auto flex min-w-0 items-center gap-2">
-              {controls}
-              {/* Stop replaces Send while a run is in flight rather than joining it:
-                a conversation being answered on the host cannot take a second
-                prompt, and the host would refuse one. The button is disabled while
-                the abort is outstanding, so `disabled` is the single guard against
-                a second abort — there is no second in-flight check to make.
-                Icon buttons, at the local composer's size and colour: the same
-                two controls in the same place on both screens. */}
-              {streaming && !text.trim() && uploads.length === 0
-                ? (
-                    <button
-                      aria-label={stopping ? t("stopping") : t("stop")}
-                      className="inline-flex size-7 items-center justify-center rounded-md bg-ink text-surface transition-colors hover:bg-ink-soft disabled:cursor-not-allowed disabled:opacity-50"
-                      disabled={stopping}
-                      onClick={() => void stop()}
-                      title={stopping ? t("stopping") : t("stop")}
-                      type="button"
-                    >
-                      {stopping ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-3 fill-current" />}
-                    </button>
-                  )
-                : (
-                    <button
-                      aria-label={busy ? t("sending") : t("send")}
-                      className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
-                      disabled={(!text.trim() && uploads.length === 0) || busy || uploading || evaluating}
-                      title={busy ? t("sending") : t("send")}
-                      type="submit"
-                    >
-                      {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArrowUp className="size-3.5" />}
-                    </button>
-                  )}
-            </div>
-          </div>
+          )
+        : null}
+      {/* The field is the local composer's, wrapped around a plain textarea.
+            The local editor is a contenteditable div — it has the `@`, `/` and
+            `#` menus built into it — so the markup cannot be shared; what can
+            be shared is everything a reader sees: no inner border (the box's
+            own border is the shell's), the same padding and type, and the same
+            growth up to 40% of the window. A bordered `TextInput` inside a
+            bordered shell put a control inside a control and made the two
+            composers look like two different products. */}
+      <textarea
+        aria-label={t("composerLabel")}
+        // `block`, not the default `inline-block`: an inline-block textarea sits
+        // on a text baseline, so its line box keeps room for the descender below
+        // it — about 6px of empty space the local editor (a block-level `div`)
+        // does not pay. The two composers were then 6px apart in height with
+        // nothing visible to explain it.
+        className="block max-h-[40vh] min-h-14 w-full resize-none overflow-y-auto whitespace-pre-wrap wrap-break-word bg-transparent px-2 py-1 text-sm leading-5 text-ink outline-none placeholder:text-ink-muted"
+        onChange={(event) => {
+          setText(event.target.value);
+          growToContent(event.currentTarget);
+        }}
+        onPaste={event => void pasteFiles(event)}
+        onKeyDown={(event) => {
+          // The slash menu owns the arrows and Enter while it is open: the
+          // word being typed is a command, not a sentence.
+          if (query !== null && slashGroups.commands.length > 0) {
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setActiveCommand(index => (index + 1) % slashGroups.commands.length);
+              return;
+            }
+            if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setActiveCommand(index => (index - 1 + slashGroups.commands.length) % slashGroups.commands.length);
+              return;
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setText(withoutSlashWord(text));
+              return;
+            }
+          }
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            submit();
+          }
+        }}
+        placeholder={t("composerPlaceholder", {
+          name: peer?.name ?? peer?.desktopId ?? "",
+        })}
+        ref={textareaRef}
+        rows={1}
+        value={text}
+      />
+      {/* The control row, in this app's own arrangement: attachment and the
+          host's approval mode at the left, the host's model and thinking level
+          beside the send button at the right. The same slots in the same order
+          as the local composer, because these are the same four decisions —
+          what goes with the message, how much the host may do on its own, and
+          which model reasons about it. */}
+      <div className="flex flex-wrap items-center justify-between gap-y-1 pt-1">
+        <div className="flex min-w-0 items-center gap-1">
+          <button
+            aria-label={t("attach")}
+            className="inline-flex size-7 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={uploading}
+            onClick={() => void attach()}
+            title={t("attach")}
+            type="button"
+          >
+            <Paperclip className="size-3.5" />
+          </button>
+          <RemoteApprovalMenu desktopId={desktopId} peer={peer} />
         </div>
-      </form>
-    </div>
+        <div className="ms-auto flex min-w-0 items-center gap-2">
+          {controls}
+          {/* Stop replaces Send while a run is in flight rather than joining it:
+              a conversation being answered on the host cannot take a second
+              prompt, and the host would refuse one. The button is disabled while
+              the abort is outstanding, so `disabled` is the single guard against
+              a second abort — there is no second in-flight check to make.
+              Icon buttons, at the local composer's size and colour: the same
+              two controls in the same place on both screens. */}
+          {streaming && !text.trim() && uploads.length === 0
+            ? (
+                <button
+                  aria-label={stopping ? t("stopping") : t("stop")}
+                  className="inline-flex size-7 items-center justify-center rounded-md bg-ink text-surface transition-colors hover:bg-ink-soft disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={stopping}
+                  onClick={() => void stop()}
+                  title={stopping ? t("stopping") : t("stop")}
+                  type="button"
+                >
+                  {stopping ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-3 fill-current" />}
+                </button>
+              )
+            : (
+                <button
+                  aria-label={busy ? t("sending") : t("send")}
+                  className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
+                  disabled={(!text.trim() && uploads.length === 0) || busy || uploading || evaluating}
+                  title={busy ? t("sending") : t("send")}
+                  type="submit"
+                >
+                  {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArrowUp className="size-3.5" />}
+                </button>
+              )}
+        </div>
+      </div>
+    </form>
   );
 }

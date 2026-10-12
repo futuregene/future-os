@@ -583,6 +583,33 @@ export const runs = [
     createdAt: now - 4 * minute,
     updatedAt: now - 3.2 * minute,
   },
+  // A finished run on a thread that is *not* the one the screenshots open on.
+  // The rail's unread dot needs both halves — a terminal run status here, and
+  // the thread marked unread in the session's own set — and a run on the open
+  // thread cannot show it: the hook clears that mark on mount.
+  {
+    id: "run_data",
+    threadId: "th_data",
+    status: "completed",
+    modelProvider: "future",
+    modelId: "deepseek-v4-pro",
+    startedAt: now - 8 * minute,
+    endedAt: now - 6 * minute,
+    createdAt: now - 8 * minute,
+    updatedAt: now - 6 * minute,
+  },
+  // And a *failed* one, so the other unread colour is reachable too.
+  {
+    id: "run_fig",
+    threadId: "th_fig",
+    status: "failed",
+    modelProvider: "future",
+    modelId: "deepseek-v4-pro",
+    startedAt: now - 34 * minute,
+    endedAt: now - 31 * minute,
+    createdAt: now - 34 * minute,
+    updatedAt: now - 31 * minute,
+  },
 ];
 
 function tool(id: string, runId: string, name: string, input: string, startedAtMs: number, durationMs: number) {
@@ -610,6 +637,66 @@ export const toolCalls = [
   tool("tc_8", "run_2", "shell", JSON.stringify({ command: "grep -n \"sample size\" -A 6 notes/*.md" }), now - 3.9 * minute, 260),
   tool("tc_9", "run_2", "read", JSON.stringify({ path: "notes/dreher-summary.md" }), now - 3.8 * minute, 170),
 ];
+
+/**
+ * A pending approval on *this* machine's open conversation.
+ *
+ * The harness had none, so the local approval card — the richest piece of the
+ * conversation frame — could not be photographed at all. Shaped like a real
+ * sandbox escalation: the sandbox refused the write, the model asked for
+ * escalation and gave its reason, and the rule editor has something to offer.
+ */
+export const pendingApproval = {
+  id: "apr_1",
+  threadId: "th_review",
+  runId: "run_2",
+  toolCallId: "tc_9",
+  kind: "shell",
+  status: "pending",
+  title: "运行 shell 命令",
+  summary: "Rscript analysis/effect-size.R --out notes/effect-size.png",
+  riskLevel: "medium",
+  requestedAction: "shell",
+  actionCategory: "shell",
+  actionPayload: JSON.stringify({
+    tool: "shell",
+    category: "sandbox_escalation",
+    behavior: "manage_files",
+    summary: "沙箱拒绝写入 notes/effect-size.png",
+    command: "Rscript analysis/effect-size.R --out notes/effect-size.png",
+    justification: "脚本要把森林图写进 notes/，沙箱只允许读 papers/ 与 notes/ 之外的路径",
+    escalationTrigger: "sandbox_failure",
+    blockedPaths: ["notes/effect-size.png"],
+    scope: {
+      cwd: "/Users/lixin/dopamine-review",
+      insideWorkspace: true,
+      estimatedBlastRadius: "low",
+    },
+  }),
+  sandboxBoundary: "/Users/lixin/dopamine-review",
+  saveSuggestion: JSON.stringify({ path: "notes/**", access: "write" }),
+  decisionNote: null,
+  decidedAt: null,
+  reviewer: "user",
+  decisionScope: "session",
+  decisionSource: "local",
+  createdAt: now - 2 * minute,
+  updatedAt: now - 2 * minute,
+};
+
+/**
+ * A pending approval on the *host*, delivered the way a real one arrives: as an
+ * `approval_request` event on the peer event stream. A remote approval has no
+ * local store to read, so the fixture must push it rather than serve it.
+ */
+export const remoteApproval = {
+  id: "rapr_1",
+  sessionId: "rs_forest",
+  toolName: "shell",
+  title: "运行 shell 命令",
+  summary: "Rscript analysis/effect-size.R --out notes/effect-size.png",
+  riskLevel: "medium",
+};
 
 export const toolOutputs: Record<string, string> = {
   tc_3: `total 96
@@ -1245,9 +1332,20 @@ export const remoteEntries: Record<string, unknown[]> = {
       // the call id and the run, and the command is read back by both.
       runId: "rrun_1",
       run: { status: "completed", durationMs: 42_000 },
+      // A reasoning block followed by a burst of tool calls, so the host's
+      // transcript renders the two things a reader compares against a local
+      // reply: the thinking block, and the folded step summary. The host's
+      // entries carried neither before — no `reasoning` block existed and every
+      // tool call stood alone, so a fold could not form and the remote
+      // conversation showed *only* the unfolded shape.
       blocks: [
-        { kind: "text", text: "先看脚本里的置信区间是怎么算的。" },
+        {
+          kind: "reasoning",
+          text: "先看脚本里的置信区间是怎么算的——区间水平多半写成参数，直接读文件比在正文里猜快。三个候选文件都读一遍，免得只改到一张图。",
+        },
         { kind: "tool_call", toolCallId: "rtc_1", name: "read" },
+        { kind: "tool_call", toolCallId: "rtc_3", name: "read" },
+        { kind: "tool_call", toolCallId: "rtc_4", name: "read" },
         {
           kind: "text",
           text: "问题在 `ci_level <- 0.90`：画的是 90% 区间，而正文写的是 95%。改成 0.95 之后重画。",
@@ -1285,6 +1383,8 @@ export const remoteEntries: Record<string, unknown[]> = {
 export const remoteToolArgs: Record<string, { name: string; arguments: Record<string, unknown> }> = {
   rtc_1: { name: "read", arguments: { file_path: "analysis/effect-size.R" } },
   rtc_2: { name: "shell", arguments: { command: "Rscript analysis/effect-size.R" } },
+  rtc_3: { name: "read", arguments: { file_path: "analysis/fig2-forest.R" } },
+  rtc_4: { name: "read", arguments: { file_path: "analysis/figS3.R" } },
 };
 
 /** A remote conversation's model and thinking level (the host's settings). */

@@ -131,7 +131,14 @@ export function MergedRows({
   };
   /** The local rail's own workspace heading, so both lists show one heading. */
   renderLocalGroupHeader: (workspaceId: string) => ReactNode;
-  renderLocalRow: (thread: StoredThread, depth?: number, hasChildren?: boolean) => ReactNode;
+  /**
+   * This machine's own row factory.
+   *
+   * `compact` is the *group's* answer — a row inside a workspace is one notch
+   * shorter than a top-level one — and the rail is what knows that, so it is
+   * passed in rather than guessed at here.
+   */
+  renderLocalRow: (thread: StoredThread, depth?: number, hasChildren?: boolean, compact?: boolean) => ReactNode;
   rows: MergedConversation[];
   /** Whether a batch is being assembled, so "select chats" is not offered again. */
   selectionMode: boolean;
@@ -159,7 +166,14 @@ export function MergedRows({
       if (!thread)
         return null;
       const meta = localRowMeta.get(thread.id);
-      return renderLocalRow(thread, meta?.depth ?? 0, meta?.hasChildren ?? false);
+      // `compact` travels with the row, and it is the *group's* answer, not the
+      // row's own: a conversation inside a workspace is one notch shorter than a
+      // top-level one. Passing it only to the remote row (as this did) left the
+      // two kinds at different heights inside one list — a local workspace row at
+      // 32px beside a remote one at 28px — and made the same local conversation
+      // change height when the device filter changed, because the local-only list
+      // always draws its workspace rows compact and this one did not.
+      return renderLocalRow(thread, meta?.depth ?? 0, meta?.hasChildren ?? false, compact);
     }
     const selectable = remoteSelection?.selectable(conversation) === true;
     return (
@@ -294,6 +308,13 @@ export function MergedRows({
                                 name: group.label ?? t("activityRail.workspace"),
                               })}
                               onClick={() => onNewChatInWorkspace?.(desktopId, workspaceId)}
+                              // A *group* heading, not a section heading: the plus
+                              // is the same control the local workspace heading
+                              // draws, revealed the same way. Drawing it plainly
+                              // here left a permanently visible glyph in the
+                              // remote heading and a hidden one in the local
+                              // heading directly above it.
+                              revealOnHover
                             />
                           </>
                         )

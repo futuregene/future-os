@@ -203,10 +203,39 @@ it("renders a local row through the rail's renderer, with its tree place", async
     threadById: new Map([["thread_1", thread("thread_1")]]),
   });
 
+  // The fourth argument is the group's `compact` answer, passed on to the rail's
+  // own renderer. A local row must be told whether it sits inside a workspace
+  // heading for the same reason a remote one is: otherwise the two kinds of row
+  // are a different height inside one list, and the same conversation changes
+  // height when the device filter changes.
   expect(renderLocalRow).toHaveBeenCalledWith(
     expect.objectContaining({ id: "thread_1" }),
     0,
     false,
+    false,
+  );
+  await view.unmount();
+});
+
+it("tells a local row inside a workspace that it is compact", async () => {
+  const renderLocalRow = vi.fn(() => <div>row</div>);
+  const view = await render({
+    renderLocalRow,
+    rows: [
+      conversation({
+        key: "local::ws_local",
+        mode: "workspace",
+        workspaceId: "ws_local",
+      }),
+    ],
+    threadById: new Map([["thread_1", thread("thread_1")]]),
+  });
+
+  expect(renderLocalRow).toHaveBeenCalledWith(
+    expect.objectContaining({ id: "thread_1" }),
+    0,
+    false,
+    true,
   );
   await view.unmount();
 });

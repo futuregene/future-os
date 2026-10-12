@@ -141,7 +141,7 @@
             "wait": 900
           },
           {
-            "tap": "工具调用 5 次"
+            "tap": "工具调用 7 次"
           },
           {
             "wait": 1500
@@ -1277,7 +1277,7 @@
             "wait": 2500
           },
           {
-            "eval": "(() => {\n  const msgs = [...document.querySelectorAll('[data-message-id]')];\n  if (msgs.length === 0) throw new Error('the transcript did not render');\n  const scroller = msgs[0].closest(\"div[class*='overflow-y-auto']\");\n  if (!scroller) throw new Error('no transcript viewport');\n  const distance = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;\n  // Within a few px of the bottom: the newest message is what the reader sees.\n  if (Math.abs(distance) > 8)\n    throw new Error('the transcript did not open at the newest message: ' + Math.round(distance) + 'px from the bottom');\n  // The last message is inside the viewport, and the first is not: proof that\n  // \"at the bottom\" is about the newest turn, not an accident of a short page.\n  const box = scroller.getBoundingClientRect();\n  const last = msgs[msgs.length - 1].getBoundingClientRect();\n  if (last.bottom > box.bottom + 8 || last.top < box.top - 8)\n    throw new Error('the newest message is not in view');\n  return 'distance=' + Math.round(distance) + ' scrollHeight=' + Math.round(scroller.scrollHeight);\n})()"
+            "eval": "(() => {\n  const msgs = [...document.querySelectorAll('[data-message-id]')];\n  if (msgs.length === 0) throw new Error('the transcript did not render');\n  const scroller = msgs[0].closest(\"[data-chat-scroll='true']\");\n  if (!scroller) throw new Error('no transcript viewport');\n  const distance = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;\n  // Within a few px of the bottom: the newest message is what the reader sees.\n  if (Math.abs(distance) > 8)\n    throw new Error('the transcript did not open at the newest message: ' + Math.round(distance) + 'px from the bottom');\n  // The last message is inside the viewport, and the first is not: proof that\n  // \"at the bottom\" is about the newest turn, not an accident of a short page.\n  const box = scroller.getBoundingClientRect();\n  const last = msgs[msgs.length - 1].getBoundingClientRect();\n  if (last.bottom > box.bottom + 8 || last.top < box.top - 8)\n    throw new Error('the newest message is not in view');\n  return 'distance=' + Math.round(distance) + ' scrollHeight=' + Math.round(scroller.scrollHeight);\n})()"
           },
           {
             "shot": "d-remote-open-at-latest.png"
@@ -1304,7 +1304,7 @@
             "wait": 2500
           },
           {
-            "eval": "(() => {\n  const msgs = [...document.querySelectorAll('[data-message-id]')];\n  const scroller = msgs[0].closest(\"div[class*='overflow-y-auto']\");\n  scroller.scrollTop = 0;\n  scroller.dispatchEvent(new Event('scroll', { bubbles: true }));\n  return 'scrollTop=' + Math.round(scroller.scrollTop) + ' scrollHeight=' + Math.round(scroller.scrollHeight);\n})()"
+            "eval": "(() => {\n  const msgs = [...document.querySelectorAll('[data-message-id]')];\n  const scroller = msgs[0].closest(\"[data-chat-scroll='true']\");\n  scroller.scrollTop = 0;\n  scroller.dispatchEvent(new Event('scroll', { bubbles: true }));\n  return 'scrollTop=' + Math.round(scroller.scrollTop) + ' scrollHeight=' + Math.round(scroller.scrollHeight);\n})()"
           },
           {
             "wait": 600
@@ -1319,10 +1319,124 @@
             "wait": 600
           },
           {
-            "eval": "(() => {\n  const msgs = [...document.querySelectorAll('[data-message-id]')];\n  const scroller = msgs[0].closest(\"div[class*='overflow-y-auto']\");\n  const distance = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;\n  if (Math.abs(distance) > 8)\n    throw new Error('jump to latest did not reach the newest message: ' + Math.round(distance) + 'px away');\n  return 'distance=' + Math.round(distance);\n})()"
+            "eval": "(() => {\n  const msgs = [...document.querySelectorAll('[data-message-id]')];\n  const scroller = msgs[0].closest(\"[data-chat-scroll='true']\");\n  const distance = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;\n  if (Math.abs(distance) > 8)\n    throw new Error('jump to latest did not reach the newest message: ' + Math.round(distance) + 'px away');\n  return 'distance=' + Math.round(distance);\n})()"
           },
           {
             "shot": "d-remote-jump-to-latest.png"
+          }
+        ]
+      },
+      "local-approval": {
+        "note": "A pending approval on this machine: the richest card in the conversation frame, and it needs the fixture's seeded request to exist at all.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!/运行 shell 命令/.test(t)) throw new Error('the local approval card is not rendered'); if (!/允许一次/.test(t)) throw new Error('the card has no allow action'); })()"
+          },
+          {
+            "shot": "d-local-approval.png"
+          }
+        ]
+      },
+      "remote-approval": {
+        "note": "A pending approval on the host. A remote approval is pushed on the peer event stream rather than read from a store, so the scenario emits it once the conversation is open.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "重画森林图并核对置信区间"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "window.__shot.remoteApproval()"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!/运行 shell 命令/.test(t)) throw new Error('the remote approval card is not rendered'); if (!/工作室 iMac/.test(t)) throw new Error('the card does not name the machine the tool runs on'); })()"
+          },
+          {
+            "shot": "d-remote-approval.png"
+          }
+        ]
+      },
+      "remote-thinking": {
+        "note": "The host's transcript with its step summary opened, so the thinking block and the tool rows a remote reply unfolds into can be compared against a local one.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "重画森林图并核对置信区间"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => { const b = [...document.querySelectorAll('button[aria-expanded]')].find(x => (x.getAttribute('aria-label') || '').includes('工具调用')); if (!b) throw new Error('the host reply has no step summary to open'); return b.getAttribute('aria-label'); })()"
+          },
+          {
+            "tap": "工具调用 3 次 · 思考 1 次"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!/已思考/.test(t)) throw new Error('opening the host summary revealed no thinking block'); })()"
+          },
+          {
+            "shot": "d-remote-thinking.png"
+          }
+        ]
+      },
+      "remote-attachment": {
+        "note": "A file staged on the host: the chip names what will be sent, so the remote composer's attachment shell can be compared with the local one.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "重画森林图并核对置信区间"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "tap": "添加附件"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!/frank-2024/.test(t)) throw new Error('the staged upload is not named in the composer'); return 'staged'; })()"
+          },
+          {
+            "shot": "d-remote-attachment.png"
+          }
+        ]
+      },
+      "rail-indicators": {
+        "note": "The two row states the fixture could not reach: a running thread's ring and a finished-but-unread thread's dot, local and remote in one list.",
+        "url": "http://localhost:5299/shot/?lang=zh&streaming=th_longformer&unread=th_data,th_fig",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => { const running = document.querySelectorAll('[aria-label=\"运行中\"]'); if (!running.length) throw new Error('no running indicator in the rail'); const finished = document.querySelectorAll('[aria-label=\"已完成\"], [aria-label=\"已失败\"]'); if (!finished.length) throw new Error('no unread dot in the rail'); return 'running=' + running.length + ' finished=' + finished.length; })()"
+          },
+          {
+            "shot": "d-rail-indicators.png"
           }
         ]
       }

@@ -94,15 +94,33 @@ export function RailHeaderButton({
   icon,
   label,
   onClick,
+  revealOnHover,
 }: {
   icon: ReactNode;
   label: string;
   onClick: () => void;
+  /**
+   * Hidden until the pointer is over the heading.
+   *
+   * A *section* heading shows its controls outright ("new workspace", "new
+   * chat" are how the section is filled, and a list with nothing in it has to
+   * show them), while a *group* heading folds them away: the group is already
+   * named by its own row, and the heading is what the pointer crosses on the way
+   * to the list. Both headings used to draw this control from different code —
+   * the local one from an inline button with `opacity-0 … group-hover:opacity-100`,
+   * the remote one from this component without it — so the same glyph sat
+   * permanently visible in one heading and hidden in the next one down. The
+   * difference is now a prop rather than a copy.
+   */
+  revealOnHover?: boolean;
 }) {
   return (
     <button
       aria-label={label}
-      className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+      className={cn(
+        "inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft",
+        revealOnHover && "opacity-0 group-hover:opacity-100",
+      )}
       onClick={onClick}
       title={label}
       type="button"
