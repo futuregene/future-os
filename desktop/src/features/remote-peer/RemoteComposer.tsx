@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { SkillCandidate } from "../../integrations/skills/skillsClient";
+import type { RemoteCommand } from "./remoteCommands";
 import type { RemotePeer, RemoteUpload } from "./remotePeerClient";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Paperclip, X } from "lucide-react";
@@ -11,10 +12,39 @@ import { readNativeClipboardFilePaths, savePastedFile, savePastedImage } from ".
 import { errorMessage } from "../../lib/errors";
 import { imageExtensionFromMime } from "../agent/attachments";
 import { SkillRecommendCard } from "../agent/SkillRecommendCard";
+import { RemoteApprovalMenu } from "./RemoteApprovalMenu";
+import { buildRemoteSlashMenu, slashQuery, withoutSlashWord } from "./remoteCommands";
 import { abortRemoteRun, promptRemoteConversation, uploadRemoteFile } from "./remotePeerClient";
+import { RemoteSlashMenu } from "./RemoteSlashMenu";
 
 /** How many files one paste may stage. The rest are reported, not silently dropped. */
 const MAX_PASTED_FILES = 4;
+
+/**
+ * The commands this composer offers after `/`, built from what the host accepts.
+ *
+ * One command today, and it is here rather than in a module of its own because
+ * this is its only consumer: a command whose host operation is unavailable is
+ * left out rather than shown disabled, because a slash menu is a list of things
+ * you can ask for.
+ */
+function useRemoteCommands({
+  canCompact,
+  onCompact,
+}: {
+  canCompact: boolean;
+  onCompact: () => void;
+}): RemoteCommand[] {
+  const { t } = useTranslation("remotePeer");
+  return canCompact
+    ? [{
+        description: t("compactHint"),
+        id: "compact",
+        label: t("compact"),
+        run: onCompact,
+      }]
+    : [];
+}
 
 /**
  * What a skill recommendation holds the message for.
@@ -45,14 +75,17 @@ export interface RemoteSkillRecommendation {
  * and stopping a run that is in flight.
  */
 export function RemoteComposer({
+  canCompact = false,
   controls,
   desktopId,
+  onCompact,
   onCreated,
   onSent,
   peer,
   sessionId,
   skillRecommendation,
   streaming = false,
+  workspaceId = null,
 }: {
   /**
    * Extra controls for the control row, before the machine hint and the send
@@ -60,7 +93,15 @@ export function RemoteComposer({
    * also keeps beside the button that sends with them.
    */
   controls?: ReactNode;
+  /**
+   * Whether the host would accept a request to compact this conversation's
+   * context: false for a draft (nothing to compact yet) and while a run is in
+   * flight (a host answering one prompt at a time refuses one then).
+   */
+  canCompact?: boolean;
   desktopId: string;
+  /** Ask the host to compact this conversation's context (the `/` menu's job). */
+  onCompact?: () => void;
   /**
    * Called only when the prompt *created* the conversation (the draft case),
    * with the ids the host chose. Opening the conversation is the caller's job:
@@ -74,6 +115,11 @@ export function RemoteComposer({
   /** Skill recommendation from that host, if the caller wired it. */
   skillRecommendation?: RemoteSkillRecommendation;
   streaming?: boolean;
+  /**
+   * The workspace to create the conversation in, for a draft started from a
+   * workspace heading. Null for a conversation with no workspace of its own.
+   */
+  workspaceId?: string | null;
 }) {
   const { t } = useTranslation("remotePeer");
   const [text, setText] = useState("");
@@ -210,6 +256,10 @@ export function RemoteComposer({
         sessionId,
         message,
         uploadsForSend.map(upload => upload.uploadId),
+        // Names the workspace only while creating the conversation: one started
+        // from a workspace heading belongs in that workspace, and the host
+        // resolves the id against its own store.
+        workspaceId,
       );
       // Cleared only after the host accepted it: a prompt that failed on the
       // wire must not cost the user the paragraph they wrote or the file they
@@ -313,20 +363,61 @@ export function RemoteComposer({
   // the types should carry rather than a guard that can never fire.
   const recommendationCard = skillRecommendation?.card ?? null;
 
+  const commands = useRemoteCommands({
+    canCompact: canCompact && !busy && !evaluating,
+    onCompact: () => onCompact?.(),
+  });
+  const query = slashQuery(text);
+  const slashGroups = query === null ? { commands: [] } : buildRemoteSlashMenu(query, commands);
+  const [activeCommand, setActiveCommand] = useState(0);
+
+  /** Ask the host for one command, then take its word out of the draft. */
+  function chooseCommand(command: RemoteCommand) {
+    setText(withoutSlashWord(text));
+    setActiveCommand(0);
+    command.run();
+  }
+
+  /**
+   * What Enter means.
+   *
+   * One function for both paths that can produce it — the field's own handler and
+   * the form's submit — because they disagreed: the form knew about the slash
+   * menu and the field did not, so Enter while the menu was open sent the draft
+   * (including the word that opened it) instead of running the command.
+   */
+  function submit() {
+    const highlighted = slashGroups.commands[activeCommand];
+    if (highlighted) {
+      chooseCommand(highlighted);
+      return;
+    }
+    void send();
+  }
+
   return (
-    // The same shell as this app's own composer (`Composer.tsx`): a bordered,
-    // floating panel with the attachment chips above the field and the controls
-    // in a row underneath. One machine's composer looking like a plain form
-    // while the other's is a panel makes switching between them read as two
-    // different apps — the conversation is the same thing either way.
-    <div className="shrink-0 px-4 pb-4 pt-2">
+    // The same shell as this app's own composer (`Composer.tsx`), at the same
+    // size and in the same place: `mx-auto max-w-3xl` in a `px-8 pb-5` band at
+    // the foot of the conversation. The width is the part that matters — the
+    // message column above it is `max-w-3xl`, and a composer wider than the text
+    // it sends puts the caret somewhere other than where the sentence is.
+    <div className="shrink-0 px-8 pb-5 pt-2">
       <form
-        className="relative rounded-lg border border-line bg-surface/95 p-2 shadow-panel backdrop-blur"
+        className="relative mx-auto w-full max-w-3xl rounded-lg border border-line bg-surface/95 p-2 shadow-panel backdrop-blur"
         onSubmit={(event) => {
           event.preventDefault();
-          void send();
+          submit();
         }}
       >
+        {query !== null
+          ? (
+              <RemoteSlashMenu
+                activeIndex={activeCommand}
+                groups={slashGroups}
+                onChoose={chooseCommand}
+              />
+            )
+          : null}
         {error ? <p className="mb-2 text-xs text-danger">{error}</p> : null}
         {/* The recommendation, above the box it is holding: it names a skill on
           that computer and offers to install it there. */}
@@ -375,9 +466,28 @@ export function RemoteComposer({
             onChange={event => setText(event.target.value)}
             onPaste={event => void pasteFiles(event)}
             onKeyDown={(event) => {
+              // The slash menu owns the arrows and Enter while it is open: the
+              // word being typed is a command, not a sentence.
+              if (query !== null && slashGroups.commands.length > 0) {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setActiveCommand(index => (index + 1) % slashGroups.commands.length);
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setActiveCommand(index => (index - 1 + slashGroups.commands.length) % slashGroups.commands.length);
+                  return;
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setText(withoutSlashWord(text));
+                  return;
+                }
+              }
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
-                void send();
+                submit();
               }
             }}
             placeholder={t("composerPlaceholder", {
@@ -385,26 +495,28 @@ export function RemoteComposer({
             })}
             value={text}
           />
-          {/* Attach sits at the left of the controls row and the send control at
-            the right, which is where this app's own composer puts them. */}
-          <div className="flex items-center justify-between gap-1">
-            <button
-              aria-label={t("attach")}
-              className="inline-flex size-7 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-              disabled={uploading}
-              onClick={() => void attach()}
-              title={t("attach")}
-              type="button"
-            >
-              <Paperclip className="size-3.5" />
-            </button>
-            <div className="flex items-center gap-2">
+          {/* The control row, in this app's own arrangement: attachment and the
+            host's approval mode at the left, the host's model and thinking level
+            beside the send button at the right. The same slots in the same order
+            as the local composer, because these are the same four decisions —
+            what goes with the message, how much the host may do on its own, and
+            which model reasons about it. */}
+          <div className="flex flex-wrap items-center justify-between gap-y-1 pt-1">
+            <div className="flex min-w-0 items-center gap-1">
+              <button
+                aria-label={t("attach")}
+                className="inline-flex size-7 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+                disabled={uploading}
+                onClick={() => void attach()}
+                title={t("attach")}
+                type="button"
+              >
+                <Paperclip className="size-3.5" />
+              </button>
+              <RemoteApprovalMenu desktopId={desktopId} peer={peer} />
+            </div>
+            <div className="ms-auto flex min-w-0 items-center gap-2">
               {controls}
-              {/* Where the prompt will run. In the controls row rather than under
-                the whole panel: it qualifies the send button beside it. */}
-              <span className="truncate text-xs text-ink-muted">
-                {uploading ? t("attaching") : t("runsOn", { name: peer?.name ?? peer?.desktopId ?? "" })}
-              </span>
               {/* Stop replaces Send while a run is in flight rather than joining it:
                 a conversation being answered on the host cannot take a second
                 prompt, and the host would refuse one. The button is disabled while

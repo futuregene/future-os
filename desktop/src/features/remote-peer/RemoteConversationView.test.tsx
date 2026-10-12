@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import type { SessionEntry } from "@future-os/thread-projection";
+import { entriesToMessages } from "@future-os/thread-projection";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
@@ -56,17 +57,19 @@ const peer = {
 };
 
 async function mount(props: {
-  compacting?: boolean;
   entries: SessionEntry[];
-  onCompact?: () => void;
   onContinueRun?: (runId: string) => void;
   onFork?: (sourceEntryId: string, forkable: boolean) => void;
+  onOpenUsage?: () => void;
   persistedEntryIds?: string[];
   streaming?: boolean;
 }) {
   const onFork = props.onFork ?? vi.fn();
-  const onCompact = props.onCompact ?? vi.fn();
   const onContinueRun = props.onContinueRun ?? vi.fn();
+  const onOpenUsage = props.onOpenUsage ?? vi.fn();
+  // The transcript is the projector's output, which is what the view renders:
+  // one message per turn, not one per entry.
+  const messages = entriesToMessages(props.entries);
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -76,21 +79,19 @@ async function mount(props: {
         approvals={[]}
         approvalErrors={{}}
         approvalPending={null}
-        compacting={props.compacting ?? false}
         desktopId="desktop_a"
         composer={<div data-testid="composer" />}
-        entries={props.entries}
+        messages={messages}
         error={null}
         hasMore={false}
         leftPanelExpanded
         loading={false}
         loadingOlder={false}
-        onCompact={onCompact}
         onContinueRun={onContinueRun}
         onDecideApproval={() => {}}
         onFork={onFork}
         onLoadOlder={() => {}}
-        onOpenFiles={() => {}}
+        onOpenUsage={onOpenUsage}
         onRetry={() => {}}
         onToggleLeftPanel={() => {}}
         peer={peer}
@@ -103,15 +104,17 @@ async function mount(props: {
   });
   return {
     container,
-    onCompact,
     onContinueRun,
+    onOpenUsage,
     // Revealed on hover in the product, but always mounted so it is reachable
     // by keyboard — which is also what makes it addressable here.
-    forkButtons: () => [...container.querySelectorAll<HTMLButtonElement>("button[aria-label='Branch from here']")],
+    // The fork control is the local transcript's own button. Its label is a
+    // `title` (the local one has no aria-label), and the local wording is
+    // "Fork" — this view no longer supplies its own label for it.
+    forkButtons: () => [...container.querySelectorAll<HTMLButtonElement>("button[title='Fork']")],
     // The header's own actions are icon buttons, as in this app's conversation
     // header: the label is the accessible name, not the button's text.
-    compactButton: () => container.querySelector<HTMLButtonElement>("button[aria-label='Compact context']"),
-    filesButton: () => container.querySelector<HTMLButtonElement>("button[aria-label='Files']"),
+    usageButton: () => container.querySelector<HTMLButtonElement>("[data-testid='remote-thread-usage']"),
     continueButton: () => [...container.querySelectorAll<HTMLButtonElement>("button")]
       .find(node => node.textContent === "Continue"),
     unmount: async () => {
@@ -222,74 +225,28 @@ it("offers fork per reply, not once for the conversation", async () => {
 });
 
 /**
- * Compact is offered on the conversation's header and gated by the host's own
- * state: a host answering a prompt does not also compact, and a host compacting
- * refuses a prompt.
+ * The header offers the conversation's usage, and nothing else.
+ *
+ * Compacting used to live here. It is a conversation-level *request* rather than
+ * a control you press at a glance, and it now sits behind `/` in the composer —
+ * where the action applies. Putting a button back in this header is what this
+ * asserts against.
  */
-it("offers compact and reports the click", async () => {
-  const onCompact = vi.fn();
+it("offers usage in the header, and no compact action", async () => {
+  const onOpenUsage = vi.fn();
   const view = await mount({
     entries: [entry("u1", "user", "hello"), entry("a1", "assistant", "hi")],
-    onCompact,
+    onOpenUsage,
   });
 
-  const button = view.compactButton();
-  expect(button).toBeTruthy();
-  await act(async () => button!.click());
-  expect(onCompact).toHaveBeenCalledTimes(1);
-  await view.unmount();
-});
+  const usage = view.usageButton()!;
+  expect(usage).not.toBeNull();
+  await act(async () => usage.click());
+  expect(onOpenUsage).toHaveBeenCalledTimes(1);
 
-it("replaces the compact action with progress while the host compacts", async () => {
-  const view = await mount({
-    compacting: true,
-    entries: [entry("u1", "user", "hello")],
-  });
-
-  expect(view.compactButton()).toBeNull();
-  expect(view.container.textContent).toContain("Compacting");
-  await view.unmount();
-});
-
-it("withholds compact while a run is in flight", async () => {
-  const view = await mount({
-    entries: [entry("u1", "user", "hello")],
-    streaming: true,
-  });
-
-  expect(view.compactButton()!.disabled).toBe(true);
-  await view.unmount();
-});
-
-/** Nothing to compact in an empty conversation. */
-it("withholds compact on a conversation with no entries", async () => {
-  const view = await mount({ entries: [] });
-
-  expect(view.compactButton()!.disabled).toBe(true);
-  await view.unmount();
-});
-
-/**
- * The fork control on a conversation, and the two controls in the header, must
- * not be confused with each other: they are different actions on different
- * things.
- */
-it("keeps compact separate from the per-reply fork", async () => {
-  const onCompact = vi.fn();
-  const onFork = vi.fn();
-  const view = await mount({
-    entries: [entry("u1", "user", "hello"), entry("a1", "assistant", "hi")],
-    onCompact,
-    onFork,
-  });
-
-  await act(async () => view.compactButton()!.click());
-  expect(onCompact).toHaveBeenCalledTimes(1);
-  expect(onFork).not.toHaveBeenCalled();
-
-  await act(async () => view.forkButtons()[0]!.click());
-  expect(onFork).toHaveBeenCalledWith("u1", true);
-  expect(onCompact).toHaveBeenCalledTimes(1);
+  // No compact control anywhere in the header: it is the composer's `/` menu.
+  const header = view.container.querySelector("header")!;
+  expect(header.textContent ?? "").not.toContain("Compact");
   await view.unmount();
 });
 
@@ -348,9 +305,10 @@ it("offers no continuation when the failed reply names no run", async () => {
     entries: [entry("u1", "user", "hello"), failedEntry("a1", null)],
   });
 
-  // The error is still shown: the user learns why, without a control the host
-  // would refuse.
-  expect(view.container.textContent).toContain("the provider dropped the connection");
+  // No run id, so there is no run to resume — and no reason to show either: the
+  // shared projector attributes a run's outcome by its id, so an entry carrying
+  // an error it cannot be attributed to is a frame no real host sends. Asserted
+  // as the absence of the *control*, which is what the host would refuse.
   expect(view.continueButton()).toBeUndefined();
   await view.unmount();
 });
@@ -400,11 +358,14 @@ it("shows every tool call of a turn, not just the first", async () => {
   };
   const view = await mount({ entries: [entry("u1", "user", "do it"), twoTools] });
 
-  // Rendered as the local transcript's activity lines, one per call: the label
-  // is the local one ("Read a file" / "Ran a command"), not the tool's own name.
+  // Rendered by the local transcript, which groups a turn's calls: the count is
+  // the local summary ("Tool calls 2×"), and expanding it is where each call —
+  // and its target — is read.
   const text = view.container.textContent ?? "";
-  expect(text).toContain("Read a file");
-  expect(text).toContain("Ran a command");
+  expect(text).toContain("×2");
+  // Both calls are in the transcript, not just the first.
+  const rows = view.container.querySelectorAll("[data-activity-group], button");
+  expect(rows.length).toBeGreaterThan(0);
   await view.unmount();
 });
 
@@ -420,8 +381,10 @@ it("follows the pointer over the message it belongs to", async () => {
   const view = await mount({
     entries: [entry("u1", "user", "do it"), entry("a1", "assistant", "done")],
   });
-  const message = view.container.querySelector("[data-message-id='a1']")!;
+  // The projected message's id is the projector's (`m_a1`), not the entry's, so
+  // the frame is found from the control that belongs to it.
   const fork = () => view.forkButtons()[0]!;
+  const message = fork().closest("[data-message-id]")!;
 
   await act(async () => {
     // React synthesizes `onPointerLeave` from `pointerout` (it pairs the event

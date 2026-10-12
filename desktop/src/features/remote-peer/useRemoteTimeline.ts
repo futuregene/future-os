@@ -1,5 +1,6 @@
-import type { SessionEntry } from "@future-os/thread-projection";
+import type { AgentMessage, SessionEntry } from "@future-os/thread-projection";
 import type { RemotePeerEvent } from "./remotePeerClient";
+import { entriesToMessages } from "@future-os/thread-projection";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { requestRemotePeer } from "./remotePeerClient";
@@ -19,6 +20,27 @@ export type RemoteEntry = SessionEntry;
 
 export interface RemoteTimeline {
   entries: RemoteEntry[];
+  /**
+   * The transcript, as messages — the shape this app draws its own in.
+   *
+   * The host serves *entries*: one per event on its agent's journal, so a single
+   * reply arrives as a thinking entry, several tool entries and a text entry.
+   * The local view has never drawn entries directly; it folds them into messages
+   * (`entriesToMessages`: one user turn and one reply each). Rendering entries
+   * one-per-message put an author line above every fragment, which is what this
+   * looked like on a real conversation — a column of "assistant", most of them
+   * empty, each with a line or two under it.
+   */
+  messages: AgentMessage[];
+  /**
+   * Whether the host would take a compact request for this conversation.
+   *
+   * The host's own preconditions, mirrored so the affordance appears only where
+   * it would be accepted: there is a conversation, there is something to compact,
+   * and no run is in flight (a host answering one prompt at a time refuses one
+   * then).
+   */
+  canCompact: boolean;
   /** True while the first page is being read. */
   loading: boolean;
   /** True while an older page is being appended. */
@@ -55,8 +77,16 @@ export interface RemoteTimeline {
  * The host's page size for a backward history read, in *user exchanges* (not
  * entries) — the same unit the phone asks in, because that is the unit the
  * host's cursor counts in. Asking in entries would misalign the cursor.
+ *
+ * Three, which is what the phone asks for, and the difference is not cosmetic:
+ * this client asked for **100** and the host answered with the whole
+ * conversation. Every open paid for a hundred exchanges of history before the
+ * first line could be drawn — on a long conversation, the reason a remote one
+ * took seconds to appear where the phone took none. Older pages arrive as the
+ * reader scrolls up, so the cost of the extra history is only paid for history
+ * that is actually looked at.
  */
-const HISTORY_PAGE_USER_EXCHANGES = 100;
+const HISTORY_PAGE_USER_EXCHANGES = 3;
 
 /**
  * The events that mean a run is in flight on the host, and the ones that settle
@@ -107,6 +137,38 @@ interface EntriesPage {
 }
 
 /**
+ * What was last read for one conversation, kept across opens.
+ *
+ * Without this, every click on a conversation threw away what was on screen and
+ * asked the host for it again: the transcript blanked, then reappeared a page at
+ * a time. The phone does not behave that way — it keeps what it has read and
+ * refreshes behind it — and switching between two conversations is a thing
+ * people do constantly, so the second visit cost the same as the first.
+ *
+ * In memory only, and never written anywhere: it is one machine's view of
+ * another machine's transcript for as long as this window is open. What it must
+ * not become is a second copy of the host's history on disk, which is the same
+ * reason the entries are never turned into local thread records.
+ */
+interface TimelineSnapshot {
+  cursor: number | null;
+  entries: RemoteEntry[];
+  hasMore: boolean;
+  persistedIds: ReadonlySet<string>;
+}
+
+const snapshots = new Map<string, TimelineSnapshot>();
+
+function snapshotKey(desktopId: string, sessionId: string): string {
+  return `${desktopId}::${sessionId}`;
+}
+
+/** Drop a conversation's snapshot, so the next open reads it fresh. */
+export function forgetRemoteTimeline(desktopId: string, sessionId: string): void {
+  snapshots.delete(snapshotKey(desktopId, sessionId));
+}
+
+/**
  * A remote session's timeline: history on open, then live events appended.
  *
  * History is read once (and paged backwards on demand); live events arrive as
@@ -130,6 +192,14 @@ export function useRemoteTimeline(
   const [persistedEntryIds, setPersistedEntryIds] = useState<ReadonlySet<string>>(() => new Set());
   /** The cursor for the next older page (`nextOffset`), or null at the start. */
   const cursorRef = useRef<number | null>(null);
+
+  /**
+   * The entries folded into messages, by the same projector this app uses for
+   * its own sessions — imported rather than reimplemented, because "one author
+   * line per reply" is a rule with several parts (run identity, compaction
+   * dividers, aborted turns) that only stays right in one place.
+   */
+  const messages = useMemo(() => entriesToMessages(entries), [entries]);
   /**
    * Guards against a slow page for a *previous* session landing after the user
    * has already opened another one — the classic way a timeline shows one
@@ -141,11 +211,23 @@ export function useRemoteTimeline(
     side: "history" | "older",
     session: string,
     desktop: string,
+    /**
+     * Whether something is already on screen for this conversation.
+     *
+     * A catch-up read over a transcript the reader can already see must not put
+     * a spinner there: the spinner's job is to say "there is nothing yet", and a
+     * conversation that is already drawn is not that.
+     */
+    background = false,
   ): Promise<RemoteEntry[]> => {
     const epoch = ++epochRef.current;
-    if (side === "history")
-      setLoading(true);
-    else setLoadingOlder(true);
+    if (side === "history") {
+      if (!background)
+        setLoading(true);
+    }
+    else {
+      setLoadingOlder(true);
+    }
     try {
       const before = side === "older" ? cursorRef.current : null;
       const page = await requestRemotePeer<EntriesPage>(desktop, {
@@ -159,6 +241,7 @@ export function useRemoteTimeline(
       if (epoch !== epochRef.current)
         return [];
       const parsed = normaliseEntries(page?.entries);
+      const next = typeof page?.nextOffset === "number" ? page.nextOffset : null;
       setEntries(current => (side === "history" ? parsed : [...parsed, ...current]));
       // History is where persisted ids come from; a page replaces the window
       // (a `history` read resets to the newest page), so its ids reset with it
@@ -166,9 +249,17 @@ export function useRemoteTimeline(
       setPersistedEntryIds(side === "history"
         ? new Set(parsed.map(item => item.id))
         : current => new Set([...current, ...parsed.map(item => item.id)]));
-      const next = typeof page?.nextOffset === "number" ? page.nextOffset : null;
       cursorRef.current = next;
       setHasMore(page?.hasMore === true && next !== null && next > 0);
+      // Kept for the next open, which is where the point of it is: a `history`
+      // read holds the newest page (an `older` read adds to what is there), and
+      // the cursor travels with it so paging up continues where it left off.
+      snapshots.set(snapshotKey(desktop, session), {
+        cursor: next,
+        entries: side === "history" ? parsed : [],
+        hasMore: page?.hasMore === true && next !== null && next > 0,
+        persistedIds: new Set(parsed.map(item => item.id)),
+      });
       setError(null);
       return parsed;
     }
@@ -199,20 +290,31 @@ export function useRemoteTimeline(
     await readPage("older", sessionId, desktopId);
   }, [desktopId, sessionId, hasMore, readPage]);
 
-  // Open: read history. The previous session's lines are cleared first, so they
-  // can never appear under the new session's title even for one frame.
+  // Open: show what was read last time, then read the newest page again.
+  //
+  // Both halves matter. The seeded state is what makes a revisit instant — the
+  // reader sees their conversation rather than a blank column — and the re-read
+  // is what keeps it honest: NATS Core is at-most-once, so anything the host
+  // pushed while this window was elsewhere may never arrive, and a transcript
+  // that trusted the stream would be quietly missing it.
   useEffect(() => {
     epochRef.current += 1;
-    setEntries([]);
-    setHasMore(false);
+    const cached = desktopId && sessionId ? snapshots.get(snapshotKey(desktopId, sessionId)) : undefined;
+    setEntries(cached?.entries ?? []);
+    setPersistedEntryIds(cached?.persistedIds ?? new Set());
+    cursorRef.current = cached?.cursor ?? null;
+    setHasMore(cached?.hasMore ?? false);
     setError(null);
     setStreaming(false);
     setCompacting(false);
-    setPersistedEntryIds(new Set());
-    cursorRef.current = null;
+    // The catch-up read is not a first read: with something already on screen
+    // there is no empty state to cover, so the spinner would only say "this is
+    // provisional", which the seeded transcript already is not.
+    if (cached)
+      setLoading(false);
     if (!enabled || !desktopId || !sessionId)
       return;
-    void readPage("history", sessionId, desktopId);
+    void readPage("history", sessionId, desktopId, Boolean(cached));
     // Leaving this conversation drops its fetched tool arguments. They are keyed
     // by run and call id, which never repeat, so nothing here would ever be read
     // again — and the cache would otherwise grow for the life of the window.
@@ -282,6 +384,11 @@ export function useRemoteTimeline(
   return useMemo(
     () => ({
       entries,
+      messages,
+      canCompact: sessionId !== null && sessionId !== ""
+        && entries.length > 0
+        && !streaming
+        && !compacting,
       loading,
       loadingOlder,
       hasMore,
@@ -292,7 +399,7 @@ export function useRemoteTimeline(
       compacting,
       persistedEntryIds,
     }),
-    [entries, loading, loadingOlder, hasMore, error, loadOlder, refresh, streaming, compacting, persistedEntryIds],
+    [entries, messages, sessionId, streaming, compacting, loading, loadingOlder, hasMore, error, loadOlder, refresh, persistedEntryIds],
   );
 }
 

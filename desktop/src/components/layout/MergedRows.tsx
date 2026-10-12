@@ -4,10 +4,12 @@ import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadTreeRow } from "./threadTree";
 import { Plus } from "lucide-react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { groupMergedRows } from "../../features/remote-peer/mergeConversations";
 import { iconGlyph } from "../../features/remote-peer/peerIcons";
-import { useCollapsedWorkspaces } from "./hooks/useCollapsedWorkspaces";
+import { RemoteWorkspaceMenu } from "../../features/remote-peer/RemoteWorkspaceMenu";
+import { ChatSectionMenu } from "./ActivityRailMenus";
 import { RailGroupHeader, RailHeaderButton, RailSectionHeader, RailSectionToggle } from "./RailChrome";
 import { RemoteConversationRow } from "./RemoteConversationRow";
 
@@ -22,29 +24,39 @@ import { RemoteConversationRow } from "./RemoteConversationRow";
  *   file one machine's rows under the other's heading.
  * - A group heading carries the machine's icon (after the name), since with
  *   several machines in one list the name alone does not say where it is from.
- * - Fold state is per `(machine, workspace)` and kept in this component, the way
- *   the local list keeps its own — folding a group is a property of looking at
- *   the list, not of the conversations in it.
  *
  * Local rows are supplied by the rail as already-built nodes, and so are local
  * group headings. That is deliberate: the rail owns their props (selection mode,
  * approvals, run status, unread, the workspace menu), and rebuilding them here
  * would mean two places to update whenever either gains a prop — which is how
- * one list ends up subtly different from the other. It also means a local
- * workspace heading is not merely *like* the local list's: it is the same one.
+ * one list ends up subtly different from the other.
+ *
+ * **The fold state is the rail's, passed in.** This component used to call
+ * `useCollapsedWorkspaces` again, which is a *second* `useState` over the same
+ * localStorage key — so the rail's copy drove the heading (chevron, label) and
+ * this copy drove the rows. They agree only at mount, and then: folding a
+ * workspace flipped the heading while its conversations stayed, and expanding
+ * one after a restart flipped the heading while the conversations stayed hidden.
+ * That is the reported "a local workspace's list is empty", and it is why there
+ * is one instance now.
  */
 export function MergedRows({
   activeKey,
   chatSectionCollapsed,
+  collapsedWorkspaces,
   filter,
   onChangedRemote,
   onNewChat,
+  onNewChatInWorkspace,
   onNewWorkspace,
   onOpenRemote,
   onRenameRemote,
+  onSelectChats,
   onToggleChatSection,
+  onToggleWorkspace,
   onToggleWorkspaceSection,
   peers,
+  pinnedWorkspaces,
   renderLocalGroupHeader,
   renderLocalRow,
   rows,
@@ -54,6 +66,8 @@ export function MergedRows({
 }: {
   activeKey: string | null;
   chatSectionCollapsed: boolean;
+  /** The rail's fold state: the same instance that draws the local headings. */
+  collapsedWorkspaces: ReadonlySet<string>;
   /**
    * Which machines the list is showing.
    *
@@ -66,10 +80,15 @@ export function MergedRows({
   /** Re-read a host's catalogue after one of its rows was acted on. */
   onChangedRemote: () => void;
   onNewChat?: () => void;
+  /** Start a conversation in a workspace on another machine. */
+  onNewChatInWorkspace?: (desktopId: string, workspaceId: string) => void;
   onNewWorkspace?: () => void;
   onOpenRemote: (conversation: MergedConversation) => void;
   onRenameRemote: (conversation: MergedConversation) => void;
+  /** Mark this machine's chats for a batch action (a local-only operation). */
+  onSelectChats?: () => void;
   onToggleChatSection: () => void;
+  onToggleWorkspace: (key: string) => void;
   onToggleWorkspaceSection: () => void;
   /**
    * Where each local conversation sits in its own tree, keyed by thread id.
@@ -80,6 +99,8 @@ export function MergedRows({
    */
   localRowMeta: Map<string, ThreadTreeRow>;
   peers: RemotePeer[];
+  /** This machine's pinned workspaces, so their groups lead the list. */
+  pinnedWorkspaces: ReadonlySet<string>;
   /** The local rail's own workspace heading, so both lists show one heading. */
   renderLocalGroupHeader: (workspaceId: string) => ReactNode;
   renderLocalRow: (thread: StoredThread, depth?: number, hasChildren?: boolean) => ReactNode;
@@ -88,21 +109,19 @@ export function MergedRows({
   workspaceSectionCollapsed: boolean;
 }) {
   const { t } = useTranslation("layout");
-  const { chats, pinned, workspaces } = groupMergedRows(rows);
-  // Fold state, keyed by group. Shared with the local list's workspace folding so
-  // a workspace folded in one place is folded in the other — it is the same
-  // workspace, and two independent fold states would disagree the moment a device
-  // filter changed which list is drawn.
-  const { collapsedWorkspaces, toggleWorkspaceCollapsed } = useCollapsedWorkspaces();
+  const { chats, pinned, workspaces } = groupMergedRows(rows, pinnedWorkspaces);
+  // The chat section's menu is the rail's own control, which owns its open state
+  // through props — so the state lives here, next to the header that draws it.
+  const [chatMenuOpen, setChatMenuOpen] = useState(false);
   // One machine selected: it is named by the selector directly above the list, so
   // repeating it on every row says nothing and takes the space a title needs.
-  const showSource = !(filter.kind === "device" && filter.desktopId !== null);
+  const oneMachine = filter.kind === "device" && filter.desktopId !== null;
   // Creating a workspace or a chat makes one on *this* machine, so the controls
   // that do it belong only where this machine's rows are listed: under a remote
   // device's filter they would add something the user cannot see.
   const showLocalActions = filter.kind === "all" || filter.desktopId === null;
 
-  function renderRow(conversation: MergedConversation, compact: boolean): ReactNode {
+  function renderRow(conversation: MergedConversation, compact: boolean, groupHasSource: boolean): ReactNode {
     if (conversation.desktopId === null) {
       const thread = threadById.get(conversation.id);
       // A local row without a thread cannot happen (the merge is built from the
@@ -122,7 +141,10 @@ export function MergedRows({
         onOpen={onOpenRemote}
         onOpenRename={onRenameRemote}
         peer={peers.find(peer => peer.desktopId === conversation.desktopId)}
-        showSource={showSource}
+        // The machine is named once per group, on the heading. Repeating it on
+        // every row under that heading is the same word on every line — and the
+        // row pays for it in the width its title needs.
+        showSource={!oneMachine && !groupHasSource}
       />
     );
   }
@@ -137,7 +159,7 @@ export function MergedRows({
         ? (
             <div className="mb-3 space-y-0.5">
               <RailSectionHeader>{t("activityRail.pinnedHeader")}</RailSectionHeader>
-              {pinned.map(row => renderRow(row, false))}
+              {pinned.map(row => renderRow(row, false, false))}
             </div>
           )
         : null}
@@ -173,32 +195,58 @@ export function MergedRows({
           ? null
           : workspaces.map((group) => {
               // A group of this machine's rows is this machine's workspace, and
-              // the local rail already renders that heading — with its menu, its
+              // the rail already renders that heading — with its menu, its
               // click-to-select and its pin marker. Using it here is what makes
               // the two lists one list rather than two that resemble each other.
               if (group.desktopId === null && group.workspaceId !== null) {
+                const collapsed = collapsedWorkspaces.has(group.workspaceId);
                 return (
                   <div className="space-y-0.5" key={group.key}>
                     {renderLocalGroupHeader(group.workspaceId)}
-                    {collapsedWorkspaces.has(group.workspaceId)
+                    {collapsed
                       ? null
-                      : group.rows.map(row => renderRow(row, true))}
+                      : group.rows.map(row => renderRow(row, true, false))}
                   </div>
                 );
               }
               const collapsed = collapsedWorkspaces.has(group.key);
+              const desktopId = group.desktopId;
+              const workspaceId = group.workspaceId;
               return (
                 <div className="space-y-0.5" key={group.key}>
                   <RailGroupHeader
                     collapsed={collapsed}
                     collapsedLabel={t("activityRail.expandWorkspace")}
                     expandedLabel={t("activityRail.collapseWorkspace")}
-                    glyph={showSource ? <GroupGlyph desktopId={group.desktopId} peers={peers} /> : null}
+                    glyph={oneMachine ? null : <GroupGlyph desktopId={desktopId} peers={peers} />}
+                    menu={desktopId && workspaceId
+                      ? (
+                          <>
+                            {/* A workspace on another machine takes the same two
+                                controls the local one has: a menu for what the
+                                host accepts, and a way to start a conversation
+                                in it. */}
+                            <RailHeaderButton
+                              icon={<Plus className="size-3.5" />}
+                              label={t("activityRail.newChatInWorkspace", {
+                                name: group.label ?? t("activityRail.workspace"),
+                              })}
+                              onClick={() => onNewChatInWorkspace?.(desktopId, workspaceId)}
+                            />
+                            <RemoteWorkspaceMenu
+                              desktopId={desktopId}
+                              name={group.label ?? t("activityRail.workspace")}
+                              onChanged={onChangedRemote}
+                              workspaceId={workspaceId}
+                            />
+                          </>
+                        )
+                      : null}
                     name={group.label ?? t("activityRail.workspace")}
-                    onToggle={() => toggleWorkspaceCollapsed(group.key)}
+                    onToggle={() => onToggleWorkspace(group.key)}
                     testId="merged-group-heading"
                   />
-                  {collapsed ? null : group.rows.map(row => renderRow(row, true))}
+                  {collapsed ? null : group.rows.map(row => renderRow(row, true, true))}
                 </div>
               );
             })}
@@ -214,6 +262,21 @@ export function MergedRows({
                   : t("activityRail.collapseChatSection")}
                 onToggle={onToggleChatSection}
               />
+              {/* The chat section's own menu, as the local list has. It marks
+                  conversations for a batch action, which is this machine's: a
+                  remote conversation has no checkbox because the batch it would
+                  join is a local-store operation. Offered only where this
+                  machine's rows are listed, since a menu that could only act on
+                  rows the filter has hidden would be a dead control. */}
+              {showLocalActions && onSelectChats
+                ? (
+                    <ChatSectionMenu
+                      open={chatMenuOpen}
+                      onOpenChange={setChatMenuOpen}
+                      onSelect={onSelectChats}
+                    />
+                  )
+                : null}
               {showLocalActions && onNewChat
                 ? (
                     <RailHeaderButton
@@ -232,7 +295,7 @@ export function MergedRows({
           ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noChats")}</div>
           : null}
         <div className="shrink-0 space-y-0.5" data-testid="merged-conversations">
-          {chatSectionCollapsed ? null : chats.map(row => renderRow(row, false))}
+          {chatSectionCollapsed ? null : chats.map(row => renderRow(row, false, false))}
         </div>
       </div>
     </>

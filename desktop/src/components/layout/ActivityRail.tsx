@@ -89,6 +89,14 @@ interface ActivityRailProps {
   onRenameRemoteConversation?: (conversation: MergedConversation) => void;
   /** Re-read paired hosts and their catalogues (after a remote row action). */
   onRemoteConversationsChanged?: () => void;
+  /**
+   * Start a conversation in a workspace on another machine.
+   *
+   * The remote counterpart of the local heading's own "new chat" control: the
+   * workspace is on that host, so the request has to name it there rather than
+   * carry a path this machine cannot resolve.
+   */
+  onNewChatOnRemote?: (desktopId: string, workspaceId: string) => void;
   /** Jump to the Remote Desktops screen. */
   onManageDesktops?: () => void;
   /** The remote conversation currently open (client role), if any. */
@@ -150,6 +158,7 @@ export function ActivityRail({
   onOpenRemoteConversation,
   onRenameRemoteConversation,
   onRemoteConversationsChanged,
+  onNewChatOnRemote,
   onManageDesktops,
   activeRemoteKey = null,
   futureBalance,
@@ -403,6 +412,18 @@ export function ActivityRail({
     );
   }
 
+  /**
+   * This machine's pinned workspaces, by id.
+   *
+   * Read by the merged list so a pinned workspace leads there too. Without it
+   * the merged list ordered groups purely by recency, and a pin set in the local
+   * list showed its marker on a group that never moved.
+   */
+  const pinnedWorkspaceIds = useMemo(
+    () => new Set(workspaces.filter(workspace => workspace.pinned).map(workspace => workspace.id)),
+    [workspaces],
+  );
+
   const threadById = useMemo(
     () => new Map(visibleThreads.map(thread => [thread.id, thread])),
     [visibleThreads],
@@ -440,7 +461,15 @@ export function ActivityRail({
           type="button"
         >
           <Folder className="size-4 shrink-0 text-ink-soft" />
-          <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-soft" title={workspace.name}>
+          {/* Named for the merged list's sake: the merged list renders *this*
+              heading for this machine's workspaces, and its own assertions have
+              to be able to address it (a heading whose rows come from another
+              component is the pair that can disagree). */}
+          <span
+            className="min-w-0 flex-1 truncate text-sm font-medium text-ink-soft"
+            data-testid="local-group-heading"
+            title={workspace.name}
+          >
             {workspace.name}
           </span>
           {/* A pinned group leads the list; the marker stays visible on hover
@@ -631,15 +660,21 @@ export function ActivityRail({
                               <MergedRows
                                 activeKey={activeConversationKey}
                                 chatSectionCollapsed={chatSectionCollapsed}
+                                collapsedWorkspaces={collapsedWorkspaces}
                                 filter={deviceFilter}
                                 onChangedRemote={() => onRemoteConversationsChanged?.()}
                                 onNewChat={() => onNewChat()}
+                                onNewChatInWorkspace={(desktopId, workspaceId) =>
+                                  onNewChatOnRemote?.(desktopId, workspaceId)}
                                 onNewWorkspace={onNewWorkspace}
                                 onOpenRemote={conversation => onOpenRemoteConversation?.(conversation)}
                                 onRenameRemote={conversation => onRenameRemoteConversation?.(conversation)}
+                                onSelectChats={() => enterSelectionMode("chat")}
                                 onToggleChatSection={() => setChatSectionCollapsed(value => !value)}
+                                onToggleWorkspace={toggleWorkspaceCollapsed}
                                 onToggleWorkspaceSection={() => setWorkspaceSectionCollapsed(value => !value)}
                                 peers={remotePeers}
+                                pinnedWorkspaces={pinnedWorkspaceIds}
                                 localRowMeta={localRowMeta}
                                 renderLocalGroupHeader={(workspaceId) => {
                                   const found = visibleWorkspaceGroups.find(item => item.workspace.id === workspaceId);

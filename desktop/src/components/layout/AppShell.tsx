@@ -11,14 +11,14 @@ import { saveComposerDraft } from "../../features/agent/composerDraft";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { sessionMentionOptions } from "../../features/agent/sessionMention";
 import { useSkillRecommendation } from "../../features/agent/useSkillRecommendation";
-import { peerBadgeText } from "../../features/remote-peer/peerIcons";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
-import { RemoteFilesDialog } from "../../features/remote-peer/RemoteFilesDialog";
+import { RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
 import { compactRemoteConversation, continueRemoteRun, forkRemoteConversation, installRemoteSkill } from "../../features/remote-peer/remotePeerClient";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { remoteSkillRecoSource } from "../../features/remote-peer/remoteSkillRecoSource";
+import { RemoteUsageDialog } from "../../features/remote-peer/RemoteUsageDialog";
 import { useRemoteApprovals } from "../../features/remote-peer/useRemoteApprovals";
 import { useRemoteConversationSettings } from "../../features/remote-peer/useRemoteConversationSettings";
 import { useRemoteSkillCatalog } from "../../features/remote-peer/useRemoteSkillCatalog";
@@ -148,11 +148,22 @@ function ReadyAppShell({
    * new-chat flows only know how to leave the thread view — giving them a mode
    * they never set is how a stale remote view reappears.
    */
-  const [activeRemote, setActiveRemote] = useState<{ desktopId: string; sessionId: string } | null>(null);
+  const [activeRemote, setActiveRemote] = useState<{
+    desktopId: string;
+    sessionId: string;
+    /**
+     * The workspace a *draft* belongs in, on that host.
+     *
+     * Set when the draft was started from a workspace heading; the host resolves
+     * the id against its own store when the first prompt creates the session.
+     * Null for a draft started with no workspace in mind.
+     */
+    workspaceId: string | null;
+  } | null>(null);
   /** The remote conversation whose rename dialog is open, if any. */
   const [remoteRename, setRemoteRename] = useState<MergedConversation | null>(null);
-  /** Whether the open remote conversation's file browser is showing. */
-  const [remoteFilesOpen, setRemoteFilesOpen] = useState(false);
+  /** Whether the open remote conversation's account book is showing. */
+  const [remoteUsageOpen, setRemoteUsageOpen] = useState(false);
   const [leftExpanded, setLeftExpanded] = useState(true);
   const [leftOverlayOpen, setLeftOverlayOpen] = useState(false);
   const [rightExpanded, setRightExpanded] = useState(false);
@@ -801,7 +812,7 @@ function ReadyAppShell({
   function openRemoteConversation(conversation: MergedConversation) {
     if (conversation.desktopId === null)
       return;
-    setActiveRemote({ desktopId: conversation.desktopId, sessionId: conversation.id });
+    setActiveRemote({ desktopId: conversation.desktopId, sessionId: conversation.id, workspaceId: null });
     setSection("chat");
     // The mirror of `handleSelectThread`: opening a remote conversation leaves
     // the local one, and it has to actually be *shown* — a draft left in the
@@ -818,7 +829,7 @@ function ReadyAppShell({
    * than a row — a task run names its conversation by session id.
    */
   function openRemoteSession(desktopId: string, sessionId: string) {
-    setActiveRemote({ desktopId, sessionId });
+    setActiveRemote({ desktopId, sessionId, workspaceId: null });
     setSection("chat");
     setActiveThreadId(null);
     setCenterMode("thread");
@@ -843,7 +854,7 @@ function ReadyAppShell({
     try {
       const child = await forkRemoteConversation(desktopId, sessionId, sourceEntryId);
       await refreshRemotePeers();
-      setActiveRemote({ desktopId, sessionId: child.sessionId });
+      setActiveRemote({ desktopId, sessionId: child.sessionId, workspaceId: null });
     }
     catch (error) {
       emitFutureEvent("toast", {
@@ -861,8 +872,8 @@ function ReadyAppShell({
    * guard against — it is the only way to start a conversation remotely, since
    * the client cannot mint a host-side session id.
    */
-  function startRemoteConversation(desktopId: string) {
-    setActiveRemote({ desktopId, sessionId: "" });
+  function startRemoteConversation(desktopId: string, workspaceId: string | null = null) {
+    setActiveRemote({ desktopId, sessionId: "", workspaceId });
     setSection("chat");
     // A draft on a machine is still "a conversation in the column": without
     // this, asking for one from the new-chat screen left that screen up and the
@@ -881,6 +892,7 @@ function ReadyAppShell({
     onChangeDeviceFilter: setDeviceFilter,
     onOpenRemoteConversation: openRemoteConversation,
     onRenameRemoteConversation: setRemoteRename,
+    onNewChatOnRemote: (desktopId: string, workspaceId: string) => startRemoteConversation(desktopId, workspaceId),
     onRemoteConversationsChanged: () => void refreshRemotePeers(),
     onManageDesktops: () => handleSectionChange("remote"),
     activeRemoteKey: activeRemote
@@ -1022,7 +1034,7 @@ function ReadyAppShell({
                           leftPanelExpanded={showLeftPanel}
                           onOpenRemoteSession={openRemoteSession}
                           onRefreshRemote={refreshRemote}
-                          onStartConversation={startRemoteConversation}
+                          onStartConversation={(desktopId: string) => startRemoteConversation(desktopId)}
                           onToggleAutoConnect={value => void changeSettings({ autoConnectRemote: value })}
                           onToggleLeftPanel={handleToggleLeftPanel}
                           remoteStatus={remoteStatus}
@@ -1037,17 +1049,19 @@ function ReadyAppShell({
                             desktopId={activeRemote.desktopId}
                             composer={(
                               <RemoteComposer
+                                canCompact={remoteTimeline.canCompact}
                                 desktopId={activeRemote.desktopId}
                                 // The host-owned model and thinking level live in
                                 // the composer's control row, beside the send
                                 // button they apply to — the same place this
                                 // app's own model and thinking controls are.
                                 controls={<RemoteConversationSettings settings={remoteSettings} />}
+                                onCompact={() => void compactRemoteConversationOn(activeRemote.desktopId, activeRemote.sessionId)}
                                 onCreated={(createdSessionId) => {
                                   // Adopt the conversation the host just made, so
                                   // the next prompt goes to it by name instead
                                   // of creating a second one.
-                                  setActiveRemote({ desktopId: activeRemote.desktopId, sessionId: createdSessionId });
+                                  setActiveRemote({ desktopId: activeRemote.desktopId, sessionId: createdSessionId, workspaceId: null });
                                   void refreshRemotePeers();
                                 }}
                                 onSent={() => {
@@ -1058,15 +1072,15 @@ function ReadyAppShell({
                                 sessionId={activeRemote.sessionId}
                                 skillRecommendation={remoteSkillRecommendation}
                                 streaming={remoteTimeline.streaming}
+                                workspaceId={activeRemote.workspaceId}
                               />
                             )}
                             leftPanelExpanded={showLeftPanel}
-                            entries={remoteTimeline.entries}
+                            messages={remoteTimeline.messages}
                             error={remoteTimeline.error}
                             hasMore={remoteTimeline.hasMore}
                             loading={remoteTimeline.loading}
                             loadingOlder={remoteTimeline.loadingOlder}
-                            onCompact={() => void compactRemoteConversationOn(activeRemote.desktopId, activeRemote.sessionId)}
                             onToggleLeftPanel={handleToggleLeftPanel}
                             onContinueRun={runId => void continueRemoteRunOn(activeRemote.desktopId, activeRemote.sessionId, runId)}
                             onDecideApproval={(approval, decision) => void remoteApprovals.decide(approval, decision)}
@@ -1078,13 +1092,12 @@ function ReadyAppShell({
                                 forkable,
                               )}
                             onLoadOlder={() => void remoteTimeline.loadOlder()}
-                            onOpenFiles={() => setRemoteFilesOpen(true)}
+                            onOpenUsage={() => setRemoteUsageOpen(true)}
                             onRetry={() => void remoteTimeline.refresh()}
                             peer={activeRemotePeer}
                             persistedEntryIds={remoteTimeline.persistedEntryIds}
                             sessionId={activeRemote.sessionId}
                             streaming={remoteTimeline.streaming}
-                            compacting={remoteTimeline.compacting}
                             title={titleOfRemote(remoteCatalogs, activeRemote)}
                           />
                         )
@@ -1138,7 +1151,12 @@ function ReadyAppShell({
           </main>
           {/* Views without thread context hide the right panel entirely, including
           the collapsed expand affordance. */}
-          {hideRightPanel
+          {/* A remote conversation's right panel is that machine's files — and
+          nothing else. The panel's other tabs (review, runs, artifacts)
+          describe *this* machine, so they have no remote counterpart to show;
+          the panel is hidden entirely while a remote conversation is open and
+          this one is drawn instead. */}
+          {hideRightPanel || activeRemote
             ? null
             : (
                 <ContextPanel
@@ -1153,6 +1171,17 @@ function ReadyAppShell({
                   onToggleExpanded={() => setRightExpanded(value => !value)}
                 />
               )}
+          {activeRemote && activeRemote.sessionId !== "" && !hideRightPanel
+            ? (
+                <RemoteFilesPanel
+                  desktopId={activeRemote.desktopId}
+                  expanded={rightExpanded}
+                  onToggleExpanded={() => setRightExpanded(value => !value)}
+                  peer={activeRemotePeer}
+                  sessionId={activeRemote.sessionId}
+                />
+              )
+            : null}
           {/* While dragging the divider, a full-window overlay keeps the cursor and
           captures mouse events even over embedded iframes (PDF preview). */}
           {rightPanelResizing && !hideRightPanel
@@ -1200,17 +1229,15 @@ function ReadyAppShell({
             />
           )
         : null}
-      {/* Keyed on the conversation so switching to another one closes the
-          browser: the listing belongs to a session, and keeping it open across
-          a switch would show one conversation's files under another's title. */}
-      {remoteFilesOpen && activeRemote && activeRemote.sessionId
+      {/* The conversation's account book, as the local header's is: token usage
+          and amount for the *host's* session, read from the host's own state. */}
+      {remoteUsageOpen && activeRemote
         ? (
-            <RemoteFilesDialog
+            <RemoteUsageDialog
               desktopId={activeRemote.desktopId}
-              key={`${activeRemote.desktopId}::${activeRemote.sessionId}`}
-              onClose={() => setRemoteFilesOpen(false)}
-              peerName={activeRemotePeer ? peerBadgeText(activeRemotePeer, activeRemotePeer.desktopId) : ""}
+              onClose={() => setRemoteUsageOpen(false)}
               sessionId={activeRemote.sessionId}
+              title={titleOfRemote(remoteCatalogs, activeRemote)}
             />
           )
         : null}
