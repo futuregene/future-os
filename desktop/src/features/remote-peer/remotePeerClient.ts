@@ -57,17 +57,6 @@ export async function listRemotePeers(): Promise<RemotePeer[]> {
   return Array.isArray(raw) ? raw : [];
 }
 
-/**
- * Open one machine's settings in a window of its own.
- *
- * The window is created and remembered by the backend (one per machine, raised
- * if it is already open), so nothing here holds window state: two callers
- * asking for the same machine get the same window rather than two.
- */
-export function openRemoteSettingsWindow(desktopId: string): Promise<void> {
-  return invokeCommand<void>("remote_peer_open_settings_window", { desktopId });
-}
-
 export function pairRemotePeer(invitation: string): Promise<RemotePeer> {
   return invokeCommand<RemotePeer>("remote_peer_pair", { invitation });
 }
@@ -484,11 +473,35 @@ export function remoteModelProvider(reference: string): string | undefined {
 
 /** The host's model catalogue, as this machine may choose from. */
 export async function listRemoteModels(desktopId: string): Promise<RemoteModelInfo[]> {
-  const raw = await requestRemotePeer<Record<string, unknown>>(
+  return parseModelList(await requestRemotePeer<Record<string, unknown>>(
     desktopId,
     { type: "list_models" },
     "list",
-  );
+  ));
+}
+
+/**
+ * The host's models as its *own settings page* sees them: **including** the ones
+ * the user has hidden.
+ *
+ * A different command from `listRemoteModels`, and the difference is the whole
+ * point of the settings page. The host answers `list_models` with the models it
+ * currently offers — it strips `hiddenModels` before replying — so a visibility
+ * switch fed from that list could only ever show models that are already on, and
+ * a hidden model could never be switched back on. `list_settings_models` is the
+ * unfiltered catalogue, which is what a page of switches needs (and what the
+ * phone's models page reads, for the same reason).
+ */
+export async function listRemoteSettingsModels(desktopId: string): Promise<RemoteModelInfo[]> {
+  return parseModelList(await requestRemotePeer<Record<string, unknown>>(
+    desktopId,
+    { type: "list_settings_models" },
+    "list",
+  ));
+}
+
+/** One entry of a host's model list, as the two read commands both spell it. */
+function parseModelList(raw: Record<string, unknown> | null | undefined): RemoteModelInfo[] {
   const models = Array.isArray(raw?.models) ? raw.models : [];
   return models.flatMap((entry): RemoteModelInfo[] => {
     if (typeof entry !== "object" || entry === null)

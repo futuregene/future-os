@@ -1,11 +1,13 @@
 import type { RemotePeer } from "./remotePeerClient";
 import type { RemoteApproval } from "./useRemoteApprovals";
 import type { RemoteEntry } from "./useRemoteTimeline";
-import { GitBranch } from "lucide-react";
+import { FolderOpen, GitBranch } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/cn";
+import { startWindowDrag } from "../../lib/windowDrag";
 import { MarkdownContent } from "../markdown/MarkdownContent";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
 import { precedingUserEntryId } from "./useRemoteTimeline";
@@ -31,6 +33,7 @@ export function RemoteConversationView({
   entries,
   error,
   hasMore,
+  leftPanelExpanded,
   loading,
   loadingOlder,
   onCompact,
@@ -40,6 +43,7 @@ export function RemoteConversationView({
   onLoadOlder,
   onOpenFiles,
   onRetry,
+  onToggleLeftPanel,
   peer,
   persistedEntryIds,
   settings,
@@ -58,6 +62,8 @@ export function RemoteConversationView({
   entries: RemoteEntry[];
   error: string | null;
   hasMore: boolean;
+  /** The panel toggle, as on this app's own conversation header. */
+  leftPanelExpanded: boolean;
   loading: boolean;
   loadingOlder: boolean;
   /** Ask the host to compact this conversation's context. */
@@ -82,6 +88,7 @@ export function RemoteConversationView({
   onFork: (sourceEntryId: string, forkable: boolean) => void;
   onLoadOlder: () => void;
   onRetry: () => void;
+  onToggleLeftPanel: () => void;
   peer: RemotePeer | undefined;
   /** The conversation's session id on that host. */
   sessionId: string;
@@ -94,18 +101,34 @@ export function RemoteConversationView({
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line-soft px-4">
-        <span aria-hidden className="text-base">{iconGlyph(peer?.icon)}</span>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold text-ink">{title}</div>
-          <div className="truncate text-xs text-ink-muted">
-            {t("runsOn", { name: peer ? peerBadgeText(peer, peer.desktopId) : "" })}
+      {/* Same header row as this app's own conversation (`ThreadHeader`): the
+          panel toggle and the title at the left, the conversation's own actions
+          at the right, same height and padding — a remote conversation is a
+          conversation, and its frame should not announce otherwise.
+          `pr-14` reserves the collapsed context panel's corner, as there. */}
+      <header
+        className="flex h-12 shrink-0 select-none items-center gap-2 border-b border-line-soft/40 pl-4 pr-14"
+        onMouseDown={startWindowDrag}
+      >
+        <div className="mr-3 flex min-w-0 flex-1 items-center" data-tauri-drag-region>
+          <LeftPanelTitlebarToggle expanded={leftPanelExpanded} onToggle={onToggleLeftPanel} />
+          <span aria-hidden className="mr-1.5 text-base">{iconGlyph(peer?.icon)}</span>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-semibold text-ink">{title}</div>
+            <div className="truncate text-xs text-ink-muted">
+              {t("runsOn", { name: peer ? peerBadgeText(peer, peer.desktopId) : "" })}
+            </div>
           </div>
         </div>
         {/* The conversation's own settings, beside the controls for it: these act
             on the host and the picker says so through their labels. */}
         {settings}
-        <Button onClick={onOpenFiles} size="sm" variant="ghost">
+        {/* Files (the host's files for this conversation) and Compact, in the
+            header's right-hand group where this app puts a conversation's own
+            actions. No terminal toggle: a remote conversation has no local
+            shell to open, which is the one thing the local header has and this
+            one does not. */}
+        <Button leftIcon={<FolderOpen className="size-3.5" />} onClick={onOpenFiles} size="sm" variant="ghost">
           {t("filesTitle")}
         </Button>
         {/* Compact is a conversation-level action on the host, next to the run

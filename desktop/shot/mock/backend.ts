@@ -9,6 +9,7 @@
  * `[mock] UNHANDLED COMMAND <name>` — add a handler for it and re-capture.
  */
 import type { MockEntry } from "./data";
+
 import {
   appSettings,
   availableSkills,
@@ -48,6 +49,18 @@ import {
 const log = (...args: unknown[]) => console.log("[mock]", ...args);
 
 let settings: typeof appSettings = { ...appSettings };
+
+/**
+ * The keys the fixture's host has hidden.
+ *
+ * Read from the same mutable `settings` the mock answers `get_desktop_settings`
+ * with, so a scenario that flips a switch and one that lists models cannot
+ * disagree about what is hidden.
+ */
+function hiddenModelKeys(): string[] {
+  const hidden: unknown = (settings as { hiddenModels?: unknown }).hiddenModels;
+  return Array.isArray(hidden) ? hidden.filter((item): item is string => typeof item === "string") : [];
+}
 const threadList = threads.map(thread => ({ ...thread }));
 const workspaceList = workspaces.map(workspace => ({ ...workspace }));
 /** How many times each thread's agent state has been read (see the handler). */
@@ -488,11 +501,22 @@ const handlers: Record<string, (args: any) => unknown> = {
         };
       case "get_state":
         return remoteConversationState;
+      // The host answers these two differently on purpose: `list_models` is the
+      // picker's list and omits what the user hid, `list_settings_models` is the
+      // settings page's and includes it. The fixture mirrors that split, or a
+      // page fed from the wrong one would still look right here.
       case "list_models":
       case "get_available_models":
+        return { models: models.filter(model => !hiddenModelKeys().includes(`${model.provider}/${model.id}`)) };
+      case "list_settings_models":
         return { models };
       case "get_desktop_settings":
-        return { ...appSettings };
+        return { ...settings };
+      case "update_desktop_settings": {
+        const patch = (command.settings ?? {}) as Record<string, unknown>;
+        settings = { ...settings, ...patch };
+        return { ...settings };
+      }
       case "get_settings":
         return { approvalTier: "sandbox", sandboxAvailable: true };
       case "list_workspaces":

@@ -340,22 +340,34 @@ this machine's embedded terminal, Review/diff, workspace file tree, and
 Reset/Debug describe local facts, so a remote conversation offers no entry to
 them.
 
-**Each machine's settings live in their own window.** "Settings" on a machine
-opens a separate native window (`remote_peer_open_settings_window`, one window per
-`desktop_id`; asking again *raises* the existing one rather than opening a
-second). Those settings belong to that machine: beside this machine's own state
-in the main window, "auto-upgrade skills" stops meaning one thing — and a page
-stacked in the main window is lost the moment the user navigates. The window
-identifies itself through a URL parameter
-(`?window=peer-settings&desktop=<id>`), so it stays the same bundle with the same
-providers; a new window label must also be listed in the Tauri capability's
-`windows`, or its webview has no IPC and opens blank. The window's root page is a short list of rows: the
-*long* ones — skills, models, providers, workspaces, tasks — are pages of their
-own (the longer a list is, the less it belongs in front of the settings below
-it). The task editor is reached
-from that window, and "open a conversation" is rendered by the main window — the
-one hand-off that has to cross windows, over a backend event, because the app's
-own event bus is per-window.
+**Each machine's settings are a page, not another window.** "Settings" on a
+machine changes the page *in this window*: the settings page and each long list
+inside it (models, skills, providers, workspaces) are pages with a back control at
+the **top left**, and so is the task editor. They belong to that machine, but the
+user is still working in *this* window — leaving it (its size, position and place)
+costs more than the errand. So there is no second native window, and therefore no
+extra window label or capability entry: the URL-parameter route (`windowRoute`)
+and the `remote_peer_open_settings_window` command were both removed from the
+implementation.
+
+**The long lists are pages of their own, and the models page reads the
+*unfiltered* list.** A count is the wrong answer to "which models does that
+machine offer": the page groups by provider, filters as you type, and its switches
+write that machine's own `hiddenModels`. One command choice matters here: the host
+answers `list_models` **after** removing `hiddenModels` (that list is for the
+picker), while `list_settings_models` returns the complete catalogue. A settings
+page fed from the former could only ever show models that were already on — a
+hidden model was not in the list at all, so the switch was one-way. That was a
+real bug, found by rendering the page (the phone's models page reads
+`list_settings_models` for the same reason).
+
+**A remote conversation uses the same frame as a local one.** Its header matches
+the local header (48px; panel toggle and title at the left; this conversation's own
+actions at the right — settings, files, compact), and the composer is the same
+floating panel this app's own composer is (bordered, rounded, shadowed; attach at
+the bottom left, send at the bottom right). The one thing missing is the terminal:
+a remote conversation has no local shell to open. Aligning the right-hand panel
+(files only) is not done yet.
 
 **Capability alignment with mobile.** Every command the phone can use on a
 remote conversation now has a desktop entry point (reading and writing

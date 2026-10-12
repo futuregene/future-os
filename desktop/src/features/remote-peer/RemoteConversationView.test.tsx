@@ -14,6 +14,14 @@ import { RemoteConversationView } from "./RemoteConversationView";
  * its store, so sending one it has never seen is a guaranteed refusal.
  */
 
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    isFullscreen: () => Promise.resolve(false),
+    onResized: () => Promise.resolve(() => {}),
+    startDragging: () => Promise.resolve(),
+  }),
+}));
+
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 function entry(id: string, role: "assistant" | "user", text: string): SessionEntry {
@@ -74,6 +82,7 @@ async function mount(props: {
         entries={props.entries}
         error={null}
         hasMore={false}
+        leftPanelExpanded
         loading={false}
         loadingOlder={false}
         onCompact={onCompact}
@@ -83,6 +92,7 @@ async function mount(props: {
         onLoadOlder={() => {}}
         onOpenFiles={() => {}}
         onRetry={() => {}}
+        onToggleLeftPanel={() => {}}
         peer={peer}
         persistedEntryIds={new Set(props.persistedEntryIds ?? props.entries.map(item => item.id))}
         sessionId="sess_1"

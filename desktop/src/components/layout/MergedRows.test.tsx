@@ -275,3 +275,163 @@ it("keeps the badge on a mixed list even when the filter is not `all`", async ()
   expect(view.container.textContent).toContain("row");
   await view.unmount();
 });
+
+/**
+ * Foldable groups.
+ *
+ * The local list folds a workspace away; the merged one did not, so a user who
+ * paired a machine and filtered to it saw a flat list where their own machine's
+ * list had headings they could close — the same list behaving two ways.
+ */
+it("folds a workspace group away, and back", async () => {
+  const renderLocalRow = vi.fn(() => <div>row</div>);
+  const view = await render({
+    renderLocalRow,
+    rows: [
+      conversation({
+        desktopId: null,
+        id: "ws_local",
+        key: "local::ws_local",
+        mode: "workspace",
+        title: "in the workspace",
+        workspaceId: "ws_1",
+        workspaceName: "future-os",
+      }),
+    ],
+    threadById: new Map([["ws_local", thread("ws_local")]]),
+  });
+
+  const header = [...view.container.querySelectorAll("[data-testid='merged-group-heading']")]
+    .find(node => node.textContent === "future-os")!;
+  const toggle = header.parentElement!.querySelector("button")!;
+  expect(renderLocalRow).toHaveBeenCalledTimes(1);
+
+  await act(async () => toggle.click());
+  // The heading stays (so the group can be reopened); its rows are not built.
+  expect(view.container.querySelector("[data-testid='merged-group-heading']")!.textContent).toBe("future-os");
+  expect(renderLocalRow).toHaveBeenCalledTimes(1);
+
+  await act(async () => toggle.click());
+  expect(renderLocalRow).toHaveBeenCalledTimes(2);
+  await view.unmount();
+});
+
+/**
+ * This machine's groups are keyed by the workspace id alone, which is the key the
+ * local list folds by — so a workspace already folded there arrives folded here,
+ * and one workspace does not have two fold states depending on the list.
+ */
+it("honours the fold state the local list stores, by the same key", async () => {
+  localStorage.setItem("future.collapsedWorkspaces", JSON.stringify(["ws_1"]));
+  try {
+    const renderLocalRow = vi.fn(() => <div>row</div>);
+    const view = await render({
+      renderLocalRow,
+      rows: [
+        conversation({
+          desktopId: null,
+          id: "ws_local",
+          key: "local::ws_local",
+          mode: "workspace",
+          title: "in the workspace",
+          workspaceId: "ws_1",
+          workspaceName: "future-os",
+        }),
+      ],
+      threadById: new Map([["ws_local", thread("ws_local")]]),
+    });
+
+    // The heading is there; this workspace's rows are not.
+    expect(view.container.querySelector("[data-testid='merged-group-heading']")!.textContent).toBe("future-os");
+    expect(renderLocalRow).not.toHaveBeenCalled();
+    await view.unmount();
+  }
+  finally {
+    localStorage.removeItem("future.collapsedWorkspaces");
+  }
+});
+
+/** The machine's icon follows its name, so the name starts the heading. */
+it("puts the machine's icon after the group name", async () => {
+  const view = await render({
+    peers: [{
+      agentAvailable: true,
+      bridgeInstanceId: "bridge_1",
+      connected: true,
+      desktopId: "desktop_a",
+      error: null,
+      features: [],
+      icon: "laptop",
+      name: "Studio iMac",
+      pairId: "pair_1",
+    }],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [
+      conversation({
+        desktopId: "desktop_a",
+        id: "sess_a",
+        key: "desktop_a::sess_a",
+        mode: "workspace",
+        title: "theirs",
+        workspaceId: "ws_9",
+        workspaceName: "future-os",
+      }),
+    ],
+    threadById: new Map(),
+  });
+
+  const heading = view.container.querySelector("[data-testid='merged-group-heading']")!;
+  const icon = heading.parentElement!.querySelector("span[aria-hidden]")!;
+  // The name element precedes the machine's glyph inside the header.
+  expect(icon).not.toBeNull();
+  expect(icon.className).toContain("shrink-0");
+  expect(heading.parentElement!.textContent).toBe("future-os💻");
+  await view.unmount();
+});
+
+/**
+ * A chat section folds as well as a workspace one.
+ *
+ * The chat section is where most conversations are, and a reader who wants to
+ * scroll past another machine's chats to reach their own has no other way to put
+ * them away.
+ */
+it("folds a chat section away, and back", async () => {
+  const view = await render({
+    peers: [{
+      agentAvailable: true,
+      bridgeInstanceId: "bridge_1",
+      connected: true,
+      desktopId: "desktop_a",
+      error: null,
+      features: [],
+      icon: "laptop",
+      name: "Studio iMac",
+      pairId: "pair_1",
+    }],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [
+      conversation({
+        desktopId: "desktop_a",
+        id: "chat_a",
+        key: "desktop_a::chat_a",
+        title: "a chat on the host",
+      }),
+    ],
+    threadById: new Map(),
+  });
+
+  const heading = [...view.container.querySelectorAll("[data-testid='merged-group-heading']")]
+    .find(node => node.textContent === "Studio iMac")!;
+  const toggle = heading.parentElement!.querySelector("button")!;
+  const rows = () => view.container.querySelectorAll("[data-testid='remote-source-icon']").length;
+  expect(rows()).toBe(1);
+
+  await act(async () => toggle.click());
+  expect(rows()).toBe(0);
+  expect(view.container.querySelector("[data-testid='merged-group-heading']")!.textContent).toBe("Studio iMac");
+
+  await act(async () => toggle.click());
+  expect(rows()).toBe(1);
+  await view.unmount();
+});

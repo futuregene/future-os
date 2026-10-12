@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
-import { SettingsLinkRow, SettingsList, SettingsRow, SettingsSection, SettingsSubPage, Switch } from "../settings/SettingsPrimitives";
+import { SettingsLinkRow, SettingsList, SettingsPage, SettingsRow, SettingsSection, Switch } from "../settings/SettingsPrimitives";
 import { PeerIconPicker } from "./PeerIconPicker";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
 import { RemoteModelsPanel } from "./RemoteModelsPanel";
@@ -22,7 +22,7 @@ import { RemoteWorkspacesPanel } from "./RemoteWorkspacesPanel";
  * later setting below a scroll. They are pages of their own instead, reached
  * from a row that says what is behind it.
  */
-type SettingsPage = "root" | "skills" | "models" | "providers" | "workspaces";
+type SettingsSectionPage = "root" | "skills" | "models" | "providers" | "workspaces";
 
 /**
  * Settings for *another* machine, mirroring the phone's settings rows.
@@ -60,8 +60,8 @@ export function RemotePeerSettings({
   const [approval, setApproval] = useState<{ approvalTier: string; sandboxAvailable: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** Which page of these settings is open. See `SettingsPage`. */
-  const [page, setPage] = useState<SettingsPage>("root");
+  /** Which page of these settings is open. See `SettingsSectionPage`. */
+  const [page, setPage] = useState<SettingsSectionPage>("root");
 
   // The host advertises which commands it serves; the approval rows are only
   // offered by a host that says it has them, so an older build shows fewer rows
@@ -138,6 +138,10 @@ export function RemotePeerSettings({
   const available = peer.connected;
   const setting = (key: string, fallback: boolean): boolean =>
     typeof settings?.[key] === "boolean" ? settings[key] as boolean : fallback;
+  // The machine, as the user named it: part of each row's accessible name,
+  // because "Models" here means *that* machine's models and the word alone does
+  // not say so.
+  const machine = peerBadgeText(peer, peer.desktopId);
   const hiddenModels = Array.isArray(settings?.hiddenModels)
     ? (settings.hiddenModels as unknown[]).filter((item): item is string => typeof item === "string")
     : [];
@@ -145,7 +149,7 @@ export function RemotePeerSettings({
   // The sections that became pages of their own. Rendered from one description
   // rather than four copies of the same header, so a page cannot end up with a
   // different back control or heading from its neighbours.
-  const SUB_PAGES: Record<Exclude<SettingsPage, "root">, {
+  const SUB_PAGES: Record<Exclude<SettingsSectionPage, "root">, {
     content: React.ReactNode;
     title: string;
   }> = {
@@ -173,7 +177,7 @@ export function RemotePeerSettings({
 
   if (page !== "root") {
     return (
-      <SettingsSubPage
+      <SettingsPage
         backLabel={t("backToSettings")}
         onBack={() => setPage("root")}
         title={SUB_PAGES[page].title}
@@ -181,20 +185,17 @@ export function RemotePeerSettings({
         {error ? <p className="text-xs text-danger">{error}</p> : null}
         {!available ? <p className="text-xs text-ink-muted">{t("settingsOfflineHint")}</p> : null}
         {SUB_PAGES[page].content}
-      </SettingsSubPage>
+      </SettingsPage>
     );
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <Button onClick={onBack} size="sm" variant="ghost">{t("backToDesktops")}</Button>
-        <span aria-hidden className="text-lg">{iconGlyph(peer.icon)}</span>
-        <span className="min-w-0 truncate text-sm font-semibold text-ink">
-          {peerBadgeText(peer, peer.desktopId)}
-        </span>
-      </div>
-
+    <SettingsPage
+      backLabel={t("backToDesktops")}
+      icon={<span aria-hidden className="text-base">{iconGlyph(peer.icon)}</span>}
+      onBack={onBack}
+      title={peerBadgeText(peer, peer.desktopId)}
+    >
       {error ? <p className="text-xs text-danger">{error}</p> : null}
       {!available ? <p className="text-xs text-ink-muted">{t("settingsOfflineHint")}</p> : null}
 
@@ -310,12 +311,14 @@ export function RemotePeerSettings({
       <SettingsSection description={t("settingsHostContentHint")} title={t("settingsHostContent")}>
         <SettingsList>
           <SettingsLinkRow
+            ariaLabel={`${t("models")} · ${machine}`}
             description={t("modelsHint")}
             disabled={!available}
             onClick={() => setPage("models")}
             title={t("models")}
           />
           <SettingsLinkRow
+            ariaLabel={`${t("skills")} · ${machine}`}
             description={t("skillsHint")}
             disabled={!available}
             onClick={() => setPage("skills")}
@@ -326,6 +329,7 @@ export function RemotePeerSettings({
           {providersSupported
             ? (
                 <SettingsLinkRow
+                  ariaLabel={`${t("providersRemoteSection")} · ${machine}`}
                   description={t("providersRemoteHint")}
                   disabled={!available}
                   onClick={() => setPage("providers")}
@@ -336,6 +340,7 @@ export function RemotePeerSettings({
           {peer.features.includes("workspace_create_v1")
             ? (
                 <SettingsLinkRow
+                  ariaLabel={`${t("workspacesTitle")} · ${machine}`}
                   description={t("workspacesHint")}
                   disabled={!available}
                   onClick={() => setPage("workspaces")}
@@ -343,9 +348,11 @@ export function RemotePeerSettings({
                 />
               )
             : null}
-          {/* Tasks keep their own editor, which needs the whole window — the
-              caller owns opening it (the settings window shows it full-page). */}
+          {/* Tasks keep their own editor, which needs the whole column — so this
+              row hands off to the caller, which shows it as a page like this
+              one rather than inside it. */}
           <SettingsLinkRow
+            ariaLabel={`${t("tasks")} · ${machine}`}
             description={t("tasksHint")}
             disabled={!available}
             onClick={onOpenTasks}
@@ -361,6 +368,6 @@ export function RemotePeerSettings({
           </SettingsRow>
         </SettingsList>
       </SettingsSection>
-    </div>
+    </SettingsPage>
   );
 }

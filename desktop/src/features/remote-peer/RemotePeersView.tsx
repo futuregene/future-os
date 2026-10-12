@@ -27,21 +27,21 @@ import {
 export function RemoteClientSection({
   onOpenSettings,
   onStartConversation,
+  refreshNonce,
 }: {
   /**
    * Open a new conversation on that host. Owned by the shell because it decides
    * what the user is looking at; this section only knows the machines.
    */
   onStartConversation: (desktopId: string) => void;
-  /**
-   * Open that machine's settings — in a window of its own, not a level here.
-   *
-   * Those settings belong to the other machine, and a page stacked inside this
-   * window is lost the moment the user navigates anywhere else (and reads as if
-   * it were this machine's). The backend owns the window and raises it if it is
-   * already open.
-   */
+  /** Open that machine's settings, as a page of the window the user is in. */
   onOpenSettings: (peer: RemotePeer) => void;
+  /**
+   * Bumped when something outside this section changed a machine (a rename or an
+   * unpair on its settings page), so the list re-reads instead of showing what it
+   * read when the page was first opened.
+   */
+  refreshNonce?: number;
 }) {
   const { t } = useTranslation("remotePeer");
   const [peers, setPeers] = useState<RemotePeer[]>([]);
@@ -62,7 +62,7 @@ export function RemoteClientSection({
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, refreshNonce]);
 
   async function run(desktopId: string, action: () => Promise<unknown>) {
     setBusy(desktopId);

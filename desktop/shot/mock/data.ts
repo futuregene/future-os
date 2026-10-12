@@ -685,7 +685,9 @@ export const providersView = {
 
 export const appSettings = {
   approvalTier: "off",
-  hiddenModels: [],
+  // One model is hidden so the settings page has to show it with its switch
+  // off — the state the picker's list cannot represent.
+  hiddenModels: ["future/future-vision"],
   autoUpgradeSkills: true,
   autoConnectRemote: false,
   skillGuideDismissed: true,

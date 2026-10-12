@@ -306,93 +306,121 @@ export function RemoteComposer({
   const recommendationCard = skillRecommendation?.card ?? null;
 
   return (
-    <div className="shrink-0 border-t border-line-soft px-4 py-3">
-      {error ? <p className="mb-2 text-xs text-danger">{error}</p> : null}
-      {/* The recommendation, above the box it is holding: it names a skill on
+    // The same shell as this app's own composer (`Composer.tsx`): a bordered,
+    // floating panel with the attachment chips above the field and the controls
+    // in a row underneath. One machine's composer looking like a plain form
+    // while the other's is a panel makes switching between them read as two
+    // different apps — the conversation is the same thing either way.
+    <div className="shrink-0 px-4 pb-4 pt-2">
+      <form
+        className="relative rounded-lg border border-line bg-surface/95 p-2 shadow-panel backdrop-blur"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void send();
+        }}
+      >
+        {error ? <p className="mb-2 text-xs text-danger">{error}</p> : null}
+        {/* The recommendation, above the box it is holding: it names a skill on
           that computer and offers to install it there. */}
-      {skillRecommendation && recommendationCard
-        ? (
-            <SkillRecommendCard
-              description={recommendationCard.description}
-              installing={installingSkill}
-              name={recommendationCard.name}
-              onDismiss={() => {
-                skillRecommendation.onDismiss();
-                void sendNow(text.trim(), uploads);
-              }}
-              onInstall={() => void installRecommended(skillRecommendation, recommendationCard)}
-            />
-          )
-        : null}
-      {/* What is about to be sent, named, with a way back out: an attachment the
-          user cannot see is one they cannot remove. */}
-      {uploads.length > 0
-        ? (
-            <div className="mb-2 flex flex-wrap gap-1.5">
-              {uploads.map(upload => (
-                <span
-                  className="inline-flex items-center gap-1 rounded-md border border-line-soft bg-surface-subtle px-2 py-0.5 text-xs text-ink-soft"
-                  key={upload.uploadId}
-                >
-                  <Paperclip aria-hidden className="size-3" />
-                  <span className="max-w-48 truncate">{upload.name}</span>
-                  <button
-                    aria-label={t("removeAttachment", { name: upload.name })}
-                    className="text-ink-muted hover:text-ink"
-                    onClick={() => setUploads(current => current.filter(item => item.uploadId !== upload.uploadId))}
-                    type="button"
-                  >
-                    <X className="size-3" />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )
-        : null}
-      <div className="flex items-end gap-2">
-        <Button disabled={uploading} onClick={() => void attach()} size="sm" variant="ghost">
-          <Paperclip className="size-3.5" />
-          {uploading ? t("attaching") : t("attach")}
-        </Button>
-        <TextInput
-          aria-label={t("composerLabel")}
-          onChange={event => setText(event.target.value)}
-          onPaste={event => void pasteFiles(event)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void send();
-            }
-          }}
-          placeholder={t("composerPlaceholder", {
-            name: peer?.name ?? peer?.desktopId ?? "",
-          })}
-          value={text}
-        />
-        {/* Stop replaces Send while a run is in flight rather than joining it:
-            a conversation being answered on the host cannot take a second
-            prompt, and the host would refuse one. The button is disabled while
-            the abort is outstanding, so `disabled` is the single guard against
-            a second abort — there is no second in-flight check to make. */}
-        {streaming && !text.trim() && uploads.length === 0
+        {skillRecommendation && recommendationCard
           ? (
-              <Button disabled={stopping} onClick={() => void stop()} variant="secondary">
-                {stopping ? t("stopping") : t("stop")}
-              </Button>
+              <SkillRecommendCard
+                description={recommendationCard.description}
+                installing={installingSkill}
+                name={recommendationCard.name}
+                onDismiss={() => {
+                  skillRecommendation.onDismiss();
+                  void sendNow(text.trim(), uploads);
+                }}
+                onInstall={() => void installRecommended(skillRecommendation, recommendationCard)}
+              />
             )
-          : (
-              <Button
-                disabled={(!text.trim() && uploads.length === 0) || busy || uploading || evaluating}
-                onClick={() => void send()}
-                variant="primary"
-              >
-                {busy ? t("sending") : t("send")}
-              </Button>
-            )}
-      </div>
-      <p className="mt-1.5 text-xs text-ink-muted">
-        {t("runsOn", { name: peer?.name ?? peer?.desktopId ?? "" })}
-      </p>
+          : null}
+        {/* What is about to be sent, named, with a way back out: an attachment the
+          user cannot see is one they cannot remove. */}
+        {uploads.length > 0
+          ? (
+              <div className="mb-2 flex flex-wrap items-center gap-1.5 px-1">
+                {uploads.map(upload => (
+                  <span
+                    className="inline-flex items-center gap-1 rounded-md border border-line-soft bg-surface-subtle px-2 py-0.5 text-xs text-ink-soft"
+                    key={upload.uploadId}
+                  >
+                    <Paperclip aria-hidden className="size-3" />
+                    <span className="max-w-48 truncate">{upload.name}</span>
+                    <button
+                      aria-label={t("removeAttachment", { name: upload.name })}
+                      className="text-ink-muted hover:text-ink"
+                      onClick={() => setUploads(current => current.filter(item => item.uploadId !== upload.uploadId))}
+                      type="button"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )
+          : null}
+        <div className="flex flex-col gap-1 px-1 pt-1">
+          <TextInput
+            aria-label={t("composerLabel")}
+            onChange={event => setText(event.target.value)}
+            onPaste={event => void pasteFiles(event)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void send();
+              }
+            }}
+            placeholder={t("composerPlaceholder", {
+              name: peer?.name ?? peer?.desktopId ?? "",
+            })}
+            value={text}
+          />
+          {/* Attach sits at the left of the controls row and the send control at
+            the right, which is where this app's own composer puts them. */}
+          <div className="flex items-center justify-between gap-1">
+            <button
+              aria-label={t("attach")}
+              className="inline-flex size-7 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
+              disabled={uploading}
+              onClick={() => void attach()}
+              title={t("attach")}
+              type="button"
+            >
+              <Paperclip className="size-3.5" />
+            </button>
+            <div className="flex items-center gap-2">
+              {/* Where the prompt will run. In the controls row rather than under
+                the whole panel: it qualifies the send button beside it. */}
+              <span className="truncate text-xs text-ink-muted">
+                {uploading ? t("attaching") : t("runsOn", { name: peer?.name ?? peer?.desktopId ?? "" })}
+              </span>
+              {/* Stop replaces Send while a run is in flight rather than joining it:
+                a conversation being answered on the host cannot take a second
+                prompt, and the host would refuse one. The button is disabled while
+                the abort is outstanding, so `disabled` is the single guard against
+                a second abort — there is no second in-flight check to make. */}
+              {streaming && !text.trim() && uploads.length === 0
+                ? (
+                    <Button disabled={stopping} onClick={() => void stop()} size="sm" variant="secondary">
+                      {stopping ? t("stopping") : t("stop")}
+                    </Button>
+                  )
+                : (
+                    <Button
+                      disabled={(!text.trim() && uploads.length === 0) || busy || uploading || evaluating}
+                      size="sm"
+                      type="submit"
+                      variant="primary"
+                    >
+                      {busy ? t("sending") : t("send")}
+                    </Button>
+                  )}
+            </div>
+          </div>
+        </div>
+      </form>
     </div>
   );
 }

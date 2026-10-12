@@ -6,7 +6,7 @@ import { Button } from "../../components/ui/Button";
 import { Switch } from "../../components/ui/Switch";
 import { TextInput } from "../../components/ui/TextInput";
 import { errorMessage } from "../../lib/errors";
-import { listRemoteModels, remoteModelReference } from "./remotePeerClient";
+import { listRemoteSettingsModels, remoteModelReference } from "./remotePeerClient";
 
 /**
  * The models a host offers, grouped by provider, with a visibility switch.
@@ -44,7 +44,9 @@ export function RemoteModelsPanel({
     setLoading(true);
     setError(null);
     try {
-      setModels(await listRemoteModels(peer.desktopId));
+      // The *settings* list, not the picker's: the picker's omits hidden models,
+      // and a switch that cannot see a hidden model cannot switch it back on.
+      setModels(await listRemoteSettingsModels(peer.desktopId));
     }
     catch (err) {
       setError(errorMessage(err));
