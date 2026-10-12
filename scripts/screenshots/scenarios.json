@@ -731,6 +731,7 @@
       },
       "tasks-editor": {
         "url": "http://localhost:5299/shot/?lang=zh",
+        "note": "A stored task that reuses its conversation: the retention row is deliberately withheld (reuse has nothing to throw away), so the capture switches the conversation to one opened per run to exercise the row, then switches back — the shot is the stored state.",
         "steps": [
           {
             "wait": 1200
@@ -757,6 +758,15 @@
             "eval": "(() => { const t = document.body.innerText; if (!t.includes('触发器')) throw new Error('editor is missing the trigger section'); if (!t.includes('完全权限')) throw new Error('the full-permission warning is not shown'); })()"
           },
           {
+            "eval": "(() => { const policy = [...document.querySelectorAll('select')].find(s => [...s.options].some(o => (o.textContent || '').trim() === '每次新建会话')); if (!policy) throw new Error('the editor has no conversation-policy select'); if (policy.value !== 'existing') throw new Error('the stored task no longer opens on its reused conversation: got ' + policy.value); const t = document.body.innerText; if (t.includes('运行后会话')) throw new Error('a reused conversation is offered a retention choice it cannot honour'); if (!t.includes('每次运行都接着同一条会话')) throw new Error('the editor does not explain that the conversation is reused'); return 'reused conversation: retention withheld'; })()"
+          },
+          {
+            "eval": "(() => { const policy = [...document.querySelectorAll('select')].find(s => [...s.options].some(o => (o.textContent || '').trim() === '每次新建会话')); const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set; setter.call(policy, 'new'); policy.dispatchEvent(new Event('change', { bubbles: true })); return 'switched to a conversation opened per run'; })()"
+          },
+          {
+            "wait": 400
+          },
+          {
             "eval": "(() => { const t = document.body.innerText; if (!t.includes('运行后会话')) throw new Error('the editor has no conversation-retention field'); const select = [...document.querySelectorAll('select')].find(s => [...s.options].some(o => (o.textContent || '').trim() === '删除')); if (!select) throw new Error('the retention select has no delete option'); if (select.value !== 'keep') throw new Error('a stored task should default to keep, got ' + select.value); select.value = 'delete'; select.dispatchEvent(new Event('change', { bubbles: true })); return 'switched to delete'; })()"
           },
           {
@@ -767,6 +777,15 @@
           },
           {
             "eval": "(() => { const browse = [...document.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '浏览'); if (!browse) throw new Error('the working-directory row has no browse button'); const box = browse.getBoundingClientRect(); const panel = browse.closest('section').getBoundingClientRect(); if (box.right > panel.right + 1) throw new Error('the browse button runs past the panel edge: button ' + Math.round(box.right) + ' vs panel ' + Math.round(panel.right)); if (box.width < 56) throw new Error('the browse button is squeezed to ' + Math.round(box.width) + 'px'); const field = document.querySelector(\"input[aria-label='工作目录']\"); if (!field) throw new Error('a workspace conversation has no directory field'); const fieldBox = field.getBoundingClientRect(); if (fieldBox.right > box.left + 1) throw new Error('the field overlaps the button'); })()"
+          },
+          {
+            "eval": "(() => { const policy = [...document.querySelectorAll('select')].find(s => [...s.options].some(o => (o.textContent || '').trim() === '每次新建会话')); const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set; setter.call(policy, 'existing'); policy.dispatchEvent(new Event('change', { bubbles: true })); return 'restored the stored policy'; })()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => { if (document.body.innerText.includes('运行后会话')) throw new Error('the retention row outlived the per-run choice'); })()"
           },
           {
             "shot": "d-tasks-editor.png"
