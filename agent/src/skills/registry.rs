@@ -166,7 +166,7 @@ pub fn list_skill_records() -> Result<Vec<SkillRecord>> {
 /// missing. Runs in mutator processes (CLI, desktop) beside a possibly
 /// running agent, so it follows the same recognition rules as the session
 /// schema's `open_connection`: refuse foreign or unrecognized files, accept
-/// the schema versions this build knows (0, 2, 3, 4, 5).
+/// the schema versions this build knows (0, 2, 3, 4, 5 and the current Agent schema).
 ///
 /// A file created here is stamped `application_id` + `user_version = 4`; an
 /// existing v3 database moves to v4 after the new tables are created.
@@ -176,6 +176,35 @@ pub(crate) fn open_registry(path: &Path) -> Result<Connection> {
     }
     let mut connection = Connection::open(path).context("open Agent SQLite database")?;
     connection.busy_timeout(Duration::from_secs(5))?;
+    let initial = {
+        // Ownership and version must also come from one preflight snapshot;
+        // a peer can initialize the file between two independent PRAGMA reads.
+        let preflight = connection.transaction()?;
+        let state = inspect_registry_database(&preflight)?;
+        preflight.commit()?;
+        state
+    };
+    if initial.fresh {
+        // Configure a fresh file before WAL initializes its header. The
+        // recognition/version checks are repeated under the write lock below.
+        connection.pragma_update(None, "auto_vacuum", 2)?;
+    }
+    connection.pragma_update(None, "journal_mode", "WAL")?;
+    // Settled registries are also opened by list queries. Do not reserve the
+    // writer lock unless tables/indexes or the v3 stamp actually need updating.
+    if initial.fresh || initial.version == 3 || !initial.schema_ready {
+        initialize_registry_schema(&mut connection)?;
+    }
+    Ok(connection)
+}
+
+struct RegistryDatabaseState {
+    fresh: bool,
+    version: i64,
+    schema_ready: bool,
+}
+
+fn inspect_registry_database(connection: &Connection) -> Result<RegistryDatabaseState> {
     let application: i64 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -192,27 +221,47 @@ pub(crate) fn open_registry(path: &Path) -> Result<Connection> {
         if version != 0 || tables != 0 {
             bail!("refusing to initialize an unrecognized database");
         }
-    } else if version != 0 && version != 2 && version != 3 && version != 4 && version != 5 {
+    } else if version != 0
+        && version != 2
+        && version != 3
+        && version != 4
+        && version != 5
+        && version != crate::session::database::CURRENT_SCHEMA_VERSION
+    {
         bail!("unsupported Agent database schema version {version}");
     }
-    if fresh {
-        // Set the pointer-map layout before WAL writes the fresh file header.
-        // Existing databases keep their layout and are never fully rebuilt.
-        connection.pragma_update(None, "auto_vacuum", 2)?;
-    }
-    connection.pragma_update(None, "journal_mode", "WAL")?;
-    let tx = connection.transaction()?;
+    let schema_ready = connection.query_row(
+        "SELECT count(*) = 5 FROM sqlite_schema
+         WHERE (type='table' AND name IN
+             ('skills','skills_meta','skill_installations','skill_operations'))
+            OR (type='index' AND name='skill_installations_name')",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(RegistryDatabaseState {
+        fresh,
+        version,
+        schema_ready,
+    })
+}
+
+fn initialize_registry_schema(connection: &mut Connection) -> Result<()> {
+    // Another process may have initialized/upgraded the file after preflight.
+    // Read ownership and version only after reserving the write lock: a stale
+    // fresh/v3 observation must never overwrite a newer supported schema.
+    let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let current = inspect_registry_database(&tx)?;
     tx.execute_batch(SKILLS_TABLE_SQL)?;
-    if fresh {
+    if current.fresh {
         tx.execute_batch(&format!(
             "PRAGMA application_id = {APPLICATION_ID};
              PRAGMA user_version = 4;"
         ))?;
-    } else if version == 3 {
+    } else if current.version == 3 {
         tx.execute_batch("PRAGMA user_version = 4;")?;
     }
     tx.commit()?;
-    Ok(connection)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -224,240 +273,9 @@ fn now_ms() -> i64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "registry_tests.rs"]
+mod tests;
 
-    /// The registry lives at `$HOME/.future/agent/agent.db` — the same file
-    /// the session Manager owns for the default sessions directory.
-    #[test]
-    fn registry_db_path_matches_the_session_database() {
-        let _home = crate::test_support::TestHome::new();
-        assert_eq!(
-            registry_db_path(),
-            crate::utils::default_session_dir("")
-                .parent()
-                .unwrap()
-                .join("agent.db")
-        );
-    }
-
-    #[test]
-    fn install_upgrade_and_uninstall_roundtrip() {
-        let _home = crate::test_support::TestHome::new();
-        record_skill_installed("future-x", Some("1.0.0")).unwrap();
-        let records = list_skill_records().unwrap();
-        assert_eq!(
-            records,
-            vec![SkillRecord {
-                name: "future-x".to_string(),
-                version: Some("1.0.0".to_string()),
-                deleted: false,
-                installed_at_ms: records[0].installed_at_ms,
-                updated_at_ms: records[0].updated_at_ms,
-            }]
-        );
-        let first_installed_at = records[0].installed_at_ms;
-
-        // Upgrade: version moves, installed_at keeps the first install time.
-        record_skill_installed("future-x", Some("2.0.0")).unwrap();
-        let record = &list_skill_records().unwrap()[0];
-        assert_eq!(record.version.as_deref(), Some("2.0.0"));
-        assert_eq!(record.installed_at_ms, first_installed_at);
-        assert!(!record.deleted);
-
-        // Uninstall: tombstone, last-known version kept.
-        record_skill_uninstalled("future-x").unwrap();
-        let record = &list_skill_records().unwrap()[0];
-        assert!(record.deleted);
-        assert_eq!(record.version.as_deref(), Some("2.0.0"));
-        assert_eq!(
-            deleted_skill_names().unwrap(),
-            ["future-x".to_string()].into()
-        );
-
-        // Reinstall clears the tombstone.
-        record_skill_installed("future-x", Some("3.0.0")).unwrap();
-        assert!(deleted_skill_names().unwrap().is_empty());
-        assert_eq!(
-            list_skill_records().unwrap()[0].version.as_deref(),
-            Some("3.0.0")
-        );
-    }
-
-    #[test]
-    fn uninstalling_an_unknown_skill_creates_a_tombstone() {
-        let _home = crate::test_support::TestHome::new();
-        record_skill_uninstalled("never-installed").unwrap();
-        let record = &list_skill_records().unwrap()[0];
-        assert_eq!(record.name, "never-installed");
-        assert!(record.deleted);
-        assert_eq!(record.version, None);
-    }
-
-    /// A database created by the registry (no agent has run yet) must be
-    /// accepted by the session store, which fills in the remaining tables.
-    #[test]
-    fn registry_created_database_is_accepted_by_the_session_store() {
-        let _home = crate::test_support::TestHome::new();
-        record_skill_installed("future-x", Some("1.0.0")).unwrap();
-        let path = registry_db_path();
-
-        let check = rusqlite::Connection::open(&path).unwrap();
-        assert_eq!(
-            check
-                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-                .unwrap(),
-            4
-        );
-        assert_eq!(
-            check
-                .pragma_query_value(None, "application_id", |row| row.get::<_, i64>(0))
-                .unwrap(),
-            APPLICATION_ID
-        );
-
-        // The session Manager opens agent.db through the strict schema path;
-        // a registry-created file must pass it and gain the session tables.
-        let manager = crate::session::Manager::new(path.parent().unwrap().join("sessions"));
-        manager.initialize().unwrap();
-        assert!(manager.import_records().unwrap().is_empty());
-        let check = rusqlite::Connection::open(&path).unwrap();
-        let sessions: i64 = check
-            .query_row("SELECT count(*) FROM sessions", [], |row| row.get(0))
-            .unwrap();
-        let skills: i64 = check
-            .query_row("SELECT count(*) FROM skills", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!((sessions, skills), (0, 1));
-    }
-
-    /// A v2 database (previous agent release) gains the skills table without
-    /// its declared version being touched; the agent's schema batch owns the
-    /// v2 → v3 migration.
-    #[test]
-    fn open_registry_upgrades_v2_without_bumping_the_version() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("agent.db");
-        let connection = Connection::open(&path).unwrap();
-        connection
-            .execute_batch(
-                "CREATE TABLE sessions (id TEXT PRIMARY KEY NOT NULL);
-                 PRAGMA application_id = 1179997266;
-                 PRAGMA user_version = 2;",
-            )
-            .unwrap();
-        drop(connection);
-
-        open_registry(&path).unwrap();
-        let check = Connection::open(&path).unwrap();
-        let version: i64 = check
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .unwrap();
-        assert_eq!(version, 2);
-        let skills: i64 = check
-            .query_row("SELECT count(*) FROM skills", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(skills, 0);
-    }
-
-    #[test]
-    fn open_registry_refuses_foreign_databases() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("agent.db");
-        let connection = Connection::open(&path).unwrap();
-        connection
-            // Must stay within i32: SQLite silently ignores out-of-range
-            // application_id values, which would leave the field at 0.
-            .pragma_update(None, "application_id", 0x1122_3344i64)
-            .unwrap();
-        drop(connection);
-        assert!(open_registry(&path).is_err());
-    }
-
-    #[test]
-    fn open_registry_refuses_unrecognized_databases() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("agent.db");
-        let connection = Connection::open(&path).unwrap();
-        connection.execute("CREATE TABLE mystery (x)", []).unwrap();
-        drop(connection);
-        assert!(open_registry(&path).is_err());
-    }
-
-    #[test]
-    fn open_registry_refuses_future_schema_versions() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("agent.db");
-        let connection = Connection::open(&path).unwrap();
-        connection
-            .execute_batch(&format!(
-                "PRAGMA application_id = {APPLICATION_ID};
-                 PRAGMA user_version = 99;"
-            ))
-            .unwrap();
-        drop(connection);
-        assert!(open_registry(&path).is_err());
-    }
-
-    /// The registry writes beside a live session store (whose worker holds
-    /// agent.db open) — WAL allows the two connections to coexist.
-    #[test]
-    fn registry_writes_coexist_with_an_open_session_store() {
-        let _home = crate::test_support::TestHome::new();
-        let path = registry_db_path();
-        let manager = crate::session::Manager::new(path.parent().unwrap().join("sessions"));
-        manager.initialize().unwrap();
-
-        record_skill_installed("future-x", Some("1.0.0")).unwrap();
-        assert_eq!(list_skill_records().unwrap().len(), 1);
-
-        let check = Connection::open(&path).unwrap();
-        assert_eq!(
-            check
-                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            5,
-            "registry writes must preserve the snapshot schema version"
-        );
-
-        // The session store's connection still serves requests afterwards.
-        assert!(manager.import_records().unwrap().is_empty());
-    }
-
-    /// A v3 database is adopted in place: its tables are kept, and only the
-    /// schema version moves — opening it must never drop or recreate anything.
-    #[test]
-    fn a_v3_database_is_migrated_in_place_without_losing_rows() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("agent.db");
-        let connection = Connection::open(&path).unwrap();
-        connection.execute_batch(SKILLS_TABLE_SQL).unwrap();
-        connection
-            .execute_batch(&format!(
-                "PRAGMA application_id = {APPLICATION_ID};\n PRAGMA user_version = 3;"
-            ))
-            .unwrap();
-        connection
-            .execute(
-                "INSERT INTO skills(name,version,deleted,installed_at_ms,updated_at_ms)
-                 VALUES('legacy','0.9.0',0,1,1)",
-                [],
-            )
-            .unwrap();
-        drop(connection);
-
-        let migrated = open_registry(&path).unwrap();
-        let version: i64 = migrated
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .unwrap();
-        assert_eq!(version, 4);
-        let name: String = migrated
-            .query_row("SELECT name FROM skills", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(name, "legacy", "the upgrade must keep the existing rows");
-
-        // And a v4 database is accepted as-is on the next open.
-        drop(migrated);
-        assert!(open_registry(&path).is_ok());
-    }
-}
+#[cfg(test)]
+#[path = "registry_race_tests.rs"]
+mod registry_race_tests;

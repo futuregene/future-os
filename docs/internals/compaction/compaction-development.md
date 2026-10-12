@@ -33,7 +33,7 @@ measures them.
 | Fingerprint, claim and atomic completion | [compaction_ops.rs](../../../agent/src/session/compaction_ops.rs) |
 | Ordered writer and barrier | [persistence.rs](../../../agent/src/session/persistence.rs) |
 | Checkpoint and fork references | [checkpoint.rs](../../../agent/src/session/checkpoint.rs), [fork.rs](../../../agent/src/session/fork.rs) |
-| Original evidence | [history_query.rs](../../../agent/src/session/history_query.rs) |
+| Original evidence | [history/recall.rs](../../../agent/src/session/history/recall.rs) |
 
 ## 3. Runtime pipeline
 

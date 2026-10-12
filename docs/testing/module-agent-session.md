@@ -1,5 +1,10 @@
 # future-agent / `ag-session` subtree — coverage, waivers and test-quality record
 
+> Source paths and coverage figures in this record refer to the measured
+> revision. The subsequent storage refactor groups current implementations under
+> `agent/src/session/{database,sqlite_store,history,manager}/` and
+> `agent/src/rpc/broadcaster/`; the tables below retain their original evidence.
+
 Goal `cov-100-multidim` · group **ag-session** of module **future-agent** (`agent/`) ·
 branch `test/cov100` (worktree `.worktrees/cov100`) · host **Windows x86_64**, rustc
 pinned by `rust-toolchain.toml` · measured 2026-09-26 · session

@@ -752,7 +752,7 @@ the final checkpoint enters the agent JSONL.
 > Shipped addition (2026-09-26): the **Agent** database (not desktop SQLite)
 > gained `compaction_operations` to make manual and automatic compaction
 > idempotent across restarts — key, digest, operation id, state and result
-> JSON (`agent/src/session/database.rs:336-343`). Summaries themselves are
+> JSON (`agent/src/session/database/schema.sql`). Summaries themselves are
 > still not stored there; the deterministic index is rebuilt and the model
 > summary is recomputed when a replayed operation has no result.
 

@@ -13,6 +13,7 @@
 //! discovers the same per-user Agent endpoint.
 
 pub mod command_policy;
+pub mod history;
 pub mod home;
 pub mod session_deletion;
 pub mod shell_result;

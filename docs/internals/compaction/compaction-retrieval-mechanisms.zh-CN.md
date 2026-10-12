@@ -54,7 +54,7 @@ History RPC 分支在创建模型运行时之前处理，不调用摘要模型�
 future session history search --session SESSION_ID --query "exact value" --limit 5 --json
 ```
 
-实现：`agent/src/session/history_query.rs::search_history`。
+实现：`agent/src/session/history/recall.rs::search_history`。
 
 - 只查指定持久会话。
 - 搜索用户/assistant 文本、工具参数 JSON、工具结果；不查 reasoning、隐藏 provider 元数据、checkpoint 和生命周期条目。
@@ -195,7 +195,7 @@ launcher 只检查 shell 已解析好的单次 CLI argv 再转发，不解析 sh
 - `agent/src/sandbox/mod.rs`：宿主 shell 调用与各平台封装。
 - `cli/src/commands/session_history.rs`、`cli/src/rpc.rs`：CLI 参数和 RPC。
 - `agent/src/rpc/commands/mod.rs`：直接历史读分支。
-- `agent/src/session/history_query.rs`：真实数据库查询与分页。
+- `agent/src/session/history/recall.rs`：真实数据库查询与分页。
 
 ### Codex 固定提交的原生源码
 

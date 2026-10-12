@@ -237,7 +237,7 @@ fn coalesce_deltas(events: Vec<SseEvent>) -> Vec<SseEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rpc::{protocol::apply_to_projection, SseBroadcaster};
+    use crate::rpc::{broadcaster::apply_to_projection, SseBroadcaster};
     use serde_json::json;
 
     /// A `tool_start` only carries arguments when the payload is present and

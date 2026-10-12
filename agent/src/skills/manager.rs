@@ -264,7 +264,7 @@ impl SkillManager {
                 removed = true;
             }
         }
-        let tx = crate::session::database::begin_immediate(db)?;
+        let tx = crate::session::database::begin_write_transaction(db)?;
         tx.execute(
             "INSERT INTO skills(name,version,deleted,installed_at_ms,updated_at_ms)
             VALUES(?1,NULL,1,NULL,?2)
@@ -442,7 +442,7 @@ impl SkillManager {
     }
 
     fn finish_install(&self, db: &mut Connection, receipt: &Receipt, dest: &Path) -> Result<()> {
-        let tx = crate::session::database::begin_immediate(db)?;
+        let tx = crate::session::database::begin_write_transaction(db)?;
         let now = now_ms();
         tx.execute(
             "INSERT INTO skills(name,version,deleted,installed_at_ms,updated_at_ms) VALUES(?1,?2,0,?3,?3)
@@ -525,7 +525,7 @@ impl SkillManager {
         } else {
             std::collections::HashSet::new()
         };
-        let tx = crate::session::database::begin_immediate(db)?;
+        let tx = crate::session::database::begin_write_transaction(db)?;
         tx.execute("DELETE FROM skill_installations", [])?;
         // App installs take precedence in both the list and the historical
         // version row when an id also exists in the global scope.

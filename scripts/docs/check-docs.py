@@ -10,7 +10,8 @@ This is a structural check, not a substitute for source-based factual review.
 Rules
 1. Placement: every .md/.mdx/.rst file must live under docs/, except the
    root-level files in WHITELIST (repo entry points and legal files, plus
-   desktop/CLAUDE.md). The only documentation .txt files are the
+   desktop/CLAUDE.md), compiled runtime prompt assets, and the companion
+   files explicitly listed in WHITELIST. The only documentation .txt files are the
    release-package readmes under docs/dist/ (path is frozen: the signed and
    portable release workflows copy these files verbatim).
 2. Bilingual pairing. Every .md under docs/ needs both languages, plus the
@@ -89,7 +90,7 @@ def diagnostic(path, message):
     return Diagnostic(path, message)
 
 
-# Files allowed to live outside docs/ (repo-root level, plus desktop/CLAUDE.md).
+# Repository entry points, runtime assets and companion files outside docs/.
 WHITELIST = {
     "CLAUDE.md",
     "README.md",
@@ -99,6 +100,11 @@ WHITELIST = {
     "THIRD_PARTY_NOTICES.md",
     "THIRD_PARTY_NOTICES.zh-CN.md",
     "desktop/CLAUDE.md",
+    # Compiled runtime prompt assets, loaded through include_str!. Their
+    # placement belongs to the prompt module; they are not user documentation.
+    "agent/src/prompt/approval.md",
+    "agent/src/prompt/communication.md",
+    "agent/src/prompt/execution.md",
     # Release-pipeline dependency: build-macos-signed.yml, build-windows-signed.yml
     # and build-linux.yaml copy this provenance notice into the shipped
     # licenses/loop/ directory. It cannot move under docs/ without editing those

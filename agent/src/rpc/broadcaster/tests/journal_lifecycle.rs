@@ -1,0 +1,217 @@
+use super::*;
+
+/// A store that cannot accept the batch must fail the durable caller, mark
+/// the journal unhealthy, and make the read path report it rather than
+/// return a silently short history.
+#[test]
+fn a_failed_batch_commit_is_reported_and_blocks_the_read_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(directory.path().to_path_buf());
+    let b = SseBroadcaster::new();
+    b.configure_journal("session-broken", &manager).unwrap();
+    b.start_run("run-broken".to_string(), 1);
+    b.broadcast(SseEvent::new("agent_end", serde_json::json!({})));
+    assert_eq!(b.journal_commit_count(), 1, "the healthy commit must land");
+    assert_eq!(b.read_journal("run-broken").unwrap().len(), 1);
+
+    // The table the event batch writes to is gone, so the next commit fails
+    // exactly as it would on a corrupt store.
+    manager.test_execute("DROP TABLE run_events");
+    b.broadcast(SseEvent::new("agent_end", serde_json::json!({})));
+
+    let error = b
+        .persistence_error()
+        .expect("a failed commit must be recorded as a persistence error");
+    assert!(
+        error.contains("event batch commit failed") || error.contains("persistence"),
+        "{error}"
+    );
+    assert!(
+        b.read_journal("run-broken").is_err(),
+        "the read path must surface the failure, not a truncated history"
+    );
+    // The snapshot resume path reads the same journal, so it must refuse too: a
+    // client resuming from an unhealthy journal would otherwise be handed a
+    // prefix the store never durably held.
+    let snapshot = b.run_snapshot("run-broken").unwrap_err();
+    assert!(
+        snapshot
+            .to_string()
+            .contains("run snapshot persistence is unhealthy"),
+        "{snapshot}"
+    );
+}
+
+#[test]
+fn closed_journal_rejects_late_broadcast_without_recreating_files() {
+    let directory = tempfile::tempdir().unwrap();
+    let b = SseBroadcaster::new();
+    b.configure_journal(
+        "session-delete",
+        &crate::session::Manager::new(directory.path().to_path_buf()),
+    )
+    .unwrap();
+    b.start_run("run-delete".to_string(), 1);
+    let mut receiver = b.subscribe();
+
+    b.close_journal();
+    std::fs::remove_dir_all(directory.path()).unwrap();
+    b.broadcast(SseEvent::new(
+        "text_chunk",
+        serde_json::json!({"text":"too late"}),
+    ));
+
+    assert!(!directory.path().exists());
+    assert!(receiver.try_recv().is_err());
+}
+
+#[test]
+fn closing_journal_flushes_pending_deltas() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(directory.path().to_path_buf());
+    let b = SseBroadcaster::new();
+    b.configure_journal("session-close", &manager).unwrap();
+    b.start_run("run-close".to_string(), 1);
+    b.broadcast(SseEvent::new(
+        "text_chunk",
+        serde_json::json!({"text":"pending"}),
+    ));
+
+    b.close_journal();
+
+    let events = manager
+        .storage()
+        .unwrap()
+        .events("session-close", "run-close")
+        .unwrap();
+    assert_eq!(events.len(), 1);
+}
+
+#[test]
+fn journal_failpoints_cover_append_flush_and_sync_boundaries() {
+    for point in [
+        JournalFailPoint::Append,
+        JournalFailPoint::Flush,
+        JournalFailPoint::Sync,
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let b = SseBroadcaster::new();
+        b.configure_journal(
+            "session-1",
+            &crate::session::Manager::new(directory.path().to_path_buf()),
+        )
+        .unwrap();
+        b.start_run("run-1".to_string(), 1);
+        let mut receiver = b.subscribe();
+        b.fail_at(point);
+        b.broadcast(SseEvent::new("agent_start", serde_json::json!({})));
+        assert!(receiver.try_recv().is_err());
+        assert!(b.persistence_error().is_some());
+        assert_eq!(b.last_idx(), -1);
+    }
+}
+
+// ─── coverage batch: journal resume/recovery/projection arms ───────────
+
+#[test]
+fn configure_journal_resumes_session_idx_sequence() {
+    let dir = tempfile::tempdir().unwrap();
+    // Pre-existing session journal with events at session_idx 0 and 1.
+    let first = SseBroadcaster::new();
+    first
+        .configure_journal(
+            "s1".to_string(),
+            &crate::session::Manager::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+    first.broadcast(SseEvent::new("model_changed", serde_json::json!({"m": 1})));
+    first.broadcast(SseEvent::new("model_changed", serde_json::json!({"m": 2})));
+
+    let second = SseBroadcaster::new();
+    second
+        .configure_journal(
+            "s1".to_string(),
+            &crate::session::Manager::new(dir.path().to_path_buf()),
+        )
+        .unwrap();
+    second.broadcast(SseEvent::new("model_changed", serde_json::json!({"m": 3})));
+    let events = second.session_events_since(-1).unwrap();
+    let idxs: Vec<i64> = events.iter().map(|e| e.session_idx).collect();
+    assert_eq!(idxs, vec![0, 1, 2], "resumed after the on-disk sequence");
+}
+
+#[test]
+fn configured_journal_cannot_be_rebound_to_another_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(dir.path().to_path_buf());
+    let broadcaster = SseBroadcaster::new();
+    broadcaster.configure_journal("parent", &manager).unwrap();
+
+    let error = broadcaster
+        .configure_journal("child", &manager)
+        .expect_err("journal ownership must be immutable");
+    assert!(error.to_string().contains("cannot rebind"));
+    broadcaster.broadcast(SseEvent::new("model_changed", serde_json::json!({})));
+    let event = broadcaster.session_events_since(-1).unwrap().pop().unwrap();
+    assert_eq!(event.session_id, "parent");
+}
+
+#[test]
+fn set_persistence_interrupt_flags_when_journal_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    // A file where the journal directory belongs → configure fails.
+    let blocker = dir.path().join("blocked");
+    std::fs::write(&blocker, "x").unwrap();
+    let broadcaster = SseBroadcaster::new();
+    assert!(broadcaster
+        .configure_journal(
+            "s1".to_string(),
+            &crate::session::Manager::new(blocker.join("sub"))
+        )
+        .is_err());
+    assert!(broadcaster.persistence_error().is_some());
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    broadcaster.set_persistence_interrupt(flag.clone());
+    assert!(flag.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[test]
+fn start_run_recovers_from_corrupt_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(dir.path().to_path_buf());
+    let broadcaster = SseBroadcaster::new();
+    broadcaster
+        .configure_journal("s1".to_string(), &manager)
+        .unwrap();
+    manager.test_execute("DROP TABLE run_events");
+    broadcaster.start_run("run-x".to_string(), 1);
+    assert!(broadcaster.persistence_error().is_some());
+}
+
+#[test]
+fn broadcast_without_configured_journal_is_in_memory_only() {
+    let broadcaster = SseBroadcaster::new();
+    broadcaster.start_run("run-mem".to_string(), 1);
+    broadcaster.broadcast(SseEvent::new(
+        "text_chunk",
+        serde_json::json!({"text": "x"}),
+    ));
+    assert!(broadcaster.persistence_error().is_none());
+    let (_, events, _, _) = broadcaster.events_since("run-mem", -1).unwrap();
+    assert_eq!(events.len(), 1);
+}
+
+#[test]
+fn attach_beyond_ring_without_journal_returns_projection() {
+    let broadcaster = SseBroadcaster::new();
+    broadcaster.start_run("run-ring".to_string(), 1);
+    for i in 0..2100 {
+        broadcaster.broadcast(SseEvent::new("text_chunk", serde_json::json!({"i": i})));
+    }
+    let attachment = broadcaster.attach("run-ring", 0).unwrap();
+    let projection = attachment
+        .projection
+        .expect("projection over the truncated ring");
+    assert_eq!(projection.run_id, "run-ring");
+    assert!(!projection.events.is_empty());
+}

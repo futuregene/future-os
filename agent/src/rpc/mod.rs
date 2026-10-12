@@ -1,6 +1,7 @@
 //! RPC Server - Command handling for gRPC
 
 mod approval;
+mod broadcaster;
 mod commands;
 mod prompt_helpers;
 mod protocol;
@@ -19,8 +20,11 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock};
 
 pub use approval::{ApprovalDecision, ApprovalDecisionStatus, ApprovalGate};
+pub use broadcaster::{
+    RunAttachment, RunProjectionSnapshot, SseBroadcaster, BROADCAST_RING_CAPACITY,
+};
 pub use commands::handle_command_internal;
-pub use protocol::{RpcCommand, RpcResponse, SseBroadcaster, SseEvent, BROADCAST_RING_CAPACITY};
+pub use protocol::{RpcCommand, RpcResponse, SseEvent};
 pub use session::ServerSession;
 
 /// Process-wide control-plane events (not chat state): provider/auth config

@@ -129,12 +129,25 @@ pub use crate::message::SessionEntryPayload;
 
 /// One page returned by `get_session_entries`.
 #[derive(Serialize, Deserialize)]
-pub struct SessionEntriesPage {
-    pub entries: Vec<SessionEntryPayload>,
+pub struct SessionEntriesPage<Entry = SessionEntryPayload> {
+    pub entries: Vec<Entry>,
     #[serde(default, rename = "hasMore")]
     pub has_more: bool,
     #[serde(default, rename = "nextOffset")]
     pub next_offset: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fragment: Option<HistoryEntryFragment>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEntryFragment {
+    pub entry_id: String,
+    pub ordinal: i64,
+    pub offset: i64,
+    pub total_bytes: i64,
+    pub json: String,
+    pub sha256: String,
 }
 
 /// One replayed event (get_events_since; proto `ReplayEvent`). Keys mirror

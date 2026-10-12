@@ -1,7 +1,7 @@
 //! Read-only legacy importer. Each transcript and its event files either
 //! commits completely or is recorded as skipped; storage failures propagate.
 
-use super::sqlite_store::{insert_entries, insert_event, SqliteStore};
+use super::sqlite_store::{insert_event_record, insert_transcript_entries, SqliteStore};
 use anyhow::{bail, Context, Result};
 use chrono::TimeZone;
 use rusqlite::{params, OptionalExtension};
@@ -255,15 +255,15 @@ impl SqliteStore {
                 // Reads the destination before it writes: take the write lock at
                 // BEGIN, or a concurrent connection's commit invalidates this
                 // snapshot and the upgrade fails instantly (SQLITE_BUSY_SNAPSHOT).
-                let tx = crate::session::database::begin_immediate(db)?;
+                let tx = crate::session::database::begin_write_transaction(db)?;
                 let parsed = if tx.query_row("SELECT id FROM sessions WHERE id=?1", [&id], |r| r.get::<_, String>(0)).optional()?.is_some() {
                     Err(InvalidSource { file: "transcript".into(), line: 0, kind: "existing_sqlite_session" })
                 } else { parsed };
                 match parsed {
                     Ok(import) => {
                         tx.execute("INSERT INTO sessions(id) VALUES (?1)", [&id])?;
-                        insert_entries(&tx, &id, import.entries)?;
-                        for event in import.events { insert_event(&tx, &id, event)?; }
+                        insert_transcript_entries(&tx, &id, import.entries)?;
+                        for event in import.events { insert_event_record(&tx, &id, event)?; }
                         tx.execute("UPDATE runs SET status='interrupted' WHERE session_id=?1 AND status='running'", [&id])?;
                         tx.execute("INSERT INTO legacy_imports(session_id,status,fingerprint,warnings) VALUES (?1,'imported',?2,?3)
                             ON CONFLICT(session_id) DO UPDATE SET status='imported',fingerprint=excluded.fingerprint,warnings=excluded.warnings,error_file=NULL,error_line=NULL,error_kind=NULL",

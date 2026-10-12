@@ -266,7 +266,20 @@ fn get_session_entries(data: &Value) -> Option<proto::SessionEntriesResponse> {
         let payload: SessionEntryPayload = serde_json::from_value(row.clone()).ok()?;
         entries.push(session_entry_to_proto(&payload));
     }
+    let fragment = if let Some(v) = data.get("fragment").filter(|v| !v.is_null()) {
+        Some(proto::HistoryEntryFragment {
+            entry_id: v["entryId"].as_str()?.to_owned(),
+            ordinal: v["ordinal"].as_i64()?,
+            offset: v["offset"].as_i64()?,
+            total_bytes: v["totalBytes"].as_i64()?,
+            json: v["json"].as_str()?.to_owned(),
+            sha256: v["sha256"].as_str()?.to_owned(),
+        })
+    } else {
+        None
+    };
     Some(proto::SessionEntriesResponse {
+        fragment,
         entries,
         has_more: data
             .get("hasMore")

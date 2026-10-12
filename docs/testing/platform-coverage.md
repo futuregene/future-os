@@ -1,5 +1,10 @@
 # Platform coverage — what a Windows measurement cannot see
 
+> Source paths and coverage figures in this record refer to the measured
+> revision. The subsequent storage refactor groups current implementations under
+> `agent/src/session/{database,sqlite_store,history,manager}/` and
+> `agent/src/rpc/broadcaster/`; the tables below retain their original evidence.
+
 Every figure in this goal's module docs is measured on **Windows x86_64**.
 `cargo llvm-cov` only reports code the current platform compiled, so anything
 gated to another OS is **neither 0% nor in the denominator — it is absent**.

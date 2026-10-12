@@ -548,7 +548,7 @@ fn ok(value: Value) -> (bool, String, String) {
 /// and the bridge's 512 KiB budget then keeps *as many newest exchanges as fit* —
 /// which is not the page the phone asks for. The phone sends `before` (its
 /// backward cursor) plus `limit` user exchanges, so the page has to be selected
-/// here the way `agent::session::history_index::read_page` selects it: the newest
+/// here the way `agent::session::history::paging::read_display_page` selects it: the newest
 /// `limit` user entries ending at the cursor. Without this the harness overstates
 /// a lean page several-fold (it fills the budget instead of stopping at the
 /// requested exchanges).

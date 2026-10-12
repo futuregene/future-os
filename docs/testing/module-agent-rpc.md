@@ -1,5 +1,10 @@
 # Module `agent/rpc` + `agent/grpc` (worker group `ag-rpc`) — coverage handoff
 
+> Source paths and coverage figures in this record refer to the measured
+> revision. The subsequent storage refactor groups current implementations under
+> `agent/src/session/{database,sqlite_store,history,manager}/` and
+> `agent/src/rpc/broadcaster/`; the tables below retain their original evidence.
+
 Subtree scope (frozen by `verify.py` `RUST_GROUPS["ag-rpc"]`): `agent/src/rpc/` and `agent/src/grpc/`.
 Gate: `python .future/cov100/verify.py rust-module ag-rpc 99.99 docs/testing/module-agent-rpc.md coverage/agent-ag-rpc-report.json`.
 Evidence token for this run: **`gate-green`** (see §8 for the exit status of that exact command).

@@ -1,5 +1,5 @@
 //! Shared display projection for full exports and indexed history pages.
-use super::SessionEntry;
+use crate::session::SessionEntry;
 
 pub(crate) fn project_entries(entries: &[SessionEntry]) -> Vec<serde_json::Value> {
     // SQLite retains one current metadata record. Accept in-memory snapshots
@@ -103,7 +103,7 @@ pub(crate) fn project_entries(entries: &[SessionEntry]) -> Vec<serde_json::Value
             let stats = run_stats.get(&e.id);
             let blocks = if matches!(e.entry_type.as_str(), "user" | "assistant" | "tool") {
                 let raw: serde_json::Value = serde_json::from_str(
-                    &super::Manager::serialize_entry(e).expect("serializable entry"),
+                    &crate::session::Manager::serialize_entry(e).expect("serializable entry"),
                 )
                 .expect("serialized entry");
                 raw["content"]

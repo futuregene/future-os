@@ -43,6 +43,9 @@ WHITELISTED_FILES = [
     "THIRD_PARTY_NOTICES.md",
     "THIRD_PARTY_NOTICES.zh-CN.md",
     "desktop/CLAUDE.md",
+    "agent/src/prompt/approval.md",
+    "agent/src/prompt/communication.md",
+    "agent/src/prompt/execution.md",
     "orchestration/loop/UPSTREAM.md",
     "orchestration/loop/UPSTREAM.zh-CN.md",
     "scripts/compaction_experiment/README.md",
@@ -321,6 +324,14 @@ class NegativeControlTests(unittest.TestCase):
     def test_clean_fixture_passes(self):
         result = run(build_tree({}))
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_runtime_prompts_are_assets_and_inline_link_examples_are_not_targets(self):
+        result = run(build_tree({
+            "agent/src/prompt/approval.md": "# Approval\n",
+            "agent/src/prompt/execution.md": "# Execution\n",
+            "agent/src/prompt/communication.md": "Use `[name](<path>)` or `[notes.txt](<./notes.txt>)`.\n",
+        }))
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_stray_markdown_outside_docs_fails(self):
         result = run(build_tree({"stray.md": "# stray\n"}))

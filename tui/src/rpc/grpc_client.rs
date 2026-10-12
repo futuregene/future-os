@@ -578,8 +578,9 @@ impl GrpcClient {
     /// used to fail outright at tonic's 4 MiB decoding default). This reads the
     /// agent's indexed history instead: `before` is the exclusive backward
     /// cursor — `i64::MAX` starts at the tail — and `limit` counts *user
-    /// exchanges*, which the agent clamps to 1..=100 (and which it never splits,
-    /// so a page can cost more than a small exchange). `hasMore`/`nextOffset`
+    /// exchanges*, which the agent clamps to 1..=100. Transport pages pay a
+    /// byte budget; the client assembles fragments and incomplete exchanges.
+    /// `hasMore`/`nextOffset`
     /// carry the continuation; a page that ends the history reports neither.
     pub async fn session_entries_page(
         &self,
@@ -593,8 +594,14 @@ impl GrpcClient {
             limit: Some(limit),
             ..Default::default()
         };
-        let page = self.call("get_session_entries", cmd).await?;
-        Ok(SessionEntriesPage::from_value(&page))
+        let page = future_rpc::history::read_page(cmd, |command| async move {
+            let value = self.call("get_session_entries", command).await?;
+            serde_json::from_value::<future_rpc::payloads::SessionEntriesPage<Value>>(value)
+                .map_err(|e| format!("invalid history page: {e}"))
+        })
+        .await?;
+        let value = serde_json::to_value(page).map_err(|e| e.to_string())?;
+        Ok(SessionEntriesPage::from_value(&value))
     }
 
     /// `setModel(modelId)`.
@@ -2626,6 +2633,7 @@ mod tests {
             ResponsePayload {
                 kind: Some(response_payload::Kind::GetSessionEntries(
                     future_rpc::proto::SessionEntriesResponse {
+                        fragment: None,
                         entries: vec![future_rpc::proto::SessionEntry {
                             id: "e1".into(),
                             role: "user".into(),

@@ -316,6 +316,7 @@ impl proto::future_agent_server::FutureAgent for FutureAgentService {
             offset: cmd.offset,
             limit: cmd.limit,
             before: cmd.before,
+            fragment_offset: cmd.fragment_offset,
             max_sessions: cmd.max_sessions,
             name: cmd.name,
             system_prompt: cmd.system_prompt,

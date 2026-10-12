@@ -1,0 +1,288 @@
+//! Session transcript reads, replacement and incremental index updates.
+use super::SqliteStore;
+use anyhow::{bail, Result};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::Value;
+
+impl SqliteStore {
+    pub fn entries(&self, session: &str) -> Result<Vec<Value>> {
+        self.typed_entries(session)
+    }
+
+    /// Transfer raw rows off the database worker before decoding. Large history
+    /// parsing must not hold up unrelated durable writes on that worker.
+    pub(crate) fn typed_entries<T: serde::de::DeserializeOwned>(
+        &self,
+        session: &str,
+    ) -> Result<Vec<T>> {
+        let session = session.to_owned();
+        let rows = self.db.call(move |db| read_entry_rows(db, &session))?;
+        rows.into_iter()
+            .map(|row| Ok(serde_json::from_str(&row)?))
+            .collect()
+    }
+
+    /// Summary inputs only: use the kind index to skip assistant/tool bodies.
+    /// Read the tail timestamp separately so ordering includes all entry kinds.
+    pub(crate) fn summary_rows(&self, session: &str) -> Result<(Vec<String>, String)> {
+        let session = session.to_owned();
+        self.db.call(move |db| {
+            let tx = db.transaction()?;
+            let rows = {
+                let mut stmt = tx.prepare("SELECT payload FROM entry_records WHERE session_id=?1 AND entry_type IN ('session_info','model_change','user') ORDER BY position")?;
+                let rows = stmt.query_map([&session], |row| row.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+                rows
+            };
+            let timestamp = tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ',updated_at_ms/1000.0,'unixepoch') FROM sessions WHERE id=?1", [&session], |row| row.get(0))?;
+            tx.commit()?;
+            Ok((rows, timestamp))
+        })
+    }
+
+    pub fn replace(&self, session: &str, entries: Vec<Value>) -> Result<()> {
+        let session = session.to_owned();
+        let result = self.db.call(move |db| {
+            // Reads `legacy_imports` before writing, so the transaction must own
+            // the write lock from the start: a deferred read-then-upgrade fails
+            // instantly (SQLITE_BUSY_SNAPSHOT) when another connection commits
+            // in between, which is exactly the "database is locked" seen while
+            // the skill registry wrote this same file.
+            {
+                let tx = crate::session::database::begin_write_transaction(db)?;
+                let skipped: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM legacy_imports WHERE session_id=?1 AND status='skipped')", [&session], |r| r.get(0))?;
+                if skipped { bail!("session migration was skipped; retry import before modifying it"); }
+                tx.execute("INSERT INTO sessions(id) VALUES (?1) ON CONFLICT(id) DO UPDATE SET revision=MAX(revision+1,0)", [&session])?;
+                tx.execute("DELETE FROM entries WHERE session_id=?1", [&session])?;
+                tx.execute("DELETE FROM history_display WHERE session_id=?1", [&session])?;
+                tx.execute("DELETE FROM runs WHERE session_id=?1", [&session])?;
+                tx.execute("UPDATE sessions SET current_metadata_json=NULL WHERE id=?1", [&session])?;
+                insert_transcript_entries(&tx, &session, entries)?;
+                tx.execute("DELETE FROM run_events WHERE session_id=?1 AND run_id IN (SELECT run_id FROM run_snapshots WHERE session_id=?1 AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.session_id=run_snapshots.session_id AND r.run_id=run_snapshots.run_id))", [&session])?;
+                tx.execute("DELETE FROM run_snapshots WHERE session_id=?1 AND NOT EXISTS(SELECT 1 FROM runs r WHERE r.session_id=run_snapshots.session_id AND r.run_id=run_snapshots.run_id)", [&session])?;
+                tx.commit()?;
+                Ok(())
+            }
+        });
+        // A rewrite can drop a large amount of history (compaction), which would
+        // otherwise stay in the file as free pages forever. Separate job: the
+        // worker is one ordered thread, so this cannot nest inside the call above.
+        self.request_reclamation_after_success(result.is_ok());
+        result
+    }
+
+    pub fn append(&self, session: &str, entries: Vec<Value>) -> Result<()> {
+        self.commit(session, entries, Vec::new())
+    }
+}
+
+fn read_entry_rows(db: &Connection, session: &str) -> Result<Vec<String>> {
+    let mut statement =
+        db.prepare("SELECT payload FROM entry_records WHERE session_id=?1 ORDER BY position")?;
+    let values = statement
+        .query_map([session], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if values.is_empty() {
+        bail!("session has no entries or was not imported");
+    }
+    Ok(values)
+}
+
+pub(crate) fn read_run_markers(db: &Connection, session: &str) -> Result<Vec<Value>> {
+    let mut statement=db.prepare("SELECT payload FROM entry_records WHERE session_id=?1 AND entry_type IN ('run_started','run_terminal') ORDER BY position")?;
+    let rows = statement
+        .query_map([session], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(|row| Ok(serde_json::from_str(&row)?))
+        .collect()
+}
+
+pub(crate) fn insert_transcript_entries(
+    db: &Connection,
+    session: &str,
+    mut entries: Vec<Value>,
+) -> Result<()> {
+    // Resolve legacy message ownership once, before discarding repeated
+    // snapshots. A terminal/start marker supplies identity, not a display-time
+    // positional guess. Explicit identities are never overwritten.
+    let mut boundary_run: Option<String> = None;
+    for entry in entries.iter_mut().rev() {
+        let kind = entry["type"].as_str().unwrap_or("").to_owned();
+        if matches!(kind.as_str(), "run_started" | "run_terminal") {
+            boundary_run = entry["content"]["run_id"].as_str().map(str::to_owned);
+        } else if matches!(kind.as_str(), "user" | "assistant" | "tool") {
+            if entry
+                .get("meta")
+                .and_then(|m| m.get("run_id"))
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .is_none()
+            {
+                if let Some(run) = &boundary_run {
+                    if !entry["meta"].is_object() {
+                        entry["meta"] = serde_json::json!({});
+                    }
+                    entry["meta"]["run_id"] = Value::String(run.clone());
+                }
+            }
+            if kind == "user" {
+                boundary_run = None;
+            }
+        }
+    }
+    let mut position: i64 = db.query_row(
+        "SELECT COALESCE(MAX(position)+1,0) FROM entries WHERE session_id=?1",
+        [session],
+        |r| r.get(0),
+    )?;
+    let mut changed_position: Option<i64> = None;
+    let mut metadata_changed = false;
+    for value in entries {
+        let mut value = crate::session::entry_records::normalize_entry(value);
+        if value["type"] == "user"
+            && value
+                .get("meta")
+                .and_then(|m| m.get("run_id"))
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .is_none()
+        {
+            let id = value["id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing entry identity"))?;
+            let run_id = format!("history:{session}:{id}");
+            if !value["meta"].is_object() {
+                value["meta"] = serde_json::json!({});
+            }
+            value["meta"]["run_id"] = Value::String(run_id);
+        }
+        if matches!(value["type"].as_str(), Some("assistant" | "tool"))
+            && value
+                .get("meta")
+                .and_then(|m| m.get("run_id"))
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .is_none()
+        {
+            let active:Option<String> = db.query_row("SELECT coalesce((SELECT run_id FROM entries WHERE session_id=?1 AND entry_id=?2),
+                 (SELECT run_id FROM entries WHERE session_id=?1 AND run_id IS NOT NULL ORDER BY position DESC LIMIT 1))",params![session,value["id"].as_str()],|r|r.get::<_,Option<String>>(0))?
+                .or_else(||value["id"].as_str().map(|id|format!("history:{session}:{id}")));
+            if let Some(run_id) = active {
+                if !value["meta"].is_object() {
+                    value["meta"] = serde_json::json!({});
+                }
+                value["meta"]["run_id"] = Value::String(run_id);
+            }
+        }
+        if matches!(value["type"].as_str(), Some("user" | "assistant" | "tool")) {
+            db.execute("INSERT INTO runs(session_id,run_id,status) VALUES (?1,?2,'unknown') ON CONFLICT(session_id,run_id) DO NOTHING",params![session,value["meta"]["run_id"].as_str()])?;
+        }
+        if value["type"] == "run_terminal" {
+            let baseline: Option<(i64,i64)> = db.query_row(
+                "SELECT input_baseline,cache_read_baseline FROM runs WHERE session_id=?1 AND run_id=?2 AND input_baseline IS NOT NULL",
+                params![session,value["content"]["run_id"].as_str()],|r|Ok((r.get(0)?,r.get(1)?))).optional()?;
+            let (input,cache)=match baseline {Some(value)=>value,None=>db.query_row("SELECT COALESCE(SUM(input_tokens),0),COALESCE(SUM(cache_read_tokens),0) FROM runs WHERE session_id=?1 AND run_id<>?2",params![session,value["content"]["run_id"].as_str()],|r|Ok((r.get(0)?,r.get(1)?)))?};
+            {
+                let (total_input,total_cache):(Option<i64>,Option<i64>)=db.query_row(
+                    "SELECT json_extract(current_metadata_json,'$.tokens_in'),json_extract(current_metadata_json,'$.tokens_cache_r') FROM sessions WHERE id=?1",
+                    [session],|r|Ok((r.get(0)?,r.get(1)?)))?;
+                let content = value["content"]
+                    .as_object_mut()
+                    .ok_or_else(|| anyhow::anyhow!("invalid run terminal"))?;
+                if let Some(total) = total_input {
+                    content
+                        .entry("input_tokens")
+                        .or_insert_with(|| (total - input).max(0).into());
+                }
+                if let Some(total) = total_cache {
+                    content
+                        .entry("cache_read_tokens")
+                        .or_insert_with(|| (total - cache).max(0).into());
+                }
+            }
+        }
+        let id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("missing entry identity"))?;
+        let kind = value
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing entry type"))?;
+        let previous: Option<String> = db
+            .query_row(
+                "SELECT payload FROM entry_records WHERE session_id=?1 AND entry_id=?2 LIMIT 1",
+                params![session, id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(previous) = previous {
+            if serde_json::from_str::<Value>(&previous)? != value {
+                bail!("conflicting entry identity");
+            }
+            continue;
+        }
+        // A session has one current metadata record, not a snapshot for each
+        // settings change. Keep its original position so history cursors do not
+        // move when metadata is refreshed.
+        let metadata_position: Option<i64> = if kind == "session_info" {
+            db.query_row("SELECT position FROM entries WHERE session_id=?1 AND entry_type='session_info' LIMIT 1",[session],|r|r.get(0)).optional()?
+        } else {
+            None
+        };
+        let write_position = metadata_position.unwrap_or(position);
+        if metadata_position.is_some() {
+            db.execute(
+                "DELETE FROM entries WHERE session_id=?1 AND position=?2",
+                params![session, write_position],
+            )?;
+        }
+        crate::session::entry_records::insert_entry_record(db, session, write_position, &value)?;
+        crate::session::history::insert_entry_shape(db, session, write_position, &value)?;
+        metadata_changed |= matches!(kind, "session_info" | "model_change");
+        if metadata_position.is_none() && kind != "model_change" {
+            changed_position =
+                Some(changed_position.map_or(write_position, |p| p.min(write_position)));
+        }
+        if matches!(kind, "run_started" | "run_terminal") {
+            let content = &value["content"];
+            let run = content
+                .get("run_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("missing run identity"))?;
+            let state = if kind == "run_started" {
+                "running"
+            } else {
+                content
+                    .get("state")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("missing terminal state"))?
+            };
+            let timestamp = value["timestamp"]
+                .as_str()
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.timestamp_millis());
+            let state = match state {
+                "error" => "failed",
+                "incomplete" | "interrupted_by_restart" => "interrupted",
+                state => state,
+            };
+            db.execute("INSERT INTO runs(session_id,run_id,status,run_sequence,epoch,started_at_ms,completed_at_ms,error,cache_write_tokens,input_baseline,cache_read_baseline,input_tokens,cache_read_tokens,output_tokens,duration_ms)
+                SELECT ?1,?2,?3,?8,?9,?10,?11,?12,?13,COALESCE(json_extract(current_metadata_json,'$.tokens_in'),0),COALESCE(json_extract(current_metadata_json,'$.tokens_cache_r'),0),?4,?5,?6,?7 FROM sessions WHERE id=?1
+                ON CONFLICT(session_id,run_id) DO UPDATE SET status=excluded.status,run_sequence=COALESCE(excluded.run_sequence,runs.run_sequence),epoch=COALESCE(excluded.epoch,runs.epoch),started_at_ms=COALESCE(runs.started_at_ms,excluded.started_at_ms),completed_at_ms=excluded.completed_at_ms,error=excluded.error,cache_write_tokens=excluded.cache_write_tokens,input_baseline=COALESCE(runs.input_baseline,excluded.input_baseline),cache_read_baseline=COALESCE(runs.cache_read_baseline,excluded.cache_read_baseline),input_tokens=excluded.input_tokens,cache_read_tokens=excluded.cache_read_tokens,output_tokens=excluded.output_tokens,duration_ms=excluded.duration_ms",
+                params![session,run,state,content["input_tokens"].as_i64(),content["cache_read_tokens"].as_i64(),content["run_tokens"].as_i64(),content["run_duration_ms"].as_i64(),content["run_sequence"].as_i64(),content["epoch"].as_i64(),if kind=="run_started" {timestamp} else {None},if kind=="run_terminal" {timestamp} else {None},content["error"].as_str().filter(|s|!s.is_empty()),content["cache_write_tokens"].as_i64()])?;
+        }
+        if metadata_position.is_none() {
+            position += 1;
+        }
+    }
+    if let Some(position) = changed_position {
+        crate::session::history::update_display_index_from(db, session, position)?;
+    }
+    if metadata_changed {
+        crate::session::history::refresh_session_metadata(db, session)?;
+    }
+    Ok(())
+}
