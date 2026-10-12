@@ -141,7 +141,13 @@ pub async fn remote_peer_open_settings_window<R: tauri::Runtime>(
 fn settings_window_label(desktop_id: &str) -> String {
     let sanitized: String = desktop_id
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' { ch } else { '-' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' {
+                ch
+            } else {
+                '-'
+            }
+        })
         .collect();
     format!("peer-settings-{sanitized}")
 }
@@ -163,8 +169,7 @@ fn percent_encode(value: &str) -> String {
     for byte in value.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
             encoded.push(byte as char);
-        }
-        else {
+        } else {
             encoded.push_str(&format!("%{byte:02X}"));
         }
     }
@@ -782,7 +787,10 @@ mod tests {
             settings_window_url("a&b=c"),
             "index.html?window=peer-settings&desktop=a%26b%3Dc"
         );
-        assert_eq!(settings_window_url("a b"), "index.html?window=peer-settings&desktop=a%20b");
+        assert_eq!(
+            settings_window_url("a b"),
+            "index.html?window=peer-settings&desktop=a%20b"
+        );
     }
 
     /// Asking twice must not stack two copies of the same machine's settings:
@@ -801,7 +809,11 @@ mod tests {
             .expect("raise the existing settings window");
 
         let labels: Vec<String> = app.webview_windows().keys().cloned().collect();
-        assert_eq!(labels, vec!["peer-settings-desktop-1".to_string()], "{labels:?}");
+        assert_eq!(
+            labels,
+            vec!["peer-settings-desktop-1".to_string()],
+            "{labels:?}"
+        );
 
         // A different machine gets its own window: the label carries the id.
         remote_peer_open_settings_window(app.clone(), "desktop_2".into())
