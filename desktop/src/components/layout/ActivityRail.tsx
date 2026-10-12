@@ -44,6 +44,7 @@ import { useRailSelection } from "./hooks/useRailSelection";
 import { MergedRows } from "./MergedRows";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, visibleThreadRows } from "./threadTree";
+import { RailDisclosure } from "./RailChrome";
 
 export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote" | "settings";
 
@@ -408,6 +409,69 @@ export function ActivityRail({
   );
 
   /**
+   * One workspace's heading, built once and used by both list modes.
+   *
+   * The merged list is handed this same node for this machine's workspaces, so a
+   * workspace heading is not merely *like* the local list's — with its folder,
+   * its pin marker, its menu and its click-to-select — it is the one the local
+   * list renders. A second, similar heading in the merged list is how the two
+   * lists drifted apart in the first place.
+   */
+  function renderWorkspaceHeader(workspace: StoredWorkspace, groupThreads: StoredThread[]): React.ReactNode {
+    const collapsed = collapsedWorkspaces.has(workspace.id);
+    return (
+      // Right-click anywhere on the heading opens the same actions menu as the
+      // `...` button.
+      <div
+        className="group flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle"
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setOpenWorkspaceMenuId(workspace.id);
+        }}
+      >
+        <RailDisclosure
+          collapsed={collapsed}
+          label={collapsed ? t("activityRail.expandWorkspace") : t("activityRail.collapseWorkspace")}
+          onToggle={() => toggleWorkspaceCollapsed(workspace.id)}
+        />
+        <button
+          className="flex min-w-0 flex-1 items-center gap-1 text-left"
+          onClick={() => onSelectWorkspace(workspace, groupThreads)}
+          type="button"
+        >
+          <Folder className="size-4 shrink-0 text-ink-soft" />
+          <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-soft" title={workspace.name}>
+            {workspace.name}
+          </span>
+          {/* A pinned group leads the list; the marker stays visible on hover
+              like the row's own pin state, without a second control. */}
+          {workspace.pinned
+            ? <Pin aria-hidden className="size-3.5 shrink-0 text-accent" />
+            : null}
+        </button>
+        <WorkspaceHeaderMenu
+          open={openWorkspaceMenuId === workspace.id}
+          workspace={workspace}
+          onDelete={onDeleteWorkspace}
+          onOpenChange={open => setOpenWorkspaceMenuId(open ? workspace.id : null)}
+          onRename={onRenameWorkspace}
+          onTogglePin={onTogglePinWorkspace}
+          onSelect={selectionMode ? undefined : () => enterSelectionMode(workspace.id)}
+        />
+        <button
+          aria-label={t("activityRail.newChatInWorkspace", { name: workspace.name })}
+          className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover:opacity-100"
+          onClick={() => onNewChat(workspace.id)}
+          title={t("activityRail.newChatInWorkspace", { name: workspace.name })}
+          type="button"
+        >
+          <Plus className="size-3.5" />
+        </button>
+      </div>
+    );
+  }
+
+  /**
    * Local conversations hidden because an ancestor is collapsed.
    *
    * In the local list the rail simply does not build the rows; the merged list
@@ -566,18 +630,28 @@ export function ActivityRail({
                           ? (
                               <MergedRows
                                 activeKey={activeConversationKey}
+                                chatSectionCollapsed={chatSectionCollapsed}
                                 filter={deviceFilter}
                                 onChangedRemote={() => onRemoteConversationsChanged?.()}
+                                onNewChat={() => onNewChat()}
+                                onNewWorkspace={onNewWorkspace}
                                 onOpenRemote={conversation => onOpenRemoteConversation?.(conversation)}
                                 onRenameRemote={conversation => onRenameRemoteConversation?.(conversation)}
+                                onToggleChatSection={() => setChatSectionCollapsed(value => !value)}
+                                onToggleWorkspaceSection={() => setWorkspaceSectionCollapsed(value => !value)}
                                 peers={remotePeers}
                                 localRowMeta={localRowMeta}
+                                renderLocalGroupHeader={(workspaceId) => {
+                                  const found = visibleWorkspaceGroups.find(item => item.workspace.id === workspaceId);
+                                  return found ? renderWorkspaceHeader(found.workspace, found.threads) : null;
+                                }}
                                 renderLocalRow={renderLocalRow}
                                 rows={visibleRemoteRows.filter(row =>
                                   // A collapsed local parent takes its forks with
                                   // it, exactly as it does in the local list.
                                   row.desktopId !== null || !collapsedLocalIds.has(row.id))}
                                 threadById={threadById}
+                                workspaceSectionCollapsed={workspaceSectionCollapsed}
                               />
                             )
                           : null}
@@ -651,63 +725,7 @@ export function ActivityRail({
                                     const collapsed = collapsedWorkspaces.has(workspace.id);
                                     return (
                                       <div key={workspace.id} className="space-y-0.5">
-                                        {/* Group header: hover only, no selected state (req 4).
-                                Right-click anywhere on the row opens the same
-                                actions menu as the `...` button. */}
-                                        <div
-                                          className="group flex h-7 w-full items-center gap-1 rounded-md px-2 text-left transition-colors hover:bg-surface-subtle"
-                                          onContextMenu={(event) => {
-                                            event.preventDefault();
-                                            setOpenWorkspaceMenuId(workspace.id);
-                                          }}
-                                        >
-                                          <button
-                                            aria-label={collapsed ? t("activityRail.expandWorkspace") : t("activityRail.collapseWorkspace")}
-                                            className="inline-flex size-4 shrink-0 items-center justify-center text-ink-muted transition-colors hover:text-ink-soft"
-                                            onClick={() => toggleWorkspaceCollapsed(workspace.id)}
-                                            type="button"
-                                          >
-                                            {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
-                                          </button>
-                                          {/* gap-1 (not gap-2): the workspace name then lands on
-                                      the same 48px column as its first-level titles,
-                                      matching the folder icon's role as this header's
-                                      version of the row toggle column. */}
-                                          <button
-                                            className="flex min-w-0 flex-1 items-center gap-1 text-left"
-                                            onClick={() => onSelectWorkspace(workspace, groupThreads)}
-                                            type="button"
-                                          >
-                                            <Folder className="size-4 shrink-0 text-ink-soft" />
-                                            <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-soft" title={workspace.name}>
-                                              {workspace.name}
-                                            </span>
-                                            {/* A pinned group leads the list; the marker
-                                        stays visible on hover like the row's own
-                                        pin state, without a second control. */}
-                                            {workspace.pinned
-                                              ? <Pin aria-hidden className="size-3.5 shrink-0 text-accent" />
-                                              : null}
-                                          </button>
-                                          <WorkspaceHeaderMenu
-                                            open={openWorkspaceMenuId === workspace.id}
-                                            workspace={workspace}
-                                            onDelete={onDeleteWorkspace}
-                                            onOpenChange={open => setOpenWorkspaceMenuId(open ? workspace.id : null)}
-                                            onRename={onRenameWorkspace}
-                                            onTogglePin={onTogglePinWorkspace}
-                                            onSelect={selectionMode ? undefined : () => enterSelectionMode(workspace.id)}
-                                          />
-                                          <button
-                                            aria-label={t("activityRail.newChatInWorkspace", { name: workspace.name })}
-                                            className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted opacity-0 transition hover:bg-surface hover:text-ink-soft group-hover:opacity-100"
-                                            onClick={() => onNewChat(workspace.id)}
-                                            title={t("activityRail.newChatInWorkspace", { name: workspace.name })}
-                                            type="button"
-                                          >
-                                            <Plus className="size-3.5" />
-                                          </button>
-                                        </div>
+                                        {renderWorkspaceHeader(workspace, groupThreads)}
                                         {!collapsed && groupThreads.length > 0
                                           ? (
                                               <div className="space-y-0.5">
