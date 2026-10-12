@@ -29,6 +29,20 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: (...args: Parameters<typeof openDialog>) => openDialog(...args),
 }));
 
+/**
+ * The clipboard's file sources, mocked at the module the composer shares with the
+ * local one: a Finder copy (paths recovered from WKWebView) and a screenshot
+ * (bytes written to a temporary file, because the host's upload takes a path).
+ */
+const nativePaths = vi.fn<() => Promise<string[]>>();
+const saveImage = vi.fn<(input: { bytes: number[]; extension: string }) => Promise<{ path: string }>>();
+const saveFile = vi.fn<(input: { bytes: number[]; name: string }) => Promise<{ path: string }>>();
+vi.mock("../../integrations/storage/threadStore", () => ({
+  readNativeClipboardFilePaths: () => nativePaths(),
+  savePastedFile: (input: { bytes: number[]; name: string }) => saveFile(input),
+  savePastedImage: (input: { bytes: number[]; extension: string }) => saveImage(input),
+}));
+
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 const peer = {
@@ -385,3 +399,82 @@ it("holds the send back while a file is uploading", async () => {
   expect(view.text()).toContain("report.txt");
   await view.unmount();
 });
+
+/**
+ * A file pasted into the box goes to the *host*: the machine that will read it
+ * is the machine that needs the bytes. Without this the user's only way to hand
+ * a file over is the attach button, which is not how anyone moves a file on a
+ * desktop.
+ */
+it("stages a pasted file on the host, not in the draft", async () => {
+  nativePaths.mockResolvedValue(["/Users/me/Desktop/report.txt"]);
+  upload.mockResolvedValue({ contentHash: "h", name: "report.txt", uploadId: "upload_9" });
+  const view = await mount();
+
+  // What a Finder copy actually looks like in the webview: a `File` with no
+  // usable name or type, whose real path has to be recovered off the pasteboard.
+  const opaque = new File([new Uint8Array([1])], "", { type: "" });
+  await act(async () => {
+    view.input.dispatchEvent(pasteEvent({ files: [opaque] }));
+  });
+  await settle();
+
+  // The recovered path is uploaded, not the opaque bytes: the path is the only
+  // one that names the file the user actually copied.
+  expect(upload).toHaveBeenCalledWith({ desktopId: "desktop_a", path: "/Users/me/Desktop/report.txt" });
+  expect(saveFile).not.toHaveBeenCalled();
+  expect(view.text()).toContain("report.txt");
+  await view.unmount();
+});
+
+/**
+ * The bytes case: a screenshot has no path, so it is written to a temporary file
+ * and that is what is uploaded.
+ */
+it("uploads a pasted screenshot through a temporary file", async () => {
+  nativePaths.mockResolvedValue([]);
+  saveImage.mockResolvedValue({ path: "/tmp/pasted-1.png" });
+  upload.mockResolvedValue({ contentHash: "h", name: "pasted-1.png", uploadId: "upload_10" });
+  const view = await mount();
+
+  const file = new File([new Uint8Array([1, 2, 3])], "pasted.png", { type: "image/png" });
+  await act(async () => {
+    view.input.dispatchEvent(pasteEvent({ files: [file] }));
+  });
+  await settle();
+
+  expect(saveImage).toHaveBeenCalledWith({ bytes: [1, 2, 3], extension: "png" });
+  expect(upload).toHaveBeenCalledWith({ desktopId: "desktop_a", path: "/tmp/pasted-1.png" });
+  await view.unmount();
+});
+
+/**
+ * A plain text paste belongs in the field. Swallowing it would be worse than the
+ * feature it was added for.
+ */
+it("leaves a text paste to the input", async () => {
+  nativePaths.mockResolvedValue([]);
+  const view = await mount();
+
+  const event = pasteEvent();
+  await act(async () => {
+    view.input.dispatchEvent(event);
+  });
+  await settle();
+
+  expect(upload).not.toHaveBeenCalled();
+  expect(event.defaultPrevented).toBe(false);
+  await view.unmount();
+});
+
+/** A clipboard carrying a file URI but no `File` is still a file copy. */
+function pasteEvent(input: { files?: File[]; uriList?: string } = {}): Event {
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  const data = {
+    files: input.files ?? [],
+    getData: (type: string) => (type === "text/uri-list" ? input.uriList ?? "" : ""),
+    types: input.uriList ? ["text/uri-list"] : [],
+  };
+  Object.defineProperty(event, "clipboardData", { value: data });
+  return event;
+}

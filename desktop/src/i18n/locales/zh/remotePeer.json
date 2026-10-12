@@ -154,5 +154,7 @@
   "workspacesAdd": "添加",
   "workspacesAddHint": "目录必须在那台电脑上已经存在；路径以那台电脑为准。",
   "workspacesRemove": "移除",
-  "workspacesRemoveConfirm": "从那台电脑移除工作区「{{workspace}}」？它在{{host}}上的会话也会一起删除。"
+  "workspacesRemoveConfirm": "从那台电脑移除工作区「{{workspace}}」？它在{{host}}上的会话也会一起删除。",
+  "pasteUnreadable": "无法读取粘贴的文件：{{name}}",
+  "pasteTooMany": "一次最多粘贴 {{max}} 个文件"
 }
