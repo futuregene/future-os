@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn settled_registry_opens_without_the_write_lock() {
+    for version in [0, 2, 4, 5, crate::session::database::CURRENT_SCHEMA_VERSION] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("agent.db");
+        let holder = open_registry(&path).unwrap();
+        holder.pragma_update(None, "user_version", version).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE;").unwrap();
+
+        let reader = open_registry(&path).unwrap();
+        assert_eq!(
+            reader
+                .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            version
+        );
+        reader
+            .query_row("SELECT count(*) FROM skills", [], |r| r.get::<_, i64>(0))
+            .unwrap();
+        holder.execute_batch("ROLLBACK;").unwrap();
+    }
+}
+
+#[test]
 fn fresh_registry_keeps_incremental_reclamation_without_rebuilding() {
     let dir = tempfile::tempdir().unwrap();
     let connection = open_registry(&dir.path().join("agent.db")).unwrap();

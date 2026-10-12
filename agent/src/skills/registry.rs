@@ -190,13 +190,18 @@ pub(crate) fn open_registry(path: &Path) -> Result<Connection> {
         connection.pragma_update(None, "auto_vacuum", 2)?;
     }
     connection.pragma_update(None, "journal_mode", "WAL")?;
-    initialize_registry_schema(&mut connection)?;
+    // Settled registries are also opened by list queries. Do not reserve the
+    // writer lock unless tables/indexes or the v3 stamp actually need updating.
+    if initial.fresh || initial.version == 3 || !initial.schema_ready {
+        initialize_registry_schema(&mut connection)?;
+    }
     Ok(connection)
 }
 
 struct RegistryDatabaseState {
     fresh: bool,
     version: i64,
+    schema_ready: bool,
 }
 
 fn inspect_registry_database(connection: &Connection) -> Result<RegistryDatabaseState> {
@@ -225,13 +230,25 @@ fn inspect_registry_database(connection: &Connection) -> Result<RegistryDatabase
     {
         bail!("unsupported Agent database schema version {version}");
     }
-    Ok(RegistryDatabaseState { fresh, version })
+    let schema_ready = connection.query_row(
+        "SELECT count(*) = 5 FROM sqlite_schema
+         WHERE (type='table' AND name IN
+             ('skills','skills_meta','skill_installations','skill_operations'))
+            OR (type='index' AND name='skill_installations_name')",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(RegistryDatabaseState {
+        fresh,
+        version,
+        schema_ready,
+    })
 }
 
 fn initialize_registry_schema(connection: &mut Connection) -> Result<()> {
     // Another process may have initialized/upgraded the file after preflight.
     // Read ownership and version only after reserving the write lock: a stale
-    // fresh/v3 observation must never overwrite a committed a newer supported schema.
+    // fresh/v3 observation must never overwrite a newer supported schema.
     let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let current = inspect_registry_database(&tx)?;
     tx.execute_batch(SKILLS_TABLE_SQL)?;
