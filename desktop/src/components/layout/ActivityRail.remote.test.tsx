@@ -292,3 +292,83 @@ describe("the local tree in merged mode", () => {
     view.unmount();
   });
 });
+
+/**
+ * The merged list's chrome is the rail's own, and its controls stay wired to the
+ * rail's state: folding a section, creating a workspace or a chat, and re-reading
+ * a host after one of its rows was acted on.
+ *
+ * Asserted through the rail because that is where those handlers live — a section
+ * header that renders but does not fold is a control that does nothing.
+ */
+describe("the merged list's controls", () => {
+  it("folds the workspace and chat sections from their headers", async () => {
+    const view = await mountRail({ remoteCatalogs: [catalogRow("sess_a")] });
+
+    await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='Collapse workspace list']")!.click());
+    expect(view.container.querySelector("button[aria-label='Expand workspace list']")).not.toBeNull();
+
+    await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='Collapse chat list']")!.click());
+    expect(view.container.querySelector("button[aria-label='Expand chat list']")).not.toBeNull();
+    view.unmount();
+  });
+
+  it("offers this machine's creation controls, and hands them the rail's handlers", async () => {
+    const onNewWorkspace = vi.fn();
+    const onNewChat = vi.fn();
+    const view = await mountRail({
+      onNewChat,
+      onNewWorkspace,
+      remoteCatalogs: [catalogRow("sess_a")],
+    });
+
+    await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='New workspace']")!.click());
+    expect(onNewWorkspace).toHaveBeenCalledTimes(1);
+
+    await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='New chat']")!.click());
+    expect(onNewChat).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it("re-reads a host when one of its rows changed", async () => {
+    const onRemoteConversationsChanged = vi.fn();
+    const view = await mountRail({
+      onRemoteConversationsChanged,
+      remoteCatalogs: [catalogRow("sess_a")],
+    });
+
+    pin.mockResolvedValueOnce(undefined);
+    await act(async () => view.actionsButton()!.click());
+    await act(async () => view.item("Pin")!.click());
+    await settle();
+
+    expect(pin).toHaveBeenCalled();
+    // The list the user is looking at is the host's, so it has to be read again
+    // — nothing local would show what was just changed there.
+    expect(onRemoteConversationsChanged).toHaveBeenCalled();
+    view.unmount();
+  });
+});
+
+/**
+ * With a host in the list, this machine's workspace heading is still the rail's
+ * own — with its folder, its menu and its fold control.
+ *
+ * The merged list asks the rail for that heading rather than drawing its own, so
+ * one workspace cannot be folded in one list and open in the other.
+ */
+it("renders this machine's workspace heading through the merged list", async () => {
+  const view = await mountRail({
+    remoteCatalogs: [catalogRow("sess_a")],
+    threads: [thread("th_a", { mode: "workspace", workspaceId: "ws_1" })],
+    workspaces: [{ id: "ws_1", name: "future-os", path: "/tmp/ws", pinned: false } as never],
+  });
+
+  // The workspace heading, and its fold control, are in the merged list.
+  expect(view.container.textContent).toContain("future-os");
+  const collapse = view.container.querySelector<HTMLButtonElement>("button[aria-label='Collapse workspace']");
+  expect(collapse).not.toBeNull();
+  await act(async () => collapse!.click());
+  expect(view.container.querySelector("button[aria-label='Expand workspace']")).not.toBeNull();
+  view.unmount();
+});

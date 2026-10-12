@@ -108,8 +108,10 @@ async function mount(props: {
     // Revealed on hover in the product, but always mounted so it is reachable
     // by keyboard — which is also what makes it addressable here.
     forkButtons: () => [...container.querySelectorAll<HTMLButtonElement>("button[aria-label='Branch from here']")],
-    compactButton: () => [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find(node => node.textContent === "Compact context"),
+    // The header's own actions are icon buttons, as in this app's conversation
+    // header: the label is the accessible name, not the button's text.
+    compactButton: () => container.querySelector<HTMLButtonElement>("button[aria-label='Compact context']"),
+    filesButton: () => container.querySelector<HTMLButtonElement>("button[aria-label='Files']"),
     continueButton: () => [...container.querySelectorAll<HTMLButtonElement>("button")]
       .find(node => node.textContent === "Continue"),
     unmount: async () => {
@@ -244,7 +246,7 @@ it("replaces the compact action with progress while the host compacts", async ()
     entries: [entry("u1", "user", "hello")],
   });
 
-  expect(view.compactButton()).toBeUndefined();
+  expect(view.compactButton()).toBeNull();
   expect(view.container.textContent).toContain("Compacting");
   await view.unmount();
 });
@@ -398,8 +400,44 @@ it("shows every tool call of a turn, not just the first", async () => {
   };
   const view = await mount({ entries: [entry("u1", "user", "do it"), twoTools] });
 
+  // Rendered as the local transcript's activity lines, one per call: the label
+  // is the local one ("Read a file" / "Ran a command"), not the tool's own name.
   const text = view.container.textContent ?? "";
-  expect(text).toContain("read");
-  expect(text).toContain("shell");
+  expect(text).toContain("Read a file");
+  expect(text).toContain("Ran a command");
+  await view.unmount();
+});
+
+/**
+ * The fork control follows the pointer, driven by the message it belongs to.
+ *
+ * Hidden-but-mounted so it stays reachable by keyboard, and `pointer-events-none`
+ * while hidden so an invisible control cannot be clicked. both halves are
+ * asserted here from the pointer: leave hides it, over shows it. (The message
+ * frame owns that state — the control itself has no hover of its own.)
+ */
+it("follows the pointer over the message it belongs to", async () => {
+  const view = await mount({
+    entries: [entry("u1", "user", "do it"), entry("a1", "assistant", "done")],
+  });
+  const message = view.container.querySelector("[data-message-id='a1']")!;
+  const fork = () => view.forkButtons()[0]!;
+
+  await act(async () => {
+    // React synthesizes `onPointerLeave` from `pointerout` (it pairs the event
+    // with a `relatedTarget` outside the element), so a bare `pointerleave`
+    // never reaches the handler in jsdom — this is the event a browser sends.
+    message.dispatchEvent(new PointerEvent("pointerout", { bubbles: true, relatedTarget: document.body }));
+  });
+  expect(fork().className).toContain("opacity-0");
+  expect(fork().className).toContain("pointer-events-none");
+
+  await act(async () => {
+    message.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+  });
+  expect(fork().className).toContain("opacity-100");
+  // Still mounted while hidden and while shown: a control removed on mouse-out
+  // is invisible to a keyboard user.
+  expect(view.forkButtons()).toHaveLength(1);
   await view.unmount();
 });

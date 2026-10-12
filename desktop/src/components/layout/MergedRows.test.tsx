@@ -498,3 +498,29 @@ it("offers the local-only controls only when this machine's rows are listed", as
   expect(remote.container.querySelector("button[aria-label='New workspace']")).toBeNull();
   await remote.unmount();
 });
+
+/**
+ * Pinned rows lead the list, remote ones included.
+ *
+ * A pinned conversation on a host is pinned for the same reason this machine's
+ * are, so it belongs in the same section — the pinned section is the one place a
+ * reader looks for what they deliberately put first.
+ */
+it("lists a pinned remote conversation in the pinned section", async () => {
+  const view = await render({
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [
+      conversation({ desktopId: "desktop_a", id: "pinned_1", key: "desktop_a::pinned_1", pinned: true, title: "kept first" }),
+      conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a", title: "a chat on the host" }),
+    ],
+    threadById: new Map(),
+  });
+
+  const pinnedSection = view.container.firstElementChild!;
+  expect(pinnedSection.textContent).toContain("Pinned");
+  expect(pinnedSection.textContent).toContain("kept first");
+  // And not in the chat section too: a pinned row is listed once.
+  expect(view.container.querySelector("[data-testid='merged-conversations']")!.textContent).not.toContain("kept first");
+  await view.unmount();
+});

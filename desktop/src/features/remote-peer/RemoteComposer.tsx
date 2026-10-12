@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { SkillCandidate } from "../../integrations/skills/skillsClient";
 import type { RemotePeer, RemoteUpload } from "./remotePeerClient";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -44,6 +45,7 @@ export interface RemoteSkillRecommendation {
  * and stopping a run that is in flight.
  */
 export function RemoteComposer({
+  controls,
   desktopId,
   onCreated,
   onSent,
@@ -52,6 +54,12 @@ export function RemoteComposer({
   skillRecommendation,
   streaming = false,
 }: {
+  /**
+   * Extra controls for the control row, before the machine hint and the send
+   * button: the host's own model and thinking level, which this app's composer
+   * also keeps beside the button that sends with them.
+   */
+  controls?: ReactNode;
   desktopId: string;
   /**
    * Called only when the prompt *created* the conversation (the draft case),
@@ -391,6 +399,7 @@ export function RemoteComposer({
               <Paperclip className="size-3.5" />
             </button>
             <div className="flex items-center gap-2">
+              {controls}
               {/* Where the prompt will run. In the controls row rather than under
                 the whole panel: it qualifies the send button beside it. */}
               <span className="truncate text-xs text-ink-muted">

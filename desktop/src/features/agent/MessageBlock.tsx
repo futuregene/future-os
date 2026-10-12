@@ -5,8 +5,6 @@ import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../components/ui/CopyButton";
 import { useCopyState } from "../../components/ui/useCopyState";
 import { cn } from "../../lib/cn";
-import { formatDateTime, formatMessageTimestamp } from "../../lib/date";
-import { useNow } from "../../lib/useNow";
 import { STREAMED_BLOCK_CONTAINMENT } from "../markdown/LiveMarkdownContext";
 import { StreamingMarkdownContent } from "../markdown/MarkdownContent";
 import { SafeLink } from "../markdown/renderers/SafeLink";
@@ -16,6 +14,7 @@ import { splitExternalLinkSegments } from "./externalLinks";
 import { parseMentionSegments } from "./mentionMarkdown";
 import { MessageMeta } from "./MessageMeta";
 import { AttachmentChip } from "./messages/AttachmentChip";
+import { MessageFrame } from "./messages/MessageFrame";
 import { CompactionDivider, StatusDivider } from "./messages/MessageStatus";
 import { buildReplyBlocks } from "./replyBlocks";
 import { ReplySteps } from "./ReplySteps";
@@ -60,10 +59,7 @@ function MessageBlockImpl({
   workspaceId,
   workspacePath,
 }: MessageBlockProps) {
-  const { i18n, t } = useTranslation("agent");
-  // Re-render on a minute cadence so the relative timestamp ("3 minutes ago")
-  // stays accurate as it ages, instead of freezing at its first-render value.
-  const now = useNow();
+  const { t } = useTranslation("agent");
   const { copiedKey, copy } = useCopyState();
   const isUser = message.role === "user";
   // While the reply streams, the footer is pinned open and shows a live activity
@@ -122,222 +118,188 @@ function MessageBlockImpl({
   }
 
   return (
-    <article className="flex justify-center">
-      <div
-        className="min-w-0 w-full max-w-3xl"
-        data-message-id={dataMessageId}
-        onPointerLeave={() => onLeave(message.id)}
-        onPointerOver={() => onHover(message.id)}
-      >
-        <div className={cn(
-          "flex items-center gap-2",
-          isUser ? "mb-1 justify-end" : "mb-3 border-b border-line-soft/40 pb-2",
-        )}
-        >
-          <span className="text-sm font-semibold text-ink">
-            {t(message.authorKey)}
-          </span>
-          <span className="text-xs text-ink-muted" title={formatDateTime(message.createdAt, i18n.language)}>
-            {formatMessageTimestamp(message.createdAt, i18n.language, {
-              now,
-              justNowLabel: t("message.justNow"),
-            })}
-          </span>
-        </div>
-        <div
-          className={cn(
-            "text-sm leading-6 text-ink",
-            isUser
-              ? "ml-auto w-fit max-w-2xl wrap-break-word rounded-lg bg-surface-subtle px-4 py-3 text-left"
-              : "w-full",
-            // See LiveMarkdownContext for the full mechanism. While the reply
-            // streams, every pushed delta mutates the growing tail and the
-            // browser re-computes preferred widths and re-lays-out the message
-            // from scratch — visible in WebContent samples as the dominant
-            // frame-time cost (`RenderBlock::layout`, `computePreferredLogical
-            // Widths`, `paintObject`, `performFlexLayout`). `contain` on the
-            // live (still-growing) segment keeps that work inside the tail
-            // instead of re-walking every settled text/thinking/code block —
-            // the difference between a chat that keeps up and one that freezes
-            // on a long reasoning reply.
-            streaming ? `**:data-[streamed-block]:${STREAMED_BLOCK_CONTAINMENT}` : "",
-          )}
-        >
-          {segments
-            ? (
-                <div className="space-y-3">
-                  {buildReplyBlocks(segments, streaming).map((block) => {
-                    if (block.kind === "steps") {
-                      return (
-                        <ReplySteps
-                          key={block.segments[0]!.id}
-                          segments={block.segments}
-                          workspaceId={workspaceId}
-                          workspacePath={workspacePath}
-                          runId={message.runId}
-                        />
-                      );
-                    }
-                    const segment = block.segment;
-                    if (segment.kind === "text") {
-                      return (
-                        <StreamingMarkdownContent
-                          content={segment.text}
-                          key={segment.id}
-                          live={segment.id === liveSegmentId}
-                          workspaceId={workspaceId}
-                        />
-                      );
-                    }
-                    if (segment.kind === "thinking") {
-                      return (
-                        <ThinkingBlock
-                          key={segment.id}
-                          live={streaming && segment === segments[segments.length - 1]}
-                          text={segment.text}
-                          workspaceId={workspaceId}
-                        />
-                      );
-                    }
-                    if (segment.kind === "compaction") {
-                      return (
-                        <CompactionDivider
-                          error={segment.error}
-                          key={segment.id}
-                          status={segment.status}
-                          tokensAfter={segment.tokensAfter}
-                          tokensBefore={segment.tokensBefore}
-                          trigger={segment.trigger}
-                        />
-                      );
-                    }
-                    return <AgentActivityLine item={segment.item} key={segment.id} workspacePath={workspacePath} runId={message.runId} />;
-                  })}
-                </div>
-              )
-            : message.content
-              ? isUser
-                ? <UserMessageText content={message.content} />
-                : (
-                    <StreamingMarkdownContent
-                      content={message.content}
+    <MessageFrame
+      author={t(message.authorKey)}
+      bodyClassName={streaming ? `**:data-[streamed-block]:${STREAMED_BLOCK_CONTAINMENT}` : undefined}
+      createdAt={message.createdAt}
+      dataMessageId={dataMessageId}
+      onEnter={() => onHover(message.id)}
+      onLeave={() => onLeave(message.id)}
+      role={isUser ? "user" : "assistant"}
+    >
+      {segments
+        ? (
+            <div className="space-y-3">
+              {buildReplyBlocks(segments, streaming).map((block) => {
+                if (block.kind === "steps") {
+                  return (
+                    <ReplySteps
+                      key={block.segments[0]!.id}
+                      segments={block.segments}
                       workspaceId={workspaceId}
-                      live={streaming}
+                      workspacePath={workspacePath}
+                      runId={message.runId}
                     />
-                  )
-              : null}
-          {message.attachments && message.attachments.length > 0
-            ? (
-                <div className={cn("mt-2 flex flex-wrap gap-1.5", isUser && "justify-end")}>
-                  {message.attachments.map(attachment => (
-                    <AttachmentChip key={`${message.id}:${attachment.path}`} attachment={attachment} />
-                  ))}
-                </div>
-              )
-            : null}
-          {!isUser && !segments && message.runId
-            ? <AgentActivityList items={message.activityItems} workspacePath={workspacePath} runId={message.runId} />
-            : !isUser && !segments
-                ? <AgentActivityList items={message.activityItems} workspacePath={workspacePath} />
-                : null}
-          {!isUser && (message.terminationNotice || noFinalReply)
-            ? (
-                <div className="mt-4">
-                  <StatusDivider
-                    label={noFinalReply ? t("thread.noFinalReply") : message.stopped ? t("thread.responseStopped") : (message.terminationTitle ?? t("thread.responseIncomplete"))}
-                    warning={!message.stopped && !noFinalReply}
-                  />
-                  {isLast === true && !message.stopped
-                    ? (
-                        <p className={cn("mt-2 text-sm leading-6", message.stopped ? "text-ink-muted" : "text-ink-soft")}>
-                          {noFinalReply ? t("thread.noFinalReplyDetail") : message.terminationNotice}
-                        </p>
-                      )
-                    : null}
-                </div>
-              )
-            : null}
-          {canRecover
-            ? (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {recoverySource && onRetry
-                    ? (
-                        <button
-                          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
-                          onClick={() => onRetry(message, recoverySource)}
-                          type="button"
-                        >
-                          <RotateCcw className="size-3.5" />
-                          {t("message.retry")}
-                        </button>
-                      )
-                    : null}
-                  {onContinue && canContinueResponse(message)
-                    ? (
-                        <button
-                          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
-                          onClick={() => onContinue(message)}
-                          type="button"
-                        >
-                          <StepForward className="size-3.5" />
-                          {t("message.continue")}
-                        </button>
-                      )
-                    : null}
-                </div>
-              )
-            : null}
-        </div>
-        <div className={cn("flex flex-wrap items-center gap-2", isUser ? "mt-1 justify-end" : "mt-3 justify-start")}>
-          {streaming
-            ? (
-                <StreamingIndicator
-                  label={message.reconnecting
-                    ? t("message.reconnecting", { attempt: message.reconnecting.attempt, maxRetries: message.reconnecting.maxRetries })
-                    : t("message.generating")}
-                  showLabel={Boolean(message.reconnecting)}
+                  );
+                }
+                const segment = block.segment;
+                if (segment.kind === "text") {
+                  return (
+                    <StreamingMarkdownContent
+                      content={segment.text}
+                      key={segment.id}
+                      live={segment.id === liveSegmentId}
+                      workspaceId={workspaceId}
+                    />
+                  );
+                }
+                if (segment.kind === "thinking") {
+                  return (
+                    <ThinkingBlock
+                      key={segment.id}
+                      live={streaming && segment === segments[segments.length - 1]}
+                      text={segment.text}
+                      workspaceId={workspaceId}
+                    />
+                  );
+                }
+                if (segment.kind === "compaction") {
+                  return (
+                    <CompactionDivider
+                      error={segment.error}
+                      key={segment.id}
+                      status={segment.status}
+                      tokensAfter={segment.tokensAfter}
+                      tokensBefore={segment.tokensBefore}
+                      trigger={segment.trigger}
+                    />
+                  );
+                }
+                return <AgentActivityLine item={segment.item} key={segment.id} workspacePath={workspacePath} runId={message.runId} />;
+              })}
+            </div>
+          )
+        : message.content
+          ? isUser
+            ? <UserMessageText content={message.content} />
+            : (
+                <StreamingMarkdownContent
+                  content={message.content}
+                  workspaceId={workspaceId}
+                  live={streaming}
                 />
               )
-            : copyableText
-              ? (
-                  <CopyButton
+          : null}
+      {message.attachments && message.attachments.length > 0
+        ? (
+            <div className={cn("mt-2 flex flex-wrap gap-1.5", isUser && "justify-end")}>
+              {message.attachments.map(attachment => (
+                <AttachmentChip key={`${message.id}:${attachment.path}`} attachment={attachment} />
+              ))}
+            </div>
+          )
+        : null}
+      {!isUser && !segments && message.runId
+        ? <AgentActivityList items={message.activityItems} workspacePath={workspacePath} runId={message.runId} />
+        : !isUser && !segments
+            ? <AgentActivityList items={message.activityItems} workspacePath={workspacePath} />
+            : null}
+      {!isUser && (message.terminationNotice || noFinalReply)
+        ? (
+            <div className="mt-4">
+              <StatusDivider
+                label={noFinalReply ? t("thread.noFinalReply") : message.stopped ? t("thread.responseStopped") : (message.terminationTitle ?? t("thread.responseIncomplete"))}
+                warning={!message.stopped && !noFinalReply}
+              />
+              {isLast === true && !message.stopped
+                ? (
+                    <p className={cn("mt-2 text-sm leading-6", message.stopped ? "text-ink-muted" : "text-ink-soft")}>
+                      {noFinalReply ? t("thread.noFinalReplyDetail") : message.terminationNotice}
+                    </p>
+                  )
+                : null}
+            </div>
+          )
+        : null}
+      {canRecover
+        ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {recoverySource && onRetry
+                ? (
+                    <button
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+                      onClick={() => onRetry(message, recoverySource)}
+                      type="button"
+                    >
+                      <RotateCcw className="size-3.5" />
+                      {t("message.retry")}
+                    </button>
+                  )
+                : null}
+              {onContinue && canContinueResponse(message)
+                ? (
+                    <button
+                      className="inline-flex h-8 items-center gap-1.5 rounded-md border border-line bg-surface px-2.5 text-xs font-medium text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink"
+                      onClick={() => onContinue(message)}
+                      type="button"
+                    >
+                      <StepForward className="size-3.5" />
+                      {t("message.continue")}
+                    </button>
+                  )
+                : null}
+            </div>
+          )
+        : null}
+      <div className={cn("flex flex-wrap items-center gap-2", isUser ? "mt-1 justify-end" : "mt-3 justify-start")}>
+        {streaming
+          ? (
+              <StreamingIndicator
+                label={message.reconnecting
+                  ? t("message.reconnecting", { attempt: message.reconnecting.attempt, maxRetries: message.reconnecting.maxRetries })
+                  : t("message.generating")}
+                showLabel={Boolean(message.reconnecting)}
+              />
+            )
+          : copyableText
+            ? (
+                <CopyButton
                   // `will-change-[opacity]` keeps the button on its own compositor
                   // layer at all times: WKWebView (tauri#12800 family) drops repaints
                   // of in-flow content until a window resize, so hide/show — and the
                   // fade, which is only safe because the compositor animates a
                   // promoted layer's opacity — must never depend on a repaint. Do not
                   // remove the will-change without re-testing stale-paint ghosts.
-                    className={cn(
-                      "will-change-[opacity] transition-opacity duration-200 focus-visible:pointer-events-auto focus-visible:opacity-100",
-                      hovered ? "opacity-100" : "pointer-events-none opacity-0",
-                    )}
-                    copied={copiedKey === "default"}
-                    onCopy={() => void copy(copyableText)}
-                  />
-                )
-              : null}
-          {!streaming && !isUser && onFork
-            ? (
-                <button
                   className={cn(
-                    "rounded p-1 text-ink-muted hover:text-ink will-change-[opacity] transition-opacity duration-200 focus-visible:pointer-events-auto focus-visible:opacity-100",
+                    "will-change-[opacity] transition-opacity duration-200 focus-visible:pointer-events-auto focus-visible:opacity-100",
                     hovered ? "opacity-100" : "pointer-events-none opacity-0",
                   )}
-                  onClick={() => onFork(message)}
-                  title={t("message.fork")}
-                  type="button"
-                >
-                  <GitBranch className="size-3.5" />
-                </button>
+                  copied={copiedKey === "default"}
+                  onCopy={() => void copy(copyableText)}
+                />
               )
             : null}
-          {!isUser ? <MessageMeta message={message} hovered={hovered} /> : null}
-          {streaming && !isUser && message.thinkingActive && !segments?.some(segment => segment.kind === "thinking")
-            ? <span className="select-none text-xs text-ink-muted">{t("message.thinking")}</span>
-            : null}
-        </div>
+        {!streaming && !isUser && onFork
+          ? (
+              <button
+                className={cn(
+                  "rounded p-1 text-ink-muted hover:text-ink will-change-[opacity] transition-opacity duration-200 focus-visible:pointer-events-auto focus-visible:opacity-100",
+                  hovered ? "opacity-100" : "pointer-events-none opacity-0",
+                )}
+                onClick={() => onFork(message)}
+                title={t("message.fork")}
+                type="button"
+              >
+                <GitBranch className="size-3.5" />
+              </button>
+            )
+          : null}
+        {!isUser ? <MessageMeta message={message} hovered={hovered} /> : null}
+        {streaming && !isUser && message.thinkingActive && !segments?.some(segment => segment.kind === "thinking")
+          ? <span className="select-none text-xs text-ink-muted">{t("message.thinking")}</span>
+          : null}
       </div>
-    </article>
+    </MessageFrame>
   );
 }
 

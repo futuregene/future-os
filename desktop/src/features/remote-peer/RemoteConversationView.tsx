@@ -1,15 +1,19 @@
 import type { RemotePeer } from "./remotePeerClient";
 import type { RemoteApproval } from "./useRemoteApprovals";
 import type { RemoteEntry } from "./useRemoteTimeline";
-import { FolderOpen, GitBranch } from "lucide-react";
+import { asToolKind } from "@future-os/thread-projection";
+import { Archive, FolderOpen, GitBranch } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { Button } from "../../components/ui/Button";
+import { IconButton } from "../../components/ui/IconButton";
 import { cn } from "../../lib/cn";
 import { startWindowDrag } from "../../lib/windowDrag";
+import { AgentActivityLine } from "../agent/AgentActivityList";
+import { MessageFrame } from "../agent/messages/MessageFrame";
 import { MarkdownContent } from "../markdown/MarkdownContent";
-import { iconGlyph, peerBadgeText } from "./peerIcons";
+import { peerBadgeText } from "./peerIcons";
 import { precedingUserEntryId } from "./useRemoteTimeline";
 import { useRemoteToolTarget } from "./useRemoteToolTarget";
 
@@ -46,7 +50,6 @@ export function RemoteConversationView({
   onToggleLeftPanel,
   peer,
   persistedEntryIds,
-  settings,
   streaming,
   title,
   sessionId,
@@ -78,8 +81,6 @@ export function RemoteConversationView({
   onContinueRun: (runId: string) => void;
   /** Open the browser for the files this conversation's host holds for it. */
   onOpenFiles: () => void;
-  /** The conversation's host-owned model and thinking level, if the caller has them. */
-  settings?: React.ReactNode;
   /**
    * Branch the conversation at the turn that produced an assistant reply, and
    * open the child. `forkable` is false when that turn is not persisted on the
@@ -112,42 +113,37 @@ export function RemoteConversationView({
       >
         <div className="mr-3 flex min-w-0 flex-1 items-center" data-tauri-drag-region>
           <LeftPanelTitlebarToggle expanded={leftPanelExpanded} onToggle={onToggleLeftPanel} />
-          <span aria-hidden className="mr-1.5 text-base">{iconGlyph(peer?.icon)}</span>
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-semibold text-ink">{title}</div>
-            <div className="truncate text-xs text-ink-muted">
-              {t("runsOn", { name: peer ? peerBadgeText(peer, peer.desktopId) : "" })}
-            </div>
           </div>
         </div>
-        {/* The conversation's own settings, beside the controls for it: these act
-            on the host and the picker says so through their labels. */}
-        {settings}
-        {/* Files (the host's files for this conversation) and Compact, in the
-            header's right-hand group where this app puts a conversation's own
-            actions. No terminal toggle: a remote conversation has no local
-            shell to open, which is the one thing the local header has and this
-            one does not. */}
-        <Button leftIcon={<FolderOpen className="size-3.5" />} onClick={onOpenFiles} size="sm" variant="ghost">
-          {t("filesTitle")}
-        </Button>
+        {/* The conversation's own actions, as icon buttons: this header is the
+            same row as this app's own (`ThreadHeader`), which carries a
+            conversation's controls as 32px icon buttons with their labels in the
+            tooltip. Text buttons here read as a toolbar bolted onto the title.
+            The machine this conversation runs on is named by the composer's
+            control row — beside the button that sends to it — so it does not
+            take a second line under the title, which no local header has. */}
+        <IconButton
+          icon={<FolderOpen className="size-4" />}
+          label={t("filesTitle")}
+          onClick={onOpenFiles}
+        />
         {/* Compact is a conversation-level action on the host, next to the run
             state it is mutually exclusive with: a host answering a prompt does
             not also compact, and a host compacting refuses a prompt. */}
         {compacting
-          ? <span className="shrink-0 text-xs text-ink-muted">{t("compacting")}</span>
+          ? <span className="shrink-0 px-1 text-xs text-ink-muted">{t("compacting")}</span>
           : (
-              <Button
+              <IconButton
                 disabled={streaming || loading || error !== null || entries.length === 0}
+                icon={<Archive className="size-4" />}
+                label={t("compact")}
                 onClick={onCompact}
-                size="sm"
-                variant="ghost"
-              >
-                {t("compact")}
-              </Button>
+              />
             )}
         {streaming
-          ? <span className="shrink-0 text-xs text-accent">{t("statusRunning")}</span>
+          ? <span className="shrink-0 px-1 text-xs text-accent">{t("statusRunning")}</span>
           : null}
       </header>
 
@@ -234,7 +230,14 @@ export function RemoteConversationView({
  * action, and the whole point of this feature is that it is not.
  */
 /**
- * What one tool call did, as a row of its own.
+ * What one tool call did, as an activity line.
+ *
+ * Rendered through the same `AgentActivityLine` this app's own transcript uses,
+ * with an `AgentActivityItem` built from the tool call: the icon, the label
+ * ("Ran a command", "Read a file"), the target and the expandable detail are the
+ * local row's, not a second rendering of the same idea. What the reader compares
+ * when they switch between a local and a remote conversation is whether the tool
+ * rows look like tool rows — so the local ones are the ones used.
  *
  * One component per call rather than one per turn, because the arguments are
  * fetched per call and a hook cannot be called in a loop: a turn that ran three
@@ -257,7 +260,6 @@ function RemoteToolRow({
   sessionId: string;
   toolCallId: string;
 }) {
-  const { t } = useTranslation("remotePeer");
   // A tool row keeps its identity and can lose its arguments: a lean history
   // page strips a shell call's command, keeping the call id and the run to fetch
   // it back. Asked for on mount and cached in the module, because a transcript
@@ -269,15 +271,21 @@ function RemoteToolRow({
     sessionId,
     toolCallId,
   });
+  const kind = asToolKind(name);
   return (
-    <div className="mb-1 text-xs text-ink-muted">
-      {t("toolRan", { name })}
-      {/* What it acted on. A shell command or a path is the difference between
-          "Bash ran" and knowing what it did. */}
-      {target
-        ? <div className="mt-0.5 font-mono text-[11px] wrap-break-word text-ink-soft">{target}</div>
-        : null}
-    </div>
+    <AgentActivityLine
+      item={{
+        id: toolCallId !== "" ? toolCallId : `${name}-${runId}`,
+        kind,
+        status: "completed",
+        // What it acted on: the command for a shell call, else the path. The
+        // lean feed strips a shell call's arguments, which is why they are
+        // fetched rather than read off the block.
+        target: target ?? undefined,
+      }}
+      // No `runId`: the local inspect action addresses a run in *this* app's
+      // store, and this run lives on the host.
+    />
   );
 }
 
@@ -363,79 +371,84 @@ function EntryRow({
   const runError = entry.run?.error ?? null;
 
   return (
-    <div
-      className={isUser ? "flex justify-end" : "flex justify-start"}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+    /* The same frame this app's own transcript draws a message in
+       (`MessageFrame`): an author line above the text, ruled off on the
+       assistant's side, the user's own message in a right-aligned bubble. The
+       two views had different frames — an accent-coloured bubble for the user
+       and a bordered card for the assistant, neither of them anything this app
+       draws — which is what made switching between them read as two products
+       rather than one conversation on two machines. */
+    <MessageFrame
+      author={t(`author.${isUser ? "you" : "researchCopilot"}`, { ns: "agent" })}
+      createdAt={new Date(entry.createdAtMs).toISOString()}
+      dataMessageId={entry.id}
+      onEnter={() => setHovered(true)}
+      onLeave={() => setHovered(false)}
+      role={isUser ? "user" : "assistant"}
     >
-      <div
-        className={
-          isUser
-            ? "max-w-[85%] rounded-lg bg-accent px-3 py-2 text-sm text-white"
-            : "max-w-[85%] rounded-lg border border-line-soft bg-surface-subtle px-3 py-2"
-        }
-      >
-        {tools.map(tool => (
-          <RemoteToolRow
-            desktopId={desktopId}
-            key={toolKey(tool, tools)}
-            name={tool.name ?? ""}
-            runId={typeof entry.runId === "string" ? entry.runId : ""}
-            sessionId={sessionId}
-            toolCallId={typeof tool.toolCallId === "string" ? tool.toolCallId : ""}
-          />
-        ))}
-        {text
-          ? (isUser
-              ? <div className="whitespace-pre-wrap wrap-break-word">{text}</div>
-              : <MarkdownContent content={text} />)
-          : null}
-        {runError
-          ? (
-              <div className="mt-1 flex items-center gap-2 text-xs text-danger">
-                <span className="min-w-0 wrap-break-word">{runError}</span>
-                {/* Only when the host named the run: a continuation is addressed
-                    by it, and one it cannot address would be refused. */}
-                {entry.runId && !streaming
-                  ? (
-                      <button
-                        className="shrink-0 rounded px-1.5 py-0.5 font-medium text-accent hover:bg-accent-soft"
-                        onClick={() => onContinueRun(entry.runId!)}
-                        type="button"
-                      >
-                        {t("continueRun")}
-                      </button>
-                    )
-                  : null}
-              </div>
-            )
-          : null}
-        <div className={isUser ? "mt-1 text-[10px] text-white/70" : "mt-1 text-[10px] text-ink-muted"}>
-          {new Date(entry.createdAtMs).toLocaleString()}
-        </div>
-      </div>
-      {/* Hidden while a run is in flight, like the local Fork button: the turn
-          being forked is not settled yet, so its persisted identity may not
-          exist. */}
-      {forkSource && !streaming
+      {tools.map(tool => (
+        <RemoteToolRow
+          desktopId={desktopId}
+          key={toolKey(tool, tools)}
+          name={tool.name ?? ""}
+          runId={typeof entry.runId === "string" ? entry.runId : ""}
+          sessionId={sessionId}
+          toolCallId={typeof tool.toolCallId === "string" ? tool.toolCallId : ""}
+        />
+      ))}
+      {text
+        ? (isUser
+            ? <div className="whitespace-pre-wrap wrap-break-word">{text}</div>
+            : <MarkdownContent content={text} />)
+        : null}
+      {runError
         ? (
-            <button
-              aria-label={t("fork")}
-              className={cn(
-                "ml-1 self-start rounded p-1 text-ink-muted transition-opacity duration-200 hover:text-ink focus-visible:opacity-100",
-                // Still reachable by keyboard: a control that only exists on
-                // hover is unreachable without a pointer.
-                hovered ? "opacity-100" : "pointer-events-none opacity-0",
-              )}
-              onClick={() => onFork(forkSource, forkable)}
-              title={t("fork")}
-              type="button"
-            >
-              <GitBranch className="size-3.5" />
-            </button>
+            <div className="mt-2 flex items-center gap-2 text-xs text-danger">
+              <span className="min-w-0 wrap-break-word">{runError}</span>
+              {/* Only when the host named the run: a continuation is addressed
+                  by it, and one it cannot address would be refused. */}
+              {entry.runId && !streaming
+                ? (
+                    <button
+                      className="shrink-0 rounded px-1.5 py-0.5 font-medium text-accent hover:bg-accent-soft"
+                      onClick={() => onContinueRun(entry.runId!)}
+                      type="button"
+                    >
+                      {t("continueRun")}
+                    </button>
+                  )
+                : null}
+            </div>
           )
         : null}
-    </div>
+      {/* The fork control sits in the message's own footer, as it does in this
+          app's transcript: beside the message it belongs to, inside the reading
+          column. Placing it *next to* the frame instead took 26px off the width
+          of every message that had one — measured, and the reason the last
+          message on this page was narrower than the same message locally.
+          Hidden while a run is in flight, like the local one: the turn being
+          forked is not settled yet, so its persisted identity may not exist. */}
+      {forkSource && !streaming
+        ? (
+            <div className="mt-3 flex justify-start">
+              <button
+                aria-label={t("fork")}
+                className={cn(
+                  "rounded p-1 text-ink-muted transition-opacity duration-200 hover:text-ink focus-visible:opacity-100",
+                  // Still reachable by keyboard: a control that only exists on
+                  // hover is unreachable without a pointer.
+                  hovered ? "opacity-100" : "pointer-events-none opacity-0",
+                )}
+                onClick={() => onFork(forkSource, forkable)}
+                title={t("fork")}
+                type="button"
+              >
+                <GitBranch className="size-3.5" />
+              </button>
+            </div>
+          )
+        : null}
+    </MessageFrame>
   );
 }
 

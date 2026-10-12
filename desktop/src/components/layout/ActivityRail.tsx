@@ -42,9 +42,9 @@ import { useCollapsedWorkspaces } from "./hooks/useCollapsedWorkspaces";
 import { usePendingApprovalCounts } from "./hooks/usePendingApprovalCounts";
 import { useRailSelection } from "./hooks/useRailSelection";
 import { MergedRows } from "./MergedRows";
+import { RailDisclosure } from "./RailChrome";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, visibleThreadRows } from "./threadTree";
-import { RailDisclosure } from "./RailChrome";
 
 export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote" | "settings";
 
