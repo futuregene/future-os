@@ -27,7 +27,7 @@ vi.mock("@tauri-apps/api/event", () => ({
   },
 }));
 
-const { precedingUserEntryId, useRemoteTimeline } = await import("./useRemoteTimeline");
+const { forgetRemoteTimeline, precedingUserEntryId, useRemoteTimeline } = await import("./useRemoteTimeline");
 const { fetchRemoteToolTarget, forgetRemoteToolTargets } = await import("./remoteToolTarget");
 
 function entry(id: string, role: "user" | "assistant", text: string): SessionEntry {
@@ -58,6 +58,11 @@ async function settle(): Promise<void> {
 beforeEach(() => {
   requestMock.mockReset();
   listeners = [];
+  // What was read for a conversation is kept for the window, so one test's
+  // transcript would otherwise seed the next one's.
+  for (const desktop of ["desktop_a", "desktop_b"])
+    for (const session of ["sess_1", "sess_2", "sess_3"])
+      forgetRemoteTimeline(desktop, session);
 });
 
 describe("useRemoteTimeline", () => {
@@ -559,4 +564,70 @@ describe("tool-argument cache lifetime", () => {
     await expect(fetchRemoteToolTarget(call)).resolves.toBe("pwd");
     expect(requestMock).toHaveBeenCalledTimes(3);
   });
+});
+
+/**
+ * Three user exchanges per page, not a hundred.
+ *
+ * The client asked the host for a hundred and the host answered with the whole
+ * conversation, so every open paid for history nobody had asked to see — the
+ * difference between a remote conversation appearing and appearing seconds
+ * later. The phone asks for three; this asks for the same, and older pages
+ * arrive as the reader scrolls up.
+ */
+it("asks the host for three exchanges, not the whole conversation", async () => {
+  requestMock.mockResolvedValue(page([]));
+  const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+  await settle();
+
+  const [, command] = requestMock.mock.calls[0]!;
+  expect((command as { limit?: number }).limit).toBe(3);
+  hook.unmount();
+});
+
+/**
+ * Reopening a conversation shows what was read, then catches up.
+ *
+ * Switching between two conversations is constant, and re-reading from nothing
+ * made the second visit cost what the first did: a blank column, then the
+ * transcript. The read still happens — a push missed while the window was
+ * elsewhere never arrives (NATS Core is at-most-once) — but it no longer decides
+ * whether anything is on screen.
+ */
+it("shows a conversation's last read state on reopen, and re-reads behind it", async () => {
+  requestMock.mockResolvedValue(page([entry("e1", "user", "hello")]));
+  const first = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+  await settle();
+  expect(first.current.entries.map(item => item.id)).toEqual(["e1"]);
+  first.unmount();
+
+  // A host that has since moved on.
+  requestMock.mockResolvedValue(page([
+    entry("e1", "user", "hello"),
+    entry("e2", "assistant", "and this is new"),
+  ]));
+  const second = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+
+  // Before the reply lands, the previous read is already on screen.
+  expect(second.current.entries.map(item => item.id)).toEqual(["e1"]);
+  expect(second.current.loading).toBe(false);
+
+  await settle();
+  expect(second.current.entries.map(item => item.id)).toEqual(["e1", "e2"]);
+  second.unmount();
+});
+
+/** One conversation's read state is not another's. */
+it("keeps each conversation's read state to itself", async () => {
+  requestMock.mockResolvedValue(page([entry("e1", "user", "first conversation")]));
+  const first = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+  await settle();
+  first.unmount();
+
+  requestMock.mockResolvedValue(page([entry("e9", "user", "another conversation")]));
+  const other = renderHook(() => useRemoteTimeline("desktop_a", "sess_2", true));
+  await settle();
+
+  expect(other.current.entries.map(item => item.id)).toEqual(["e9"]);
+  other.unmount();
 });
