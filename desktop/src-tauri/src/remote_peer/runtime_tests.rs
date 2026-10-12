@@ -730,6 +730,56 @@ async fn a_lean_event_recovers_its_session_from_the_subject() {
     teardown().await;
 }
 
+/// A burst of live events still reaches the UI one by one and in the order the
+/// host sent them.
+///
+/// The batch changes *when* the loop yields, never what it delivers: the UI's
+/// contract is a `PeerEvent` per push, and a batch that reordered or swallowed
+/// one would be a rendering bug that only shows under load. 80 pushes is past
+/// the 64-push ceiling, so at least one batch boundary is crossed.
+#[tokio::test]
+async fn a_burst_of_events_reaches_the_emitter_in_order() {
+    let (_home, fx) = start("peer-rt-burst").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    let (emitter, count) = counting_emitter();
+    connect_with_emitter(&desktop_id, Some(emitter))
+        .await
+        .expect("connect with a stream");
+
+    let burst = 80u64;
+    for idx in 0..burst {
+        crate::remote::publish_event(
+            "sess_rt_burst",
+            "agent_text",
+            r#"{"text":"token"}"#,
+            "run-burst",
+            idx as i64,
+            1,
+            &format!("evt-{idx}"),
+            "2026-01-01T00:00:00Z",
+            1,
+            1,
+        );
+    }
+
+    wait_for("the burst never fully arrived", || {
+        count.lock().unwrap().len() as u64 >= burst
+    })
+    .await;
+    let seen = count.lock().unwrap().clone();
+    let order: Vec<u64> = seen
+        .iter()
+        .map(|event| event.payload["idx"].as_u64().expect("an idx per event"))
+        .collect();
+    assert_eq!(
+        order,
+        (0..burst).collect::<Vec<u64>>(),
+        "batching must not reorder, duplicate or drop a push"
+    );
+
+    teardown().await;
+}
+
 /// Reconnecting replaces the stream. Two live subscription tasks would deliver
 /// every event twice, and would keep reading from a socket that is gone.
 #[tokio::test]

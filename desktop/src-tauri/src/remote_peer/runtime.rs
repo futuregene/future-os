@@ -615,6 +615,181 @@ async fn attach_stream(
     }
 }
 
+/// How many pushes one batch may carry before the loop yields, how many wire
+/// bytes, and how long it may take.
+///
+/// Deliberately the mobile client's numbers (`mobile/src/remote/client.ts`):
+/// both platforms read the same host lane, and a ceiling changed on one side
+/// only re-introduces the per-token scheduler round trip the other side measured
+/// away. At 60–90 msg/s this is one wakeup per ~8 ms instead of one per token.
+const EVENT_BATCH_MAX: usize = 64;
+const EVENT_BATCH_BYTES: usize = 256 * 1024;
+const EVENT_BATCH_DEADLINE: Duration = Duration::from_millis(8);
+
+/// How many pushes may wait for the decrypt/dispatch loop before the newest is
+/// dropped.
+///
+/// The subscription itself is unbounded — `async_nats` buffers a fast publisher
+/// without limit — so this is the client's own ceiling, and it is the host's
+/// (`EVENT_QUEUE_CAPACITY`, the queue on the other end of the same pairing):
+/// two ends of one link queued to the same depth. Overflow is never silent: the
+/// drop is logged and a resync is pushed, because this client has no cursor to
+/// fill a hole with, and a lost range would otherwise leave a transcript that
+/// simply ends early.
+const EVENT_BACKLOG_CAPACITY: usize = 4096;
+
+/// The `PeerEvent.kind` a push is delivered under.
+///
+/// `evt.*` is the only lane that carries a conversation; `presence` is the
+/// host's liveness tick. Chunks are not a `PeerEvent` kind at all — they go to
+/// the pull waiting for them ([`deliver_chunk`]).
+const EVENT_LANE: &str = "event";
+const PRESENCE_LANE: &str = "presence";
+const TRANSFER_LANE: &str = "chunk";
+
+/// One push taken off a subscription, before anything has been made of it.
+///
+/// The lane is resolved where the message is taken, because from there the
+/// three subscriptions are one queue.
+struct Push {
+    kind: &'static str,
+    message: async_nats::Message,
+}
+
+/// Wait for the next push on any lane, or `None` once a stream has ended.
+async fn next_push(
+    events: &mut async_nats::Subscriber,
+    presence: &mut async_nats::Subscriber,
+    transfers: &mut async_nats::Subscriber,
+) -> Option<Push> {
+    let (kind, message) = tokio::select! {
+        message = events.next() => (EVENT_LANE, message),
+        message = presence.next() => (PRESENCE_LANE, message),
+        message = transfers.next() => (TRANSFER_LANE, message),
+    };
+    Some(Push {
+        kind,
+        message: message?,
+    })
+}
+
+/// One push that has *already* arrived, without waiting for one that has not.
+///
+/// `async_nats`' `Subscriber` exposes no non-blocking read, so its `Stream` is
+/// polled once here. That is cancel-safe — a `poll_next` that is not ready has
+/// consumed nothing — so a poll that finds nothing loses nothing.
+async fn ready_push(
+    events: &mut async_nats::Subscriber,
+    presence: &mut async_nats::Subscriber,
+    transfers: &mut async_nats::Subscriber,
+) -> Option<Push> {
+    if let std::task::Poll::Ready(Some(message)) = futures::poll!(events.next()) {
+        return Some(Push {
+            kind: EVENT_LANE,
+            message,
+        });
+    }
+    if let std::task::Poll::Ready(Some(message)) = futures::poll!(presence.next()) {
+        return Some(Push {
+            kind: PRESENCE_LANE,
+            message,
+        });
+    }
+    if let std::task::Poll::Ready(Some(message)) = futures::poll!(transfers.next()) {
+        return Some(Push {
+            kind: TRANSFER_LANE,
+            message,
+        });
+    }
+    None
+}
+
+/// The three ceilings a batch of pushes yields on.
+///
+/// A value with an injected clock rather than a handful of locals, so each
+/// boundary can be asserted without waiting out a real 8 ms.
+struct BatchBudget {
+    count: usize,
+    bytes: usize,
+    started: std::time::Instant,
+}
+
+impl BatchBudget {
+    fn new(started: std::time::Instant) -> Self {
+        Self {
+            count: 0,
+            bytes: 0,
+            started,
+        }
+    }
+
+    /// Record one delivery and say whether this batch is now due to yield.
+    ///
+    /// Bytes saturate rather than overflow: the ceiling is a few hundred KiB and
+    /// a `usize` sum of message lengths cannot realistically wrap, but a wrapped
+    /// sum would read as *under* the ceiling and keep a batch open forever.
+    fn record(&mut self, bytes: usize, now: std::time::Instant) -> bool {
+        self.count += 1;
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.count >= EVENT_BATCH_MAX
+            || self.bytes >= EVENT_BATCH_BYTES
+            || now.saturating_duration_since(self.started) >= EVENT_BATCH_DEADLINE
+    }
+
+    /// Begin the next batch at `now`.
+    ///
+    /// Without the reset a batch that ended on the count would still be over the
+    /// byte or deadline ceiling when the next one starts, and every batch after
+    /// the first would yield on its first delivery — the yield would keep
+    /// happening but stop meaning anything.
+    fn reset(&mut self, now: std::time::Instant) {
+        self.count = 0;
+        self.bytes = 0;
+        self.started = now;
+    }
+}
+
+/// A bounded queue of pushes waiting for the decrypt/dispatch loop.
+///
+/// Overflow drops the *newest* push and counts it, the same policy the host's
+/// own event queue uses, so a burst that outruns the UI degrades identically on
+/// both ends of the link.
+struct Backlog<T> {
+    items: std::collections::VecDeque<T>,
+    capacity: usize,
+    dropped: usize,
+}
+
+impl<T> Backlog<T> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            items: std::collections::VecDeque::new(),
+            capacity: capacity.max(1),
+            dropped: 0,
+        }
+    }
+
+    /// Queue one push, or drop it when the queue is full. Says which happened.
+    fn push(&mut self, item: T) -> bool {
+        if self.items.len() >= self.capacity {
+            self.dropped += 1;
+            return false;
+        }
+        self.items.push_back(item);
+        true
+    }
+
+    fn pop_front(&mut self) -> Option<T> {
+        self.items.pop_front()
+    }
+
+    /// Take the drop count accumulated since the last call, so the loop signals
+    /// a resync once per episode of dropping rather than once per push.
+    fn take_dropped(&mut self) -> usize {
+        std::mem::take(&mut self.dropped)
+    }
+}
+
 /// Drain the host's event, presence and file-transfer subscriptions.
 ///
 /// Events and presence are pushed at the UI as `PeerEvent`s. Transfer bytes are
@@ -624,6 +799,12 @@ async fn attach_stream(
 /// The traffic-key mutex is shared with the command path, so this task and a
 /// concurrent request take the same short lock; neither holds it across an
 /// `await`.
+///
+/// Pushes are taken in batches and handed over one at a time, with a yield
+/// between batches ([`BatchBudget`], [`Backlog`]): the per-event contract the UI
+/// consumes is unchanged, what changes is how often the loop wakes. A burst that
+/// outruns the queue is dropped and answered with a resync rather than queued
+/// without bound.
 ///
 /// Every push's conversation is recovered from the subject it arrived on when
 /// the payload does not carry one, because a lean host trims `sessionId` out of
@@ -667,36 +848,41 @@ fn spawn_event_stream(
             // gzipped today, but one decoder is harder to get wrong than two.
             super::codec::decode_reply(&open_bytes(channel, subject, payload)?).ok()
         }
-        loop {
-            let next = tokio::select! {
-                message = events.next() => message.map(|message| ("event", message)),
-                message = presence.next() => message.map(|message| ("presence", message)),
-                message = transfers.next() => message.map(|message| ("chunk", message)),
-            };
-            let Some((kind, message)) = next else {
-                // Every stream ended: the socket is gone. The next status poll
-                // and the next command both notice; this task just stops.
-                return;
-            };
-            if kind == "chunk" {
-                // Parsed before decrypting: a malformed subject is dropped without
-                // spending a decryption (and the traffic-key lock) on it, and a
-                // relay that spams the transfer prefix cannot make this client
-                // work to throw the messages away.
+
+        /// Decrypt one push and hand it to whoever it belongs to.
+        ///
+        /// Chunks go to the pull waiting for them; everything else is a
+        /// [`PeerEvent`]. A push that cannot be opened or parsed is dropped
+        /// silently: it is either a forgery (a relay can inject one at will) or
+        /// a shape this version does not know, and neither is the connection's
+        /// fault, so there is nothing to report and nothing to retry.
+        async fn handle_push(
+            push: Push,
+            channel: &std::sync::Mutex<future_remote_crypto::Channel>,
+            desktop_id: &str,
+            pair_id: &str,
+            emitter: &Emitter,
+        ) {
+            let Push { kind, message } = push;
+            if kind == TRANSFER_LANE {
+                // Parsed before decrypting: a malformed subject is dropped
+                // without spending a decryption (and the traffic-key lock) on
+                // it, and a relay that spams the transfer prefix cannot make
+                // this client work to throw the messages away.
                 let Some((transfer_id, index)) = parse_chunk_subject(&message.subject) else {
-                    continue;
+                    return;
                 };
-                let Some(bytes) = open_bytes(&channel, &message.subject, &message.payload) else {
+                let Some(bytes) = open_bytes(channel, &message.subject, &message.payload) else {
                     // Unauthenticated: a relay can inject one at will, and the
                     // connection is not at fault, so drop it.
-                    continue;
+                    return;
                 };
-                deliver_chunk(&desktop_id, transfer_id, index, bytes).await;
-                continue;
+                deliver_chunk(desktop_id, transfer_id, index, bytes).await;
+                return;
             }
-            let Some(mut payload) = open(&channel, &message.subject, &message.payload) else {
+            let Some(mut payload) = open(channel, &message.subject, &message.payload) else {
                 // Unparsable or unauthenticated; same reasoning as above.
-                continue;
+                return;
             };
             // Only an event: presence is not session-scoped, and a chunk left
             // this branch above. The subject is the authority on which
@@ -705,19 +891,70 @@ fn spawn_event_stream(
             // which a lean host trims to `type`/`data`/`runId`/`idx`. A payload
             // that already names its session is left exactly as it came, so a
             // client that declared nothing sees what it always did.
-            if kind == "event" && payload.get("sessionId").and_then(Value::as_str).is_none() {
+            if kind == EVENT_LANE && payload.get("sessionId").and_then(Value::as_str).is_none() {
                 if let (Some(session), Some(object)) = (
-                    event_session_id(&message.subject, &pair_id),
+                    event_session_id(&message.subject, pair_id),
                     payload.as_object_mut(),
                 ) {
                     object.insert("sessionId".to_string(), Value::String(session.to_string()));
                 }
             }
             emitter(PeerEvent {
-                desktop_id: desktop_id.clone(),
+                desktop_id: desktop_id.to_string(),
                 kind,
                 payload,
             });
+        }
+
+        let mut backlog: Backlog<Push> = Backlog::new(EVENT_BACKLOG_CAPACITY);
+        let mut budget = BatchBudget::new(std::time::Instant::now());
+        loop {
+            // Park until something arrives: an idle link must cost nothing, and
+            // the first push of a batch is the only one worth waiting for.
+            let Some(first) = next_push(&mut events, &mut presence, &mut transfers).await else {
+                // Every stream ended: the socket is gone. The next status poll
+                // and the next command both notice; this task just stops.
+                return;
+            };
+            backlog.push(first);
+            // Take everything else the subscriptions have already buffered. Each
+            // read is a poll rather than a wait, and a poll that finds nothing
+            // returns *now* rather than parking, so this ends as soon as the
+            // buffers are empty instead of holding the loop for a slow
+            // publisher — and the queue's own ceiling is what stops a firehose
+            // from growing it. (The mobile client's loop drains its subscription
+            // the same way, until the SDK reports an empty queue.)
+            while let Some(push) = ready_push(&mut events, &mut presence, &mut transfers).await {
+                backlog.push(push);
+            }
+            // Hand them over one at a time — the UI's contract is per event —
+            // yielding between batches so one burst cannot starve everything
+            // else on the runtime.
+            while let Some(push) = backlog.pop_front() {
+                let bytes = push.message.payload.len();
+                handle_push(push, &channel, &desktop_id, &pair_id, &emitter).await;
+                if budget.record(bytes, std::time::Instant::now()) {
+                    tokio::task::yield_now().await;
+                    budget.reset(std::time::Instant::now());
+                }
+            }
+            let dropped = backlog.take_dropped();
+            if dropped > 0 {
+                // The queue overflowed, so part of this conversation is gone and
+                // no later push will repair it. `resumed` is the one signal the
+                // UI already treats as "what the host sent is missing" (it
+                // re-reads the page and the catalogue), which is exactly the
+                // resync a drop needs — a new kind would be a contract change
+                // the UI does not know how to act on.
+                eprintln!(
+                    "remote_peer: dropped {dropped} buffered pushes for {desktop_id}; re-syncing"
+                );
+                emitter(PeerEvent {
+                    desktop_id: desktop_id.clone(),
+                    kind: "resumed",
+                    payload: json!({}),
+                });
+            }
         }
     })
 }
@@ -1588,5 +1825,110 @@ mod tests {
                 "subject {subject}"
             );
         }
+    }
+
+    // ── the batch budget and the backlog ────────────────────────────────────
+
+    /// The three ceilings are the mobile client's, because both platforms read
+    /// the same host lane: a number changed here alone re-introduces on this
+    /// side the per-token wakeup the other side measured away.
+    #[test]
+    fn the_batch_ceilings_are_the_mobile_clients() {
+        assert_eq!(EVENT_BATCH_MAX, 64);
+        assert_eq!(EVENT_BATCH_BYTES, 256 * 1024);
+        assert_eq!(EVENT_BATCH_DEADLINE, std::time::Duration::from_millis(8));
+        assert_eq!(EVENT_BACKLOG_CAPACITY, 4096);
+    }
+
+    /// ① The count ceiling: 64 small pushes end the batch on the 64th.
+    #[test]
+    fn a_batch_yields_at_the_count_ceiling() {
+        let now = std::time::Instant::now();
+        let mut budget = BatchBudget::new(now);
+        for delivered in 1..EVENT_BATCH_MAX {
+            assert!(
+                !budget.record(1, now),
+                "push {delivered} is before the ceiling"
+            );
+        }
+        assert!(
+            budget.record(1, now),
+            "the {EVENT_BATCH_MAX}th push ends the batch"
+        );
+    }
+
+    /// ② The byte ceiling: one large push ends the batch long before the count
+    /// does — a burst of big events is what makes the difference visible.
+    #[test]
+    fn a_batch_yields_at_the_byte_ceiling() {
+        let now = std::time::Instant::now();
+        let mut budget = BatchBudget::new(now);
+        assert!(
+            !budget.record(EVENT_BATCH_BYTES - 1, now),
+            "one byte short of the ceiling is still inside the batch"
+        );
+        assert!(budget.record(1, now), "the ceiling itself is due");
+    }
+
+    /// ③ The deadline: a slow trickle of small pushes still hands control back,
+    /// or a quiet link would hold one batch open for as long as it stayed quiet.
+    #[test]
+    fn a_batch_yields_at_the_deadline() {
+        let now = std::time::Instant::now();
+        let started = now - EVENT_BATCH_DEADLINE - std::time::Duration::from_millis(1);
+        let mut budget = BatchBudget::new(started);
+        assert!(
+            budget.record(1, now),
+            "the first push after the deadline ends the batch"
+        );
+    }
+
+    /// A batch that ended on the count must not make the *next* batch yield on
+    /// its first delivery: the reset is what keeps every batch after the first
+    /// meaningful.
+    #[test]
+    fn resetting_starts_the_next_batch_empty() {
+        let now = std::time::Instant::now();
+        let mut budget = BatchBudget::new(now);
+        for _ in 0..EVENT_BATCH_MAX {
+            budget.record(1, now);
+        }
+        budget.reset(now);
+        assert!(
+            !budget.record(1, now),
+            "the next batch starts with one delivery, not a full budget"
+        );
+    }
+
+    /// The backlog's ceiling drops the newest push and counts it once, so the
+    /// loop can answer with a single resync instead of one per lost push.
+    #[test]
+    fn a_full_backlog_drops_the_newest_and_counts_it() {
+        let mut backlog = Backlog::new(2);
+        assert!(backlog.push("a"));
+        assert!(backlog.push("b"));
+        assert!(!backlog.push("c"), "past the ceiling the push is dropped");
+        assert!(!backlog.push("d"));
+        assert_eq!(backlog.take_dropped(), 2);
+        assert_eq!(
+            backlog.take_dropped(),
+            0,
+            "a drop is reported once, not once per call"
+        );
+        // What was queued still comes out in order: the cap drops the newest,
+        // never the oldest, so the UI never sees a reorder on the way in.
+        assert_eq!(backlog.pop_front(), Some("a"));
+        assert_eq!(backlog.pop_front(), Some("b"));
+        assert_eq!(backlog.pop_front(), None);
+    }
+
+    /// A queue sized zero would drop everything; the floor keeps a
+    /// misconfiguration from turning every push into a resync.
+    #[test]
+    fn a_zero_capacity_backlog_still_holds_one() {
+        let mut backlog = Backlog::new(0);
+        assert!(backlog.push("a"));
+        assert!(!backlog.push("b"));
+        assert_eq!(backlog.pop_front(), Some("a"));
     }
 }
