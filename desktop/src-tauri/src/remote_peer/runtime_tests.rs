@@ -81,10 +81,13 @@ async fn pairing_a_link_connects_and_reports_the_host() {
             "pair_id": fx.pair_id,
             "user_jwt": crate::remote::test_support::jwt(crate::remote::test_support::now_secs() + 3_600),
             "refresh_token": "refresh-token-1",
-            "nats_url": fx.nats.url(),
+            // The real claim response has no `nats_url` (the platform's
+            // `ClaimPairResponse` carries only `nats_ws_url`), so this one does
+            // not either: the endpoint has to come from the refresh below.
             "nats_ws_url": fx.nats.url().replace("nats://", "ws://"),
         }),
     );
+    fx.platform.respond_refresh(fx.nats.url());
 
     let summary = pair_with_emitter(&invitation, None)
         .await
@@ -105,6 +108,55 @@ async fn pairing_a_link_connects_and_reports_the_host() {
     let peers = list().await.expect("list");
     assert_eq!(peers.len(), 1);
     assert!(find(&peers, &fx.paired.creds.desktop_id).connected);
+
+    teardown().await;
+}
+
+/// The bug this guards: the client required `nats_url` from the claim, but the
+/// platform's claim response has never had that field (only `nats_ws_url`), so
+/// **every** real pairing failed with "did not return a usable nats_url" — the
+/// feature could not work at all, on any machine. The TCP endpoint lives on the
+/// token endpoint, so a claim without it is resolved by one refresh.
+///
+/// This is also the self-pairing case, and by construction rather than by luck:
+/// the fixture runs the host bridge and the client in one installation, so both
+/// carry the same `device_id` and the client claims an invitation this very
+/// process minted. That is the shape a user produces when they paste their own
+/// machine's link, so a regression here breaks the first thing anyone tries.
+#[tokio::test]
+async fn a_claim_without_a_tcp_endpoint_still_pairs() {
+    let (_home, fx) = start("peer-rt-pair-no-nats-url").await;
+    let claim_url = format!("{}/client/v1/remote/pair/claim", fx.platform.url());
+    let invitation = super::testing::invitation_for(&fx.host_invitation, &claim_url);
+    // Exactly what the real platform sends: a grant, and no TCP endpoint.
+    fx.platform.push(
+        "/client/v1/remote/pair/claim",
+        200,
+        serde_json::json!({
+            "pair_id": fx.pair_id,
+            "user_jwt": crate::remote::test_support::jwt(crate::remote::test_support::now_secs() + 3_600),
+            "refresh_token": "refresh-token-1",
+            "nats_ws_url": fx.nats.url().replace("nats://", "ws://"),
+        }),
+    );
+    // The endpoint the client needs is only on the token endpoint.
+    fx.platform.respond_refresh(fx.nats.url());
+
+    let summary = pair_with_emitter(&invitation, None)
+        .await
+        .expect("a claim without nats_url must still pair");
+    assert!(summary.connected, "{summary:?}");
+
+    // Resolved and *stored*: the next launch reads the credential off disk, so
+    // an endpoint only kept in memory would break reconnection after a restart.
+    let stored = creds::load()
+        .expect("load peer creds")
+        .find(&fx.paired.creds.desktop_id)
+        .expect("the pairing is stored")
+        .creds
+        .nats_url
+        .clone();
+    assert_eq!(stored, fx.nats.url());
 
     teardown().await;
 }
