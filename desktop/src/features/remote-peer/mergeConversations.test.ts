@@ -6,6 +6,7 @@ import type {
 import { describe, expect, it } from "vitest";
 import {
   compareConversations,
+  groupMergedRows,
   localTimestamp,
   mergeConversations,
   rowKey,
@@ -223,5 +224,150 @@ describe("mergeConversations", () => {
     // A host that predates the field: pin and delete are refused downstream
     // rather than silently addressed with the session id.
     expect(merged.find(row => row.id === "sess_2")!.threadId).toBeNull();
+  });
+
+  /**
+   * Pairing a machine to itself puts this machine's own sessions in the host's
+   * catalogue, so every conversation appeared twice — once as the local thread,
+   * once as that host's session. They are one conversation, and the session id is
+   * what proves it (the local thread carries its agent session).
+   */
+  it("does not list a conversation twice when the host holds it too", () => {
+    const merged = mergeConversations(
+      [thread({ id: "local_1", agentSessionId: "sess_1" })],
+      [catalog("desktop_self", [
+        { sessionId: "sess_1", threadId: "thread_1", title: "same conversation", lastMessageAt: 900 },
+      ])],
+      ALL,
+    );
+
+    expect(merged.map(row => row.desktopId)).toEqual([null]);
+  });
+
+  /**
+   * Unless the user asked for that machine by name. Filtering to it is a request
+   * for *its* sessions, and hiding the ones that also exist here would silently
+   * shorten the answer.
+   */
+  it("still lists a host's own copy when the user filtered to that host", () => {
+    const merged = mergeConversations(
+      [thread({ id: "local_1", agentSessionId: "sess_1" })],
+      [catalog("desktop_self", [
+        { sessionId: "sess_1", threadId: "thread_1", title: "same conversation", lastMessageAt: 900 },
+      ])],
+      { kind: "device", desktopId: "desktop_self" },
+    );
+
+    expect(merged.map(row => row.id)).toEqual(["sess_1"]);
+  });
+
+  /**
+   * The merged list keeps the local list's headings. Without this a user who
+   * pairs a machine loses the workspace grouping they had before the feature
+   * existed, and every row reads as if it were pinned.
+   */
+  describe("groupMergedRows", () => {
+    function rows(threads: LocalThreadLike[], catalogs: RemoteCatalog[]) {
+      return mergeConversations(
+        threads,
+        catalogs,
+        ALL,
+        new Map([["ws_local", "This machine's workspace"]]),
+      );
+    }
+
+    it("splits pinned from the rest, and workspaces from chats", () => {
+      const grouped = groupMergedRows(rows(
+        [
+          thread({ id: "chat_1", workspaceId: "ws_local" }),
+          thread({ id: "pinned_1", pinned: true }),
+          thread({ id: "ws_1", mode: "workspace", workspaceId: "ws_local" }),
+        ],
+        [],
+      ));
+
+      expect(grouped.pinned.map(row => row.id)).toEqual(["pinned_1"]);
+      expect(grouped.workspaces.flatMap(group => group.rows.map(row => row.id))).toEqual(["ws_1"]);
+      expect(grouped.workspaces[0]!.label).toBe("This machine's workspace");
+      expect(grouped.chats.flatMap(group => group.rows.map(row => row.id))).toEqual(["chat_1"]);
+      expect(grouped.chats[0]!.desktopId).toBeNull();
+    });
+
+    /**
+     * Two machines hold a workspace of the same id and name — the common case,
+     * since workspaces are named after the folder. One heading for both would
+     * file another machine's rows under this one's name.
+     */
+    it("keeps same-named workspaces on different machines apart", () => {
+      const grouped = groupMergedRows(rows(
+        [thread({ id: "local_ws", mode: "workspace", workspaceId: "ws_1" })],
+        [catalog("desktop_a", [
+          {
+            sessionId: "a_ws",
+            title: "on a",
+            mode: "workspace",
+            workspaceId: "ws_1",
+            workspaceName: "future-os",
+            lastMessageAt: 500,
+          },
+        ])],
+      ));
+
+      expect(grouped.workspaces).toHaveLength(2);
+      expect(grouped.workspaces.map(group => group.desktopId).sort()).toEqual([
+        null,
+        "desktop_a",
+      ].sort());
+      // The remote heading is the host's own name for it.
+      expect(grouped.workspaces.find(group => group.desktopId === "desktop_a")!.label).toBe("future-os");
+    });
+
+    /**
+     * A row whose host predates the name field must not blank a heading another
+     * row in the same group already supplied — otherwise the group loses its
+     * name as soon as one older session appears in it.
+     */
+    it("keeps a heading that an older row in the group did not carry", () => {
+      const grouped = groupMergedRows(rows([], [catalog("desktop_a", [
+        {
+          sessionId: "named",
+          title: "named",
+          mode: "workspace",
+          workspaceId: "ws_1",
+          workspaceName: "future-os",
+          lastMessageAt: 900,
+        },
+        {
+          sessionId: "unnamed",
+          title: "unnamed",
+          mode: "workspace",
+          workspaceId: "ws_1",
+          lastMessageAt: 800,
+        },
+      ])]));
+
+      expect(grouped.workspaces).toHaveLength(1);
+      expect(grouped.workspaces[0]!.label).toBe("future-os");
+      expect(grouped.workspaces[0]!.rows).toHaveLength(2);
+    });
+
+    /**
+     * Headings move with activity: a list whose groups are fixed to an arbitrary
+     * machine order buries the workspace the user was just working in.
+     */
+    it("orders groups by their most recent row", () => {
+      const grouped = groupMergedRows(rows(
+        [
+          thread({ id: "old_ws", mode: "workspace", workspaceId: "ws_old", updatedAt: 10 }),
+          thread({ id: "new_ws", mode: "workspace", workspaceId: "ws_new", updatedAt: 900 }),
+        ],
+        [],
+      ));
+
+      expect(grouped.workspaces.map(group => group.key)).toEqual([
+        "local::ws_new",
+        "local::ws_old",
+      ]);
+    });
   });
 });

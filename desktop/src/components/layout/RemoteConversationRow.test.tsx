@@ -187,3 +187,21 @@ it("shows a running conversation and an unread one differently", async () => {
   expect(status(quiet.container)).toEqual([]);
   await quiet.unmount();
 });
+
+/**
+ * The source badge sits after the title. In front of it, every title in the list
+ * starts one indent further in for no gain: the badge is a qualifier of the title,
+ * not a leading label.
+ */
+it("shows the source icon after the title, not in front of it", async () => {
+  const view = await mount();
+  const title = [...view.container.querySelectorAll("span")]
+    .find(node => node.textContent === "Fix the login bug")!;
+  const icon = view.container.querySelector("[data-testid='remote-source-icon']")!;
+
+  // `compareDocumentPosition` rather than a child index: the assertion is about
+  // the order the user reads, which the element order alone would not settle.
+  const iconFollowsTitle = title.compareDocumentPosition(icon) & Node.DOCUMENT_POSITION_FOLLOWING;
+  expect(iconFollowsTitle).toBeTruthy();
+  await view.unmount();
+});
