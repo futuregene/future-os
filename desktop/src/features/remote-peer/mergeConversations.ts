@@ -85,16 +85,6 @@ export interface LocalThreadLike {
   pinned: boolean;
   status: "active" | "archived" | "deleted";
   workspaceId: string;
-  /**
-   * This thread's session on its agent.
-   *
-   * Used for one thing: suppressing a *remote* row for a conversation that is
-   * already in this list. Pairing a machine to itself (which is how a user
-   * tests this, and how one shares a machine's history with another) makes the
-   * host's catalogue contain this machine's own sessions, so every conversation
-   * appeared twice — once local, once remote.
-   */
-  agentSessionId?: string | null;
   lastMessageAt?: number | null;
   updatedAt: number;
   createdAt: number;
@@ -137,24 +127,12 @@ export function mergeConversations(
     filter.kind === "all"
     || (filter.kind === "device" && filter.desktopId === desktopId);
 
-  /**
-   * The agent sessions this machine already lists, so a remote row for one of
-   * them can be dropped.
-   *
-   * Only when local rows are in this list at all: filtering to one machine is a
-   * request for *that* machine's sessions, and hiding the ones that happen to
-   * exist here too would silently shorten the answer.
-   */
-  const localSessions = new Set<string>();
-
   if (wantsLocal) {
     for (const thread of threads) {
       // Deleted threads are not conversations the user can open; archived ones
       // are still listed (the rail has a restore action for them).
       if (thread.status === "deleted")
         continue;
-      if (thread.agentSessionId)
-        localSessions.add(thread.agentSessionId);
       rows.push({
         key: rowKey(null, thread.id),
         desktopId: null,
@@ -180,9 +158,6 @@ export function mergeConversations(
     for (const session of catalog.sessions) {
       const key = rowKey(catalog.desktopId, session.sessionId);
       if (seen.has(key))
-        continue;
-      // The same conversation, listed locally already (see `localSessions`).
-      if (localSessions.has(session.sessionId))
         continue;
       seen.add(key);
       rows.push({

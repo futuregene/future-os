@@ -5,13 +5,24 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
-import { SettingsList, SettingsRow, SettingsSection, Switch } from "../settings/SettingsPrimitives";
+import { SettingsLinkRow, SettingsList, SettingsRow, SettingsSection, SettingsSubPage, Switch } from "../settings/SettingsPrimitives";
 import { PeerIconPicker } from "./PeerIconPicker";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
+import { RemoteModelsPanel } from "./RemoteModelsPanel";
 import { getRemoteApprovalSettings, requestRemotePeer, setRemoteApprovalTier } from "./remotePeerClient";
 import { RemoteProvidersPanel } from "./RemoteProvidersPanel";
 import { RemoteSkillsPanel } from "./RemoteSkillsPanel";
 import { RemoteWorkspacesPanel } from "./RemoteWorkspacesPanel";
+
+/**
+ * The sections too long to sit in the settings column.
+ *
+ * Each is a list a machine's own settings page shows in full — its skills, its
+ * models, its providers, its workspaces — and stacked here they pushed every
+ * later setting below a scroll. They are pages of their own instead, reached
+ * from a row that says what is behind it.
+ */
+type SettingsPage = "root" | "skills" | "models" | "providers" | "workspaces";
 
 /**
  * Settings for *another* machine, mirroring the phone's settings rows.
@@ -46,10 +57,11 @@ export function RemotePeerSettings({
   const { t } = useTranslation("remotePeer");
   const [name, setName] = useState(peer.name ?? "");
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
-  const [models, setModels] = useState<string[]>([]);
   const [approval, setApproval] = useState<{ approvalTier: string; sandboxAvailable: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Which page of these settings is open. See `SettingsPage`. */
+  const [page, setPage] = useState<SettingsPage>("root");
 
   // The host advertises which commands it serves; the approval rows are only
   // offered by a host that says it has them, so an older build shows fewer rows
@@ -61,16 +73,17 @@ export function RemotePeerSettings({
   const load = useCallback(async () => {
     setError(null);
     try {
+      // The models are *not* read here any more: their page does that, from
+      // `list_models` (which carries each model's provider, so the page can group
+      // and name them) rather than the bare id list this used to count.
       const values = await Promise.all([
         requestRemotePeer<Record<string, unknown>>(peer.desktopId, { type: "get_desktop_settings" }, "list"),
-        readList(peer.desktopId, { type: "list_settings_models" }, "models"),
         supportsApprovalTier
           ? getRemoteApprovalSettings(peer.desktopId)
           : Promise.resolve(null),
       ]);
       setSettings(values[0]);
-      setModels(values[1]);
-      setApproval(values[2]);
+      setApproval(values[1]);
     }
     catch (err) {
       // One machine's settings page can fail as a whole (the host went away);
@@ -125,6 +138,52 @@ export function RemotePeerSettings({
   const available = peer.connected;
   const setting = (key: string, fallback: boolean): boolean =>
     typeof settings?.[key] === "boolean" ? settings[key] as boolean : fallback;
+  const hiddenModels = Array.isArray(settings?.hiddenModels)
+    ? (settings.hiddenModels as unknown[]).filter((item): item is string => typeof item === "string")
+    : [];
+
+  // The sections that became pages of their own. Rendered from one description
+  // rather than four copies of the same header, so a page cannot end up with a
+  // different back control or heading from its neighbours.
+  const SUB_PAGES: Record<Exclude<SettingsPage, "root">, {
+    content: React.ReactNode;
+    title: string;
+  }> = {
+    models: {
+      title: t("models"),
+      content: (
+        <RemoteModelsPanel
+          available={available}
+          hidden={hiddenModels}
+          onChangeHidden={next => void update({ hiddenModels: next })}
+          peer={peer}
+        />
+      ),
+    },
+    skills: { title: t("skills"), content: <RemoteSkillsPanel available={available} peer={peer} /> },
+    providers: {
+      title: t("providersRemoteSection"),
+      content: <RemoteProvidersPanel available={available} peer={peer} />,
+    },
+    workspaces: {
+      title: t("workspacesTitle"),
+      content: <RemoteWorkspacesPanel available={available} onChanged={onChanged} peer={peer} />,
+    },
+  };
+
+  if (page !== "root") {
+    return (
+      <SettingsSubPage
+        backLabel={t("backToSettings")}
+        onBack={() => setPage("root")}
+        title={SUB_PAGES[page].title}
+      >
+        {error ? <p className="text-xs text-danger">{error}</p> : null}
+        {!available ? <p className="text-xs text-ink-muted">{t("settingsOfflineHint")}</p> : null}
+        {SUB_PAGES[page].content}
+      </SettingsSubPage>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -243,32 +302,55 @@ export function RemotePeerSettings({
           )
         : null}
 
-      {/* Skills are manageable from here rather than summarised: installing one
-          is the errand that makes "go to that machine" unreasonable. */}
-      <RemoteSkillsPanel available={available} peer={peer} />
-
-      {/* Providers and their keys are the other such errand, and the one where
-          walking over is worst: a host whose key expired cannot run anything. */}
-      {providersSupported
-        ? <RemoteProvidersPanel available={available} peer={peer} />
-        : null}
-
-      {/* Workspaces are folders on that machine, so creating, pinning and
-          removing them is done there too. */}
-      {peer.features.includes("workspace_create_v1")
-        ? <RemoteWorkspacesPanel available={available} onChanged={onChanged} peer={peer} />
-        : null}
-
+      {/* The long sections, as links. Each is a list a machine's own settings
+          page shows in full; rendered inline they pushed everything below them
+          off the screen. The rows say what is behind them, and stay visible
+          but disabled when the host cannot serve them: a user who paired an
+          older build should see that the capability exists. */}
       <SettingsSection description={t("settingsHostContentHint")} title={t("settingsHostContent")}>
         <SettingsList>
-          <SettingsRow description={countOf(models, t("countModels"))} title={t("models")}>
-            <span className="text-xs text-ink-muted">{models.length}</span>
-          </SettingsRow>
-          <SettingsRow description={t("tasksHint")} title={t("tasks")}>
-            <Button disabled={!available} onClick={onOpenTasks} size="sm" variant="ghost">
-              {t("tasksManage")}
-            </Button>
-          </SettingsRow>
+          <SettingsLinkRow
+            description={t("modelsHint")}
+            disabled={!available}
+            onClick={() => setPage("models")}
+            title={t("models")}
+          />
+          <SettingsLinkRow
+            description={t("skillsHint")}
+            disabled={!available}
+            onClick={() => setPage("skills")}
+            title={t("skills")}
+          />
+          {/* Only offered by a host that advertises it, like the panel itself:
+              the command would be refused otherwise. */}
+          {providersSupported
+            ? (
+                <SettingsLinkRow
+                  description={t("providersRemoteHint")}
+                  disabled={!available}
+                  onClick={() => setPage("providers")}
+                  title={t("providersRemoteSection")}
+                />
+              )
+            : null}
+          {peer.features.includes("workspace_create_v1")
+            ? (
+                <SettingsLinkRow
+                  description={t("workspacesHint")}
+                  disabled={!available}
+                  onClick={() => setPage("workspaces")}
+                  title={t("workspacesTitle")}
+                />
+              )
+            : null}
+          {/* Tasks keep their own editor, which needs the whole window — the
+              caller owns opening it (the settings window shows it full-page). */}
+          <SettingsLinkRow
+            description={t("tasksHint")}
+            disabled={!available}
+            onClick={onOpenTasks}
+            title={t("tasks")}
+          />
         </SettingsList>
       </SettingsSection>
 
@@ -281,29 +363,4 @@ export function RemotePeerSettings({
       </SettingsSection>
     </div>
   );
-}
-
-async function readList(
-  desktopId: string,
-  command: Record<string, unknown>,
-  key: string,
-): Promise<string[]> {
-  const data = await requestRemotePeer<Record<string, unknown>>(desktopId, command, "list");
-  const items = data?.[key];
-  if (!Array.isArray(items))
-    return [];
-  return items.flatMap((item) => {
-    if (typeof item === "string")
-      return [item];
-    if (typeof item === "object" && item !== null) {
-      const record = item as Record<string, unknown>;
-      const name = record.name ?? record.id ?? record.title;
-      return typeof name === "string" ? [name] : [];
-    }
-    return [];
-  });
-}
-
-function countOf(values: string[], unit: string): string {
-  return `${values.length} ${unit}`;
 }

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { MergedConversation } from "../../features/remote-peer/mergeConversations";
+import type { DeviceFilter, MergedConversation } from "../../features/remote-peer/mergeConversations";
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadTreeRow } from "./threadTree";
@@ -20,6 +20,7 @@ import { RemoteConversationRow } from "./RemoteConversationRow";
  */
 export function MergedRows({
   activeKey,
+  filter,
   onChangedRemote,
   onOpenRemote,
   localRowMeta,
@@ -30,7 +31,13 @@ export function MergedRows({
   threadById,
 }: {
   activeKey: string | null;
-  filter: unknown;
+  /**
+   * Which machines the list is showing.
+   *
+   * Read for one decision: filtered to a single machine, every remote row is
+   * that machine's, so a per-row badge repeats the selector above it.
+   */
+  filter: DeviceFilter;
   /** Re-read a host's catalogue after one of its rows was acted on. */
   onChangedRemote: () => void;
   onOpenRemote: (conversation: MergedConversation) => void;
@@ -50,6 +57,9 @@ export function MergedRows({
 }) {
   const { t } = useTranslation("layout");
   const { chats, pinned, workspaces } = groupMergedRows(rows);
+  // One machine selected: it is named by the selector directly above the list, so
+  // repeating it on every row says nothing and takes the space a title needs.
+  const showSource = !(filter.kind === "device" && filter.desktopId !== null);
 
   function renderRow(conversation: MergedConversation): ReactNode {
     if (conversation.desktopId === null) {
@@ -70,6 +80,7 @@ export function MergedRows({
         onOpen={onOpenRemote}
         onOpenRename={onRenameRemote}
         peer={peers.find(peer => peer.desktopId === conversation.desktopId)}
+        showSource={showSource}
       />
     );
   }
@@ -93,8 +104,10 @@ export function MergedRows({
       {workspaces.map(group => (
         <div className="mb-3 space-y-0.5" key={group.key}>
           <div className="flex h-6 items-center gap-1.5 bg-surface px-2 text-xs font-medium text-ink-muted">
-            <GroupGlyph desktopId={group.desktopId} peers={peers} />
-            <span className="min-w-0 truncate">{group.label ?? t("activityRail.workspace")}</span>
+            {showSource ? <GroupGlyph desktopId={group.desktopId} peers={peers} /> : null}
+            <span className="min-w-0 truncate" data-testid="merged-group-heading">
+              {group.label ?? t("activityRail.workspace")}
+            </span>
           </div>
           {group.rows.map(renderRow)}
         </div>
@@ -102,8 +115,8 @@ export function MergedRows({
       {chats.map(group => (
         <div className="shrink-0 space-y-0.5" data-testid="merged-conversations" key={group.key}>
           <div className="sticky top-0 z-20 flex h-6 items-center gap-1.5 bg-surface px-2 text-xs font-medium text-ink-muted">
-            <GroupGlyph desktopId={group.desktopId} peers={peers} />
-            <span className="min-w-0 truncate">
+            {showSource ? <GroupGlyph desktopId={group.desktopId} peers={peers} /> : null}
+            <span className="min-w-0 truncate" data-testid="merged-group-heading">
               {group.desktopId === null
                 ? t("activityRail.chatHeader")
                 : peerName(group.desktopId, peers) ?? t("activityRail.chatHeader")}

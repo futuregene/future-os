@@ -227,41 +227,6 @@ describe("mergeConversations", () => {
   });
 
   /**
-   * Pairing a machine to itself puts this machine's own sessions in the host's
-   * catalogue, so every conversation appeared twice — once as the local thread,
-   * once as that host's session. They are one conversation, and the session id is
-   * what proves it (the local thread carries its agent session).
-   */
-  it("does not list a conversation twice when the host holds it too", () => {
-    const merged = mergeConversations(
-      [thread({ id: "local_1", agentSessionId: "sess_1" })],
-      [catalog("desktop_self", [
-        { sessionId: "sess_1", threadId: "thread_1", title: "same conversation", lastMessageAt: 900 },
-      ])],
-      ALL,
-    );
-
-    expect(merged.map(row => row.desktopId)).toEqual([null]);
-  });
-
-  /**
-   * Unless the user asked for that machine by name. Filtering to it is a request
-   * for *its* sessions, and hiding the ones that also exist here would silently
-   * shorten the answer.
-   */
-  it("still lists a host's own copy when the user filtered to that host", () => {
-    const merged = mergeConversations(
-      [thread({ id: "local_1", agentSessionId: "sess_1" })],
-      [catalog("desktop_self", [
-        { sessionId: "sess_1", threadId: "thread_1", title: "same conversation", lastMessageAt: 900 },
-      ])],
-      { kind: "device", desktopId: "desktop_self" },
-    );
-
-    expect(merged.map(row => row.id)).toEqual(["sess_1"]);
-  });
-
-  /**
    * The merged list keeps the local list's headings. Without this a user who
    * pairs a machine loses the workspace grouping they had before the feature
    * existed, and every row reads as if it were pinned.

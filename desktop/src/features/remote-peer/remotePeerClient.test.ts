@@ -24,6 +24,7 @@ const {
   deleteRemoteWorkspace,
   downloadRemoteFile,
   fetchRemoteSessions,
+  openRemoteSettingsWindow,
   forkRemoteConversation,
   generateRemoteTitle,
   getRemoteConversationSettings,
@@ -298,6 +299,23 @@ describe("compactRemoteConversation", () => {
   });
 });
 
+describe("openRemoteSettingsWindow", () => {
+  /**
+   * The window is the backend's (one per machine, raised if already open), so the
+   * frontend's whole part in it is this command and the id — and an id sent as
+   * anything other than `desktopId` would open the wrong machine's settings.
+   */
+  it("asks for one machine's settings window by id", async () => {
+    invokeMock.mockResolvedValue(null);
+
+    await openRemoteSettingsWindow("desktop_a");
+
+    expect(invokeMock).toHaveBeenCalledWith("remote_peer_open_settings_window", {
+      desktopId: "desktop_a",
+    });
+  });
+});
+
 describe("fetchRemoteSessions", () => {
   it("carries the host's thread id through to the merged row", async () => {
     invokeMock.mockResolvedValue({
@@ -314,6 +332,28 @@ describe("fetchRemoteSessions", () => {
     expect(catalog.sessions[0]).toMatchObject({ sessionId: "sess_1", threadId: "thread_1" });
     // Absent, not conflated with the session id.
     expect(catalog.sessions[1]).not.toHaveProperty("threadId");
+  });
+
+  /**
+   * The workspace's name, which the merged list uses as a group heading. This
+   * parser names every field it keeps, so a field the host sends is dropped
+   * here unless it is listed — the heading fell back to the generic label until
+   * this was carried (found by asserting the heading text in the harness).
+   */
+  it("carries the host's workspace name through to the merged row", async () => {
+    invokeMock.mockResolvedValue({
+      sessions: [
+        { sessionId: "sess_1", mode: "workspace", workspaceId: "ws_1", workspaceName: "图表脚本" },
+        { sessionId: "sess_2", mode: "workspace", workspaceId: "ws_1" },
+      ],
+    });
+
+    const catalog = await fetchRemoteSessions("desktop_a");
+
+    expect(catalog.sessions[0]).toMatchObject({ workspaceName: "图表脚本" });
+    // Absent rather than an empty heading: a host that predates the field leaves
+    // the heading to the caller's fallback.
+    expect(catalog.sessions[1]).not.toHaveProperty("workspaceName");
   });
 
   /** A row with no session id could not be opened, so it is dropped. */

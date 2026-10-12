@@ -28,6 +28,7 @@ export function RemoteConversationRow({
   onOpen,
   onOpenRename,
   peer,
+  showSource,
   unread,
 }: {
   active: boolean;
@@ -37,6 +38,15 @@ export function RemoteConversationRow({
   onOpen: (conversation: MergedConversation) => void;
   onOpenRename: (conversation: MergedConversation) => void;
   peer: RemotePeer | undefined;
+  /**
+   * Whether the row still needs to say which machine it is on.
+   *
+   * False when the list is already filtered to one machine: every row is that
+   * machine's, so the badge repeats what the selector above says. The title
+   * does not carry the machine either way (the row has a title and a time
+   * already), so the badge is only ever a qualifier.
+   */
+  showSource?: boolean;
   unread?: boolean;
 }) {
   const { t } = useTranslation("remotePeer");
@@ -61,9 +71,13 @@ export function RemoteConversationRow({
         type="button"
       >
         <span className="min-w-0 flex-1 truncate">{conversation.title}</span>
-        <span aria-hidden className="shrink-0 text-xs" data-testid="remote-source-icon">
-          {iconGlyph(peer?.icon)}
-        </span>
+        {showSource === false
+          ? null
+          : (
+              <span aria-hidden className="shrink-0 text-xs" data-testid="remote-source-icon">
+                {iconGlyph(peer?.icon)}
+              </span>
+            )}
         {conversation.streaming
           ? (
               <span

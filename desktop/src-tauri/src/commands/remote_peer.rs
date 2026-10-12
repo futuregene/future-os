@@ -96,6 +96,86 @@ pub async fn remote_peer_set_label(
     runtime::set_label(&desktop_id, name.as_deref(), icon.as_deref())
 }
 
+/// One paired machine's settings, in a window of its own.
+///
+/// A separate window rather than another level in the hub, because these
+/// settings belong to the *other* machine: sitting beside this machine's own
+/// state (and beside the list of the others), "auto-upgrade skills" stops
+/// meaning one thing. It also keeps the main window usable — the page can be
+/// left open while the user goes back to their conversations.
+///
+/// Opening it twice raises the window that is already there instead of stacking
+/// a second copy of the same settings, which is what the user means by asking
+/// again (and the two copies would disagree the moment one of them wrote).
+#[tauri::command]
+pub async fn remote_peer_open_settings_window<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    desktop_id: String,
+) -> Result<(), crate::AppError> {
+    use tauri::Manager as _;
+    let label = settings_window_label(&desktop_id);
+    if let Some(existing) = app.get_webview_window(&label) {
+        let _ = existing.unminimize();
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        &label,
+        tauri::WebviewUrl::App(settings_window_url(&desktop_id).into()),
+    )
+    .title("FutureOS")
+    .inner_size(760.0, 780.0)
+    .min_inner_size(560.0, 420.0)
+    .build()
+    .map_err(|error| crate::AppError::Message(format!("remote_settings_window_failed: {error}")))?;
+    Ok(())
+}
+
+/// The window label for one machine's settings.
+///
+/// Restricted to what a label may contain: an id from the platform is
+/// alphanumeric in practice, but a label is not the place to find out that it
+/// was not.
+fn settings_window_label(desktop_id: &str) -> String {
+    let sanitized: String = desktop_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("peer-settings-{sanitized}")
+}
+
+/// Where that window loads, carrying the machine it is about.
+///
+/// Percent-encoded rather than interpolated: the value is parsed as a query
+/// parameter on the other side, so an id containing `&` or `#` would otherwise
+/// decide what the window shows.
+fn settings_window_url(desktop_id: &str) -> String {
+    format!(
+        "index.html?window=peer-settings&desktop={}",
+        percent_encode(desktop_id)
+    )
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
 /// The host's session snapshot, stamped with `desktopId`.
 #[tauri::command]
 pub async fn remote_peer_sessions(desktop_id: String) -> Result<Value, crate::AppError> {
@@ -253,6 +333,7 @@ mod tests {
                 remote_peer_disconnect,
                 remote_peer_unpair,
                 remote_peer_set_label,
+                remote_peer_open_settings_window,
                 remote_peer_sessions,
                 remote_peer_workspaces,
                 remote_peer_list_files,
@@ -268,6 +349,10 @@ mod tests {
                 (
                     "remote_peer_set_label",
                     serde_json::json!({ "desktopId": "d", "name": "n", "icon": 1 }),
+                ),
+                (
+                    "remote_peer_open_settings_window",
+                    serde_json::json!({ "desktopId": 1 }),
                 ),
                 ("remote_peer_sessions", serde_json::json!({})),
                 ("remote_peer_workspaces", serde_json::json!({})),
@@ -672,5 +757,76 @@ mod tests {
             .expect("build mock app")
             .handle()
             .clone()
+    }
+
+    /// The label is what the capability matches on (`peer-settings-*`) and what
+    /// `get_webview_window` looks up, so an id that is not label-safe has to be
+    /// made safe rather than trusted: the platform generates it, but a label is
+    /// not where that gets verified.
+    #[test]
+    fn the_settings_window_label_is_one_a_label_may_contain() {
+        assert_eq!(
+            settings_window_label("desktop_C76HVR4TKPGOCC55"),
+            "peer-settings-desktop-C76HVR4TKPGOCC55"
+        );
+        // A `/` would be read as a path separator, and a space or `:` are not
+        // label characters at all.
+        assert_eq!(settings_window_label("a/b c:d"), "peer-settings-a-b-c-d");
+    }
+
+    /// The id travels in the query string, so it is percent-encoded: an `&` left
+    /// raw would let the id decide what the window shows (and an `#` would cut
+    /// the rest of the query off entirely).
+    #[test]
+    fn the_settings_window_url_carries_its_machine_encoded() {
+        assert_eq!(
+            settings_window_url("desktop_1"),
+            "index.html?window=peer-settings&desktop=desktop_1"
+        );
+        assert_eq!(
+            settings_window_url("a&b=c"),
+            "index.html?window=peer-settings&desktop=a%26b%3Dc"
+        );
+        assert_eq!(
+            settings_window_url("a b"),
+            "index.html?window=peer-settings&desktop=a%20b"
+        );
+    }
+
+    /// Asking twice must not stack two copies of the same machine's settings:
+    /// both would be live, and the second write would silently undo the first.
+    #[tokio::test]
+    async fn opening_the_settings_window_twice_raises_the_same_one() {
+        use tauri::Manager as _;
+        let app = mock_app();
+
+        remote_peer_open_settings_window(app.clone(), "desktop_1".into())
+            .await
+            .expect("open the settings window");
+        // Second call: the existing window is raised, not duplicated.
+        remote_peer_open_settings_window(app.clone(), "desktop_1".into())
+            .await
+            .expect("raise the existing settings window");
+
+        let labels: Vec<String> = app.webview_windows().keys().cloned().collect();
+        assert_eq!(
+            labels,
+            vec!["peer-settings-desktop-1".to_string()],
+            "{labels:?}"
+        );
+
+        // A different machine gets its own window: the label carries the id.
+        remote_peer_open_settings_window(app.clone(), "desktop_2".into())
+            .await
+            .expect("open a second machine's settings");
+        let mut labels: Vec<String> = app.webview_windows().keys().cloned().collect();
+        labels.sort();
+        assert_eq!(
+            labels,
+            vec![
+                "peer-settings-desktop-1".to_string(),
+                "peer-settings-desktop-2".to_string(),
+            ]
+        );
     }
 }

@@ -328,9 +328,6 @@ export function ActivityRail({
         pinned: thread.pinned,
         status: thread.status,
         workspaceId: thread.workspaceId,
-        // The conversation's own session, so a host that happens to hold the
-        // same one (pairing a machine to itself) does not list it twice.
-        agentSessionId: thread.agentSessionId,
         lastMessageAt: thread.lastMessageAt,
         updatedAt: thread.updatedAt,
         createdAt: thread.createdAt,
