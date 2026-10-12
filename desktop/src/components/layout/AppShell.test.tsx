@@ -405,6 +405,13 @@ vi.mock("../../lib/useTauriEvent", () => ({
   },
 }));
 
+// The client role's settings window raises itself through this API when it hands
+// a conversation to the main window; jsdom has no Tauri internals behind it.
+const setFocus = vi.fn(() => Promise.resolve());
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({ setFocus: () => setFocus() }),
+}));
+
 function thread(id: string, overrides: Partial<StoredThread> = {}): StoredThread {
   return {
     id,
@@ -1729,17 +1736,16 @@ describe("app shell collapsed-panel affordances", () => {
     });
 
     /**
-     * A task run names its conversation by ids rather than by a row, and the
-     * shell is what turns either into "the conversation you are looking at".
+     * A task run names its conversation by ids rather than by a row, and a task
+     * run is opened from a machine's *settings window* — a different window —
+     * which asks for the conversation over a backend event. The shell is what
+     * turns that into "the conversation you are looking at".
      */
-    it("opens a remote conversation from the ids a task run gave", () => {
+    it("opens a remote conversation a settings window asked for", () => {
       const view = mount(<AppShell />);
       act(() => rail().onManageDesktops?.());
-      const hub = children.remoteHub as {
-        onOpenRemoteSession: (desktopId: string, sessionId: string) => void;
-      };
 
-      act(() => hub.onOpenRemoteSession("desktop_a", "sess_task"));
+      act(() => tauri("remote-peer-open-session")({ desktopId: "desktop_a", sessionId: "sess_task" }));
 
       // The same destination as opening a row: the chat column, on that
       // conversation, addressed to the host it belongs to.

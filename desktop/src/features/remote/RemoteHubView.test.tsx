@@ -86,7 +86,7 @@ async function mount(overrides: Partial<Parameters<typeof RemoteHubView>[0]> = {
     autoConnect: false,
     leftPanelExpanded: true,
     onRefreshRemote: vi.fn(async () => {}),
-    onOpenRemoteSession: vi.fn(),
+    onOpenRemoteSettings: vi.fn(),
     onStartConversation: vi.fn(),
     onToggleAutoConnect: vi.fn(),
     onToggleLeftPanel: vi.fn(),
@@ -178,7 +178,10 @@ it("gives each direction what it needs, and nothing crossed over", async () => {
     autoConnect: true,
     remoteStatus: { pairId: "pair_1" },
   });
-  expect(sections.client).toMatchObject({ onStartConversation: props.onStartConversation });
+  expect(sections.client).toMatchObject({
+    onOpenSettings: props.onOpenRemoteSettings,
+    onStartConversation: props.onStartConversation,
+  });
   // The host half has no machines to open conversations on, and the client half
   // has no pairing state: a prop on the wrong side would be invisible until it
   // misbehaved.
@@ -198,25 +201,20 @@ it("carries the page shell: the title and the window drag", async () => {
 });
 
 /**
- * A host's tasks take the whole column.
- *
- * They are a list and a detail side by side, and this page's own content sits in
- * a narrow scrolling pane — so the editor replaces the page rather than being
- * nested inside it, and the back control returns to the page it came from.
+ * The client section opens a machine's settings in its own window (see
+ * `remote_peer_open_settings_window`) rather than stacking a page here, so the
+ * page stays on the machines and the settings survive navigating away.
  */
-it("hands the whole column to a host's tasks, and gives it back", async () => {
-  await mount();
+it("opens a machine's settings in its own window, from the client section", async () => {
+  const onOpenRemoteSettings = vi.fn();
+  await mount({ onOpenRemoteSettings });
 
   await act(async () => {
-    (sections.client as { onOpenTasks: (peer: { desktopId: string }) => void })
-      .onOpenTasks({ desktopId: "desk_a" });
+    onOpenRemoteSettings({ desktopId: "desk_a" });
   });
-  expect(container.querySelector("[data-child='tasks-view']")!.getAttribute("data-peer")).toBe("desk_a");
-  // The page's own sections are gone while the editor is open.
-  expect(container.querySelector("[data-child='client-section']")).toBeNull();
 
-  await act(async () => {
-    container.querySelector<HTMLButtonElement>("[data-back='1']")!.click();
-  });
+  // The page is unchanged: the window is the backend's to open, and the hub only
+  // forwards the request.
   expect(container.querySelector("[data-child='client-section']")).not.toBeNull();
+  expect(container.querySelector("[data-child='tasks-view']")).toBeNull();
 });

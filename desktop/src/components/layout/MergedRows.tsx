@@ -94,7 +94,9 @@ export function MergedRows({
         <div className="mb-3 space-y-0.5" key={group.key}>
           <div className="flex h-6 items-center gap-1.5 bg-surface px-2 text-xs font-medium text-ink-muted">
             <GroupGlyph desktopId={group.desktopId} peers={peers} />
-            <span className="min-w-0 truncate">{group.label ?? t("activityRail.workspace")}</span>
+            <span className="min-w-0 truncate" data-testid="merged-group-heading">
+              {group.label ?? t("activityRail.workspace")}
+            </span>
           </div>
           {group.rows.map(renderRow)}
         </div>
@@ -103,7 +105,7 @@ export function MergedRows({
         <div className="shrink-0 space-y-0.5" data-testid="merged-conversations" key={group.key}>
           <div className="sticky top-0 z-20 flex h-6 items-center gap-1.5 bg-surface px-2 text-xs font-medium text-ink-muted">
             <GroupGlyph desktopId={group.desktopId} peers={peers} />
-            <span className="min-w-0 truncate">
+            <span className="min-w-0 truncate" data-testid="merged-group-heading">
               {group.desktopId === null
                 ? t("activityRail.chatHeader")
                 : peerName(group.desktopId, peers) ?? t("activityRail.chatHeader")}

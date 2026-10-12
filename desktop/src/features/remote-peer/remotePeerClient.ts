@@ -57,6 +57,17 @@ export async function listRemotePeers(): Promise<RemotePeer[]> {
   return Array.isArray(raw) ? raw : [];
 }
 
+/**
+ * Open one machine's settings in a window of its own.
+ *
+ * The window is created and remembered by the backend (one per machine, raised
+ * if it is already open), so nothing here holds window state: two callers
+ * asking for the same machine get the same window rather than two.
+ */
+export function openRemoteSettingsWindow(desktopId: string): Promise<void> {
+  return invokeCommand<void>("remote_peer_open_settings_window", { desktopId });
+}
+
 export function pairRemotePeer(invitation: string): Promise<RemotePeer> {
   return invokeCommand<RemotePeer>("remote_peer_pair", { invitation });
 }
@@ -126,6 +137,13 @@ export async function fetchRemoteSessions(desktopId: string): Promise<RemoteCata
         title: typeof row.title === "string" && row.title ? row.title : sessionId,
         mode: row.mode === "workspace" ? "workspace" : "chat",
         ...(typeof row.workspaceId === "string" ? { workspaceId: row.workspaceId } : {}),
+        // The workspace's *name*, for the merged list's group heading. Carried
+        // explicitly like every other field: this parser is field-by-field, so an
+        // optional field the host sends reaches the UI only if it is named here
+        // (the heading showed the fallback text until this line existed).
+        ...(typeof row.workspaceName === "string" && row.workspaceName
+          ? { workspaceName: row.workspaceName }
+          : {}),
         pinned: row.pinned === true,
         streaming: row.streaming === true,
         ...(typeof row.status === "string" ? { status: row.status } : {}),

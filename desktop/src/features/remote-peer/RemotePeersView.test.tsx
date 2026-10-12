@@ -18,37 +18,11 @@ const connectRemotePeer = vi.fn<(desktopId: string) => Promise<unknown>>();
 const disconnectRemotePeer = vi.fn<(desktopId: string) => Promise<unknown>>();
 const listRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
 const pairRemotePeer = vi.fn<(invitation: string) => Promise<unknown>>();
-const setRemotePeerLabel = vi.fn<(desktopId: string, patch: Record<string, unknown>) => Promise<unknown>>();
-const unpairRemotePeer = vi.fn<(desktopId: string) => Promise<string | null>>();
 vi.mock("./remotePeerClient", () => ({
   connectRemotePeer: (...args: Parameters<typeof connectRemotePeer>) => connectRemotePeer(...args),
   disconnectRemotePeer: (...args: Parameters<typeof disconnectRemotePeer>) => disconnectRemotePeer(...args),
   listRemotePeers: () => listRemotePeers(),
   pairRemotePeer: (...args: Parameters<typeof pairRemotePeer>) => pairRemotePeer(...args),
-  setRemotePeerLabel: (...args: Parameters<typeof setRemotePeerLabel>) => setRemotePeerLabel(...args),
-  unpairRemotePeer: (...args: Parameters<typeof unpairRemotePeer>) => unpairRemotePeer(...args),
-}));
-// The real settings panel reads the host for models/skills/tasks; its own
-// behaviour is tested where it lives, and `onUpdateLabel` is what this section
-// is responsible for wiring.
-vi.mock("./RemotePeerSettings", () => ({
-  RemotePeerSettings: (props: {
-    onBack: () => void;
-    onChanged: () => void;
-    onOpenTasks: () => void;
-    onUnpair: () => void;
-    onUpdateLabel: (patch: Record<string, unknown>) => void;
-  }) => (
-    <div data-testid="peer-settings">
-      <button onClick={props.onBack} type="button">settings-back</button>
-      <button onClick={() => props.onUpdateLabel({ name: "Renamed" })} type="button">settings-rename</button>
-      {/* Unpairing lives behind the computer's settings, so the confirmation
-          this section owns only appears from there. */}
-      <button onClick={props.onUnpair} type="button">settings-unpair</button>
-      <button onClick={props.onChanged} type="button">settings-changed</button>
-      <button onClick={props.onOpenTasks} type="button">settings-tasks</button>
-    </div>
-  ),
 }));
 // LeftPanelTitlebarToggle → useIsFullscreen reads the Tauri window API, which is
 // irrelevant (and absent) under jsdom.
@@ -77,14 +51,14 @@ function peer(overrides: Partial<RemotePeer> = {}): RemotePeer {
 }
 
 async function mount() {
-  const onOpenTasks = vi.fn();
+  const onOpenSettings = vi.fn();
   const onStartConversation = vi.fn();
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <RemoteClientSection onOpenTasks={onOpenTasks} onStartConversation={onStartConversation} />,
+      <RemoteClientSection onOpenSettings={onOpenSettings} onStartConversation={onStartConversation} />,
     );
   });
   await act(async () => {
@@ -93,7 +67,7 @@ async function mount() {
   return {
     container,
     input: () => container.querySelector<HTMLInputElement>("input")!,
-    onOpenTasks,
+    onOpenSettings,
     onStartConversation,
     button: (label: string) => [...container.querySelectorAll("button")]
       .find(node => node.textContent === label),
@@ -139,8 +113,6 @@ beforeEach(() => {
   disconnectRemotePeer.mockReset().mockResolvedValue(undefined);
   listRemotePeers.mockReset().mockResolvedValue([peer()]);
   pairRemotePeer.mockReset().mockResolvedValue(undefined);
-  setRemotePeerLabel.mockReset().mockResolvedValue(undefined);
-  unpairRemotePeer.mockReset().mockResolvedValue(null);
 });
 
 it("offers a new conversation on a reachable host, and names it", async () => {
@@ -153,16 +125,21 @@ it("offers a new conversation on a reachable host, and names it", async () => {
 });
 
 /**
- * A host's tasks are opened from that host's settings page, and the section
- * passes the peer it is showing rather than the one the caller happens to hold.
+ * Settings live in a window of their own, so this section opens that window
+ * rather than rendering the page inline: a page stacked in this window is lost
+ * the moment the user navigates, and it reads as if it were this machine's.
  */
-it("opens the settings page's own host's tasks", async () => {
+it("opens a machine's settings in a window instead of inline", async () => {
   const view = await mount();
   await act(async () => view.button("Settings")!.click());
 
-  await act(async () => view.button("settings-tasks")!.click());
-
-  expect(view.onOpenTasks).toHaveBeenCalledWith(expect.objectContaining({ desktopId: "desktop_a" }));
+  // The *section* only reports which machine; the window is opened by the shell
+  // (see `openRemoteSettingsWindow`), so that the page never becomes a second
+  // place that owns the window lifecycle.
+  expect(view.onOpenSettings).toHaveBeenCalledWith(expect.objectContaining({ desktopId: "desktop_a" }));
+  // Nothing is stacked here: no settings page, and the list is still the page.
+  expect(view.container.querySelector("[data-testid='peer-settings']")).toBeNull();
+  expect(view.input()).toBeTruthy();
   await view.unmount();
 });
 
@@ -242,66 +219,6 @@ it("reconnects an offline computer, by its own id", async () => {
   await view.unmount();
 });
 
-/** Unpairing is destructive enough to confirm, and the confirmation is the thing that acts. */
-it("unpairs only after the confirmation", async () => {
-  const view = await mount();
-  await act(async () => view.rowButton("Settings")!.click());
-  await act(async () => view.button("settings-unpair")!.click());
-  expect(unpairRemotePeer).not.toHaveBeenCalled();
-
-  await act(async () => view.dialogButton("Unpair")!.click());
-  await view.settle();
-  expect(unpairRemotePeer).toHaveBeenCalledWith("desktop_a");
-  await view.unmount();
-});
-
-it("cancels an unpair without touching the pairing", async () => {
-  const view = await mount();
-  await act(async () => view.rowButton("Settings")!.click());
-  await act(async () => view.button("settings-unpair")!.click());
-  await act(async () => view.dialogButton("Cancel")!.click());
-  await view.settle();
-
-  expect(unpairRemotePeer).not.toHaveBeenCalled();
-  expect(view.container.querySelector("[role='dialog']")).toBeNull();
-  await view.unmount();
-});
-
-/**
- * A revoke the platform never accepted is reported: the local pairing is gone
- * either way, and saying so is more honest than claiming a clean removal.
- */
-it("says so when the platform-side revoke could not be delivered", async () => {
-  unpairRemotePeer.mockResolvedValue("pending");
-  const view = await mount();
-  await act(async () => view.rowButton("Settings")!.click());
-  await act(async () => view.button("settings-unpair")!.click());
-
-  // The pairing is gone locally either way, so the list comes back — and the
-  // warning about the undelivered revoke belongs there, not on a settings page
-  // for a computer that is no longer paired.
-  listRemotePeers.mockResolvedValue([]);
-  await act(async () => view.dialogButton("Unpair")!.click());
-  await view.settle();
-
-  expect(view.text()).toContain("could not be reached to revoke");
-  await view.unmount();
-});
-
-it("opens that computer's settings, and writes a rename to it", async () => {
-  const view = await mount();
-  await act(async () => view.rowButton("Settings")!.click());
-  expect(view.container.querySelector("[data-testid='peer-settings']")).not.toBeNull();
-
-  await act(async () => view.button("settings-rename")!.click());
-  await view.settle();
-  expect(setRemotePeerLabel).toHaveBeenCalledWith("desktop_a", { name: "Renamed" });
-
-  await act(async () => view.button("settings-back")!.click());
-  expect(view.container.querySelector("[data-testid='peer-settings']")).toBeNull();
-  await view.unmount();
-});
-
 it("lists every paired computer with its own name", async () => {
   listRemotePeers.mockResolvedValue([
     peer({ desktopId: "desktop_a", name: "Studio iMac" }),
@@ -311,40 +228,5 @@ it("lists every paired computer with its own name", async () => {
 
   expect(view.text()).toContain("Studio iMac");
   expect(view.text()).toContain("Mac mini");
-  await view.unmount();
-});
-
-/** Dismissing the confirmation with Escape must leave the pairing alone. */
-it("closes the unpair confirmation on Escape without unpairing", async () => {
-  const view = await mount();
-  await act(async () => view.rowButton("Settings")!.click());
-  await act(async () => view.button("settings-unpair")!.click());
-  expect(view.container.querySelector("[role='dialog']")).not.toBeNull();
-
-  await act(async () => {
-    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-  });
-  await view.settle();
-
-  expect(unpairRemotePeer).not.toHaveBeenCalled();
-  expect(view.container.querySelector("[role='dialog']")).toBeNull();
-  await view.unmount();
-});
-
-/**
- * A change made on that computer's settings page re-reads the computers.
- *
- * The title or icon the panel just wrote lives on the host, so nothing local
- * would show it until the next catalogue read.
- */
-it("re-reads the computers when a settings page reports a change", async () => {
-  const view = await mount();
-  await act(async () => view.rowButton("Settings")!.click());
-  const readsBefore = listRemotePeers.mock.calls.length;
-
-  await act(async () => view.button("settings-changed")!.click());
-  await view.settle();
-
-  expect(listRemotePeers.mock.calls.length).toBeGreaterThan(readsBefore);
   await view.unmount();
 });

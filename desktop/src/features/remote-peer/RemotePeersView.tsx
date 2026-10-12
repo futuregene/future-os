@@ -3,7 +3,6 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
-import { Dialog } from "../../components/ui/Dialog";
 import { TextInput } from "../../components/ui/TextInput";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
 import {
@@ -11,10 +10,7 @@ import {
   disconnectRemotePeer,
   listRemotePeers,
   pairRemotePeer,
-  setRemotePeerLabel,
-  unpairRemotePeer,
 } from "./remotePeerClient";
-import { RemotePeerSettings } from "./RemotePeerSettings";
 
 /**
  * "Connect to another computer" — the client half of the Remote page.
@@ -29,7 +25,7 @@ import { RemotePeerSettings } from "./RemotePeerSettings";
  * naming, the icon, connection state, and unpairing.
  */
 export function RemoteClientSection({
-  onOpenTasks,
+  onOpenSettings,
   onStartConversation,
 }: {
   /**
@@ -38,29 +34,20 @@ export function RemoteClientSection({
    */
   onStartConversation: (desktopId: string) => void;
   /**
-   * Open that host's tasks. Handled by the hub rather than here because the
-   * task editor needs the whole column.
+   * Open that machine's settings — in a window of its own, not a level here.
+   *
+   * Those settings belong to the other machine, and a page stacked inside this
+   * window is lost the moment the user navigates anywhere else (and reads as if
+   * it were this machine's). The backend owns the window and raises it if it is
+   * already open.
    */
-  onOpenTasks: (peer: RemotePeer) => void;
+  onOpenSettings: (peer: RemotePeer) => void;
 }) {
   const { t } = useTranslation("remotePeer");
   const [peers, setPeers] = useState<RemotePeer[]>([]);
   const [invitation, setInvitation] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [warning, setWarning] = useState<string | null>(null);
-  /**
-   * The host whose settings page is open, if any.
-   *
-   * A separate level rather than an accordion inside the list row: those
-   * settings belong to a different machine, and presenting them inline next to
-   * this machine's own state is how "auto-upgrade skills" becomes ambiguous.
-   */
-  const [settingsFor, setSettingsFor] = useState<string | null>(null);
-  const [unpairTarget, setUnpairTarget] = useState<RemotePeer | null>(null);
-  const settingsPeer = settingsFor
-    ? peers.find(peer => peer.desktopId === settingsFor)
-    : undefined;
 
   const refresh = useCallback(async () => {
     try {
@@ -80,7 +67,6 @@ export function RemoteClientSection({
   async function run(desktopId: string, action: () => Promise<unknown>) {
     setBusy(desktopId);
     setError(null);
-    setWarning(null);
     try {
       await action();
       await refresh();
@@ -99,7 +85,6 @@ export function RemoteClientSection({
       return;
     setBusy("__pair__");
     setError(null);
-    setWarning(null);
     try {
       await pairRemotePeer(link);
       // The link is single-use: keeping it in the box would invite the user to
@@ -115,113 +100,58 @@ export function RemoteClientSection({
     }
   }
 
-  async function handleUnpair(peer: RemotePeer) {
-    await run(peer.desktopId, async () => {
-      const pending = await unpairRemotePeer(peer.desktopId);
-      // Local pairing is already gone; say so when the platform-side revoke
-      // could not be delivered instead of reporting a clean removal.
-      if (pending)
-        setWarning(t("unpairPendingWarning"));
-    });
-    setUnpairTarget(null);
-  }
-
   return (
     <>
-      {settingsPeer
-        ? (
-            <RemotePeerSettings
-              onBack={() => setSettingsFor(null)}
-              onChanged={() => void refresh()}
-              onOpenTasks={() => onOpenTasks(settingsPeer)}
-              onUnpair={() => setUnpairTarget(settingsPeer)}
-              onUpdateLabel={patch => void run(settingsPeer.desktopId, () => setRemotePeerLabel(settingsPeer.desktopId, patch))}
-              peer={settingsPeer}
-            />
-          )
-        : (
-            <div className="space-y-6">
-              {/* The paragraph that explains this direction lives on the hub, which
+      <div className="space-y-6">
+        {/* The paragraph that explains this direction lives on the hub, which
                   renders it as this section's subtitle. Rendering it here too put
                   the same sentence on screen twice. */}
-              <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
-                <label className="text-sm font-medium text-ink" htmlFor="peer-invitation">
-                  {t("addTitle")}
-                </label>
-                <p className="mt-1 text-xs leading-5 text-ink-muted">{t("addHint")}</p>
-                <div className="mt-3 flex items-center gap-2">
-                  <TextInput
-                    id="peer-invitation"
-                    onChange={event => setInvitation(event.target.value)}
-                    placeholder="futureos://remote/pair?…"
-                    value={invitation}
-                  />
-                  <Button
-                    disabled={!invitation.trim() || busy !== null}
-                    onClick={() => void handlePair()}
-                    size="sm"
-                    variant="primary"
-                  >
-                    {busy === "__pair__" ? t("adding") : t("add")}
-                  </Button>
-                </div>
-                {/* Replacing the phone pairing on the other machine is a real
-                consequence of this action, so it is stated before, not after. */}
-                <p className="mt-2 text-xs leading-5 text-ink-muted">{t("slotWarning")}</p>
-              </div>
-
-              {error ? <p className="text-xs text-danger">{error}</p> : null}
-              {warning ? <p className="text-xs text-ink-muted">{warning}</p> : null}
-
-              {peers.length === 0
-                ? <p className="text-sm text-ink-soft">{t("empty")}</p>
-                : (
-                    <div className="space-y-2">
-                      {peers.map(peer => (
-                        <PeerRow
-                          busy={busy === peer.desktopId}
-                          key={peer.desktopId}
-                          onDisconnect={() => void run(peer.desktopId, () => disconnectRemotePeer(peer.desktopId))}
-                          onEdit={() => setSettingsFor(peer.desktopId)}
-                          onNewConversation={() => onStartConversation(peer.desktopId)}
-                          onReconnect={() => void run(peer.desktopId, () => connectRemotePeer(peer.desktopId))}
-                          peer={peer}
-                        />
-                      ))}
-                    </div>
-                  )}
-            </div>
-          )}
-      {unpairTarget
-        ? (
-      // `Dialog` rather than `ConfirmDeleteDialog`: the shared confirm
-      // is worded for deletion ("Delete"), and unpairing a desktop is
-      // not deleting anything the user created — the other machine
-      // keeps all of its data.
-            <Dialog
-              description={t("unpairConfirmDesc", { name: peerBadgeText(unpairTarget, unpairTarget.desktopId) })}
-              footer={(
-                <>
-                  <Button onClick={() => setUnpairTarget(null)} variant="ghost">
-                    {t("cancel")}
-                  </Button>
-                  <Button
-                    disabled={busy === unpairTarget.desktopId}
-                    onClick={() => void handleUnpair(unpairTarget)}
-                    variant="danger"
-                  >
-                    {t("unpair")}
-                  </Button>
-                </>
-              )}
-              onClose={() => setUnpairTarget(null)}
-              open
-              title={t("unpairConfirmTitle")}
+        <div className="rounded-lg border border-line-soft bg-surface-subtle p-4">
+          <label className="text-sm font-medium text-ink" htmlFor="peer-invitation">
+            {t("addTitle")}
+          </label>
+          <p className="mt-1 text-xs leading-5 text-ink-muted">{t("addHint")}</p>
+          <div className="mt-3 flex items-center gap-2">
+            <TextInput
+              id="peer-invitation"
+              onChange={event => setInvitation(event.target.value)}
+              placeholder="futureos://remote/pair?…"
+              value={invitation}
+            />
+            <Button
+              disabled={!invitation.trim() || busy !== null}
+              onClick={() => void handlePair()}
+              size="sm"
+              variant="primary"
             >
-              <span />
-            </Dialog>
-          )
-        : null}
+              {busy === "__pair__" ? t("adding") : t("add")}
+            </Button>
+          </div>
+          {/* Replacing the phone pairing on the other machine is a real
+                consequence of this action, so it is stated before, not after. */}
+          <p className="mt-2 text-xs leading-5 text-ink-muted">{t("slotWarning")}</p>
+        </div>
+
+        {error ? <p className="text-xs text-danger">{error}</p> : null}
+
+        {peers.length === 0
+          ? <p className="text-sm text-ink-soft">{t("empty")}</p>
+          : (
+              <div className="space-y-2">
+                {peers.map(peer => (
+                  <PeerRow
+                    busy={busy === peer.desktopId}
+                    key={peer.desktopId}
+                    onDisconnect={() => void run(peer.desktopId, () => disconnectRemotePeer(peer.desktopId))}
+                    onEdit={() => onOpenSettings(peer)}
+                    onNewConversation={() => onStartConversation(peer.desktopId)}
+                    onReconnect={() => void run(peer.desktopId, () => connectRemotePeer(peer.desktopId))}
+                    peer={peer}
+                  />
+                ))}
+              </div>
+            )}
+      </div>
     </>
   );
 }

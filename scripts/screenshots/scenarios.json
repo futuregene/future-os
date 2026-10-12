@@ -914,7 +914,7 @@
             "wait": 1500
           },
           {
-            "eval": "(() => { const t = document.body.innerText; if (!t.includes('重画森林图并核对置信区间')) throw new Error('the remote conversation is not in the shared list'); if (!t.includes('整理两篇文献的结论对比表')) throw new Error('the local conversation disappeared from the shared list'); const named = [...document.querySelectorAll('[title]')].some(node => (node.getAttribute('title') || '').includes('工作室 iMac')); if (!named) throw new Error('no row names its host: the list does not say which machine a conversation belongs to'); })()"
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('重画森林图并核对置信区间')) throw new Error('the remote conversation is not in the shared list'); if (!t.includes('整理两篇文献的结论对比表')) throw new Error('the local conversation disappeared from the shared list'); const named = [...document.querySelectorAll('[title]')].some(node => (node.getAttribute('title') || '').includes('工作室 iMac')); if (!named) throw new Error('no row names its host'); const headings = [...document.querySelectorAll(\"[data-testid='merged-group-heading']\")].map(n => (n.textContent || '').trim()); if (headings.length < 3) throw new Error('the merged list has no group headings: ' + JSON.stringify(headings)); if (!headings.includes('图表脚本')) throw new Error(\"the host's own workspace name is not a heading: \" + JSON.stringify(headings)); if (!headings.includes('对话')) throw new Error('the local chat section is missing: ' + JSON.stringify(headings)); if (!headings.includes('工作室 iMac')) throw new Error(\"the host's chats have no section of their own: \" + JSON.stringify(headings)); const badges = [...document.querySelectorAll(\"[data-testid='remote-source-icon']\")]; if (badges.length === 0) throw new Error('no remote row says which machine it is on'); const wrong = badges.filter(badge => { const button = badge.closest('button'); const title = [...button.querySelectorAll('span')].find(s => (s.textContent || '').length > 4 && !s.querySelector('svg')); if (!title) return true; return (title.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING) === 0; }); if (wrong.length > 0) throw new Error('a machine badge renders before its title'); })()"
           },
           {
             "shot": "d-remote-merged.png"
@@ -976,26 +976,14 @@
         ]
       },
       "remote-host-settings": {
-        "note": "One host's settings: its workspaces, its tasks, and its approval mode.",
-        "url": "http://localhost:5299/shot/?lang=zh",
+        "note": "One host's settings — a window of its own, opened by the 设置 button.",
+        "url": "http://localhost:5299/shot/?lang=zh&window=peer-settings&desktop=desktop_studio",
         "steps": [
-          {
-            "wait": 1200
-          },
-          {
-            "tap": "远程"
-          },
           {
             "wait": 1500
           },
           {
-            "tap": "设置"
-          },
-          {
-            "wait": 2000
-          },
-          {
-            "eval": "(() => { const t = document.body.innerText; if (!t.includes('图表脚本')) throw new Error('that host workspaces are not listed'); if (!t.includes('审批模式')) throw new Error('that host approval mode is not offered'); if (!t.includes('管理')) throw new Error('that host tasks are not reachable'); if (/sk-[A-Za-z0-9]{8}/.test(t)) throw new Error('an API key appears in the UI'); })()"
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('远程桌面设置')) throw new Error('this is not the settings window'); if (document.querySelector('[data-activity-rail-scroll]')) throw new Error('the app shell rendered instead of the settings window'); if (!t.includes('图表脚本')) throw new Error('that host workspaces are not listed'); if (!t.includes('审批模式')) throw new Error('that host approval mode is not offered'); if (!t.includes('管理')) throw new Error('that host tasks are not reachable'); if (/sk-[A-Za-z0-9]{8}/.test(t)) throw new Error('an API key appears in the UI'); })()"
           },
           {
             "shot": "d-remote-host-settings.png"
@@ -1003,23 +991,11 @@
         ]
       },
       "remote-host-tasks": {
-        "note": "Another computer tasks, edited with this app own task editor.",
-        "url": "http://localhost:5299/shot/?lang=zh",
+        "note": "Another computer's tasks, edited from that computer's settings window.",
+        "url": "http://localhost:5299/shot/?lang=zh&window=peer-settings&desktop=desktop_studio",
         "steps": [
           {
-            "wait": 1200
-          },
-          {
-            "tap": "远程"
-          },
-          {
             "wait": 1500
-          },
-          {
-            "tap": "设置"
-          },
-          {
-            "wait": 2000
           },
           {
             "tap": "管理"

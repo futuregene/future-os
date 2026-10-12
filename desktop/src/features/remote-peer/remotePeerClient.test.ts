@@ -316,6 +316,28 @@ describe("fetchRemoteSessions", () => {
     expect(catalog.sessions[1]).not.toHaveProperty("threadId");
   });
 
+  /**
+   * The workspace's name, which the merged list uses as a group heading. This
+   * parser names every field it keeps, so a field the host sends is dropped
+   * here unless it is listed — the heading fell back to the generic label until
+   * this was carried (found by asserting the heading text in the harness).
+   */
+  it("carries the host's workspace name through to the merged row", async () => {
+    invokeMock.mockResolvedValue({
+      sessions: [
+        { sessionId: "sess_1", mode: "workspace", workspaceId: "ws_1", workspaceName: "图表脚本" },
+        { sessionId: "sess_2", mode: "workspace", workspaceId: "ws_1" },
+      ],
+    });
+
+    const catalog = await fetchRemoteSessions("desktop_a");
+
+    expect(catalog.sessions[0]).toMatchObject({ workspaceName: "图表脚本" });
+    // Absent rather than an empty heading: a host that predates the field leaves
+    // the heading to the caller's fallback.
+    expect(catalog.sessions[1]).not.toHaveProperty("workspaceName");
+  });
+
   /** A row with no session id could not be opened, so it is dropped. */
   it("drops rows that name no session and tolerates a malformed payload", async () => {
     invokeMock.mockResolvedValue({
