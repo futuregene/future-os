@@ -1,4 +1,4 @@
-import type { DeviceFilter, MergedConversation, RemoteCatalog } from "../../features/remote-peer/mergeConversations";
+import type { DeviceFilter, MergedConversation, RemoteCatalog, RemoteWorkspaceTarget } from "../../features/remote-peer/mergeConversations";
 import type { SettingsTab } from "../../features/settings/SettingsDialog";
 import type { FutureAuthState, ProvidersView } from "../../integrations/agent/providers";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
@@ -19,6 +19,7 @@ import { compactRemoteConversation, continueRemoteRun, deleteRemoteConversation,
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { remoteSkillRecoSource } from "../../features/remote-peer/remoteSkillRecoSource";
 import { RemoteUsageDialog } from "../../features/remote-peer/RemoteUsageDialog";
+import { RemoteWorkspaceRenameDialog } from "../../features/remote-peer/RemoteWorkspaceRenameDialog";
 import { useRemoteApprovals } from "../../features/remote-peer/useRemoteApprovals";
 import { useRemoteConversationSettings } from "../../features/remote-peer/useRemoteConversationSettings";
 import { useRemoteSkillCatalog } from "../../features/remote-peer/useRemoteSkillCatalog";
@@ -162,6 +163,8 @@ function ReadyAppShell({
   } | null>(null);
   /** The remote conversation whose rename dialog is open, if any. */
   const [remoteRename, setRemoteRename] = useState<MergedConversation | null>(null);
+  /** The remote *workspace* whose rename dialog is open, if any. */
+  const [remoteWorkspaceRename, setRemoteWorkspaceRename] = useState<RemoteWorkspaceTarget | null>(null);
   /** Whether the open remote conversation's account book is showing. */
   const [remoteUsageOpen, setRemoteUsageOpen] = useState(false);
   const [leftExpanded, setLeftExpanded] = useState(true);
@@ -930,6 +933,7 @@ function ReadyAppShell({
     onChangeDeviceFilter: setDeviceFilter,
     onOpenRemoteConversation: openRemoteConversation,
     onRenameRemoteConversation: setRemoteRename,
+    onRenameRemoteWorkspace: setRemoteWorkspaceRename,
     onNewChatOnRemote: (desktopId: string, workspaceId: string) => startRemoteConversation(desktopId, workspaceId),
     onRemoteConversationsChanged: () => void refreshRemotePeers(),
     onManageDesktops: () => handleSectionChange("remote"),
@@ -1115,6 +1119,7 @@ function ReadyAppShell({
                               />
                             )}
                             leftPanelExpanded={showLeftPanel}
+                            live={remoteTimeline.live}
                             messages={remoteTimeline.messages}
                             error={remoteTimeline.error}
                             hasMore={remoteTimeline.hasMore}
@@ -1265,6 +1270,19 @@ function ReadyAppShell({
               conversation={remoteRename}
               onClose={() => setRemoteRename(null)}
               onRenamed={() => void refreshRemotePeers()}
+            />
+          )
+        : null}
+      {/* A workspace on another machine is renamed on that machine, so this uses
+          the shared dialog shell (as this app's own workspace rename does) and the
+          remote namespace for its words: which computer it belongs to is the one
+          thing the reader needs that the local dialog never says. */}
+      {remoteWorkspaceRename
+        ? (
+            <RemoteWorkspaceRenameDialog
+              onClose={() => setRemoteWorkspaceRename(null)}
+              onRenamed={() => void refreshRemotePeers()}
+              target={remoteWorkspaceRename}
             />
           )
         : null}

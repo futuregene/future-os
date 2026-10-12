@@ -892,6 +892,27 @@ export async function setRemoteWorkspacePinned(
 }
 
 /**
+ * Rename one of that host's workspaces.
+ *
+ * The name lives in the host's store and nowhere else — a workspace is a
+ * directory there, and this is its label, so nothing is moved and no path
+ * changes. The host applies its own rules to the name (it trims, and refuses an
+ * empty one), which is why the refusal arrives as a rejection rather than being
+ * second-guessed here.
+ */
+export async function renameRemoteWorkspace(
+  desktopId: string,
+  workspaceId: string,
+  name: string,
+): Promise<unknown> {
+  return requestRemotePeer(
+    desktopId,
+    { type: "rename_workspace", workspaceId, name },
+    "list",
+  );
+}
+
+/**
  * Remove a workspace from that host.
  *
  * The host removes its conversations and threads with it, so this is not a

@@ -182,5 +182,8 @@
   "workspaceRemove": "Remove workspace from this list",
   "jumpToLatest": "Jump to latest",
   "selectConversation": "Select {{title}}",
-  "deleteFailed": "Some conversations could not be deleted: {{message}}"
+  "deleteFailed": "Some conversations could not be deleted: {{message}}",
+  "renameWorkspaceTitle": "Rename “{{name}}”",
+  "renameWorkspaceLabel": "Workspace name",
+  "renameWorkspaceHint": "The name changes on the computer that owns this folder. Nothing is moved, and the conversations in it are not touched."
 }

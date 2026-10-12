@@ -149,7 +149,6 @@ export function RailGroupHeader({
       <span className="min-w-0 truncate text-sm font-medium text-ink-soft" data-testid={testId} title={name}>
         {name}
       </span>
-      {pinned ? <Pin aria-hidden className="size-3.5 shrink-0 text-accent" /> : null}
       {glyph}
     </>
   );
@@ -175,6 +174,12 @@ export function RailGroupHeader({
           left over goes here, at the end — where it separates the heading from
           its menu instead of pushing the icon out to it. */}
       <span className="min-w-0 flex-1" />
+      {/* A pinned group leads the list, and its marker sits where this app's own
+          heading puts it: at the far end of the row, before the controls. The
+          two headings are the same heading drawn for two owners, so a marker
+          that moves depending on which machine owns the workspace reads as two
+          different rules — the reported "the pin is not in the same place". */}
+      {pinned ? <Pin aria-hidden className="size-3.5 shrink-0 text-accent" /> : null}
       {menu}
     </div>
   );

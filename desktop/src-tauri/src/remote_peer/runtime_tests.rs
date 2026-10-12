@@ -448,6 +448,70 @@ async fn catalogue_reads_are_stamped_with_the_host_and_its_pair() {
     teardown().await;
 }
 
+/// A page larger than one reply arrives intact.
+///
+/// The host answers a read larger than its page threshold with an immutable
+/// snapshot the client pulls back in ≤192 KiB chunks, so a page of *any* size is
+/// deliverable. This is what makes a conversation whose newest exchange is huge
+/// openable at all: one long agent run is a single exchange, the host's trim may
+/// only drop whole exchanges, and so the page is as large as that run. A client
+/// that never asks to be chunked gets `remote_reply_too_large` instead — the
+/// reported "opening the conversation shows an error" — and one that asks but
+/// cannot reassemble loses the middle of its history silently.
+#[tokio::test]
+async fn a_page_larger_than_one_reply_arrives_intact() {
+    let (_home, fx) = start("peer-rt-chunked-page").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    connect(&desktop_id).await.expect("connect");
+
+    let agent = crate::remote::test_support::ensure_mock_agent();
+    agent.clear_scripts();
+    let session = "sess_rt_chunked_page";
+    // One exchange: a single user turn and a run that produced more text than one
+    // reply can carry. The host cannot defer any of it, because deferring works in
+    // whole exchanges.
+    let body = "x".repeat(200 * 1024);
+    let mut entries = vec![json!({
+        "id": "u", "kind": "user", "role": "user",
+        "blocks": [{"kind": "text", "text": "question"}],
+    })];
+    entries.extend((0..8).map(|index| {
+        json!({
+            "id": format!("a{index}"), "kind": "assistant", "role": "assistant",
+            "runId": "r",
+            "blocks": [{"kind": "text", "text": body}],
+        })
+    }));
+    agent.set_session_entries(session, json!({ "entries": entries }));
+
+    let page = request(
+        &desktop_id,
+        json!({
+            "type": "get_session_entries", "sessionId": session,
+            "before": i64::MAX, "limit": 3,
+        }),
+        session,
+    )
+    .await
+    .expect("a large page is delivered, not refused");
+
+    let rows = page["entries"].as_array().expect("entries");
+    assert_eq!(rows.len(), 9, "no entry is lost to the chunking");
+    assert_eq!(
+        rows[0]["id"],
+        json!("u"),
+        "the page still starts at the turn"
+    );
+    assert_eq!(rows[8]["id"], json!("a7"));
+    assert_eq!(
+        rows[8]["blocks"][0]["text"],
+        json!(body),
+        "the reassembled bytes are the page, not a truncated prefix"
+    );
+
+    teardown().await;
+}
+
 /// A catalogue read against an unpaired host fails rather than opening a
 /// connection as a side effect of a background poll.
 #[tokio::test]

@@ -585,6 +585,155 @@ describe("useRemoteTimeline resume", () => {
 });
 
 /**
+ * A remote run's reply is drawn as it is written.
+ *
+ * The host publishes its agent's events the moment they happen — the same
+ * vocabulary a local run produces — and the transcript folds them into the reply
+ * bubble. Without this a prompt sent from this window was followed by silence
+ * until the run ended, and the answer appeared whole, seconds later.
+ */
+describe("useRemoteTimeline live reply", () => {
+  const runId = "run_live";
+  /** One pushed event of the run, in the host's own body shape. */
+  const event = (type: string, data: unknown, idx: number) => push({
+    sessionId: "sess_1",
+    runId,
+    idx,
+    eventId: `sess_1:${runId}:${idx}`,
+    timestamp: "2026-01-01T00:00:00Z",
+    type,
+    data: JSON.stringify(data),
+  });
+
+  async function open(text: string) {
+    requestMock.mockResolvedValue(page([entry("e1", "user", text)]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    return hook;
+  }
+
+  it("draws the reply as its text arrives, and clears it when the run ends", async () => {
+    const hook = await open("hello host");
+    expect(hook.current.live).toBeNull();
+
+    event("agent_start", {}, 0);
+    await settle();
+    // Nothing to draw yet: an empty bubble with an author line reads as a broken
+    // reply, so the transcript waits for the first word.
+    expect(hook.current.live).toBeNull();
+
+    event("text_chunk", { text: "Wor" }, 1);
+    event("text_chunk", { text: "king" }, 2);
+    await settle();
+    expect(hook.current.live?.content).toBe("Working");
+    expect(hook.current.live?.status).toBe("streaming");
+    expect(hook.current.live?.runId).toBe(runId);
+    // The settled transcript is still the history it was: the live reply is drawn
+    // *after* it, not folded into it.
+    expect(hook.current.messages.map(message => message.content)).toEqual(["hello host"]);
+
+    // The run settles: the live bubble steps aside for the record, which is read
+    // back from the host (the journal has the reply now).
+    requestMock.mockResolvedValue(page([
+      entry("e1", "user", "hello host"),
+      entry("e2", "assistant", "Working"),
+    ]));
+    event("agent_end", {}, 3);
+    await settle();
+    expect(hook.current.live).toBeNull();
+    expect(hook.current.messages.map(message => message.content)).toEqual(["hello host", "Working"]);
+    hook.unmount();
+  });
+
+  /**
+   * A settled run's projection is dropped, so the next run's reply is only its own.
+   *
+   * The projection accumulates deltas; keeping it would prefix the finished reply
+   * to the next one.
+   */
+  it("does not carry one run's text into the next", async () => {
+    const hook = await open("first");
+    event("text_chunk", { text: "answer one" }, 1);
+    await settle();
+    expect(hook.current.live?.content).toBe("answer one");
+
+    event("agent_end", {}, 2);
+    await settle();
+
+    push({
+      sessionId: "sess_1",
+      runId: "run_two",
+      idx: 0,
+      eventId: "sess_1:run_two:0",
+      timestamp: "2026-01-01T00:00:10Z",
+      type: "text_chunk",
+      data: JSON.stringify({ text: "answer two" }),
+    });
+    await settle();
+    expect(hook.current.live?.content).toBe("answer two");
+    expect(hook.current.live?.id).toBe("stream_run_two");
+    hook.unmount();
+  });
+
+  /** Another conversation's reply is never drawn under this one's title. */
+  it("ignores another session's reply", async () => {
+    const hook = await open("hello");
+    push({
+      sessionId: "sess_other",
+      runId,
+      idx: 0,
+      eventId: "x",
+      timestamp: "2026-01-01T00:00:00Z",
+      type: "text_chunk",
+      data: JSON.stringify({ text: "not mine" }),
+    });
+    await settle();
+    expect(hook.current.live).toBeNull();
+    hook.unmount();
+  });
+
+  /** A settings change is not a reply: it must not open an empty bubble. */
+  it("does not treat a session-level event as a reply", async () => {
+    const hook = await open("hello");
+    push({ sessionId: "sess_1", type: "model_changed", data: JSON.stringify({ model: "m" }) });
+    push({ sessionId: "sess_1", type: "user_message", eventId: "u", timestamp: "2026-01-01T00:00:00Z", data: JSON.stringify({ text: "hello" }) });
+    await settle();
+    expect(hook.current.live).toBeNull();
+    hook.unmount();
+  });
+});
+
+/**
+ * The `live` reply is gone when the conversation changes.
+ *
+ * The bubble is a projection of *that* run's deltas: drawn under another
+ * conversation's title it would be a reply to a question the reader cannot see.
+ */
+it("drops the live reply when another conversation is opened", async () => {
+  requestMock.mockResolvedValue(page([entry("e1", "user", "first")]));
+  let session = "sess_1";
+  const hook = renderHook(() => useRemoteTimeline("desktop_a", session, true));
+  await settle();
+  push({
+    sessionId: "sess_1",
+    runId: "run_1",
+    idx: 0,
+    eventId: "e",
+    timestamp: "2026-01-01T00:00:00Z",
+    type: "text_chunk",
+    data: JSON.stringify({ text: "answering" }),
+  });
+  await settle();
+  expect(hook.current.live?.content).toBe("answering");
+
+  session = "sess_2";
+  hook.rerender();
+  await settle();
+  expect(hook.current.live).toBeNull();
+  hook.unmount();
+});
+
+/**
  * A conversation's fetched tool arguments are dropped when it is left.
  *
  * The cache is keyed by run and call id, which never repeat, so nothing in it

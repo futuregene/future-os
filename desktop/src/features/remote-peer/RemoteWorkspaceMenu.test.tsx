@@ -30,7 +30,7 @@ beforeEach(() => {
   remove.mockReset().mockResolvedValue(undefined);
 });
 
-async function mount(overrides: { onSelect?: () => void; pinned?: boolean } = {}) {
+async function mount(overrides: { onRename?: (workspaceId: string) => void; onSelect?: () => void; pinned?: boolean } = {}) {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -41,6 +41,7 @@ async function mount(overrides: { onSelect?: () => void; pinned?: boolean } = {}
         desktopId="desktop_a"
         name="图表脚本"
         onChanged={onChanged}
+        onRename={overrides.onRename}
         onSelect={overrides.onSelect}
         pinned={overrides.pinned ?? false}
         workspaceId="ws_9"
@@ -64,6 +65,24 @@ async function mount(overrides: { onSelect?: () => void; pinned?: boolean } = {}
   };
 }
 
+/**
+ * A workspace on another machine is renamed on that machine.
+ *
+ * The menu only hands the request up: the dialog and its text are the shell's, as
+ * they are for renaming one of this machine's own workspaces. The menu closes
+ * first, because what comes next is a dialog rather than a host command.
+ */
+it("hands rename to the caller, and closes", async () => {
+  const onRename = vi.fn();
+  const view = await mount({ onRename });
+  await view.open();
+  await act(async () => view.item("Rename")!.click());
+
+  expect(onRename).toHaveBeenCalledWith("ws_9");
+  expect(view.container.querySelector("[role='menu']")).toBeNull();
+  await view.unmount();
+});
+
 it("pins the workspace on its host, then re-reads that host's list", async () => {
   const view = await mount();
   await view.open();
@@ -83,10 +102,12 @@ it("pins the workspace on its host, then re-reads that host's list", async () =>
  * action and which is the no-op, and a menu that lists both makes the user guess.
  */
 it("offers unpin, and not both pin and unpin, when the host says it is pinned", async () => {
-  const view = await mount({ pinned: true });
+  const view = await mount({ onRename: vi.fn(), pinned: true });
   await view.open();
   const labels = [...view.container.querySelectorAll("[role='menuitem']")].map(node => node.textContent);
-  expect(labels).toEqual(["Unpin", "Delete"]);
+  // Rename leads, as it does in the local menu; the pin item shows the host's own
+  // state, and only that one of the two is offered.
+  expect(labels).toEqual(["Rename", "Unpin", "Delete"]);
   await act(async () => view.item("Unpin")!.click());
   expect(pin).toHaveBeenCalledWith("desktop_a", "ws_9", false);
   await view.unmount();
@@ -100,7 +121,7 @@ it("offers unpin, and not both pin and unpin, when the host says it is pinned", 
  */
 it("marks the workspace's conversations for a batch", async () => {
   const onSelect = vi.fn();
-  const view = await mount({ onSelect });
+  const view = await mount({ onRename: vi.fn(), onSelect });
   await view.open();
   await act(async () => view.item("Select chats")!.click());
   expect(onSelect).toHaveBeenCalledTimes(1);
@@ -108,7 +129,7 @@ it("marks the workspace's conversations for a batch", async () => {
 
   // Offered only outside selection mode, as the local heading's menu is: the item
   // is what *enters* it.
-  const withoutSelect = await mount();
+  const withoutSelect = await mount({ onRename: vi.fn() });
   await withoutSelect.open();
   expect(withoutSelect.container.textContent).not.toContain("Select chats");
   await withoutSelect.unmount();
