@@ -146,7 +146,7 @@ export function RailGroupHeader({
   const label = (
     <>
       <Folder className="size-4 shrink-0 text-ink-soft" />
-      <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-soft" data-testid={testId} title={name}>
+      <span className="min-w-0 truncate text-sm font-medium text-ink-soft" data-testid={testId} title={name}>
         {name}
       </span>
       {pinned ? <Pin aria-hidden className="size-3.5 shrink-0 text-accent" /> : null}
@@ -166,11 +166,15 @@ export function RailGroupHeader({
           version of the row toggle column. */}
       {onSelect
         ? (
-            <button className="flex min-w-0 flex-1 items-center gap-1 text-left" onClick={onSelect} type="button">
+            <button className="flex min-w-0 items-center gap-1 text-left" onClick={onSelect} type="button">
               {label}
             </button>
           )
-        : <span className="flex min-w-0 flex-1 items-center gap-1 text-left">{label}</span>}
+        : <span className="flex min-w-0 items-center gap-1 text-left">{label}</span>}
+      {/* The machine's icon rides with the name (above), so the space that is
+          left over goes here, at the end — where it separates the heading from
+          its menu instead of pushing the icon out to it. */}
+      <span className="min-w-0 flex-1" />
       {menu}
     </div>
   );

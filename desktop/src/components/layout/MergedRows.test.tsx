@@ -454,7 +454,7 @@ it("folds the chat section through its header, and back", async () => {
     threadById: new Map(),
   });
 
-  const sectionToggle = view.container.querySelector("button[aria-label='Collapse chat list']")!;
+  const sectionToggle = view.container.querySelector<HTMLButtonElement>("button[aria-label='Collapse chat list']")!;
   expect(sectionToggle).not.toBeNull();
   await act(async () => sectionToggle.click());
   expect(onToggleChatSection).toHaveBeenCalledTimes(1);

@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import { iconGlyph } from "../../features/remote-peer/peerIcons";
 import { RemoteConversationMenu } from "../../features/remote-peer/RemoteConversationMenu";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
-import { RailRow, RailRowIndicator, RailRowMenuButton, RailRowTitle } from "./RailRow";
+import { RailRow, RailRowIndicator, RailRowMenuButton, RailRowSpacer, RailRowTitle } from "./RailRow";
 
 /**
  * A remote conversation in the shared list.
@@ -73,9 +73,12 @@ export function RemoteConversationRow({
       onContextMenu={() => setMenuOpen(true)}
       onSelect={() => onOpen(conversation)}
     >
-      <RailRowTitle>{conversation.title}</RailRowTitle>
-      {/* The machine, after the title: the title is what the row is about, and a
-          leading glyph would push every title in the list one indent in. */}
+      <RailRowTitle grow={false}>{conversation.title}</RailRowTitle>
+      {/* The machine, immediately after the title it qualifies: the title is what
+          the row is about, and the icon says whose it is. Aligned with the
+          title rather than with the row's right edge — at the far edge it read
+          as a second, unrelated column, and on a narrow rail it was further
+          from the title than from the next row. */}
       {showSource === false
         ? null
         : (
@@ -83,6 +86,7 @@ export function RemoteConversationRow({
               {iconGlyph(peer?.icon)}
             </span>
           )}
+      <RailRowSpacer />
       {/* A remote host reports that a run is in flight, so the row uses the same
           indicator the local one does for it — an animated ring in the reserved
           slot, not a dot of its own size in a slot of its own size. */}

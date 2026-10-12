@@ -87,17 +87,33 @@ export function RailRow({
 }
 
 /** A row's title, at the one size and weight every row uses. */
-export function RailRowTitle({ children, muted }: { children: ReactNode; muted?: boolean }) {
+export function RailRowTitle({ children, grow = true, muted }: { children: ReactNode; grow?: boolean; muted?: boolean }) {
   return (
     <span
       className={cn(
-        "pointer-events-none min-w-0 flex-1 truncate text-sm font-medium",
+        "pointer-events-none min-w-0 truncate text-sm font-medium",
+        // `flex-1` while the title is the row's last flexible element (its
+        // indicator and menu belong at the right edge). A row that puts a
+        // qualifier *after* the title — the machine a conversation is on —
+        // passes `grow={false}` and adds the spacer itself, so the qualifier
+        // sits against the title instead of a pane's width away from it.
+        grow && "flex-1",
         muted ? "text-ink-muted" : "text-ink-soft",
       )}
     >
       {children}
     </span>
   );
+}
+
+/**
+ * The flexible space between a row's content and its right-hand controls.
+ *
+ * Needed wherever something follows the title, because the title then cannot be
+ * the flexible element itself.
+ */
+export function RailRowSpacer() {
+  return <span className="min-w-0 flex-1" />;
 }
 
 /**
