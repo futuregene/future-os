@@ -178,5 +178,6 @@
   "slashCommands": "Commands",
   "usageTitle": "Token usage and cost",
   "usageUnavailable": "The host could not report this conversation's usage: {{message}}",
-  "workspaceRemove": "Remove workspace from this list"
+  "workspaceRemove": "Remove workspace from this list",
+  "jumpToLatest": "Jump to latest"
 }

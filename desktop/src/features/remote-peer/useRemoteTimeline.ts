@@ -85,6 +85,15 @@ export interface RemoteTimeline {
  * took seconds to appear where the phone took none. Older pages arrive as the
  * reader scrolls up, so the cost of the extra history is only paid for history
  * that is actually looked at.
+ *
+ * **This value and the phone's are one contract, in two files.** They diverged
+ * once (100 against 3) precisely because neither side could see the other, so
+ * each is named in the other's comment: changing one is changing both. The two
+ * clients are separate implementations on purpose — this one must survive a
+ * minimised window, which the phone's does not have to — but a page size is a
+ * fact about the host's cursor, not a choice either client gets to make alone.
+ *
+ * The phone's copy: `mobile/src/remote/timeline/historyPaging.ts`.
  */
 const HISTORY_PAGE_USER_EXCHANGES = 3;
 
