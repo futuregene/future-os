@@ -65,9 +65,10 @@ fn read_sessions(pair_id: &str) -> Option<Value> {
     // peer's name for every remote group) would collapse several workspaces into
     // one. Best-effort: a thread whose workspace row is gone still lists, under
     // its peer's name.
-    let workspace_names: std::collections::HashMap<String, String> = crate::store::list_workspaces()
-        .map(|rows| rows.into_iter().map(|row| (row.id, row.name)).collect())
-        .unwrap_or_default();
+    let workspace_names: std::collections::HashMap<String, String> =
+        crate::store::list_workspaces()
+            .map(|rows| rows.into_iter().map(|row| (row.id, row.name)).collect())
+            .unwrap_or_default();
 
     let thread_ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
     let run_infos = crate::store::latest_run_infos(&thread_ids).ok()?;
