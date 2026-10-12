@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { SkillCandidate } from "../../integrations/skills/skillsClient";
+import type { RemoteCommand } from "./remoteCommands";
 import type { RemotePeer, RemoteUpload } from "./remotePeerClient";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Paperclip, X } from "lucide-react";
@@ -12,12 +13,38 @@ import { errorMessage } from "../../lib/errors";
 import { imageExtensionFromMime } from "../agent/attachments";
 import { SkillRecommendCard } from "../agent/SkillRecommendCard";
 import { RemoteApprovalMenu } from "./RemoteApprovalMenu";
-import { buildRemoteSlashMenu, RemoteSlashMenu, slashQuery, useRemoteCommands, withoutSlashWord } from "./remoteCommands";
-import type { RemoteCommand } from "./remoteCommands";
+import { buildRemoteSlashMenu, slashQuery, withoutSlashWord } from "./remoteCommands";
 import { abortRemoteRun, promptRemoteConversation, uploadRemoteFile } from "./remotePeerClient";
+import { RemoteSlashMenu } from "./RemoteSlashMenu";
 
 /** How many files one paste may stage. The rest are reported, not silently dropped. */
 const MAX_PASTED_FILES = 4;
+
+/**
+ * The commands this composer offers after `/`, built from what the host accepts.
+ *
+ * One command today, and it is here rather than in a module of its own because
+ * this is its only consumer: a command whose host operation is unavailable is
+ * left out rather than shown disabled, because a slash menu is a list of things
+ * you can ask for.
+ */
+function useRemoteCommands({
+  canCompact,
+  onCompact,
+}: {
+  canCompact: boolean;
+  onCompact: () => void;
+}): RemoteCommand[] {
+  const { t } = useTranslation("remotePeer");
+  return canCompact
+    ? [{
+        description: t("compactHint"),
+        id: "compact",
+        label: t("compact"),
+        run: onCompact,
+      }]
+    : [];
+}
 
 /**
  * What a skill recommendation holds the message for.
@@ -58,6 +85,7 @@ export function RemoteComposer({
   sessionId,
   skillRecommendation,
   streaming = false,
+  workspaceId = null,
 }: {
   /**
    * Extra controls for the control row, before the machine hint and the send
@@ -87,6 +115,11 @@ export function RemoteComposer({
   /** Skill recommendation from that host, if the caller wired it. */
   skillRecommendation?: RemoteSkillRecommendation;
   streaming?: boolean;
+  /**
+   * The workspace to create the conversation in, for a draft started from a
+   * workspace heading. Null for a conversation with no workspace of its own.
+   */
+  workspaceId?: string | null;
 }) {
   const { t } = useTranslation("remotePeer");
   const [text, setText] = useState("");
@@ -223,6 +256,10 @@ export function RemoteComposer({
         sessionId,
         message,
         uploadsForSend.map(upload => upload.uploadId),
+        // Names the workspace only while creating the conversation: one started
+        // from a workspace heading belongs in that workspace, and the host
+        // resolves the id against its own store.
+        workspaceId,
       );
       // Cleared only after the host accepted it: a prompt that failed on the
       // wire must not cost the user the paragraph they wrote or the file they

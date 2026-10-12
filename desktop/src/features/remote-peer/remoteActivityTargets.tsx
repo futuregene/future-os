@@ -1,5 +1,5 @@
 import type { AgentActivityItem, AgentMessage, MessageSegment } from "@future-os/thread-projection";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchRemoteToolTarget } from "./remoteToolTarget";
 
 /**
@@ -140,22 +140,37 @@ export function useRemoteActivityTargets(
     () => pending.map(item => `${item.runId}::${item.toolCallId}`).sort().join(","),
     [pending],
   );
+  /**
+   * The calls already asked for.
+   *
+   * A ref rather than a read of `found`: `found` only gains an entry for a target
+   * the host actually reported, so a call with no target would be asked for
+   * again on every render — and reading state inside the effect would make the
+   * effect depend on it, which is a request per streaming push. The current list
+   * is read through a ref too, so the effect runs when the *set* of missing
+   * calls changes and not once per delta.
+   */
+  const requestedRef = useRef(new Set<string>());
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
 
   useEffect(() => {
-    if (!desktopId || !sessionId || key === "")
+    if (!desktopId || !sessionId)
       return;
     let cancelled = false;
-    for (const item of pending) {
-      if (found.has(item.toolCallId))
+    for (const item of pendingRef.current) {
+      const address = `${item.runId}::${item.toolCallId}`;
+      if (requestedRef.current.has(address))
         continue;
+      requestedRef.current.add(address);
       void fetchRemoteToolTarget({
         desktopId,
         runId: item.runId,
         sessionId,
         toolCallId: item.toolCallId,
       }).then((target) => {
-        // A host that reports no target is remembered as such, so the row stops
-        // asking — the same choice the fetch cache makes.
+        // A host that reports no target is not remembered here: the fetch cache
+        // has already stopped asking, and the row simply shows its name.
         if (cancelled || target === null)
           return;
         setFound((current) => {
@@ -170,14 +185,13 @@ export function useRemoteActivityTargets(
     return () => {
       cancelled = true;
     };
-    // `found` is deliberately not a dependency: it changes as fetches land, and
-    // re-running on it would re-ask for every call still in flight.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [desktopId, sessionId, key]);
 
-  // A different conversation keeps nothing: the calls belong to the old one.
+  // A different conversation keeps nothing: the calls belong to the old one, and
+  // its ids never repeat, so nothing here would be read again.
   useEffect(() => {
     setFound(new Map());
+    requestedRef.current = new Set();
   }, [desktopId, sessionId]);
 
   return found;

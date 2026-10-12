@@ -242,6 +242,15 @@ export async function promptRemoteConversation(
   sessionId: string,
   message: string,
   attachments: string[] = [],
+  /**
+   * The workspace to create the conversation in, for a draft.
+   *
+   * The host's own `workspace_id`, not a path: it resolves the id against its
+   * own store, and this machine has no way to name a directory there. Sent only
+   * when the conversation is being created — an existing one is already in a
+   * workspace, and the host ignores it.
+   */
+  workspaceId?: string | null,
 ): Promise<RemoteConversationIds> {
   const ack = await requestRemotePeer<Record<string, unknown>>(
     desktopId,
@@ -249,6 +258,7 @@ export async function promptRemoteConversation(
       type: "prompt",
       sessionId,
       message,
+      ...(!sessionId && workspaceId ? { mode: "workspace", workspaceId } : {}),
       ...(attachments.length > 0
         ? { attachments: attachments.map(uploadId => ({ uploadId })) }
         : {}),

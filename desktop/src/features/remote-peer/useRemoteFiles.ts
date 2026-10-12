@@ -9,7 +9,7 @@ import { parentOf } from "./remotePeerFiles";
  * Browsing one conversation's files on another machine.
  *
  * Extracted so the panel that shows them is the only thing that decides how they
- * *look*: the reading, the navigation and the download are the same whether they
+ * look*: the reading, the navigation and the download are the same whether they
  * are drawn in a panel or anywhere else, and a second copy would be a second set
  * of rules for what "up" means on a host whose separators are not this machine's.
  *

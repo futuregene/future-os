@@ -60,9 +60,10 @@ beforeEach(() => {
   listeners = [];
   // What was read for a conversation is kept for the window, so one test's
   // transcript would otherwise seed the next one's.
-  for (const desktop of ["desktop_a", "desktop_b"])
+  for (const desktop of ["desktop_a", "desktop_b"]) {
     for (const session of ["sess_1", "sess_2", "sess_3"])
       forgetRemoteTimeline(desktop, session);
+  }
 });
 
 describe("useRemoteTimeline", () => {

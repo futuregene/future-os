@@ -2065,6 +2065,35 @@ describe("app shell collapsed-panel affordances", () => {
       view.unmount();
     });
 
+    /**
+     * Starting a chat from a remote workspace heading names that workspace.
+     *
+     * The workspace belongs to the host, so the request carries its id — the
+     * conversation is created *there*, in that folder. A draft started from the
+     * machine's own page carries no workspace, which is what the negative half
+     * of this asserts.
+     */
+    it("carries the workspace when a conversation starts in one on a host", () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onNewChatOnRemote?.("desktop_a", "ws_9"));
+
+      // The conversation is on screen, and its composer is told where to create
+      // it. The host resolves the id; this machine never sees a path.
+      const composer = children.remoteComposer as { workspaceId?: string | null };
+      expect(composer.workspaceId).toBe("ws_9");
+      view.unmount();
+    });
+
+    /** A draft with no workspace in mind does not invent one. */
+    it("sends no workspace for a draft started from the machine's page", () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onManageDesktops?.());
+      act(() => (children.remoteHub as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
+
+      expect((children.remoteComposer as { workspaceId?: string | null }).workspaceId).toBeNull();
+      view.unmount();
+    });
+
     /** A draft has no conversation on the host, so it has no files to browse. */
     it("offers no files panel for a conversation that does not exist yet", () => {
       const view = mount(<AppShell />);

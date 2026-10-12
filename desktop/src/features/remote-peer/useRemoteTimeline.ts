@@ -1,7 +1,7 @@
 import type { AgentMessage, SessionEntry } from "@future-os/thread-projection";
 import type { RemotePeerEvent } from "./remotePeerClient";
-import { listen } from "@tauri-apps/api/event";
 import { entriesToMessages } from "@future-os/thread-projection";
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { requestRemotePeer } from "./remotePeerClient";
 import { forgetRemoteToolTargets } from "./remoteToolTarget";

@@ -13,12 +13,12 @@ import { sessionMentionOptions } from "../../features/agent/sessionMention";
 import { useSkillRecommendation } from "../../features/agent/useSkillRecommendation";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
-import { RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
-import { RemoteUsageDialog } from "../../features/remote-peer/RemoteUsageDialog";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
+import { RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
 import { compactRemoteConversation, continueRemoteRun, forkRemoteConversation, installRemoteSkill } from "../../features/remote-peer/remotePeerClient";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { remoteSkillRecoSource } from "../../features/remote-peer/remoteSkillRecoSource";
+import { RemoteUsageDialog } from "../../features/remote-peer/RemoteUsageDialog";
 import { useRemoteApprovals } from "../../features/remote-peer/useRemoteApprovals";
 import { useRemoteConversationSettings } from "../../features/remote-peer/useRemoteConversationSettings";
 import { useRemoteSkillCatalog } from "../../features/remote-peer/useRemoteSkillCatalog";
@@ -148,7 +148,18 @@ function ReadyAppShell({
    * new-chat flows only know how to leave the thread view — giving them a mode
    * they never set is how a stale remote view reappears.
    */
-  const [activeRemote, setActiveRemote] = useState<{ desktopId: string; sessionId: string } | null>(null);
+  const [activeRemote, setActiveRemote] = useState<{
+    desktopId: string;
+    sessionId: string;
+    /**
+     * The workspace a *draft* belongs in, on that host.
+     *
+     * Set when the draft was started from a workspace heading; the host resolves
+     * the id against its own store when the first prompt creates the session.
+     * Null for a draft started with no workspace in mind.
+     */
+    workspaceId: string | null;
+  } | null>(null);
   /** The remote conversation whose rename dialog is open, if any. */
   const [remoteRename, setRemoteRename] = useState<MergedConversation | null>(null);
   /** Whether the open remote conversation's account book is showing. */
@@ -801,7 +812,7 @@ function ReadyAppShell({
   function openRemoteConversation(conversation: MergedConversation) {
     if (conversation.desktopId === null)
       return;
-    setActiveRemote({ desktopId: conversation.desktopId, sessionId: conversation.id });
+    setActiveRemote({ desktopId: conversation.desktopId, sessionId: conversation.id, workspaceId: null });
     setSection("chat");
     // The mirror of `handleSelectThread`: opening a remote conversation leaves
     // the local one, and it has to actually be *shown* — a draft left in the
@@ -818,7 +829,7 @@ function ReadyAppShell({
    * than a row — a task run names its conversation by session id.
    */
   function openRemoteSession(desktopId: string, sessionId: string) {
-    setActiveRemote({ desktopId, sessionId });
+    setActiveRemote({ desktopId, sessionId, workspaceId: null });
     setSection("chat");
     setActiveThreadId(null);
     setCenterMode("thread");
@@ -843,7 +854,7 @@ function ReadyAppShell({
     try {
       const child = await forkRemoteConversation(desktopId, sessionId, sourceEntryId);
       await refreshRemotePeers();
-      setActiveRemote({ desktopId, sessionId: child.sessionId });
+      setActiveRemote({ desktopId, sessionId: child.sessionId, workspaceId: null });
     }
     catch (error) {
       emitFutureEvent("toast", {
@@ -861,8 +872,8 @@ function ReadyAppShell({
    * guard against — it is the only way to start a conversation remotely, since
    * the client cannot mint a host-side session id.
    */
-  function startRemoteConversation(desktopId: string) {
-    setActiveRemote({ desktopId, sessionId: "" });
+  function startRemoteConversation(desktopId: string, workspaceId: string | null = null) {
+    setActiveRemote({ desktopId, sessionId: "", workspaceId });
     setSection("chat");
     // A draft on a machine is still "a conversation in the column": without
     // this, asking for one from the new-chat screen left that screen up and the
@@ -881,6 +892,7 @@ function ReadyAppShell({
     onChangeDeviceFilter: setDeviceFilter,
     onOpenRemoteConversation: openRemoteConversation,
     onRenameRemoteConversation: setRemoteRename,
+    onNewChatOnRemote: (desktopId: string, workspaceId: string) => startRemoteConversation(desktopId, workspaceId),
     onRemoteConversationsChanged: () => void refreshRemotePeers(),
     onManageDesktops: () => handleSectionChange("remote"),
     activeRemoteKey: activeRemote
@@ -1022,7 +1034,7 @@ function ReadyAppShell({
                           leftPanelExpanded={showLeftPanel}
                           onOpenRemoteSession={openRemoteSession}
                           onRefreshRemote={refreshRemote}
-                          onStartConversation={startRemoteConversation}
+                          onStartConversation={(desktopId: string) => startRemoteConversation(desktopId)}
                           onToggleAutoConnect={value => void changeSettings({ autoConnectRemote: value })}
                           onToggleLeftPanel={handleToggleLeftPanel}
                           remoteStatus={remoteStatus}
@@ -1049,7 +1061,7 @@ function ReadyAppShell({
                                   // Adopt the conversation the host just made, so
                                   // the next prompt goes to it by name instead
                                   // of creating a second one.
-                                  setActiveRemote({ desktopId: activeRemote.desktopId, sessionId: createdSessionId });
+                                  setActiveRemote({ desktopId: activeRemote.desktopId, sessionId: createdSessionId, workspaceId: null });
                                   void refreshRemotePeers();
                                 }}
                                 onSent={() => {
@@ -1060,6 +1072,7 @@ function ReadyAppShell({
                                 sessionId={activeRemote.sessionId}
                                 skillRecommendation={remoteSkillRecommendation}
                                 streaming={remoteTimeline.streaming}
+                                workspaceId={activeRemote.workspaceId}
                               />
                             )}
                             leftPanelExpanded={showLeftPanel}
@@ -1079,7 +1092,8 @@ function ReadyAppShell({
                                 forkable,
                               )}
                             onLoadOlder={() => void remoteTimeline.loadOlder()}
-                            onOpenUsage={() => setRemoteUsageOpen(true)}                            onRetry={() => void remoteTimeline.refresh()}
+                            onOpenUsage={() => setRemoteUsageOpen(true)}
+                            onRetry={() => void remoteTimeline.refresh()}
                             peer={activeRemotePeer}
                             persistedEntryIds={remoteTimeline.persistedEntryIds}
                             sessionId={activeRemote.sessionId}

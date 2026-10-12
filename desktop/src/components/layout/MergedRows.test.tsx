@@ -69,12 +69,17 @@ function thread(id: string): StoredThread {
 
 async function render(props: {
   chatSectionCollapsed?: boolean;
+  collapsedWorkspaces?: ReadonlySet<string>;
   filter?: DeviceFilter;
   onNewChat?: () => void;
+  onNewChatInWorkspace?: (desktopId: string, workspaceId: string) => void;
   onNewWorkspace?: () => void;
+  onSelectChats?: () => void;
   onToggleChatSection?: () => void;
+  onToggleWorkspace?: (key: string) => void;
   onToggleWorkspaceSection?: () => void;
   peers?: RemotePeer[];
+  pinnedWorkspaces?: ReadonlySet<string>;
   renderLocalGroupHeader?: (workspaceId: string) => React.ReactNode;
   renderLocalRow: (thread: StoredThread, depth?: number, hasChildren?: boolean) => React.ReactNode;
   rows: MergedConversation[];
@@ -89,16 +94,21 @@ async function render(props: {
       <MergedRows
         activeKey={null}
         chatSectionCollapsed={props.chatSectionCollapsed ?? false}
+        collapsedWorkspaces={props.collapsedWorkspaces ?? new Set()}
         filter={props.filter ?? { kind: "all" }}
         localRowMeta={new Map()}
         onChangedRemote={vi.fn()}
         onNewChat={props.onNewChat}
+        onNewChatInWorkspace={props.onNewChatInWorkspace}
         onNewWorkspace={props.onNewWorkspace}
         onOpenRemote={vi.fn()}
         onRenameRemote={vi.fn()}
+        onSelectChats={props.onSelectChats}
         onToggleChatSection={props.onToggleChatSection ?? vi.fn()}
+        onToggleWorkspace={props.onToggleWorkspace ?? vi.fn()}
         onToggleWorkspaceSection={props.onToggleWorkspaceSection ?? vi.fn()}
         peers={props.peers ?? []}
+        pinnedWorkspaces={props.pinnedWorkspaces ?? new Set()}
         renderLocalGroupHeader={props.renderLocalGroupHeader ?? (() => null)}
         renderLocalRow={props.renderLocalRow}
         rows={props.rows}
@@ -316,88 +326,150 @@ it("keeps the badge on a mixed list even when the filter is not `all`", async ()
 });
 
 /**
- * Foldable groups.
+ * Foldable groups, driven by the state the rail owns.
  *
- * The local list folds a workspace away; the merged one did not, so a user who
- * paired a machine and filtered to it saw a flat list where their own machine's
- * list had headings they could close — the same list behaving two ways.
+ * The component does not hold fold state of its own, and this is the assertion
+ * that keeps it that way. It used to: it called `useCollapsedWorkspaces` a second
+ * time, which is a second `useState` over the same localStorage key, while the
+ * rail's own copy drove the heading it renders. The two agreed only at mount, so
+ * folding a workspace while a remote machine was connected flipped the heading
+ * and left its conversations in place — and a workspace collapsed before a
+ * restart could never be opened again.
  */
-it("folds a remote workspace group away, and back", async () => {
-  const view = await render({
+it("hides a group's rows when the state says it is collapsed", async () => {
+  const onToggleWorkspace = vi.fn();
+  const rows = [conversation({
+    desktopId: "desktop_a",
+    id: "ws_remote",
+    key: "desktop_a::ws_remote",
+    mode: "workspace",
+    title: "theirs",
+    workspaceId: "ws_9",
+    workspaceName: "future-os",
+  })];
+
+  const open = await render({
+    onToggleWorkspace,
     peers: [peer("desktop_a", "Studio iMac")],
     renderLocalRow: vi.fn(() => <div>row</div>),
+    rows,
+    threadById: new Map(),
+  });
+  // Rows are counted by their frame: a row under a heading that already names
+  // the machine does not repeat its icon, which is the point of that rule.
+  const visible = () => open.container.querySelectorAll("div[class*='group/thread']").length;
+  // The heading is a group's, with the local one's shape: a fold control, the
+  // folder, the name, and this machine's icon after it.
+  expect(open.container.querySelector("[data-testid='merged-group-heading']")!.textContent).toBe("future-os");
+  expect(visible()).toBe(1);
+  await act(async () => open.container.querySelector("[data-testid='merged-group-heading']")!.closest("div")!.querySelector("button")!.click());
+  // The control asks the rail to fold it; whether the rows go is the rail's word.
+  expect(onToggleWorkspace).toHaveBeenCalledWith("desktop_a::ws_9");
+  await open.unmount();
+
+  const folded = await render({
+    collapsedWorkspaces: new Set(["desktop_a::ws_9"]),
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows,
+    threadById: new Map(),
+  });
+  // The heading stays — that is how the group is reopened — and its rows do not.
+  expect(folded.container.querySelector("[data-testid='merged-group-heading']")!.textContent).toBe("future-os");
+  expect(folded.container.querySelectorAll("div[class*='group/thread']").length).toBe(0);
+  await folded.unmount();
+});
+
+/**
+ * This machine's workspace groups fold by the workspace id, under the heading the
+ * rail supplies.
+ *
+ * Both halves of the old defect are here: the rows are gated by the same set the
+ * rail folds with (so a collapsed workspace is collapsed in both lists), and the
+ * heading is the rail's own node rather than a second one.
+ */
+it("folds this machine's workspace group by the key the local list uses", async () => {
+  const renderLocalRow = vi.fn(() => <div>row</div>);
+  const rows = [conversation({
+    desktopId: null,
+    id: "ws_local",
+    key: "local::ws_local",
+    mode: "workspace",
+    title: "in the workspace",
+    workspaceId: "ws_1",
+    workspaceName: "future-os",
+  })];
+
+  const open = await render({
+    collapsedWorkspaces: new Set(),
+    renderLocalGroupHeader: workspaceId => <div data-testid="local-group-heading">{workspaceId}</div>,
+    renderLocalRow,
+    rows,
+    threadById: new Map([["ws_local", thread("ws_local")]]),
+  });
+  expect(open.container.querySelector("[data-testid='local-group-heading']")!.textContent).toBe("ws_1");
+  expect(renderLocalRow).toHaveBeenCalledTimes(1);
+  await open.unmount();
+
+  renderLocalRow.mockClear();
+  const folded = await render({
+    collapsedWorkspaces: new Set(["ws_1"]),
+    renderLocalGroupHeader: workspaceId => <div data-testid="local-group-heading">{workspaceId}</div>,
+    renderLocalRow,
+    rows,
+    threadById: new Map([["ws_local", thread("ws_local")]]),
+  });
+  // The heading is still drawn (it is what the reader clicks to reopen), and this
+  // workspace's rows are not built at all.
+  expect(folded.container.querySelector("[data-testid='local-group-heading']")).not.toBeNull();
+  expect(renderLocalRow).not.toHaveBeenCalled();
+  await folded.unmount();
+});
+
+/**
+ * A pinned workspace leads the list, as it does in the local one.
+ *
+ * The merged list ordered groups purely by recency and ignored the pin, so a
+ * pinned workspace kept its marker on a group that never moved — a pin that does
+ * nothing is worse than no pin, because the user believes they set something.
+ */
+it("leads with a pinned workspace", async () => {
+  const view = await render({
+    pinnedWorkspaces: new Set(["ws_1"]),
+    renderLocalGroupHeader: workspaceId => <div data-testid="local-group-heading">{workspaceId}</div>,
+    renderLocalRow: vi.fn(() => <div>row</div>),
     rows: [
+      conversation({
+        desktopId: null,
+        id: "ws_local",
+        key: "local::ws_local",
+        lastMessageAt: 1_000,
+        mode: "workspace",
+        workspaceId: "ws_1",
+        workspaceName: "pinned one",
+      }),
       conversation({
         desktopId: "desktop_a",
         id: "ws_remote",
         key: "desktop_a::ws_remote",
+        lastMessageAt: 9_000,
         mode: "workspace",
-        title: "theirs",
         workspaceId: "ws_9",
-        workspaceName: "future-os",
+        workspaceName: "newer but unpinned",
       }),
     ],
-    threadById: new Map(),
+    threadById: new Map([["ws_local", thread("ws_local")]]),
   });
 
-  const rows = () => view.container.querySelectorAll("[data-testid='remote-source-icon']").length;
-  // The heading is a group's, with the local one's shape: a fold control, the
-  // folder, the name, and this machine's icon after it.
-  const heading = view.container.querySelector("[data-testid='merged-group-heading']")!;
-  const header = heading.closest("div")!;
-  const toggle = header.querySelector("button")!;
-  expect(heading.textContent).toBe("future-os");
-  // The fold control, and the folder the local heading has.
-  expect(header.querySelectorAll("svg").length).toBeGreaterThanOrEqual(2);
-  expect(rows()).toBe(1);
-
-  await act(async () => toggle.click());
-  // The heading stays (so the group can be reopened); its rows are not built.
-  expect(view.container.querySelector("[data-testid='merged-group-heading']")!.textContent).toBe("future-os");
-  expect(rows()).toBe(0);
-
-  await act(async () => view.container.querySelector("[data-testid='merged-group-heading']")!.closest("div")!.querySelector("button")!.click());
-  expect(rows()).toBe(1);
+  const headings = [...view.container.querySelectorAll("[data-testid='merged-group-heading']")]
+    .map(node => node.textContent);
+  expect(headings).toEqual(["newer but unpinned"]);
+  // The pinned group is a local one, so its heading comes from the rail — but it
+  // is the first group drawn, ahead of a newer unpinned one.
+  const order = [...view.container.querySelectorAll("[data-testid='local-group-heading'], [data-testid='merged-group-heading']")]
+    .map(node => node.textContent);
+  expect(order).toEqual(["ws_1", "newer but unpinned"]);
   await view.unmount();
-});
-
-/**
- * This machine's groups are keyed by the workspace id alone, which is the key the
- * local list folds by — so a workspace already folded there arrives folded here,
- * and one workspace does not have two fold states depending on the list.
- *
- * The heading itself is the rail's, so what the merged list owes is the *fold*:
- * a collapsed workspace's rows are left unbuilt.
- */
-it("honours the fold state the local list stores, by the same key", async () => {
-  localStorage.setItem("future.collapsedWorkspaces", JSON.stringify(["ws_1"]));
-  try {
-    const renderLocalRow = vi.fn(() => <div>row</div>);
-    const view = await render({
-      renderLocalGroupHeader: workspaceId => <div data-testid="local-group-heading">{workspaceId}</div>,
-      renderLocalRow,
-      rows: [
-        conversation({
-          desktopId: null,
-          id: "ws_local",
-          key: "local::ws_local",
-          mode: "workspace",
-          title: "in the workspace",
-          workspaceId: "ws_1",
-          workspaceName: "future-os",
-        }),
-      ],
-      threadById: new Map([["ws_local", thread("ws_local")]]),
-    });
-
-    // The heading is there; this workspace's rows are not.
-    expect(view.container.querySelector("[data-testid='local-group-heading']")).not.toBeNull();
-    expect(renderLocalRow).not.toHaveBeenCalled();
-    await view.unmount();
-  }
-  finally {
-    localStorage.removeItem("future.collapsedWorkspaces");
-  }
 });
 
 /** The machine's icon follows its name, so the name starts the heading. */
@@ -523,4 +595,146 @@ it("lists a pinned remote conversation in the pinned section", async () => {
   // And not in the chat section too: a pinned row is listed once.
   expect(view.container.querySelector("[data-testid='merged-conversations']")!.textContent).not.toContain("kept first");
   await view.unmount();
+});
+
+// ── the controls on a heading ───────────────────────────────────────────────
+
+/**
+ * A workspace on another machine takes the same two controls the local one has.
+ *
+ * The local heading carries a menu for what the host accepts and a way to start
+ * a conversation in it; a remote one carried neither, so the only way to work in
+ * a folder on the other machine was to go to that machine. The actions differ —
+ * there is no "open folder" for a directory that is not here — but their
+ * presence does not.
+ */
+it("offers a menu and a new-chat control on a remote workspace heading", async () => {
+  const onNewChatInWorkspace = vi.fn();
+  const view = await render({
+    onNewChatInWorkspace,
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [
+      conversation({
+        desktopId: "desktop_a",
+        id: "ws_remote",
+        key: "desktop_a::ws_remote",
+        mode: "workspace",
+        title: "theirs",
+        workspaceId: "ws_9",
+        workspaceName: "图表脚本",
+      }),
+    ],
+    threadById: new Map(),
+  });
+
+  const heading = view.container.querySelector("[data-testid='merged-group-heading']")!;
+  const header = heading.closest("div[class*='group']")!;
+  await act(async () => header.querySelector<HTMLButtonElement>("button[aria-label^='New chat in']")!.click());
+  // The workspace is named to the host that owns it, not by a path.
+  expect(onNewChatInWorkspace).toHaveBeenCalledWith("desktop_a", "ws_9");
+  expect(header.querySelector("button[aria-label^='Workspace actions for']")).not.toBeNull();
+  await view.unmount();
+});
+
+/**
+ * The machine is named once per group, not on every row under it.
+ *
+ * A row's icon repeated what the heading directly above it already said, and the
+ * row paid for the repetition out of the width its title needs. A conversation in
+ * the chat section still carries it: that section spans machines, so there it
+ * qualifies the row.
+ */
+it("does not repeat the machine on a row whose group heading already names it", async () => {
+  const peers = [peer("desktop_a", "Studio iMac")];
+  const view = await render({
+    peers,
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [
+      conversation({
+        desktopId: "desktop_a",
+        id: "ws_remote",
+        key: "desktop_a::ws_remote",
+        mode: "workspace",
+        title: "in a workspace",
+        workspaceId: "ws_9",
+        workspaceName: "图表脚本",
+      }),
+      conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a", title: "a chat" }),
+    ],
+    threadById: new Map(),
+  });
+
+  // The workspace group's heading carries it, so its row does not...
+  const rows = [...view.container.querySelectorAll("div[class*='group/thread']")];
+  const inWorkspace = rows.find(row => (row.textContent || "").includes("in a workspace"))!;
+  expect(inWorkspace.querySelector("[data-testid='remote-source-icon']")).toBeNull();
+  // ...and the chat section, which has no heading of its own, still does.
+  const inChats = rows.find(row => (row.textContent || "").includes("a chat"))!;
+  expect(inChats.querySelector("[data-testid='remote-source-icon']")).not.toBeNull();
+  await view.unmount();
+});
+
+/** With one machine selected nothing needs naming, on a heading or a row. */
+it("drops the machine from headings too when one machine is selected", async () => {
+  const view = await render({
+    filter: { kind: "device", desktopId: "desktop_a" },
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [
+      conversation({
+        desktopId: "desktop_a",
+        id: "ws_remote",
+        key: "desktop_a::ws_remote",
+        mode: "workspace",
+        title: "in a workspace",
+        workspaceId: "ws_9",
+        workspaceName: "图表脚本",
+      }),
+    ],
+    threadById: new Map(),
+  });
+
+  const heading = view.container.querySelector("[data-testid='merged-group-heading']")!;
+  expect(heading.closest("div[class*='group']")!.querySelector("span[aria-hidden]")).toBeNull();
+  expect(view.container.querySelector("[data-testid='remote-source-icon']")).toBeNull();
+  await view.unmount();
+});
+
+/**
+ * The chat section has its own menu, as the local list's does.
+ *
+ * The action it offers is this machine's — marking conversations for a batch
+ * operation — so it appears only where this machine's rows are listed: under a
+ * host's filter a menu that could only act on rows the filter has hidden would be
+ * a control that does nothing.
+ */
+it("offers the chat section menu where this machine's rows are listed", async () => {
+  const onSelectChats = vi.fn();
+  const rows = [conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a", title: "a chat" })];
+
+  const all = await render({
+    onSelectChats,
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows,
+    threadById: new Map(),
+  });
+  await act(async () => all.container.querySelector<HTMLButtonElement>("button[aria-label='Chat section actions']")!.click());
+  await act(async () => {
+    [...all.container.querySelectorAll("button")].find(node => node.textContent === "Select chats")!.click();
+  });
+  expect(onSelectChats).toHaveBeenCalledTimes(1);
+  await all.unmount();
+
+  const remoteOnly = await render({
+    filter: { kind: "device", desktopId: "desktop_a" },
+    onSelectChats,
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows,
+    threadById: new Map(),
+  });
+  expect(remoteOnly.container.querySelector("button[aria-label='Chat section actions']")).toBeNull();
+  await remoteOnly.unmount();
 });

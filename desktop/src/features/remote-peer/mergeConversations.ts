@@ -224,7 +224,19 @@ export interface MergedGroup {
  * newest-first inside every heading and the headings themselves move with
  * activity rather than being pinned to an arbitrary machine order.
  */
-export function groupMergedRows(rows: MergedConversation[]): {
+export function groupMergedRows(
+  rows: MergedConversation[],
+  /**
+   * Which of this machine's workspaces the user pinned.
+   *
+   * Passed in rather than looked up: a workspace's pin state lives in this
+   * machine's workspace store, and this module knows nothing about stores. A
+   * remote workspace's pin is not here either — the catalogue does not carry it,
+   * so a remote group is never ordered as pinned, which is honest rather than
+   * guessing.
+   */
+  pinnedLocalWorkspaces: ReadonlySet<string> = new Set(),
+): {
   chats: MergedConversation[];
   pinned: MergedConversation[];
   workspaces: MergedGroup[];
@@ -272,8 +284,14 @@ export function groupMergedRows(rows: MergedConversation[]): {
       (best, row) => Math.max(best, row.lastMessageAt ?? Number.NEGATIVE_INFINITY),
       Number.NEGATIVE_INFINITY,
     );
+  const isPinned = (group: MergedGroup) => isPinnedGroup(group, pinnedLocalWorkspaces);
+
   const groups = [...byKey.values()];
   groups.sort((a, b) => {
+    // Pinned groups first, as in the local list; then newest, so the list still
+    // reads newest-first inside each half.
+    if (isPinned(a) !== isPinned(b))
+      return isPinned(a) ? -1 : 1;
     const gap = newest(b) - newest(a);
     if (Number.isFinite(gap) && gap !== 0)
       return gap;
@@ -281,6 +299,12 @@ export function groupMergedRows(rows: MergedConversation[]): {
   });
 
   const chats = groups.find(group => group.kind === "chat");
+  /**
+   * The pin state of one group, for a caller that renders the heading.
+   *
+   * Exported on its own so the list does not have to guess at the rule the
+   * ordering used.
+   */
   return {
     pinned,
     workspaces: groups.filter(group => group.kind === "workspace"),
@@ -290,4 +314,15 @@ export function groupMergedRows(rows: MergedConversation[]): {
     // scans for "what is current" into one list per machine to scan separately.
     chats: chats ? chats.rows.slice().sort(compareConversations) : [],
   };
+}
+
+/** Whether a group leads the list because the user pinned it. */
+export function isPinnedGroup(
+  group: MergedGroup,
+  pinnedLocalWorkspaces: ReadonlySet<string>,
+): boolean {
+  return group.kind === "workspace"
+    && group.desktopId === null
+    && group.workspaceId !== null
+    && pinnedLocalWorkspaces.has(group.workspaceId);
 }

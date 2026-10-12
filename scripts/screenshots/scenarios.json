@@ -1106,6 +1106,48 @@
             "shot": "d-remote-single-device.png"
           }
         ]
+      },
+      "remote-workspace-fold": {
+        "note": "Clicking a workspace heading folds its rows — the heading and its rows are one decision.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const rail = document.querySelector(\"[data-activity-rail-content='true']\");\n  const rowsOf = (heading) => {\n    const group = heading.closest(\"div[class*='space-y-0.5']\");\n    return group ? group.querySelectorAll(\"div[class*='group/thread']\").length : -1;\n  };\n  const headings = [\n    // This machine's workspace heading comes from the rail, and the rows under it\n    // from the merged list: two components, one decision. That is the pair that\n    // disagreed, so it is the one asserted first.\n    ...rail.querySelectorAll(\"[data-testid='local-group-heading']\"),\n    ...rail.querySelectorAll(\"[data-testid='merged-group-heading']\"),\n  ];\n  if (headings.length === 0) throw new Error('no workspace heading in the merged list');\n  const results = [];\n  const fold = (heading, label) => new Promise((resolve) => {\n    const before = rowsOf(heading);\n    if (before === 0) { resolve(label + ':no-rows'); return; }\n    heading.closest(\"div\").querySelector(\"button\").click();\n    setTimeout(() => {\n      const after = rowsOf(heading);\n      heading.closest(\"div\").querySelector(\"button\").click();\n      setTimeout(() => {\n        const back = rowsOf(heading);\n        resolve(label + ':' + before + '->' + after + '->' + back + (after === 0 && back === before ? ' OK' : ' BAD'));\n      }, 260);\n    }, 260);\n  });\n  return Promise.all(headings.slice(0, 3).map((heading, index) =>\n    fold(heading, index === 0 ? 'first' : 'next'))).then((parts) => {\n    const bad = parts.filter(part => part.includes('BAD'));\n    if (bad.length > 0) throw new Error('a heading did not fold its rows: ' + parts.join(' | '));\n    if (parts.every(part => part.includes('no-rows'))) throw new Error('no group had rows to fold: ' + parts.join(' | '));\n    return parts.join(' | ');\n  });\n})()"
+          },
+          {
+            "shot": "d-remote-workspace-fold.png"
+          }
+        ]
+      },
+      "remote-workspace-pin": {
+        "note": "A pinned workspace leads the merged list.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const names = [...document.querySelectorAll(\"[data-testid='local-group-heading']\")]\n    .map(node => (node.textContent || '').trim());\n  if (names.length < 4) throw new Error('too few local workspace headings to judge an order: ' + JSON.stringify(names));\n  // This fixture pins two of this machine's workspaces (\"多巴胺与决策\", \"稀疏注意力复现\"),\n  // so the rule is that every pinned group precedes every unpinned one — not that\n  // any particular one leads, since the two pinned ones are theirs to order.\n  const pinned = ['多巴胺与决策', '稀疏注意力复现'];\n  const unpinned = ['单细胞转录组', '临时会话'];\n  const lastPinned = Math.max(...pinned.map(name => names.indexOf(name)));\n  const firstUnpinned = Math.min(...unpinned.map(name => names.indexOf(name)));\n  if (pinned.some(name => names.indexOf(name) < 0)) throw new Error('a pinned workspace is not listed: ' + JSON.stringify(names));\n  if (unpinned.some(name => names.indexOf(name) < 0)) throw new Error('an unpinned workspace is not listed: ' + JSON.stringify(names));\n  if (lastPinned > firstUnpinned) throw new Error('an unpinned workspace leads a pinned one: ' + JSON.stringify(names));\n  return names.join(' / ');\n})()"
+          },
+          {
+            "shot": "d-remote-workspace-pin.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",
