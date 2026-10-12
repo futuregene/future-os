@@ -28,6 +28,16 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Ordinary commands default, matching the phone's request timeout.
 pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Capabilities this client declares on `secure_ready`, in the order they are
+/// advertised. Kept as a named constant so the declaration is testable without
+/// a live host: without one, a future edit could quietly drop a capability the
+/// decode path depends on.
+///
+/// `event_coalescing_v1` needs no consumer change (see `super::codec` and the
+/// handshake comment); `reply_gzip_v1` is only safe because `super::codec`
+/// inflates bounded replies. `lean_events_v1` is deliberately absent.
+pub(crate) const DECLARED_FEATURES: [&str; 2] = ["event_coalescing_v1", "reply_gzip_v1"];
+
 pub(crate) struct PeerSession {
     pair_id: String,
     client: async_nats::Client,
@@ -217,7 +227,7 @@ impl PeerSession {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .open(&context, &response.payload)
             .map_err(|_| crate::AppError::Message("remote_secure_channel_invalid".into()))?;
-        let reply: Value = serde_json::from_slice(&opened)
+        let reply: Value = super::codec::decode_reply(&opened)
             .map_err(|error| crate::AppError::Message(format!("decode reply: {error}")))?;
         if reply.get("success").and_then(Value::as_bool) != Some(true) {
             let detail = reply
@@ -516,14 +526,23 @@ async fn handshake(
         features: confirmed.features,
         presence: confirmed.presence,
     };
-    // Note the *absence* of declared capabilities: this client deliberately
-    // asks for the conservative lanes (no coalescing, no reply gzip, no lean
-    // events). `secure_ready` is what commits the host's candidate channel, so
-    // it must still be sent — declaring nothing keeps the protocol readable
-    // from the wire and leaves the optimisation flags for a later, measured
-    // change.
+    // What this client can consume. `secure_ready` is what commits the host's
+    // candidate channel, so it must still be sent; the declared set now asks
+    // for the lanes the host already implements and this client is audited for:
     //
-    // It does carry this client's identity, which is not a capability: the host
+    // * `event_coalescing_v1` — the merged event's `data.text` is the full
+    //   concatenation of its fragment range, so a consumer with no index cursor
+    //   (this one, and the TS timeline that dedups on `eventId`) renders it
+    //   identically to the per-token lane. No consumer change is required.
+    // * `reply_gzip_v1` — safe only because the reply decode path sniffs the
+    //   gzip magic and inflates under a bounded cap (`super::codec`); declaring
+    //   it without that reader would make every reply ≥ 32 KiB undecodable.
+    //
+    // `lean_events_v1` is deliberately **not** declared: it strips
+    // `sessionId`/`eventId`/`timestamp` from the envelope, and this client's
+    // consumers still depend on all three.
+    //
+    // It also carries this client's identity, which is not a capability: the host
     // shows the user what is connected, and it cannot say "a computer" about
     // something that never told it so. An older host ignores both fields.
     session
@@ -531,7 +550,7 @@ async fn handshake(
             &session.command_subject("handshake"),
             json!({
                 "type": "secure_ready",
-                "features": [],
+                "features": DECLARED_FEATURES,
                 "deviceName": super::runtime::device_name(),
                 "deviceKind": "desktop",
             }),
@@ -615,6 +634,28 @@ mod tests {
         assert_eq!(command_subject("pair_1", ""), "p.pair_1.cmd.new");
         assert_eq!(command_subject("pair_1", "list"), "p.pair_1.cmd.list");
         assert_eq!(command_subject("pair_1", "sess_9"), "p.pair_1.cmd.sess_9");
+    }
+
+    /// The declaration is why the host sends gzip replies and coalesced events
+    /// at all: dropping either entry silently reverts this client to the legacy
+    /// lanes. Asserted as a set (order is free) and as the wire shape, because a
+    /// declaration the host cannot read is the same as none.
+    #[test]
+    fn the_client_declares_the_lanes_its_decoders_expect() {
+        for expected in ["event_coalescing_v1", "reply_gzip_v1"] {
+            assert!(
+                DECLARED_FEATURES.contains(&expected),
+                "the handshake must declare {expected}: {DECLARED_FEATURES:?}"
+            );
+        }
+        assert!(
+            !DECLARED_FEATURES.contains(&"lean_events_v1"),
+            "lean must stay off until the envelope fields it strips are unused"
+        );
+        assert_eq!(
+            json!({ "features": DECLARED_FEATURES })["features"],
+            json!(["event_coalescing_v1", "reply_gzip_v1"])
+        );
     }
 
     /// Asserted here rather than through a live connection: whether an agent

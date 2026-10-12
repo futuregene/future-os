@@ -495,6 +495,7 @@ pub(crate) async fn connect_with_emitter(
                 desktop_id.to_string(),
                 spawn_event_stream(
                     desktop_id.to_string(),
+                    peer_session.pair_id().to_string(),
                     channel,
                     events,
                     presence,
@@ -624,6 +625,10 @@ async fn attach_stream(
 /// concurrent request take the same short lock; neither holds it across an
 /// `await`.
 ///
+/// Every push's conversation is recovered from the subject it arrived on when
+/// the payload does not carry one, because a lean host trims `sessionId` out of
+/// the event envelope.
+///
 /// Spawned through `crate::runtime` rather than `tokio::spawn`: this is a
 /// process-lifetime task, and the crate's spawner is what lets a test fixture
 /// stop it before switching `HOME`. A raw spawn outlives the runtime that
@@ -631,6 +636,7 @@ async fn attach_stream(
 /// while another test owns the process-global runtime and `HOME`.
 fn spawn_event_stream(
     desktop_id: String,
+    pair_id: String,
     channel: std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
     mut events: async_nats::Subscriber,
     mut presence: async_nats::Subscriber,
@@ -657,7 +663,9 @@ fn spawn_event_stream(
             subject: &str,
             payload: &[u8],
         ) -> Option<Value> {
-            serde_json::from_slice(&open_bytes(channel, subject, payload)?).ok()
+            // Same decoder as the command-reply path: the event lane is not
+            // gzipped today, but one decoder is harder to get wrong than two.
+            super::codec::decode_reply(&open_bytes(channel, subject, payload)?).ok()
         }
         loop {
             let next = tokio::select! {
@@ -686,10 +694,25 @@ fn spawn_event_stream(
                 deliver_chunk(&desktop_id, transfer_id, index, bytes).await;
                 continue;
             }
-            let Some(payload) = open(&channel, &message.subject, &message.payload) else {
+            let Some(mut payload) = open(&channel, &message.subject, &message.payload) else {
                 // Unparsable or unauthenticated; same reasoning as above.
                 continue;
             };
+            // Only an event: presence is not session-scoped, and a chunk left
+            // this branch above. The subject is the authority on which
+            // conversation a push belongs to — the host routes by it — so it is
+            // read back into the payload rather than trusted to the envelope,
+            // which a lean host trims to `type`/`data`/`runId`/`idx`. A payload
+            // that already names its session is left exactly as it came, so a
+            // client that declared nothing sees what it always did.
+            if kind == "event" && payload.get("sessionId").and_then(Value::as_str).is_none() {
+                if let (Some(session), Some(object)) = (
+                    event_session_id(&message.subject, &pair_id),
+                    payload.as_object_mut(),
+                ) {
+                    object.insert("sessionId".to_string(), Value::String(session.to_string()));
+                }
+            }
             emitter(PeerEvent {
                 desktop_id: desktop_id.clone(),
                 kind,
@@ -716,6 +739,27 @@ async fn deliver_chunk(desktop_id: &str, transfer_id: String, index: u64, bytes:
         // A closed receiver means the pull gave up; the bytes are then unwanted.
         let _ = waiter.send(bytes);
     }
+}
+
+/// The conversation an `evt.>` subject names, or `None` when the subject is not
+/// one of this pairing's event subjects.
+///
+/// The host publishes an event on `p.{pair}.evt.{session}`
+/// (`remote::publisher::publish_event`), and this client subscribes with exactly
+/// `p.{pair}.evt.>` (`session.rs::subscribe`), so the session is whatever
+/// follows that prefix. Slicing the *known prefix* rather than splitting into
+/// fixed fields is what the phone does, and it stays right if a pair or session
+/// id ever contained a dot: the tokens the host joined are the ones we strip.
+///
+/// A subject that does not carry the prefix yields `None` rather than a guessed
+/// session. Every UI listener drops an event without a `sessionId`, which is
+/// the honest outcome (the event is not ours to file); inventing one would file
+/// it under another conversation.
+pub(crate) fn event_session_id<'a>(subject: &'a str, pair_id: &str) -> Option<&'a str> {
+    let rest = subject.strip_prefix("p.")?;
+    let rest = rest.strip_prefix(pair_id)?;
+    let session = rest.strip_prefix(".evt.")?;
+    (!session.is_empty()).then_some(session)
 }
 
 /// `transfer_id` and chunk index from a `xfer.down` subject.
@@ -1501,5 +1545,48 @@ mod tests {
             !runtime().lock().await.supervisors.contains_key("desktop_a"),
             "the supervisor must not outlive an explicit disconnect"
         );
+    }
+
+    /// The token chain the host joins (`p.{pair}.evt.{session}`) is what decides
+    /// which conversation a push belongs to, so it is read back rather than
+    /// assumed.
+    #[test]
+    fn an_event_subject_names_its_session() {
+        assert_eq!(
+            event_session_id("p.pair_1.evt.sess_a", "pair_1"),
+            Some("sess_a")
+        );
+        // Ids are opaque: a dotted session is one token chain, not a field to
+        // split, and the pair prefix is stripped as a string for the same
+        // reason.
+        assert_eq!(
+            event_session_id("p.pair_1.evt.sess.with.dots", "pair_1"),
+            Some("sess.with.dots")
+        );
+    }
+
+    /// Everything else on the wire is not an event subject, and the answer for
+    /// it is `None`: an `evt.>` subscription never delivers these, but a caller
+    /// that guessed would file a presence tick under a conversation.
+    #[test]
+    fn a_subject_that_is_not_an_event_is_refused() {
+        for subject in [
+            "p.pair_1.presence",
+            "p.pair_1.state.events",
+            "p.pair_1.xfer.down.download_9.chunk.3",
+            // Another pairing's event lane: the prefix must match whole tokens,
+            // so a pair id that is merely a prefix of another does not match.
+            "p.pair_10.evt.sess_a",
+            // No session token at all (`evt.>` requires one).
+            "p.pair_1.evt.",
+            "p.pair_1.evt",
+            "",
+        ] {
+            assert_eq!(
+                event_session_id(subject, "pair_1"),
+                None,
+                "subject {subject}"
+            );
+        }
     }
 }

@@ -661,6 +661,75 @@ async fn a_connected_host_streams_its_events_to_the_emitter() {
     teardown().await;
 }
 
+/// A lean host trims `sessionId` out of the event envelope, and every listener
+/// on the UI side filters by it, so the conversation has to be read back from
+/// the subject the push arrived on. Without this the live lane is silently dead
+/// — no user bubble, no approval card, no streaming indicator — while history
+/// still renders, which is exactly the kind of failure a screenshot would not
+/// show.
+#[tokio::test]
+async fn a_lean_event_recovers_its_session_from_the_subject() {
+    let (_home, fx) = start("peer-rt-lean-session").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    let (emitter, count) = counting_emitter();
+    connect_with_emitter(&desktop_id, Some(emitter))
+        .await
+        .expect("connect with a stream");
+
+    // The declaration is process-wide; the home guard this fixture holds is what
+    // keeps a sibling test from publishing while it is flipped.
+    crate::remote_host::lean::set_enabled(true);
+    crate::remote::publish_event(
+        "sess_lean_events",
+        "user_message",
+        r#"{"text":"hello","entry_id":"entry_1","run_id":"run-1","created_at_ms":1}"#,
+        "run-1",
+        4,
+        1,
+        "evt-lean",
+        "2026-01-01T00:00:00Z",
+        1,
+        1,
+    );
+    crate::remote_host::lean::set_enabled(false);
+    // The same lane with the declaration withdrawn: nothing about the full feed
+    // may change, envelope keys included.
+    crate::remote::publish_event(
+        "sess_full_events",
+        "user_message",
+        r#"{"text":"hello","entry_id":"entry_2"}"#,
+        "run-2",
+        1,
+        1,
+        "evt-full",
+        "2026-01-01T00:00:01Z",
+        1,
+        2,
+    );
+
+    wait_for("the host's events never reached the emitter", || {
+        count.lock().unwrap().len() >= 2
+    })
+    .await;
+    let events = count.lock().unwrap().clone();
+    let lean = events
+        .iter()
+        .find(|event| event.payload["sessionId"] == json!("sess_lean_events"))
+        .expect("the lean event must still name its conversation");
+    // Proof the lane really was lean: the envelope key the read-back replaces is
+    // gone, so the assertion above can only be satisfied by the subject.
+    assert_eq!(lean.payload.get("eventId"), None);
+    assert_eq!(lean.payload.get("timestamp"), None);
+
+    let full = events
+        .iter()
+        .find(|event| event.payload["sessionId"] == json!("sess_full_events"))
+        .expect("the full feed is untouched");
+    assert_eq!(full.payload["eventId"], json!("evt-full"));
+
+    teardown().await;
+}
+
 /// Reconnecting replaces the stream. Two live subscription tasks would deliver
 /// every event twice, and would keep reading from a socket that is gone.
 #[tokio::test]
