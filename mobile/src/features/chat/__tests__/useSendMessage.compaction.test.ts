@@ -14,11 +14,13 @@ test("pending manual compaction blocks send, retry and continue without consumin
     compacting: false, selectedSessionId: "s",
     timeline: { ...emptyTimeline(), items: [{ kind: "message", role: "user", id: "u", text: "question" }, assistant] },
     sendMessage: jest.fn(async () => {}), continueRun: jest.fn(async () => {}),
-  } as unknown as Parameters<typeof useSendMessage>[0];
+  } as unknown as Parameters<typeof useSendMessage>[0]["remote"];
   const setMessage = jest.fn(), setAttachments = jest.fn();
   let api!: SendMessageApi;
   function Harness({ pending }: { pending: boolean }) {
-    api = useSendMessage(remote, ((key: string) => key) as Parameters<typeof useSendMessage>[1], "draft", [], setMessage, setAttachments, jest.fn(), undefined, pending);
+    api = useSendMessage({ remote, t: ((key: string) => key) as Parameters<typeof useSendMessage>[0]["t"],
+      message: "draft", attachments: [], setMessage, setAttachments,
+      setTransferProgress: jest.fn(), compactionPending: pending });
     return null;
   }
   let tree!: ReactTestRenderer;

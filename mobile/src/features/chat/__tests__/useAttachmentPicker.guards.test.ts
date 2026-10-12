@@ -4,11 +4,13 @@ import { Platform } from "react-native";
 import type { TFunction } from "i18next";
 import { useAttachmentPicker } from "../useAttachmentPicker";
 import { ActionMenu } from "../../../components/ActionMenu";
-import { albumSource, pickAttachments, pickFromAlbum, takePhoto } from "../../../remote/files";
+import { albumSource, deleteTemporaryAttachment, pickAttachments, pickFromAlbum, takePhoto } from "../../../remote/files";
 import { showToast } from "../utils";
 import type { MobileAttachment } from "../../../remote/types";
 
 jest.mock("../../../remote/files", () => ({
+  validateAttachmentBatch: jest.fn(),
+  deleteTemporaryAttachment: jest.fn(),
   albumSource: jest.fn(async () => "system"),
   loadAlbumImages: jest.fn(async () => []),
   pickAttachments: jest.fn(async () => []),
@@ -38,8 +40,8 @@ let tree: ReactTestRenderer;
 let api: ReturnType<typeof useAttachmentPicker>;
 const setAttachments = jest.fn();
 
-function Harness() {
-  const value = useAttachmentPicker([], setAttachments, t);
+function Harness({ attachments = [], scope = "A" }: { attachments?: MobileAttachment[]; scope?: string }) {
+  const value = useAttachmentPicker(attachments, setAttachments, t, { scope });
   useEffect(() => { api = value; });
   return value.attachmentMenu;
 }
@@ -120,4 +122,39 @@ test("a system album source opens the native picker instead of the in-app grid",
   expect(pickFromAlbum).toHaveBeenCalledWith([]);
   expect(pick).not.toHaveBeenCalled();
   expect(toast).not.toHaveBeenCalled();
+});
+
+
+test("a picker result merges only additions into the current attachment list", async () => {
+  const pending = deferred<MobileAttachment[]>();
+  const added = { ...attachment, localUri: "file:///added.png" };
+  const newest = { ...attachment, localUri: "file:///newest.png" };
+  pick.mockReturnValueOnce(pending.promise);
+  act(() => tree.update(createElement(Harness, { attachments: [attachment] })));
+  act(() => { void api.chooseFiles(); });
+  // The old attachment was deleted and another was added while the picker ran.
+  act(() => tree.update(createElement(Harness, { attachments: [newest] })));
+  await act(async () => { pending.resolve([attachment, added]); await Promise.resolve(); });
+  expect(setAttachments).toHaveBeenCalledWith([newest, added]);
+});
+
+test("a late picker result after navigation cleans up its temporary copy", async () => {
+  const pending = deferred<MobileAttachment[]>();
+  const added = { ...attachment, temporary: true };
+  pick.mockReturnValueOnce(pending.promise);
+  act(() => { void api.chooseFiles(); });
+  act(() => tree.update(createElement(Harness, { scope: "B" })));
+  act(() => tree.update(createElement(Harness, { scope: "A" })));
+  await act(async () => { pending.resolve([added]); await Promise.resolve(); });
+  expect(setAttachments).not.toHaveBeenCalled();
+  expect(deleteTemporaryAttachment).toHaveBeenCalledWith(added);
+});
+
+
+test("a source action deferred from the outgoing menu cannot launch in another conversation", async () => {
+  const chooseFromOutgoingMenu = api.chooseFiles;
+  act(() => tree.update(createElement(Harness, { scope: "B" })));
+  await act(async () => { await chooseFromOutgoingMenu(); });
+  expect(pick).not.toHaveBeenCalled();
+  expect(setAttachments).not.toHaveBeenCalled();
 });

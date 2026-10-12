@@ -8,7 +8,7 @@ import { SkillPicker } from "../components/SkillPicker";
 import { SessionPicker } from "../components/SessionPicker";
 import { SkillSuggestionCard } from "../components/SkillSuggestionCard";
 import { SkillDetailsDialog } from "../components/SkillDetailsDialog";
-import { PendingApprovalCard } from "../../../components/TimelineCard";
+import { PendingApprovalCard } from "../messages/PendingApprovalCard";
 import { deleteTemporaryAttachment } from "../../../remote/files";
 import { resources } from "../../../i18n/locales";
 import { CircleAlert } from "lucide-react-native";
@@ -34,7 +34,7 @@ jest.mock("react-i18next", () => ({
 // insets. Outside a provider that hook throws, so use the package's own mock.
 jest.mock("react-native-safe-area-context", () =>
   jest.requireActual("react-native-safe-area-context/jest/mock").default);
-jest.mock("../../../components/TimelineCard", () => ({ PendingApprovalCard: jest.fn(() => null) }));
+jest.mock("../messages/PendingApprovalCard", () => ({ PendingApprovalCard: jest.fn(() => null) }));
 jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
 jest.mock("../../../remote/files", () => ({ deleteTemporaryAttachment: jest.fn() }));
 // The picker itself is replaced, but its sizing helpers are the real ones: the
@@ -761,6 +761,8 @@ test("removing an attachment deletes its temporary file and drops only that row"
     const next = removal.mock.calls[0]![0] as (current: unknown[]) => unknown[];
     const current = [attachment("a.png"), attachment("b.png"), attachment("c.png")];
     const kept = next(current) as { name: string }[];
+    // React may replay an updater; filesystem work must not replay with it.
+    expect(next(current)).toEqual(kept);
     expect(kept.map(item => item.name)).toEqual(["a.png", "c.png"]);
     // The row's own local copy is deleted, and only that one: the other two
     // must stay on disk for the send that follows.

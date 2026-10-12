@@ -39,9 +39,13 @@ import type {
   ThinkingLevel,
 } from "./types";
 
+import { captureConversationLifetime } from "./conversationLifetime";
+
 interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   desktopSettingsRevision: number;
   skillsRevision: number;
+  /** Capture navigation/connection ownership before starting asynchronous UI work. */
+  captureConversationOperation(): () => boolean;
   phase: ConnectionPhase;
   error: string | null;
   credentials: RemoteCredentials | null;
@@ -234,6 +238,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // capture the epoch so their eventual ack cannot pull the UI back to a
   // conversation the user has already left.
   const conversationEpochRef = useRef(0);
+  const captureConversationOperation = useCallback(() => captureConversationLifetime({
+    conversationEpochRef, clientRef, credentialsRef,
+  }), []);
+
   // Connection callbacks are created before the conversation controller. Keep
   // their settings sink current without rebuilding the connection/sync engine.
   const settingsSink = useRef<Pick<ReturnType<typeof useConversationController>,
@@ -484,6 +492,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const value = useMemo<RemoteControls>(
     () => ({
       ...desktopManagement,
+      captureConversationOperation,
       desktopSettingsRevision,
       skillsRevision,
       phase,
@@ -559,6 +568,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     }),
     [
       desktopManagement,
+      captureConversationOperation,
       desktopSettingsRevision,
       skillsRevision,
       abort,

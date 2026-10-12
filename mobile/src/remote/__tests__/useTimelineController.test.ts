@@ -2048,7 +2048,7 @@ describe("useTimelineController", () => {
     const terminal = (type: string, data: Record<string, unknown>) => evt(type, JSON.stringify(data));
 
     test("a stale probe cannot strand a wait registered after its own settle", async () => {
-      const reads: Array<(value: unknown) => void> = [];
+      const reads: ((value: unknown) => void)[] = [];
       request.mockImplementation((cmd: { type: string }) => cmd.type === "get_state"
         ? new Promise(resolve => { reads.push(resolve as (value: unknown) => void); })
         : Promise.resolve({ data: { entries: [] } }));

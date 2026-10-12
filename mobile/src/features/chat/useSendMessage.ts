@@ -1,10 +1,12 @@
-import { useCallback, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useMemo, type Dispatch, type SetStateAction } from "react";
 import type { TFunction } from "i18next";
 import { File } from "expo-file-system";
 import { mimeFor } from "../../remote/files";
 import { useRemote } from "../../remote/RemoteContext";
 import type { MobileAttachment, SessionReferenceMap, TimelineItem } from "../../remote/types";
 import { expandSessionReferences } from "./sessionCompletion";
+import { useCommittedRef } from "../../lib/useCommittedRef";
+import { useConversationOperation } from "./useConversationOperation";
 import { showToast } from "./utils";
 
 type Remote = ReturnType<typeof useRemote>;
@@ -22,61 +24,57 @@ export interface SendMessageApi {
   forkMessage: (item: TimelineItem) => void;
 }
 
-export function useSendMessage(
-  remote: Remote,
-  t: TFunction,
-  message: string,
-  attachments: MobileAttachment[],
-  setMessage: Dispatch<SetStateAction<string>>,
-  setAttachments: Dispatch<SetStateAction<MobileAttachment[]>>,
-  setTransferProgress: (value: number | null) => void,
-  /** The draft's conversation references, expanded back into links on send. */
-  sessionRefs: SessionReferenceMap = {},
-  compactionPending = false,
-): SendMessageApi {
-  const { sendMessage } = remote;
-  const compacting = compactionPending || remote.compacting;
+export interface SendMessageOptions {
+  remote: Remote;
+  t: TFunction;
+  message: string;
+  attachments: MobileAttachment[];
+  setMessage: Dispatch<SetStateAction<string>>;
+  setAttachments: Dispatch<SetStateAction<MobileAttachment[]>>;
+  setTransferProgress: (value: number | null) => void;
+  sessionRefs?: SessionReferenceMap;
+  compactionPending?: boolean;
+}
+
+export function useSendMessage(options: SendMessageOptions): SendMessageApi {
+  const inputRef = useCommittedRef(options);
+  const { captureOperation } = useConversationOperation(options.remote);
   const send = useCallback(async (override?: string) => {
-    if (compacting) { showToast(t("chat.compacting")); return; }
-    // The draft shows a reference as `#title` (the desktop shows a pill); the
-    // message it sends carries the link, which is where the session id lives.
+    const { remote, t, message, attachments, setMessage, setAttachments, setTransferProgress,
+      sessionRefs = {}, compactionPending = false } = inputRef.current;
+    if (compactionPending || remote.compacting) { showToast(t("chat.compacting")); return; }
     const draftValue = (override ?? message).trim();
     const value = expandSessionReferences(draftValue, sessionRefs);
-    if (!value && attachments.length === 0) return;
-    const pendingAttachments = attachments;
-    setTransferProgress(pendingAttachments.length ? 0 : null);
+    if (!value && !attachments.length) return;
+    const isCurrent = captureOperation();
+    const sameText = () => [message.trim(), draftValue].includes(inputRef.current.message.trim());
+    setTransferProgress(attachments.length ? 0 : null);
     try {
-      await sendMessage(value, pendingAttachments, (done, total) =>
-        setTransferProgress(total > 0 ? done / total : null),
-      );
-      setMessage("");
-      setAttachments([]);
+      await remote.sendMessage(value, attachments, (done, total) => {
+        if (isCurrent()) setTransferProgress(total > 0 ? done / total : null);
+      });
+      if (!isCurrent()) return;
+      if (sameText()) setMessage("");
+      const submitted = new Set(attachments.map(item => item.localUri));
+      setAttachments(inputRef.current.attachments.filter(item => !submitted.has(item.localUri)));
     } catch (error) {
-      // M9: sendMessage now throws for busy/streaming/disconnected instead of
-      // swallowing the input — always restore the draft so nothing vanishes.
-      // The *draft* form, not the expanded text: the composer shows tokens.
-      setMessage(draftValue);
+      if (!isCurrent()) return;
+      if (sameText()) setMessage(draftValue);
       const key = error instanceof Error ? error.message : "";
-      showToast(
-        key === "send_compacting"
-          ? t("chat.compacting")
-          : key === "prompt_too_large"
-          ? t("chat.promptTooLarge")
-          // The desktop refuses a prompt naming a conversation it does not have
-          // (a merged row from another machine, or one deleted since the list
-          // was read). "Failed to send" would hide the one fact that matters:
-          // the conversation lives somewhere else.
-          : key.includes("session_not_on_desktop")
-          ? t("chat.sessionNotOnDesktop")
-          : t("chat.sendFailed"),
-      );
+      showToast(key === "send_compacting" ? t("chat.compacting")
+        : key === "prompt_too_large" ? t("chat.promptTooLarge")
+          : key.includes("session_not_on_desktop") ? t("chat.sessionNotOnDesktop")
+            : t("chat.sendFailed"));
     } finally {
-      setTransferProgress(null);
+      if (isCurrent()) setTransferProgress(null);
     }
-  }, [attachments, compacting, message, sendMessage, sessionRefs, setAttachments, setMessage, setTransferProgress, t]);
+  }, [captureOperation, inputRef]);
 
   const retryMessage = useCallback(
     (item: TimelineItem) => {
+      const { remote, t, compactionPending } = inputRef.current;
+      const compacting = compactionPending || remote.compacting;
+      const isCurrent = captureOperation();
       if (compacting) { showToast(t("chat.compacting")); return; }
       if (item.kind !== "message" || item.role !== "assistant") return;
       const items = remote.timeline.items;
@@ -87,6 +85,7 @@ export function useSendMessage(
           void (async () => {
             const retryAttachments: MobileAttachment[] = [];
             for (const attachment of prev.attachments ?? []) {
+              if (!isCurrent()) return;
               if (/^[a-z][a-z0-9+.-]*:\/\//i.test(attachment.path)) {
                 const file = new File(attachment.path);
                 retryAttachments.push({
@@ -114,24 +113,27 @@ export function useSendMessage(
                 mobilePreviewUnsupported: attachment.mobilePreviewUnsupported,
               });
             }
-            await remote.sendMessage(prev.text, retryAttachments);
-          })().catch(() => showToast(t("chat.sendFailed")));
+            if (isCurrent()) await remote.sendMessage(prev.text, retryAttachments);
+          })().catch(() => { if (isCurrent()) showToast(t("chat.sendFailed")); });
           return;
         }
       }
     },
-    [compacting, remote, t],
+    [captureOperation, inputRef],
   );
 
   const continueMessage = useCallback(
     (item: TimelineItem) => {
+      const { remote, t, compactionPending } = inputRef.current;
+      const compacting = compactionPending || remote.compacting;
+      const isCurrent = captureOperation();
       if (compacting) { showToast(t("chat.compacting")); return; }
       if (item.kind !== "message" || item.role !== "assistant" || !item.runId) return;
       void remote
         .continueRun(remote.selectedSessionId, item.runId)
-        .catch(() => showToast(t("chat.sendFailed")));
+        .catch(() => { if (isCurrent()) showToast(t("chat.sendFailed")); });
     },
-    [compacting, remote, t],
+    [captureOperation, inputRef],
   );
 
   /**
@@ -142,6 +144,8 @@ export function useSendMessage(
    */
   const forkMessage = useCallback(
     (item: TimelineItem) => {
+      const { remote, t } = inputRef.current;
+      const isCurrent = captureOperation();
       if (item.kind !== "message" || item.role !== "assistant") return;
       const items = remote.timeline.items;
       const index = items.findIndex(entry => entry.id === item.id);
@@ -154,6 +158,7 @@ export function useSendMessage(
             return;
           }
           void remote.forkConversation(sourceEntryId).catch((error: unknown) => {
+            if (!isCurrent()) return;
             const message = error instanceof Error && error.message
               ? error.message
               : t("chat.forkUnknownError");
@@ -163,8 +168,9 @@ export function useSendMessage(
         }
       }
     },
-    [remote, t],
+    [captureOperation, inputRef],
   );
 
-  return { send, retryMessage, continueMessage, forkMessage };
+  return useMemo(() => ({ send, retryMessage, continueMessage, forkMessage }),
+    [send, retryMessage, continueMessage, forkMessage]);
 }

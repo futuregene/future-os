@@ -8,7 +8,7 @@ import type { TimelineItem, TimelineSegment, TimelineToolRow } from "../../remot
 
 jest.mock("../MarkdownText", () => ({ MarkdownText: "MarkdownText" }));
 jest.mock("lucide-react-native", () => Object.fromEntries([
-  "AlertTriangle", "Brain", "Check", "ChevronDown", "ChevronUp", "CircleAlert", "Copy", "FileText", "Paperclip", "Pencil", "TerminalSquare", "TriangleAlert", "Wrench", "X",
+  "AlertTriangle", "Brain", "Check", "ChevronDown", "ChevronUp", "CircleAlert", "Copy", "FileText", "GitBranch", "Paperclip", "Pencil", "TerminalSquare", "TriangleAlert", "Wrench", "X",
 ].map(name => [name, name])));
 // The mock mirrors the real templates for the keys the folded summary uses, and
 // returns every other key bare — so the summary's rendered shape is assertable
@@ -268,24 +268,24 @@ test("each glyph sits tight against its count", () => {
   expect(groups).toHaveLength(2);
 });
 
-// A failed call folds like any other — and counts like any other, as a tool call
-// — so the run must still say that something in it failed.
-test("a failed call folds into the run, counts as a tool call, and is flagged", () => {
+// Failure context stays accessible while only counts and the chevron are drawn.
+test("a failed call folds without an alert icon and keeps its expanded failure details", () => {
   render(reply({
     segments: [thinking("k1"), tool("c1", { status: "failed" }), tool("c2"), tool("c3")],
   }));
   // Three tool calls ran, one of them badly: folded into one line, counted 3.
   expect(summaryRow({ tools: 3, thinking: 1, failed: 1 })).toBeTruthy();
   expect(hasText("chat.runFailed")).toBe(false);
-  // Flagged, not silent: the alert glyph rides along with the counts.
-  expect(countIconsIn(summaryRow({ tools: 3, thinking: 1, failed: 1 }))).toBe(4);
+  const summary = summaryRow({ tools: 3, thinking: 1, failed: 1 });
+  expect(countIconsIn(summary)).toBe(3);
+  expect(countIconsNamed(summary, "TriangleAlert")).toBe(0);
   // The failed row keeps its own label once the run is open.
   act(() => summaryRow({ tools: 3, thinking: 1, failed: 1 }).props.onPress());
   expect(hasText("chat.runFailed")).toBe(true);
+  expect(countIconsNamed(rowButton("chat.runFailed"), "TriangleAlert")).toBe(1);
 });
 
-// A failure is marked by the alert glyph's shape alone — colour would shout
-// inside the very line that was folded to quieten the transcript down.
+// A failed run keeps the summary's muted counts.
 test("a failed run is not tinted", () => {
   render(reply({ segments: [thinking("k1"), tool("c1", { status: "failed" }), tool("c2")] }));
   const counts = tree.root.findAll(node => node.props.children === "×2" || node.props.children === "×1");
@@ -294,30 +294,24 @@ test("a failed run is not tinted", () => {
     expect(StyleSheet.flatten(text.props.style).color).toBe(colors.inkMuted);
 });
 
-// The folded line is apparatus, not prose: it sits against the right edge so the
-// reader's eye line stays with the reply text, and its tap target stays clipped
-// to the glyphs rather than spanning the bubble.
-test("the folded summary hugs the right edge", () => {
+// The summary shares the reply's leading edge while remaining a compact row.
+test("the folded summary aligns with the reply's left edge", () => {
   render(reply({ segments: [thinking("k1"), tool("c1")] }));
   const row = summaryRow(THINK_RUN);
   const style = StyleSheet.flatten(row.props.style);
-  expect(style.alignSelf).toBe("flex-end");
-  expect(style.justifyContent).toBe("flex-end");
+  expect(style.alignSelf).toBe("flex-start");
+  expect(style.justifyContent).toBe("flex-start");
 });
 
-// A step row that is NOT folded — a lone call, a lone burst, the slice still
-// running — must sit on the same rail as a folded run. It did not, while the
-// rail was a per-call-site `align` prop with a left-aligning default: the reply
-// then alternated left/right down one screen, and a streaming row jumped sides
-// the moment it got folded. The prop is gone so this cannot come back.
-test("an unfolded step row sits on the same right rail as a folded run", () => {
+// Lone and live rows use the same alignment as folded activity.
+test("an unfolded step row aligns with the folded summary on the left", () => {
   // One lone tool call before the prose, one lone reasoning slice after it:
   // neither reaches the two-slice minimum for folding.
   render(reply({
     segments: [tool("c1", { detail: "ls -la" }), prose("p1"), thinking("k1", "why")],
   }));
   for (const label of ["chat.runCompleted", "chat.thoughtCompleted"])
-    expect(railOf(rowButton(label))).toBe("flex-end");
+    expect(railOf(rowButton(label))).toBe("flex-start");
 });
 
 // A step row is the only way into the call behind it, so it carries a real touch
@@ -331,40 +325,37 @@ test("every step row extends its touch area beyond its drawn line", () => {
   expect(rowButton("chat.thoughtCompleted").props.hitSlop).toEqual({ top: 8, bottom: 8 });
 });
 
-// The live timer is part of the same apparatus and follows it onto the right
-// rail, instead of hanging off the left edge of the reply it belongs to.
-test("the live run indicator sits on the right rail", () => {
+// Timing metadata follows the reply's leading edge while the run is live.
+test("the live run indicator sits on the left", () => {
   render(reply({ streaming: true, startedAt: Date.now() - 1000 }));
   const indicator = tree.root.findAll(node => node.props.children === "1s"
     || node.props.children === "chat.generating")[0]!;
   const style = StyleSheet.flatten(indicator.parent!.props.style);
-  expect(style.alignSelf).toBe("flex-end");
+  expect(style.alignSelf).toBe("flex-start");
 });
 
-// The footer is the settled form of that same timer — duration and tokens, with
-// the copy button beside them — so it lands on the same rail. It did not, so a
-// reply jumped from the right edge to the left the instant its run finished.
-test("the settled footer sits on the same rail as the live timer", () => {
-  render(reply({ durationMs: 5100, outputTokens: 1234 }));
+// Settled stats and actions are visible without any disclosure gesture.
+test("the settled footer keeps stats and actions visible on the left", () => {
+  render(reply({ durationMs: 5100, outputTokens: 1234 }), { onFork: jest.fn() });
   const footer = tree.root.findAll(node => node.props.children === "5s · chat.tokens")[0]!;
   const style = StyleSheet.flatten(footer.parent!.props.style);
-  expect(style.alignSelf).toBe("flex-end");
-  expect(style.justifyContent).toBe("flex-end");
-  // The copy button rides along in the same group, so its target stays clipped.
+  expect(style.alignSelf).toBe("flex-start");
+  expect(style.justifyContent).toBe("flex-start");
   const copy = tree.root.findAll(node => node.props.accessibilityLabel === "chat.copyResponse")[0]!;
+  const fork = tree.root.findAll(node => node.props.accessibilityLabel === "chat.fork")[0]!;
   expect(copy).toBeDefined();
+  expect(fork).toBeDefined();
 });
 
-// The summary is the run's badge: tapping it must not move the line under the
-// user's finger. The rows it opens are read, so they land in the reading column.
-test("opening a run leaves the summary on the rail and reads its rows on the left", () => {
+// Opening a run keeps its summary anchored and its revealed content unchanged.
+test("opening a run keeps the summary on the left and preserves its revealed content", () => {
   render(reply({
     segments: [thinking("k1", "why it broke"), tool("c1", { detail: "ls -la" })],
   }));
-  expect(StyleSheet.flatten(summaryRow(THINK_RUN).props.style).alignSelf).toBe("flex-end");
+  expect(StyleSheet.flatten(summaryRow(THINK_RUN).props.style).alignSelf).toBe("flex-start");
   act(() => summaryRow(THINK_RUN).props.onPress());
   // The line the user just tapped is still where it was.
-  expect(StyleSheet.flatten(summaryRow(THINK_RUN).props.style).alignSelf).toBe("flex-end");
+  expect(StyleSheet.flatten(summaryRow(THINK_RUN).props.style).alignSelf).toBe("flex-start");
 
   // ...and everything it opened is reading content on the left.
   expect(railOf(rowButton("chat.thoughtCompleted"))).toBeUndefined();
@@ -391,7 +382,7 @@ test.each(["read", "write", "edit"])("opening a %s tool reveals its file name", 
       status: "completed",
     })],
   }));
-  expect(railOf(rowButton(`chat.${kind}Completed`))).toBe("flex-end");
+  expect(railOf(rowButton(`chat.${kind}Completed`))).toBe("flex-start");
   expect(hasText("issue-audit-2026-09-16-with-a-long-filename.md")).toBe(false);
   act(() => rowButton(`chat.${kind}Completed`).props.onPress());
   const name = "issue-audit-2026-09-16-with-a-long-filename.md";
@@ -597,7 +588,7 @@ describe("a tool row whose target the lean page omitted", () => {
     // The row is still the collapsed badge it was, with no invented target, and
     // the rest of the reply rendered regardless.
     const row = rowButton("chat.runCompleted");
-    expect(railOf(row)).toBe("flex-end");
+    expect(railOf(row)).toBe("flex-start");
     // The prose beside it still rendered (MarkdownText is a host stub here).
     expect(
       tree.root

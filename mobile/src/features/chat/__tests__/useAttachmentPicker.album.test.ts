@@ -15,6 +15,8 @@ import {
 } from "../../../remote/files";
 
 jest.mock("../../../remote/files", () => ({
+  validateAttachmentBatch: jest.fn(),
+  deleteTemporaryAttachment: jest.fn(),
   albumSource: jest.fn(async () => "system"),
   loadAlbumImages: jest.fn(async () => []),
   pickAttachments: jest.fn(async () => []),

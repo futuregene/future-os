@@ -1,0 +1,130 @@
+import { useEffect, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { BackHandler, Keyboard, type TextInput } from "react-native";
+import { completeSessionReference, sessionQuery as findSessionQuery } from "./sessionCompletion";
+import { completeSkill, insertSkillSlash, removeSkillQuery, skillQuery, type SlashAction, type TextSelection } from "./skillCompletion";
+import type { SessionReferenceMap, SessionReferenceTarget } from "../../remote/types";
+
+export function useComposerCompletion(message: string, setMessage: Dispatch<SetStateAction<string>>, enabled: boolean, inputRef: RefObject<TextInput | null>, onAction?: (action: SlashAction) => void, sessionReference?: {
+  /** The draft's existing references, so a repeated title can be made distinct. */
+  refs: SessionReferenceMap;
+  /** Record which conversation a freshly inserted token stands for. */
+  remember: (token: string, target: SessionReferenceTarget) => void;
+}) {
+  const [selection, setSelection] = useState<TextSelection>({ start: message.length, end: message.length });
+  // Observe normal native caret movement without controlling it on every
+  // keystroke (important for IME composition and asynchronously restored drafts).
+  const [inputSelection, setInputSelection] = useState<TextSelection>();
+  const [focused, setFocused] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const query = enabled && focused && !dismissed ? skillQuery(message, selection) : null;
+  const open = query !== null;
+  // `#` (a conversation reference) shares this hook's caret tracking with `/`
+  // (skills and actions) because the two never both apply at one caret — `/`
+  // wins when they could, matching the desktop composer's trigger order.
+  const session = !query && enabled && focused && !dismissed ? findSessionQuery(message, selection) : null;
+  const menuOpen = open || session !== null;
+  useEffect(() => {
+    if (!menuOpen) return;
+    const back = BackHandler.addEventListener("hardwareBackPress", () => {
+      setDismissed(true);
+      return true;
+    });
+    // Android's IME can consume Back before RN's BackHandler sees it.
+    const keyboard = Keyboard.addListener("keyboardDidHide", () => setDismissed(true));
+    return () => { back.remove(); keyboard.remove(); };
+  }, [menuOpen]);
+
+  return {
+    selection, inputSelection, query, session,
+    onSelectionChange: (next: TextSelection) => {
+      setSelection(next);
+      setInputSelection(undefined);
+    },
+    onChangeText: (text: string) => {
+      if (text !== message) {
+        // Native text and selection events need not arrive together. Derive
+        // the edit's caret now so slash filtering never waits on a stale caret.
+        // Prefer the known selection to disambiguate repeated characters.
+        const prefix = message.slice(0, selection.start);
+        const suffix = message.slice(selection.end);
+        let cursor: number;
+        if (selection.end <= message.length && text.length >= prefix.length + suffix.length
+          && text.startsWith(prefix) && text.endsWith(suffix)) {
+          cursor = text.length - suffix.length;
+        } else {
+          let start = 0;
+          while (start < message.length && start < text.length && message[start] === text[start]) start++;
+          let tail = 0;
+          while (tail < message.length - start && tail < text.length - start
+            && message[message.length - tail - 1] === text[text.length - tail - 1]) tail++;
+          cursor = text.length - tail;
+        }
+        setSelection({ start: cursor, end: cursor });
+      }
+      setMessage(text);
+      // Prediction is only for completion; do not control the native IME caret.
+      setInputSelection(undefined);
+      setDismissed(false);
+    },
+    onFocus: () => setFocused(true),
+    onBlur: () => { setFocused(false); },
+    close: () => setDismissed(true),
+    insertSlash: () => {
+      if (!enabled) return;
+      const next = insertSkillSlash(message, selection);
+      setMessage(next.text);
+      setSelection(next.selection);
+      setInputSelection(next.selection);
+      setDismissed(false);
+      setFocused(true);
+      inputRef.current?.focus();
+    },
+    select: (name: string) => {
+      if (!query || !enabled) return;
+      const next = completeSkill(message, query, name);
+      setMessage(next.text);
+      setSelection(next.selection);
+      setInputSelection(next.selection);
+      setDismissed(true);
+      inputRef.current?.focus();
+    },
+    /** Insert the picked conversation as a reference carrying its session id. */
+    selectSession: (picked: SessionReferenceTarget) => {
+      if (!session || !enabled) return;
+      const next = completeSessionReference(message, session, picked, sessionReference?.refs);
+      setMessage(next.text);
+      setSelection(next.selection);
+      setInputSelection(next.selection);
+      setDismissed(true);
+      inputRef.current?.focus();
+      // The draft only shows the compact token; the id it stands for lives in
+      // the draft's reference map until the send expands it again.
+      sessionReference?.remember(next.token, picked);
+    },
+    runAction: (action: SlashAction) => {
+      if (!query || !enabled) return;
+      // Clear the typed command first: it is a control, not part of the draft.
+      const next = removeSkillQuery(message, query);
+      // An action may leave a token behind (see `SlashAction.insert`): the draft
+      // then reads as if the token had been typed, which is what opens the menu
+      // that token belongs to.
+      const placed = action.insert
+        ? {
+          text: `${next.text.slice(0, next.selection.start)}${action.insert}${next.text.slice(next.selection.start)}`,
+          selection: {
+            start: next.selection.start + action.insert.length,
+            end: next.selection.start + action.insert.length,
+          },
+        }
+        : next;
+      setMessage(placed.text);
+      setSelection(placed.selection);
+      setInputSelection(placed.selection);
+      // Keep the composer's menu open when the action handed over to another one
+      // — dismissing would close the conversation list before it was shown.
+      setDismissed(!action.insert);
+      inputRef.current?.focus();
+      onAction?.(action);
+    },
+  };
+}

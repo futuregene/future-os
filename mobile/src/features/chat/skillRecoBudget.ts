@@ -135,8 +135,10 @@ export async function recordShown(
   skill: string,
   hash: string,
   now = new Date(),
+  isCurrent: () => boolean = () => true,
 ): Promise<SkillRecoDay> {
   const day = await loadDay(now);
+  if (!isCurrent()) return day;
   const next: SkillRecoDay = {
     day: day.day,
     skills: [...day.skills, skill],

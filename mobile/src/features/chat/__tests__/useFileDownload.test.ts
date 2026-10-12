@@ -718,7 +718,7 @@ test("a revealed dialog adopts the freshly known size instead of being rebuilt",
   jest.useFakeTimers();
   const prepare = deferred<DownloadInfo>();
   const download = deferred<typeof file>();
-  const progress: Array<(done: number, total: number) => void> = [];
+  const progress: ((done: number, total: number) => void)[] = [];
   const remote = {
     cachedAttachment: jest.fn(() => null),
     prepareAttachment: jest.fn(() => prepare.promise),
@@ -876,8 +876,8 @@ describe("the download lane's invariants hold across randomized operation sequen
     // them, so the operations interleave at arbitrary points.
     type Pending = { kind: "prepare" | "download"; settle: (reject: boolean) => void };
     const pending: Pending[] = [];
-    let progressCallbacks: Array<(done: number, total: number) => void> = [];
-    let waitingCallbacks: Array<() => void> = [];
+    let progressCallbacks: ((done: number, total: number) => void)[] = [];
+    let waitingCallbacks: (() => void)[] = [];
     const remote = {
       cachedAttachment: jest.fn(() => null),
       prepareAttachment: jest.fn(() => new Promise<DownloadInfo>((resolve, reject) => {

@@ -20,7 +20,7 @@ import { MarkdownText } from "../../../components/MarkdownText";
 import { JsonPreview } from "../../../components/JsonPreview";
 import type { HistoryAttachment } from "../../../remote/types";
 import { colors, layout, radius, spacing } from "../../../theme/tokens";
-import type { PreviewState } from "../useFileDownload";
+import type { PreviewState } from "../files/useChatFiles";
 import type { ActiveDownload, FileOperation } from "../utils";
 import { ZoomableImage } from "./ZoomableImage";
 
@@ -194,7 +194,7 @@ function PreviewLayer({
   t: TFunction;
 }) {
   const [headerHeight, setHeaderHeight] = useState(60);
-  // Highlight here rather than in `useFileDownload`: the plain-text route serves
+  // Highlight here rather than in `useChatFiles`: the plain-text route serves
   // both code files and prose (`.txt`, `.log`), so only the file name knows
   // whether this is source. Tokenizing is bounded — `highlightCode` refuses
   // oversized files and grammars it does not ship — and the fallback is the

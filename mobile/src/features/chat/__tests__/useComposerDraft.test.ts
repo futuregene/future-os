@@ -19,6 +19,7 @@ jest.mock("../../../remote/draftStorage", () => ({
   scheduleSessionDraft: jest.fn(),
 }));
 jest.mock("../../../remote/files", () => ({
+  deleteTemporaryAttachment: jest.fn(),
   recoverPendingImagePickerAttachments: jest.fn(async (attachments: unknown) => attachments),
 }));
 jest.mock("../utils", () => ({ showToast: jest.fn(), deferPresentation: jest.fn() }));
@@ -41,12 +42,12 @@ function deferred<T>() {
 
 let tree: ReactTestRenderer;
 let current: ComposerDraftApi;
-function Harness({ desktopId = "desk-1", sessionId = "s1" }: { desktopId?: string; sessionId?: string }) {
+function Harness({ desktopId = "desk-1", sessionId = "s1", translate = t }: { desktopId?: string; sessionId?: string; translate?: typeof t }) {
   useRemoteMock.mockReturnValue({
     credentials: { expectedDesktopId: desktopId },
     selectedSessionId: sessionId,
   } as unknown as ReturnType<typeof useRemote>);
-  const value = useComposerDraft(useRemoteMock(), t as never);
+  const value = useComposerDraft(useRemoteMock(), translate as never);
   useEffect(() => { current = value; }, [value]);
   return null;
 }
@@ -220,4 +221,46 @@ test("switching desktops rekeys the draft instead of reusing the old slot", asyn
   await settle();
   expect(load.mock.calls.map(([key]) => key)).toEqual(["desk-1:s1", "desk-2:s1"]);
   expect(flush).toHaveBeenCalledWith("desk-1:s1");
+});
+
+
+test("a pending restore cannot overwrite an edit made after reading started", async () => {
+  const pending = deferred<{ attachments: MobileAttachment[]; text: string }>();
+  load.mockReturnValueOnce(pending.promise);
+  render();
+  act(() => current.setMessage("new edit"));
+  await act(async () => {
+    pending.resolve({ attachments: [attachment], text: "stored text" });
+    await Promise.resolve();
+  });
+  expect(current.message).toBe("new edit");
+  expect(current.attachments).toEqual([]);
+  expect(current.restoring).toBe(false);
+});
+
+test("A → B → A navigation rejects the first visit's late restore", async () => {
+  const first = deferred<{ attachments: MobileAttachment[]; text: string }>();
+  load.mockReturnValueOnce(first.promise).mockResolvedValueOnce(null)
+    .mockResolvedValueOnce({ attachments: [], text: "latest A" });
+  render({ sessionId: "A" });
+  render({ sessionId: "B" });
+  render({ sessionId: "A" });
+  await settle();
+  await act(async () => {
+    first.resolve({ attachments: [attachment], text: "stale A" });
+    await Promise.resolve();
+  });
+  expect(current.message).toBe("latest A");
+  expect(current.attachments).toEqual([]);
+});
+
+
+test("changing the UI language preserves edits without rereading the draft", async () => {
+  render();
+  await settle();
+  act(() => current.setMessage("unsaved edit"));
+  render({ translate: key => `translated:${key}` });
+  await settle();
+  expect(load).toHaveBeenCalledTimes(1);
+  expect(current.message).toBe("unsaved edit");
 });

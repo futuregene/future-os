@@ -1,64 +1,31 @@
-import {
-  ArrowDown,
-  ChevronDown,
-  CircleAlert,
-  FileText,
-  Paperclip,
-  Send,
-  Slash,
-  Square,
-  X,
-} from "lucide-react-native";
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  useWindowDimensions,
-  View,
-} from "react-native";
-import {
-  memo,
-  useCallback,
-  useMemo,
-  useRef,
-  useState,
-  type Dispatch,
-  type SetStateAction,
-} from "react";
+import { INPUT_MIN_HEIGHT, INPUT_MAX_HEIGHT } from "../composer/composerMetrics";
+import { ArrowDown, CircleAlert, FileText, Paperclip, X } from "lucide-react-native";
+import { Pressable, ScrollView, Text, TextInput, useWindowDimensions, View } from "react-native";
+import { memo, useCallback, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { TFunction } from "i18next";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
-import { PendingApprovalCard } from "../../../components/TimelineCard";
+import { PendingApprovalCard } from "../messages/PendingApprovalCard";
 import type { RemoteControls } from "../../../remote/RemoteContext";
 import { deleteTemporaryAttachment } from "../../../remote/files";
 import type { MobileAttachment, RemoteSkill, SessionReferenceMap, SessionReferenceTarget, TimelineItem } from "../../../remote/types";
-import {
-  chatTypography,
-  colors,
-  layout,
-  radius,
-  spacing,
-} from "../../../theme/tokens";
-import { COMPOSER_FADE_CLEARANCE, formatBytes } from "../utils";
-import { useSkillCompletion } from "../useSkillCompletion";
+import { colors } from "../../../theme/tokens";
+import { formatBytes } from "../utils";
+import { useComposerCompletion } from "../useComposerCompletion";
 import { sessionMentionGroups } from "../sessionMention";
 import type { PendingSuggestion } from "../useSkillRecommendation";
 import type { SlashAction } from "../skillCompletion";
 import { useStopRequest } from "../useStopRequest";
 import { SkillDetailsDialog } from "./SkillDetailsDialog";
 import { SkillSuggestionCard } from "./SkillSuggestionCard";
+import { ComposerToolbar } from "../composer/ComposerToolbar";
+import { styles } from "../composer/composerStyles";
 import { SkillPicker, skillPickerHeight } from "./SkillPicker";
 import { SessionPicker, sessionPickerHeight } from "./SessionPicker";
 import { FloatingTimelineButton } from "./FloatingTimelineButton";
 
 type Remote = RemoteControls;
 
-type PendingApproval = Extract<TimelineItem, { kind: "approval" }>;
-
-const INPUT_MIN_HEIGHT = 46;
-const INPUT_MAX_HEIGHT = 240;
+type PendingApproval = Extract<TimelineItem, { kind: "approval"; }>;
 
 function ComposerDockView({
   message,
@@ -83,6 +50,7 @@ function ComposerDockView({
   setSelector,
   onCompactContext,
   compactionPending = false,
+  draftRestoring = false,
   keyboardHeight = 0,
   skillSuggestion = null,
   skillEvaluating = false,
@@ -110,7 +78,7 @@ function ComposerDockView({
   scrollToLatest: () => void;
   pendingApprovals: PendingApproval[];
   approvalSubmitting: string | null;
-  approvalError: { id: string; message: string } | null;
+  approvalError: { id: string; message: string; } | null;
   decideApproval: (
     id: string,
     decision: "approved" | "rejected",
@@ -120,6 +88,7 @@ function ComposerDockView({
   /** Manual context compaction, offered as a `/` action (never a toolbar button). */
   onCompactContext?: () => void;
   compactionPending?: boolean;
+  draftRestoring?: boolean;
   keyboardHeight?: number;
   /** A skill suggestion holding the draft, or null (see the card component). */
   skillSuggestion?: PendingSuggestion | null;
@@ -139,9 +108,9 @@ function ComposerDockView({
   // short send/upload busy phase locked so its acknowledgement cannot clear edits.
   // The recommendation wait locks drafting too (see `skillEvaluating`): the
   // message that goes out must be the one the recommender was asked about.
-  const editable = !remote.busy && !skillEvaluating;
+  const editable = !remote.busy && !skillEvaluating && !skillInstalling && !draftRestoring;
   const compacting = compactionPending || remote.compacting;
-  const canSend = !skillEvaluating && !remote.streaming && !compacting && !remote.busy && remote.desktopOnline &&
+  const canSend = !skillInstalling && !draftRestoring && !skillEvaluating && !remote.streaming && !compacting && !remote.busy && remote.desktopOnline &&
     (!!message.trim() || attachments.length > 0);
   // A run in flight rejects compaction, so the tool stays hidden rather than
   // offering an action the Agent will refuse (desktop parity).
@@ -193,7 +162,7 @@ function ComposerDockView({
     remote.abort,
   );
   const inputRef = useRef<TextInput>(null);
-  const completion = useSkillCompletion(
+  const completion = useComposerCompletion(
     message,
     setMessage,
     editable && selector === null,
@@ -263,7 +232,7 @@ function ComposerDockView({
           <PendingApprovalCard
             error={
               approvalSubmitting !== item.payload.approval_request_id &&
-              approvalError?.id === item.payload.approval_request_id
+                approvalError?.id === item.payload.approval_request_id
                 ? approvalError.message
                 : null
             }
@@ -345,14 +314,12 @@ function ComposerDockView({
                     })}
                     accessibilityRole="button"
                     style={styles.removeAttachment}
-                    onPress={() =>
-                      setAttachments((current) => {
-                        deleteTemporaryAttachment(current[index]!);
-                        return current.filter(
-                          (_, itemIndex) => itemIndex !== index,
-                        );
-                      })
-                    }
+                    disabled={!editable}
+                    onPress={() => {
+                      // File I/O belongs to the event, never a state updater.
+                      try { deleteTemporaryAttachment(attachment); } catch { /* best-effort cleanup */ }
+                      setAttachments(current => current.filter(item => item.localUri !== attachment.localUri));
+                    }}
                   >
                     <X color={colors.inkMuted} size={14} />
                   </Pressable>
@@ -409,164 +376,22 @@ function ComposerDockView({
               value={message}
             />
           </View>
-          <View
-            style={[
-              styles.composerToolbar,
-              compactToolbar && styles.composerToolbarCompact,
-            ]}
-          >
-            <View
-              style={[
-                styles.composerSelectors,
-                compactToolbar && styles.composerSelectorsCompact,
-              ]}
-            >
-              <Pressable
-                accessibilityLabel={`${t("chat.model")}: ${activeModelLabel}`}
-                accessibilityRole="button"
-                accessibilityState={{
-                  expanded: selector === "model",
-                  disabled:
-                    remote.streaming || compacting ||
-                    remote.connectionPresentation.level !== "connected",
-                }}
-                disabled={
-                  remote.streaming || compacting ||
-                  remote.connectionPresentation.level !== "connected"
-                }
-                onPress={() => setSelector("model")}
-                style={({ pressed }) => [
-                  styles.selectorTrigger,
-                  styles.modelTrigger,
-                  compactToolbar && styles.selectorTriggerCompact,
-                  pressed && styles.selectorTriggerPressed,
-                  (remote.streaming || compacting) && styles.controlDisabled,
-                ]}
-              >
-                <Text numberOfLines={1} style={styles.selectorText}>
-                  {activeModelLabel}
-                </Text>
-                <ChevronDown color={colors.inkMuted} size={14} />
-              </Pressable>
-              <Pressable
-                accessibilityLabel={`${t("chat.thinkingLevel")}: ${t(`thinking.${remote.thinkingLevel}`)}`}
-                accessibilityRole="button"
-                accessibilityState={{
-                  expanded: selector === "thinking",
-                  disabled:
-                    remote.streaming || compacting ||
-                    remote.connectionPresentation.level !== "connected",
-                }}
-                disabled={
-                  remote.streaming || compacting ||
-                  remote.connectionPresentation.level !== "connected"
-                }
-                onPress={() => setSelector("thinking")}
-                style={({ pressed }) => [
-                  styles.selectorTrigger,
-                  styles.thinkingTrigger,
-                  compactToolbar && styles.selectorTriggerCompact,
-                  pressed && styles.selectorTriggerPressed,
-                  (remote.streaming || compacting) && styles.controlDisabled,
-                ]}
-              >
-                <Text numberOfLines={1} style={styles.selectorText}>
-                  {t(`thinking.${remote.thinkingLevel}`)}
-                </Text>
-                <ChevronDown color={colors.inkMuted} size={14} />
-              </Pressable>
-            </View>
-            <Pressable
-              accessibilityLabel={t("skills.choose")}
-              accessibilityRole="button"
-              accessibilityState={{
-                expanded: !!completion.query,
-                disabled: !editable,
-              }}
-              disabled={!editable}
-              onPress={completion.insertSlash}
-              hitSlop={{ left: 6, right: 6 }}
-              style={({ pressed }) => [
-                styles.attachmentButton,
-                styles.skillButton,
-                (pressed || !!completion.query) &&
-                  styles.selectorTriggerPressed,
-                !editable && styles.controlDisabled,
-              ]}
-            >
-              <Slash
-                color={completion.query ? colors.accent : colors.inkSoft}
-                size={16}
-              />
-            </Pressable>
-            <Pressable
-              accessibilityLabel={t("attachment.add")}
-              accessibilityRole="button"
-              disabled={
-                remote.streaming || remote.busy || !remote.fileTransferSupported
-              }
-              onPress={openAttachmentMenu}
-              style={({ pressed }) => [
-                styles.attachmentButton,
-                pressed && styles.selectorTriggerPressed,
-                (remote.streaming ||
-                  remote.busy ||
-                  !remote.fileTransferSupported) &&
-                  styles.controlDisabled,
-              ]}
-            >
-              <Paperclip color={colors.inkSoft} size={17} />
-            </Pressable>
-            {remote.streaming ? (
-              <Pressable
-                accessibilityLabel={t(
-                  stopRequest.status === "requesting" ? "chat.stopping" : "chat.stop",
-                )}
-                accessibilityRole="button"
-                accessibilityState={{
-                  busy: stopRequest.status === "requesting",
-                  disabled: stopRequest.status === "requesting",
-                }}
-                disabled={stopRequest.status === "requesting"}
-                onPress={() => void stopRequest.stop()}
-                android_ripple={{ color: "#ffffff40" }}
-                style={({ pressed }) => [
-                  styles.sendButton,
-                  styles.stopButton,
-                  pressed && styles.sendPressed,
-                ]}
-              >
-                {stopRequest.status === "requesting" ? (
-                  <ActivityIndicator color={colors.surface} size="small" />
-                ) : (
-                  <Square color={colors.surface} fill={colors.surface} size={14} />
-                )}
-              </Pressable>
-            ) : (
-              <Pressable
-                accessibilityLabel={t(
-                  skillEvaluating
-                    ? "chat.findingSkill"
-                    : compacting ? "chat.compacting" : "chat.send",
-                )}
-                accessibilityRole="button"
-                accessibilityState={{ disabled: !canSend, busy: compacting || skillEvaluating }}
-                disabled={!canSend}
-                onPress={() => { if (canSend) void send(); }}
-                style={({ pressed }) => [
-                  styles.sendButton,
-                  !canSend && styles.sendDisabled,
-                  pressed && styles.sendPressed,
-                ]}
-              >
-                {compacting || skillEvaluating ? (
-                  <ActivityIndicator color={colors.surface} size="small" />
-                ) : (
-                  <Send color={colors.surface} size={17} />
-                )}
-              </Pressable>
-            )}
-          </View>
+          <ComposerToolbar
+            remote={remote}
+            t={t}
+            compactToolbar={compactToolbar}
+            compacting={compacting}
+            activeModelLabel={activeModelLabel}
+            selector={selector}
+            setSelector={setSelector}
+            completion={completion}
+            editable={editable}
+            openAttachmentMenu={openAttachmentMenu}
+            stopRequest={stopRequest}
+            skillEvaluating={skillEvaluating}
+            canSend={canSend}
+            send={send}
+          />
           {remote.streaming && stopRequest.status !== "idle" && (
             <Text accessibilityLiveRegion="polite" style={styles.stopStatus}>
               {t(
@@ -598,164 +423,4 @@ export const ComposerDock = memo(ComposerDockView, (previous, next) => {
       Object.is(before[key], after[key]),
     )
   );
-});
-
-const styles = StyleSheet.create({
-  composerDock: {
-    flexShrink: 0,
-    backgroundColor: colors.surface,
-  },
-  composerFade: {
-    position: "absolute",
-    top: -COMPOSER_FADE_CLEARANCE,
-    right: 0,
-    left: 0,
-    height: COMPOSER_FADE_CLEARANCE + 4,
-  },
-  backToLatest: { top: -56 },
-  offlineComposer: {
-    marginHorizontal: spacing.md,
-    marginBottom: spacing.xs,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.md,
-    color: colors.warning,
-    backgroundColor: colors.warningSoft,
-    fontSize: 12,
-    textAlign: "center",
-  },
-  dockedApproval: {
-    marginHorizontal: spacing.md,
-    marginBottom: spacing.sm,
-  },
-  composerArea: {
-    paddingHorizontal: layout.gutter,
-    paddingTop: spacing.xs,
-    paddingBottom: spacing.sm,
-    backgroundColor: "transparent",
-  },
-  composer: {
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: radius.lg,
-    backgroundColor: colors.surface,
-    shadowColor: colors.inkStrong,
-    shadowOpacity: 0.05,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 2,
-  },
-  pendingAttachments: {
-    gap: spacing.sm,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-  },
-  pendingAttachment: {
-    maxWidth: 260,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.sm,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-    borderWidth: 1,
-    borderColor: colors.lineSoft,
-    borderRadius: radius.md,
-    backgroundColor: colors.surfaceSubtle,
-  },
-  pendingAttachmentCopy: { maxWidth: 155, flexShrink: 1 },
-  removeAttachment: {
-    width: layout.touchTarget,
-    height: layout.touchTarget,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  pendingAttachmentName: { color: colors.ink, fontSize: 12, fontWeight: "600" },
-  pendingAttachmentSize: { color: colors.inkMuted, fontSize: 10 },
-  attachmentWarning: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.xs,
-    color: colors.warning,
-    fontSize: 11,
-  },
-  inputMeasure: { position: "absolute", top: 0, left: 0, right: 0, opacity: 0 },
-  inputText: {
-    color: colors.ink,
-    ...chatTypography,
-    includeFontPadding: false,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.sm,
-  },
-  input: {
-    minHeight: INPUT_MIN_HEIGHT,
-    textAlignVertical: "top",
-  },
-  composerToolbar: {
-    minHeight: layout.touchTarget + spacing.sm,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: spacing.xs,
-    paddingHorizontal: spacing.sm,
-    paddingBottom: spacing.sm,
-  },
-  composerSelectors: {
-    minWidth: 0,
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-  },
-  // Keep both selectors visible even on small screens / with large type.
-  // Toolbar 8 + trigger 8 matches the text/attachment inset of 16.
-  composerToolbarCompact: { gap: spacing.xs },
-  composerSelectorsCompact: { gap: spacing.xs },
-  selectorTriggerCompact: { gap: spacing.xs },
-  modelTrigger: { flex: 1, maxWidth: 154 },
-  thinkingTrigger: { flexShrink: 0, maxWidth: "50%" },
-  selectorTrigger: {
-    minWidth: 0,
-    maxWidth: 154,
-    flexShrink: 1,
-    minHeight: 44,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-    paddingHorizontal: spacing.sm,
-    borderRadius: radius.sm,
-  },
-  selectorTriggerPressed: { backgroundColor: colors.surfaceSubtle },
-  selectorText: {
-    flexShrink: 1,
-    color: colors.inkSoft,
-    fontSize: 12,
-    fontWeight: "600",
-  },
-  attachmentButton: {
-    width: 44,
-    height: 44,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: radius.md,
-    flexShrink: 0,
-  },
-  skillButton: { width: 32 },
-  controlDisabled: { opacity: 0.5 },
-  sendButton: {
-    width: 44,
-    height: 44,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: radius.md,
-    backgroundColor: colors.accent,
-  },
-  stopButton: { backgroundColor: colors.danger, overflow: "hidden" },
-  stopStatus: {
-    color: colors.inkSoft,
-    fontSize: 12,
-    paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.sm,
-  },
-  sendDisabled: { backgroundColor: colors.accentDisabled },
-  sendPressed: { opacity: 0.78 },
 });

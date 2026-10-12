@@ -1,6 +1,5 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Pressable, Text } from "react-native";
 import type { TFunction } from "i18next";
 import { PreviewModal } from "../components/PreviewModal";
 import type { PreviewState } from "../useFileDownload";

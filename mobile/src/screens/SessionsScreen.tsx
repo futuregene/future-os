@@ -61,9 +61,6 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const Alert = useAppDialog(active);
   const { t, i18n } = useTranslation();
   const remote = useRemote();
-  const selectedDesktop =
-    remote.desktops.find((desktop) => desktop.pairId === remote.credentials?.pairId) ??
-    remote.desktops[0];
   const [tab, setTabState] = useState<Tab>(lastTab);
   /**
    * Which desktops the session list shows. Kept for the life of the screen: a

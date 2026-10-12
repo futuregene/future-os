@@ -1,241 +1,20 @@
+import { useOlderHistory } from "./timeline/useOlderHistory";
+import { compactionTerminalOf, useCompactionOutcomes } from "./timeline/useCompactionOutcomes";
+import { HISTORY_PAGE_USER_EXCHANGES, HISTORY_TAIL_CURSOR, readHistoryPage, latestTimelineWindow, retainOlderHistoryPrefix, diagnosticError } from "./timeline/historyPaging";
+import type { HistoryPagingState } from "./timeline/historyPaging";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 import type { RemoteClient } from "./client";
 import { fetchEventsSince } from "./replay";
-import { requestReadPage } from "./readPages";
+
 import type { RunCursor } from "./runCursor";
-import {
-  SyncEngine,
-  type ReconcileReason,
-  type TimelineSyncStatus,
-} from "./syncEngine";
-import {
-  emptyTimeline,
-  markApprovalDecision,
-  mergeHistoryAttachments,
-  timelineFromEntries,
-  type TimelineState,
-} from "./timeline";
-import type { EntriesData, HistoryEntry, RemoteSessionState, StreamEvent, CompactionOutcome } from "./types";
+import { SyncEngine, type ReconcileReason, type TimelineSyncStatus } from "./syncEngine";
+import { emptyTimeline, markApprovalDecision, mergeHistoryAttachments, timelineFromEntries, type TimelineState } from "./timeline";
+import type { HistoryEntry, RemoteSessionState, StreamEvent } from "./types";
+export { compactionTerminalOf, COMPACTION_TERMINAL_TIMEOUT_MS } from "./timeline/useCompactionOutcomes";
 
 const TIMELINE_LOAD_TIMEOUT_MS = 15_000;
-/** Manual compaction waits for its terminal event, not for the summary itself. */
-export const COMPACTION_TERMINAL_TIMEOUT_MS = 30 * 60 * 1000;
-
-/**
- * The terminal compaction event behind an operation id.
- *
- * `compaction_end` is deliberately absent: it is the released-journal
- * compatibility marker and carries no operation id from the async path.
- */
-export function compactionTerminalOf(
-  event: StreamEvent,
-): { operationId: string; outcome: CompactionOutcome } | null {
-  if (
-    event.type !== "compaction_committed"
-    && event.type !== "compaction_failed"
-    && event.type !== "compaction_unchanged"
-  )
-    return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(event.data);
-  } catch {
-    return null;
-  }
-  const payload = (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
-  const operationId = typeof payload.operation_id === "string" ? payload.operation_id : "";
-  if (!operationId) return null;
-  if (event.type === "compaction_failed") {
-    return {
-      operationId,
-      outcome: {
-        status: "failed",
-        ...(typeof payload.error === "string" ? { error: payload.error } : {}),
-      },
-    };
-  }
-  if (event.type === "compaction_unchanged") {
-    return {
-      operationId,
-      outcome: {
-        status: "unchanged",
-        alreadyCompacted: payload.already_compacted === true,
-        reused: payload.reused === true,
-      },
-    };
-  }
-  return { operationId, outcome: { status: "committed" } };
-}
-// One deadline covers transport retries AND waiting behind a replay. Expiry
-// cancels the transaction, so late responses/queued mutations cannot skip pages.
-const HISTORY_PAGE_TIMEOUT_MS = 30_000;
-// An exchange can contain hundreds of tool steps. Bound both the first paint
-// and each older-history pull to the same small window.
-const HISTORY_PAGE_USER_EXCHANGES = 3;
-const HISTORY_TAIL_CURSOR = Number.MAX_SAFE_INTEGER;
-
-async function readHistoryPage(
-  client: RemoteClient,
-  sessionId: string,
-  before: number,
-  isCurrent: () => boolean,
-  untrimmed = false,
-): Promise<EntriesData> {
-  const response = await requestReadPage<EntriesData>(client, {
-    type: "get_session_entries", sessionId, before, limit: HISTORY_PAGE_USER_EXCHANGES,
-    // The bridge's byte-budget trim sheds whole oldest exchanges from a
-    // backward page; the gap-fill integrity check below needs the page to
-    // end flush with the requested cursor, so it opts out explicitly.
-    ...(untrimmed ? { untrimmed: true } : {}),
-  }, sessionId, isCurrent);
-  return response.data;
-}
-
-type HistoryPagingState = NonNullable<TimelineState["historyWindow"]> & { loading: boolean };
-
-function latestTimelineWindow(
-  timeline: TimelineState,
-  userExchangeCount: number,
-): TimelineState {
-  let remaining = userExchangeCount;
-  let start = 0;
-  for (let index = timeline.items.length - 1; index >= 0; index -= 1) {
-    const item = timeline.items[index];
-    if (item?.kind !== "message" || item.role !== "user") continue;
-    remaining -= 1;
-    if (remaining === 0) {
-      start = index;
-      break;
-    }
-  }
-  if (remaining > 0 || start === 0) return timeline;
-  const items = timeline.items.slice(start);
-  const visibleIds = new Set(items.map((item) => item.id));
-  return {
-    ...timeline,
-    items,
-    durableItemIds: new Set(
-      [...(timeline.durableItemIds ?? [])].filter((id) => visibleIds.has(id)),
-    ),
-  };
-}
-
-function prependHistoryPage(
-  live: TimelineState,
-  older: TimelineState,
-): TimelineState {
-  const liveIds = new Set(live.items.map((item) => item.id));
-  const olderItems = older.items.filter((item) => !liveIds.has(item.id));
-  return {
-    ...live,
-    items: [...olderItems, ...live.items],
-    durableItemIds: new Set([
-      ...(live.durableItemIds ?? []),
-      ...(older.durableItemIds ?? []),
-    ]),
-  };
-}
-
-/** A page is complete when the authoritative sync lane publishes its merge.
- * React rendering and native layout are deliberately outside this contract.
- */
-function commitHistoryPage(
-  engine: SyncEngine,
-  sessionId: string,
-  older: TimelineState,
-  isCurrent: () => boolean,
-  signal: AbortSignal,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let applied = false;
-    const cleanup = () => {
-      unsubscribe();
-      signal.removeEventListener("abort", abort);
-    };
-    const abort = () => {
-      cleanup();
-      reject(new Error("history_page_cancelled"));
-    };
-    const unsubscribe = engine.subscribe((commit) => {
-      if (commit.sessionId !== sessionId || !applied) return;
-      cleanup();
-      resolve();
-    });
-    signal.addEventListener("abort", abort);
-    if (!isCurrent()) {
-      abort();
-      return;
-    }
-    engine.mutate(sessionId, (live) => {
-      if (!isCurrent()) {
-        abort();
-        return live;
-      }
-      applied = true;
-      return prependHistoryPage(live, older);
-    });
-  });
-}
-
-/** Replace the loaded tail without evicting a contiguous older prefix. A long
- * exchange can make the bridge return only the next exchange: in that case
- * the durable entry cursor, not a shared UI row, proves the pages are adjacent. */
-function retainOlderHistoryPrefix(
-  existing: TimelineState | null,
-  latest: TimelineState,
-  adjacent: boolean,
-): TimelineState {
-  if (!existing || latest.items.length === 0) return latest;
-  const latestIds = new Set(latest.items.map((item) => item.id));
-  const latestRuns = new Set(latest.items.flatMap(item =>
-    item.kind === "message" && item.runId ? [`${item.role}:${item.runId}`] : [],
-  ));
-  // A just-acknowledged prompt has a local id until history arrives. Bind it
-  // by role + run, never by text (repeated prompts are distinct exchanges).
-  const overlap = existing.items.findIndex(item => latestIds.has(item.id) ||
-    (adjacent && item.kind === "message" && !!item.runId && latestRuns.has(`${item.role}:${item.runId}`)),
-  );
-  if (overlap === 0 || (overlap < 0 && !adjacent)) return latest;
-  const durableRuns = new Set(existing.items.flatMap(item =>
-    existing.durableItemIds?.has(item.id) && item.runId ? [item.runId] : [],
-  ));
-  const prefix = overlap < 0
-    ? existing.items.filter(item => existing.durableItemIds?.has(item.id) ||
-      (!!item.runId && durableRuns.has(item.runId)))
-    : existing.items.slice(0, overlap);
-  if (prefix.length === 0) return latest;
-  return {
-    ...latest,
-    items: [...prefix, ...latest.items],
-    durableItemIds: new Set([
-      ...(latest.durableItemIds ?? []),
-      ...prefix
-        .filter((item) => existing.durableItemIds?.has(item.id))
-        .map((item) => item.id),
-    ]),
-  };
-}
-
-function diagnosticError(error: unknown): {
-  name?: string;
-  message: string;
-  code?: unknown;
-} {
-  if (error instanceof Error) {
-    return {
-      name: error.name,
-      message: error.message,
-      ...(error.cause &&
-      typeof error.cause === "object" &&
-      "code" in error.cause
-        ? { code: (error.cause as { code?: unknown }).code }
-        : {}),
-    };
-  }
-  return { message: String(error) };
-}
 
 interface TimelineControllerOptions {
   clientRef: MutableRefObject<RemoteClient | null>;
@@ -274,23 +53,11 @@ export function useTimelineController({
   const cursorsRef = useRef<Record<string, RunCursor>>({});
   const streamingRef = useRef<Record<string, boolean>>({});
   const compactingRef = useRef<Record<string, boolean>>({});
-  // Manual compaction is asynchronous: the request returns before the summary
-  // runs, so the waiter and the event race in both directions. Waiters are
-  // keyed by operation id (a replayed older operation can never settle a new
-  // request), and a terminal event that arrives first is buffered per session
-  // until its initiator correlates it.
-  const compactionWaitersRef = useRef<
-    Map<string, { sessionId: string; promise: Promise<CompactionOutcome>; settle: (outcome: CompactionOutcome) => void }>
-  >(new Map());
-  const compactionTerminalsRef = useRef<Map<string, CompactionOutcome>>(new Map());
-  const cancelCompactionWaiters = useCallback(() => {
-    for (const waiter of [...compactionWaitersRef.current.values()]) waiter.settle({ status: "cancelled" });
-    compactionTerminalsRef.current.clear();
-  }, []);
-  useEffect(() => cancelCompactionWaiters, [cancelCompactionWaiters]);
   const historyPagingRef = useRef<Record<string, HistoryPagingState>>({});
   const committedHistoryRef = useRef<Record<string, TimelineState["historyWindow"]>>({});
   const historyEpochRef = useRef(0);
+  const { compactionWaitersRef, compactionTerminalsRef, cancelCompactionWaiters, awaitCompactionOutcome }
+    = useCompactionOutcomes({ clientRef, selectedRef, syncEngineRef, historyEpochRef });
   const olderRequestRef = useRef<{
     sessionId: string;
     controller: AbortController;
@@ -423,13 +190,7 @@ export function useTimelineController({
       syncEngineRef.current?.event(sid, event);
       if (event.type === "agent_end") void refreshSessions();
     },
-    [
-      reconcileSession,
-      refreshModels,
-      refreshSessions,
-      selectedRef,
-      setTitleOverrides,
-    ],
+    [compactionTerminalsRef, compactionWaitersRef, reconcileSession, refreshModels, refreshSessions, selectedRef, setTitleOverrides],
   );
 
   const loadHistory = useCallback(
@@ -562,114 +323,8 @@ export function useTimelineController({
     [clientRef, selectedRef],
   );
 
-  const loadOlderTimeline = useCallback(async () => {
-    const sessionId = selectedRef.current;
-    const current = historyPagingRef.current[sessionId];
-    const client = clientRef.current;
-    const engine = syncEngineRef.current;
-    if (
-      !sessionId ||
-      !client ||
-      !engine ||
-      !current?.hasMore ||
-      current.loading
-    )
-      return false;
-
-    const controller = new AbortController();
-    olderRequestRef.current?.controller.abort();
-    olderRequestRef.current = { sessionId, controller };
-    const loading = { ...current, loading: true };
-    historyPagingRef.current[sessionId] = loading;
-    setHistoryPaging((previous) => ({ ...previous, [sessionId]: loading }));
-    const isCurrent = () =>
-      !controller.signal.aborted &&
-      historyPagingRef.current[sessionId] === loading &&
-      clientRef.current === client &&
-      selectedRef.current === sessionId &&
-      syncEngineRef.current === engine;
-    const timeout = setTimeout(
-      () => controller.abort(),
-      HISTORY_PAGE_TIMEOUT_MS,
-    );
-    let onAbort = () => {};
-    const cancelled = new Promise<never>((_resolve, reject) => {
-      onAbort = () => reject(new Error("history_page_cancelled"));
-      controller.signal.addEventListener("abort", onAbort);
-    });
-    try {
-      const response = await Promise.race([
-        requestReadPage<EntriesData>(
-          client,
-          {
-            type: "get_session_entries",
-            sessionId,
-            before: current.nextBefore,
-            limit: HISTORY_PAGE_USER_EXCHANGES,
-          },
-          sessionId,
-          isCurrent,
-        ),
-        cancelled,
-      ]);
-      // Reopening/reconciling may have replaced this cursor while the request
-      // was in flight. Never install an old page into that new paging window.
-      if (!isCurrent()) return false;
-      const entries = response.data.entries ?? [];
-      const nextBefore = response.data.nextOffset ?? 0;
-      if (
-        response.data.hasMore &&
-        (nextBefore <= 0 || nextBefore >= current.nextBefore)
-      ) {
-        throw new Error("history_backward_cursor_not_advancing");
-      }
-      const older = timelineFromEntries(entries);
-      await Promise.race([
-        commitHistoryPage(
-          engine,
-          sessionId,
-          older,
-          isCurrent,
-          controller.signal,
-        ),
-        cancelled,
-      ]);
-      if (!isCurrent()) return false;
-      const next: HistoryPagingState = {
-        nextBefore,
-        endOffset: current.endOffset,
-        hasMore: response.data.hasMore === true && nextBefore > 0,
-        loading: false,
-      };
-      historyPagingRef.current[sessionId] = next;
-      setHistoryPaging((previous) => ({ ...previous, [sessionId]: next }));
-      // Advance the cursor only with a committed page, never with a merely
-      // downloaded page which a restart or stalled replay could discard.
-      return older.items.map((item) => item.id);
-    } catch (error) {
-      if (historyPagingRef.current[sessionId] !== loading) return false;
-      const failed = { ...current, loading: false };
-      historyPagingRef.current[sessionId] = failed;
-      setHistoryPaging((previous) => ({ ...previous, [sessionId]: failed }));
-      console.error("[remote] older history page failed", {
-        sessionId,
-        before: current.nextBefore,
-        error: diagnosticError(error),
-      });
-      return false;
-    } finally {
-      clearTimeout(timeout);
-      controller.signal.removeEventListener("abort", onAbort);
-      if (olderRequestRef.current?.controller === controller)
-        olderRequestRef.current = null;
-      // Also fences a queued mutation if this operation failed before commit.
-      controller.abort();
-      if (historyPagingRef.current[sessionId] === loading) {
-        historyPagingRef.current[sessionId] = current;
-        setHistoryPaging((previous) => ({ ...previous, [sessionId]: current }));
-      }
-    }
-  }, [clientRef, selectedRef]);
+  const loadOlderTimeline = useOlderHistory({ clientRef, selectedRef, syncEngineRef,
+    historyPagingRef, setHistoryPaging, olderRequestRef });
 
   const pruneTimelines = useCallback((selected: string) => {
     const removed = syncEngineRef.current?.pruneCache(selected) ?? [];
@@ -857,7 +512,7 @@ export function useTimelineController({
       syncEngineRef.current = null;
       engine.clear();
     };
-  }, [clientRef, loadHistory, selectedRef]);
+  }, [clientRef, compactionWaitersRef, loadHistory, selectedRef]);
 
   useEffect(() => {
     hydrateAttachmentsRef.current = async (sessionId) => {
@@ -900,69 +555,6 @@ export function useTimelineController({
       engine.reconcile(sessionId, "snapshot-flip", run ?? undefined);
     },
     [],
-  );
-
-  /**
-   * Await the terminal event of the compaction behind `operationId`.
-   *
-   * A timeout is reported as `timeout`, not `failed`: an unobserved terminal
-   * event (backgrounded app, dropped stream, long summary) proves nothing
-   * about the operation itself.
-   */
-  const awaitCompactionOutcome = useCallback(
-    (
-      sessionId: string,
-      operationId: string,
-      timeoutMs: number = COMPACTION_TERMINAL_TIMEOUT_MS,
-      signal?: AbortSignal,
-    ): Promise<CompactionOutcome> => {
-      if (signal?.aborted) return Promise.resolve({ status: "cancelled" });
-      const key = JSON.stringify([sessionId, operationId]);
-      const buffered = compactionTerminalsRef.current.get(key);
-      if (buffered) {
-        compactionTerminalsRef.current.delete(key);
-        return Promise.resolve(buffered);
-      }
-      const existing = compactionWaitersRef.current.get(key);
-      if (existing) return existing.promise;
-      let resolve!: (outcome: CompactionOutcome) => void;
-      const promise = new Promise<CompactionOutcome>(done => { resolve = done; });
-      let finished = false;
-      let pollTimer: ReturnType<typeof setTimeout> | undefined;
-      const settle = (outcome: CompactionOutcome) => {
-        if (finished) return;
-        finished = true;
-        clearTimeout(timer);
-        clearTimeout(pollTimer);
-        signal?.removeEventListener("abort", cancel);
-        compactionWaitersRef.current.delete(key);
-        resolve(outcome);
-      };
-      const cancel = () => settle({ status: "cancelled" });
-      const timer = setTimeout(() => settle({ status: "timeout" }), timeoutMs);
-      compactionWaitersRef.current.set(key, { sessionId, promise, settle });
-      signal?.addEventListener("abort", cancel, { once: true });
-      // Recover lost started AND terminal frames while staying on this screen.
-      // One bounded, read-only probe at a time; never retry the write operation.
-      const epoch = historyEpochRef.current;
-      const probe = async () => {
-        const client = clientRef.current;
-        if (finished) return;
-        if (client && selectedRef.current === sessionId && AppState.currentState !== "background") {
-          try {
-            const { data } = await client.requestRetry<RemoteSessionState>({ type: "get_state", sessionId }, sessionId);
-            if (!finished && clientRef.current === client && historyEpochRef.current === epoch && data.isCompacting === false) {
-              settle({ status: "unobserved" });
-              syncEngineRef.current?.reconcile(sessionId, "resend");
-            }
-          } catch { /* Unreachable is not idle; keep waiting within the deadline. */ }
-        }
-        if (!finished) pollTimer = setTimeout(() => { void probe(); }, 5_000);
-      };
-      pollTimer = setTimeout(() => { void probe(); }, 5_000);
-      return promise;
-    },
-    [clientRef, selectedRef],
   );
 
   const resetTimeline = useCallback(() => {
