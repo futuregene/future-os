@@ -1,4 +1,4 @@
-import { MoreHorizontal, Pin, Trash2 } from "lucide-react";
+import { CheckSquare, MoreHorizontal, Pin, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useDropUpMenu } from "../../components/layout/hooks/useDropUpMenu";
@@ -10,10 +10,17 @@ import { deleteRemoteWorkspace, setRemoteWorkspacePinned } from "./remotePeerCli
 /**
  * The actions a workspace on another machine supports.
  *
- * The same menu the local heading has, reduced to what the host accepts: pin and
- * remove. "Reveal in file manager" is absent because the folder is on *that*
- * machine — there is nothing here to open — and an item that did nothing when
- * clicked would be worse than its absence.
+ * The same menu the local heading has, reduced to what the host accepts: pin,
+ * select its conversations, and remove. "Reveal in file manager" is absent
+ * because the folder is on *that* machine — there is nothing here to open — and
+ * an item that did nothing when clicked would be worse than its absence.
+ *
+ * **One pin item, showing what the host is actually in.** The menu used to offer
+ * "pin" and "unpin" side by side, which is not a choice: the host's own state
+ * decides which of the two the user could possibly want, and a menu that offers
+ * both asks them to work out which one is the no-op. The state comes from the
+ * host with the row (`workspacePinned` on its sessions) — the same field the list
+ * orders the group by — so the item and the order cannot disagree.
  *
  * Like the remote conversation menu, an item does not dismiss before running: a
  * host command can fail on the wire, and a message that vanished with the menu
@@ -23,12 +30,18 @@ export function RemoteWorkspaceMenu({
   desktopId,
   name,
   onChanged,
+  onSelect,
+  pinned,
   workspaceId,
 }: {
   desktopId: string;
   name: string;
   /** Re-read the host's catalogue once the change has landed. */
   onChanged: () => void;
+  /** Mark this workspace's conversations for a batch action. */
+  onSelect?: () => void;
+  /** Whether the host reports this workspace as pinned. */
+  pinned: boolean;
   workspaceId: string;
 }) {
   const { t } = useTranslation("layout");
@@ -78,17 +91,35 @@ export function RemoteWorkspaceMenu({
       {open
         ? (
             <MenuPanel
-              className={cn("absolute right-1 z-40 w-40 p-1", dropUp ? "bottom-7" : "top-7")}
+              className={cn("absolute right-1 z-40 w-max min-w-36 p-1", dropUp ? "bottom-7" : "top-7")}
               ref={menuRef}
               role="menu"
             >
               {error ? <p className="px-2 py-1 text-xs text-danger">{error}</p> : null}
-              <Item disabled={busy} icon={<Pin className="size-3.5" />} onClick={() => void run(() => setRemoteWorkspacePinned(desktopId, workspaceId, true))}>
-                {t("activityRail.pin")}
+              <Item
+                disabled={busy}
+                icon={<Pin className="size-3.5" />}
+                onClick={() => void run(() => setRemoteWorkspacePinned(desktopId, workspaceId, !pinned))}
+              >
+                {pinned ? t("activityRail.unpin") : t("activityRail.pin")}
               </Item>
-              <Item disabled={busy} icon={<Pin className="size-3.5" />} onClick={() => void run(() => setRemoteWorkspacePinned(desktopId, workspaceId, false))}>
-                {t("activityRail.unpin")}
-              </Item>
+              {/* The same item the local heading's menu carries, in the same
+                  place. Offered only outside selection mode, as there: the
+                  action is *entering* it. */}
+              {onSelect
+                ? (
+                    <Item
+                      disabled={busy}
+                      icon={<CheckSquare className="size-3.5" />}
+                      onClick={() => {
+                        setOpen(false);
+                        onSelect();
+                      }}
+                    >
+                      {t("activityRail.selectThreads")}
+                    </Item>
+                  )
+                : null}
               <Item danger disabled={busy} icon={<Trash2 className="size-3.5" />} onClick={() => void run(() => deleteRemoteWorkspace(desktopId, workspaceId))}>
                 {t("activityRail.delete")}
               </Item>

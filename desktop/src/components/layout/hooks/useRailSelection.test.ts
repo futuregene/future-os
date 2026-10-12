@@ -16,10 +16,14 @@ describe("rail selection", () => {
     let visibleThreads = [first, second];
     let threadScopes = new Map([[first.id, "chat"], [second.id, "chat"]]);
     const onBatchDeleteThreads = vi.fn();
+    const onDeleteRemoteConversations = vi.fn();
     const h = renderHook(() => useRailSelection({
       onBatchDeleteThreads,
+      onDeleteRemoteConversations,
       onSelectThread: vi.fn(),
+      remoteScopes: new Map(),
       threadScopes,
+      visibleRemoteRows: [],
       visibleThreads,
     }));
 
@@ -45,8 +49,11 @@ describe("rail selection", () => {
     const onBatchDeleteThreads = vi.fn();
     const h = renderHook(() => useRailSelection({
       onBatchDeleteThreads,
+      onDeleteRemoteConversations: vi.fn(),
       onSelectThread: vi.fn(),
+      remoteScopes: new Map(),
       threadScopes: new Map([[plain.id, "chat"], [pinned.id, "chat"]]),
+      visibleRemoteRows: [],
       visibleThreads: [plain, pinned],
     }));
 
@@ -66,8 +73,11 @@ describe("rail selection", () => {
     const item = thread("item");
     const h = renderHook(() => useRailSelection({
       onBatchDeleteThreads: vi.fn(),
+      onDeleteRemoteConversations: vi.fn(),
       onSelectThread: vi.fn(),
+      remoteScopes: new Map(),
       threadScopes: new Map([[item.id, "chat"]]),
+      visibleRemoteRows: [],
       visibleThreads: [item],
     }));
 
@@ -109,8 +119,11 @@ describe("rail selection", () => {
     const onSelectThread = vi.fn();
     const h = renderHook(() => useRailSelection({
       onBatchDeleteThreads: vi.fn(),
+      onDeleteRemoteConversations: vi.fn(),
       onSelectThread,
+      remoteScopes: new Map(),
       threadScopes: new Map([[item.id, "chat"]]),
+      visibleRemoteRows: [],
       visibleThreads: [item],
     }));
 

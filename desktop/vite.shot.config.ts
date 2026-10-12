@@ -28,6 +28,18 @@ const MOCKS: Record<string, string> = {
 };
 
 /**
+ * A filesystem path as Vite's `/@fs/` URL.
+ *
+ * The separators matter: `/@fs/` takes a POSIX-style absolute path, and a
+ * Windows `path.join` result (`D:\repo\desktop\shot\mock\core.ts`) produces
+ * `/@fsD:\repo\...` — which resolves to nothing, so the import fails silently in
+ * the transform and the harness page boots blank. On POSIX this is a no-op.
+ */
+function fsUrl(target: string): string {
+  return `/@fs/${target.replace(/\\/g, "/")}`;
+}
+
+/**
  * Rewrite the Tauri imports in the app's own module text rather than through
  * `resolve.alias`: Vite pre-bundles bare specifiers during dependency
  * optimization, before the alias resolver runs, so an alias alone would leave
@@ -45,7 +57,7 @@ function tauriMock() {
         for (const quote of ["\"", "'"]) {
           const from = `${quote}${specifier}${quote}`;
           if (out.includes(from))
-            out = out.split(from).join(`${quote}/@fs${target}${quote}`);
+            out = out.split(from).join(`${quote}${fsUrl(target)}${quote}`);
         }
       }
       return out === code ? null : out;

@@ -276,17 +276,30 @@ async function mountPicker(settings: Parameters<typeof RemoteConversationSetting
   await act(async () => {
     root.render(<RemoteConversationSettings settings={settings} />);
   });
-  const select = (label: string) => container.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)!;
+  const MODEL_LABEL = "Model for this conversation (on that computer)";
+  const THINKING_LABEL = "Thinking level (on that computer)";
+  // This app's own dropdown, not a native `<select>`: a trigger with the current
+  // value, whose menu is a listbox of items.
+  const trigger = (label: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+  // Rows inside an open `SelectMenu` panel, which is the absolutely positioned
+  // surface every dropdown in this app uses.
+  const menuItems = () => [...container.querySelectorAll<HTMLButtonElement>("div.absolute.bottom-9 button")];
   return {
     container,
-    model: () => select("Model for this conversation (on that computer)"),
-    thinking: () => select("Thinking level (on that computer)"),
-    choose: async (element: HTMLSelectElement, value: string) => {
-      await act(async () => {
-        const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
-        setter.call(element, value);
-        element.dispatchEvent(new Event("change", { bubbles: true }));
-      });
+    menuItems,
+    model: () => trigger(MODEL_LABEL),
+    modelLabel: () => trigger(MODEL_LABEL).textContent,
+    thinking: () => trigger(THINKING_LABEL),
+    thinkingLabel: () => trigger(THINKING_LABEL).textContent,
+    open: async (label: string) => {
+      await act(async () => trigger(label).click());
+    },
+    /** Open a control and pick the item whose text starts with `text`. */
+    choose: async (label: string, text: string) => {
+      await act(async () => trigger(label).click());
+      const item = menuItems().find(node => (node.textContent ?? "").startsWith(text));
+      expect(item, `no menu item starts with ${text}: ${menuItems().map(node => node.textContent).join(" | ")}`).toBeTruthy();
+      await act(async () => item!.click());
     },
     unmount: async () => {
       await act(async () => root.unmount());
@@ -312,11 +325,15 @@ it("offers the host's models, and reports a choice", async () => {
   const settings = state();
   const view = await mountPicker(settings);
 
-  expect(view.model().value).toBe("openai/gpt-5");
-  expect([...view.model().options].map(option => option.value)).toEqual(["openai/gpt-5", "openrouter/auto"]);
-
-  await view.choose(view.model(), "openrouter/auto");
+  // The trigger is the current model, at the local composer's shape.
+  expect(view.modelLabel()).toContain("GPT-5");
+  await view.open("Model for this conversation (on that computer)");
+  expect(view.menuItems().map(node => node.textContent)).toEqual(["GPT-5openai", "Autoopenrouter"]);
+  await act(async () => view.menuItems()[1]!.click());
   expect(settings.setModel).toHaveBeenCalledWith("openrouter/auto");
+  // The menu closes on a choice; the trigger shows the host's own value until it
+  // announces the new one.
+  expect(view.container.querySelector("div.absolute.bottom-9")).toBeNull();
   await view.unmount();
 });
 
@@ -324,24 +341,25 @@ it("offers the thinking levels, and reports a choice", async () => {
   const settings = state({ thinkingLevel: "off" });
   const view = await mountPicker(settings);
 
-  expect(view.thinking().value).toBe("off");
-  await view.choose(view.thinking(), "high");
+  expect(view.thinkingLabel()).toContain("Off");
+  await view.choose("Thinking level (on that computer)", "High");
   expect(settings.setThinkingLevel).toHaveBeenCalledWith("high");
   await view.unmount();
 });
 
 /**
  * The host can be using a model its own catalogue does not list — one it
- * resolves itself, or one removed there since. Keeping it as an option is what
- * stops the select from silently showing the first entry as though it were the
+ * resolves itself, or one removed there since. Keeping it on screen is what
+ * stops the control from silently showing the first entry as though it were the
  * current model.
  */
 it("keeps a current model the catalogue does not list", async () => {
   const view = await mountPicker(state({ model: "internal/house-model" }));
 
-  const values = [...view.model().options].map(option => option.value);
-  expect(values[0]).toBe("internal/house-model");
-  expect(view.model().value).toBe("internal/house-model");
+  expect(view.modelLabel()).toContain("internal/house-model");
+  await view.open("Model for this conversation (on that computer)");
+  // It is also selectable, and first — it is the conversation's current value.
+  expect(view.menuItems()[0]!.textContent).toContain("internal/house-model");
   await view.unmount();
 });
 

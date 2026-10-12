@@ -3,11 +3,9 @@ import type { SkillCandidate } from "../../integrations/skills/skillsClient";
 import type { RemoteCommand } from "./remoteCommands";
 import type { RemotePeer, RemoteUpload } from "./remotePeerClient";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Paperclip, X } from "lucide-react";
-import { useState } from "react";
+import { ArrowUp, Loader2, Paperclip, Square, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Button } from "../../components/ui/Button";
-import { TextInput } from "../../components/ui/TextInput";
 import { readNativeClipboardFilePaths, savePastedFile, savePastedImage } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
 import { imageExtensionFromMime } from "../agent/attachments";
@@ -19,6 +17,24 @@ import { RemoteSlashMenu } from "./RemoteSlashMenu";
 
 /** How many files one paste may stage. The rest are reported, not silently dropped. */
 const MAX_PASTED_FILES = 4;
+
+/**
+ * The field's ceiling, as the local editor's is: 40% of the window.
+ *
+ * A `<textarea>` does not grow with its content the way the local contenteditable
+ * editor does, so the height is set from `scrollHeight` on every edit. The
+ * ceiling is the sheet's own `max-h-[40vh]`; measuring in pixels here keeps one
+ * number in one place (a computed style read would duplicate it).
+ */
+const MAX_FIELD_HEIGHT_RATIO = 0.4;
+
+function growToContent(node: HTMLTextAreaElement): void {
+  // `auto` first: with the current height still applied, `scrollHeight` would be
+  // the *larger* of the content and the box, and a field never shrinks again.
+  node.style.height = "auto";
+  const ceiling = window.innerHeight * MAX_FIELD_HEIGHT_RATIO;
+  node.style.height = `${Math.min(node.scrollHeight, ceiling)}px`;
+}
 
 /**
  * The commands this composer offers after `/`, built from what the host accepts.
@@ -123,6 +139,7 @@ export function RemoteComposer({
 }) {
   const { t } = useTranslation("remotePeer");
   const [text, setText] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -177,7 +194,7 @@ export function RemoteComposer({
    * because that is the machine that will read the file. Text pastes are left to
    * the field.
    */
-  async function pasteFiles(event: React.ClipboardEvent<HTMLInputElement>) {
+  async function pasteFiles(event: React.ClipboardEvent<HTMLTextAreaElement>) {
     const data = event.clipboardData;
     if (!data || busy || uploading)
       return;
@@ -371,6 +388,14 @@ export function RemoteComposer({
   const slashGroups = query === null ? { commands: [] } : buildRemoteSlashMenu(query, commands);
   const [activeCommand, setActiveCommand] = useState(0);
 
+  // A draft that arrived from somewhere other than a keystroke — the skill card's
+  // insert, a cleared field — has to be measured too, or the box keeps the height
+  // of the text it no longer holds.
+  useEffect(() => {
+    if (textareaRef.current)
+      growToContent(textareaRef.current);
+  }, [text]);
+
   /** Ask the host for one command, then take its word out of the draft. */
   function chooseCommand(command: RemoteCommand) {
     setText(withoutSlashWord(text));
@@ -461,9 +486,21 @@ export function RemoteComposer({
             )
           : null}
         <div className="flex flex-col gap-1 px-1 pt-1">
-          <TextInput
+          {/* The field is the local composer's, wrapped around a plain textarea.
+              The local editor is a contenteditable div — it has the `@`, `/` and
+              `#` menus built into it — so the markup cannot be shared; what can
+              be shared is everything a reader sees: no inner border (the box's
+              own border is the shell's), the same padding and type, and the same
+              growth up to 40% of the window. A bordered `TextInput` inside a
+              bordered shell put a control inside a control and made the two
+              composers look like two different products. */}
+          <textarea
             aria-label={t("composerLabel")}
-            onChange={event => setText(event.target.value)}
+            className="max-h-[40vh] min-h-14 w-full resize-none overflow-y-auto whitespace-pre-wrap wrap-break-word bg-transparent px-2 py-1 text-sm leading-5 text-ink outline-none placeholder:text-ink-muted"
+            onChange={(event) => {
+              setText(event.target.value);
+              growToContent(event.currentTarget);
+            }}
             onPaste={event => void pasteFiles(event)}
             onKeyDown={(event) => {
               // The slash menu owns the arrows and Enter while it is open: the
@@ -493,6 +530,8 @@ export function RemoteComposer({
             placeholder={t("composerPlaceholder", {
               name: peer?.name ?? peer?.desktopId ?? "",
             })}
+            ref={textareaRef}
+            rows={1}
             value={text}
           />
           {/* The control row, in this app's own arrangement: attachment and the
@@ -521,22 +560,32 @@ export function RemoteComposer({
                 a conversation being answered on the host cannot take a second
                 prompt, and the host would refuse one. The button is disabled while
                 the abort is outstanding, so `disabled` is the single guard against
-                a second abort — there is no second in-flight check to make. */}
+                a second abort — there is no second in-flight check to make.
+                Icon buttons, at the local composer's size and colour: the same
+                two controls in the same place on both screens. */}
               {streaming && !text.trim() && uploads.length === 0
                 ? (
-                    <Button disabled={stopping} onClick={() => void stop()} size="sm" variant="secondary">
-                      {stopping ? t("stopping") : t("stop")}
-                    </Button>
+                    <button
+                      aria-label={stopping ? t("stopping") : t("stop")}
+                      className="inline-flex size-7 items-center justify-center rounded-md bg-ink text-surface transition-colors hover:bg-ink-soft disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={stopping}
+                      onClick={() => void stop()}
+                      title={stopping ? t("stopping") : t("stop")}
+                      type="button"
+                    >
+                      {stopping ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-3 fill-current" />}
+                    </button>
                   )
                 : (
-                    <Button
+                    <button
+                      aria-label={busy ? t("sending") : t("send")}
+                      className="inline-flex size-7 items-center justify-center rounded-md bg-accent text-white transition-colors hover:bg-accent-hover disabled:bg-accent-disabled"
                       disabled={(!text.trim() && uploads.length === 0) || busy || uploading || evaluating}
-                      size="sm"
+                      title={busy ? t("sending") : t("send")}
                       type="submit"
-                      variant="primary"
                     >
-                      {busy ? t("sending") : t("send")}
-                    </Button>
+                      {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArrowUp className="size-3.5" />}
+                    </button>
                   )}
             </div>
           </div>

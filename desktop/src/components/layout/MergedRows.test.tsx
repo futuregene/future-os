@@ -75,14 +75,20 @@ async function render(props: {
   onNewChatInWorkspace?: (desktopId: string, workspaceId: string) => void;
   onNewWorkspace?: () => void;
   onSelectChats?: () => void;
+  onSelectWorkspaceChats?: (groupKey: string) => void;
   onToggleChatSection?: () => void;
   onToggleWorkspace?: (key: string) => void;
   onToggleWorkspaceSection?: () => void;
   peers?: RemotePeer[];
-  pinnedWorkspaces?: ReadonlySet<string>;
+  remoteSelection?: {
+    selected: (conversation: MergedConversation) => boolean;
+    selectable: (conversation: MergedConversation) => boolean;
+    toggle: (conversation: MergedConversation) => void;
+  };
   renderLocalGroupHeader?: (workspaceId: string) => React.ReactNode;
   renderLocalRow: (thread: StoredThread, depth?: number, hasChildren?: boolean) => React.ReactNode;
   rows: MergedConversation[];
+  selectionMode?: boolean;
   threadById: Map<string, StoredThread>;
   workspaceSectionCollapsed?: boolean;
 }) {
@@ -104,14 +110,16 @@ async function render(props: {
         onOpenRemote={vi.fn()}
         onRenameRemote={vi.fn()}
         onSelectChats={props.onSelectChats}
+        onSelectWorkspaceChats={props.onSelectWorkspaceChats}
         onToggleChatSection={props.onToggleChatSection ?? vi.fn()}
         onToggleWorkspace={props.onToggleWorkspace ?? vi.fn()}
         onToggleWorkspaceSection={props.onToggleWorkspaceSection ?? vi.fn()}
         peers={props.peers ?? []}
-        pinnedWorkspaces={props.pinnedWorkspaces ?? new Set()}
+        remoteSelection={props.remoteSelection}
         renderLocalGroupHeader={props.renderLocalGroupHeader ?? (() => null)}
         renderLocalRow={props.renderLocalRow}
         rows={props.rows}
+        selectionMode={props.selectionMode ?? false}
         threadById={props.threadById}
         workspaceSectionCollapsed={props.workspaceSectionCollapsed ?? false}
       />,
@@ -432,10 +440,13 @@ it("folds this machine's workspace group by the key the local list uses", async 
  * The merged list ordered groups purely by recency and ignored the pin, so a
  * pinned workspace kept its marker on a group that never moved — a pin that does
  * nothing is worse than no pin, because the user believes they set something.
+ *
+ * The pin travels on the *row* now (`workspacePinned`), which is what lets a
+ * workspace on another machine lead this list too: the merged list never reads
+ * this machine's workspace store for a row it does not own.
  */
-it("leads with a pinned workspace", async () => {
+it("leads with a pinned workspace, whichever machine pinned it", async () => {
   const view = await render({
-    pinnedWorkspaces: new Set(["ws_1"]),
     renderLocalGroupHeader: workspaceId => <div data-testid="local-group-heading">{workspaceId}</div>,
     renderLocalRow: vi.fn(() => <div>row</div>),
     rows: [
@@ -447,6 +458,7 @@ it("leads with a pinned workspace", async () => {
         mode: "workspace",
         workspaceId: "ws_1",
         workspaceName: "pinned one",
+        workspacePinned: true,
       }),
       conversation({
         desktopId: "desktop_a",
@@ -470,6 +482,39 @@ it("leads with a pinned workspace", async () => {
     .map(node => node.textContent);
   expect(order).toEqual(["ws_1", "newer but unpinned"]);
   await view.unmount();
+
+  // The same rule for a host's workspace: it leads the list and its heading
+  // shows the pin, so the group that moved says why it moved.
+  const remotePinned = await render({
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [
+      conversation({
+        desktopId: null,
+        id: "ws_local",
+        key: "local::ws_local",
+        lastMessageAt: 9_000,
+        mode: "workspace",
+        workspaceId: "ws_1",
+        workspaceName: "newer but unpinned",
+      }),
+      conversation({
+        desktopId: "desktop_a",
+        id: "ws_remote",
+        key: "desktop_a::ws_remote",
+        lastMessageAt: 1_000,
+        mode: "workspace",
+        workspaceId: "ws_9",
+        workspaceName: "pinned there",
+        workspacePinned: true,
+      }),
+    ],
+    threadById: new Map([["ws_local", thread("ws_local")]]),
+  });
+  const remoteOrder = [...remotePinned.container.querySelectorAll("[data-testid='merged-group-heading']")]
+    .map(node => node.textContent);
+  expect(remoteOrder[0]).toBe("pinned there");
+  await remotePinned.unmount();
 });
 
 /** The machine's icon follows its name, so the name starts the heading. */
@@ -675,6 +720,68 @@ it("does not repeat the machine on a row whose group heading already names it", 
   await view.unmount();
 });
 
+/**
+ * The heading's controls are in the local heading's order.
+ *
+ * The remote heading had its "+" first and its menu second — the same two
+ * controls as the local heading, in the opposite order, which reads as a
+ * different set of affordances until you click each of them.
+ */
+it("puts the actions menu before the new-chat control, as the local heading does", async () => {
+  const view = await render({
+    onSelectWorkspaceChats: vi.fn(),
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [
+      conversation({
+        desktopId: "desktop_a",
+        id: "ws_remote",
+        key: "desktop_a::ws_remote",
+        mode: "workspace",
+        title: "theirs",
+        workspaceId: "ws_9",
+        workspaceName: "图表脚本",
+      }),
+    ],
+    threadById: new Map(),
+  });
+
+  const heading = view.container.querySelector("[data-testid='merged-group-heading']")!;
+  const header = heading.closest("div")!;
+  const menu = header.querySelector("button[aria-label^='Workspace actions']")!;
+  const add = header.querySelector("button[aria-label^='New chat in']")!;
+  // Measured, not read off a class list: "before" is a position.
+  expect(menu.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  await view.unmount();
+});
+
+/**
+ * A batch can hold a host's conversations too.
+ *
+ * The selection state is the rail's; what the list does per row is ask it,
+ * replace the run indicator with the same checkbox a local row shows, and tick
+ * rather than open on a click.
+ */
+it("takes the batch's checkbox on a host's row, and ticks instead of opening it", async () => {
+  const toggle = vi.fn();
+  const selectable = vi.fn(() => true);
+  const view = await render({
+    peers: [peer("desktop_a", "Studio iMac")],
+    remoteSelection: { selectable, selected: () => true, toggle },
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a", title: "a chat" })],
+    selectionMode: true,
+    threadById: new Map(),
+  });
+
+  const checkbox = view.container.querySelector<HTMLInputElement>("input[type='checkbox']")!;
+  expect(checkbox.checked).toBe(true);
+  await act(async () => checkbox.click());
+  expect(selectable).toHaveBeenCalled();
+  expect(toggle).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
 /** With one machine selected nothing needs naming, on a heading or a row. */
 it("drops the machine from headings too when one machine is selected", async () => {
   const view = await render({
@@ -708,12 +815,20 @@ it("drops the machine from headings too when one machine is selected", async () 
  * operation — so it appears only where this machine's rows are listed: under a
  * host's filter a menu that could only act on rows the filter has hidden would be
  * a control that does nothing.
+ *
+ * Offered whatever the filter shows, including a host's rows alone: a batch can
+ * hold a host's conversations — they carry the same checkbox a local row does —
+ * so the section that lists them is where it is entered from. What stays
+ * local-only is creation (a new workspace or chat is made on this machine, which
+ * under another device's filter the user could not see).
  */
-it("offers the chat section menu where this machine's rows are listed", async () => {
+it("offers the chat section menu in every mode, and the creation controls only where this machine's rows are", async () => {
   const onSelectChats = vi.fn();
+  const onNewChat = vi.fn();
   const rows = [conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a", title: "a chat" })];
 
   const all = await render({
+    onNewChat,
     onSelectChats,
     peers: [peer("desktop_a", "Studio iMac")],
     renderLocalRow: vi.fn(() => <div>row</div>),
@@ -725,16 +840,19 @@ it("offers the chat section menu where this machine's rows are listed", async ()
     [...all.container.querySelectorAll("button")].find(node => node.textContent === "Select chats")!.click();
   });
   expect(onSelectChats).toHaveBeenCalledTimes(1);
+  expect(all.container.querySelector("button[aria-label='New chat']")).not.toBeNull();
   await all.unmount();
 
   const remoteOnly = await render({
     filter: { kind: "device", desktopId: "desktop_a" },
+    onNewChat,
     onSelectChats,
     peers: [peer("desktop_a", "Studio iMac")],
     renderLocalRow: vi.fn(() => <div>row</div>),
     rows,
     threadById: new Map(),
   });
-  expect(remoteOnly.container.querySelector("button[aria-label='Chat section actions']")).toBeNull();
+  expect(remoteOnly.container.querySelector("button[aria-label='Chat section actions']")).not.toBeNull();
+  expect(remoteOnly.container.querySelector("button[aria-label='New chat']")).toBeNull();
   await remoteOnly.unmount();
 });

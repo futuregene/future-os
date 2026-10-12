@@ -218,6 +218,62 @@ pub async fn remote_peer_download_file(
     Ok(fetched.name)
 }
 
+/// Pull a file from a host into this machine's preview cache, and answer with the
+/// local path the overlay can read.
+///
+/// Two things this does that a save-as cannot. It asks for the host's *preview*
+/// variant, which is what a host resizes an image down to and validates before
+/// sending — the same variant the phone previews with. And when the host refuses
+/// that variant it retries with the original bytes: the host's preview vocabulary
+/// is the *phone's* (a handful of text extensions plus images) while this app's
+/// overlay reads whatever the operating system can hand it, so a refusal there is
+/// not "this file cannot be previewed here". The overlay decides what is
+/// previewable; this only fetches.
+///
+/// The name the host reports is what the caller shows and what the cache keeps,
+/// because the overlay picks its renderer off the extension.
+#[tauri::command]
+pub async fn remote_peer_preview_file(
+    desktop_id: String,
+    session_id: String,
+    path: String,
+    name: Option<String>,
+) -> Result<Value, crate::AppError> {
+    let fetched = match crate::remote_peer::transfer::download(
+        &desktop_id,
+        &session_id,
+        &path,
+        name.as_deref(),
+        "preview",
+    )
+    .await
+    {
+        Ok(fetched) => fetched,
+        Err(_) => {
+            crate::remote_peer::transfer::download(
+                &desktop_id,
+                &session_id,
+                &path,
+                name.as_deref(),
+                "original",
+            )
+            .await?
+        }
+    };
+    let destination = crate::remote_peer::transfer::preview_cache_path(
+        &desktop_id,
+        &session_id,
+        &path,
+        &fetched.name,
+    )?;
+    crate::remote_peer::transfer::write_atomically(&destination, &fetched.bytes)?;
+    crate::remote_peer::transfer::prune_preview_cache();
+    Ok(serde_json::json!({
+        "name": fetched.name,
+        "path": destination.display().to_string(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,6 +313,7 @@ mod tests {
                 remote_peer_workspaces,
                 remote_peer_list_files,
                 remote_peer_download_file,
+                remote_peer_preview_file,
                 remote_peer_upload_file,
                 remote_peer_request,
             ],
@@ -284,6 +341,15 @@ mod tests {
                         "name": "n",
                         "variant": "original",
                         "destination": 1,
+                    }),
+                ),
+                (
+                    "remote_peer_preview_file",
+                    serde_json::json!({
+                        "desktopId": "d",
+                        "sessionId": "s",
+                        "path": "p",
+                        "name": 1,
                     }),
                 ),
                 (
@@ -568,6 +634,94 @@ mod tests {
         // The name the host chose, which is what the UI reports as saved.
         assert_eq!(name, "report.txt");
         assert_eq!(std::fs::read(&destination).expect("read back"), contents);
+
+        teardown().await;
+    }
+
+    /// A preview is pulled into this machine's cache, under the host's own name.
+    ///
+    /// Two things are asserted together because they are one contract: the local
+    /// path is readable (that is what the overlay is handed), and it *ends with the
+    /// host's name* — the overlay picks its renderer from the extension, so a
+    /// cache entry that lost it would open every image as an unreadable blob.
+    #[tokio::test]
+    async fn a_preview_lands_in_this_machines_cache_under_the_hosts_name() {
+        let (_home, fx) = start("peer-cmd-preview").await;
+        let desktop_id = fx.paired.creds.desktop_id.clone();
+        let noop: runtime::Emitter = std::sync::Arc::new(|_| {});
+        runtime::connect_with_emitter(&desktop_id, Some(noop))
+            .await
+            .expect("connect");
+
+        let dir = std::env::temp_dir().join("futureos-peer-cmd-preview");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let source = dir.join("notes.md");
+        let contents = b"# Notes\n\nbody";
+        std::fs::write(&source, contents).expect("write the source file");
+
+        let preview = remote_peer_preview_file(
+            desktop_id,
+            "sess_unused".into(),
+            source.to_string_lossy().into_owned(),
+            Some("notes.md".into()),
+        )
+        .await
+        .expect("preview");
+
+        assert_eq!(preview["name"], serde_json::json!("notes.md"));
+        let local = preview["path"].as_str().expect("a local path");
+        assert!(
+            local.contains("remote-previews") && local.ends_with("notes.md"),
+            "the preview is cached under the host's name: {local}"
+        );
+        assert_eq!(
+            std::fs::read(local).expect("read the cached preview"),
+            contents
+        );
+
+        teardown().await;
+    }
+
+    /// A file the host will not preview is still previewed here.
+    ///
+    /// The host's preview vocabulary is the *phone's* — images and a short list of
+    /// text extensions — while this app's overlay reads whatever the operating
+    /// system can hand it. A refusal there therefore means "the phone could not show
+    /// this", not "this cannot be previewed", so the original bytes are fetched and
+    /// the same overlay reads them. Without this the two clients would disagree
+    /// about which files can be opened, which is exactly what "the same file types
+    /// as the local panel" rules out.
+    #[tokio::test]
+    async fn a_file_the_host_will_not_preview_is_fetched_as_its_original() {
+        let (_home, fx) = start("peer-cmd-preview-fallback").await;
+        let desktop_id = fx.paired.creds.desktop_id.clone();
+        let noop: runtime::Emitter = std::sync::Arc::new(|_| {});
+        runtime::connect_with_emitter(&desktop_id, Some(noop))
+            .await
+            .expect("connect");
+
+        let dir = std::env::temp_dir().join("futureos-peer-cmd-preview-fallback");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        // Not an image, not Markdown/JSON, not one of the phone's text extensions:
+        // the host's preview variant refuses this one.
+        let source = dir.join("archive.zip");
+        let contents = b"PK-not-really-a-zip";
+        std::fs::write(&source, contents).expect("write the source file");
+
+        let preview = remote_peer_preview_file(
+            desktop_id,
+            "sess_unused".into(),
+            source.to_string_lossy().into_owned(),
+            Some("archive.zip".into()),
+        )
+        .await
+        .expect("preview");
+
+        let local = preview["path"].as_str().expect("a local path");
+        assert_eq!(
+            std::fs::read(local).expect("read the cached preview"),
+            contents
+        );
 
         teardown().await;
     }

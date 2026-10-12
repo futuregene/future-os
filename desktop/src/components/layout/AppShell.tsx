@@ -15,7 +15,7 @@ import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
-import { compactRemoteConversation, continueRemoteRun, forkRemoteConversation, installRemoteSkill } from "../../features/remote-peer/remotePeerClient";
+import { compactRemoteConversation, continueRemoteRun, deleteRemoteConversation, forkRemoteConversation, installRemoteSkill } from "../../features/remote-peer/remotePeerClient";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { remoteSkillRecoSource } from "../../features/remote-peer/remoteSkillRecoSource";
 import { RemoteUsageDialog } from "../../features/remote-peer/RemoteUsageDialog";
@@ -635,6 +635,44 @@ function ReadyAppShell({
     return workspace;
   }
 
+  /**
+   * Delete a batch of conversations, each on the host that owns it.
+   *
+   * One command per conversation, because that is the host's own unit: its
+   * `delete_session` takes a thread id and is idempotent, so a parent deleted
+   * before its child (or a row another client already removed) is answered
+   * rather than refused. A failure is reported with the host's reason and does
+   * not stop the rest — a batch that half-deleted is still a batch to be honest
+   * about, and the catalogue is re-read either way so the list shows what is
+   * actually there.
+   */
+  async function handleDeleteRemoteConversations(rows: MergedConversation[]) {
+    const failures: string[] = [];
+    for (const row of rows) {
+      if (!row.desktopId)
+        continue;
+      try {
+        await deleteRemoteConversation(row.desktopId, { sessionId: row.id, threadId: row.threadId });
+      }
+      catch (error) {
+        failures.push(`${row.title}: ${errorMessage(error)}`);
+      }
+    }
+    await refreshRemotePeers();
+    if (failures.length > 0) {
+      emitFutureEvent("toast", {
+        message: tRemotePeer("deleteFailed", { message: failures.join("; ") }),
+        tone: "error",
+      });
+    }
+    // A deleted conversation may be the one on screen, and nothing would say so:
+    // its row is gone from the list while the column keeps drawing it.
+    if (rows.some(row => row.desktopId === activeRemote?.desktopId && row.id === activeRemote.sessionId)) {
+      setActiveRemote(null);
+      setCenterMode("thread");
+    }
+  }
+
   async function handleTogglePinThread(thread: StoredThread) {
     await pinThread({ threadId: thread.id, pinned: !thread.pinned });
     await refreshStore(thread.id);
@@ -909,6 +947,7 @@ function ReadyAppShell({
     onNewChat: handleOpenNewChat,
     onNewWorkspace: handleOpenNewWorkspace,
     onBatchDeleteThreads: openBatchDelete,
+    onDeleteRemoteConversations: handleDeleteRemoteConversations,
     onDeleteThread: openDelete,
     onRenameThread: openRename,
     onDeleteWorkspace: openWorkspaceDelete,

@@ -91,9 +91,12 @@ async function mount(props: {
       />,
     );
   });
-  const input = container.querySelector("input")!;
-  // By accessible name: the attach control is an icon button (as it is in this
-  // app's own composer), so it has an aria-label rather than text.
+  // The field is a textarea: the local composer's editor is a contenteditable
+  // div, so this is the closest markup the remote one can share — and a
+  // `TextInput` put a bordered control inside the bordered shell.
+  const input = container.querySelector("textarea")!;
+  // By accessible name: the attach and send controls are icon buttons (as they
+  // are in this app's own composer), so they have an aria-label rather than text.
   const button = (label: string) => [...container.querySelectorAll("button")]
     .find(node => node.textContent === label || node.getAttribute("aria-label") === label);
   return {
@@ -106,7 +109,7 @@ async function mount(props: {
     type: async (value: string) => {
       await act(async () => {
         // React reads the value off the event, so set it then dispatch input.
-        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
         setter.call(input, value);
         input.dispatchEvent(new Event("input", { bubbles: true }));
       });
@@ -265,8 +268,12 @@ it("ignores a second stop while one is in flight", async () => {
   const view = await mount({ streaming: true });
 
   await act(async () => view.button("Stop")!.click());
-  // The label changes while stopping, so address it by position.
-  await act(async () => view.button("Stopping…")!.click());
+  // The abort is outstanding, so the control is closed and says so: `disabled` is
+  // the single guard against a second stop (there is no second check to make),
+  // and the label changes with the state as this app's own composer's does.
+  const stopping = view.button("Stopping…")!;
+  expect(stopping.disabled).toBe(true);
+  await act(async () => stopping.click());
   expect(abort).toHaveBeenCalledTimes(1);
 
   await act(async () => {
@@ -287,6 +294,38 @@ it("ignores a second stop while one is in flight", async () => {
 it("names the machine the prompt runs on, in the box itself", async () => {
   const view = await mount();
   expect(view.input.placeholder).toContain("Studio iMac");
+  await view.unmount();
+});
+
+/**
+ * The box is this app's own, down to the shape of its controls.
+ *
+ * The two composers sit one above the other on the same screen, so a difference
+ * is not a matter of taste — it reads as two products. The field had an inner
+ * border (a `TextInput` inside an already-bordered shell) and the send control
+ * was a labelled button where this app's is an icon. Measured rather than
+ * described: the shell's classes are the local form's, the field carries no
+ * border of its own, and the send control is the local icon button.
+ */
+it("uses this app's own field and send control, not a control nested in the shell", async () => {
+  const view = await mount();
+  const form = view.container.querySelector("form")!;
+  for (const part of ["rounded-lg", "border", "shadow-panel"]) {
+    expect(form.className, `the shell is missing ${part}`).toContain(part);
+  }
+
+  const field = view.input;
+  // Two nested borders: the shell's and the field's. The local editor has none.
+  expect(field.className).not.toContain("border");
+  for (const part of ["min-h-14", "px-2", "py-1", "text-sm", "leading-5", "placeholder:text-ink-muted"]) {
+    expect(field.className, `the field is missing ${part}`).toContain(part);
+  }
+
+  const send = view.button("Send")!;
+  expect(send.className).toContain("size-7");
+  // Icon only: the label is an accessible name, not the button's content.
+  expect(send.textContent).toBe("");
+  expect(send.querySelector("svg")).not.toBeNull();
   await view.unmount();
 });
 

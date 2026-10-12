@@ -61,13 +61,20 @@ fn read_sessions(pair_id: &str) -> Option<Value> {
     let active_sessions = crate::store::active_run_sessions().ok()?;
     let threads = crate::store::list_threads().ok()?;
     // A client that groups its merged list by workspace needs the workspace's
-    // *name*: an id means nothing to a reader, and the alternative (showing the
+    // *name* — an id means nothing to a reader, and the alternative (showing the
     // peer's name for every remote group) would collapse several workspaces into
-    // one. Best-effort: a thread whose workspace row is gone still lists, under
-    // its peer's name.
-    let workspace_names: std::collections::HashMap<String, String> =
+    // one — and its *pin*, because a pinned workspace must lead the client's list
+    // exactly as it leads this one. Both ride on each session row: a client that
+    // has to ask for a separate workspace list would be asking on every poll, and
+    // a group exists only where a row does. Best-effort: a thread whose workspace
+    // row is gone still lists, under its peer's name, un-pinned.
+    let workspaces: std::collections::HashMap<String, (String, bool)> =
         crate::store::list_workspaces()
-            .map(|rows| rows.into_iter().map(|row| (row.id, row.name)).collect())
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|row| (row.id, (row.name, row.pinned)))
+                    .collect()
+            })
             .unwrap_or_default();
 
     let thread_ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
@@ -89,13 +96,18 @@ fn read_sessions(pair_id: &str) -> Option<Value> {
         };
         let streaming = active_sessions.iter().any(|active| active == sid);
         let status = run_status_by_thread.get(t.id.as_str()).copied();
+        let workspace = workspaces.get(&t.workspace_id);
         sessions.push(json!({
             "sessionId": sid,
             "threadId": t.id,
             "title": t.title,
             "mode": t.mode,
             "workspaceId": t.workspace_id,
-            "workspaceName": workspace_names.get(&t.workspace_id).cloned(),
+            "workspaceName": workspace.map(|(name, _)| name.clone()),
+            // Whether this conversation's workspace is pinned *here*. Optional by
+            // contract: a client built before this field simply orders by recency,
+            // which is what it did before.
+            "workspacePinned": workspace.map(|(_, pinned)| *pinned),
             "parentSessionId": t.parent_session_id,
             "pinned": t.pinned,
             "streaming": streaming,
@@ -200,6 +212,38 @@ mod tests {
         // The name the store gave the workspace it created for that path — the
         // row's own name, not its id (see `create_thread`).
         assert_eq!(row["workspaceName"], json!("Named Workspace"));
+        assert_eq!(row["workspacePinned"], json!(false));
+    }
+
+    /// A pinned workspace says so on its conversations.
+    ///
+    /// The client orders its merged list by this: a group whose workspace is
+    /// pinned leads, and a workspace on *this* machine is pinned here — so the
+    /// field is the only way a pin set in this app's own list can move the group
+    /// in a paired client's list. Without it the client's "pin" writes its own
+    /// store and the group never moves.
+    #[test]
+    fn sessions_snapshot_marks_a_pinned_workspace() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-workspace-pinned");
+        crate::remote::test_support::init_store();
+
+        let thread = new_thread("sess-pinned-ws", "Pinned workspace");
+        let workspace_id = thread.workspace_id.clone();
+        crate::store::pin_workspace(crate::store::PinWorkspaceInput {
+            workspace_id: workspace_id.clone(),
+            pinned: true,
+        })
+        .expect("pin the workspace");
+
+        let (payload, _signature) = sessions("pair_test").expect("snapshot");
+        let row = payload["sessions"]
+            .as_array()
+            .expect("sessions array")
+            .iter()
+            .find(|row| row["sessionId"] == json!("sess-pinned-ws"))
+            .expect("session in snapshot");
+        assert_eq!(row["workspaceId"], json!(workspace_id));
+        assert_eq!(row["workspacePinned"], json!(true));
     }
 
     /// A thread without an agent session is not a remote session at all, and a

@@ -2,7 +2,7 @@ import type { RemoteFileEntry, RemoteFileListing } from "./remotePeerClient";
 import { save } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
 import { errorMessage } from "../../lib/errors";
-import { downloadRemoteFile, listRemoteSessionFiles } from "./remotePeerClient";
+import { downloadRemoteFile, listRemoteSessionFiles, previewRemoteFile } from "./remotePeerClient";
 import { parentOf } from "./remotePeerFiles";
 
 /**
@@ -27,9 +27,26 @@ export interface RemoteFilesState {
   open: (path?: string) => Promise<void>;
   refresh: () => Promise<void>;
   download: (entry: RemoteFileEntry) => Promise<void>;
+  /** The path being fetched for a preview, so its own row can say so. */
+  previewingPath: string | null;
+  /** What the overlay should show, or `null` when nothing is open. */
+  previewTarget: RemotePreviewTarget | null;
+  /** Fetch one file into the local cache and show it. */
+  preview: (entry: RemoteFileEntry) => Promise<void>;
+  closePreview: () => void;
   /** One level up, or null at the root. */
   parent: string | null;
   entries: RemoteFileEntry[];
+}
+
+/**
+ * A file being previewed: the local cache path the overlay reads, plus the source
+ * entry, so a preview that cannot be rendered can fall back to saving the file.
+ */
+export interface RemotePreviewTarget {
+  entry: RemoteFileEntry;
+  name: string;
+  path: string;
 }
 
 export function useRemoteFiles(
@@ -52,6 +69,8 @@ export function useRemoteFiles(
   const [error, setError] = useState<string | null>(null);
   const [busyPath, setBusyPath] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const [previewingPath, setPreviewingPath] = useState<string | null>(null);
+  const [previewTarget, setPreviewTarget] = useState<RemotePreviewTarget | null>(null);
 
   /**
    * Read a directory.
@@ -94,8 +113,12 @@ export function useRemoteFiles(
     if (!enabled) {
       setListing(null);
       setError(null);
+      // Another conversation's file must not stay on screen under this one: the
+      // overlay would show one machine's screenshot under another's title.
+      setPreviewTarget(null);
       return;
     }
+    setPreviewTarget(null);
     let cancelled = false;
     void (async () => {
       setLoading(true);
@@ -148,8 +171,37 @@ export function useRemoteFiles(
     }
   }, [desktopId, sessionId]);
 
+  /**
+   * Fetch one file into the local cache and show it.
+   *
+   * No save dialog, deliberately: looking at a file is not copying it, and a
+   * panel where every click opened a "where should this go?" dialog would make the
+   * quickest thing on the screen the slowest. The bytes land in this app's own
+   * cache, and the same overlay the local panel uses reads them from there.
+   */
+  const preview = useCallback(async (entry: RemoteFileEntry) => {
+    setPreviewingPath(entry.path);
+    setError(null);
+    try {
+      const fetched = await previewRemoteFile({
+        desktopId,
+        sessionId,
+        path: entry.path,
+        name: entry.name,
+      });
+      setPreviewTarget({ entry, name: fetched.name, path: fetched.path });
+    }
+    catch (err) {
+      setError(errorMessage(err));
+    }
+    finally {
+      setPreviewingPath(null);
+    }
+  }, [desktopId, sessionId]);
+
   return {
     busyPath,
+    closePreview: () => setPreviewTarget(null),
     download,
     entries: listing?.entries ?? [],
     error,
@@ -157,6 +209,9 @@ export function useRemoteFiles(
     loading,
     open,
     parent: listing ? parentOf(listing.path, listing.rootPath) : null,
+    preview,
+    previewTarget,
+    previewingPath,
     refresh: readRoot,
     saved,
   };

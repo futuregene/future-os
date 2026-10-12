@@ -63,6 +63,18 @@ pub fn app_images_root() -> Result<PathBuf, crate::AppError> {
     Ok(app_dir()?.join("images"))
 }
 
+/// Root of the preview cache for files pulled from a paired host
+/// (`~/.future/app/remote-previews`).
+///
+/// These are *another* machine's bytes, kept only so the same file is not fetched
+/// twice while the reader looks at it; an entry is keyed by that machine, the
+/// session and the host's path, and pruned by age and count (see
+/// `remote_peer::transfer::prune_preview_cache`). Nothing here is authoritative —
+/// deleting the whole directory costs a re-download and nothing else.
+pub fn remote_previews_dir() -> Result<PathBuf, crate::AppError> {
+    Ok(app_dir()?.join("remote-previews"))
+}
+
 /// Attachment-root directory: `~/.future/app/images/<asset_root_id>` (with
 /// `thumb/` and `origin/` subdirs). A normal thread owns its own root; fork
 /// descendants retain the same root through `threads.asset_root_id`.

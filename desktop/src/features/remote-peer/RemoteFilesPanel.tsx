@@ -1,8 +1,10 @@
 import type { RemotePeer } from "./remotePeerClient";
-import { ArrowUp, Download, File, Folder, PanelRightClose, PanelRightOpen, RefreshCw } from "lucide-react";
+import { ArrowUp, Download, File, Folder, Loader2, PanelRightClose, PanelRightOpen, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { IconButton } from "../../components/ui/IconButton";
 import { cn } from "../../lib/cn";
+import { FilePreviewOverlay } from "../filepreview/FilePreviewOverlay";
+import { previewKindForPath } from "../filepreview/previewKind";
 import { peerBadgeText } from "./peerIcons";
 import { formatSize } from "./remotePeerFiles";
 import { useRemoteFiles } from "./useRemoteFiles";
@@ -34,6 +36,8 @@ export function RemoteFilesPanel({
 }) {
   const { t } = useTranslation("remotePeer");
   const files = useRemoteFiles(desktopId, sessionId, expanded);
+  const preview = files.previewTarget;
+  const previewKind = preview ? previewKindForPath(preview.name) : null;
 
   if (!expanded) {
     // Collapsed, this toggle floats over the conversation header instead of
@@ -94,41 +98,71 @@ export function RemoteFilesPanel({
                   {files.listing === null || files.loading ? t("loadingHistory") : t("filesEmpty")}
                 </p>
               )
-            : files.entries.map(entry => (
-                <div className="flex items-center gap-2 border-b border-line-soft/50 px-2 py-1.5 last:border-b-0" key={entry.path}>
-                  {entry.isDir
-                    ? <Folder aria-hidden className="size-3.5 shrink-0 text-ink-muted" />
-                    : <File aria-hidden className="size-3.5 shrink-0 text-ink-muted" />}
-                  <button
-                    className="min-w-0 flex-1 truncate text-left text-sm text-ink hover:underline disabled:hover:no-underline"
-                    disabled={!entry.isDir || files.loading}
-                    onClick={() => void files.open(entry.path)}
-                    title={entry.path}
-                    type="button"
-                  >
-                    {entry.name}
-                  </button>
-                  {entry.isDir
-                    ? null
-                    : (
-                        <>
-                          <span className="shrink-0 text-[11px] text-ink-muted">{formatSize(entry.size)}</span>
-                          {/* Download goes through a save dialog: guessing a
-                              destination would write to a directory the user did
-                              not choose, on a machine whose conventions we are
-                              guessing at. */}
-                          <IconButton
-                            disabled={files.busyPath !== null}
-                            icon={<Download className="size-3.5" />}
-                            label={t("filesDownload", { name: entry.name })}
-                            onClick={() => void files.download(entry)}
-                          />
-                        </>
-                      )}
-                </div>
-              ))}
+            : files.entries.map((entry) => {
+                // A folder opens; a file the overlay can render opens *here*,
+                // after being fetched into this machine's cache — the same click,
+                // the same overlay and the same file types as the local panel,
+                // which is what makes the two panels one behaviour. Anything else
+                // is downloaded through its own control rather than opened with a
+                // handler this machine does not have for another machine's file.
+                const previewable = !entry.isDir && previewKindForPath(entry.name) !== null;
+                const fetching = files.previewingPath === entry.path;
+                return (
+                  <div className="flex items-center gap-2 border-b border-line-soft/50 px-2 py-1.5 last:border-b-0" key={entry.path}>
+                    {entry.isDir
+                      ? <Folder aria-hidden className="size-3.5 shrink-0 text-ink-muted" />
+                      : fetching
+                        ? <Loader2 aria-hidden className="size-3.5 shrink-0 animate-spin text-ink-muted" />
+                        : <File aria-hidden className="size-3.5 shrink-0 text-ink-muted" />}
+                    <button
+                      className="min-w-0 flex-1 truncate text-left text-sm text-ink hover:underline disabled:hover:no-underline"
+                      disabled={(!entry.isDir && !previewable) || files.loading || files.previewingPath !== null}
+                      onClick={() => void (entry.isDir ? files.open(entry.path) : files.preview(entry))}
+                      title={previewable ? t("filesPreview", { name: entry.name }) : entry.path}
+                      type="button"
+                    >
+                      {entry.name}
+                    </button>
+                    {entry.isDir
+                      ? null
+                      : (
+                          <>
+                            <span className="shrink-0 text-[11px] text-ink-muted">{formatSize(entry.size)}</span>
+                            {/* Download goes through a save dialog: guessing a
+                                destination would write to a directory the user did
+                                not choose, on a machine whose conventions we are
+                                guessing at. */}
+                            <IconButton
+                              disabled={files.busyPath !== null || files.previewingPath !== null}
+                              icon={<Download className="size-3.5" />}
+                              label={t("filesDownload", { name: entry.name })}
+                              onClick={() => void files.download(entry)}
+                            />
+                          </>
+                        )}
+                  </div>
+                );
+              })}
         </div>
       </div>
+
+      {/* The same overlay the local panel shows, over the file this machine just
+          fetched: one preview implementation, so a file cannot look like one
+          thing here and another there. `onOpenExternal` is that panel's
+          "open it with the platform" fallback, which for another machine's file
+          is the save dialog — the download control's own action. */}
+      {preview && previewKind
+        ? (
+            <FilePreviewOverlay
+              kind={previewKind}
+              name={preview.name}
+              onClose={() => files.closePreview()}
+              onOpenExternal={() => void files.download(preview.entry)}
+              open
+              path={preview.path}
+            />
+          )
+        : null}
     </aside>
   );
 }

@@ -35,7 +35,7 @@ it("closes the workspace menu when the reader dismisses it", async () => {
   document.body.append(container);
   const root = createRoot(container);
   await act(async () => {
-    root.render(<RemoteWorkspaceMenu desktopId="desktop_a" name="图表脚本" onChanged={vi.fn()} workspaceId="ws_9" />);
+    root.render(<RemoteWorkspaceMenu desktopId="desktop_a" name="图表脚本" onChanged={vi.fn()} pinned={false} workspaceId="ws_9" />);
   });
 
   await act(async () => container.querySelector<HTMLButtonElement>("button[aria-label^='Workspace actions']")!.click());

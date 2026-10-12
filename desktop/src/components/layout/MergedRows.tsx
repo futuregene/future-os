@@ -52,14 +52,16 @@ export function MergedRows({
   onOpenRemote,
   onRenameRemote,
   onSelectChats,
+  onSelectWorkspaceChats,
   onToggleChatSection,
   onToggleWorkspace,
   onToggleWorkspaceSection,
   peers,
-  pinnedWorkspaces,
+  remoteSelection,
   renderLocalGroupHeader,
   renderLocalRow,
   rows,
+  selectionMode,
   threadById,
   localRowMeta,
   workspaceSectionCollapsed,
@@ -71,10 +73,9 @@ export function MergedRows({
   /**
    * Which machines the list is showing.
    *
-   * Read for two decisions: a per-row badge repeats the selector above it when
-   * the list is already one machine's, and the local-only controls (new
-   * workspace, new chat) are offered only when this machine's rows are in the
-   * list at all.
+   * Read for one decision: whether this machine's *creation* controls (new
+   * workspace, new chat) are offered at all. Those make something on this
+   * machine, which under another device's filter the user could not see.
    */
   filter: DeviceFilter;
   /** Re-read a host's catalogue after one of its rows was acted on. */
@@ -85,8 +86,16 @@ export function MergedRows({
   onNewWorkspace?: () => void;
   onOpenRemote: (conversation: MergedConversation) => void;
   onRenameRemote: (conversation: MergedConversation) => void;
-  /** Mark this machine's chats for a batch action (a local-only operation). */
+  /** Mark the chats section for a batch action. */
   onSelectChats?: () => void;
+  /**
+   * Mark one workspace's conversations for a batch action, by group key.
+   *
+   * The same control the local heading's menu has, for a workspace on another
+   * machine: the batch it starts is assembled from the rows under that heading,
+   * wherever they live.
+   */
+  onSelectWorkspaceChats?: (groupKey: string) => void;
   onToggleChatSection: () => void;
   onToggleWorkspace: (key: string) => void;
   onToggleWorkspaceSection: () => void;
@@ -99,17 +108,30 @@ export function MergedRows({
    */
   localRowMeta: Map<string, ThreadTreeRow>;
   peers: RemotePeer[];
-  /** This machine's pinned workspaces, so their groups lead the list. */
-  pinnedWorkspaces: ReadonlySet<string>;
+  /**
+   * The batch, as it applies to a host's rows.
+   *
+   * The rail owns the selection state (it is one selection over both machines'
+   * rows), so what arrives here is the three questions the list asks of it per
+   * row: is it ticked, does clicking it tick it, and tick it. Absent when there
+   * is no remote row at all.
+   */
+  remoteSelection?: {
+    selected: (conversation: MergedConversation) => boolean;
+    selectable: (conversation: MergedConversation) => boolean;
+    toggle: (conversation: MergedConversation) => void;
+  };
   /** The local rail's own workspace heading, so both lists show one heading. */
   renderLocalGroupHeader: (workspaceId: string) => ReactNode;
   renderLocalRow: (thread: StoredThread, depth?: number, hasChildren?: boolean) => ReactNode;
   rows: MergedConversation[];
+  /** Whether a batch is being assembled, so "select chats" is not offered again. */
+  selectionMode: boolean;
   threadById: Map<string, StoredThread>;
   workspaceSectionCollapsed: boolean;
 }) {
   const { t } = useTranslation("layout");
-  const { chats, pinned, workspaces } = groupMergedRows(rows, pinnedWorkspaces);
+  const { chats, pinned, workspaces } = groupMergedRows(rows);
   // The chat section's menu is the rail's own control, which owns its open state
   // through props — so the state lives here, next to the header that draws it.
   const [chatMenuOpen, setChatMenuOpen] = useState(false);
@@ -131,6 +153,7 @@ export function MergedRows({
       const meta = localRowMeta.get(thread.id);
       return renderLocalRow(thread, meta?.depth ?? 0, meta?.hasChildren ?? false);
     }
+    const selectable = remoteSelection?.selectable(conversation) === true;
     return (
       <RemoteConversationRow
         active={activeKey === conversation.key}
@@ -138,9 +161,20 @@ export function MergedRows({
         conversation={conversation}
         key={conversation.key}
         onChanged={onChangedRemote}
-        onOpen={onOpenRemote}
+        onOpen={(row) => {
+          // In selection mode a click ticks the row instead of opening it — the
+          // local row's rule, from the same state.
+          if (remoteSelection?.selectable(row)) {
+            remoteSelection.toggle(row);
+            return;
+          }
+          onOpenRemote(row);
+        }}
         onOpenRename={onRenameRemote}
+        onToggleSelection={conversation => remoteSelection?.toggle(conversation)}
         peer={peers.find(peer => peer.desktopId === conversation.desktopId)}
+        selected={remoteSelection?.selected(conversation) === true}
+        selectionMode={selectable}
         // The machine is named once per group, on the heading. Repeating it on
         // every row under that heading is the same word on every line — and the
         // row pays for it in the width its title needs.
@@ -222,10 +256,20 @@ export function MergedRows({
                     menu={desktopId && workspaceId
                       ? (
                           <>
-                            {/* A workspace on another machine takes the same two
-                                controls the local one has: a menu for what the
-                                host accepts, and a way to start a conversation
-                                in it. */}
+                            {/* A workspace on another machine takes the same
+                                controls the local one has, in the same order:
+                                the actions menu first, then the way to start a
+                                conversation in it. */}
+                            <RemoteWorkspaceMenu
+                              desktopId={desktopId}
+                              name={group.label ?? t("activityRail.workspace")}
+                              onChanged={onChangedRemote}
+                              onSelect={selectionMode
+                                ? undefined
+                                : () => onSelectWorkspaceChats?.(group.key)}
+                              pinned={group.pinned}
+                              workspaceId={workspaceId}
+                            />
                             <RailHeaderButton
                               icon={<Plus className="size-3.5" />}
                               label={t("activityRail.newChatInWorkspace", {
@@ -233,17 +277,12 @@ export function MergedRows({
                               })}
                               onClick={() => onNewChatInWorkspace?.(desktopId, workspaceId)}
                             />
-                            <RemoteWorkspaceMenu
-                              desktopId={desktopId}
-                              name={group.label ?? t("activityRail.workspace")}
-                              onChanged={onChangedRemote}
-                              workspaceId={workspaceId}
-                            />
                           </>
                         )
                       : null}
                     name={group.label ?? t("activityRail.workspace")}
                     onToggle={() => onToggleWorkspace(group.key)}
+                    pinned={group.pinned}
                     testId="merged-group-heading"
                   />
                   {collapsed ? null : group.rows.map(row => renderRow(row, true, true))}
@@ -263,12 +302,11 @@ export function MergedRows({
                 onToggle={onToggleChatSection}
               />
               {/* The chat section's own menu, as the local list has. It marks
-                  conversations for a batch action, which is this machine's: a
-                  remote conversation has no checkbox because the batch it would
-                  join is a local-store operation. Offered only where this
-                  machine's rows are listed, since a menu that could only act on
-                  rows the filter has hidden would be a dead control. */}
-              {showLocalActions && onSelectChats
+                  conversations for a batch action, and the batch can hold any
+                  machine's rows — a remote row carries the same checkbox a local
+                  one does — so it is offered wherever the section lists
+                  anything. */}
+              {onSelectChats
                 ? (
                     <ChatSectionMenu
                       open={chatMenuOpen}

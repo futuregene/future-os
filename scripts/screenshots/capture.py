@@ -514,11 +514,16 @@ def run_scenario(platform: str, name: str, spec: dict, out_dir: Path, cd_endpoin
     if not config.get("touch", True):
         command += ["--touch", "false"]
     print(f"── {platform}/{name}{shot_suffix}")
-    result = subprocess.run(command, capture_output=True, text=True)
-    for line in result.stdout.splitlines():
+    # `text=True` with no encoding decodes with the locale's, which on a Windows
+    # console is a legacy code page: the step runner prints whatever the page said
+    # — a Chinese title, an error message from the app — and one byte it cannot
+    # decode takes the whole capture down (`stdout` is then `None`) rather than
+    # reporting the scenario that failed. The runner speaks UTF-8; decode that.
+    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    for line in (result.stdout or "").splitlines():
         print("   " + line.replace("cdp: ", ""))
     if result.returncode != 0:
-        print(result.stderr[-600:], file=sys.stderr)
+        print((result.stderr or "")[-600:], file=sys.stderr)
     steps_path.unlink(missing_ok=True)
 
     if frames_dir is not None:

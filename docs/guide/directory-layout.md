@@ -37,6 +37,7 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   ├── app.db                 # SQLite database (threads, runs, approvals, …)
 │   ├── images/                # per-thread image tree (thumb/ + origin/)
 │   ├── review/                # per-workspace shadow git review repos
+│   ├── remote-previews/       # files pulled from a paired host to preview (pruned by age and count)
 │   └── run_events/            # per-run event logs (JSONL)
 ├── workspaces/
 │   └── chat/                  # per-thread chat workspaces (agent session / thread id)

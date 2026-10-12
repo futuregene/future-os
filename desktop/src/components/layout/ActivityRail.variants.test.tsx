@@ -85,6 +85,7 @@ function props(overrides: Partial<ComponentProps<typeof ActivityRail>> = {}): Co
     expanded: true,
     futureSessionStatus: "authenticated",
     onBatchDeleteThreads: vi.fn(),
+    onDeleteRemoteConversations: vi.fn(),
     onChange: vi.fn(),
     onDeleteThread: vi.fn(),
     onDeleteWorkspace: vi.fn(),

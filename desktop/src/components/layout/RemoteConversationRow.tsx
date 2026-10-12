@@ -31,7 +31,10 @@ export function RemoteConversationRow({
   onChanged,
   onOpen,
   onOpenRename,
+  onToggleSelection,
   peer,
+  selected,
+  selectionMode,
   showSource,
   unread,
 }: {
@@ -44,7 +47,18 @@ export function RemoteConversationRow({
   onChanged: () => void;
   onOpen: (conversation: MergedConversation) => void;
   onOpenRename: (conversation: MergedConversation) => void;
+  /** Tick or untick this row while a batch is being assembled. */
+  onToggleSelection?: (conversation: MergedConversation) => void;
   peer: RemotePeer | undefined;
+  selected?: boolean;
+  /**
+   * Whether this row shows a checkbox.
+   *
+   * The same slot and the same control the local row uses, because a batch can
+   * hold both machines' conversations: a remote row without one would be a row
+   * the user could see the batch around and not add to it.
+   */
+  selectionMode?: boolean;
   /**
    * Whether the row still needs to say which machine it is on.
    *
@@ -87,10 +101,25 @@ export function RemoteConversationRow({
             </span>
           )}
       <RailRowSpacer />
-      {/* A remote host reports that a run is in flight, so the row uses the same
-          indicator the local one does for it — an animated ring in the reserved
-          slot, not a dot of its own size in a slot of its own size. */}
-      <RailRowIndicator status={conversation.streaming ? "running" : unread ? "completed" : undefined} unread={unread} />
+      {selectionMode
+        ? (
+            // The same control, in the same slot, as the local row's: the
+            // checkbox replaces the run indicator rather than joining it, so the
+            // two kinds of row line up while a batch is being assembled.
+            <input
+              aria-label={t("selectConversation", { title: conversation.title })}
+              checked={selected === true}
+              className="relative z-10 size-5 shrink-0 rounded border-line accent-accent"
+              onChange={(event) => {
+                event.stopPropagation();
+                onToggleSelection?.(conversation);
+              }}
+              type="checkbox"
+            />
+          )
+        : (
+            <RailRowIndicator status={conversation.streaming ? "running" : unread ? "completed" : undefined} unread={unread} />
+          )}
       <RailRowMenuButton
         label={t("conversationActions")}
         menuOpen={menuOpen}

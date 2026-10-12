@@ -332,5 +332,41 @@ describe("mergeConversations", () => {
       // the local list folds by (see `groupMergedRows`).
       expect(grouped.workspaces.map(group => group.key)).toEqual(["ws_new", "ws_old"]);
     });
+
+    /**
+     * A pinned workspace leads, on whichever machine it was pinned.
+     *
+     * The pin is the *owner's*: a folder on the far side of a pairing is pinned
+     * there, and the user set it from here. Ordering only by recency left a
+     * pinned group in the middle of the list with its pin nowhere to be seen,
+     * which is what "clicking pin on a remote workspace does nothing" looked
+     * like.
+     */
+    it("leads with a pinned workspace, local or remote", () => {
+      const remote = groupMergedRows(rows([], [catalog("desktop_a", [
+        {
+          sessionId: "remote_ws",
+          title: "pinned over there",
+          mode: "workspace",
+          workspaceId: "ws_remote",
+          workspaceName: "图表脚本",
+          workspacePinned: true,
+          // Older than the unpinned local group, so recency alone would put it
+          // second: only the pin can lead it.
+          lastMessageAt: 100,
+        },
+      ])]));
+      expect(remote.workspaces.map(group => group.key)).toEqual(["desktop_a::ws_remote"]);
+      expect(remote.workspaces[0]!.pinned).toBe(true);
+
+      const mixed = groupMergedRows(rows(
+        [
+          thread({ id: "unpinned_ws", mode: "workspace", workspaceId: "ws_new", updatedAt: 900 }),
+          thread({ id: "pinned_ws", mode: "workspace", workspaceId: "ws_local", updatedAt: 10, workspacePinned: true }),
+        ],
+        [],
+      ));
+      expect(mixed.workspaces.map(group => group.key)).toEqual(["ws_local", "ws_new"]);
+    });
   });
 });

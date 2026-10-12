@@ -72,6 +72,7 @@ function railProps(overrides: Partial<ComponentProps<typeof ActivityRail>> = {})
     activeThreadId: null,
     expanded: true,
     onBatchDeleteThreads: vi.fn(),
+    onDeleteRemoteConversations: vi.fn(),
     onChange: vi.fn(),
     onDeleteThread: vi.fn(),
     onDeleteWorkspace: vi.fn(),
@@ -401,4 +402,67 @@ describe("the merged list's workspace controls", () => {
     expect(view.container.querySelector("[data-child='selection-toolbar'], [role='toolbar']")).not.toBeNull();
     view.unmount();
   });
+});
+
+/**
+ * A batch can hold a host's conversations.
+ *
+ * One selection over every row the list shows: a host's row carries the same
+ * checkbox a local one does, the toolbar counts it, and Delete hands it to the
+ * shell — which is where the host command belongs, because a remote row's
+ * deletion addresses a machine this component knows nothing about.
+ */
+it("collects a host's conversations into a batch and hands them to the shell", async () => {
+  const onDeleteRemoteConversations = vi.fn();
+  const onBatchDeleteThreads = vi.fn();
+  const view = await mountRail({
+    deviceFilter: { kind: "all" },
+    onBatchDeleteThreads,
+    onDeleteRemoteConversations,
+    remoteCatalogs: [catalogRow("sess_1")],
+    remotePeers: [peer],
+  });
+
+  // Entered from the chat section, which now lists a host's chats too.
+  await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='Chat section actions']")!.click());
+  await act(async () => {
+    [...view.container.querySelectorAll("button")].find(node => node.textContent === "Select chats")!.click();
+  });
+
+  const checkbox = view.container.querySelector<HTMLInputElement>("input[type='checkbox']")!;
+  await act(async () => checkbox.click());
+  expect(view.text()).toContain("1 selected");
+  // `selectedCount === totalCount` by now, so the toolbar's own box is the
+  // *deselect* control; the Delete button is the one under test.
+  await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='Delete']")!.click());
+  // The host's row goes to the host, and never to this machine's batch.
+  expect(onDeleteRemoteConversations).toHaveBeenCalledTimes(1);
+  expect(onDeleteRemoteConversations.mock.calls[0]![0].map((row: { id: string }) => row.id)).toEqual(["sess_1"]);
+  expect(onBatchDeleteThreads).not.toHaveBeenCalled();
+  view.unmount();
+});
+
+/**
+ * The local heading's "select chats" item, on a workspace that lives elsewhere.
+ *
+ * The item was missing from a remote workspace's menu, so the only way to batch
+ * another machine's conversations was to go to that machine.
+ */
+it("offers select-chats on a host's workspace heading, scoping the batch to it", async () => {
+  const view = await mountRail({
+    remoteCatalogs: [catalogRow("sess_ws", { mode: "workspace", workspaceId: "ws_9", workspaceName: "图表脚本" })],
+    remotePeers: [peer],
+  });
+
+  await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label^='Workspace actions']")!.click());
+  await act(async () => {
+    [...view.container.querySelectorAll("button")].find(node => node.textContent === "Select chats")!.click();
+  });
+  expect(view.container.querySelector("[role='toolbar']")).not.toBeNull();
+
+  // The scope is that workspace: its own row is selectable.
+  const checkbox = view.container.querySelector<HTMLInputElement>("input[type='checkbox']")!;
+  await act(async () => checkbox.click());
+  expect(view.text()).toContain("1 selected");
+  view.unmount();
 });

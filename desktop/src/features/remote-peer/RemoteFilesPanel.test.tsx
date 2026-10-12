@@ -15,9 +15,28 @@ import { RemoteFilesPanel } from "./RemoteFilesPanel";
  */
 const list = vi.fn<(desktopId: string, sessionId: string, path?: string) => Promise<RemoteFileListing>>();
 const download = vi.fn<(input: Record<string, unknown>) => Promise<string>>();
+const preview = vi.fn<(input: Record<string, unknown>) => Promise<{ name: string; path: string }>>();
 vi.mock("./remotePeerClient", () => ({
   listRemoteSessionFiles: (...args: Parameters<typeof list>) => list(...args),
   downloadRemoteFile: (...args: Parameters<typeof download>) => download(...args),
+  previewRemoteFile: (...args: Parameters<typeof preview>) => preview(...args),
+}));
+
+/**
+ * The overlay is stubbed, as elsewhere: what belongs to *this* panel is that it
+ * shows the local preview component for a fetched file, not what that component
+ * paints. Its own behaviour — kinds, readers, errors — is its own test file's.
+ */
+const previews: Array<{ kind: string; name: string; path: string }> = [];
+vi.mock("../filepreview/FilePreviewOverlay", () => ({
+  FilePreviewOverlay: (props: { kind: string; name: string; onClose: () => void; path: string }) => {
+    previews.push({ kind: props.kind, name: props.name, path: props.path });
+    return (
+      <div data-kind={props.kind} data-preview="">
+        <button data-close-preview="" onClick={props.onClose} type="button" />
+      </div>
+    );
+  },
 }));
 
 const save = vi.fn<(options: Record<string, unknown>) => Promise<string | null>>();
@@ -42,8 +61,10 @@ function listing(entries: RemoteFileListing["entries"], path = "/home/studio", r
 }
 
 beforeEach(() => {
+  previews.length = 0;
   list.mockReset().mockResolvedValue(listing([]));
   download.mockReset().mockResolvedValue("report.txt");
+  preview.mockReset().mockResolvedValue({ name: "forest.png", path: "/home/me/.future/app/remote-previews/abc__forest.png" });
   save.mockReset().mockResolvedValue("/Users/me/report.txt");
 });
 
@@ -155,6 +176,82 @@ it("downloads nothing when the destination is declined", async () => {
     view.container.querySelector<HTMLButtonElement>("button[aria-label='Download report.txt']")!.click();
   });
   expect(download).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+/**
+ * A previewable file is fetched and shown *here*, without a save dialog.
+ *
+ * The local panel's rule, kept: a click on a file the overlay can render shows
+ * it, and the bytes come from that machine. The destination is this app's own
+ * cache — looking at a file is not copying it, and asking where to put a copy
+ * every time someone clicks a file in a panel makes the quickest thing on the
+ * screen the slowest.
+ */
+it("fetches a previewable file and shows it in the local overlay", async () => {
+  list.mockResolvedValue(listing([
+    { isDir: false, name: "forest.png", path: "/home/studio/forest.png", size: 4_096 },
+  ]));
+  const view = await mount();
+
+  await act(async () => {
+    [...view.container.querySelectorAll("button")].find(node => node.textContent === "forest.png")!.click();
+  });
+
+  expect(preview).toHaveBeenCalledWith({
+    desktopId: "desktop_a",
+    name: "forest.png",
+    path: "/home/studio/forest.png",
+    sessionId: "sess_1",
+  });
+  expect(save).not.toHaveBeenCalled();
+  expect(download).not.toHaveBeenCalled();
+  // The local overlay, over the local cache entry, with the kind the *name*
+  // selects — the same renderers and the same supported types as the local panel.
+  expect(previews).toEqual([{
+    kind: "image",
+    name: "forest.png",
+    path: "/home/me/.future/app/remote-previews/abc__forest.png",
+  }]);
+  await view.unmount();
+});
+
+/** The file types are the local overlay's own list, read off the name. */
+it("previews every kind the local overlay can render, and nothing else", async () => {
+  list.mockResolvedValue(listing([
+    { isDir: false, name: "notes.md", path: "/home/studio/notes.md", size: 10 },
+    { isDir: false, name: "data.json", path: "/home/studio/data.json", size: 10 },
+    { isDir: false, name: "effect-size.R", path: "/home/studio/effect-size.R", size: 10 },
+    { isDir: false, name: "archive.zip", path: "/home/studio/archive.zip", size: 10 },
+  ]));
+  const view = await mount();
+  const nameButton = (label: string) => [...view.container.querySelectorAll<HTMLButtonElement>("button")]
+    .find(node => node.textContent === label)!;
+
+  // Markdown, JSON and a code file are previewable; a zip is not.
+  expect(nameButton("notes.md").disabled).toBe(false);
+  expect(nameButton("data.json").disabled).toBe(false);
+  expect(nameButton("effect-size.R").disabled).toBe(false);
+  expect(nameButton("archive.zip").disabled).toBe(true);
+
+  preview.mockResolvedValue({ name: "notes.md", path: "/cache/abc__notes.md" });
+  await act(async () => nameButton("notes.md").click());
+  expect(previews[0]!.kind).toBe("markdown");
+  await view.unmount();
+});
+
+it("surfaces a preview the host could not serve", async () => {
+  list.mockResolvedValue(listing([
+    { isDir: false, name: "forest.png", path: "/home/studio/forest.png", size: 4_096 },
+  ]));
+  preview.mockRejectedValue(new Error("transfer failed"));
+  const view = await mount();
+
+  await act(async () => {
+    [...view.container.querySelectorAll("button")].find(node => node.textContent === "forest.png")!.click();
+  });
+  expect(view.container.textContent).toContain("transfer failed");
+  expect(previews).toEqual([]);
   await view.unmount();
 });
 

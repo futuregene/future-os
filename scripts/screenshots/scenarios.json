@@ -968,7 +968,7 @@
             "wait": 2000
           },
           {
-            "eval": "(() => {\n  const msgs = [...document.querySelectorAll('[data-message-id]')];\n  if (msgs.length < 2) throw new Error('the transcript did not render: ' + msgs.length);\n\n  // The author line: one per turn, above the text. A transcript that rendered the\n  // host's raw entries had one above every *fragment* — a column of \"assistant\".\n  const authors = msgs.map(m => (m.innerText || '').split('\\n')[0].replace(/\\s+/g, ' ').trim().slice(0, 12));\n  if (authors.some(a => !a)) throw new Error('a turn has no author line: ' + JSON.stringify(authors));\n  const speaker = (label) => authors.filter(a => a.includes(label)).length;\n  if (speaker('你') < 1 || speaker('未来助手') < 1) throw new Error('the transcript is not a conversation: ' + JSON.stringify(authors));\n\n  // One reading column, at this app's width.\n  const boxes = msgs.map(m => { const r = m.getBoundingClientRect(); return Math.round(r.left) + ',' + Math.round(r.width); });\n  if (new Set(boxes).size !== 1) throw new Error('turns are not one column: ' + boxes.join(' | '));\n\n  // The header: this app's own, 48px, carrying the conversation's usage.\n  const header = document.querySelector('header');\n  const h = header.getBoundingClientRect();\n  if (Math.round(h.height) !== 48) throw new Error('header is not 48px: ' + h.height);\n  const headerLabels = [...header.querySelectorAll('button')].map(b => b.getAttribute('aria-label') || '');\n  if (header.querySelector(\"[data-testid='remote-thread-usage']\") === null)\n    throw new Error('no usage action in the header: ' + headerLabels.join('|'));\n  // Compacting is a request, and it lives behind `/` in the composer.\n  if (headerLabels.some(l => l.includes('压缩上下文')))\n    throw new Error('compact is still a header button: ' + headerLabels.join('|'));\n\n  // The right panel is this conversation's files: the collapsed affordance is a\n  // button over the header, and opening it lists that host's files.\n  const filesToggle = document.querySelector(\"button[aria-label='显示此对话的文件']\")\n    || document.querySelector(\"button[aria-label=\\\"Show this conversation's files\\\"]\");\n  if (!filesToggle) throw new Error('no files affordance for a remote conversation');\n\n  // The composer: this app's shell, the same width as the messages above it.\n  const form = document.querySelector('form');\n  if (!form) throw new Error('no composer');\n  const cls = form.className || '';\n  for (const part of ['rounded-lg', 'shadow-panel', 'border-line']) {\n    if (!cls.includes(part)) throw new Error('composer shell is not the local one: missing ' + part);\n  }\n  const f = form.getBoundingClientRect();\n  const firstMessage = msgs[0].getBoundingClientRect();\n  if (Math.abs(f.width - firstMessage.width) > 2)\n    throw new Error('the composer is not as wide as the messages: ' + Math.round(f.width) + ' vs ' + Math.round(firstMessage.width));\n  const attach = form.querySelector(\"button[aria-label='添加附件']\") || form.querySelector(\"button[aria-label='Attach']\");\n  const send = [...form.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '发送' || (b.textContent || '').trim() === 'Send');\n  if (!attach || !send) throw new Error('composer controls missing: ' + (attach ? '' : 'attach ') + (send ? '' : 'send'));\n  const a = attach.getBoundingClientRect();\n  const s = send.getBoundingClientRect();\n  if (a.left > f.left + f.width / 2) throw new Error('attach is not at the left');\n  if (s.right < f.left + f.width / 2) throw new Error('send is not at the right');\n})()"
+            "eval": "(() => {\n  const msgs = [...document.querySelectorAll('[data-message-id]')];\n  if (msgs.length < 2) throw new Error('the transcript did not render: ' + msgs.length);\n\n  // The author line: one per turn, above the text. A transcript that rendered the\n  // host's raw entries had one above every *fragment* — a column of \"assistant\".\n  const authors = msgs.map(m => (m.innerText || '').split('\\n')[0].replace(/\\s+/g, ' ').trim().slice(0, 12));\n  if (authors.some(a => !a)) throw new Error('a turn has no author line: ' + JSON.stringify(authors));\n  const speaker = (label) => authors.filter(a => a.includes(label)).length;\n  if (speaker('你') < 1 || speaker('未来助手') < 1) throw new Error('the transcript is not a conversation: ' + JSON.stringify(authors));\n\n  // One reading column, at this app's width.\n  const boxes = msgs.map(m => { const r = m.getBoundingClientRect(); return Math.round(r.left) + ',' + Math.round(r.width); });\n  if (new Set(boxes).size !== 1) throw new Error('turns are not one column: ' + boxes.join(' | '));\n\n  // The header: this app's own, 48px, carrying the conversation's usage.\n  const header = document.querySelector('header');\n  const h = header.getBoundingClientRect();\n  if (Math.round(h.height) !== 48) throw new Error('header is not 48px: ' + h.height);\n  const headerLabels = [...header.querySelectorAll('button')].map(b => b.getAttribute('aria-label') || '');\n  if (header.querySelector(\"[data-testid='remote-thread-usage']\") === null)\n    throw new Error('no usage action in the header: ' + headerLabels.join('|'));\n  // Compacting is a request, and it lives behind `/` in the composer.\n  if (headerLabels.some(l => l.includes('压缩上下文')))\n    throw new Error('compact is still a header button: ' + headerLabels.join('|'));\n\n  // The right panel is this conversation's files: the collapsed affordance is a\n  // button over the header, and opening it lists that host's files.\n  const filesToggle = document.querySelector(\"button[aria-label='显示此对话的文件']\")\n    || document.querySelector(\"button[aria-label=\\\"Show this conversation's files\\\"]\");\n  if (!filesToggle) throw new Error('no files affordance for a remote conversation');\n\n  // The composer: this app's shell, the same width as the messages above it.\n  const form = document.querySelector('form');\n  if (!form) throw new Error('no composer');\n  const cls = form.className || '';\n  for (const part of ['rounded-lg', 'shadow-panel', 'border-line']) {\n    if (!cls.includes(part)) throw new Error('composer shell is not the local one: missing ' + part);\n  }\n  const f = form.getBoundingClientRect();\n  const firstMessage = msgs[0].getBoundingClientRect();\n  if (Math.abs(f.width - firstMessage.width) > 2)\n    throw new Error('the composer is not as wide as the messages: ' + Math.round(f.width) + ' vs ' + Math.round(firstMessage.width));\n  const attach = form.querySelector(\"button[aria-label='添加附件']\") || form.querySelector(\"button[aria-label='Attach']\");\n  // Found by its accessible name: this app's send control is an icon button.\n  const send = form.querySelector(\"button[aria-label='发送']\") || form.querySelector(\"button[aria-label='Send']\");\n  if ((send?.textContent || '').trim() !== '') throw new Error('send still carries a label: ' + send.textContent);\n  if (!attach || !send) throw new Error('composer controls missing: ' + (attach ? '' : 'attach ') + (send ? '' : 'send'));\n  const a = attach.getBoundingClientRect();\n  const s = send.getBoundingClientRect();\n  if (a.left > f.left + f.width / 2) throw new Error('attach is not at the left');\n  if (s.right < f.left + f.width / 2) throw new Error('send is not at the right');\n  // The field is the local composer's shape: a textarea the shell borders, rather than a bordered control nested inside the shell.\n  const field = form.querySelector('textarea');\n  if (!field) throw new Error('the field is not a textarea');\n  if ((field.className || '').includes('border')) throw new Error('the field draws its own border inside the shell');\n  for (const part of ['min-h-14', 'px-2', 'py-1', 'text-sm']) {\n    if (!(field.className || '').includes(part)) throw new Error('the field is not the local one: missing ' + part);\n  }\n  // The model and thinking controls are this app's own dropdowns, not native selects.\n  if (form.querySelector('select')) throw new Error('the control row still uses a native select');\n})()"
           },
           {
             "shot": "d-remote-conversation.png"
@@ -1107,6 +1107,42 @@
           }
         ]
       },
+      "remote-files-preview": {
+        "note": "A file in a host's folder: clicking it fetches it into this machine's cache and shows it in the same overlay the local panel uses. The types the overlay cannot render keep the download control.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "重画森林图并核对置信区间"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "显示此对话的文件"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "forest-plot.png"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const overlay = document.querySelector(\"[data-preview-overlay], img[alt='forest-plot.png']\");\n  const image = document.querySelector(\"img[alt='forest-plot.png']\");\n  if (!image) throw new Error('the preview overlay is not showing the file');\n  if (!(image.getAttribute('src') || '').includes('forest-plot.png'))\n    throw new Error('the image is not the fetched file: ' + image.getAttribute('src'));\n  // Nothing asked the user where to put a copy: looking at a file is not saving it.\n  if (document.querySelector(\"[role='dialog']\"))\n    throw new Error('a dialog is open over the preview');\n  // The panel keeps the file it opened, and the types it will not open are still\n  // the download control's.\n  const panel = [...document.querySelectorAll('aside')].find(node => (node.textContent || '').includes('forest-plot.png'));\n  if (!panel) throw new Error('the file panel is gone');\n  const zip = [...panel.querySelectorAll('button')].find(node => (node.textContent || '').trim() === 'archive.zip');\n  if (!zip || !zip.disabled) throw new Error('a file the overlay cannot render is offered as a preview');\n  return image.getAttribute('src');\n})()"
+          },
+          {
+            "shot": "d-remote-files-preview.png"
+          }
+        ]
+      },
       "remote-workspace-fold": {
         "note": "Clicking a workspace heading folds its rows — the heading and its rows are one decision.",
         "url": "http://localhost:5299/shot/?lang=zh",
@@ -1125,6 +1161,27 @@
           },
           {
             "shot": "d-remote-workspace-fold.png"
+          }
+        ]
+      },
+      "remote-workspace-menu": {
+        "note": "A host's workspace heading carries the same two controls as the local one, in the same order, and one pin item for the state the host is in.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const heading = [...document.querySelectorAll(\"[data-testid='merged-group-heading']\")]\n    .find(node => (node.textContent || '').includes('图表脚本'));\n  if (!heading) throw new Error('the host workspace heading is not in the list');\n  const header = heading.closest('div');\n  const buttons = [...header.querySelectorAll('button')];\n  const menu = buttons.find(button => button.getAttribute('aria-haspopup') === 'menu');\n  const add = buttons[buttons.length - 1];\n  if (!menu || !add) throw new Error('the heading is missing a control: ' + buttons.map(b => b.getAttribute('aria-label')).join(' | '));\n  // The local heading's order: the actions menu, then the way into the workspace.\n  if (!(menu.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING))\n    throw new Error('the new-chat control precedes the actions menu');\n  menu.click();\n  // React commits the panel on its own tick, so the menu's contents are read a\n  // frame later rather than in the click's own task.\n  return new Promise((resolve, reject) => {\n    setTimeout(() => {\n      try {\n        const items = [...document.querySelectorAll(\"[role='menuitem']\")].map(node => (node.textContent || '').trim());\n        const pinItems = items.filter(text => text === '置顶' || text === '取消置顶');\n        if (pinItems.length !== 1)\n          throw new Error('the menu offers ' + pinItems.length + ' pin items: ' + items.join(' | '));\n        if (!items.includes('选择聊天'))\n          throw new Error('the menu has no select-chats item: ' + items.join(' | '));\n        if (items.length !== 3)\n          throw new Error('the menu is not [pin, select chats, delete]: ' + items.join(' | '));\n        resolve(items.join(' | '));\n      }\n      catch (error) {\n        reject(error);\n      }\n    }, 250);\n  });\n})()"
+          },
+          {
+            "shot": "d-remote-workspace-menu.png"
           }
         ]
       },

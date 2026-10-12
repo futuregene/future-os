@@ -9,10 +9,14 @@ import { RemoteWorkspaceMenu } from "./RemoteWorkspaceMenu";
 /**
  * The actions a workspace on another machine supports.
  *
- * The same menu the local heading has, reduced to what the host accepts: pin and
- * remove. "Reveal in file manager" is absent because the folder is on that
- * machine, where an item that did nothing when clicked would be worse than its
- * absence.
+ * The same menu the local heading has, reduced to what the host accepts: pin,
+ * select its conversations, and remove. "Reveal in file manager" is absent
+ * because the folder is on that machine, where an item that did nothing when
+ * clicked would be worse than its absence.
+ *
+ * **One pin item**, showing the state the host is actually in. The menu used to
+ * offer "pin" and "unpin" side by side, which asks the user to work out which of
+ * the two is the no-op.
  */
 const pin = vi.fn<(desktopId: string, workspaceId: string, pinned: boolean) => Promise<unknown>>();
 const remove = vi.fn<(desktopId: string, workspaceId: string) => Promise<unknown>>();
@@ -26,13 +30,22 @@ beforeEach(() => {
   remove.mockReset().mockResolvedValue(undefined);
 });
 
-async function mount() {
+async function mount(overrides: { onSelect?: () => void; pinned?: boolean } = {}) {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   const onChanged = vi.fn();
   await act(async () => {
-    root.render(<RemoteWorkspaceMenu desktopId="desktop_a" name="图表脚本" onChanged={onChanged} workspaceId="ws_9" />);
+    root.render(
+      <RemoteWorkspaceMenu
+        desktopId="desktop_a"
+        name="图表脚本"
+        onChanged={onChanged}
+        onSelect={overrides.onSelect}
+        pinned={overrides.pinned ?? false}
+        workspaceId="ws_9"
+      />,
+    );
   });
   const trigger = () => container.querySelector<HTMLButtonElement>("button[aria-label^='Workspace actions for']")!;
   const item = (label: string) => [...container.querySelectorAll("button")].find(node => node.textContent === label)!;
@@ -63,12 +76,42 @@ it("pins the workspace on its host, then re-reads that host's list", async () =>
   await view.unmount();
 });
 
-it("unpins it again", async () => {
-  const view = await mount();
+/**
+ * A workspace the host already pinned is offered "unpin", and only that.
+ *
+ * The two items cannot both be right: the host's state decides which is the
+ * action and which is the no-op, and a menu that lists both makes the user guess.
+ */
+it("offers unpin, and not both pin and unpin, when the host says it is pinned", async () => {
+  const view = await mount({ pinned: true });
   await view.open();
+  const labels = [...view.container.querySelectorAll("[role='menuitem']")].map(node => node.textContent);
+  expect(labels).toEqual(["Unpin", "Delete"]);
   await act(async () => view.item("Unpin")!.click());
   expect(pin).toHaveBeenCalledWith("desktop_a", "ws_9", false);
   await view.unmount();
+});
+
+/**
+ * The local heading's third item, on a workspace that lives elsewhere.
+ *
+ * A batch is assembled from the rows under a heading, wherever they are, so a
+ * remote workspace offers the same "select chats" the local one does.
+ */
+it("marks the workspace's conversations for a batch", async () => {
+  const onSelect = vi.fn();
+  const view = await mount({ onSelect });
+  await view.open();
+  await act(async () => view.item("Select chats")!.click());
+  expect(onSelect).toHaveBeenCalledTimes(1);
+  await view.unmount();
+
+  // Offered only outside selection mode, as the local heading's menu is: the item
+  // is what *enters* it.
+  const withoutSelect = await mount();
+  await withoutSelect.open();
+  expect(withoutSelect.container.textContent).not.toContain("Select chats");
+  await withoutSelect.unmount();
 });
 
 it("removes the workspace from the host's list", async () => {
