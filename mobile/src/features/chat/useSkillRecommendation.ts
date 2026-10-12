@@ -1,7 +1,9 @@
 // The shape mirrors the desktop and TUI clients', so a message recognised on one
 // client reads the same in the others' records.
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRemote } from "../../remote/RemoteContext";
+import { useCommittedRef } from "../../lib/useCommittedRef";
+import { useConversationOperation } from "./useConversationOperation";
 import type { AvailableSkill } from "../../remote/types";
 import {
   alreadyEvaluated,
@@ -87,14 +89,6 @@ export function utf8Length(text: string): number {
   return length;
 }
 
-/** Resolve null when `promise` has not settled within the budget. */
-function withTimeout(promise: Promise<SkillCandidate | null>): Promise<SkillCandidate | null> {
-  return Promise.race([
-    promise,
-    new Promise<null>(resolve => setTimeout(() => resolve(null), RECOMMEND_TIMEOUT_MS)),
-  ]);
-}
-
 export interface SkillRecommendationApi {
   /** The suggestion waiting for a decision, or null. */
   suggestion: PendingSuggestion | null;
@@ -109,11 +103,11 @@ export interface SkillRecommendationApi {
   evaluating: boolean;
   /**
    * Evaluate `draft`. Resolves true when a suggestion is shown (the caller must
-   * NOT send yet), false when the message should be sent normally.
+   * NOT send yet), or the operation was superseded. False permits normal send.
    */
   evaluate: (draft: string) => Promise<boolean>;
-  /** Install the suggested skill, returning the draft with `/skill` appended. */
-  installAndUse: () => Promise<string | null>;
+  /** Install the suggested skill, appending `/skill` to the current composer draft. */
+  installAndUse: (currentDraft?: string) => Promise<string | null>;
   /** Dismiss the suggestion; the caller then sends the original draft. */
   dismiss: () => void;
 }
@@ -124,109 +118,109 @@ export function useSkillRecommendation(
   language: string,
 ): SkillRecommendationApi {
   const remote = useRemote();
-  const [suggestion, setSuggestion] = useState<PendingSuggestion | null>(null);
-  const [evaluating, setEvaluating] = useState(false);
-  // One evaluation cannot overlap another. The toggle is a dependency of
-  // `evaluate` below rather than a ref, so each evaluation sees the current
-  // value without writing a ref during render.
-  const inFlightRef = useRef(false);
-  // The catalogue's Chinese descriptions, keyed by skill id, for the card's
-  // text (see `shownDescription`) — filled by the candidate read below.
-  const zhDescriptionsRef = useRef<Map<string, string>>(new Map());
-
-  /** The uninstalled skills: the desktop's catalogue minus its installed set. */
-  const candidateList = useCallback(async (): Promise<SkillCandidate[]> => {
-    const [catalogue, installed] = await Promise.all([
-      remote.listAvailableSkills().catch(() => [] as AvailableSkill[]),
-      remote.listInstalledSkills().catch(() => []),
-    ]);
-    const installedIds = new Set(installed.map(skill => skill.id));
-    zhDescriptionsRef.current = new Map(
-      catalogue.map(entry => [entry.id, entry.descriptionZh ?? ""]),
-    );
-    return catalogue
-      .filter(entry => !installedIds.has(entry.id))
-      .map(entry => ({ name: entry.id, description: entry.description }))
-      .slice(0, MAX_CANDIDATES);
-  }, [remote]);
+  const { listAvailableSkills, listInstalledSkills, suggestSkill, installSkill } = remote;
+  const { scope, captureOperation } = useConversationOperation(remote);
+  const [card, setCard] = useState<{ scope: object; pending: PendingSuggestion; } | null>(null);
+  const [evaluationScope, setEvaluationScope] = useState<object | null>(null);
+  const suggestion = card?.scope === scope ? card.pending : null;
+  const evaluating = evaluationScope === scope;
+  const suggestionRef = useCommittedRef(suggestion);
+  const languageRef = useCommittedRef(language);
+  const inFlightRef = useRef<{ cancel: () => void; } | null>(null);
+  useLayoutEffect(() => () => {
+    inFlightRef.current?.cancel();
+    inFlightRef.current = null;
+  }, [scope]);
 
   const evaluate = useCallback(async (draft: string): Promise<boolean> => {
+    if (inFlightRef.current) return true;
     const trimmed = draft.trim();
-    if (
-      !enabled
-      || !desktopOnline
-      || trimmed.length === 0
-      || trimmed.length > MAX_QUERY_CHARS
-      || utf8Length(trimmed) < MIN_QUERY_BYTES
-      || draftPicksSkill(trimmed)
-      || inFlightRef.current
-    ) {
-      return false;
-    }
-
-    inFlightRef.current = true;
-    try {
-      // Read the day per submission: another message (or an earlier attempt)
-      // may have spent part of the budget since the last read.
+    if (!enabled || !desktopOnline || !trimmed
+      || trimmed.length > MAX_QUERY_CHARS || utf8Length(trimmed) < MIN_QUERY_BYTES
+      || draftPicksSkill(trimmed)) return false;
+    const lifetimeIsCurrent = captureOperation();
+    let active = true;
+    const isCurrent = () => active && lifetimeIsCurrent();
+    let cancel!: () => void;
+    const cancelled = new Promise<boolean>(resolve => {
+      cancel = () => { active = false; resolve(true); };
+    });
+    const attempt = { cancel };
+    inFlightRef.current = attempt;
+    setEvaluationScope(scope);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const work = async () => {
       const today = await loadDay();
+      if (!isCurrent()) return true;
       if (exhausted(today)) return false;
       const hash = messageHash(trimmed);
       if (alreadyEvaluated(today, hash)) return false;
-
-      const candidates = await candidateList();
-      if (candidates.length === 0) return false;
-
-      // Lock the composer for exactly the wait that can take the full budget —
-      // the local budget/candidate checks above are fast and must not flash the
-      // input disabled.
-      setEvaluating(true);
-      try {
-        const answer = await withTimeout(remote.suggestSkill(trimmed, candidates));
-        if (!answer) return false;
-        // Already shown today: skip rather than offer a different skill (§4).
-        if (alreadyRecommended(today, answer.name)) return false;
-        // Recorded before it is shown: the card spends the budget the moment it
-        // is displayed, whatever the user then does.
-        await recordShown(answer.name, hash);
-        setSuggestion({
+      const [catalogue, installed] = await Promise.all([
+        listAvailableSkills().catch(() => [] as AvailableSkill[]),
+        listInstalledSkills().catch(() => []),
+      ]);
+      if (!isCurrent()) return true;
+      const installedIds = new Set(installed.map(skill => skill.id));
+      const candidates = catalogue.filter(entry => !installedIds.has(entry.id))
+        .map(entry => ({ name: entry.id, description: entry.description })).slice(0, MAX_CANDIDATES);
+      if (!candidates.length) return false;
+      const answer = await suggestSkill(trimmed, candidates);
+      if (!isCurrent()) return true;
+      if (!answer || alreadyRecommended(today, answer.name)) return false;
+      await recordShown(answer.name, hash, new Date(), isCurrent);
+      if (!isCurrent()) return true;
+      setCard({
+        scope, pending: {
           skill: {
-            name: answer.name,
-            description: shownDescription(answer, language, zhDescriptionsRef.current),
+            name: answer.name, description: shownDescription(answer, languageRef.current,
+              new Map(catalogue.map(entry => [entry.id, entry.descriptionZh ?? ""])))
           },
           draft: trimmed,
-        });
-        return true;
-      }
-      finally {
-        setEvaluating(false);
-      }
-    } catch {
-      // Every failure means "send the message": a recommendation is never worth
-      // failing a send over.
-      return false;
-    } finally {
-      inFlightRef.current = false;
-    }
-  }, [candidateList, desktopOnline, enabled, language, remote]);
-
-  const installAndUse = useCallback(async (): Promise<string | null> => {
-    const pending = suggestion;
-    if (!pending) return null;
+        }
+      });
+      return true;
+    };
     try {
-      const catalogue = await remote.listAvailableSkills();
+      return await Promise.race([
+        work(), cancelled,
+        new Promise<boolean>(resolve => {
+          timeout = setTimeout(() => {
+            active = false;
+            resolve(false);
+          }, RECOMMEND_TIMEOUT_MS);
+        }),
+      ]);
+    } catch {
+      return !lifetimeIsCurrent();
+    } finally {
+      active = false;
+      clearTimeout(timeout);
+      if (inFlightRef.current === attempt) {
+        inFlightRef.current = null;
+        setEvaluationScope(null);
+      }
+    }
+  }, [captureOperation, desktopOnline, enabled, languageRef, listAvailableSkills, listInstalledSkills, scope, suggestSkill]);
+
+  const installAndUse = useCallback(async (currentDraft?: string): Promise<string | null> => {
+    const pending = suggestionRef.current;
+    if (!pending) return null;
+    const draft = currentDraft ?? pending.draft;
+    const isCurrent = captureOperation();
+    try {
+      const catalogue = await listAvailableSkills();
+      if (!isCurrent()) return null;
       const version = catalogue.find(entry => entry.id === pending.skill.name)?.latestVersion;
       if (!version) return null;
-      await remote.installSkill(pending.skill.name, version);
-      const separator = pending.draft.endsWith(" ") ? "" : " ";
-      setSuggestion(null);
-      return `${pending.draft}${separator}/${pending.skill.name}`;
+      await installSkill(pending.skill.name, version);
+      if (!isCurrent()) return null;
+      setCard(null);
+      return `${draft}${draft.endsWith(" ") ? "" : " "}/${pending.skill.name}`;
     } catch {
-      // Leave the card up so the user can retry or send without it.
       return null;
     }
-  }, [remote, suggestion]);
-
-  const dismiss = useCallback(() => setSuggestion(null), []);
-
-  return { suggestion, evaluating, evaluate, installAndUse, dismiss };
+  }, [captureOperation, installSkill, listAvailableSkills, suggestionRef]);
+  const dismiss = useCallback(() => setCard(null), []);
+  return useMemo(() => ({ suggestion, evaluating, evaluate, installAndUse, dismiss }),
+    [suggestion, evaluating, evaluate, installAndUse, dismiss]);
 }

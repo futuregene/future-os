@@ -1,4 +1,4 @@
-import { createElement } from "react";
+import { createElement, useLayoutEffect } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { useSendMessage, type SendMessageApi } from "../useSendMessage";
 import { showToast } from "../utils";
@@ -32,13 +32,24 @@ function remoteFor(overrides: Record<string, unknown> = {}) {
     sendMessage: jest.fn(async () => {}),
     timeline: { items: [] as TimelineItem[] },
     ...overrides,
-  } as unknown as Parameters<typeof useSendMessage>[0];
+  } as unknown as Parameters<typeof useSendMessage>[0]["remote"];
 }
 
 let tree: ReactTestRenderer;
 let api: SendMessageApi;
+function SendHarness({ input }: { input: Parameters<typeof useSendMessage>[0] }) {
+  const value = useSendMessage(input);
+  useLayoutEffect(() => { api = value; }, [value]);
+  return null;
+}
+function deferred() {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
 function mount(options: {
-  remote: Parameters<typeof useSendMessage>[0];
+  remote: Parameters<typeof useSendMessage>[0]["remote"];
   message?: string;
   attachments?: MobileAttachment[];
   sessionRefs?: import("../../../remote/types").SessionReferenceMap;
@@ -47,16 +58,14 @@ function mount(options: {
   const setMessage = jest.fn();
   const setAttachments = jest.fn();
   const setTransferProgress = jest.fn();
-  function Harness() {
-    api = useSendMessage(
-      options.remote, t as never, options.message ?? "", options.attachments ?? [],
-      setMessage, setAttachments, setTransferProgress, options.sessionRefs ?? {}, options.compactionPending ?? false,
-    );
-    return null;
-  }
+  const input = {
+    remote: options.remote, t: t as never, message: options.message ?? "", attachments: options.attachments ?? [],
+    setMessage, setAttachments, setTransferProgress, sessionRefs: options.sessionRefs ?? {},
+    compactionPending: options.compactionPending ?? false,
+  };
   act(() => {
-    if (tree) tree.update(createElement(Harness));
-    else tree = create(createElement(Harness));
+    if (tree) tree.update(createElement(SendHarness, { input }));
+    else tree = create(createElement(SendHarness, { input }));
   });
   return { setAttachments, setMessage, setTransferProgress };
 }
@@ -374,5 +383,61 @@ describe("continuing a truncated answer", () => {
     await act(async () => { api.continueMessage(assistant({ id: "a1" })); await Promise.resolve(); });
     expect(toast).toHaveBeenCalledWith("t:chat.compacting");
     expect(remote.continueRun).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("send completion ownership", () => {
+  test.each(["success", "failure"])("late %s cannot change another conversation's draft", async outcome => {
+    const pending = deferred();
+    let progress!: (done: number, total: number) => void;
+    const remote = remoteFor({ sendMessage: jest.fn((_text, _files, report) => {
+      progress = report;
+      return pending.promise;
+    }) });
+    const original = mount({ remote, message: "message for A", attachments: [attachment] });
+    let sending!: Promise<void>;
+    act(() => { sending = api.send(); });
+    const next = mount({ remote: remoteFor({ selectedSessionId: "session-2" }), message: "B draft" });
+    original.setTransferProgress.mockClear();
+    await act(async () => {
+      progress(1, 2);
+      if (outcome === "success") pending.resolve();
+      else pending.reject(new Error("offline"));
+      await sending;
+    });
+    for (const callbacks of [original, next]) {
+      expect(callbacks.setMessage).not.toHaveBeenCalled();
+      expect(callbacks.setAttachments).not.toHaveBeenCalled();
+      expect(callbacks.setTransferProgress).not.toHaveBeenCalled();
+    }
+    expect(toast).not.toHaveBeenCalled();
+  });
+
+  test("acknowledgment keeps newer edits and attachments in the same conversation", async () => {
+    const pending = deferred();
+    const remote = remoteFor({ sendMessage: jest.fn(() => pending.promise) });
+    const original = mount({ remote, message: "submitted", attachments: [attachment] });
+    let sending!: Promise<void>;
+    act(() => { sending = api.send(); });
+    const extra = { ...attachment, localUri: "file:///b.png", name: "b.png" };
+    mount({ remote, message: "next message", attachments: [attachment, extra] });
+    await act(async () => { pending.resolve(); await sending; });
+    expect(original.setMessage).not.toHaveBeenCalled();
+    expect(original.setAttachments).toHaveBeenCalledWith([extra]);
+  });
+
+  test("binding a sent new conversation preserves the operation's navigation epoch", async () => {
+    const pending = deferred();
+    const captureConversationOperation = () => () => true;
+    const remote = remoteFor({ selectedSessionId: "", draft: true, captureConversationOperation,
+      sendMessage: jest.fn(() => pending.promise) });
+    const original = mount({ remote, message: "new conversation" });
+    let sending!: Promise<void>;
+    act(() => { sending = api.send(); });
+    mount({ remote: remoteFor({ selectedSessionId: "acknowledged", draft: false, captureConversationOperation }),
+      message: "new conversation" });
+    await act(async () => { pending.resolve(); await sending; });
+    expect(original.setMessage).toHaveBeenCalledWith("");
   });
 });

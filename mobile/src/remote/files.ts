@@ -295,7 +295,7 @@ async function prepareFiles(selected: { file: File; mimeType?: string | null }[]
   return results.map(result => (result as PromiseFulfilledResult<MobileAttachment>).value);
 }
 
-function validateBatch(items: MobileAttachment[]): void {
+export function validateAttachmentBatch(items: MobileAttachment[]): void {
   // Image rule first: see validateRawSelection.
   if (items.filter(item => item.kind === "image").length > MAX_IMAGES) {
     throw new Error("attachment_image_count");
@@ -320,7 +320,7 @@ export async function pickAttachments(existing: MobileAttachment[]): Promise<Mob
   validateRawSelection(existing, selected);
   const prepared = await prepareFiles(selected);
   const combined = [...existing, ...prepared];
-  validateBatch(combined);
+  validateAttachmentBatch(combined);
   return combined;
 }
 
@@ -354,7 +354,7 @@ export async function prepareSharedAttachments(
     };
   });
   const combined = [...existing, ...named];
-  validateBatch(combined);
+  validateAttachmentBatch(combined);
   return combined;
 }
 
@@ -377,7 +377,7 @@ export async function takePhoto(existing: MobileAttachment[]): Promise<MobileAtt
     ? { ...prepared, name: prepared.transferName }
     : prepared;
   const combined = [...existing, cameraAttachment];
-  validateBatch(combined);
+  validateAttachmentBatch(combined);
   return combined;
 }
 
@@ -392,7 +392,7 @@ async function prepareImagePickerAssets(
   validateRawSelection(existing, selected);
   const prepared = await prepareFiles(selected);
   const combined = [...existing, ...prepared];
-  validateBatch(combined);
+  validateAttachmentBatch(combined);
   return combined;
 }
 
@@ -555,7 +555,7 @@ async function prepareGalleryPick(
       ...existing,
       { ...prepared, name: reported?.name || source.name || prepared.name, temporary: true },
     ];
-    validateBatch(combined);
+    validateAttachmentBatch(combined);
     return combined;
   } catch (error) {
     if (cached.exists) cached.delete();
@@ -758,7 +758,7 @@ export async function uploadAttachments(
   attachments: MobileAttachment[],
   onProgress?: (completedBytes: number, totalBytes: number) => void,
 ): Promise<MobileAttachment[]> {
-  validateBatch(attachments);
+  validateAttachmentBatch(attachments);
   const totalBytes = attachments.reduce((sum, item) => sum + item.transferSize, 0);
   let completedBytes = 0;
   const uploaded: MobileAttachment[] = [];

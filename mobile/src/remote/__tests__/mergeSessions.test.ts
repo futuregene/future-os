@@ -1,4 +1,4 @@
-import type { MergedSessionRow, CatalogEntry, DesktopFilter } from "../mergeSessions";
+import type { CatalogEntry, DesktopFilter } from "../mergeSessions";
 import { describe, expect, it } from "@jest/globals";
 import { hiddenSessionCount, mergeSessions, sessionKey } from "../mergeSessions";
 import type { RemoteSession } from "../types";

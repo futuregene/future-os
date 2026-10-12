@@ -2,7 +2,7 @@ import { createElement, useState } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRemote } from "../../../remote/RemoteContext";
-import { draftPicksSkill, utf8Length, useSkillRecommendation, type SkillRecommendationApi } from "../useSkillRecommendation";
+import { draftPicksSkill, RECOMMEND_TIMEOUT_MS, utf8Length, useSkillRecommendation, type SkillRecommendationApi } from "../useSkillRecommendation";
 import { messageHash, today } from "../skillRecoBudget";
 
 jest.mock("../../../remote/RemoteContext", () => ({ useRemote: jest.fn() }));
@@ -178,9 +178,8 @@ describe("showing a recommendation", () => {
   });
 
   /**
-   * The composer is locked for exactly the network wait (and not for the fast
-   * local budget/candidate checks before it), so the caller can show the wait
-   * instead of a composer that looks dead.
+   * The composer reports the whole evaluation wait, including storage and
+   * catalogue reads, so a second submit cannot bypass the recommendation.
    */
   it("reports the wait while the desktop is being asked", async () => {
     let release!: (value: null) => void;
@@ -311,6 +310,21 @@ describe("accepting and dismissing", () => {
     } finally {
       act(() => tree.unmount());
     }
+  });
+
+  it("accepting a recommendation uses the edited draft, not the recommendation snapshot", async () => {
+    remoteMock.mockReturnValue(remote({
+      suggestSkill: jest.fn(async () => ({ name: "future-web", description: "search the web" })),
+    }));
+    const api: { current: SkillRecommendationApi | null } = { current: null };
+    const tree = mount(api);
+    try {
+      await evaluate(api, DRAFT);
+      const edited = "please search the web for the revised question";
+      let composed: string | null = null;
+      await act(async () => { composed = await api.current!.installAndUse(edited); });
+      expect(composed).toBe(`${edited} /future-web`);
+    } finally { act(() => tree.unmount()); }
   });
 
   it("keeps the card up when the install fails", async () => {
@@ -452,4 +466,104 @@ describe("helpers", () => {
     expect(utf8Length("单细胞测序如何分析")).toBe(27);
     expect(utf8Length("单细胞测序如何分析流")).toBe(30);
   });
+});
+
+
+describe("recommendation operation lifetime", () => {
+  it("locks before storage completes and a second evaluation cannot bypass it", async () => {
+    let resolve!: (value: string | null) => void;
+    jest.mocked(AsyncStorage.getItem).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const api: { current: SkillRecommendationApi | null } = { current: null };
+    const tree = mount(api);
+    try {
+      let first!: Promise<boolean>;
+      act(() => { first = api.current!.evaluate(DRAFT); });
+      expect(api.current!.evaluating).toBe(true);
+      expect(await evaluate(api, DRAFT)).toBe(true);
+      await act(async () => { resolve(null); expect(await first).toBe(false); });
+      expect(api.current!.evaluating).toBe(false);
+    } finally { act(() => tree.unmount()); }
+  });
+
+  it.each(["storage", "catalogue", "record"])("the whole deadline covers a stalled %s operation", async phase => {
+    jest.useFakeTimers();
+    const api: { current: SkillRecommendationApi | null } = { current: null };
+    const value = remote({ suggestSkill: jest.fn(async () => ({ name: "future-web", description: "search" })) });
+    if (phase === "storage") jest.mocked(AsyncStorage.getItem).mockImplementationOnce(() => new Promise(() => {}));
+    if (phase === "catalogue") jest.mocked(value.listAvailableSkills).mockImplementationOnce(() => new Promise(() => {}));
+    if (phase === "record") {
+      jest.mocked(AsyncStorage.getItem).mockResolvedValueOnce(null)
+        .mockImplementationOnce(() => new Promise(() => {}));
+    }
+    remoteMock.mockReturnValue(value);
+    const tree = mount(api);
+    try {
+      await act(async () => {
+        const pending = api.current!.evaluate(DRAFT);
+        await jest.advanceTimersByTimeAsync(RECOMMEND_TIMEOUT_MS);
+        expect(await pending).toBe(false);
+      });
+      expect(api.current!.evaluating).toBe(false);
+      expect(api.current!.suggestion).toBeNull();
+      expect(jest.getTimerCount()).toBe(0);
+    } finally { act(() => tree.unmount()); jest.useRealTimers(); }
+  });
+
+  it("A → B → A never revives an old evaluation or its late suggestion", async () => {
+    let resolve!: (value: { name: string; description: string }) => void;
+    const value = remote({ selectedSessionId: "A", suggestSkill: jest.fn(() => new Promise(done => { resolve = done; })) });
+    const api: { current: SkillRecommendationApi | null } = { current: null };
+    function Harness({ session }: { session: string }) {
+      remoteMock.mockReturnValue({ ...value, selectedSessionId: session });
+      api.current = useSkillRecommendation(true, true, "en");
+      return null;
+    }
+    let tree!: ReactTestRenderer;
+    act(() => { tree = create(createElement(Harness, { session: "A" })); });
+    try {
+      let pending!: Promise<boolean>;
+      await act(async () => { pending = api.current!.evaluate(DRAFT); await Promise.resolve(); await Promise.resolve(); });
+      expect(value.suggestSkill).toHaveBeenCalled();
+      act(() => tree.update(createElement(Harness, { session: "B" })));
+      act(() => tree.update(createElement(Harness, { session: "A" })));
+      expect(api.current!.evaluating).toBe(false);
+      await act(async () => { resolve({ name: "future-web", description: "late" }); expect(await pending).toBe(true); });
+      expect(api.current!.suggestion).toBeNull();
+      expect(store.has(STORAGE_KEY)).toBe(false);
+    } finally { act(() => tree.unmount()); }
+  });
+
+  it("streamed context changes preserve the recommendation API and callbacks", () => {
+    const value = remote({ selectedSessionId: "A" });
+    remoteMock.mockReturnValue(value);
+    const api: { current: SkillRecommendationApi | null; rerender?: () => void } = { current: null };
+    const tree = mount(api);
+    try {
+      const before = api.current;
+      remoteMock.mockReturnValue({ ...value, timeline: { ...value.timeline, items: [] } });
+      act(() => api.rerender!());
+      expect(api.current).toBe(before);
+    } finally { act(() => tree.unmount()); }
+  });
+});
+
+
+it("a superseded connection releases the evaluation spinner without showing its answer", async () => {
+  let current = true;
+  let resolve!: (value: { name: string; description: string }) => void;
+  remoteMock.mockReturnValue(remote({
+    captureConversationOperation: () => () => current,
+    suggestSkill: jest.fn(() => new Promise(done => { resolve = done; })),
+  }));
+  const api: { current: SkillRecommendationApi | null } = { current: null };
+  const tree = mount(api);
+  try {
+    let pending!: Promise<boolean>;
+    await act(async () => { pending = api.current!.evaluate(DRAFT); });
+    expect(api.current!.evaluating).toBe(true);
+    current = false;
+    await act(async () => { resolve({ name: "future-web", description: "old answer" }); await pending; });
+    expect(api.current!.suggestion).toBeNull();
+    expect(api.current!.evaluating).toBe(false);
+  } finally { act(() => tree.unmount()); }
 });

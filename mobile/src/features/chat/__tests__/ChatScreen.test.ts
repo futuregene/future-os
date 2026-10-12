@@ -77,7 +77,7 @@ jest.mock("lucide-react-native", () => ({
   ArrowUp: "ArrowUp",
   History: "History",
 }));
-jest.mock("../../../components/TimelineCard", () => ({
+jest.mock("../messages/TimelineCard", () => ({
   TimelineCard: "TimelineCard",
 }));
 jest.mock("../../../components/ErrorBanner", () => ({
@@ -119,7 +119,8 @@ const mockFileDownload: {
   openOrShare: jest.fn(),
   setFileAction: jest.fn(),
 };
-jest.mock("../useFileDownload", () => ({ useFileDownload: () => mockFileDownload }));
+jest.mock("../files/useChatFiles", () => ({ useChatFiles: () => mockFileDownload }));
+const mockSendOptions = { current: null as { setTransferProgress: (value: number | null) => void } | null };
 const mockSendApi: { send: jest.Mock; retryMessage: jest.Mock; continueMessage: jest.Mock; forkMessage: jest.Mock } = {
   send: jest.fn(),
   retryMessage: jest.fn(),
@@ -128,7 +129,10 @@ const mockSendApi: { send: jest.Mock; retryMessage: jest.Mock; continueMessage: 
 };
 // The send/retry pair the timeline rows drive. `send` is asserted directly;
 // the two others exist so the row wiring has a real controller to reach.
-jest.mock("../useSendMessage", () => ({ useSendMessage: () => mockSendApi }));
+jest.mock("../useSendMessage", () => ({ useSendMessage: (options: typeof mockSendOptions.current) => {
+  mockSendOptions.current = options;
+  return mockSendApi;
+} }));
 const mockSkillReco: {
   suggestion: PendingSuggestion | null;
   evaluating: boolean;
@@ -183,6 +187,7 @@ beforeEach(() => {
   mockFileDownload.preview = null;
   mockFileDownload.activeDownload = null;
   mockFileDownload.fileAction = null;
+  mockRemote.selectedSessionId = "history";
   mockRemote.canLoadOlderTimeline = true;
   mockRemote.desktopOnline = true;
   mockRemote.streaming = false;
@@ -959,4 +964,20 @@ describe("ChatScreen wiring", () => {
     act(() => sheet.props.onClose());
     expect(mockFileDownload.setFileAction).toHaveBeenCalledWith(null);
   });
+});
+
+
+test("conversation navigation removes outgoing transfer progress and rejects late callbacks", () => {
+  const progressWidth = (value: string) => tree.root.findAll(node =>
+    node.props.style && StyleSheet.flatten(node.props.style)?.width === value);
+  const reportA = mockSendOptions.current!.setTransferProgress;
+  act(() => reportA(0.25));
+  expect(progressWidth("25%").length).toBeGreaterThan(0);
+  mockRemote.selectedSessionId = "B";
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(progressWidth("25%")).toHaveLength(0);
+  act(() => mockSendOptions.current!.setTransferProgress(0.5));
+  act(() => reportA(0.75));
+  expect(progressWidth("50%").length).toBeGreaterThan(0);
+  expect(progressWidth("75%")).toHaveLength(0);
 });

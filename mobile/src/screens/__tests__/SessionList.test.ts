@@ -442,15 +442,6 @@ function confirmAlert(): void {
   act(() => modal.props.onDismiss());
 }
 
-/** The destructive button of the *confirmation dialog* (not a menu item), with
- * its handler left un-invoked so a double tap can land on it twice before the
- * surface is gone. */
-function dangerPress(): () => void {
-  const modal = tree.root.findAllByType(Modal).find(node => node.props.visible && node.findAllByType(DialogSurface).length > 0)!;
-  const button = modal.findAllByType(Button).find(node => node.props.variant === "danger")!;
-  return button.props.onPress;
-}
-
 test.each(["workspace", "chat"] as const)("%s parents fold with +/−, not the workspace header chevron", (tab) => {
   // A 44px touch target keeps the row toggle and the workspace header's fold
   // control in the same column, so the glyph is the only thing separating them.
