@@ -376,6 +376,15 @@ mod bridge_tests {
             .expect_err("reject");
         assert_eq!(error.to_string(), "get_session_entries returned an error");
 
+        mock.push(
+            "get_session_entries",
+            Reply::Reject("history unavailable".to_string()),
+        );
+        let error = get_session_entries("s".to_string())
+            .await
+            .expect_err("reject with explanation");
+        assert_eq!(error.to_string(), "history unavailable");
+
         mock.push("get_state", Reply::Status(tonic::Code::Internal, "boom"));
         let error = get_session_state("s".to_string())
             .await
