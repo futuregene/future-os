@@ -11,11 +11,11 @@ import { saveComposerDraft } from "../../features/agent/composerDraft";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { sessionMentionOptions } from "../../features/agent/sessionMention";
 import { useSkillRecommendation } from "../../features/agent/useSkillRecommendation";
-import { peerBadgeText } from "../../features/remote-peer/peerIcons";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
+import { RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
+import { RemoteUsageDialog } from "../../features/remote-peer/RemoteUsageDialog";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
-import { RemoteFilesDialog } from "../../features/remote-peer/RemoteFilesDialog";
 import { compactRemoteConversation, continueRemoteRun, forkRemoteConversation, installRemoteSkill } from "../../features/remote-peer/remotePeerClient";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { remoteSkillRecoSource } from "../../features/remote-peer/remoteSkillRecoSource";
@@ -151,8 +151,8 @@ function ReadyAppShell({
   const [activeRemote, setActiveRemote] = useState<{ desktopId: string; sessionId: string } | null>(null);
   /** The remote conversation whose rename dialog is open, if any. */
   const [remoteRename, setRemoteRename] = useState<MergedConversation | null>(null);
-  /** Whether the open remote conversation's file browser is showing. */
-  const [remoteFilesOpen, setRemoteFilesOpen] = useState(false);
+  /** Whether the open remote conversation's account book is showing. */
+  const [remoteUsageOpen, setRemoteUsageOpen] = useState(false);
   const [leftExpanded, setLeftExpanded] = useState(true);
   const [leftOverlayOpen, setLeftOverlayOpen] = useState(false);
   const [rightExpanded, setRightExpanded] = useState(false);
@@ -1037,12 +1037,14 @@ function ReadyAppShell({
                             desktopId={activeRemote.desktopId}
                             composer={(
                               <RemoteComposer
+                                canCompact={remoteTimeline.canCompact}
                                 desktopId={activeRemote.desktopId}
                                 // The host-owned model and thinking level live in
                                 // the composer's control row, beside the send
                                 // button they apply to — the same place this
                                 // app's own model and thinking controls are.
                                 controls={<RemoteConversationSettings settings={remoteSettings} />}
+                                onCompact={() => void compactRemoteConversationOn(activeRemote.desktopId, activeRemote.sessionId)}
                                 onCreated={(createdSessionId) => {
                                   // Adopt the conversation the host just made, so
                                   // the next prompt goes to it by name instead
@@ -1061,12 +1063,11 @@ function ReadyAppShell({
                               />
                             )}
                             leftPanelExpanded={showLeftPanel}
-                            entries={remoteTimeline.entries}
+                            messages={remoteTimeline.messages}
                             error={remoteTimeline.error}
                             hasMore={remoteTimeline.hasMore}
                             loading={remoteTimeline.loading}
                             loadingOlder={remoteTimeline.loadingOlder}
-                            onCompact={() => void compactRemoteConversationOn(activeRemote.desktopId, activeRemote.sessionId)}
                             onToggleLeftPanel={handleToggleLeftPanel}
                             onContinueRun={runId => void continueRemoteRunOn(activeRemote.desktopId, activeRemote.sessionId, runId)}
                             onDecideApproval={(approval, decision) => void remoteApprovals.decide(approval, decision)}
@@ -1078,13 +1079,11 @@ function ReadyAppShell({
                                 forkable,
                               )}
                             onLoadOlder={() => void remoteTimeline.loadOlder()}
-                            onOpenFiles={() => setRemoteFilesOpen(true)}
-                            onRetry={() => void remoteTimeline.refresh()}
+                            onOpenUsage={() => setRemoteUsageOpen(true)}                            onRetry={() => void remoteTimeline.refresh()}
                             peer={activeRemotePeer}
                             persistedEntryIds={remoteTimeline.persistedEntryIds}
                             sessionId={activeRemote.sessionId}
                             streaming={remoteTimeline.streaming}
-                            compacting={remoteTimeline.compacting}
                             title={titleOfRemote(remoteCatalogs, activeRemote)}
                           />
                         )
@@ -1138,7 +1137,12 @@ function ReadyAppShell({
           </main>
           {/* Views without thread context hide the right panel entirely, including
           the collapsed expand affordance. */}
-          {hideRightPanel
+          {/* A remote conversation's right panel is that machine's files — and
+          nothing else. The panel's other tabs (review, runs, artifacts)
+          describe *this* machine, so they have no remote counterpart to show;
+          the panel is hidden entirely while a remote conversation is open and
+          this one is drawn instead. */}
+          {hideRightPanel || activeRemote
             ? null
             : (
                 <ContextPanel
@@ -1153,6 +1157,17 @@ function ReadyAppShell({
                   onToggleExpanded={() => setRightExpanded(value => !value)}
                 />
               )}
+          {activeRemote && activeRemote.sessionId !== "" && !hideRightPanel
+            ? (
+                <RemoteFilesPanel
+                  desktopId={activeRemote.desktopId}
+                  expanded={rightExpanded}
+                  onToggleExpanded={() => setRightExpanded(value => !value)}
+                  peer={activeRemotePeer}
+                  sessionId={activeRemote.sessionId}
+                />
+              )
+            : null}
           {/* While dragging the divider, a full-window overlay keeps the cursor and
           captures mouse events even over embedded iframes (PDF preview). */}
           {rightPanelResizing && !hideRightPanel
@@ -1200,17 +1215,15 @@ function ReadyAppShell({
             />
           )
         : null}
-      {/* Keyed on the conversation so switching to another one closes the
-          browser: the listing belongs to a session, and keeping it open across
-          a switch would show one conversation's files under another's title. */}
-      {remoteFilesOpen && activeRemote && activeRemote.sessionId
+      {/* The conversation's account book, as the local header's is: token usage
+          and amount for the *host's* session, read from the host's own state. */}
+      {remoteUsageOpen && activeRemote
         ? (
-            <RemoteFilesDialog
+            <RemoteUsageDialog
               desktopId={activeRemote.desktopId}
-              key={`${activeRemote.desktopId}::${activeRemote.sessionId}`}
-              onClose={() => setRemoteFilesOpen(false)}
-              peerName={activeRemotePeer ? peerBadgeText(activeRemotePeer, activeRemotePeer.desktopId) : ""}
+              onClose={() => setRemoteUsageOpen(false)}
               sessionId={activeRemote.sessionId}
+              title={titleOfRemote(remoteCatalogs, activeRemote)}
             />
           )
         : null}

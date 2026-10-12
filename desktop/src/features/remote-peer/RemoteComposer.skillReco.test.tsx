@@ -19,6 +19,9 @@ vi.mock("./remotePeerClient", () => ({
   abortRemoteRun: vi.fn(),
   promptRemoteConversation: (...args: Parameters<typeof prompt>) => prompt(...args),
   uploadRemoteFile: vi.fn(),
+  // The control row reads the host's approval mode on mount.
+  getRemoteApprovalSettings: async () => ({ approvalTier: "manual", sandboxAvailable: false }),
+  setRemoteApprovalTier: async (_desktopId: string, tier: string) => tier,
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 

@@ -47,7 +47,7 @@ const children = vi.hoisted(() => ({
   appShellDialogs: null as unknown,
   contextPanel: null as unknown,
   conversationSettings: null as unknown,
-  filesDialog: null as unknown,
+  filesPanel: null as unknown,
   newConversation: null as unknown,
   onboardingGate: null as unknown,
   remoteComposer: null as unknown,
@@ -139,12 +139,15 @@ vi.mock("../../features/remote-peer/RemoteConversationSettings", async () => {
     },
   };
 });
-vi.mock("../../features/remote-peer/RemoteFilesDialog", async () => {
+vi.mock("../../features/remote-peer/RemoteFilesPanel", async () => {
   const { createElement } = await import("react");
   return {
-    RemoteFilesDialog: (props: unknown) => {
-      children.filesDialog = props;
-      return createElement("div", { "data-child": "remote-files" });
+    RemoteFilesPanel: (props: { expanded: boolean }) => {
+      children.filesPanel = props;
+      // The collapsed panel is the floating affordance over the header; the
+      // expanded one is the panel itself. The shell's test reads which it asked
+      // for from the props it recorded.
+      return createElement("div", { "data-child": "remote-files", "data-expanded": String(props.expanded) });
     },
   };
 });
@@ -1992,7 +1995,7 @@ describe("app shell collapsed-panel affordances", () => {
 
       mocks.invoke.mockResolvedValue({ accepted: true, operationId: "op_1" });
       await act(async () => {
-        (children.remoteConversationView as { onCompact: () => void }).onCompact();
+        (children.remoteComposer as { onCompact: () => void }).onCompact();
         for (let i = 0; i < 6; i += 1) await Promise.resolve();
       });
 
@@ -2010,7 +2013,7 @@ describe("app shell collapsed-panel affordances", () => {
 
       mocks.invoke.mockResolvedValue({ accepted: false });
       await act(async () => {
-        (children.remoteConversationView as { onCompact: () => void }).onCompact();
+        (children.remoteComposer as { onCompact: () => void }).onCompact();
         for (let i = 0; i < 6; i += 1) await Promise.resolve();
       });
 
@@ -2028,7 +2031,7 @@ describe("app shell collapsed-panel affordances", () => {
       act(() => (children.remoteHub as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
 
       await act(async () => {
-        (children.remoteConversationView as { onCompact: () => void }).onCompact();
+        (children.remoteComposer as { onCompact: () => void }).onCompact();
         for (let i = 0; i < 6; i += 1) await Promise.resolve();
       });
 
@@ -2044,32 +2047,34 @@ describe("app shell collapsed-panel affordances", () => {
      * is keyed on the open conversation, so switching cannot leave another
      * one's files on screen under the new title.
      */
-    it("opens the file browser for the open conversation, and closes it", () => {
+    it("gives the open remote conversation a files panel, closed by default", () => {
       const view = mount(<AppShell />);
       act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
-      const conversationView = children.remoteConversationView as { onOpenFiles: () => void };
 
-      expect(view.container.querySelector("[data-child='remote-files']")).toBeNull();
-      act(() => conversationView.onOpenFiles());
-      expect(view.container.querySelector("[data-child='remote-files']")).not.toBeNull();
-      expect(children.filesDialog).toMatchObject({
+      // The panel belongs to the conversation on screen, and starts collapsed:
+      // the reader opens it, and the collapsed state is the header's own toggle.
+      expect(children.filesPanel).toMatchObject({
         desktopId: "desktop_a",
+        expanded: false,
         sessionId: "sess_1",
       });
 
-      act(() => (children.filesDialog as { onClose: () => void }).onClose());
-      expect(view.container.querySelector("[data-child='remote-files']")).toBeNull();
+      act(() => (children.filesPanel as { onToggleExpanded: () => void }).onToggleExpanded());
+      expect(view.container.querySelector("[data-child='remote-files']")).not.toBeNull();
+      expect(children.filesPanel).toMatchObject({ expanded: true });
       view.unmount();
     });
 
     /** A draft has no conversation on the host, so it has no files to browse. */
-    it("offers no file browser for a conversation that does not exist yet", () => {
+    it("offers no files panel for a conversation that does not exist yet", () => {
       const view = mount(<AppShell />);
       act(() => rail().onManageDesktops?.());
       act(() => (children.remoteHub as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
-      act(() => (children.remoteConversationView as { onOpenFiles: () => void }).onOpenFiles());
 
+      // A draft has no session on the host, so there is nothing to list: the
+      // panel is not merely empty, it is not rendered at all.
       expect(view.container.querySelector("[data-child='remote-files']")).toBeNull();
+      expect(children.filesPanel).toBeNull();
       view.unmount();
     });
 

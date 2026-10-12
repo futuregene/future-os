@@ -22,6 +22,11 @@ vi.mock("./remotePeerClient", () => ({
   promptRemoteConversation: (...args: Parameters<typeof prompt>) => prompt(...args),
   abortRemoteRun: (...args: Parameters<typeof abort>) => abort(...args),
   uploadRemoteFile: (...args: Parameters<typeof upload>) => upload(...args),
+  // The control row carries the host's own approval mode, which the composer
+  // reads on mount: a host that reports a mode shows the menu, and one that
+  // cannot is a host the composer draws the other controls without.
+  getRemoteApprovalSettings: async () => ({ approvalTier: "manual", sandboxAvailable: false }),
+  setRemoteApprovalTier: async (_desktopId: string, tier: string) => tier,
 }));
 
 const openDialog = vi.fn<(options: Record<string, unknown>) => Promise<string | null>>();
@@ -266,9 +271,16 @@ it("ignores a second stop while one is in flight", async () => {
 });
 
 /** The composer states where the prompt runs, using the host's local name. */
-it("names the machine the prompt runs on", async () => {
+/**
+ * The machine is named where the message is written, and only there.
+ *
+ * It used to be in two places — a line under the conversation title *and* the
+ * control row — which reads as two machines. The placeholder is where this app
+ * tells the reader what the box is for, so the host's name goes there.
+ */
+it("names the machine the prompt runs on, in the box itself", async () => {
   const view = await mount();
-  expect(view.text()).toContain("Studio iMac");
+  expect(view.input.placeholder).toContain("Studio iMac");
   await view.unmount();
 });
 

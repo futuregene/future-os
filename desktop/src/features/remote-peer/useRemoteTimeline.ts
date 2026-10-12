@@ -1,6 +1,7 @@
-import type { SessionEntry } from "@future-os/thread-projection";
+import type { AgentMessage, SessionEntry } from "@future-os/thread-projection";
 import type { RemotePeerEvent } from "./remotePeerClient";
 import { listen } from "@tauri-apps/api/event";
+import { entriesToMessages } from "@future-os/thread-projection";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { requestRemotePeer } from "./remotePeerClient";
 import { forgetRemoteToolTargets } from "./remoteToolTarget";
@@ -19,6 +20,27 @@ export type RemoteEntry = SessionEntry;
 
 export interface RemoteTimeline {
   entries: RemoteEntry[];
+  /**
+   * The transcript, as messages — the shape this app draws its own in.
+   *
+   * The host serves *entries*: one per event on its agent's journal, so a single
+   * reply arrives as a thinking entry, several tool entries and a text entry.
+   * The local view has never drawn entries directly; it folds them into messages
+   * (`entriesToMessages`: one user turn and one reply each). Rendering entries
+   * one-per-message put an author line above every fragment, which is what this
+   * looked like on a real conversation — a column of "assistant", most of them
+   * empty, each with a line or two under it.
+   */
+  messages: AgentMessage[];
+  /**
+   * Whether the host would take a compact request for this conversation.
+   *
+   * The host's own preconditions, mirrored so the affordance appears only where
+   * it would be accepted: there is a conversation, there is something to compact,
+   * and no run is in flight (a host answering one prompt at a time refuses one
+   * then).
+   */
+  canCompact: boolean;
   /** True while the first page is being read. */
   loading: boolean;
   /** True while an older page is being appended. */
@@ -130,6 +152,14 @@ export function useRemoteTimeline(
   const [persistedEntryIds, setPersistedEntryIds] = useState<ReadonlySet<string>>(() => new Set());
   /** The cursor for the next older page (`nextOffset`), or null at the start. */
   const cursorRef = useRef<number | null>(null);
+
+  /**
+   * The entries folded into messages, by the same projector this app uses for
+   * its own sessions — imported rather than reimplemented, because "one author
+   * line per reply" is a rule with several parts (run identity, compaction
+   * dividers, aborted turns) that only stays right in one place.
+   */
+  const messages = useMemo(() => entriesToMessages(entries), [entries]);
   /**
    * Guards against a slow page for a *previous* session landing after the user
    * has already opened another one — the classic way a timeline shows one
@@ -282,6 +312,11 @@ export function useRemoteTimeline(
   return useMemo(
     () => ({
       entries,
+      messages,
+      canCompact: sessionId !== null && sessionId !== ""
+        && entries.length > 0
+        && !streaming
+        && !compacting,
       loading,
       loadingOlder,
       hasMore,
@@ -292,7 +327,7 @@ export function useRemoteTimeline(
       compacting,
       persistedEntryIds,
     }),
-    [entries, loading, loadingOlder, hasMore, error, loadOlder, refresh, streaming, compacting, persistedEntryIds],
+    [entries, messages, sessionId, streaming, compacting, loading, loadingOlder, hasMore, error, loadOlder, refresh, persistedEntryIds],
   );
 }
 
