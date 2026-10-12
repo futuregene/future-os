@@ -169,23 +169,64 @@ it("shows the machine's icon and names the machine", async () => {
   await view.unmount();
 });
 
-it("shows a running conversation and an unread one differently", async () => {
-  const status = (node: HTMLElement) => [...node.querySelectorAll("[aria-label]")]
+/**
+ * The indicator is the local row's, labels included.
+ *
+ * It used to be this row's own: a dot of its own size, in a slot of its own
+ * width, with labels from the remote vocabulary ("Unread"). In a list holding
+ * both kinds that read as two different things reporting two different states,
+ * so the remote row now reports through `RailRowIndicator` — the same ring, the
+ * same reserved slot and the same words as the local row beside it.
+ */
+it("reports a run through the shared indicator, in the local row's words", async () => {
+  const labels = (node: HTMLElement) => [...node.querySelectorAll("[aria-label]")]
     .map(child => child.getAttribute("aria-label"))
-    .filter(label => label === "Running" || label === "Unread");
+    .filter(label => label === "Running" || label === "Completed");
 
   const running = await mount({ conversation: conversation({ streaming: true }) });
-  // A running row says so rather than claiming unread.
-  expect(status(running.container)).toEqual(["Running"]);
+  // A running row says so rather than claiming a finished one.
+  expect(labels(running.container)).toEqual(["Running"]);
   await running.unmount();
 
   const unread = await mount({ unread: true });
-  expect(status(unread.container)).toEqual(["Unread"]);
+  expect(labels(unread.container)).toEqual(["Completed"]);
   await unread.unmount();
 
   const quiet = await mount();
-  expect(status(quiet.container)).toEqual([]);
+  expect(labels(quiet.container)).toEqual([]);
   await quiet.unmount();
+});
+
+/**
+ * The menu trigger is the shared one: 20px, out of the layout while hidden.
+ *
+ * It was 24px and always occupied its space, so the merged list's titles sat a
+ * few pixels left of the local list's and moved on hover.
+ */
+it("uses the shared 20px actions trigger, hidden until hover", async () => {
+  const view = await mount();
+  const trigger = view.container.querySelector("button[aria-haspopup='menu']")!;
+  expect(trigger.className).toContain("size-5");
+  expect(trigger.className).toContain("hidden");
+  expect(trigger.className).toContain("group-hover/thread:inline-flex");
+  await view.unmount();
+});
+
+/** Right-click opens the same menu, exactly as on a local row. */
+it("opens its menu on right-click", async () => {
+  const view = await mount();
+  expect(view.container.querySelector("[data-testid='menu']")).toBeNull();
+
+  await act(async () => {
+    view.container.firstElementChild!.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+    );
+  });
+
+  expect(view.container.querySelector("[data-testid='menu']")).not.toBeNull();
+  // The right-click opened the menu, not the conversation behind it.
+  expect(view.onOpen).not.toHaveBeenCalled();
+  await view.unmount();
 });
 
 /**

@@ -1038,6 +1038,11 @@ function ReadyAppShell({
                             composer={(
                               <RemoteComposer
                                 desktopId={activeRemote.desktopId}
+                                // The host-owned model and thinking level live in
+                                // the composer's control row, beside the send
+                                // button they apply to — the same place this
+                                // app's own model and thinking controls are.
+                                controls={<RemoteConversationSettings settings={remoteSettings} />}
                                 onCreated={(createdSessionId) => {
                                   // Adopt the conversation the host just made, so
                                   // the next prompt goes to it by name instead
@@ -1078,7 +1083,6 @@ function ReadyAppShell({
                             peer={activeRemotePeer}
                             persistedEntryIds={remoteTimeline.persistedEntryIds}
                             sessionId={activeRemote.sessionId}
-                            settings={(<RemoteConversationSettings settings={remoteSettings} />)}
                             streaming={remoteTimeline.streaming}
                             compacting={remoteTimeline.compacting}
                             title={titleOfRemote(remoteCatalogs, activeRemote)}

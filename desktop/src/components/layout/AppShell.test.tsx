@@ -2078,16 +2078,17 @@ describe("app shell collapsed-panel affordances", () => {
      * settings: a picker wired to another one would change a conversation the
      * user is not looking at.
      */
-    it("hands a settings control to the open conversation's transcript", () => {
+    it("hands the conversation's model control to its composer", () => {
       const view = mount(<AppShell />);
       expect(children.remoteConversationView).toBeNull();
       act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
 
-      // The transcript renders it in its header; what the shell owns is that it
-      // is given one for the conversation that is open.
-      const props = children.remoteConversationView as { settings?: unknown };
-      expect(props.settings).not.toBeNull();
-      expect(props.settings).toBeDefined();
+      // The composer renders it in its control row, beside the send button it
+      // applies to — which is where this app's own model control is. What the
+      // shell owns is that the open conversation's composer is given one.
+      const props = children.remoteComposer as { controls?: unknown };
+      expect(props.controls).toBeDefined();
+      expect(props.controls).not.toBeNull();
       view.unmount();
     });
 

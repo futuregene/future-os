@@ -206,6 +206,8 @@ export interface MergedGroup {
   kind: "chat" | "workspace";
   /** The workspace's name, or `null` for the chat section. */
   label: string | null;
+  /** The workspace this group is, for this machine's own groups. */
+  workspaceId: string | null;
   rows: MergedConversation[];
 }
 
@@ -223,7 +225,7 @@ export interface MergedGroup {
  * activity rather than being pinned to an arbitrary machine order.
  */
 export function groupMergedRows(rows: MergedConversation[]): {
-  chats: MergedGroup[];
+  chats: MergedConversation[];
   pinned: MergedConversation[];
   workspaces: MergedGroup[];
 } {
@@ -244,13 +246,17 @@ export function groupMergedRows(rows: MergedConversation[]): {
     // needs the machine in the key — two machines can hold the same workspace id.
     const key = grouped
       ? (row.desktopId === null ? (row.workspaceId ?? "") : `${machine}::${row.workspaceId ?? ""}`)
-      : `${machine}::chat`;
+      : "chat";
     const existing = byKey.get(key);
     const group: MergedGroup = existing ?? {
       key,
-      desktopId: row.desktopId,
+      // A chat section has no machine: it holds every machine's chats, which is
+      // the point of it — the section is where a reader looks for conversations
+      // rather than for a place on a disk.
+      desktopId: grouped ? row.desktopId : null,
       kind: grouped ? "workspace" : "chat",
       label: row.workspaceName ?? null,
+      workspaceId: grouped ? row.workspaceId : null,
       rows: [],
     };
     if (!existing)
@@ -274,14 +280,14 @@ export function groupMergedRows(rows: MergedConversation[]): {
     return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
   });
 
+  const chats = groups.find(group => group.kind === "chat");
   return {
     pinned,
     workspaces: groups.filter(group => group.kind === "workspace"),
-    // This machine's chat section first: it is the one the local rail labels
-    // "chats", and a reader looking for their own conversations should not have
-    // to look past another machine's to find them.
-    chats: groups
-      .filter(group => group.kind === "chat")
-      .sort((a, b) => (a.desktopId === null ? -1 : b.desktopId === null ? 1 : 0)),
+    // One section, every machine's conversations in it, in the same order the
+    // rows were merged in. Grouping these by machine put a heading between two
+    // conversations that belong to the same hour, and made the one list a user
+    // scans for "what is current" into one list per machine to scan separately.
+    chats: chats ? chats.rows.slice().sort(compareConversations) : [],
   };
 }

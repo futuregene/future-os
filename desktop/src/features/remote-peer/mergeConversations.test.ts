@@ -254,8 +254,7 @@ describe("mergeConversations", () => {
       expect(grouped.pinned.map(row => row.id)).toEqual(["pinned_1"]);
       expect(grouped.workspaces.flatMap(group => group.rows.map(row => row.id))).toEqual(["ws_1"]);
       expect(grouped.workspaces[0]!.label).toBe("This machine's workspace");
-      expect(grouped.chats.flatMap(group => group.rows.map(row => row.id))).toEqual(["chat_1"]);
-      expect(grouped.chats[0]!.desktopId).toBeNull();
+      expect(grouped.chats.map(row => row.id)).toEqual(["chat_1"]);
     });
 
     /**

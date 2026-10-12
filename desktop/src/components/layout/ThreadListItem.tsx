@@ -1,12 +1,12 @@
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
-import { CircleAlert, Minus, MoreHorizontal, Plus } from "lucide-react";
+import { CircleAlert, Minus, Plus } from "lucide-react";
 import { memo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
-import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { ThreadItemMenu } from "./ActivityRailMenus";
+import { RailRow, RailRowIndicator, RailRowMenuButton, RailRowTitle } from "./RailRow";
 
 /**
  * A single sidebar thread row: title, run/unread indicator, and actions menu.
@@ -99,38 +99,15 @@ function ThreadListItemImpl({
         : runStatus?.status;
 
   return (
-    <div
-      ref={menuRef}
-      className={cn(
-        // Full-width row; workspace threads (compact) indent their content via
-        // padding so the highlight still spans the full width (req 2).
-        "group/thread relative flex w-full items-center gap-1 rounded-md pr-2 text-left transition-colors hover:bg-surface-subtle",
-        compact ? "h-7" : "h-8",
-        active && "bg-surface-subtle text-ink",
-      )}
-      // Row start = the title column of a leaf (chat/pinned 16, workspace 28,
-      // unchanged); each level adds 16px of toggle + 4px of gap, so a child's
-      // row start lands exactly on its parent's title column — descendant
-      // titles line up with the parent title, level after level.
-      style={{ paddingLeft: (compact ? 28 : 16) + depth * 20 }}
-      // Right-click anywhere on the row opens the same actions menu as the
-      // `...` button.
-      onContextMenu={(event) => {
-        event.preventDefault();
-        onMenuOpenChange(thread, true);
-      }}
+    <RailRow
+      active={active}
+      compact={compact}
+      depth={depth}
+      rowRef={menuRef}
+      title={displayTitle}
+      onContextMenu={() => onMenuOpenChange(thread, true)}
+      onSelect={() => onSelectThread(thread)}
     >
-      {/* Full-row click target so the whole (highlighted) row selects the
-          thread. Content below sits on top but is pointer-events-none so clicks
-          fall through to this button; the actions trigger and menu keep a higher
-          stacking (z-10 / z-40) so they stay clickable and never mis-fire. */}
-      <button
-        aria-label={displayTitle}
-        className="absolute inset-0 rounded-md"
-        onClick={() => onSelectThread(thread)}
-        title={displayTitle}
-        type="button"
-      />
       {hasChildren
         ? (
             <button
@@ -153,14 +130,7 @@ function ThreadListItemImpl({
             </button>
           )
         : null}
-      <span
-        className={cn(
-          "pointer-events-none min-w-0 flex-1 truncate text-sm font-medium",
-          archived ? "text-ink-muted" : "text-ink-soft",
-        )}
-      >
-        {displayTitle}
-      </span>
+      <RailRowTitle muted={archived}>{displayTitle}</RailRowTitle>
       {archived ? <span className="pointer-events-none shrink-0 text-[11px] text-ink-muted group-hover/thread:hidden">{t("activityRail.archived")}</span> : null}
       {selectionMode
         ? (
@@ -188,27 +158,13 @@ function ThreadListItemImpl({
                     </span>
                   )
                 : null}
-              <span className="pointer-events-none flex shrink-0">
-                <ThreadRunIndicator status={effectiveRunStatus} unread={unread} />
-              </span>
-              <button
-                ref={menuButtonRef}
-                aria-expanded={menuOpen}
-                aria-haspopup="menu"
-                aria-label={t("activityRail.threadActions", { title: displayTitle })}
-                className={cn(
-                  "relative z-10 hidden size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft group-hover/thread:inline-flex",
-                  menuOpen && "inline-flex",
-                )}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onMenuOpenChange(thread, !menuOpen);
-                }}
-                title={t("activityRail.threadActions", { title: displayTitle })}
-                type="button"
-              >
-                <MoreHorizontal className="size-3.5" />
-              </button>
+              <RailRowIndicator status={effectiveRunStatus} unread={unread} />
+              <RailRowMenuButton
+                buttonRef={menuButtonRef}
+                label={t("activityRail.threadActions", { title: displayTitle })}
+                menuOpen={menuOpen}
+                onToggle={() => onMenuOpenChange(thread, !menuOpen)}
+              />
             </>
           )}
       {menuOpen
@@ -224,46 +180,8 @@ function ThreadListItemImpl({
             />
           )
         : null}
-    </div>
+    </RailRow>
   );
 }
 
 export const ThreadListItem = memo(ThreadListItemImpl);
-
-function ThreadRunIndicator({ status, unread }: { status?: ThreadRunInfo["status"]; unread?: boolean }) {
-  const { t } = useTranslation("layout");
-  // Reserved-width placeholder so idle rows (and the hover state) stay aligned.
-  const placeholder = <span className="size-5 shrink-0 group-hover/thread:hidden" />;
-
-  if (status === "queued" || status === "running" || status === "waiting_approval") {
-    return (
-      <span
-        aria-label={t("activityRail.running")}
-        className="inline-flex size-5 shrink-0 items-center justify-center group-hover/thread:hidden"
-        title={t("activityRail.running")}
-      >
-        <span className="size-3 animate-spin rounded-full border-2 border-accent-soft border-t-accent" />
-      </span>
-    );
-  }
-
-  // A finished run is "unread" until the thread is opened: green when it
-  // completed, red when it failed. Once read no dot shows. `cancelled` is a
-  // deliberate user action (they aborted the run), so it never needs surfacing
-  // as unread — it falls through to the empty placeholder below.
-  if (unread && (status === "completed" || status === "failed")) {
-    const failed = status === "failed";
-    const label = failed ? t("activityRail.failed") : t("activityRail.completed");
-    return (
-      <span
-        aria-label={label}
-        className="inline-flex size-5 shrink-0 items-center justify-center group-hover/thread:hidden"
-        title={label}
-      >
-        <span className={cn("size-2 rounded-full", failed ? "bg-danger" : "bg-success")} />
-      </span>
-    );
-  }
-
-  return placeholder;
-}

@@ -1,12 +1,11 @@
 import type { MergedConversation } from "../../features/remote-peer/mergeConversations";
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
-import { MoreHorizontal } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { iconGlyph } from "../../features/remote-peer/peerIcons";
 import { RemoteConversationMenu } from "../../features/remote-peer/RemoteConversationMenu";
-import { cn } from "../../lib/cn";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
+import { RailRow, RailRowIndicator, RailRowMenuButton, RailRowSpacer, RailRowTitle } from "./RailRow";
 
 /**
  * A remote conversation in the shared list.
@@ -17,13 +16,18 @@ import { useDismissableLayer } from "../../lib/useDismissableLayer";
  * local agent, and selection writes local state. A remote row reads, is
  * prompted, and its actions are commands issued to the host that owns it.
  *
- * The badge is the icon the user chose for that machine, beside the title
- * rather than in front of it: the title is what the row is about, and a leading
- * glyph pushes every title in the list one indent in.
+ * It is built on the same `RailRow` as the local row, though — the frame, the
+ * run indicator's reserved slot and the actions trigger are shared, because
+ * those are what a reader sees when scanning a list that holds both kinds. The
+ * parts that differ are the parts that mean something different: the tree toggle
+ * (a remote session has no local tree), the selection checkbox (selection is a
+ * local-store operation) and the machine's icon.
  */
 export function RemoteConversationRow({
   active,
+  compact,
   conversation,
+  depth = 0,
   onChanged,
   onOpen,
   onOpenRename,
@@ -32,7 +36,10 @@ export function RemoteConversationRow({
   unread,
 }: {
   active: boolean;
+  /** Whether this row sits inside a workspace group, as the local row does. */
+  compact?: boolean;
   conversation: MergedConversation;
+  depth?: number;
   /** Re-read the owning host's catalogue after a row action. */
   onChanged: () => void;
   onOpen: (conversation: MergedConversation) => void;
@@ -57,61 +64,38 @@ export function RemoteConversationRow({
   });
 
   return (
-    <div
-      ref={itemRef}
-      className={cn(
-        "group relative flex h-8 w-full items-center rounded-md pr-2 text-sm transition-colors",
-        active ? "bg-surface-subtle text-ink" : "text-ink-soft hover:bg-surface-subtle hover:text-ink",
-      )}
-      // The same 16px start as a local row (`ThreadListItem`) adds for its own
-      // depth-0 rows: a merged list holds both kinds side by side, and a remote
-      // title starting 8px further left than the local one reads as a second,
-      // wider column rather than as one list.
-      style={{ paddingLeft: 16 }}
+    <RailRow
+      active={active}
+      compact={compact}
+      depth={depth}
+      rowRef={itemRef}
+      title={`${conversation.title} · ${peer?.name ?? conversation.desktopId ?? ""}`}
+      onContextMenu={() => setMenuOpen(true)}
+      onSelect={() => onOpen(conversation)}
     >
-      <button
-        className="flex h-8 min-w-0 flex-1 items-center gap-2 text-left"
-        onClick={() => onOpen(conversation)}
-        title={`${conversation.title} · ${peer?.name ?? conversation.desktopId ?? ""}`}
-        type="button"
-      >
-        <span className="min-w-0 flex-1 truncate">{conversation.title}</span>
-        {showSource === false
-          ? null
-          : (
-              <span aria-hidden className="shrink-0 text-xs" data-testid="remote-source-icon">
-                {iconGlyph(peer?.icon)}
-              </span>
-            )}
-        {conversation.streaming
-          ? (
-              <span
-                aria-label={t("statusRunning")}
-                className="size-1.5 shrink-0 animate-pulse rounded-full bg-accent"
-              />
-            )
-          : unread
-            ? <span aria-label={t("statusUnread")} className="size-1.5 shrink-0 rounded-full bg-accent" />
-            : null}
-      </button>
-      <button
-        aria-label={t("conversationActions")}
-        className={cn(
-          "mr-1 flex size-6 shrink-0 items-center justify-center rounded text-ink-muted transition-opacity hover:bg-surface-subtle hover:text-ink",
-          // Revealed on hover or while open, but always mounted: a control that
-          // appears on hover must still be reachable by keyboard focus.
-          menuOpen ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
-        )}
-        onClick={(event) => {
-          // Without this the click would also reach the row button underneath
-          // and open the conversation the user wanted to act on.
-          event.stopPropagation();
-          setMenuOpen(open => !open);
-        }}
-        type="button"
-      >
-        <MoreHorizontal className="size-3.5" />
-      </button>
+      <RailRowTitle grow={false}>{conversation.title}</RailRowTitle>
+      {/* The machine, immediately after the title it qualifies: the title is what
+          the row is about, and the icon says whose it is. Aligned with the
+          title rather than with the row's right edge — at the far edge it read
+          as a second, unrelated column, and on a narrow rail it was further
+          from the title than from the next row. */}
+      {showSource === false
+        ? null
+        : (
+            <span aria-hidden className="pointer-events-none shrink-0 text-xs" data-testid="remote-source-icon">
+              {iconGlyph(peer?.icon)}
+            </span>
+          )}
+      <RailRowSpacer />
+      {/* A remote host reports that a run is in flight, so the row uses the same
+          indicator the local one does for it — an animated ring in the reserved
+          slot, not a dot of its own size in a slot of its own size. */}
+      <RailRowIndicator status={conversation.streaming ? "running" : unread ? "completed" : undefined} unread={unread} />
+      <RailRowMenuButton
+        label={t("conversationActions")}
+        menuOpen={menuOpen}
+        onToggle={() => setMenuOpen(open => !open)}
+      />
       {menuOpen
         ? (
             <RemoteConversationMenu
@@ -125,6 +109,6 @@ export function RemoteConversationRow({
             />
           )
         : null}
-    </div>
+    </RailRow>
   );
 }
