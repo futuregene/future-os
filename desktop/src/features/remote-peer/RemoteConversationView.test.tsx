@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import type { SessionEntry } from "@future-os/thread-projection";
+import type { AgentMessage, SessionEntry } from "@future-os/thread-projection";
 import { entriesToMessages } from "@future-os/thread-projection";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -25,11 +25,12 @@ vi.mock("@tauri-apps/api/window", () => ({
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-function entry(id: string, role: "assistant" | "user", text: string): SessionEntry {
+function entry(id: string, role: "assistant" | "user", text: string, runId?: string): SessionEntry {
   return {
     id,
     kind: "message",
     role,
+    ...(runId ? { runId } : {}),
     createdAtMs: 1_000,
     blocks: [{ kind: "text", text }],
   };
@@ -58,6 +59,8 @@ const peer = {
 
 async function mount(props: {
   entries: SessionEntry[];
+  /** The reply the host is writing, if the test is about streaming. */
+  live?: AgentMessage | null;
   onContinueRun?: (runId: string) => void;
   onFork?: (sourceEntryId: string, forkable: boolean) => void;
   onOpenUsage?: () => void;
@@ -85,6 +88,7 @@ async function mount(props: {
         error={null}
         hasMore={false}
         leftPanelExpanded
+        live={props.live ?? null}
         loading={false}
         loadingOlder={false}
         onContinueRun={onContinueRun}
@@ -117,6 +121,15 @@ async function mount(props: {
     usageButton: () => container.querySelector<HTMLButtonElement>("[data-testid='remote-thread-usage']"),
     continueButton: () => [...container.querySelectorAll<HTMLButtonElement>("button")]
       .find(node => node.textContent === "Continue"),
+    /**
+     * The transcript's rows, by their own text.
+     *
+     * Read off the rendered message blocks rather than the whole container so an
+     * assertion about *order* (the live reply is last) cannot be satisfied by text
+     * somewhere else on the page.
+     */
+    rows: () => [...container.querySelectorAll<HTMLElement>("[data-message-id]")]
+      .map(node => (node.textContent ?? "").trim()),
     unmount: async () => {
       await act(async () => root.unmount());
       container.remove();
@@ -192,6 +205,43 @@ it("marks a fork whose turn is not persisted, rather than hiding it", async () =
   await act(async () => button!.click());
 
   expect(onFork).toHaveBeenCalledWith("s_1:r_1:1:7", false);
+  await view.unmount();
+});
+
+/**
+ * The reply the host is writing is drawn after the transcript.
+ *
+ * It is the same `MessageBlock` a local run's live reply uses, so a reader
+ * watching another machine answer sees what they would see here — and the row is
+ * the last one, which is also why it offers nothing to act on: a fork branches at
+ * a settled turn and the host would refuse a second prompt.
+ */
+it("draws the live reply as the last row, and offers nothing to act on while it is written", async () => {
+  const live: AgentMessage = {
+    id: "stream_run_1",
+    role: "assistant",
+    authorKey: "author.researchCopilot",
+    content: "working on it",
+    status: "streaming",
+    createdAt: new Date(1_700_000_000_000).toISOString(),
+    runId: "run_1",
+  };
+  const view = await mount({
+    entries: [entry("u1", "user", "hello"), entry("a1", "assistant", "done", "run_0")],
+    live,
+    streaming: true,
+  });
+
+  // The transcript's own reply, then the one being written — in that order, and
+  // the live one last (the header and the author lines are the renderer's).
+  const rows = view.rows();
+  expect(rows).toHaveLength(3);
+  expect(rows[1]).toContain("done");
+  expect(rows[2]).toContain("working on it");
+  // The settled turn keeps its fork; the live row has none, and neither reply
+  // offers a continuation while the host is answering.
+  expect(view.forkButtons()).toHaveLength(1);
+  expect(view.continueButton()).toBeUndefined();
   await view.unmount();
 });
 

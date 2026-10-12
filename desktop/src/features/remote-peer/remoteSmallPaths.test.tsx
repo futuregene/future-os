@@ -67,6 +67,7 @@ async function mountView(messages: AgentMessage[], onFork: (source: string, fork
         error={null}
         hasMore={false}
         leftPanelExpanded
+        live={null}
         loading={false}
         loadingOlder={false}
         messages={messages}

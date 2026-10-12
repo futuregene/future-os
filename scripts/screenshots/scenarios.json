@@ -1143,6 +1143,57 @@
           }
         ]
       },
+      "remote-streaming": {
+        "note": "A prompt sent to a host: the reply is drawn as it is written — text, reasoning and the tool row it calls, inline — and becomes a record when the run ends.",
+        "url": "http://localhost:5299/shot/?lang=zh&remoteStream=1",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "重画森林图并核对置信区间"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "消息"
+          },
+          {
+            "type": "把森林图的置信区间改成 95% 并重画"
+          },
+          {
+            "wait": 250
+          },
+          {
+            "tap": "发送"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  // Poll rather than sleep: the host's frames arrive over a couple of seconds and\n  // the harness's own click is not instant. What is asserted is unchanged — the\n  // reply is on screen while its row is still the *live* one.\n  const deadline = Date.now() + 8000;\n  return new Promise((resolve, reject) => {\n    const check = () => {\n      const rows = [...document.querySelectorAll('[data-message-id]')];\n      const live = rows.filter(row => (row.getAttribute('data-message-id') || '').startsWith('stream_'));\n      if (live.length === 1 && (live[0].innerText || '').includes('置信区间确实画成了 90%')) {\n        try {\n          const text = live[0].innerText || '';\n          // The run's work, folded into this app's own activity line: one tool call\n          // and one reasoning block, inline in the reply.\n          const line = live[0].querySelector('button[aria-label*=\"工具调用\"], button[aria-label*=\"tool\"]');\n          if (!line) throw new Error('the live reply has no inline activity line: ' + text.slice(0, 200));\n          const label = line.getAttribute('aria-label') || '';\n          if (!label.includes('工具调用') || !label.includes('思考'))\n            throw new Error('the live reply did not fold the run\\'s work: ' + label);\n          if (live[0] !== rows[rows.length - 1]) throw new Error('the live reply is not the last row');\n          // The question it answers is above it, so the reply is not drawn alone.\n          if (!rows.slice(0, -1).some(row => /森林图/.test(row.innerText || '')))\n            throw new Error('the question the reply answers is not in the transcript');\n          resolve('live row: ' + text.replace(/\\s+/g, ' ').slice(0, 120));\n        }\n        catch (error) {\n          reject(error);\n        }\n        return;\n      }\n      if (Date.now() > deadline) {\n        reject(new Error('the reply never streamed: ' + rows.length + ' rows, live=' + live.length));\n        return;\n      }\n      setTimeout(check, 150);\n    };\n    check();\n  });\n})()"
+          },
+          {
+            "shot": "d-remote-streaming.png"
+          },
+          {
+            "wait": 4000
+          },
+          {
+            "eval": "(() => {\n  const rows = [...document.querySelectorAll('[data-message-id]')];\n  const live = rows.filter(row => (row.getAttribute('data-message-id') || '').startsWith('stream_'));\n  if (live.length !== 0) throw new Error('the live reply outlived its run: ' + live.length);\n  const text = rows.map(row => row.innerText || '').join('\\n');\n  if (!text.includes('并核对了每个效应的数值')) throw new Error('the settled reply is missing: ' + text.slice(0, 300));\n  const occurrences = text.split('置信区间确实画成了 90%').length - 1;\n  if (occurrences !== 1) throw new Error('the reply is drawn ' + occurrences + ' times');\n  return 'settled rows: ' + rows.length;\n})()"
+          },
+          {
+            "shot": "d-remote-streamed.png"
+          }
+        ]
+      },
       "remote-workspace-fold": {
         "note": "Clicking a workspace heading folds its rows — the heading and its rows are one decision.",
         "url": "http://localhost:5299/shot/?lang=zh",
@@ -1178,7 +1229,7 @@
             "wait": 1500
           },
           {
-            "eval": "(() => {\n  const heading = [...document.querySelectorAll(\"[data-testid='merged-group-heading']\")]\n    .find(node => (node.textContent || '').includes('图表脚本'));\n  if (!heading) throw new Error('the host workspace heading is not in the list');\n  const header = heading.closest('div');\n  const buttons = [...header.querySelectorAll('button')];\n  const menu = buttons.find(button => button.getAttribute('aria-haspopup') === 'menu');\n  const add = buttons[buttons.length - 1];\n  if (!menu || !add) throw new Error('the heading is missing a control: ' + buttons.map(b => b.getAttribute('aria-label')).join(' | '));\n  // The local heading's order: the actions menu, then the way into the workspace.\n  if (!(menu.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING))\n    throw new Error('the new-chat control precedes the actions menu');\n  menu.click();\n  // React commits the panel on its own tick, so the menu's contents are read a\n  // frame later rather than in the click's own task.\n  return new Promise((resolve, reject) => {\n    setTimeout(() => {\n      try {\n        const items = [...document.querySelectorAll(\"[role='menuitem']\")].map(node => (node.textContent || '').trim());\n        const pinItems = items.filter(text => text === '置顶' || text === '取消置顶');\n        if (pinItems.length !== 1)\n          throw new Error('the menu offers ' + pinItems.length + ' pin items: ' + items.join(' | '));\n        if (!items.includes('选择聊天'))\n          throw new Error('the menu has no select-chats item: ' + items.join(' | '));\n        if (items.length !== 3)\n          throw new Error('the menu is not [pin, select chats, delete]: ' + items.join(' | '));\n        resolve(items.join(' | '));\n      }\n      catch (error) {\n        reject(error);\n      }\n    }, 250);\n  });\n})()"
+            "eval": "(() => {\n  const heading = [...document.querySelectorAll(\"[data-testid='merged-group-heading']\")]\n    .find(node => (node.textContent || '').includes('图表脚本'));\n  if (!heading) throw new Error('the host workspace heading is not in the list');\n  const header = heading.closest('div');\n  const buttons = [...header.querySelectorAll('button')];\n  const menu = buttons.find(button => button.getAttribute('aria-haspopup') === 'menu');\n  const add = buttons[buttons.length - 1];\n  if (!menu || !add) throw new Error('the heading is missing a control: ' + buttons.map(b => b.getAttribute('aria-label')).join(' | '));\n  // The local heading's order: the actions menu, then the way into the workspace.\n  if (!(menu.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING))\n    throw new Error('the new-chat control precedes the actions menu');\n  // The pin marker rides at the row's end, next to the controls, as it does on\n  // this app's own heading. Measured with the menu *closed*: an open menu carries\n  // a pin icon of its own, and a class list cannot say where anything is anyway.\n  const pin = header.querySelector(':scope > svg.lucide-pin');\n  if (!pin) throw new Error('the pinned heading shows no pin marker');\n  const nameBox = heading.getBoundingClientRect();\n  const pinBox = pin.getBoundingClientRect();\n  const menuBox = menu.getBoundingClientRect();\n  if (pinBox.left <= nameBox.right)\n    throw new Error('the pin sits against the name: ' + Math.round(pinBox.left) + ' vs ' + Math.round(nameBox.right));\n  if (pinBox.right > menuBox.left + 1)\n    throw new Error('the pin is not before the controls: ' + Math.round(pinBox.right) + ' vs ' + Math.round(menuBox.left));\n\n  menu.click();\n  // React commits the panel on its own tick, so the menu's contents are read a\n  // frame later rather than in the click's own task.\n  return new Promise((resolve, reject) => {\n    setTimeout(() => {\n      try {\n        const items = [...document.querySelectorAll(\"[role='menuitem']\")].map(node => (node.textContent || '').trim());\n        const pinItems = items.filter(text => text === '置顶' || text === '取消置顶');\n        if (pinItems.length !== 1)\n          throw new Error('the menu offers ' + pinItems.length + ' pin items: ' + items.join(' | '));\n        if (!items.includes('选择聊天'))\n          throw new Error('the menu has no select-chats item: ' + items.join(' | '));\n        if (!items.includes('重命名'))\n          throw new Error('the menu has no rename item: ' + items.join(' | '));\n        if (items.length !== 4)\n          throw new Error('the menu is not [rename, pin, select chats, delete]: ' + items.join(' | '));\n        resolve(items.join(' | '));\n      }\n      catch (error) {\n        reject(error);\n      }\n    }, 250);\n  });\n})()"
           },
           {
             "shot": "d-remote-workspace-menu.png"

@@ -1,4 +1,4 @@
-import { CheckSquare, MoreHorizontal, Pin, Trash2 } from "lucide-react";
+import { CheckSquare, MoreHorizontal, Pencil, Pin, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useDropUpMenu } from "../../components/layout/hooks/useDropUpMenu";
@@ -10,10 +10,11 @@ import { deleteRemoteWorkspace, setRemoteWorkspacePinned } from "./remotePeerCli
 /**
  * The actions a workspace on another machine supports.
  *
- * The same menu the local heading has, reduced to what the host accepts: pin,
- * select its conversations, and remove. "Reveal in file manager" is absent
- * because the folder is on *that* machine — there is nothing here to open — and
- * an item that did nothing when clicked would be worse than its absence.
+ * The same menu the local heading has, in the same order and reduced only to what
+ * the host accepts: rename, pin, select its conversations, remove. "Reveal in
+ * file manager" is absent because the folder is on *that* machine — there is
+ * nothing here to open — and an item that did nothing when clicked would be worse
+ * than its absence.
  *
  * **One pin item, showing what the host is actually in.** The menu used to offer
  * "pin" and "unpin" side by side, which is not a choice: the host's own state
@@ -30,6 +31,7 @@ export function RemoteWorkspaceMenu({
   desktopId,
   name,
   onChanged,
+  onRename,
   onSelect,
   pinned,
   workspaceId,
@@ -38,6 +40,8 @@ export function RemoteWorkspaceMenu({
   name: string;
   /** Re-read the host's catalogue once the change has landed. */
   onChanged: () => void;
+  /** Rename it on the machine that owns it (the dialog is the caller's). */
+  onRename?: (workspaceId: string) => void;
   /** Mark this workspace's conversations for a batch action. */
   onSelect?: () => void;
   /** Whether the host reports this workspace as pinned. */
@@ -96,6 +100,22 @@ export function RemoteWorkspaceMenu({
               role="menu"
             >
               {error ? <p className="px-2 py-1 text-xs text-danger">{error}</p> : null}
+              {/* Rename leads, as it does in the local menu: it is the one item
+                  here that opens a dialog rather than acting on the host. */}
+              {onRename
+                ? (
+                    <Item
+                      disabled={busy}
+                      icon={<Pencil className="size-3.5" />}
+                      onClick={() => {
+                        setOpen(false);
+                        onRename(workspaceId);
+                      }}
+                    >
+                      {t("activityRail.rename")}
+                    </Item>
+                  )
+                : null}
               <Item
                 disabled={busy}
                 icon={<Pin className="size-3.5" />}

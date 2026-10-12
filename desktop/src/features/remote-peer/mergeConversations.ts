@@ -51,6 +51,19 @@ export interface RemoteCatalog {
   sessions: RemoteSessionRow[];
 }
 
+/**
+ * One workspace on another machine, addressed the way that host names it.
+ *
+ * `desktopId` and `workspaceId` are what a command needs; `name` is what the user
+ * sees, and only what a dialog opens with — a workspace is renamed by id, because
+ * the name is the thing being changed.
+ */
+export interface RemoteWorkspaceTarget {
+  desktopId: string;
+  name: string;
+  workspaceId: string;
+}
+
 /** One row of the merged list. */
 export interface MergedConversation {
   /** Unique across machines: the same session id on two hosts is two rows. */

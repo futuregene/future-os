@@ -1935,6 +1935,49 @@ describe("app shell collapsed-panel affordances", () => {
     });
 
     /**
+     * A workspace on another machine is renamed on that machine.
+     *
+     * The dialog is this app's own rename shell with the remote namespace's words,
+     * and saving sends the *host's* command — the local `rename_workspace` would
+     * write this machine's store for a workspace it may not even have.
+     */
+    it("opens the rename dialog for a remote workspace, and renames it on its host", async () => {
+      const commands: Array<Record<string, unknown>> = [];
+      mocks.invoke.mockImplementation(async (command: string, args?: unknown) => {
+        if (command === "remote_peer_request")
+          commands.push((args as { command?: Record<string, unknown> })?.command ?? {});
+        return undefined;
+      });
+      const view = mount(<AppShell />);
+      expect(view.container.textContent).not.toContain("Rename “图表脚本”");
+
+      act(() => rail().onRenameRemoteWorkspace?.({ desktopId: "desktop_a", name: "图表脚本", workspaceId: "ws_9" }));
+      expect(view.container.textContent).toContain("Rename “图表脚本”");
+
+      const input = view.container.querySelector("input")!;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+        setter.call(input, "Renamed there");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => railButton(view.container, "Save").click());
+      await act(async () => {
+        for (let i = 0; i < 4; i += 1) await Promise.resolve();
+      });
+
+      expect(commands).toContainEqual(expect.objectContaining({
+        type: "rename_workspace",
+        workspaceId: "ws_9",
+        name: "Renamed there",
+      }));
+      // The host's own store is not written by this machine's command.
+      expect(mocks.invoke).not.toHaveBeenCalledWith("rename_workspace", expect.anything());
+      expect(mocks.hooks.refreshRemotePeers).toHaveBeenCalled();
+      expect(view.container.textContent).not.toContain("Rename “图表脚本”");
+      view.unmount();
+    });
+
+    /**
      * A completed rename re-reads the host, which is the only thing that brings
      * the new title into the list.
      */

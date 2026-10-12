@@ -4,6 +4,7 @@ import { entriesToMessages } from "@future-os/thread-projection";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { requestRemotePeer } from "./remotePeerClient";
+import { RemoteRunStreams } from "./remoteRunStreams";
 import { forgetRemoteToolTargets } from "./remoteToolTarget";
 
 /**
@@ -32,6 +33,22 @@ export interface RemoteTimeline {
    * empty, each with a line or two under it.
    */
   messages: AgentMessage[];
+  /**
+   * The reply the host is writing right now, or `null` when nothing is running.
+   *
+   * A remote conversation had no live reply at all: the transcript only learned
+   * what the host had *persisted*, so a prompt sent from this window was followed
+   * by silence until the run ended — the answer appeared whole, seconds later,
+   * with nothing in between. The host publishes its agent's events the moment they
+   * happen, so the reply is drawn from those (`remoteRunStreams`), which is what
+   * makes a remote run behave like one on this machine.
+   *
+   * Kept apart from `messages` rather than folded into it: this is a projection of
+   * events in flight, not a record, and the two are replaced by each other — the
+   * settled reply arrives in `messages` when the history is re-read at the end of
+   * the run.
+   */
+  live: AgentMessage | null;
   /**
    * Whether the host would take a compact request for this conversation.
    *
@@ -211,6 +228,7 @@ export function useRemoteTimeline(
   enabled: boolean,
 ): RemoteTimeline {
   const [entries, setEntries] = useState<RemoteEntry[]>([]);
+  const [live, setLive] = useState<AgentMessage | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMore, setHasMore] = useState(false);
@@ -220,6 +238,17 @@ export function useRemoteTimeline(
   const [persistedEntryIds, setPersistedEntryIds] = useState<ReadonlySet<string>>(() => new Set());
   /** The cursor for the next older page (`nextOffset`), or null at the start. */
   const cursorRef = useRef<number | null>(null);
+  /**
+   * The live replies of this conversation's runs, folded from the host's pushes.
+   *
+   * A ref rather than state: the projectors are an accumulator (each delta builds
+   * on the last), and the bubble they produce is what is rendered. Creating it
+   * lazily keeps it per-window rather than per-hook-instance, which is the same
+   * lifetime the snapshots above have.
+   */
+  const streamsRef = useRef<RemoteRunStreams | null>(null);
+  if (!streamsRef.current)
+    streamsRef.current = new RemoteRunStreams();
 
   /**
    * The entries folded into messages, by the same projector this app uses for
@@ -346,6 +375,10 @@ export function useRemoteTimeline(
     setError(null);
     setStreaming(false);
     setCompacting(false);
+    // Another conversation's reply must not be drawn under this one's title, and
+    // its projectors are deltas that only apply to the run that produced them.
+    streamsRef.current?.clear();
+    setLive(null);
     // The catch-up read is not a first read: with something already on screen
     // there is no empty state to cover, so the spinner would only say "this is
     // provisional", which the seeded transcript already is not.
@@ -401,6 +434,34 @@ export function useRemoteTimeline(
         setCompacting(true);
       else if (COMPACTION_SETTLED.has(type) || RUN_SETTLED.has(type))
         setCompacting(false);
+      // The reply as it is written. Every frame of a run carries its `runId` and
+      // its run-scoped `idx`, which is what the projector orders by; a frame
+      // without them (a settings change, a presence tick) is not part of a reply.
+      const runId = readString(payload, "runId");
+      const idx = readNumber(payload, "idx");
+      const rawData = readRaw(payload, "data");
+      const streams = streamsRef.current;
+      if (runId && idx !== null && rawData !== null && streams) {
+        setLive(streams.apply({
+          data: rawData,
+          eventId: readString(payload, "eventId") ?? `${runId}:${idx}`,
+          idx,
+          runId,
+          timestamp: readString(payload, "timestamp") ?? "",
+          type,
+        }));
+      }
+      // The run is over: the host's journal has the reply now, so the transcript
+      // re-reads it and the live bubble steps aside. Without this the bubble stays
+      // and the settled reply lands *beside* it — the same words twice, one of them
+      // frozen mid-stream. The read is a catch-up (`background`), so no spinner
+      // replaces a reply the reader is already looking at.
+      if (RUN_SETTLED.has(type)) {
+        if (runId)
+          streams?.settle(runId);
+        setLive(null);
+        void readPage("history", sessionId, desktopId, true);
+      }
       const entry = entryFromEvent(payload, type);
       if (!entry)
         return;
@@ -424,6 +485,7 @@ export function useRemoteTimeline(
     () => ({
       entries,
       messages,
+      live,
       canCompact: sessionId !== null && sessionId !== ""
         && entries.length > 0
         && !streaming
@@ -438,7 +500,7 @@ export function useRemoteTimeline(
       compacting,
       persistedEntryIds,
     }),
-    [entries, messages, sessionId, streaming, compacting, loading, loadingOlder, hasMore, error, loadOlder, refresh, persistedEntryIds],
+    [entries, messages, live, sessionId, streaming, compacting, loading, loadingOlder, hasMore, error, loadOlder, refresh, persistedEntryIds],
   );
 }
 
@@ -447,6 +509,39 @@ function readString(value: unknown, key: string): string | null {
     return null;
   const field = (value as Record<string, unknown>)[key];
   return typeof field === "string" ? field : null;
+}
+
+/** A number field of a pushed event, or null when it is absent or not a number. */
+function readNumber(value: unknown, key: string): number | null {
+  if (typeof value !== "object" || value === null)
+    return null;
+  const field = (value as Record<string, unknown>)[key];
+  return typeof field === "number" && Number.isFinite(field) ? field : null;
+}
+
+/**
+ * An event's payload as the string the projector parses.
+ *
+ * The host sends it as a JSON *string* (that is how the agent's own body spells
+ * it), and the projector expects the string too — it parses it itself, and a
+ * value re-serialized on the way would only be the same bytes in more work. A
+ * body that arrives already decoded is re-encoded, so a host that changes shape
+ * does not silently stop streaming.
+ */
+function readRaw(value: unknown, key: string): string | null {
+  if (typeof value !== "object" || value === null)
+    return null;
+  const field = (value as Record<string, unknown>)[key];
+  if (typeof field === "string")
+    return field;
+  if (field === undefined || field === null)
+    return null;
+  try {
+    return JSON.stringify(field);
+  }
+  catch {
+    return null;
+  }
 }
 
 /**

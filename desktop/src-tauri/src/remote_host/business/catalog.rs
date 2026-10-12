@@ -211,6 +211,35 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 }
             }
         }
+        "rename_workspace" => {
+            // The host's own `rename_workspace`, which is why this is one arm
+            // rather than a store call written here: the name rules (trimming,
+            // the empty-name refusal, the uniqueness the user sees) belong to the
+            // command and must not be restated by a second caller.
+            if cmd.workspace_id.is_empty() {
+                reply(sink, false, Value::Null, Some("missing workspace_id")).await;
+                return;
+            }
+            let input = crate::store::RenameWorkspaceInput {
+                workspace_id: cmd.workspace_id.clone(),
+                name: cmd.name.clone(),
+            };
+            match crate::commands::rename_workspace(input) {
+                Ok(_) => {
+                    // The host's own list draws the same name, so it is told to
+                    // re-list — this write came from another machine, and nothing
+                    // in this window made it.
+                    crate::emit_threads_updated();
+                    // The client's merged list re-reads the catalogue either way;
+                    // answering with the fresh one means it does not have to.
+                    match crate::remote_host::catalog::workspaces() {
+                        Some((payload, _)) => reply(sink, true, payload, None).await,
+                        None => reply(sink, false, Value::Null, Some("catalog_unavailable")).await,
+                    }
+                }
+                Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
+            }
+        }
         "delete_workspace" => {
             if cmd.workspace_id.is_empty() {
                 reply(sink, false, Value::Null, Some("missing workspace_id")).await;
@@ -379,6 +408,133 @@ mod dispatch_tests {
                 .contains("could not be loaded"),
             "got: {error:?}"
         );
+    }
+
+    /// A rename writes the host's own store, and answers with the fresh catalogue.
+    ///
+    /// The same write as the Desktop's own rename (it goes through the command, so
+    /// the name rules are not restated here), and the reply is the catalogue the
+    /// client's merged list draws its heading from — one round trip instead of two.
+    #[tokio::test]
+    async fn rename_workspace_writes_the_name_and_answers_the_catalogue() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-rename-workspace");
+        crate::remote::test_support::init_store();
+        let dir =
+            std::env::temp_dir().join(format!("futureos-catalog-rename-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("make the host directory");
+
+        let sink = crate::remote::test_support::RecordingSink::default();
+        let created = IncomingCmd {
+            cmd_type: "create_workspace".into(),
+            path: dir.display().to_string(),
+            name: "Before".into(),
+            ..Default::default()
+        };
+        execute(&created, &sink).await;
+        let workspace_id = sink.last().1["workspace"]["id"]
+            .as_str()
+            .expect("created id")
+            .to_string();
+
+        let sink = crate::remote::test_support::RecordingSink::default();
+        let rename = IncomingCmd {
+            cmd_type: "rename_workspace".into(),
+            workspace_id: workspace_id.clone(),
+            name: "  After  ".into(),
+            ..Default::default()
+        };
+        execute(&rename, &sink).await;
+
+        let (success, data, error) = sink.last();
+        assert!(success, "rename must succeed: {error:?}");
+        // The store trims; the answer is the catalogue the caller re-draws from.
+        let rows = data["workspaces"].as_array().expect("workspaces");
+        let row = rows
+            .iter()
+            .find(|row| row["id"] == json!(workspace_id))
+            .expect("the renamed workspace is in the catalogue");
+        assert_eq!(row["name"], json!("After"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A name the store refuses is reported, not confirmed.
+    ///
+    /// An empty name is the one the store rejects, and the phone-side client shows
+    /// the reason: answering success would leave the heading unchanged with nothing
+    /// to explain why.
+    #[tokio::test]
+    async fn rename_workspace_reports_the_stores_refusal() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-rename-refused");
+        crate::remote::test_support::init_store();
+        let dir = std::env::temp_dir().join(format!(
+            "futureos-catalog-rename-empty-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("make the host directory");
+
+        let sink = crate::remote::test_support::RecordingSink::default();
+        let created = IncomingCmd {
+            cmd_type: "create_workspace".into(),
+            path: dir.display().to_string(),
+            name: "Named".into(),
+            ..Default::default()
+        };
+        execute(&created, &sink).await;
+        let workspace_id = sink.last().1["workspace"]["id"]
+            .as_str()
+            .expect("created id")
+            .to_string();
+
+        let sink = crate::remote::test_support::RecordingSink::default();
+        execute(
+            &IncomingCmd {
+                cmd_type: "rename_workspace".into(),
+                workspace_id: workspace_id.clone(),
+                name: "   ".into(),
+                ..Default::default()
+            },
+            &sink,
+        )
+        .await;
+        let (success, _data, error) = sink.last();
+        assert!(!success, "an empty name must not be confirmed");
+        assert!(
+            error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("cannot be empty"),
+            "the store's own reason is surfaced: {error:?}"
+        );
+        assert_eq!(
+            crate::store::get_workspace(&workspace_id)
+                .expect("get")
+                .expect("still there")
+                .name,
+            "Named"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A missing id is the caller's protocol error and must not reach the store.
+    #[tokio::test]
+    async fn rename_workspace_rejects_a_missing_id_before_any_work() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-rename-args");
+        crate::remote::test_support::init_store();
+        let sink = crate::remote::test_support::RecordingSink::default();
+        execute(
+            &IncomingCmd {
+                cmd_type: "rename_workspace".into(),
+                name: "Anyname".into(),
+                ..Default::default()
+            },
+            &sink,
+        )
+        .await;
+        let (success, _data, error) = sink.last();
+        assert!(!success);
+        assert_eq!(error.as_deref(), Some("missing workspace_id"));
     }
 
     /// A phone that opens the workspace list before the desktop's store is

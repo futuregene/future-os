@@ -1150,6 +1150,10 @@ export const remoteSessions: Record<string, unknown[]> = {
       mode: "workspace",
       workspaceId: "ws_figures",
       workspaceName: "图表脚本",
+      // The same field the host's catalogue carries (a workspace's pin lives on
+      // its conversations' rows), and the same state the mock's workspace list
+      // reports: the group leads the merged list, with its marker.
+      workspacePinned: true,
       pinned: false,
       streaming: true,
       lastMessageAt: Date.now() - 90_000,
@@ -1161,6 +1165,7 @@ export const remoteSessions: Record<string, unknown[]> = {
       mode: "workspace",
       workspaceId: "ws_figures",
       workspaceName: "图表脚本",
+      workspacePinned: true,
       pinned: true,
       streaming: false,
       lastMessageAt: Date.now() - 40 * 60_000,

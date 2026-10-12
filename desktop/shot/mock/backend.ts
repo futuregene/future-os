@@ -9,7 +9,6 @@
  * `[mock] UNHANDLED COMMAND <name>` — add a handler for it and re-capture.
  */
 import type { MockEntry } from "./data";
-
 import {
   appSettings,
   availableSkills,
@@ -43,6 +42,7 @@ import {
   workspaceFiles,
   workspaces,
 } from "./data";
+import { streamedEntries, streamRemoteRun } from "./remoteStream";
 
 // The console output doubles as the "what is missing" list while iterating on
 // the harness, which is why this one log call is intentional.
@@ -508,10 +508,19 @@ const handlers: Record<string, (args: any) => unknown> = {
    */
   remote_peer_request: (args: { command?: { type?: string; [key: string]: unknown }; desktopId: string }) => {
     const command = args.command ?? {};
+    if (command.type === "prompt") {
+      // The host answers the prompt, then streams the run it started (a fixture
+      // the `remote-streaming` capture drives; see `remoteStream.ts`).
+      streamRemoteRun(String(command.sessionId ?? ""), String(command.message ?? ""));
+      return { sessionId: String(command.sessionId ?? ""), threadId: "th_forest" };
+    }
     switch (command.type) {
       case "get_session_entries":
         return {
-          entries: remoteEntries[String(command.sessionId)] ?? [],
+          entries: [
+            ...(remoteEntries[String(command.sessionId)] ?? []),
+            ...streamedEntries(String(command.sessionId)),
+          ],
           hasMore: false,
           nextOffset: 0,
         };

@@ -721,13 +721,16 @@ it("does not repeat the machine on a row whose group heading already names it", 
 });
 
 /**
- * The heading's controls are in the local heading's order.
+ * A host's workspace heading carries the same two controls as the local one, in
+ * the same order, and its pin marker where the local one puts it.
  *
  * The remote heading had its "+" first and its menu second — the same two
  * controls as the local heading, in the opposite order, which reads as a
- * different set of affordances until you click each of them.
+ * different set of affordances until you click each of them — and its pin marker
+ * sat against the name while the local heading's sits at the row's end. Both are
+ * positions, so both are measured: a class list cannot say where something is.
  */
-it("puts the actions menu before the new-chat control, as the local heading does", async () => {
+it("puts the actions menu before the new-chat control, and the pin at the row's end", async () => {
   const view = await render({
     onSelectWorkspaceChats: vi.fn(),
     peers: [peer("desktop_a", "Studio iMac")],
@@ -741,6 +744,7 @@ it("puts the actions menu before the new-chat control, as the local heading does
         title: "theirs",
         workspaceId: "ws_9",
         workspaceName: "图表脚本",
+        workspacePinned: true,
       }),
     ],
     threadById: new Map(),
@@ -750,8 +754,18 @@ it("puts the actions menu before the new-chat control, as the local heading does
   const header = heading.closest("div")!;
   const menu = header.querySelector("button[aria-label^='Workspace actions']")!;
   const add = header.querySelector("button[aria-label^='New chat in']")!;
-  // Measured, not read off a class list: "before" is a position.
   expect(menu.compareDocumentPosition(add) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+  // The pin sits after the flexible spacer and before the controls, which is
+  // where this app's own heading puts it. jsdom computes no layout, so the order
+  // is what is asserted here and the pixels are measured in the harness
+  // (`remote-workspace-menu`, which renders the real page in Chrome).
+  const pin = header.querySelector("svg.lucide-pin")!;
+  expect(pin).not.toBeNull();
+  expect(heading.compareDocumentPosition(pin) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(pin.compareDocumentPosition(menu) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const spacer = pin.previousElementSibling!;
+  expect(spacer.className).toContain("flex-1");
   await view.unmount();
 });
 
