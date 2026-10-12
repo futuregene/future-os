@@ -60,6 +60,14 @@ pub(crate) fn workspaces() -> Option<(Value, String)> {
 fn read_sessions(pair_id: &str) -> Option<Value> {
     let active_sessions = crate::store::active_run_sessions().ok()?;
     let threads = crate::store::list_threads().ok()?;
+    // A client that groups its merged list by workspace needs the workspace's
+    // *name*: an id means nothing to a reader, and the alternative (showing the
+    // peer's name for every remote group) would collapse several workspaces into
+    // one. Best-effort: a thread whose workspace row is gone still lists, under
+    // its peer's name.
+    let workspace_names: std::collections::HashMap<String, String> = crate::store::list_workspaces()
+        .map(|rows| rows.into_iter().map(|row| (row.id, row.name)).collect())
+        .unwrap_or_default();
 
     let thread_ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
     let run_infos = crate::store::latest_run_infos(&thread_ids).ok()?;
@@ -86,6 +94,7 @@ fn read_sessions(pair_id: &str) -> Option<Value> {
             "title": t.title,
             "mode": t.mode,
             "workspaceId": t.workspace_id,
+            "workspaceName": workspace_names.get(&t.workspace_id).cloned(),
             "parentSessionId": t.parent_session_id,
             "pinned": t.pinned,
             "streaming": streaming,
@@ -167,6 +176,29 @@ mod tests {
             by_id("sess-older")["lastMessageAt"],
             json!(older.updated_at)
         );
+    }
+
+    /// The workspace's *name*, not its id: the merged list groups remote sessions
+    /// by workspace, and a group labelled with an opaque id tells the reader
+    /// nothing while a missing label collapses several workspaces into one.
+    #[test]
+    fn sessions_snapshot_carries_the_workspace_name() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-workspace-name");
+        crate::remote::test_support::init_store();
+
+        let thread = new_thread("sess-named", "Named");
+
+        let (payload, _signature) = sessions("pair_test").expect("snapshot");
+        let row = payload["sessions"]
+            .as_array()
+            .expect("sessions array")
+            .iter()
+            .find(|row| row["sessionId"] == json!("sess-named"))
+            .expect("session in snapshot");
+        assert_eq!(row["workspaceId"], json!(thread.workspace_id));
+        // The name the store gave the workspace it created for that path — the
+        // row's own name, not its id (see `create_thread`).
+        assert_eq!(row["workspaceName"], json!("Named Workspace"));
     }
 
     /// A thread without an agent session is not a remote session at all, and a

@@ -41,7 +41,6 @@ export function DeviceSelector({
     : active
       ? peerBadgeText(active, active.desktopId)
       : t("selector.local");
-
   function choose(next: DeviceFilter) {
     onChange(next);
     setOpen(false);
@@ -64,7 +63,7 @@ export function DeviceSelector({
         type="button"
       >
         <span aria-hidden className="shrink-0 text-sm">
-          {active ? iconGlyph(active.icon) : "🗂"}
+          {filterIcon(filter, peers)}
         </span>
         <span className="min-w-0 flex-1 truncate text-left">{label}</span>
         <ChevronDown className="size-3.5 shrink-0 text-ink-soft" />
@@ -78,14 +77,14 @@ export function DeviceSelector({
                 label={t("selector.all")}
                 onClick={() => choose({ kind: "all" })}
               >
-                <MonitorSmartphone className="size-3.5" />
+                {filterIcon({ kind: "all" }, peers)}
               </SelectorOption>
               <SelectorOption
                 active={filter.kind === "device" && filter.desktopId === null}
                 label={t("selector.local")}
                 onClick={() => choose({ kind: "device", desktopId: null })}
               >
-                <Monitor className="size-3.5" />
+                {filterIcon({ kind: "device", desktopId: null }, peers)}
               </SelectorOption>
               {peers.map(peer => (
                 <SelectorOption
@@ -98,7 +97,7 @@ export function DeviceSelector({
                   note={peer.connected ? undefined : t("statusDisconnected")}
                   onClick={() => choose({ kind: "device", desktopId: peer.desktopId })}
                 >
-                  <span aria-hidden>{iconGlyph(peer.icon)}</span>
+                  {filterIcon({ kind: "device", desktopId: peer.desktopId }, peers)}
                 </SelectorOption>
               ))}
               <div className="my-1 h-px bg-line-soft" />
@@ -119,6 +118,21 @@ export function DeviceSelector({
   );
 }
 
+/**
+ * The glyph that stands for a filter.
+ *
+ * One function for both the collapsed button and the expanded entries, because
+ * they showed different pictures for the same choice (🗂 for "all devices"
+ * collapsed, a monitor for the same entry expanded) — the button has to show
+ * the entry the user picked, or it looks like the selection did not take.
+ */
+function filterIcon(filter: DeviceFilter, peers: RemotePeer[]): React.ReactNode {
+  if (filter.kind === "all")
+    return <MonitorSmartphone className="size-3.5" />;
+  if (filter.desktopId === null)
+    return <Monitor className="size-3.5" />;
+  return <span aria-hidden>{iconGlyph(peers.find(peer => peer.desktopId === filter.desktopId)?.icon)}</span>;
+}
 function SelectorOption({
   active,
   children,

@@ -4,6 +4,8 @@ import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadTreeRow } from "./threadTree";
 import { useTranslation } from "react-i18next";
+import { iconGlyph, peerBadgeText } from "../../features/remote-peer/peerIcons";
+import { groupMergedRows } from "../../features/remote-peer/mergeConversations";
 import { RemoteConversationRow } from "./RemoteConversationRow";
 
 /**
@@ -47,8 +49,7 @@ export function MergedRows({
   threadById: Map<string, StoredThread>;
 }) {
   const { t } = useTranslation("layout");
-  const pinned = rows.filter(row => row.pinned);
-  const rest = rows.filter(row => !row.pinned);
+  const { chats, pinned, workspaces } = groupMergedRows(rows);
 
   function renderRow(conversation: MergedConversation): ReactNode {
     if (conversation.desktopId === null) {
@@ -89,9 +90,52 @@ export function MergedRows({
             </div>
           )
         : null}
-      <div className="shrink-0 space-y-0.5" data-testid="merged-conversations">
-        {rest.map(renderRow)}
-      </div>
+      {workspaces.map(group => (
+        <div className="mb-3 space-y-0.5" key={group.key}>
+          <div className="flex h-6 items-center gap-1.5 bg-surface px-2 text-xs font-medium text-ink-muted">
+            <GroupGlyph desktopId={group.desktopId} peers={peers} />
+            <span className="min-w-0 truncate">{group.label ?? t("activityRail.workspace")}</span>
+          </div>
+          {group.rows.map(renderRow)}
+        </div>
+      ))}
+      {chats.map(group => (
+        <div className="shrink-0 space-y-0.5" data-testid="merged-conversations" key={group.key}>
+          <div className="sticky top-0 z-20 flex h-6 items-center gap-1.5 bg-surface px-2 text-xs font-medium text-ink-muted">
+            <GroupGlyph desktopId={group.desktopId} peers={peers} />
+            <span className="min-w-0 truncate">
+              {group.desktopId === null
+                ? t("activityRail.chatHeader")
+                : peerName(group.desktopId, peers) ?? t("activityRail.chatHeader")}
+            </span>
+          </div>
+          {group.rows.map(renderRow)}
+        </div>
+      ))}
     </>
   );
+}
+
+/**
+ * Which machine a heading belongs to.
+ *
+ * Local headings keep the plain indentation the local list has always had; a
+ * remote one carries that machine's own icon, because with several machines in
+ * one list the name alone does not say which pane a group came from.
+ */
+function GroupGlyph({ desktopId, peers }: { desktopId: string | null; peers: RemotePeer[] }) {
+  if (desktopId === null)
+    return null;
+  return (
+    <span aria-hidden className="shrink-0 text-xs">
+      {iconGlyph(peers.find(peer => peer.desktopId === desktopId)?.icon)}
+    </span>
+  );
+}
+
+function peerName(desktopId: string, peers: RemotePeer[]): string | null {
+  const peer = peers.find(item => item.desktopId === desktopId);
+  if (!peer)
+    return null;
+  return peerBadgeText(peer, desktopId);
 }
