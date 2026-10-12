@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import type { MergedConversation } from "../../features/remote-peer/mergeConversations";
+import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -52,6 +53,7 @@ function thread(id: string): StoredThread {
 }
 
 async function render(props: {
+  peers?: RemotePeer[];
   renderLocalRow: (thread: StoredThread, depth?: number, hasChildren?: boolean) => React.ReactNode;
   rows: MergedConversation[];
   threadById: Map<string, StoredThread>;
@@ -68,7 +70,7 @@ async function render(props: {
         onChangedRemote={vi.fn()}
         onOpenRemote={vi.fn()}
         onRenameRemote={vi.fn()}
-        peers={[]}
+        peers={props.peers ?? []}
         renderLocalRow={props.renderLocalRow}
         rows={props.rows}
         threadById={props.threadById}
@@ -83,6 +85,61 @@ async function render(props: {
     },
   };
 }
+
+it("labels each group, and marks the remote ones with their machine", async () => {
+  const view = await render({
+    peers: [{
+      agentAvailable: true,
+      bridgeInstanceId: "bridge_1",
+      connected: true,
+      desktopId: "desktop_a",
+      error: null,
+      features: [],
+      icon: "laptop",
+      name: "Studio iMac",
+      pairId: "pair_1",
+    }],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [
+      conversation({
+        desktopId: null,
+        id: "ws_local",
+        key: "local::ws_local",
+        mode: "workspace",
+        title: "mine",
+        workspaceId: "ws_1",
+        workspaceName: "future-os",
+      }),
+      conversation({
+        desktopId: "desktop_a",
+        id: "sess_a",
+        key: "desktop_a::sess_a",
+        mode: "workspace",
+        title: "theirs",
+        workspaceId: "ws_9",
+        workspaceName: "future-os",
+      }),
+      conversation({
+        desktopId: "desktop_a",
+        id: "chat_a",
+        key: "desktop_a::chat_a",
+        title: "a chat on the host",
+      }),
+    ],
+    threadById: new Map([["ws_local", thread("ws_local")]]),
+  });
+
+  const labels = [...view.container.querySelectorAll("span")]
+    .map(node => node.textContent ?? "")
+    .filter(Boolean);
+  // Both machines have a "future-os" workspace, and each keeps its own heading.
+  expect(labels.filter(text => text === "future-os")).toHaveLength(2);
+  // A chat row on a host is its own section, named after that host, rather than
+  // a heading for a workspace the row is not in. (A remote *workspace* heading
+  // stays the workspace's name, which is what the user calls it.)
+  expect(labels.filter(text => text === "Studio iMac")).toHaveLength(1);
+  await view.unmount();
+});
 
 it("renders a local row through the rail's renderer, with its tree place", async () => {
   const renderLocalRow = vi.fn(() => <div>row</div>);

@@ -17,9 +17,9 @@ import { useDismissableLayer } from "../../lib/useDismissableLayer";
  * local agent, and selection writes local state. A remote row reads, is
  * prompted, and its actions are commands issued to the host that owns it.
  *
- * The badge is the icon the user chose for that machine. It replaces the
- * machine's name in the row because the row also holds a title and a relative
- * time, and a full name there would push the title out of view.
+ * The badge is the icon the user chose for that machine, beside the title
+ * rather than in front of it: the title is what the row is about, and a leading
+ * glyph pushes every title in the list one indent in.
  */
 export function RemoteConversationRow({
   active,
@@ -60,10 +60,10 @@ export function RemoteConversationRow({
         title={`${conversation.title} · ${peer?.name ?? conversation.desktopId ?? ""}`}
         type="button"
       >
+        <span className="min-w-0 flex-1 truncate">{conversation.title}</span>
         <span aria-hidden className="shrink-0 text-xs" data-testid="remote-source-icon">
           {iconGlyph(peer?.icon)}
         </span>
-        <span className="min-w-0 flex-1 truncate">{conversation.title}</span>
         {conversation.streaming
           ? (
               <span

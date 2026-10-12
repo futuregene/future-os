@@ -26,6 +26,8 @@ export interface RemoteSessionRow {
   title: string;
   mode?: "chat" | "workspace";
   workspaceId?: string;
+  /** The workspace's name on that host; absent on a host that predates it. */
+  workspaceName?: string | null;
   parentSessionId?: string | null;
   pinned?: boolean;
   streaming?: boolean;
@@ -66,6 +68,14 @@ export interface MergedConversation {
   mode: "chat" | "workspace";
   /** The remote workspace this session belongs to; `null` for local rows. */
   workspaceId: string | null;
+  /**
+   * The workspace's name, for a group heading.
+   *
+   * Local rows take it from this machine's workspace store; remote rows from the
+   * host's catalogue. Absent when neither knows it — a heading is then the
+   * machine itself, which is still truthful, where an id would be noise.
+   */
+  workspaceName?: string | null;
 }
 
 export interface LocalThreadLike {
@@ -75,6 +85,16 @@ export interface LocalThreadLike {
   pinned: boolean;
   status: "active" | "archived" | "deleted";
   workspaceId: string;
+  /**
+   * This thread's session on its agent.
+   *
+   * Used for one thing: suppressing a *remote* row for a conversation that is
+   * already in this list. Pairing a machine to itself (which is how a user
+   * tests this, and how one shares a machine's history with another) makes the
+   * host's catalogue contain this machine's own sessions, so every conversation
+   * appeared twice — once local, once remote.
+   */
+  agentSessionId?: string | null;
   lastMessageAt?: number | null;
   updatedAt: number;
   createdAt: number;
@@ -107,6 +127,8 @@ export function mergeConversations(
   threads: LocalThreadLike[],
   catalogs: RemoteCatalog[],
   filter: DeviceFilter,
+  /** This machine's workspace names, for the group headings. */
+  workspaceNames: ReadonlyMap<string, string> = new Map(),
 ): MergedConversation[] {
   const rows: MergedConversation[] = [];
 
@@ -115,12 +137,24 @@ export function mergeConversations(
     filter.kind === "all"
     || (filter.kind === "device" && filter.desktopId === desktopId);
 
+  /**
+   * The agent sessions this machine already lists, so a remote row for one of
+   * them can be dropped.
+   *
+   * Only when local rows are in this list at all: filtering to one machine is a
+   * request for *that* machine's sessions, and hiding the ones that happen to
+   * exist here too would silently shorten the answer.
+   */
+  const localSessions = new Set<string>();
+
   if (wantsLocal) {
     for (const thread of threads) {
       // Deleted threads are not conversations the user can open; archived ones
       // are still listed (the rail has a restore action for them).
       if (thread.status === "deleted")
         continue;
+      if (thread.agentSessionId)
+        localSessions.add(thread.agentSessionId);
       rows.push({
         key: rowKey(null, thread.id),
         desktopId: null,
@@ -134,6 +168,7 @@ export function mergeConversations(
         lastMessageAt: localTimestamp(thread),
         mode: thread.mode,
         workspaceId: thread.workspaceId,
+        workspaceName: workspaceNames.get(thread.workspaceId) ?? null,
       });
     }
   }
@@ -145,6 +180,9 @@ export function mergeConversations(
     for (const session of catalog.sessions) {
       const key = rowKey(catalog.desktopId, session.sessionId);
       if (seen.has(key))
+        continue;
+      // The same conversation, listed locally already (see `localSessions`).
+      if (localSessions.has(session.sessionId))
         continue;
       seen.add(key);
       rows.push({
@@ -162,6 +200,7 @@ export function mergeConversations(
         lastMessageAt: typeof session.lastMessageAt === "number" ? session.lastMessageAt : null,
         mode: session.mode === "workspace" ? "workspace" : "chat",
         workspaceId: session.workspaceId ?? null,
+        workspaceName: session.workspaceName ?? null,
       });
     }
   }
@@ -182,4 +221,85 @@ export function compareConversations(a: MergedConversation, b: MergedConversatio
   if (at !== bt)
     return bt - at;
   return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+}
+
+/** A heading in the merged list, with the rows under it. */
+export interface MergedGroup {
+  key: string;
+  /** `null` for this machine. */
+  desktopId: string | null;
+  kind: "chat" | "workspace";
+  /** The workspace's name, or `null` for the chat section. */
+  label: string | null;
+  rows: MergedConversation[];
+}
+
+/**
+ * The merged list's headings: pinned, then workspaces, then chats.
+ *
+ * The same shape the local list has, because a user who pairs a machine and then
+ * cannot find their workspaces has lost something they had before the feature
+ * existed. A workspace is identified by `(machine, workspace id)`, not by name: a
+ * group called "future-os" exists on two machines at once, and merging them would
+ * put another machine's rows under this machine's heading.
+ *
+ * Groups are ordered by their most recent row, so the list still reads
+ * newest-first inside every heading and the headings themselves move with
+ * activity rather than being pinned to an arbitrary machine order.
+ */
+export function groupMergedRows(rows: MergedConversation[]): {
+  chats: MergedGroup[];
+  pinned: MergedConversation[];
+  workspaces: MergedGroup[];
+} {
+  const pinned = rows.filter(row => row.pinned);
+  const rest = rows.filter(row => !row.pinned);
+
+  const byKey = new Map<string, MergedGroup>();
+  for (const row of rest) {
+    const machine = row.desktopId ?? "local";
+    // A chat-mode conversation has no workspace of its own in this list's shape:
+    // the local rail shows one chat section for all of them, and a heading per
+    // workspace would be a heading for something the row is not in.
+    const grouped = row.mode === "workspace";
+    const key = grouped ? `${machine}::${row.workspaceId ?? ""}` : `${machine}::chat`;
+    const existing = byKey.get(key);
+    const group: MergedGroup = existing ?? {
+      key,
+      desktopId: row.desktopId,
+      kind: grouped ? "workspace" : "chat",
+      label: row.workspaceName ?? null,
+      rows: [],
+    };
+    if (!existing)
+      byKey.set(key, group);
+    // An older row whose host predates `workspaceName` must not blank a heading
+    // a newer row in the same group supplied.
+    group.label ??= row.workspaceName ?? null;
+    group.rows.push(row);
+  }
+
+  const newest = (group: MergedGroup) =>
+    group.rows.reduce(
+      (best, row) => Math.max(best, row.lastMessageAt ?? Number.NEGATIVE_INFINITY),
+      Number.NEGATIVE_INFINITY,
+    );
+  const groups = [...byKey.values()];
+  groups.sort((a, b) => {
+    const gap = newest(b) - newest(a);
+    if (Number.isFinite(gap) && gap !== 0)
+      return gap;
+    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+  });
+
+  return {
+    pinned,
+    workspaces: groups.filter(group => group.kind === "workspace"),
+    // This machine's chat section first: it is the one the local rail labels
+    // "chats", and a reader looking for their own conversations should not have
+    // to look past another machine's to find them.
+    chats: groups
+      .filter(group => group.kind === "chat")
+      .sort((a, b) => (a.desktopId === null ? -1 : b.desktopId === null ? 1 : 0)),
+  };
 }

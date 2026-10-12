@@ -6,9 +6,14 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { TextInput } from "../../components/ui/TextInput";
+import { readNativeClipboardFilePaths, savePastedFile, savePastedImage } from "../../integrations/storage/threadStore";
 import { errorMessage } from "../../lib/errors";
+import { imageExtensionFromMime } from "../agent/attachments";
 import { SkillRecommendCard } from "../agent/SkillRecommendCard";
 import { abortRemoteRun, promptRemoteConversation, uploadRemoteFile } from "./remotePeerClient";
+
+/** How many files one paste may stage. The rest are reported, not silently dropped. */
+const MAX_PASTED_FILES = 4;
 
 /**
  * What a skill recommendation holds the message for.
@@ -100,6 +105,73 @@ export function RemoteComposer({
         return;
       const staged = await uploadRemoteFile({ desktopId, path });
       setUploads(current => [...current, staged]);
+    }
+    catch (err) {
+      setError(errorMessage(err));
+    }
+    finally {
+      setUploading(false);
+    }
+  }
+
+  /**
+   * Stage whatever the clipboard carried.
+   *
+   * The same sources the local composer reads — a Finder copy arrives as opaque
+   * `File`s whose original paths have to be recovered, a screenshot as image
+   * bytes — and the difference is only where the bytes end up: on the *host*,
+   * because that is the machine that will read the file. Text pastes are left to
+   * the field.
+   */
+  async function pasteFiles(event: React.ClipboardEvent<HTMLInputElement>) {
+    const data = event.clipboardData;
+    if (!data || busy || uploading)
+      return;
+    const files = [...data.files];
+    const hasUriList = data.types.includes("text/uri-list") && !!data.getData("text/uri-list");
+    if (files.length === 0 && !hasUriList)
+      return;
+    // Recovered paths are used when the platform hid them (WKWebView turns a
+    // Finder copy into `File`s with no `path`), and image bytes are written to a
+    // temporary file first because the host's upload command takes a path.
+    //
+    // The recovered paths win outright rather than being added to the `File`s
+    // that produced them: those `File`s are the *same* files, so processing them
+    // too would stage every copied file twice — once by path, once by bytes. The
+    // local composer takes the same shortcut for the same reason.
+    const nativePaths = await readNativeClipboardFilePaths().catch(() => []);
+    const paths = [...nativePaths];
+    if (nativePaths.length === 0) {
+      for (const file of files) {
+        if (paths.length >= MAX_PASTED_FILES)
+          break;
+        try {
+          const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+          const saved = file.type.startsWith("image/")
+            ? await savePastedImage({ bytes, extension: imageExtensionFromMime(file.type) ?? "png" })
+            : await savePastedFile({ bytes, name: file.name });
+          paths.push(saved.path);
+        }
+        catch {
+          setError(t("pasteUnreadable", { name: file.name }));
+          return;
+        }
+      }
+    }
+    if (paths.length === 0)
+      return;
+    // Only now, with something to send: a paste of text or a link must still
+    // reach the field it was aimed at.
+    event.preventDefault();
+    if (paths.length > MAX_PASTED_FILES)
+      setError(t("pasteTooMany", { max: MAX_PASTED_FILES }));
+    setUploading(true);
+    setError(null);
+    try {
+      const staged: RemoteUpload[] = [];
+      for (const path of paths.slice(0, MAX_PASTED_FILES))
+        staged.push(await uploadRemoteFile({ desktopId, path }));
+      setUploads(current => [...current, ...staged]);
     }
     catch (err) {
       setError(errorMessage(err));
@@ -281,6 +353,7 @@ export function RemoteComposer({
         <TextInput
           aria-label={t("composerLabel")}
           onChange={event => setText(event.target.value)}
+          onPaste={event => void pasteFiles(event)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
