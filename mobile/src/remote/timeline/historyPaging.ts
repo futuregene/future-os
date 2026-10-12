@@ -9,6 +9,13 @@ import type { EntriesData } from "../types";
 export const HISTORY_PAGE_TIMEOUT_MS = 30_000;
 // An exchange can contain hundreds of tool steps. Bound both the first paint
 // and each older-history pull to the same small window.
+//
+// The desktop client's copy must stay equal to this one:
+// `desktop/src/features/remote-peer/useRemoteTimeline.ts`. They are two
+// implementations of separate clients (the desktop's has to survive a minimised
+// window), but the page size is a fact about the host's cursor — not a choice
+// either client makes alone — and they diverged once, at 100 against 3, because
+// neither could see the other.
 export const HISTORY_PAGE_USER_EXCHANGES = 3;
 export const HISTORY_TAIL_CURSOR = Number.MAX_SAFE_INTEGER;
 

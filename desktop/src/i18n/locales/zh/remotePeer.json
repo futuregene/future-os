@@ -178,5 +178,6 @@
   "slashCommands": "命令",
   "usageTitle": "Token 用量与金额",
   "usageUnavailable": "无法从对端获取此对话的用量：{{message}}",
-  "workspaceRemove": "从列表中移除工作区"
+  "workspaceRemove": "从列表中移除工作区",
+  "jumpToLatest": "跳到最新"
 }

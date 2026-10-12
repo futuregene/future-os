@@ -1179,8 +1179,47 @@ export const remoteSessions: Record<string, unknown[]> = {
 };
 
 /** A remote conversation's transcript, in the host's own entry shape. */
+
+/**
+ * More of that host's conversation, so the transcript overflows its viewport.
+ *
+ * The scroll behaviour is about content taller than the window: with a short
+ * conversation `scrollHeight === clientHeight`, every "is it at the bottom?"
+ * check is trivially true, and the read-anchor behaviour cannot happen at all.
+ * These exchanges are generated rather than hand-written because their only
+ * property that matters is their length.
+ */
+function remoteFillerExchanges(): unknown[] {
+  const out: unknown[] = [];
+  for (let index = 1; index <= 14; index += 1) {
+    const at = Date.now() - (20 - index) * 60_000;
+    out.push({
+      id: `re_fill_u${index}`,
+      kind: "message",
+      role: "user",
+      createdAtMs: at,
+      runId: `rrun_fill_${index}`,
+      blocks: [{ kind: "text", text: `第 ${index} 轮：把 ${index} 号图的分组标签核对一遍，并把结论写进表格。` }],
+    });
+    out.push({
+      id: `re_fill_a${index}`,
+      kind: "message",
+      role: "assistant",
+      createdAtMs: at + 30_000,
+      runId: `rrun_fill_${index}`,
+      run: { durationMs: 20_000, status: "completed" },
+      blocks: [
+        { kind: "text", text: `${index} 号图核对完成：分组标签与图注一致，已写入表格第 ${index} 行。` },
+        { kind: "tool_call", toolCallId: `rtc_fill_${index}`, name: "read" },
+      ],
+    });
+  }
+  return out;
+}
+
 export const remoteEntries: Record<string, unknown[]> = {
   rs_forest: [
+    ...remoteFillerExchanges(),
     {
       id: "re_1",
       kind: "message",

@@ -1148,6 +1148,75 @@
             "shot": "d-remote-workspace-pin.png"
           }
         ]
+      },
+      "remote-open-at-latest": {
+        "note": "A remote conversation opens on its newest message, not at the top of the loaded page.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "重画森林图并核对置信区间"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => {\n  const msgs = [...document.querySelectorAll('[data-message-id]')];\n  if (msgs.length === 0) throw new Error('the transcript did not render');\n  const scroller = msgs[0].closest(\"div[class*='overflow-y-auto']\");\n  if (!scroller) throw new Error('no transcript viewport');\n  const distance = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;\n  // Within a few px of the bottom: the newest message is what the reader sees.\n  if (Math.abs(distance) > 8)\n    throw new Error('the transcript did not open at the newest message: ' + Math.round(distance) + 'px from the bottom');\n  // The last message is inside the viewport, and the first is not: proof that\n  // \"at the bottom\" is about the newest turn, not an accident of a short page.\n  const box = scroller.getBoundingClientRect();\n  const last = msgs[msgs.length - 1].getBoundingClientRect();\n  if (last.bottom > box.bottom + 8 || last.top < box.top - 8)\n    throw new Error('the newest message is not in view');\n  return 'distance=' + Math.round(distance) + ' scrollHeight=' + Math.round(scroller.scrollHeight);\n})()"
+          },
+          {
+            "shot": "d-remote-open-at-latest.png"
+          }
+        ]
+      },
+      "remote-jump-to-latest": {
+        "note": "Scrolling up reveals a way back to the newest message, and taking it returns to the end.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "重画森林图并核对置信区间"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => {\n  const msgs = [...document.querySelectorAll('[data-message-id]')];\n  const scroller = msgs[0].closest(\"div[class*='overflow-y-auto']\");\n  scroller.scrollTop = 0;\n  scroller.dispatchEvent(new Event('scroll', { bubbles: true }));\n  return 'scrollTop=' + Math.round(scroller.scrollTop) + ' scrollHeight=' + Math.round(scroller.scrollHeight);\n})()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => {\n  const jump = document.querySelector(\"button[aria-label='跳到最新'], button[aria-label='Jump to latest']\");\n  if (!jump) throw new Error('scrolling away offered no way back to the newest message');\n  return 'has-jump';\n})()"
+          },
+          {
+            "tap": "跳到最新"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => {\n  const msgs = [...document.querySelectorAll('[data-message-id]')];\n  const scroller = msgs[0].closest(\"div[class*='overflow-y-auto']\");\n  const distance = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;\n  if (Math.abs(distance) > 8)\n    throw new Error('jump to latest did not reach the newest message: ' + Math.round(distance) + 'px away');\n  return 'distance=' + Math.round(distance);\n})()"
+          },
+          {
+            "shot": "d-remote-jump-to-latest.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",

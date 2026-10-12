@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import type { RemotePeer } from "./remotePeerClient";
 import type { RemoteApproval } from "./useRemoteApprovals";
-import { ReceiptText } from "lucide-react";
+import { ArrowDown, ReceiptText } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
@@ -9,6 +9,7 @@ import { Button } from "../../components/ui/Button";
 import { IconButton } from "../../components/ui/IconButton";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { MessageBlock } from "../agent/MessageBlock";
+import { useStickyAutoScroll } from "../agent/useStickyAutoScroll";
 import { peerBadgeText } from "./peerIcons";
 import { useRemoteActivityTargets, withRemoteTargets } from "./remoteActivityTargets";
 
@@ -98,25 +99,59 @@ export function RemoteConversationView({
   const rendered = withRemoteTargets(messages, targets);
 
   /**
-   * Auto-load older history at the top of the transcript.
+   * The transcript's viewport: this app's own sticky auto-scroll.
    *
-   * The local conversation has always done this; a button alone means a reader
-   * who scrolls up hits the ceiling of what was loaded and has to notice a
-   * control instead of getting more history. The listener tracks the previous
-   * offset so only an upward move triggers it — arriving at the top by any other
-   * route (a short transcript, a re-read that resets the offset) must not start
-   * a chain of loads.
+   * `useStickyAutoScroll` is the hook this app's own conversations use, and
+   * reusing it is what makes a remote conversation behave like a conversation:
+   *
+   * - it **opens on the newest message** and follows the reply as it streams;
+   * - it stops following the moment the reader scrolls up, so reading history is
+   *   not a fight with the view, and offers "jump to latest" once they are far;
+   * - it **restores the reading anchor when older history is prepended**, which is
+   *   the part a plain scroll container gets wrong: `scrollTop` is measured from
+   *   the top of the content, so growing the content above the reader throws them
+   *   backwards exactly as they asked for more.
+   *
+   * The phone is the same shape by a different mechanism: its timeline is an
+   * inverted list whose offset 0 is the newest message, and it holds a
+   * `following` flag with the same rules. Same behaviour, same page size, one
+   * implementation each — the frame is what is shared here, not the plumbing.
    */
+  const scrollRef = useRef<HTMLDivElement>(null);
   const lastScrollTopRef = useRef(0);
-  const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
-    const element = event.currentTarget;
-    const top = element.scrollTop;
+  /**
+   * Reaching the top asks for more history.
+   *
+   * The container comes from the event rather than from the ref, because that is
+   * the element the reader scrolled: nothing here has a "no container" case to
+   * guard, and a guard that cannot fire is a guard nothing can trust.
+   *
+   * Run *before* the hook settles the viewport, so it compares the positions the
+   * reader produced rather than the ones the hook's own correction writes.
+   */
+  const loadOlderAtTop = useCallback((container: HTMLElement) => {
+    const top = container.scrollTop;
     const previous = lastScrollTopRef.current;
     lastScrollTopRef.current = top;
-    // Only when the reader moved up to the top, and only when there is more.
+    // An *upward* move to the top, so arriving there some other way (a short
+    // transcript, a re-read, the anchor being restored) cannot start a chain of
+    // loads.
     if (top <= 48 && previous > top && hasMore && !loadingOlder && !loading)
       onLoadOlder();
   }, [hasMore, loadingOlder, loading, onLoadOlder]);
+
+  const {
+    handleScroll,
+    scrollToLatest,
+    showJumpToLatest,
+  } = useStickyAutoScroll({
+    // The projected transcript, not the raw entries: this is what the view
+    // renders, and a fetch that fills in a tool target re-settles the viewport
+    // the same way a pushed message does.
+    contentKey: rendered,
+    followEnabled: !loading,
+    scrollRef,
+  });
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
@@ -151,7 +186,17 @@ export function RemoteConversationView({
           : null}
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4" onScroll={handleScroll}>
+      <div
+        className="min-h-0 flex-1 overflow-y-auto px-4 py-4"
+        // One handler for both jobs, in the order that matters: this decides
+        // whether the reader is asking for older pages, then the hook settles
+        // where the viewport should be.
+        onScroll={(event) => {
+          loadOlderAtTop(event.currentTarget);
+          handleScroll();
+        }}
+        ref={scrollRef}
+      >
         {hasMore
           ? (
               <div className="mb-4 flex justify-center">
@@ -221,6 +266,26 @@ export function RemoteConversationView({
                   peerName={peer ? peerBadgeText(peer, peer.desktopId) : ""}
                 />
               ))}
+            </div>
+          )
+        : null}
+
+      {/* Reading history is not a fight with the view: once the reader has
+          scrolled away, following stops and this is how they come back. Kept
+          above the composer, where this app puts it. */}
+      {showJumpToLatest
+        ? (
+            <div className="pointer-events-none flex shrink-0 justify-center pb-1">
+              <button
+                aria-label={t("jumpToLatest")}
+                className="pointer-events-auto flex items-center gap-1 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
+                onClick={scrollToLatest}
+                title={t("jumpToLatest")}
+                type="button"
+              >
+                <ArrowDown className="size-3.5" />
+                {t("jumpToLatest")}
+              </button>
             </div>
           )
         : null}
