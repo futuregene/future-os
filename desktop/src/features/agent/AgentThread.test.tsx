@@ -58,7 +58,7 @@ const h = vi.hoisted(() => ({
 vi.mock("./ThreadHeader", () => ({
   ThreadHeader: (props: { action?: ReactNode }) => <div data-header="">{props.action ?? null}</div>,
 }));
-vi.mock("./ThreadSearch", () => ({ ThreadSearch: () => <div data-search="" /> }));
+vi.mock("./search/ThreadSearch", () => ({ ThreadSearch: () => <div data-search="" /> }));
 vi.mock("./Composer", () => ({
   Composer: (props: Record<string, unknown>) => (
     <div
