@@ -16,6 +16,7 @@ import { SessionsScreen } from "../SessionsScreen";
 import { SessionList } from "../SessionList";
 import { DesktopPicker } from "../DesktopPicker";
 import { ActionMenu } from "../../components/ActionMenu";
+import type { MachineSummary } from "../../remote/desktopStatus";
 import { RenameModal } from "../../features/chat/components/RenameModal";
 import { DisconnectedScreen } from "../DisconnectedScreen";
 import { SettingsLink } from "../../features/settings/SettingsPrimitives";
@@ -62,6 +63,15 @@ jest.mock("react-native", () => {
   });
 });
 jest.mock("../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote, useRemote: () => mockRemote }));
+const mockCatalogs = {
+  catalogs: [] as { desktopId: string; label: string; sessions: never[] }[],
+  machines: [] as MachineSummary[],
+  refresh: jest.fn(async () => {}),
+  reconnect: jest.fn(async () => {}),
+};
+jest.mock("../../remote/useDesktopCatalogs", () => ({
+  useDesktopCatalogs: () => mockCatalogs,
+}));
 jest.mock("../SessionList", () => ({ SessionList: () => null }));
 jest.mock("../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
 jest.mock("../../update/prompt", () => ({ promptUpgrade: jest.fn() }));
@@ -129,6 +139,28 @@ test("the picker offers every paired desktop plus the merged option", () => {
   act(() => picker.props.onChange({ kind: "desktop", desktopId: "desktop_2" }));
   expect(tree.root.findByType(DesktopPicker).props.filter)
     .toEqual({ kind: "desktop", desktopId: "desktop_2" });
+});
+
+test("the status dot answers for every machine, and reconnect reaches them all", () => {
+  // The merged list holds several machines, so the dot's own answer is whether
+  // all of them are up — not the state of whichever one is active.
+  mockCatalogs.machines = [
+    { desktopId: "desktop_2", label: "Office", active: false, status: "offline" },
+  ];
+  try {
+    act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+    const badge = tree.root.findByType(ConnectionBadge);
+    expect(badge.props.machines.map((machine: MachineSummary) => machine.desktopId))
+      .toEqual(["desktop_1", "desktop_2"]);
+    expect(badge.props.machines[0].active).toBe(true);
+    expect(badge.props.machines[0].label).toBe("A very long desktop name");
+
+    act(() => badge.props.onReconnect());
+    expect(mockRemote.reconnect).toHaveBeenCalledTimes(1);
+    expect(mockCatalogs.reconnect).toHaveBeenCalledTimes(1);
+  } finally {
+    mockCatalogs.machines = [];
+  }
 });
 
 test("category switching is delegated to the list toolbar, without a separate tab row", () => {
