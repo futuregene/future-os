@@ -4,9 +4,18 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react-native";
 import type { ConnectionPresentation } from "../remote/connectionPresentation";
+import type { MachineStatus, MachineSummary } from "../remote/desktopStatus";
+import { machineStatusKey, machinesConnected } from "../remote/desktopStatus";
 import { disconnectedCopy } from "../remote/disconnectedCopy";
+import { iconGlyph } from "../remote/peerIcons";
 import { colors, layout, radius, spacing } from "../theme/tokens";
 import { Button } from "./Button";
+
+/** The dot a machine's own row carries, in the same palette as the badge. */
+function statusColor(status: MachineStatus): string {
+  if (status === "connected") return colors.success;
+  return status === "offline" ? colors.danger : colors.warning;
+}
 
 export function ConnectionBadge({
   presentation,
@@ -15,6 +24,7 @@ export function ConnectionBadge({
   onReconnect,
   onUnpair,
   active = true,
+  machines,
 }: {
   presentation: ConnectionPresentation;
   disconnectReason?: string;
@@ -22,6 +32,14 @@ export function ConnectionBadge({
   onReconnect?: () => void;
   onUnpair?: () => void;
   active?: boolean;
+  /**
+   * Every paired machine this phone holds, the active one included.
+   *
+   * The dot answers for all of them: a phone paired to three desktops is green
+   * only when all three are connected, because a merged list that is missing a
+   * machine is exactly the state the reader has to be able to see.
+   */
+  machines?: MachineSummary[];
 }) {
   const { t } = useTranslation();
   const dimensions = useWindowDimensions();
@@ -46,8 +64,14 @@ export function ConnectionBadge({
       setModalOpen(true);
     });
   };
-  const color = presentation.level === "connected" ? colors.success :
-    presentation.level === "connecting" ? colors.warning : colors.danger;
+  // Several machines in one list: the header says how many are up, and the
+  // button offers to reach all of them rather than only the active one.
+  const severalMachines = (machines?.length ?? 0) > 1;
+  const summary = machines ? machinesConnected(machines) : null;
+  const color = summary && machines!.length > 0
+    ? summary.all ? colors.success : summary.any ? colors.warning : colors.danger
+    : presentation.level === "connected" ? colors.success :
+      presentation.level === "connecting" ? colors.warning : colors.danger;
   // A connection the app still reports as healthy (or still trying) is where a
   // silently dead transport hides: those states keep the same manual reconnect
   // the failure states get, so recovering never requires unpairing first.
@@ -98,7 +122,7 @@ export function ConnectionBadge({
         onPress={open}
         style={({ pressed }) => [styles.badge, (pressed || visible) && styles.pressed]}
       >
-        <View style={[styles.dot, { backgroundColor: color }]} />
+        <View testID="connection-dot" style={[styles.dot, { backgroundColor: color }]} />
       </Pressable>
       <Modal
         transparent
@@ -121,6 +145,32 @@ export function ConnectionBadge({
               </Pressable>
             </View>
             <ScrollView bounces={false} contentContainerStyle={styles.content}>
+              {severalMachines && (
+                <View style={styles.machines}>
+                  {machines!.map(machine => (
+                    <View key={machine.desktopId} style={styles.machineRow}>
+                      <View
+                        style={[
+                          styles.machineDot,
+                          { backgroundColor: statusColor(machine.status) },
+                        ]}
+                      />
+                      <Text numberOfLines={1} style={styles.machineName}>
+                        {`${iconGlyph(machine.icon)} ${machine.label}`}
+                      </Text>
+                      <Text style={styles.machineState}>
+                        {t(machineStatusKey(machine.status))}
+                      </Text>
+                    </View>
+                  ))}
+                  <Text accessibilityLiveRegion="polite" style={styles.machinesSummary}>
+                    {t("connection.machinesSummary", {
+                      connected: summary?.connected ?? 0,
+                      total: summary?.total ?? 0,
+                    })}
+                  </Text>
+                </View>
+              )}
               <Text accessibilityLiveRegion="polite" style={[styles.title, { color }]}>{label}</Text>
               <Text style={styles.hint}>{reasonWithCode}</Text>
               {solution && <Text style={styles.hint}>{solution}</Text>}
@@ -128,7 +178,9 @@ export function ConnectionBadge({
                 <Button
                   compact
                   variant={presentation.level === "disconnected" ? "primary" : "secondary"}
-                  label={t(unpairable ? "sessions.unpair" : "connection.reconnect")}
+                  label={t(unpairable
+                    ? "sessions.unpair"
+                    : severalMachines ? "connection.reconnectAll" : "connection.reconnect")}
                   onPress={() => {
                     close();
                     if (unpairable) onUnpair?.();
@@ -169,6 +221,12 @@ const styles = StyleSheet.create({
   heading: { flex: 1, color: colors.inkSoft, fontSize: 13, fontWeight: "600" },
   close: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center" },
   content: { paddingHorizontal: spacing.lg, paddingBottom: spacing.lg, gap: spacing.sm },
+  machines: { gap: spacing.xs },
+  machineRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  machineDot: { width: 8, height: 8, borderRadius: 4 },
+  machineName: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 14 },
+  machineState: { color: colors.inkMuted, fontSize: 13 },
+  machinesSummary: { color: colors.inkMuted, fontSize: 12 },
   title: { fontSize: 15, fontWeight: "600" },
   hint: { color: colors.inkSoft, fontSize: 14, lineHeight: 21 },
 });

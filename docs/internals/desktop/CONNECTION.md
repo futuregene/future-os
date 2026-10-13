@@ -430,10 +430,13 @@ before it tears the connection down, while the desktop takes the answer from the
   per Desktop, so a desktop client claiming an invitation **replaces** that
   host's current phone pairing. The UI says "replaced" rather than "invalid",
   stopping locally first and compensating the cloud revoke after.
-- On mobile, Desktops other than the active one are still **read-only catalogue
-  observers** (a polling snapshot feeding the merged list); opening one of their
-  rows switches the active connection. Promoting observers to full runtimes is
-  its own project.
+- On mobile, Desktops other than the active one are still **read-only
+  connections** rather than full runtimes: each holds its own handshake, and
+  takes the host's presence heartbeats and pushed catalogue snapshots, so the
+  merged list and the status popover are live — but a conversation's timeline,
+  drafts and outbox belong to the single active connection. Opening one of their
+  rows switches the active connection. Promoting the observers to full runtimes
+  is its own project.
 - Device identification needs a host build that reports it; an older host shows
   "unknown device".
 
