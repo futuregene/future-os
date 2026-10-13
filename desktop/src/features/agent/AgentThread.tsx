@@ -89,6 +89,14 @@ interface AgentThreadProps {
    * toggle). Kept as a node so this feature does not depend on the terminal.
    */
   headerAction?: ReactNode;
+  /**
+   * Which machine this conversation is on, when there is more than one to be on.
+   *
+   * The shell's answer, like `headerAction`: this view draws a conversation and
+   * knows nothing about pairing, and a local conversation is on this computer by
+   * definition — which is worth saying only once another computer is in the list.
+   */
+  headerMachine?: ReactNode;
 }
 
 export function AgentThread({
@@ -120,6 +128,7 @@ export function AgentThread({
   futureSessionStatus,
   futureBalance,
   headerAction,
+  headerMachine,
 }: AgentThreadProps) {
   const { t } = useTranslation("agent");
   const agentState = useCachedAgentState(thread?.id);
@@ -381,6 +390,7 @@ export function AgentThread({
       <ThreadHeader
         action={headerAction}
         leftPanelExpanded={leftPanelExpanded}
+        machine={headerMachine}
         thread={thread}
         usage={agentState?.usage}
         onToggleLeftPanel={onToggleLeftPanel}

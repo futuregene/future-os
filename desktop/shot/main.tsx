@@ -23,6 +23,7 @@ import { App } from "../src/app/App";
 import { patchSettings, seedHarnessState } from "./mock/backend";
 import { remoteApproval } from "./mock/data";
 import { emit } from "./mock/event";
+import { startMidFlightRun } from "./mock/remoteStream";
 import "../src/i18n";
 import "../src/styles/globals.css";
 
@@ -59,8 +60,20 @@ seedHarnessState({
  * arrives through the store, a remote one through the peer event stream. Both
  * are therefore triggered by a scenario step rather than a URL parameter, so the
  * capture controls when the card appears instead of racing a timer.
+ *
+ * The run a host was already part-way through is the same shape of state: its
+ * beginning is the page the client reads when it opens the conversation, and its
+ * rest is pushed — so the step that continues it has to come after that open.
  */
 (window as unknown as { __shot: unknown }).__shot = {
+  /**
+   * Continue the run `rs_forest`'s transcript is already part-way through.
+   *
+   * The conversation has to be open already: this is the push lane, and a reply
+   * pushed before the client subscribed would be exactly what the fixture is not
+   * testing. Call it after the conversation's own read has landed.
+   */
+  remoteMidFlight: () => startMidFlightRun("rs_forest"),
   /** A pending approval on the host, for the open remote conversation. */
   remoteApproval: () => emit("remote-peer-event", {
     desktopId: "desktop_studio",

@@ -6,7 +6,7 @@ import type { StoredThread, StoredWorkspace } from "../../integrations/storage/t
 import type { FutureSessionStatus } from "./hooks/useFutureAccount";
 import type { RemoteIndicator } from "./hooks/useRemoteStatus";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
-import type { ThreadTreeNode } from "./threadTree";
+import type { TreeNode } from "./threadTree";
 import {
   Blocks,
   ChevronDown,
@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { mergeConversations } from "../../features/remote-peer/mergeConversations";
+import { mergeConversations, rowKey } from "../../features/remote-peer/mergeConversations";
 import { SkillIntroBubble } from "../../features/skills/SkillIntroBubble";
 import { listInstalledSkills } from "../../integrations/skills/skillsClient";
 import { cn } from "../../lib/cn";
@@ -37,6 +37,7 @@ import { IconButton } from "../ui/IconButton";
 import { ActivityRailAccountFooter } from "./ActivityRailAccountFooter";
 import { ChatSectionMenu, WorkspaceHeaderMenu } from "./ActivityRailMenus";
 import { ActivityRailSelectionToolbar } from "./ActivityRailSelectionToolbar";
+import { ConversationSearch } from "./ConversationSearch";
 import { DeviceSelector } from "./DeviceSelector";
 import { useCollapsedWorkspaces } from "./hooks/useCollapsedWorkspaces";
 import { usePendingApprovalCounts } from "./hooks/usePendingApprovalCounts";
@@ -44,7 +45,7 @@ import { useRailSelection } from "./hooks/useRailSelection";
 import { MergedRows } from "./MergedRows";
 import { RailDisclosure, RailHeaderButton } from "./RailChrome";
 import { ThreadListItem } from "./ThreadListItem";
-import { buildThreadTree, buildTree, visibleThreadRows, visibleTreeRows } from "./threadTree";
+import { buildThreadTree, buildTree, threadParentIds, visibleThreadRows, visibleTreeRows } from "./threadTree";
 
 export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote" | "settings";
 
@@ -192,6 +193,7 @@ export function ActivityRail({
   onDismissSkillIntro,
 }: ActivityRailProps) {
   const { t } = useTranslation("layout");
+  const noMatchesText = t("activityRail.noMatches");
   // Pending approvals across all threads — badged on rail items so a background
   // conversation's approval is visible without opening it.
   const pendingApprovalCounts = usePendingApprovalCounts();
@@ -258,6 +260,14 @@ export function ActivityRail({
   const [chatSectionCollapsed, setChatSectionCollapsed] = useState(false);
   // Chat section header menu.
   const [chatSectionMenuOpen, setChatSectionMenuOpen] = useState(false);
+  // Text search for the conversation list. Not persisted: the list is huge
+  // and a leftover query after restart would feel like a stale filter.
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery("");
+  }, []);
   // Attention state for the Skills nav entry: pulsed for a few seconds when
   // the skill-guide banner is dismissed (its notice says the tutorial can be
   // reopened from the Skills page).
@@ -346,6 +356,19 @@ export function ActivityRail({
     [workspaces],
   );
 
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const queryActive = normalizedQuery.length > 0;
+
+  /**
+   * Which thread each of this machine's threads was forked from.
+   *
+   * The rail's own tree resolves it (a fork names its parent by agent session id),
+   * and the merged list is handed the same answer so a local fork is hung under
+   * the row it came from — the local list's own tree, in the list that holds both
+   * machines' rows.
+   */
+  const threadParents = useMemo(() => threadParentIds(visibleThreads), [visibleThreads]);
+
   const remoteRows = useMemo(
     () => mergeConversations(
       visibleThreads.map(thread => ({
@@ -360,13 +383,14 @@ export function ActivityRail({
         lastMessageAt: thread.lastMessageAt,
         updatedAt: thread.updatedAt,
         createdAt: thread.createdAt,
+        parentThreadId: threadParents.get(thread.id) ?? null,
       })),
       remoteCatalogs,
       deviceFilter,
       // Group headings for the local half of the merged list.
       new Map(workspaces.map(workspace => [workspace.id, workspace.name])),
     ),
-    [visibleThreads, remoteCatalogs, deviceFilter, workspaces, workspaceOrder, pinnedWorkspaceIds],
+    [visibleThreads, remoteCatalogs, deviceFilter, workspaces, workspaceOrder, pinnedWorkspaceIds, threadParents],
   );
   const hasRemoteRows = remoteRows.some(row => row.desktopId !== null);
   /**
@@ -379,6 +403,18 @@ export function ActivityRail({
    * being meaningful when a group name can exist on two machines at once.
    */
   const mergedMode = hasRemoteRows || (deviceFilter.kind === "device" && deviceFilter.desktopId !== null);
+
+  // Filtering: include a row if its title or its workspace name matches.
+  const rowMatchesQuery = useCallback((row: MergedConversation): boolean => {
+    if (!queryActive)
+      return true;
+    if (row.title.toLowerCase().includes(normalizedQuery))
+      return true;
+    if (row.workspaceName && row.workspaceName.toLowerCase().includes(normalizedQuery))
+      return true;
+    return false;
+  }, [normalizedQuery, queryActive]);
+
   const visibleRemoteRows = useMemo(
     () => (mergedMode ? remoteRows : []),
     [mergedMode, remoteRows],
@@ -399,33 +435,70 @@ export function ActivityRail({
     [visibleRemoteRows],
   );
 
+  const filteredRemoteRows = useMemo(
+    () => (mergedMode ? remoteRows.filter(row => rowMatchesQuery(row)) : []),
+    [mergedMode, remoteRows, rowMatchesQuery],
+  );
+
   /**
-   * Where a remote conversation sits in its host's tree, and what a fold hides.
+   * The shared list's tree: where each row sits, what a fold hides, and the
+   * conversation each row hangs under.
    *
-   * The local half's own arrangement, in the merged list's vocabulary: the host
-   * reports each session's parent, the merge resolves it to the row the list
-   * actually holds, and the tree is the same one the local rows are placed by —
-   * so a fork on another machine is indented under its parent and folded by the
-   * same toggle, and a fork first seen on the phone is not a row with no parent.
+   * One tree over **both machines' rows**, not one per half. A fork's parent is a
+   * row of this list or it is not, and only the list can answer that: this
+   * machine's sessions name their parent by agent session id (resolved to a local
+   * row key in the merge) and a host's by its own session id, so the two halves
+   * are two branches of the same question, drawn with the same indent and folded
+   * by the same toggle.
    *
-   * `hidden` is what the local list gets for free and this one cannot: the local
-   * rail never builds a folded descendant's row, while the merged list
-   * interleaves them, so the rows a folded ancestor owns have to be filtered out
-   * by key.
+   * This replaces what the list used to do for a folded local parent — a second
+   * walk whose only job was to hide that parent's descendants — because the rows
+   * it now hides are the same ones, for either machine, and the answer is the tree
+   * the rows are drawn from.
    */
-  const remoteRowTree = useMemo(() => {
-    const nodes = buildTree(visibleRemoteRows, row => ({
+  const mergedRowTree = useMemo(() => {
+    const nodes = buildTree(filteredRemoteRows, row => ({
       key: row.key,
       parentKey: row.parentKey ?? null,
       pinned: row.pinned,
     }));
-    const visible = visibleTreeRows(nodes, row => row.key, expandedRemoteThreads);
+    // One fold state, in the list's vocabulary: a local row's own expansion is
+    // keyed by thread id and a host's by row key, so the local half is translated
+    // into the key its merged row carries.
+    const expanded = new Set(expandedRemoteThreads);
+    for (const threadId of expandedThreads) expanded.add(rowKey(null, threadId));
+    const visible = visibleTreeRows(nodes, row => row.key, expanded);
     const meta = new Map(visible.map(row => [row.item.key, row] as const));
-    return {
-      meta,
-      hidden: new Set(visibleRemoteRows.filter(row => !meta.has(row.key)).map(row => row.key)),
+    // Which conversation each row hangs under. Section and order are decided
+    // outside this component (`groupMergedRows`), so the rail's tree — the only
+    // place that knows a fork's parent is a row *of this list* — is handed over
+    // with them rather than rebuilt from the parent links.
+    const roots = new Map<string, MergedConversation>();
+    const tag = (branch: TreeNode<MergedConversation>[], root: MergedConversation) => {
+      for (const node of branch) {
+        roots.set(node.item.key, root);
+        tag(node.children, root);
+      }
     };
-  }, [expandedRemoteThreads, visibleRemoteRows]);
+    for (const node of nodes) tag([node], node.item);
+    return { meta, roots, rows: visible.map(row => row.item) };
+  }, [expandedRemoteThreads, expandedThreads, filteredRemoteRows]);
+
+  const threadMatchesQuery = useCallback((thread: StoredThread): boolean => {
+    if (!queryActive)
+      return true;
+    if (thread.title.toLowerCase().includes(normalizedQuery))
+      return true;
+    const workspace = workspaces.find(ws => ws.id === thread.workspaceId);
+    if (workspace && workspace.name.toLowerCase().includes(normalizedQuery))
+      return true;
+    return false;
+  }, [normalizedQuery, queryActive, workspaces]);
+
+  const filteredVisibleThreads = useMemo(
+    () => visibleThreads.filter(thread => threadMatchesQuery(thread)),
+    [visibleThreads, threadMatchesQuery],
+  );
 
   const {
     deleteSelected,
@@ -449,13 +522,13 @@ export function ActivityRail({
     onSelectThread,
     remoteScopes,
     threadScopes,
-    visibleRemoteRows,
-    visibleThreads,
+    visibleRemoteRows: mergedMode ? filteredRemoteRows : visibleRemoteRows,
+    visibleThreads: mergedMode ? filteredVisibleThreads : visibleThreads,
   });
 
   /** Whether this thread should show a selection checkbox. */
   function threadSelectionMode(thread: StoredThread): boolean {
-    return selectionMode && isThreadInScope(thread);
+    return selectionMode && isThreadInScope(thread) && (!searchOpen || threadMatchesQuery(thread));
   }
 
   // Pinned threads are hoisted into a single global section (regardless of
@@ -478,24 +551,41 @@ export function ActivityRail({
           rows: visibleThreadRows(roots, expandedThreads),
           threads: visibleThreadRows(roots, new Set(visibleThreads.map(thread => thread.id))).map(row => row.thread),
         };
-      });
-  }, [workspaceRoots, workspaces, expandedThreads, visibleThreads]);
-  const visibleWorkspaceGroups = workspaceSectionCollapsed ? [] : workspaceGroups;
-  const visibleChatThreads = chatSectionCollapsed ? [] : chatThreads;
+      })
+      .filter((group) => {
+        if (normalizedQuery.length === 0)
+          return true;
+        return group.workspace.name.toLowerCase().includes(normalizedQuery)
+          || group.rows.some(row => threadMatchesQuery(row.thread));
+      })
+      .map(group => ({
+        ...group,
+        rows: group.rows.filter(({ thread }) => threadMatchesQuery(thread)),
+        threads: group.threads.filter(thread => threadMatchesQuery(thread)),
+      }));
+  }, [workspaceRoots, workspaces, expandedThreads, visibleThreads, threadMatchesQuery, normalizedQuery]);
 
-  /**
-   * Each local conversation's place in its tree, for the merged list.
-   *
-   * The merged list is flat — rows from every machine ordered by time — but a
-   * local conversation still *has* a parent, and rendering it as a root loses
-   * two things a reader relies on: the indent that says "this is a fork" and the
-   * toggle that folds a parent's forks away. Both were dropped when the merged
-   * list was introduced, so any user with a host connected lost their tree.
-   */
-  const localRowMeta = useMemo(
-    () => new Map(visibleThreadRows(threadTree, new Set()).map(row => [row.thread.id, row])),
-    [threadTree],
+  const filteredPinnedThreads = useMemo(
+    () => pinnedThreads.filter(({ thread }) => threadMatchesQuery(thread)),
+    [pinnedThreads, threadMatchesQuery],
   );
+  const filteredChatThreads = useMemo(
+    () => chatThreads.filter(({ thread }) => threadMatchesQuery(thread)),
+    [chatThreads, threadMatchesQuery],
+  );
+
+  const visibleWorkspaceGroups = workspaceSectionCollapsed ? [] : workspaceGroups;
+  const visiblePinnedThreads = searchOpen || queryActive ? filteredPinnedThreads : pinnedThreads;
+  const visibleChatThreads = chatSectionCollapsed ? [] : filteredChatThreads;
+  const hasAnyVisibleRow = useMemo(() => {
+    if (!queryActive)
+      return true;
+    if (mergedMode)
+      return filteredRemoteRows.length > 0;
+    return filteredPinnedThreads.length > 0
+      || filteredChatThreads.length > 0
+      || workspaceGroups.some(group => group.rows.length > 0);
+  }, [queryActive, mergedMode, filteredRemoteRows, filteredPinnedThreads, filteredChatThreads, workspaceGroups]);
 
   /**
    * Which row is "current". A local thread is current while the chat section is
@@ -512,8 +602,8 @@ export function ActivityRail({
    */
   function renderLocalRow(
     thread: StoredThread,
-    depth = localRowMeta.get(thread.id)?.depth ?? 0,
-    hasChildren = localRowMeta.get(thread.id)?.hasChildren ?? false,
+    depth = 0,
+    hasChildren = false,
     compact = false,
   ): React.ReactNode {
     return (
@@ -622,30 +712,6 @@ export function ActivityRail({
       </div>
     );
   }
-
-  /**
-   * Local conversations hidden because an ancestor is collapsed.
-   *
-   * In the local list the rail simply does not build the rows; the merged list
-   * interleaves them, so collapsed descendants have to be filtered out by id.
-   */
-  const collapsedLocalIds = useMemo(() => {
-    if (!mergedMode)
-      return new Set<string>();
-    const hidden = new Set<string>();
-    const walk = (nodes: ThreadTreeNode[]) => {
-      for (const node of nodes) {
-        if (!expandedThreads.has(node.item.id)) {
-          for (const descendant of descendantsOf(node))
-            hidden.add(descendant);
-          continue;
-        }
-        walk(node.children);
-      }
-    };
-    walk(threadTree);
-    return hidden;
-  }, [expandedThreads, mergedMode, threadTree]);
 
   const toggleLabel = floating
     ? t("activityRail.pinSidebar")
@@ -757,18 +823,31 @@ export function ActivityRail({
                       </div>
                     )
                   : null}
-                {onChangeDeviceFilter && remotePeers.length > 0
-                  ? (
-                      <div className="mb-2 shrink-0">
-                        <DeviceSelector
-                          filter={deviceFilter}
-                          onChange={onChangeDeviceFilter}
-                          onManage={() => onManageDesktops?.()}
-                          peers={remotePeers}
+                <div className="mb-2 flex shrink-0 items-center gap-1">
+                  {onChangeDeviceFilter && remotePeers.length > 0
+                    ? (
+                        <div className="min-w-0 flex-1">
+                          <DeviceSelector
+                            filter={deviceFilter}
+                            onChange={onChangeDeviceFilter}
+                            onManage={() => onManageDesktops?.()}
+                            peers={remotePeers}
+                          />
+                        </div>
+                      )
+                    : null}
+                  {selectionMode
+                    ? null
+                    : (
+                        <ConversationSearch
+                          onClose={closeSearch}
+                          onQueryChange={setSearchQuery}
+                          onToggleOpen={() => setSearchOpen(current => !current)}
+                          open={searchOpen}
+                          query={searchQuery}
                         />
-                      </div>
-                    )
-                  : null}
+                      )}
+                </div>
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="group relative -mx-2 flex min-h-0 flex-1">
                     <div
@@ -778,6 +857,11 @@ export function ActivityRail({
                       onScroll={listScrollbar.handleScroll}
                     >
                       <div ref={listScrollbar.contentRef} className="flex min-h-full flex-col" data-activity-rail-content="true">
+                        {!hasAnyVisibleRow
+                          ? (
+                              <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches">{noMatchesText}</div>
+                            )
+                          : null}
                         {mergedMode
                           ? (
                               <MergedRows
@@ -806,24 +890,15 @@ export function ActivityRail({
                                   selected: row => selectedRemoteKeys.has(row.key),
                                   toggle: toggleRemoteSelection,
                                 }}
-                                localRowMeta={localRowMeta}
                                 expandedRemoteRows={expandedRemoteThreads}
-                                remoteRowMeta={remoteRowTree.meta}
+                                rowMeta={mergedRowTree.meta}
+                                rowRoots={mergedRowTree.roots}
                                 renderLocalGroupHeader={(workspaceId) => {
                                   const found = visibleWorkspaceGroups.find(item => item.workspace.id === workspaceId);
                                   return found ? renderWorkspaceHeader(found.workspace, found.threads) : null;
                                 }}
                                 renderLocalRow={renderLocalRow}
-                                rows={visibleRemoteRows.filter((row) => {
-                                  if (row.desktopId === null) {
-                                    // A collapsed local parent takes its forks with
-                                    // it, exactly as it does in the local list.
-                                    return !collapsedLocalIds.has(row.id);
-                                  }
-                                  // The same rule for a conversation on another
-                                  // machine, by the key its tree is built from.
-                                  return !remoteRowTree.hidden.has(row.key);
-                                })}
+                                rows={mergedRowTree.rows}
                                 selectionMode={selectionMode}
                                 threadById={threadById}
                                 workspaceSectionCollapsed={workspaceSectionCollapsed}
@@ -834,13 +909,13 @@ export function ActivityRail({
                           ? null
                           : (
                               <>
-                                {pinnedThreads.length > 0
+                                {visiblePinnedThreads.length > 0
                                   ? (
                                       <div className="mb-3 space-y-0.5">
                                         <div className="sticky top-0 z-20 flex h-6 items-center bg-surface px-2 text-xs font-medium text-ink-muted">
                                           <span>{t("activityRail.pinnedHeader")}</span>
                                         </div>
-                                        {pinnedThreads.map(({ thread, depth, hasChildren }) => (
+                                        {visiblePinnedThreads.map(({ thread, depth, hasChildren }) => (
                                           <ThreadListItem
                                             active={thread.id === activeThreadId}
                                             archived={thread.status === "archived"}
@@ -891,9 +966,9 @@ export function ActivityRail({
                                       </button>
                                     </div>
                                   </div>
-                                  {!workspaceSectionCollapsed && workspaceGroups.length === 0
+                                  {!workspaceSectionCollapsed && workspaceGroups.length === 0 && (filteredChatThreads.length === 0 || chatSectionCollapsed)
                                     ? (
-                                        <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noWorkspaceThreads")}</div>
+                                        <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches-workspace">{noMatchesText}</div>
                                       )
                                     : null}
                                   {visibleWorkspaceGroups.map(({ workspace, threads: groupThreads, rows }) => {
@@ -969,8 +1044,10 @@ export function ActivityRail({
                                       </button>
                                     </div>
                                   </div>
-                                  {!chatSectionCollapsed && chatThreads.length === 0
-                                    ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noChats")}</div>
+                                  {!chatSectionCollapsed && filteredChatThreads.length === 0
+                                    ? (
+                                        <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches">{noMatchesText}</div>
+                                      )
                                     : null}
                                   <div className="shrink-0 space-y-0.5">
                                     {visibleChatThreads.map(({ thread, depth, hasChildren }) => renderLocalRow(thread, depth, hasChildren))}
@@ -1179,9 +1256,4 @@ function NavButton({
         : null}
     </button>
   );
-}
-
-/** Every conversation below this node, at any depth. */
-function descendantsOf(node: ThreadTreeNode): string[] {
-  return node.children.flatMap(child => [child.item.id, ...descendantsOf(child)]);
 }

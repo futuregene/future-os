@@ -4,6 +4,7 @@ import type { FutureAuthState, ProvidersView } from "../../integrations/agent/pr
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { ContextTab } from "./ContextPanel";
+import { Monitor } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
@@ -15,7 +16,8 @@ import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
-import { compactRemoteConversation, continueRemoteRun, deleteRemoteConversation, forkRemoteConversation, installRemoteSkill } from "../../features/remote-peer/remotePeerClient";
+import { compactRemoteConversation, deleteRemoteConversation, forkRemoteConversation, installRemoteSkill } from "../../features/remote-peer/remotePeerClient";
+import { sendRemoteContinuation } from "../../features/remote-peer/remotePromptOutbox";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { remoteSkillRecoSource } from "../../features/remote-peer/remoteSkillRecoSource";
 import { RemoteUsageDialog } from "../../features/remote-peer/RemoteUsageDialog";
@@ -78,6 +80,7 @@ import { useUnreadThreads } from "./hooks/useUnreadThreads";
 import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import { useWindowWidth } from "./hooks/useWindowWidth";
 import { useWorkspaceDialogs } from "./hooks/useWorkspaceDialogs";
+import { MachineBadge } from "./MachineBadge";
 import { OnboardingGate } from "./OnboardingGate";
 import { WorkspaceDialogs } from "./WorkspaceDialogs";
 
@@ -494,6 +497,23 @@ function ReadyAppShell({
       )
     : null;
 
+  /**
+   * Which machine a local conversation is on — this one.
+   *
+   * Said only when there is another machine in the list: the header's job is to
+   * answer "where am I", and with nothing paired there is one answer and no
+   * question. The word and the icon are the device selector's own (`本机`, the
+   * monitor glyph), so the same machine is named the same way in both places.
+   */
+  const localMachineBadge = remotePeers.length > 0
+    ? (
+        <MachineBadge
+          glyph={<Monitor aria-hidden className="size-3.5" />}
+          label={tRemotePeer("selector.local")}
+        />
+      )
+    : null;
+
   // Bridge the backend's deferred shadow-review notification (C1) onto the
   // typed event bus so the Review panel refreshes when the changeset lands.
   useTauriEvent<string>("review-updated", (threadId) => {
@@ -870,7 +890,9 @@ function ReadyAppShell({
    */
   async function continueRemoteRunOn(desktopId: string, sessionId: string, runId: string) {
     try {
-      await continueRemoteRun(desktopId, sessionId, runId);
+      // Queue the continuation through the outbox so an unreachable host does
+      // not lose the user's request; it will be retried automatically.
+      await sendRemoteContinuation(desktopId, sessionId, runId);
       await remoteTimeline.refresh();
       await refreshRemotePeers();
     }
@@ -1125,6 +1147,7 @@ function ReadyAppShell({
                             desktopId={activeRemote.desktopId}
                             composer={(
                               <RemoteComposer
+                                key={`remote-composer:${activeRemote.desktopId}:${activeRemote.sessionId}`}
                                 canCompact={remoteTimeline.canCompact}
                                 // The conversation frame places the composer: the
                                 // band over the transcript's foot, at the same
@@ -1222,6 +1245,7 @@ function ReadyAppShell({
                               futureSessionStatus={futureSessionStatus}
                               futureBalance={futureBalance}
                               headerAction={terminalHeaderAction}
+                              headerMachine={localMachineBadge}
                               onPromptConsumed={consumePendingPrompt}
                               onForked={(forkedThreadId: string) => {
                                 void refreshStore(forkedThreadId);

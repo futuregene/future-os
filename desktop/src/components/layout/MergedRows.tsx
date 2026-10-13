@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import type { DeviceFilter, MergedConversation, RemoteWorkspaceTarget } from "../../features/remote-peer/mergeConversations";
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread } from "../../integrations/storage/threadStore";
-import type { ThreadTreeRow } from "./threadTree";
 import { Plus } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -64,12 +63,12 @@ export function MergedRows({
   remoteSelection,
   renderLocalGroupHeader,
   renderLocalRow,
+  rowMeta,
+  rowRoots,
   rows,
   selectionMode,
   threadById,
-  localRowMeta,
   expandedRemoteRows,
-  remoteRowMeta,
   workspaceSectionCollapsed,
 }: {
   activeKey: string | null;
@@ -127,14 +126,6 @@ export function MergedRows({
   onToggleWorkspace: (key: string) => void;
   onToggleWorkspaceSection: () => void;
   /**
-   * Where each local conversation sits in its own tree, keyed by thread id.
-   *
-   * The merged list is ordered by time, but a local conversation still *has* a
-   * parent — and without this a fork rendered as a root, with no indent and no
-   * fold toggle.
-   */
-  localRowMeta: Map<string, ThreadTreeRow>;
-  /**
    * Which remote conversations have their forks on screen.
    *
    * Keyed by row key, and held by the rail for the same reason the local
@@ -143,14 +134,15 @@ export function MergedRows({
    */
   expandedRemoteRows: ReadonlySet<string>;
   /**
-   * Where a remote conversation sits in its host's tree, keyed by row key.
+   * Where each listed row sits in the shared list's tree, by row key.
    *
-   * The remote counterpart of `localRowMeta`, and needed for the same reason: a
-   * session on another machine that was forked from one of that machine's
-   * sessions still *has* a parent, and without this its fork is drawn as a root
-   * — no indent, no fold toggle — while the same fork on this machine has both.
+   * One map for both machines' rows, because it is one tree: a conversation
+   * forked from one on the other machine is drawn with the same indent and
+   * folded by the same toggle as a local one, and two maps meant two places to
+   * be right about a row's depth. Built by the rail from the tree it folds with
+   * — a fold decides which rows are *here*, not how deep any of them are.
    */
-  remoteRowMeta: ReadonlyMap<string, { depth: number; hasChildren: boolean }>;
+  rowMeta: ReadonlyMap<string, { depth: number; hasChildren: boolean }>;
   peers: RemotePeer[];
   /**
    * The batch, as it applies to a host's rows.
@@ -175,6 +167,15 @@ export function MergedRows({
    * passed in rather than guessed at here.
    */
   renderLocalRow: (thread: StoredThread, depth?: number, hasChildren?: boolean, compact?: boolean) => ReactNode;
+  /**
+   * Which conversation each listed row hangs under, by row key — its root.
+   *
+   * The rail's tree, handed over rather than rebuilt: the rail is what knows
+   * whether a fork's parent is one of *these* rows (the device filter, a fold, a
+   * parent that is gone), and a fork is drawn under that row — in its section, at
+   * its height — instead of taking a place of its own by time.
+   */
+  rowRoots: ReadonlyMap<string, MergedConversation>;
   rows: MergedConversation[];
   /** Whether a batch is being assembled, so "select chats" is not offered again. */
   selectionMode: boolean;
@@ -182,7 +183,10 @@ export function MergedRows({
   workspaceSectionCollapsed: boolean;
 }) {
   const { t } = useTranslation("layout");
-  const { chats, pinned, workspaces } = groupMergedRows(rows);
+  // The sections and their order: a fork is a conversation's, so the rows are
+  // ranked by the conversation each one hangs under, and a fork lands in that
+  // conversation's section rather than one its own fields would pick.
+  const { chats, pinned, workspaces } = groupMergedRows(rows, rowRoots);
   // The chat section's menu is the rail's own control, which owns its open state
   // through props — so the state lives here, next to the header that draws it.
   const [chatMenuOpen, setChatMenuOpen] = useState(false);
@@ -201,7 +205,7 @@ export function MergedRows({
       // same list), but rendering nothing beats rendering a broken row.
       if (!thread)
         return null;
-      const meta = localRowMeta.get(thread.id);
+      const meta = rowMeta.get(conversation.key);
       // `compact` travels with the row, and it is the *group's* answer, not the
       // row's own: a conversation inside a workspace is one notch shorter than a
       // top-level one. Passing it only to the remote row (as this did) left the
@@ -212,7 +216,7 @@ export function MergedRows({
       return renderLocalRow(thread, meta?.depth ?? 0, meta?.hasChildren ?? false, compact);
     }
     const selectable = remoteSelection?.selectable(conversation) === true;
-    const meta = remoteRowMeta.get(conversation.key);
+    const meta = rowMeta.get(conversation.key);
     return (
       <RemoteConversationRow
         active={activeKey === conversation.key}

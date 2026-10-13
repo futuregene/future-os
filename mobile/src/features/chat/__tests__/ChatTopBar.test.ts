@@ -50,3 +50,41 @@ test.each(["Non-workspace conversation", "Workspace · Research", "Workspace con
   expect(labels()).toEqual(["Back"]);
   expect(tree.root.findAll(node => node.props.accessibilityLabel === contextLabel).length).toBeGreaterThan(0);
 });
+
+/**
+ * The bar names the desktop the conversation is on, on the line that already
+ * says where it is.
+ *
+ * The phone has no agent of its own, so every conversation here lives on a paired
+ * desktop; the machine goes on the *context* line (with the workspace, or the chat
+ * section) rather than in a row of its own — the layout keeps to one line, and the
+ * machine is a qualifier of the conversation, not a second title.
+ */
+test("the context line carries the machine, and both halves stay addressable", () => {
+  act(() => {
+    tree = create(createElement(ChatTopBar, {
+      ...props,
+      contextLabel: "Workspace · Research",
+      machine: { glyph: "💻", label: "Lab MacBook Pro" },
+    }));
+  });
+
+  // The host node, not its wrapper: a testID is on both, and the rendered text
+  // is what a reader sees.
+  const hostText = (testID: string) => tree.root.findAll(node =>
+    String(node.type) === "Text" && node.props.testID === testID);
+  const machine = hostText("chat-machine");
+  expect(machine).toHaveLength(1);
+  expect(machine[0]!.props.accessibilityLabel).toBe("Lab MacBook Pro");
+  expect(machine[0]!.children.join("")).toBe("💻 Lab MacBook Pro");
+  // The workspace it sits beside is still named, and the bar's controls are
+  // untouched by the extra element.
+  expect(tree.root.findAll(node => node.props.accessibilityLabel === "Workspace · Research").length).toBeGreaterThan(0);
+  expect(labels()).toEqual(["Back", "Files", "Token usage and amount"]);
+
+  // A bar built without a machine (the tests, and any caller that has none)
+  // renders exactly what it did before.
+  act(() => { tree.update(createElement(ChatTopBar, props)); });
+  expect(hostText("chat-machine")).toHaveLength(0);
+  expect(tree.root.findAll(node => node.props.accessibilityLabel === props.contextLabel).length).toBeGreaterThan(0);
+});

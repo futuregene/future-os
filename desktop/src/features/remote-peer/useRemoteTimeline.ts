@@ -1,11 +1,13 @@
 import type { AgentMessage, SessionEntry } from "@future-os/thread-projection";
 import type { RemotePeerEvent } from "./remotePeerClient";
+import type { RunCursor } from "./replayWindow";
 import { entriesToMessages } from "@future-os/thread-projection";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { requestRemotePeer } from "./remotePeerClient";
 import { RemoteRunStreams } from "./remoteRunStreams";
 import { forgetRemoteToolTargets } from "./remoteToolTarget";
+import { applyReplayPage, newRunCursor, nextEvent } from "./replayWindow";
 
 /**
  * One entry in a remote session's history.
@@ -89,6 +91,16 @@ export interface RemoteTimeline {
    */
   persistedEntryIds: ReadonlySet<string>;
 }
+
+/**
+ * Default page size for an incremental replay request.  The host's own
+ * generic default is 100 events, which is wasteful for token-heavy runs: a
+ * single tool or thinking stream can produce hundreds of small events, and
+ * 100-item pages turn one replay into several round trips.  The phone already
+ * uses 1000; matching it keeps the two clients on the same side of the host's
+ * wire contract.
+ */
+export const REPLAY_PAGE_EVENTS = 1000;
 
 /**
  * The host's page size for a backward history read, in *user exchanges* (not
@@ -200,6 +212,8 @@ interface TimelineSnapshot {
   entries: RemoteEntry[];
   hasMore: boolean;
   persistedIds: ReadonlySet<string>;
+  /** Per-run cursors restored when this snapshot is seeded. */
+  runCursor?: RunCursor;
 }
 
 const snapshots = new Map<string, TimelineSnapshot>();
@@ -238,6 +252,8 @@ export function useRemoteTimeline(
   const [persistedEntryIds, setPersistedEntryIds] = useState<ReadonlySet<string>>(() => new Set());
   /** The cursor for the next older page (`nextOffset`), or null at the start. */
   const cursorRef = useRef<number | null>(null);
+  /** Per-run cursors for gap detection and replay validation. */
+  const runCursorRef = useRef<RunCursor>(newRunCursor());
   /**
    * The live replies of this conversation's runs, folded from the host's pushes.
    *
@@ -327,7 +343,19 @@ export function useRemoteTimeline(
         entries: side === "history" ? parsed : [],
         hasMore: page?.hasMore === true && next !== null && next > 0,
         persistedIds: new Set(parsed.map(item => item.id)),
+        runCursor: runCursorRef.current ? new Map(runCursorRef.current) : undefined,
       });
+      // A tail read restarts the live lane: the reply being written is the
+      // transcript's *tail*, and this page is now where the record ends. Keeping
+      // what the stream had accumulated across the read would draw the same
+      // deltas twice — once from the record, once from the bubble — because a
+      // delta that arrived before the read is content the page now carries
+      // (`foldLiveReply`). The bubble goes with the projection it was built from;
+      // the page it was read for is on screen now.
+      if (side === "history") {
+        streamsRef.current?.restart();
+        setLive(null);
+      }
       setError(null);
       return parsed;
     }
@@ -344,6 +372,85 @@ export function useRemoteTimeline(
       }
     }
   }, []);
+
+  /**
+   * Try an incremental replay of events since the highest applied index.  Falls
+   * back to a full newest-page read if the host does not support the command or
+   * if the replay window cannot be validated.
+   */
+  const readReplayPage = useCallback(async (
+    session: string,
+    desktop: string,
+    background = false,
+  ): Promise<RemoteEntry[]> => {
+    const cursor = runCursorRef.current;
+    const since = highestRunCursor(cursor);
+    if (since < 0)
+      return readPage("history", session, desktop, background);
+
+    const epoch = ++epochRef.current;
+    if (!background)
+      setLoading(true);
+    try {
+      const page = await requestRemotePeer<{
+        events?: unknown[];
+        watermark?: number;
+        rawEvents?: number;
+        hasMore?: boolean;
+      }>(desktop, {
+        type: "get_events_since",
+        sessionId: session,
+        sinceIdx: since,
+        limit: REPLAY_PAGE_EVENTS,
+      }, session);
+
+      if (epoch !== epochRef.current)
+        return [];
+
+      const events = normaliseReplayEvents(page?.events);
+      const cursorBefore = new Map(cursor);
+      const result = applyReplayPage(
+        cursor,
+        events.map(event => ({ id: event.id, runId: event.runId ?? undefined, idx: event.idx ?? undefined })),
+        page?.watermark,
+        page?.rawEvents,
+        since,
+      );
+
+      if (result.apply === null || !result.prefixComplete) {
+        // Validation failed or prefix is incomplete: restore cursor and fall
+        // back to the newest history page.
+        runCursorRef.current = cursorBefore;
+        return readPage("history", session, desktop, background);
+      }
+
+      const parsed = events.map(event => event.entry).filter(Boolean) as RemoteEntry[];
+      setEntries((current) => {
+        const existing = new Set(current.map(item => item.id));
+        const newEntries = parsed.filter(item => !existing.has(item.id));
+        return newEntries.length > 0 ? [...current, ...newEntries] : current;
+      });
+      setPersistedEntryIds((current) => {
+        const next = new Set(current);
+        for (const item of parsed)
+          next.add(item.id);
+        return next;
+      });
+      setError(null);
+      return parsed;
+    }
+    catch {
+      // An old host answers "Unsupported command" for get_events_since; fall
+      // back to the whole newest page so the user still sees something.
+      return readPage("history", session, desktop, background);
+    }
+    finally {
+      if (epoch === epochRef.current) {
+        setLoading(false);
+        setLoadingOlder(false);
+      }
+    }
+  }, [readPage]);
 
   const refresh = useCallback(async () => {
     if (!desktopId || !sessionId)
@@ -371,6 +478,7 @@ export function useRemoteTimeline(
     setEntries(cached?.entries ?? []);
     setPersistedEntryIds(cached?.persistedIds ?? new Set());
     cursorRef.current = cached?.cursor ?? null;
+    runCursorRef.current = cached?.runCursor ? new Map(cached.runCursor) : newRunCursor();
     setHasMore(cached?.hasMore ?? false);
     setError(null);
     setStreaming(false);
@@ -391,7 +499,7 @@ export function useRemoteTimeline(
     // by run and call id, which never repeat, so nothing here would ever be read
     // again — and the cache would otherwise grow for the life of the window.
     return () => forgetRemoteToolTargets(desktopId, sessionId);
-  }, [enabled, desktopId, sessionId, readPage]);
+  }, [enabled, desktopId, sessionId, readPage, readReplayPage]);
 
   // Live: append this session's events; ignore every other session's.
   useEffect(() => {
@@ -407,7 +515,7 @@ export function useRemoteTimeline(
       // before the `kind` check below, which only handles session events.
       if (kind === "resumed") {
         if (source === desktopId)
-          void readPage("history", sessionId, desktopId);
+          void readReplayPage(sessionId, desktopId, true);
         return;
       }
       if (kind !== "event" || source !== desktopId)
@@ -442,6 +550,10 @@ export function useRemoteTimeline(
       const rawData = readRaw(payload, "data");
       const streams = streamsRef.current;
       if (runId && idx !== null && rawData !== null && streams) {
+        // Track this frame's run cursor so the replay path knows how far it has
+        // reliably seen.  The projector needs the raw event anyway; the cursor is
+        // updated as a side effect of applying it.
+        nextEvent(runCursorRef.current, runId, idx);
         setLive(streams.apply({
           data: rawData,
           eventId: readString(payload, "eventId") ?? `${runId}:${idx}`,
@@ -479,7 +591,7 @@ export function useRemoteTimeline(
       cancelled = true;
       dispose?.();
     };
-  }, [enabled, desktopId, sessionId, readPage]);
+  }, [enabled, desktopId, sessionId, readPage, readReplayPage]);
 
   return useMemo(
     () => ({
@@ -639,6 +751,70 @@ function entryFromEvent(payload: unknown, type: string): RemoteEntry | null {
     return text ? { ...base, kind: type, role: "user", blocks: [{ kind: "text", text }] } : null;
   }
   return null;
+}
+
+function highestRunCursor(cursor: RunCursor): number {
+  let max = -1;
+  for (const entry of cursor.values()) {
+    if (entry.highWater > max)
+      max = entry.highWater;
+  }
+  return max;
+}
+
+interface ReplayEventItem {
+  id: string;
+  runId?: string | null;
+  idx?: number | null;
+  entry: RemoteEntry | null;
+}
+
+function normaliseReplayEvents(raw: unknown): ReplayEventItem[] {
+  if (!Array.isArray(raw))
+    return [];
+  return raw.flatMap((item): ReplayEventItem[] => {
+    if (typeof item !== "object" || item === null)
+      return [];
+    const record = item as Record<string, unknown>;
+    const id = typeof record.id === "string" && record.id ? record.id : null;
+    if (!id)
+      return [];
+    const runId = typeof record.runId === "string" && record.runId
+      ? record.runId
+      : typeof record.run_id === "string" && record.run_id
+        ? record.run_id
+        : null;
+    const idx = typeof record.idx === "number" && Number.isFinite(record.idx) ? record.idx : null;
+    const entry = runId && idx !== null ? replayEventToEntry(item) : null;
+    return [{ id, runId, idx, entry }];
+  });
+}
+
+function replayEventToEntry(value: unknown): RemoteEntry | null {
+  if (typeof value !== "object" || value === null)
+    return null;
+  const record = value as Record<string, unknown>;
+  const id = typeof record.id === "string" && record.id ? record.id : null;
+  const role = typeof record.role === "string" ? record.role : null;
+  if (!id || !role || (role !== "user" && role !== "assistant" && role !== "tool" && role !== "system"))
+    return null;
+  const createdAtRaw = typeof record.createdAtMs === "number"
+    ? record.createdAtMs
+    : typeof record.created_at_ms === "number"
+      ? record.created_at_ms
+      : null;
+  const blocks = Array.isArray(record.blocks)
+    ? record.blocks
+    : typeof record.data === "string"
+      ? [{ kind: "text", text: record.data }]
+      : [{ kind: "text", text: "" }];
+  return {
+    id,
+    kind: "message",
+    role,
+    createdAtMs: createdAtRaw ?? Date.now(),
+    blocks,
+  } as RemoteEntry;
 }
 
 function readJson(value: unknown, key: string): unknown {

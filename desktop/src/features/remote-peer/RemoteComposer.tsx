@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { SkillCandidate } from "../../integrations/skills/skillsClient";
 import type { RemoteCommand, RemoteSkillChoice, RemoteSlashItem } from "./remoteCommands";
 import type { RemotePeer, RemoteSkillInfo, RemoteUpload } from "./remotePeerClient";
+import type { PendingPrompt } from "./remotePromptOutbox";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUp, Loader2, Paperclip, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -13,7 +14,9 @@ import { imageExtensionFromMime, splitFileName } from "../agent/attachments";
 import { SkillRecommendCard } from "../agent/SkillRecommendCard";
 import { RemoteApprovalMenu } from "./RemoteApprovalMenu";
 import { buildRemoteSlashMenu, insertRemoteSkill, remoteSlashItems, slashQuery, withoutSlashWord } from "./remoteCommands";
-import { abortRemoteRun, listRemoteInstalledSkills, promptRemoteConversation, uploadRemoteFile } from "./remotePeerClient";
+import { clearRemoteComposerDraft, loadRemoteComposerDraft, saveRemoteComposerDraft } from "./remoteComposerDraft";
+import { abortRemoteRun, listRemoteInstalledSkills, uploadRemoteFile } from "./remotePeerClient";
+import { getRemoteOutbox, isRecoverableSendError, sendRemotePrompt } from "./remotePromptOutbox";
 import { RemoteSlashMenu } from "./RemoteSlashMenu";
 
 /** How many files one paste may stage. The rest are reported, not silently dropped. */
@@ -237,6 +240,45 @@ export function RemoteComposer({
    */
   const [uploads, setUploads] = useState<RemoteUpload[]>([]);
   const [uploading, setUploading] = useState(false);
+  /**
+   * A prompt that was queued because the host was unreachable. The UI shows the
+   * user that something is waiting to be sent.
+   */
+  const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
+
+  // Load the draft for this host+conversation on mount / when the conversation
+  // changes, and persist edits as they happen. The key includes desktopId so
+  // the same session id on two different hosts does not share a draft.
+  useEffect(() => {
+    const draft = loadRemoteComposerDraft(desktopId, sessionId);
+    setText(draft?.text ?? "");
+    setUploads(draft?.uploads ?? []);
+    const outbox = getRemoteOutbox(desktopId, sessionId);
+    setPendingPrompt(outbox.prompt);
+  }, [desktopId, sessionId]);
+
+  useEffect(() => {
+    saveRemoteComposerDraft(desktopId, sessionId, { text, uploads });
+  }, [desktopId, sessionId, text, uploads]);
+
+  // When the link comes back, try to flush any queued prompt/continuation.
+  useEffect(() => {
+    if (!peer?.connected)
+      return;
+    let active = true;
+    import("./remotePromptOutbox").then(({ recoverRemoteOutbox, getRemoteOutbox }): void => {
+      if (!active)
+        return;
+      void recoverRemoteOutbox(desktopId, sessionId).then(() => {
+        const outbox = getRemoteOutbox(desktopId, sessionId);
+        if (active)
+          setPendingPrompt(outbox.prompt);
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, [peer?.connected, desktopId, sessionId]);
 
   /**
    * Stage a file on the host.
@@ -349,34 +391,36 @@ export function RemoteComposer({
     setBusy(true);
     setError(null);
     try {
-      // The backend stamps the command id, and the host keys its durable
-      // receipt on it, so a retry of a delivery cannot run the prompt twice.
-      const ack = await promptRemoteConversation(
-        desktopId,
-        sessionId,
-        message,
-        uploadsForSend.map(upload => upload.uploadId),
-        // Names the workspace only while creating the conversation: one started
-        // from a workspace heading belongs in that workspace, and the host
-        // resolves the id against its own store.
+      // The outbox generates a stable command id, persists the prompt, and
+      // clears it once the host accepts. If the prompt is queued because the
+      // link is down, the outbox leaves it for recovery.
+      const ack = await sendRemotePrompt(desktopId, sessionId, {
+        text: message,
+        attachments: uploadsForSend,
         workspaceId,
-        // And the model and thinking level the picker showed, for the same
-        // reason: a conversation that does not exist yet has no way to carry a
-        // choice made before it was created, and leaving them out would run
-        // something other than what the reader chose.
-        { modelId: freshModelId, thinkingLevel: freshThinkingLevel },
-      );
+        freshModelId,
+        freshThinkingLevel,
+      });
       // Cleared only after the host accepted it: a prompt that failed on the
       // wire must not cost the user the paragraph they wrote or the file they
       // staged.
       setText("");
       setUploads([]);
+      clearRemoteComposerDraft(desktopId, sessionId);
+      setPendingPrompt(null);
       if (!sessionId)
         onCreated?.(ack.sessionId);
       onSent();
     }
     catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (isRecoverableSendError(err)) {
+        const outbox = getRemoteOutbox(desktopId, sessionId);
+        setPendingPrompt(outbox.prompt);
+        setError(t("promptQueued"));
+      }
+      else {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     }
     finally {
       setBusy(false);
@@ -555,6 +599,13 @@ export function RemoteComposer({
           )
         : null}
       {error ? <p className="mb-2 text-xs text-danger">{error}</p> : null}
+      {pendingPrompt
+        ? (
+            <p className="mb-2 text-xs text-warning">
+              {t("promptPending")}
+            </p>
+          )
+        : null}
       {/* The recommendation, above the box it is holding: it names a skill on
           that computer and offers to install it there. */}
       {skillRecommendation && recommendationCard

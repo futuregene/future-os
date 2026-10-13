@@ -116,6 +116,30 @@ export interface ThreadTreeRow {
 }
 
 /**
+ * Which thread each of this machine's threads was forked from, by thread id.
+ *
+ * A fork names its parent by **agent session** id, and that is resolved here,
+ * once: the tree this machine's own list is built from and the parent the merged
+ * list hangs a local fork under are the same relation, and two resolutions of it
+ * would be two answers to "whose fork is this".
+ *
+ * A thread whose parent is not in the list (an archived or deleted parent) has no
+ * entry: there is no row to hang it under, so it is a root.
+ */
+export function threadParentIds(threads: StoredThread[]): Map<string, string> {
+  const bySession = new Map(
+    threads.filter(thread => thread.agentSessionId).map(thread => [thread.agentSessionId, thread]),
+  );
+  const parents = new Map<string, string>();
+  for (const thread of threads) {
+    const parentId = thread.parentSessionId ? bySession.get(thread.parentSessionId)?.id : undefined;
+    if (parentId && parentId !== thread.id)
+      parents.set(thread.id, parentId);
+  }
+  return parents;
+}
+
+/**
  * This machine's conversation tree.
  *
  * Descendants follow their root's section. Pinned children become roots. A
@@ -123,12 +147,10 @@ export interface ThreadTreeRow {
  * session* id: a parent in another workspace is still its parent.
  */
 export function buildThreadTree(threads: StoredThread[]): ThreadTreeNode[] {
-  const bySession = new Map(
-    threads.filter(thread => thread.agentSessionId).map(thread => [thread.agentSessionId, thread]),
-  );
+  const parents = threadParentIds(threads);
   return buildTree(threads, thread => ({
     key: thread.id,
-    parentKey: thread.parentSessionId ? (bySession.get(thread.parentSessionId)?.id ?? null) : null,
+    parentKey: parents.get(thread.id) ?? null,
     pinned: thread.pinned,
   }));
 }

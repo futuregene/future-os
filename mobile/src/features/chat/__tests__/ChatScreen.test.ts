@@ -21,6 +21,16 @@ import type { RemoteSession, RemoteSessionUsage, RemoteWorkspace } from "../../.
 
 const mockRemote = {
   credentials: { expectedDesktopId: "desktop" },
+  /**
+   * The desktops this phone is paired with. The conversation's top bar names the
+   * one it is on, so the list is part of what this screen reads.
+   */
+  desktops: [{ desktopId: "desktop", pairId: "pair_1", name: "Lab MacBook Pro", icon: "laptop" }] as {
+    desktopId: string;
+    pairId: string;
+    name?: string;
+    icon?: string;
+  }[],
   selectedSessionId: "history",
   selectedTitle: "History",
   // No usage reported until a get_state read lands; the sheet must still open
@@ -980,4 +990,26 @@ test("conversation navigation removes outgoing transfer progress and rejects lat
   act(() => reportA(0.75));
   expect(progressWidth("50%").length).toBeGreaterThan(0);
   expect(progressWidth("75%")).toHaveLength(0);
+});
+
+/**
+ * The top bar names the machine the conversation is on.
+ *
+ * Every conversation on this phone lives on a paired desktop — there is no agent
+ * on the phone — and the bar said nothing about which one, so a user who paired a
+ * second desktop could not tell them apart from inside a conversation. The glyph
+ * and the user's own name are the session list's vocabulary, so the same desktop
+ * reads the same way in both places; a machine the user never renamed falls back
+ * to its id.
+ */
+test("the bar carries the desktop this conversation is on, named the way the list names it", () => {
+  expect(tree.root.findByType(ChatTopBar).props.machine)
+    .toEqual({ glyph: "💻", label: "Lab MacBook Pro" });
+
+  // Renamed or not, the machine is still named: the id is what is left when the
+  // user has not given it a label.
+  mockRemote.desktops = [{ desktopId: "desktop", pairId: "pair_1" }];
+  act(() => tree.update(createElement(ChatScreen)));
+  expect(tree.root.findByType(ChatTopBar).props.machine)
+    .toEqual({ glyph: "🖥", label: "desktop" });
 });

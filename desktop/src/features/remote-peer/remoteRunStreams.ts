@@ -47,7 +47,14 @@ const MAX_LIVE_RUNS = 4;
 
 export class RemoteRunStreams {
   private readonly projectors = new Map<string, RunProjector>();
-  /** When each live run started, for the reply's elapsed-time readout. */
+  /**
+   * When each live run started, for the reply's elapsed-time readout.
+   *
+   * A property of the *run*, not of the projector that happens to be folding it:
+   * a rebuild (an evicted run, a page that moved the boundary — see
+   * {@link restart}) starts the reply over but not the clock the reader is
+   * watching.
+   */
   private readonly startedAt = new Map<string, number>();
 
   /**
@@ -75,6 +82,22 @@ export class RemoteRunStreams {
     this.startedAt.delete(runId);
   }
 
+  /**
+   * The conversation's page moved the boundary: start the reply over from it.
+   *
+   * What the pushes built is the transcript's *tail* (`foldLiveReply` draws the
+   * page's part and then this one), so a page read while a run is live leaves the
+   * two overlapping — and a delta that arrived before the read is content the page
+   * now carries. Dropping the projectors is what keeps them disjoint.
+   *
+   * The run's own clock survives, unlike {@link clear}: the run did not start
+   * again, and a reader who reconnected mid-reply should not watch the elapsed
+   * time fall back to zero.
+   */
+  restart(): void {
+    this.projectors.clear();
+  }
+
   /** Another conversation is being opened: nothing here belongs to it. */
   clear(): void {
     this.projectors.clear();
@@ -92,7 +115,11 @@ export class RemoteRunStreams {
     }
     const projector = createRunProjector();
     this.projectors.set(runId, projector);
-    this.startedAt.set(runId, Date.now());
+    // The first frame this window sees of a run it has not seen before is when
+    // its reply began, as far as this client can tell. A run it has seen keeps
+    // its anchor across the rebuild.
+    if (!this.startedAt.has(runId))
+      this.startedAt.set(runId, Date.now());
     while (this.projectors.size > MAX_LIVE_RUNS) {
       const oldest = this.projectors.keys().next().value;
       /* v8 ignore next -- size > MAX (>= 1) guarantees a first key */

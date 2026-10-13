@@ -267,6 +267,96 @@ describe("useRemoteTimeline", () => {
     expect(hook.current.entries).toEqual([]);
     hook.unmount();
   });
+
+  /**
+   * After a link drop the host publishes `resumed`.  The timeline should try an
+   * incremental replay first; if the host supports it and the replay is valid,
+   * only the missed events are fetched.
+   */
+  it("uses get_events_since on resumed when the cursor knows a high watermark", async () => {
+    requestMock.mockResolvedValue(page([]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+
+    function pushResumed() {
+      act(() => {
+        listeners.forEach(listener => listener({ payload: { desktopId: "desktop_a", kind: "resumed", payload: {} } }));
+      });
+    }
+
+    push({
+      sessionId: "sess_1",
+      type: "agent_start",
+      runId: "r1",
+      idx: 0,
+      eventId: "r1:0",
+      timestamp: "2026-01-01T00:00:00Z",
+      data: "{}",
+    });
+    push({
+      sessionId: "sess_1",
+      type: "text_chunk",
+      runId: "r1",
+      idx: 1,
+      eventId: "r1:1",
+      timestamp: "2026-01-01T00:00:01Z",
+      data: JSON.stringify({ text: "hi" }),
+    });
+    await settle();
+
+    const replayResponse = {
+      events: [
+        { id: "r1:2", runId: "r1", idx: 2, role: "assistant", blocks: [{ kind: "text", text: "there" }] },
+      ],
+      watermark: 2,
+      rawEvents: 2,
+      hasMore: false,
+    };
+    requestMock.mockResolvedValue(replayResponse);
+    pushResumed();
+    await settle();
+
+    expect(requestMock).toHaveBeenCalledWith(
+      "desktop_a",
+      expect.objectContaining({ type: "get_events_since", sinceIdx: 1, limit: 1000 }),
+      "sess_1",
+    );
+    hook.unmount();
+  });
+
+  it("falls back to full history when the host does not support get_events_since", async () => {
+    requestMock.mockResolvedValue(page([]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+
+    function pushResumed() {
+      act(() => {
+        listeners.forEach(listener => listener({ payload: { desktopId: "desktop_a", kind: "resumed", payload: {} } }));
+      });
+    }
+
+    push({
+      sessionId: "sess_1",
+      type: "agent_start",
+      runId: "r1",
+      idx: 0,
+      eventId: "r1:0",
+      timestamp: "2026-01-01T00:00:00Z",
+      data: "{}",
+    });
+    await settle();
+
+    requestMock.mockRejectedValue(new Error("Unsupported command: get_events_since"));
+    pushResumed();
+    await settle();
+
+    expect(requestMock).toHaveBeenCalledWith(
+      "desktop_a",
+      expect.objectContaining({ type: "get_session_entries" }),
+      "sess_1",
+    );
+    hook.unmount();
+  });
 });
 
 /**
@@ -775,6 +865,45 @@ describe("useRemoteTimeline live reply", () => {
     await settle();
     expect(hook.current.live?.content).toBe("answer two");
     expect(hook.current.live?.id).toBe("stream_run_two");
+    hook.unmount();
+  });
+
+  /**
+   * A tail read restarts the live lane.
+   *
+   * The reply being written is the transcript's *tail*: a page read while a run is
+   * live moves the boundary the two meet at, and what the stream had accumulated
+   * belongs to that page now (the view draws the record's part and then the
+   * stream's — `foldLiveReply`). Keeping it would draw those deltas twice, once
+   * from the record and once from the bubble.
+   */
+  it("restarts the live lane at a catch-up read, from that page", async () => {
+    const hook = await open("hello host");
+    event("text_chunk", { text: "Wor" }, 1);
+    await settle();
+    expect(hook.current.live?.content).toBe("Wor");
+    const startedAt = hook.current.live?.runStartedAt;
+
+    // The link came back: everything written so far is on the page the host just
+    // served, so the lane starts again there rather than beside it.
+    requestMock.mockResolvedValue(page([
+      entry("e1", "user", "hello host"),
+      entry("e2", "assistant", "Wor"),
+    ]));
+    act(() => {
+      listeners.forEach(listener => listener({ payload: { desktopId: "desktop_a", kind: "resumed", payload: {} } }));
+    });
+    await settle();
+
+    expect(hook.current.live).toBeNull();
+    expect(hook.current.messages.map(message => message.content)).toEqual(["hello host", "Wor"]);
+
+    // And the next frame of the same run rebuilds the bubble from that boundary —
+    // on the same run, whose clock did not go back to zero with the rebuild.
+    event("text_chunk", { text: "king" }, 2);
+    await settle();
+    expect(hook.current.live?.content).toBe("king");
+    expect(hook.current.live?.runStartedAt).toBe(startedAt);
     hook.unmount();
   });
 

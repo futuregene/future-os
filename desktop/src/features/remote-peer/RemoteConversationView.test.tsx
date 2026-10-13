@@ -310,6 +310,46 @@ it("draws the live reply as the last row, and offers nothing to act on while it 
   await view.unmount();
 });
 
+/**
+ * A reply the transcript already carries is not drawn beside itself.
+ *
+ * Opening a conversation whose newest exchange is still running reads a page the
+ * agent is writing to — it saves each completed model call mid-run — so the same
+ * reply arrives twice: the page's partial copy, and the events the host pushes
+ * from the moment this window subscribed. The reader saw the answer twice, the
+ * first copy frozen and without the streaming mark.
+ */
+it("draws a reply the transcript already carries once, not beside itself", async () => {
+  const live: AgentMessage = {
+    id: "stream_run_1",
+    role: "assistant",
+    authorKey: "author.researchCopilot",
+    content: "and the rest",
+    status: "streaming",
+    createdAt: new Date(1_700_000_000_000).toISOString(),
+    runId: "run_1",
+    segments: [{ id: "seg_live", kind: "text", text: "and the rest" }],
+  };
+  const view = await mount({
+    entries: [
+      entry("u1", "user", "keep going", "run_1"),
+      entry("a1", "assistant", "half of it", "run_1"),
+    ],
+    live,
+    streaming: true,
+  });
+
+  const rows = view.rows();
+  // The prompt, then the reply — once, carrying both halves: what the host had
+  // already persisted, and what it is writing now.
+  expect(rows).toHaveLength(2);
+  expect(rows[1]).toContain("half of it");
+  expect(rows[1]).toContain("and the rest");
+  // It is the row still being written, so there is nothing on it to act on.
+  expect(view.forkButtons()).toHaveLength(0);
+  await view.unmount();
+});
+
 /** While a run is in flight the turn being forked has not settled. */
 it("hides fork while the host is running", async () => {
   const view = await mount({
@@ -591,5 +631,23 @@ it("disables both actions while a decision is pending", async () => {
 
   expect(view.denyButton()!.disabled).toBe(true);
   expect(view.allowButton()!.disabled).toBe(true);
+  await view.unmount();
+});
+
+/**
+ * The header names the machine this conversation is on.
+ *
+ * Always, and unlike the local header's badge: a remote conversation is on a
+ * computer that is *not* this one, so the badge is never the redundant "本机" —
+ * and a reader who opened the conversation from a merged list has no other way to
+ * tell whose it is once the list is out of sight. The glyph and the name are the
+ * rail's own vocabulary, with the id as the fallback while the peer list is still
+ * loading (a conversation can be opened from a task run before then).
+ */
+it("names the host in the header, and falls back to the id without a peer", async () => {
+  const view = await mount({ entries: [entry("e1", "user", "hi"), entry("e2", "assistant", "hello")] });
+  const badge = view.container.querySelector("[data-testid='thread-machine']")!;
+  expect(badge.textContent).toBe("💻Studio iMac");
+  expect(badge.getAttribute("title")).toBe("Studio iMac");
   await view.unmount();
 });
