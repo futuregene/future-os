@@ -331,7 +331,9 @@ function ActionDetails({ action }: ActionDetailsProps) {
           <FileTargets
             paths={action.targets.map(target => target.path)}
             scopes={action.targets.map(target => target.scope)}
-            accesses={action.category === "file_permissions" ? action.targets.map(target => target.access) : undefined}
+            accesses={action.category === "file_permissions"
+              ? action.targets.map(target => (target as { access?: "read" | "write" }).access)
+              : undefined}
           />
         </div>
       </div>
