@@ -726,6 +726,12 @@ export function MentionEditor({
         autoCorrect="off"
         contentEditable={!disabled}
         spellCheck={false}
+        // Disable Apple Intelligence inline predictive text (macOS 14.4+/WKWebView).
+        // The predictive overlay inserts and removes tentative text as you type,
+        // which re-triggers input events with unstable caret geometry; revealCaret
+        // then corrects scrollTop twice per word and the content visibly jumps.
+        // Not yet in @types/react's HTMLAttributes, so spread as a raw attribute.
+        {...{ writingsuggestions: "false" }}
         suppressContentEditableWarning
         // WebKit mismeasures the caret for mixed CJK/Latin text before our
         // trailing ZWSP with the app's optimizeLegibility shaping (e.g. type
