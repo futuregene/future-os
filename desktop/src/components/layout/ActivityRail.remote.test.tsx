@@ -323,6 +323,62 @@ describe("the local tree in merged mode", () => {
 });
 
 /**
+ * A conversation on another machine has the tree its host reports: the host
+ * sends the session each one was forked from, so the merged list draws the same
+ * indent and the same `+`/`−` toggle the local rows have. Asserted through the
+ * rail because the tree, the fold state and the row filter are three parts that
+ * have to agree — a toggle that folds nothing is the bug this is here for.
+ */
+describe("the remote tree in merged mode", () => {
+  const hostWorkspace = {
+    desktopId: "desktop_a",
+    sessions: [
+      {
+        lastMessageAt: 5_000,
+        sessionId: "sess_parent",
+        threadId: "th_parent",
+        title: "Host parent",
+        mode: "workspace",
+        workspaceId: "ws_1",
+        workspaceName: "图表脚本",
+      },
+      {
+        lastMessageAt: 4_000,
+        parentSessionId: "sess_parent",
+        sessionId: "sess_fork",
+        threadId: "th_fork",
+        title: "Host fork",
+        mode: "workspace",
+        workspaceId: "ws_1",
+        workspaceName: "图表脚本",
+      },
+    ],
+  } as never;
+
+  it("offers the fold toggle for a remote conversation that has forks", async () => {
+    const view = await mountRail({ remoteCatalogs: [hostWorkspace], remotePeers: [peer] });
+
+    expect(view.container.querySelector("button[aria-label='Expand child conversations of Host parent']")).not.toBeNull();
+    // A conversation with nothing forked from it has no toggle, as locally.
+    expect(view.container.querySelector("button[aria-label='Expand child conversations of Host fork']")).toBeNull();
+    view.unmount();
+  });
+
+  it("hides a collapsed remote conversation's forks, and reveals them", async () => {
+    const view = await mountRail({ remoteCatalogs: [hostWorkspace], remotePeers: [peer] });
+
+    // Collapsed by default, exactly as the local list is.
+    expect(view.text()).not.toContain("Host fork");
+
+    const toggle = view.container.querySelector<HTMLButtonElement>("button[aria-label='Expand child conversations of Host parent']")!;
+    act(() => toggle.click());
+
+    expect(view.text()).toContain("Host fork");
+    view.unmount();
+  });
+});
+
+/**
  * The merged list's chrome is the rail's own, and its controls stay wired to the
  * rail's state: folding a section, creating a workspace or a chat, and re-reading
  * a host after one of its rows was acted on.

@@ -1,12 +1,12 @@
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
-import { CircleAlert, Minus, Plus } from "lucide-react";
+import { CircleAlert } from "lucide-react";
 import { memo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { ThreadItemMenu } from "./ActivityRailMenus";
-import { RailRow, RailRowIndicator, RailRowMenuButton, RailRowTitle } from "./RailRow";
+import { RailRow, RailRowIndicator, RailRowMenuButton, RailRowTitle, RailRowTreeToggle } from "./RailRow";
 
 /**
  * A single sidebar thread row: title, run/unread indicator, and actions menu.
@@ -110,24 +110,11 @@ function ThreadListItemImpl({
     >
       {hasChildren
         ? (
-            <button
-              aria-expanded={expanded}
-              aria-label={t(expanded ? "activityRail.collapseThread" : "activityRail.expandThread", { title: displayTitle })}
-              // Always inline in the row's own content flow — same placement as
-              // chat/pinned rows. Absolutely placing it in the row's left gutter
-              // (as workspace rows did) pinned it to the exact column of the
-              // workspace group's own collapse chevron, so a conversation with
-              // sub-conversations read as a second "collapse workspace" toggle.
-              className="relative z-10 inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted hover:text-ink-soft"
-              onClick={() => onToggleExpanded?.(thread)}
-              type="button"
-            >
-              {/* A +/− tree-node toggle, never the chevron the workspace and
-                  section headers fold with: the same glyph one row apart read
-                  as the same control (see PRODUCT.md §5.2). Both states also
-                  stay inside the existing thin-stroke icon language. */}
-              {expanded ? <Minus className="size-3.5 shrink-0" /> : <Plus className="size-3.5 shrink-0" />}
-            </button>
+            <RailRowTreeToggle
+              expanded={expanded}
+              label={t(expanded ? "activityRail.collapseThread" : "activityRail.expandThread", { title: displayTitle })}
+              onToggle={() => onToggleExpanded?.(thread)}
+            />
           )
         : null}
       <RailRowTitle muted={archived}>{displayTitle}</RailRowTitle>

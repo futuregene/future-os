@@ -13,10 +13,18 @@
  *    remote sessions carry `lastMessageAt` from that same coalesce. Ranking
  *    them together with a different rule would make the merged list disagree
  *    with the per-machine lists the user can also see.
+ * 3. **A heading ranks by its own place, not its rows'.** A workspace group is
+ *    ordered by the workspace's own key (when *it* was last touched), which is
+ *    what the local list already does — ordering groups by their conversations
+ *    made a group jump whenever one of its rows moved, and made the merged list
+ *    disagree with the list of this machine alone.
  *
  * A remote session without a timestamp (an older host) sorts below every
  * timestamped row rather than at the top: "unknown age" must not masquerade as
- * "just now".
+ * "just now". Equal timestamps — the same message arriving on two machines, or
+ * two workspaces touched in the same millisecond — put this machine first and
+ * then a host by its device id, so the order is total instead of whatever order
+ * the rows happened to be merged in.
  */
 
 /** A session as the host's `list_sessions` reports it, plus our stamp. */
@@ -37,6 +45,15 @@ export interface RemoteSessionRow {
    * group as pinned.
    */
   workspacePinned?: boolean | null;
+  /**
+   * When that workspace itself was last touched on its own machine.
+   *
+   * The host's `COALESCE(last_opened_at, updated_at)` — the key its own
+   * workspace list is ordered by, which is what keeps a group's place
+   * independent of the conversations under it. Absent on a host that predates
+   * the field, and an absent key must not pretend to be "just now".
+   */
+  workspaceOrderedAt?: number | null;
   parentSessionId?: string | null;
   pinned?: boolean;
   streaming?: boolean;
@@ -106,6 +123,26 @@ export interface MergedConversation {
    * the group leads this list because the host said so.
    */
   workspacePinned?: boolean;
+  /**
+   * When that workspace was last touched *at its source*.
+   *
+   * The group's own place in the list — never its conversations': a workspace's
+   * rank must not move because a conversation inside it did. This machine's
+   * value comes from this machine's workspace store, a host's from that host's
+   * own report, and both are the same key (`last_opened_at`, else `updated_at`)
+   * their own workspace list is ordered by.
+   */
+  workspaceOrderedAt?: number | null;
+  /**
+   * The conversation this one was forked from, as a row key in this list.
+   *
+   * Resolved by the merge rather than carried over: a parent that is not a row
+   * here (another machine's filter, a deleted conversation) leaves its child a
+   * root, which is what the tree needs to know. Local rows are not resolved
+   * here — the rail builds this machine's tree from its own store and passes
+   * each row's place in.
+   */
+  parentKey?: string | null;
 }
 
 export interface LocalThreadLike {
@@ -116,6 +153,8 @@ export interface LocalThreadLike {
   status: "active" | "archived" | "deleted";
   workspaceId: string;
   workspacePinned?: boolean;
+  /** This machine's own key for the workspace, as its store reports it. */
+  workspaceOrderedAt?: number | null;
   lastMessageAt?: number | null;
   updatedAt: number;
   createdAt: number;
@@ -152,6 +191,14 @@ export function mergeConversations(
   workspaceNames: ReadonlyMap<string, string> = new Map(),
 ): MergedConversation[] {
   const rows: MergedConversation[] = [];
+  /**
+   * Each remote row's parent, held until every row is known.
+   *
+   * A fork is drawn under the turn it came from, and that is a question about
+   * the list rather than about one host's rows: the parent is only addressable
+   * if it is a row here, which can only be answered once the merge is complete.
+   */
+  const forks: Array<{ parentSessionId: string; row: MergedConversation }> = [];
 
   const wantsLocal = filter.kind === "all" || filter.desktopId === null;
   const wantsHost = (desktopId: string) =>
@@ -181,6 +228,10 @@ export function mergeConversations(
         // A local row's workspace pin is passed in with its thread (the rail
         // reads it from this machine's store); nothing is looked up here.
         workspacePinned: thread.workspacePinned === true,
+        workspaceOrderedAt: thread.workspaceOrderedAt ?? null,
+        // This machine's tree is the rail's (its rows arrive as built nodes), so
+        // the merged list only carries a *remote* row's parent.
+        parentKey: null,
       });
     }
   }
@@ -194,7 +245,7 @@ export function mergeConversations(
       if (seen.has(key))
         continue;
       seen.add(key);
-      rows.push({
+      const row: MergedConversation = {
         key,
         desktopId: catalog.desktopId,
         id: session.sessionId,
@@ -211,17 +262,35 @@ export function mergeConversations(
         workspaceId: session.workspaceId ?? null,
         workspaceName: session.workspaceName ?? null,
         workspacePinned: session.workspacePinned === true,
-      });
+        workspaceOrderedAt: typeof session.workspaceOrderedAt === "number"
+          ? session.workspaceOrderedAt
+          : null,
+        parentKey: null,
+      };
+      if (session.parentSessionId)
+        forks.push({ parentSessionId: session.parentSessionId, row });
+      rows.push(row);
     }
+  }
+
+  for (const { parentSessionId, row } of forks) {
+    // A session id is only meaningful on the host that issued it, so the parent
+    // is looked for on this row's own machine — the same id exists on another.
+    const parent = rowKey(row.desktopId, parentSessionId);
+    if (parent !== row.key && seen.has(parent))
+      row.parentKey = parent;
   }
 
   return rows.sort(compareConversations);
 }
 
 /**
- * Pinned first, then most recent. Ties break on the row key so the order is
- * stable across polls: a list that reshuffles equal timestamps flickers, and a
- * flickering list is how a user misses the message they were reading.
+ * Pinned first, then most recent. Ties break on the machine and then on the row
+ * key so the order is stable across polls: a list that reshuffles equal
+ * timestamps flickers, and a flickering list is how a user misses the message
+ * they were reading. Two machines can hold the same session id with the same
+ * timestamp, which is why the machine is compared before the key: this machine
+ * first, then a host by its desktop id.
  */
 export function compareConversations(a: MergedConversation, b: MergedConversation): number {
   if (a.pinned !== b.pinned)
@@ -230,7 +299,29 @@ export function compareConversations(a: MergedConversation, b: MergedConversatio
   const bt = b.lastMessageAt ?? Number.NEGATIVE_INFINITY;
   if (at !== bt)
     return bt - at;
-  return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+  return compareSource(a.desktopId, b.desktopId) || compareText(a.key, b.key);
+}
+
+/**
+ * Which machine's row leads when two rows are otherwise equal.
+ *
+ * This machine (`null`) first, then a host by its device id. Every order in this
+ * module ends on this, so "the same timestamp" has one answer rather than
+ * whichever order the rows were merged in.
+ */
+export function compareSource(a: string | null, b: string | null): number {
+  if (a === b)
+    return 0;
+  if (a === null)
+    return -1;
+  if (b === null)
+    return 1;
+  return compareText(a, b);
+}
+
+/** A total order on text for the ties above (`localeCompare` is not stable enough). */
+function compareText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** A heading in the merged list, with the rows under it. */
@@ -250,6 +341,14 @@ export interface MergedGroup {
    * host's own report. What is asserted here is the rule, not the source.
    */
   pinned: boolean;
+  /**
+   * When the workspace itself was last touched, at its source.
+   *
+   * What the group is ordered by. `null` for a source that does not report one
+   * (an older host, or a group of chats): an unknown place sorts after every
+   * known one rather than pretending to be current.
+   */
+  orderedAt: number | null;
   rows: MergedConversation[];
 }
 
@@ -262,14 +361,15 @@ export interface MergedGroup {
  * group called "future-os" exists on two machines at once, and merging them would
  * put another machine's rows under this machine's heading.
  *
- * Groups are ordered by their most recent row, so the list still reads
- * newest-first inside every heading and the headings themselves move with
- * activity rather than being pinned to an arbitrary machine order. A group whose
- * workspace is pinned leads outright, whatever its recency — and the pin is read
- * from the *row*, so a workspace on another machine leads this list on the same
- * terms as one of this machine's. That is what makes a remote pin visible here at
- * all: the merged list never reads this machine's workspace store for a row it
- * does not own.
+ * **A group's place is the workspace's own, never its rows'.** Ordering groups by
+ * their newest conversation reads as reasonable — the list is ordered by time —
+ * and is wrong in the two ways that matter: the group jumps while the reader is
+ * working in it (a reply in the third workspace moves that group to the top and
+ * back when the catalogue is next read), and the merged list then disagrees with
+ * the list of this machine alone, which orders its workspaces by when *they* were
+ * last touched (`COALESCE(last_opened_at, updated_at)`, the same coalesce the
+ * host reports per row). So the key is the workspace's, from whichever machine
+ * owns it, and the rows' recency only orders rows inside a group.
  */
 export function groupMergedRows(
   rows: MergedConversation[],
@@ -307,43 +407,34 @@ export function groupMergedRows(
       label: row.workspaceName ?? null,
       workspaceId: grouped ? row.workspaceId : null,
       pinned: grouped && row.workspacePinned === true,
+      orderedAt: grouped ? (row.workspaceOrderedAt ?? null) : null,
       rows: [],
     };
     if (!existing)
       byKey.set(key, group);
     // A host that predates the workspace *name* must not blank a heading a newer
-    // row in the same group supplied — and the same holds for its pin: one row
-    // reporting it is the group's answer.
+    // row in the same group supplied — and the same holds for its pin and its
+    // place: one row reporting it is the group's answer.
     group.label ??= row.workspaceName ?? null;
     group.pinned ||= grouped && row.workspacePinned === true;
+    group.orderedAt ??= row.workspaceOrderedAt ?? null;
     group.rows.push(row);
   }
 
-  const newest = (group: MergedGroup) =>
-    group.rows.reduce(
-      (best, row) => Math.max(best, row.lastMessageAt ?? Number.NEGATIVE_INFINITY),
-      Number.NEGATIVE_INFINITY,
-    );
-
   const groups = [...byKey.values()];
   groups.sort((a, b) => {
-    // Pinned groups first, as in the local list; then newest, so the list still
-    // reads newest-first inside each half.
+    // Pinned groups first, as in the local list; then the workspace's own place,
+    // newest first, so a group holds its rank while the reader works in it.
     if (a.pinned !== b.pinned)
       return a.pinned ? -1 : 1;
-    const gap = newest(b) - newest(a);
-    if (Number.isFinite(gap) && gap !== 0)
-      return gap;
-    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+    const at = a.orderedAt ?? Number.NEGATIVE_INFINITY;
+    const bt = b.orderedAt ?? Number.NEGATIVE_INFINITY;
+    if (at !== bt)
+      return bt - at;
+    return compareSource(a.desktopId, b.desktopId) || compareText(a.key, b.key);
   });
 
   const chats = groups.find(group => group.kind === "chat");
-  /**
-   * The pin state of one group, for a caller that renders the heading.
-   *
-   * Exported on its own so the list does not have to guess at the rule the
-   * ordering used.
-   */
   return {
     pinned,
     workspaces: groups.filter(group => group.kind === "workspace"),

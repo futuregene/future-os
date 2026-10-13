@@ -70,6 +70,7 @@ function thread(id: string): StoredThread {
 async function render(props: {
   chatSectionCollapsed?: boolean;
   collapsedWorkspaces?: ReadonlySet<string>;
+  expandedRemoteRows?: ReadonlySet<string>;
   filter?: DeviceFilter;
   onNewChat?: () => void;
   onNewChatInWorkspace?: (desktopId: string, workspaceId: string) => void;
@@ -77,9 +78,11 @@ async function render(props: {
   onSelectChats?: () => void;
   onSelectWorkspaceChats?: (groupKey: string) => void;
   onToggleChatSection?: () => void;
+  onToggleRemoteExpanded?: (key: string) => void;
   onToggleWorkspace?: (key: string) => void;
   onToggleWorkspaceSection?: () => void;
   peers?: RemotePeer[];
+  remoteRowMeta?: ReadonlyMap<string, { depth: number; hasChildren: boolean }>;
   remoteSelection?: {
     selected: (conversation: MergedConversation) => boolean;
     selectable: (conversation: MergedConversation) => boolean;
@@ -101,6 +104,7 @@ async function render(props: {
         activeKey={null}
         chatSectionCollapsed={props.chatSectionCollapsed ?? false}
         collapsedWorkspaces={props.collapsedWorkspaces ?? new Set()}
+        expandedRemoteRows={props.expandedRemoteRows ?? new Set()}
         filter={props.filter ?? { kind: "all" }}
         localRowMeta={new Map()}
         onChangedRemote={vi.fn()}
@@ -113,9 +117,11 @@ async function render(props: {
         onSelectChats={props.onSelectChats}
         onSelectWorkspaceChats={props.onSelectWorkspaceChats}
         onToggleChatSection={props.onToggleChatSection ?? vi.fn()}
+        onToggleRemoteExpanded={props.onToggleRemoteExpanded ?? vi.fn()}
         onToggleWorkspace={props.onToggleWorkspace ?? vi.fn()}
         onToggleWorkspaceSection={props.onToggleWorkspaceSection ?? vi.fn()}
         peers={props.peers ?? []}
+        remoteRowMeta={props.remoteRowMeta ?? new Map()}
         remoteSelection={props.remoteSelection}
         renderLocalGroupHeader={props.renderLocalGroupHeader ?? (() => null)}
         renderLocalRow={props.renderLocalRow}

@@ -339,6 +339,37 @@ describe("fetchRemoteSessions", () => {
     expect(catalog.sessions[1]).not.toHaveProperty("workspaceName");
   });
 
+  /**
+   * The two fields the merged list draws a group's *place* and a fork's *parent*
+   * from. Both are the host's own facts: the place is the key its workspace list
+   * is ordered by, and the parent is the session the fork came from.
+   */
+  it("carries a workspace's own place and a fork's parent", async () => {
+    invokeMock.mockResolvedValue({
+      sessions: [
+        {
+          sessionId: "sess_fork",
+          mode: "workspace",
+          workspaceId: "ws_1",
+          workspaceOrderedAt: 1_700_000_000_000,
+          parentSessionId: "sess_parent",
+        },
+        { sessionId: "sess_plain" },
+      ],
+    });
+
+    const catalog = await fetchRemoteSessions("desktop_a");
+
+    expect(catalog.sessions[0]).toMatchObject({
+      parentSessionId: "sess_parent",
+      workspaceOrderedAt: 1_700_000_000_000,
+    });
+    // A host that predates either field says nothing rather than something
+    // wrong: no place (not "now") and no parent (not a root by accident).
+    expect(catalog.sessions[1]).not.toHaveProperty("parentSessionId");
+    expect(catalog.sessions[1]).not.toHaveProperty("workspaceOrderedAt");
+  });
+
   /** A row with no session id could not be opened, so it is dropped. */
   it("drops rows that name no session and tolerates a malformed payload", async () => {
     invokeMock.mockResolvedValue({

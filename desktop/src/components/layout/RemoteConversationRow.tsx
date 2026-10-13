@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import { iconGlyph } from "../../features/remote-peer/peerIcons";
 import { RemoteConversationMenu } from "../../features/remote-peer/RemoteConversationMenu";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
-import { RailRow, RailRowIndicator, RailRowMenuButton, RailRowSpacer, RailRowTitle } from "./RailRow";
+import { RailRow, RailRowIndicator, RailRowMenuButton, RailRowSpacer, RailRowTitle, RailRowTreeToggle } from "./RailRow";
 
 /**
  * A remote conversation in the shared list.
@@ -18,9 +18,10 @@ import { RailRow, RailRowIndicator, RailRowMenuButton, RailRowSpacer, RailRowTit
  *
  * It is built on the same `RailRow` as the local row, though — the frame, the
  * run indicator's reserved slot and the actions trigger are shared, because
- * those are what a reader sees when scanning a list that holds both kinds. The
- * parts that differ are the parts that mean something different: the tree toggle
- * (a remote session has no local tree), the selection checkbox (selection is a
+ * those are what a reader sees when scanning a list that holds both kinds, and
+ * so is the tree toggle: a session on another machine is forked the same way, and
+ * the host reports the parent it came from. The parts that differ are the parts
+ * that mean something different: the selection checkbox (selection is a
  * local-store operation) and the machine's icon.
  */
 export function RemoteConversationRow({
@@ -28,10 +29,13 @@ export function RemoteConversationRow({
   compact,
   conversation,
   depth = 0,
+  expanded = false,
+  hasChildren = false,
   onChanged,
   onDeletedRemote,
   onOpen,
   onOpenRename,
+  onToggleExpanded,
   onToggleSelection,
   peer,
   selected,
@@ -44,12 +48,24 @@ export function RemoteConversationRow({
   compact?: boolean;
   conversation: MergedConversation;
   depth?: number;
+  /** Whether this row's forks are on screen. Only meaningful with `hasChildren`. */
+  expanded?: boolean;
+  /**
+   * Whether the host reports a conversation forked from this one.
+   *
+   * The same control as the local row's, for the same reason: a fork is an
+   * indented row under the turn it came from, and without the toggle its parent
+   * is a conversation with children the reader cannot put away.
+   */
+  hasChildren?: boolean;
   /** Re-read the owning host's catalogue after a row action. */
   onChanged: () => void;
   /** This conversation was deleted on the host. */
   onDeletedRemote: (conversation: MergedConversation) => void;
   onOpen: (conversation: MergedConversation) => void;
   onOpenRename: (conversation: MergedConversation) => void;
+  /** Fold or unfold this conversation's forks. */
+  onToggleExpanded?: (conversation: MergedConversation) => void;
   /** Tick or untick this row while a batch is being assembled. */
   onToggleSelection?: (conversation: MergedConversation) => void;
   peer: RemotePeer | undefined;
@@ -74,6 +90,9 @@ export function RemoteConversationRow({
   unread?: boolean;
 }) {
   const { t } = useTranslation("remotePeer");
+  // The tree toggle is the local row's control, so it is named with the local
+  // row's own words rather than a second set written for this list.
+  const { t: tLayout } = useTranslation("layout");
   const [menuOpen, setMenuOpen] = useState(false);
   const itemRef = useDismissableLayer<HTMLDivElement>({
     enabled: menuOpen,
@@ -90,6 +109,20 @@ export function RemoteConversationRow({
       onContextMenu={() => setMenuOpen(true)}
       onSelect={() => onOpen(conversation)}
     >
+      {/* The fork toggle, in the slot the local row uses: a `+`/`−` tree node,
+          named with the local row's own words so the two lists say the same
+          thing about the same control. */}
+      {hasChildren
+        ? (
+            <RailRowTreeToggle
+              expanded={expanded}
+              label={tLayout(expanded
+                ? "activityRail.collapseThread"
+                : "activityRail.expandThread", { title: conversation.title })}
+              onToggle={() => onToggleExpanded?.(conversation)}
+            />
+          )
+        : null}
       <RailRowTitle grow={false}>{conversation.title}</RailRowTitle>
       {/* The machine, immediately after the title it qualifies: the title is what
           the row is about, and the icon says whose it is. Aligned with the

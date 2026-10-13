@@ -1,6 +1,6 @@
 import type { ReactNode, Ref } from "react";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
-import { MoreHorizontal } from "lucide-react";
+import { Minus, MoreHorizontal, Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
 
@@ -17,9 +17,10 @@ import { cn } from "../../lib/cn";
  * spacing from the local ones. Two implementations that must look identical is a
  * rule nothing enforces; one implementation is.
  *
- * What is *not* here is deliberate: the leading tree toggle, the approval badge,
- * the selection checkbox and the source icon are each one list's own, and a
- * shared slot for all of them would be a prop bag rather than a shell.
+ * What is *not* here is deliberate: the approval badge, the selection checkbox
+ * and the source icon are each one list's own, and a shared slot for all of them
+ * would be a prop bag rather than a shell. The tree toggle *is* here, because
+ * both lists draw one and it has to be the same control in both.
  */
 
 /** A row's frame: geometry, the full-width click target, and hover/active. */
@@ -83,6 +84,45 @@ export function RailRow({
       />
       {children}
     </div>
+  );
+}
+
+/**
+ * The leading tree toggle: a `+`/`−` tree node that folds a conversation's forks.
+ *
+ * Shared because both lists draw it and it is the same control in both — a
+ * conversation on another machine is forked the same way — while two copies of
+ * the same markup and classes are exactly how these two rows drifted apart
+ * before. The label comes from the caller, since each list names it in its own
+ * vocabulary.
+ *
+ * Deliberately *not* the chevron a workspace or section heading folds with: the
+ * same glyph one row apart read as the same control (see PRODUCT.md §5.2).
+ */
+export function RailRowTreeToggle({
+  expanded,
+  label,
+  onToggle,
+}: {
+  expanded: boolean;
+  label: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      aria-expanded={expanded}
+      aria-label={label}
+      // Always inline in the row's own content flow — same placement as
+      // chat/pinned rows. Absolutely placing it in the row's left gutter (as
+      // workspace rows did) pinned it to the exact column of the workspace
+      // group's own collapse chevron, so a conversation with sub-conversations
+      // read as a second "collapse workspace" toggle.
+      className="relative z-10 inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted hover:text-ink-soft"
+      onClick={onToggle}
+      type="button"
+    >
+      {expanded ? <Minus className="size-3.5 shrink-0" /> : <Plus className="size-3.5 shrink-0" />}
+    </button>
   );
 }
 

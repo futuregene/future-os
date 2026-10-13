@@ -44,7 +44,7 @@ import { useRailSelection } from "./hooks/useRailSelection";
 import { MergedRows } from "./MergedRows";
 import { RailDisclosure, RailHeaderButton } from "./RailChrome";
 import { ThreadListItem } from "./ThreadListItem";
-import { buildThreadTree, visibleThreadRows } from "./threadTree";
+import { buildThreadTree, buildTree, visibleThreadRows, visibleTreeRows } from "./threadTree";
 
 export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote" | "settings";
 
@@ -231,6 +231,25 @@ export function ActivityRail({
       return next;
     });
   }, []);
+  /**
+   * The same fold state for conversations on another machine.
+   *
+   * Its own set rather than one over both: a local row is addressed by thread id
+   * and a remote one by its row key, and one set keyed two ways is how a local
+   * thread and a remote session that happen to share an id would fold together.
+   * Kept here, next to the local fold state, because it is one question over the
+   * list and the rows are the rail's to draw.
+   */
+  const [expandedRemoteThreads, setExpandedRemoteThreads] = useState<Set<string>>(() => new Set());
+  const toggleRemoteThreadExpanded = useCallback((key: string) => {
+    setExpandedRemoteThreads((current) => {
+      const next = new Set(current);
+      if (next.has(key))
+        next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
   // Persisted across restarts (see useCollapsedWorkspaces).
   const { collapsedWorkspaces, toggleWorkspaceCollapsed } = useCollapsedWorkspaces();
   // Collapse state for the two top-level list sections (Workspace / Chat),
@@ -292,7 +311,7 @@ export function ActivityRail({
     const allExpanded = new Set(visibleThreads.map(thread => thread.id));
     const scopes = new Map<string, string>();
     for (const root of threadTree) {
-      const scope = root.thread.mode === "chat" ? "chat" : root.thread.workspaceId;
+      const scope = root.item.mode === "chat" ? "chat" : root.item.workspaceId;
       for (const { thread } of visibleThreadRows([root], allExpanded)) scopes.set(thread.id, scope);
     }
     return scopes;
@@ -311,6 +330,22 @@ export function ActivityRail({
     [workspaces],
   );
 
+  /**
+   * This machine's workspaces, by when *they* were last touched.
+   *
+   * The same key `list_workspaces` orders its own rows by
+   * (`COALESCE(last_opened_at, updated_at)`), read here so a local group holds
+   * its place in the merged list exactly as it holds it in the local one: a
+   * conversation arriving inside a workspace must not move the workspace.
+   */
+  const workspaceOrder = useMemo(
+    () => new Map(workspaces.map(workspace => [
+      workspace.id,
+      workspace.lastOpenedAt ?? workspace.updatedAt,
+    ])),
+    [workspaces],
+  );
+
   const remoteRows = useMemo(
     () => mergeConversations(
       visibleThreads.map(thread => ({
@@ -321,6 +356,7 @@ export function ActivityRail({
         status: thread.status,
         workspaceId: thread.workspaceId,
         workspacePinned: pinnedWorkspaceIds.has(thread.workspaceId),
+        workspaceOrderedAt: workspaceOrder.get(thread.workspaceId) ?? null,
         lastMessageAt: thread.lastMessageAt,
         updatedAt: thread.updatedAt,
         createdAt: thread.createdAt,
@@ -330,7 +366,7 @@ export function ActivityRail({
       // Group headings for the local half of the merged list.
       new Map(workspaces.map(workspace => [workspace.id, workspace.name])),
     ),
-    [visibleThreads, remoteCatalogs, deviceFilter, workspaces, pinnedWorkspaceIds],
+    [visibleThreads, remoteCatalogs, deviceFilter, workspaces, workspaceOrder, pinnedWorkspaceIds],
   );
   const hasRemoteRows = remoteRows.some(row => row.desktopId !== null);
   /**
@@ -362,6 +398,34 @@ export function ActivityRail({
     ])),
     [visibleRemoteRows],
   );
+
+  /**
+   * Where a remote conversation sits in its host's tree, and what a fold hides.
+   *
+   * The local half's own arrangement, in the merged list's vocabulary: the host
+   * reports each session's parent, the merge resolves it to the row the list
+   * actually holds, and the tree is the same one the local rows are placed by —
+   * so a fork on another machine is indented under its parent and folded by the
+   * same toggle, and a fork first seen on the phone is not a row with no parent.
+   *
+   * `hidden` is what the local list gets for free and this one cannot: the local
+   * rail never builds a folded descendant's row, while the merged list
+   * interleaves them, so the rows a folded ancestor owns have to be filtered out
+   * by key.
+   */
+  const remoteRowTree = useMemo(() => {
+    const nodes = buildTree(visibleRemoteRows, row => ({
+      key: row.key,
+      parentKey: row.parentKey ?? null,
+      pinned: row.pinned,
+    }));
+    const visible = visibleTreeRows(nodes, row => row.key, expandedRemoteThreads);
+    const meta = new Map(visible.map(row => [row.item.key, row] as const));
+    return {
+      meta,
+      hidden: new Set(visibleRemoteRows.filter(row => !meta.has(row.key)).map(row => row.key)),
+    };
+  }, [expandedRemoteThreads, visibleRemoteRows]);
 
   const {
     deleteSelected,
@@ -396,19 +460,19 @@ export function ActivityRail({
 
   // Pinned threads are hoisted into a single global section (regardless of
   // workspace/chat); the per-group lists show only the unpinned rest.
-  const pinnedThreads = useMemo(() => visibleThreadRows(threadTree.filter(node => node.thread.pinned), expandedThreads), [threadTree, expandedThreads]);
-  const chatThreads = useMemo(() => visibleThreadRows(threadTree.filter(node => node.thread.mode === "chat" && !node.thread.pinned), expandedThreads), [threadTree, expandedThreads]);
-  const workspaceRoots = useMemo(() => threadTree.filter(node => node.thread.mode === "workspace" && !node.thread.pinned), [threadTree]);
+  const pinnedThreads = useMemo(() => visibleThreadRows(threadTree.filter(node => node.item.pinned), expandedThreads), [threadTree, expandedThreads]);
+  const chatThreads = useMemo(() => visibleThreadRows(threadTree.filter(node => node.item.mode === "chat" && !node.item.pinned), expandedThreads), [threadTree, expandedThreads]);
+  const workspaceRoots = useMemo(() => threadTree.filter(node => node.item.mode === "workspace" && !node.item.pinned), [threadTree]);
   // The store keeps its recency order (the new-conversation picker reads
   // `workspaces[0]` as "most recent"); pinning is this list's own rule, so the
   // groups are ordered here. Within each half the store's order is kept.
   const workspaceGroups = useMemo(() => {
     const groups = workspaces.filter(
-      workspace => workspace.kind === "user" || workspaceRoots.some(node => node.thread.workspaceId === workspace.id),
+      workspace => workspace.kind === "user" || workspaceRoots.some(node => node.item.workspaceId === workspace.id),
     );
     return [...groups.filter(workspace => workspace.pinned), ...groups.filter(workspace => !workspace.pinned)]
       .map((workspace) => {
-        const roots = workspaceRoots.filter(node => node.thread.workspaceId === workspace.id);
+        const roots = workspaceRoots.filter(node => node.item.workspaceId === workspace.id);
         return {
           workspace,
           rows: visibleThreadRows(roots, expandedThreads),
@@ -571,7 +635,7 @@ export function ActivityRail({
     const hidden = new Set<string>();
     const walk = (nodes: ThreadTreeNode[]) => {
       for (const node of nodes) {
-        if (!expandedThreads.has(node.thread.id)) {
+        if (!expandedThreads.has(node.item.id)) {
           for (const descendant of descendantsOf(node))
             hidden.add(descendant);
           continue;
@@ -733,6 +797,7 @@ export function ActivityRail({
                                 onSelectChats={() => enterSelectionMode("chat")}
                                 onSelectWorkspaceChats={groupKey => enterSelectionMode(groupKey)}
                                 onToggleChatSection={() => setChatSectionCollapsed(value => !value)}
+                                onToggleRemoteExpanded={toggleRemoteThreadExpanded}
                                 onToggleWorkspace={toggleWorkspaceCollapsed}
                                 onToggleWorkspaceSection={() => setWorkspaceSectionCollapsed(value => !value)}
                                 peers={remotePeers}
@@ -742,15 +807,23 @@ export function ActivityRail({
                                   toggle: toggleRemoteSelection,
                                 }}
                                 localRowMeta={localRowMeta}
+                                expandedRemoteRows={expandedRemoteThreads}
+                                remoteRowMeta={remoteRowTree.meta}
                                 renderLocalGroupHeader={(workspaceId) => {
                                   const found = visibleWorkspaceGroups.find(item => item.workspace.id === workspaceId);
                                   return found ? renderWorkspaceHeader(found.workspace, found.threads) : null;
                                 }}
                                 renderLocalRow={renderLocalRow}
-                                rows={visibleRemoteRows.filter(row =>
-                                  // A collapsed local parent takes its forks with
-                                  // it, exactly as it does in the local list.
-                                  row.desktopId !== null || !collapsedLocalIds.has(row.id))}
+                                rows={visibleRemoteRows.filter((row) => {
+                                  if (row.desktopId === null) {
+                                    // A collapsed local parent takes its forks with
+                                    // it, exactly as it does in the local list.
+                                    return !collapsedLocalIds.has(row.id);
+                                  }
+                                  // The same rule for a conversation on another
+                                  // machine, by the key its tree is built from.
+                                  return !remoteRowTree.hidden.has(row.key);
+                                })}
                                 selectionMode={selectionMode}
                                 threadById={threadById}
                                 workspaceSectionCollapsed={workspaceSectionCollapsed}
@@ -1110,5 +1183,5 @@ function NavButton({
 
 /** Every conversation below this node, at any depth. */
 function descendantsOf(node: ThreadTreeNode): string[] {
-  return node.children.flatMap(child => [child.thread.id, ...descendantsOf(child)]);
+  return node.children.flatMap(child => [child.item.id, ...descendantsOf(child)]);
 }

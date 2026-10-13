@@ -56,6 +56,10 @@ function conversation(overrides: Partial<MergedConversation> = {}): MergedConver
 
 async function mount(props: {
   conversation?: MergedConversation;
+  depth?: number;
+  expanded?: boolean;
+  hasChildren?: boolean;
+  onToggleExpanded?: (conversation: MergedConversation) => void;
   unread?: boolean;
 } = {}) {
   const onChanged = vi.fn();
@@ -70,10 +74,14 @@ async function mount(props: {
       <RemoteConversationRow
         active={false}
         conversation={props.conversation ?? conversation()}
+        depth={props.depth}
+        expanded={props.expanded}
+        hasChildren={props.hasChildren}
         onChanged={onChanged}
         onDeletedRemote={onDeletedRemote}
         onOpen={onOpen}
         onOpenRename={onOpenRename}
+        onToggleExpanded={props.onToggleExpanded}
         peer={peer}
         unread={props.unread}
       />,
@@ -198,6 +206,45 @@ it("reports a run through the shared indicator, in the local row's words", async
   const quiet = await mount();
   expect(labels(quiet.container)).toEqual([]);
   await quiet.unmount();
+});
+
+/**
+ * A conversation on another machine folds its forks exactly as a local one does.
+ *
+ * The host reports the session each one was forked from, so a fork is an indented
+ * row under its parent with the `+`/`−` toggle the local row draws — and that
+ * toggle must never reach the row's click target, which would open the parent
+ * when the user asked to fold it.
+ */
+it("folds its forks with the local row's own toggle, without opening the row", async () => {
+  const onToggleExpanded = vi.fn();
+  const folded = await mount({ depth: 1, hasChildren: true, onToggleExpanded });
+
+  // The tree toggle, not the actions trigger: both announce an expanded state,
+  // and only the toggle says what it folds.
+  const toggle = folded.container.querySelector<HTMLButtonElement>("button[aria-expanded]:not([aria-haspopup])")!;
+  expect(toggle).not.toBeNull();
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  expect(toggle.getAttribute("aria-label")).toContain("Fix the login bug");
+  // The child row is one indent in from its parent's start, as a local fork is
+  // (the row's own geometry: 16px for a top-level row, 20px per level).
+  expect(folded.container.firstElementChild!.getAttribute("style")).toContain("padding-left: 36px");
+
+  await act(async () => toggle.click());
+  expect(onToggleExpanded).toHaveBeenCalledTimes(1);
+  expect(onToggleExpanded.mock.calls[0]![0]).toMatchObject({ key: "desktop_a::sess_1" });
+  // The toggle is its own control: asking to fold is not asking to open.
+  expect(folded.onOpen).not.toHaveBeenCalled();
+  await folded.unmount();
+
+  const laidOut = await mount({ depth: 1, expanded: true, hasChildren: true });
+  expect(laidOut.container.querySelector("button[aria-expanded]:not([aria-haspopup])")!.getAttribute("aria-expanded")).toBe("true");
+  await laidOut.unmount();
+
+  // A conversation with no forks has no toggle: the slot is not decoration.
+  const leaf = await mount({ depth: 1 });
+  expect(leaf.container.querySelector("button[aria-expanded]:not([aria-haspopup])")).toBeNull();
+  await leaf.unmount();
 });
 
 /**
