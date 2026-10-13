@@ -398,10 +398,14 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     }
   }, [pairedIds]);
 
+  // Depends on the callbacks it uses, never on the pairing surface itself: that
+  // object is rebuilt on every render, and an unstable identity here would
+  // re-register the app's AppState and network listeners on every one of them.
+  const { drainRevokes } = pairing;
   const recoverAll = useCallback((reason: RecoveryReason) => {
-    void pairing.drainRevokes();
+    void drainRevokes();
     for (const entry of registryRef.current.values()) void entry.connection.recover(reason);
-  }, [pairing]);
+  }, [drainRevokes]);
 
   const setRuntimesActive = useCallback((active: boolean) => {
     for (const entry of registryRef.current.values()) entry.setAppActive(active);
@@ -447,40 +451,42 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     }
   }, []);
 
+  const { selectDesktop } = pairing;
   const switchDesktop = useCallback(
     async (desktopId: string) => {
-      await pairing.selectDesktop(desktopId);
+      await selectDesktop(desktopId);
     },
-    [pairing],
+    [selectDesktop],
   );
 
   const openSessionOnDesktop = useCallback(
     async (desktopId: string, sessionId: string) => {
-      const target = desktopId || pairing.activeDesktopId;
+      const target = desktopId || activeDesktopId;
       if (!target) return;
-      if (target !== pairing.activeDesktopId) await pairing.selectDesktop(target);
+      if (target !== activeDesktopId) await selectDesktop(target);
       const entry = await waitForRuntime(target);
       // A machine that cannot be reached must say so: the caller reports it,
       // rather than the row appearing to open onto an empty conversation.
       if (!entry) throw new Error("desktop_unavailable");
       await entry.conversation.selectSession(sessionId);
     },
-    [pairing, waitForRuntime],
+    [activeDesktopId, selectDesktop, waitForRuntime],
   );
 
+  const { reconnect: rebuildDesktop } = pairing;
   const disconnectDesktop = useCallback((desktopId: string) => {
     const entry = registryRef.current.get(desktopId);
     const phase = entry?.connection.phase;
     // A connection that gave up is not re-opened from the inside; a live one is
     // probed. The two failures need different answers, so the button picks.
-    if (phase === "failed" || phase === "stopped" || phase === "revoked") pairing.reconnect(desktopId);
+    if (phase === "failed" || phase === "stopped" || phase === "revoked") rebuildDesktop(desktopId);
     else void entry?.connection.recover("request-failure");
-  }, [pairing]);
+  }, [rebuildDesktop]);
 
   const reconnect = useCallback(async () => {
-    if (!pairing.activeDesktopId) return;
-    disconnectDesktop(pairing.activeDesktopId);
-  }, [disconnectDesktop, pairing.activeDesktopId]);
+    if (!activeDesktopId) return;
+    disconnectDesktop(activeDesktopId);
+  }, [activeDesktopId, disconnectDesktop]);
 
   /**
    * Remove the open pairing.
@@ -489,19 +495,20 @@ export function RemoteProvider({ children }: PropsWithChildren) {
    * what the user asked for, and it must not wait on a desktop that may be
    * gone. Its runtime unmounts with the pairing, which closes the socket.
    */
+  const { removeDesktop: removeStoredDesktop, unpair: unpairDesktop } = pairing;
   const unpair = useCallback(async () => {
-    const entry = registryRef.current.get(pairing.activeDesktopId ?? "");
+    const entry = registryRef.current.get(activeDesktopId ?? "");
     await entry?.notifyUnpair();
-    await pairing.unpair();
-  }, [pairing]);
+    await unpairDesktop();
+  }, [activeDesktopId, unpairDesktop]);
 
   const removeDesktop = useCallback(
     async (desktopId: string) => {
-      if (desktopId === pairing.activeDesktopId) return unpair();
+      if (desktopId === activeDesktopId) return unpair();
       await registryRef.current.get(desktopId)?.notifyUnpair();
-      await pairing.removeDesktop(desktopId);
+      await removeStoredDesktop(desktopId);
     },
-    [pairing, unpair],
+    [activeDesktopId, removeStoredDesktop, unpair],
   );
 
   /**

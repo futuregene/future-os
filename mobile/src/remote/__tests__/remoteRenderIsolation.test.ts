@@ -45,7 +45,10 @@ const mockPairedDesktops = {
 };
 
 jest.mock("../usePairedDesktops", () => ({
-  usePairedDesktops: () => mockPairedDesktops,
+  // A fresh surface every render, exactly as the real hook returns: its
+  // callbacks are stable, the object that carries them is not. Reading the
+  // object itself in a dependency list is the mistake this guards against.
+  usePairedDesktops: () => ({ ...mockPairedDesktops }),
 }));
 
 jest.mock("../useDesktopRuntime", () => {
