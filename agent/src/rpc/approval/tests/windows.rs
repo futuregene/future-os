@@ -37,7 +37,8 @@ fn windows_capability_shape_uses_behavior_and_target_not_model_reason() {
     assert_eq!(shape.action["command"], "build-release");
     let action = shape.action.to_string();
     assert!(!action.contains("hash-is-internal"));
-    assert!(!action.contains("MODEL CONTROLLED"));
+    assert_eq!(shape.action["justification"], "MODEL CONTROLLED TITLE");
+    assert!(!shape.summary.contains("MODEL CONTROLLED"));
     let suggestion = shape.save_suggestion.unwrap();
     assert_eq!(suggestion["rules"].as_array().unwrap().len(), 1);
     assert_eq!(

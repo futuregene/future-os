@@ -16,7 +16,7 @@
 | L-D2 / D11 | Network open; phase one has no seccomp filter, defense in depth comes separately later |
 | L-D3 | The sandbox development branch integrates directly into the product with no hidden switch; availability and release criteria are separate |
 | L-D5 | Existing glob matches at launch are hard-protected; new matches within a command are end-detection only |
-| L-D6 | Phase one whole-command de-sandbox approval; phase two execution_grants together with macOS |
+| L-D6 | on-request failures return to model; precise per-command read/write execution_grants |
 | L-D7 / D10 | Secure PATH, version/args, real-run three-layer probe; minimum bwrap **0.9.0** |
 | L-D8 / D9 | Native Linux only; WSL not supported / not specifically detected; no scanning extra compatibility install dirs; no argv0 compatibility branch |
 | 2026-09-04 addition | Missing Ask/Deny (including approval_rule), complex reopen, and missing writable allows are not must-fix items this cycle; see §4 |
@@ -245,32 +245,9 @@ mismatched, **passive** de-sandbox retry is forbidden — the original exit is
 kept with a detection-unknown hint; the model is not prevented from separately
 requesting approval explicitly.
 
-After a valid empty report, ordinary failures still use the
-`Permission denied`/`Operation not permitted`/`Read-only file system` text
-heuristics, excluding exits 0, 2, 125, 126, 127. It is not errno
-certification: a program can forge ordinary error text; final approval still
-requires the user. The private channel does not defend against an attacker who
-already controls the host's same-user Agent.
+After a valid empty report, ordinary permission-error heuristics may annotate failures; they are not errno certification and grant no authority. All failures return to the main model without passive approval or replay.
 
-Deleting an existing protected file (like `.env`) may return
-`Device or resource busy` (EBUSY): that object is a mount point inside the
-sandbox, not a sign a program holds it. That text shares passive-approval
-recognition with the permission errors above: a valid private completion report
-with no detection events and a classifiable non-zero exit are required, but the
-path no longer needs to exactly match the launch request, and the command no
-longer needs to be a simple `rm`/`rmdir`.
-
-Relative paths, absolute paths, variable expansion, cwd switching, scripts, and
-other programs all go through the same error-output classification; path
-extraction is only for approval display — failure does not block approval, and
-the script's absolute target is not guessed from the initial cwd. No
-synthesized "confirmed protected mount target" diagnostics. Ordinary device
-busy or forged text can also trigger approval; swallowed, localized,
-unrecognized-format, or excluded-exit-code output can miss cases — no promise
-all programs' failures are passively recognized. The model can still request
-actively. After approval it is one whole-command de-sandbox run; rejection does
-not delete the file; incomplete detection/new-target detection keeps passive
-retry forbidden.
+The model declares existing files or directory scopes before execution through `additional_permissions.read/write`. The host validates, approves and recompiles narrow mount/reopen rules for that invocation. Unrepresentable access combinations fail before approval rather than run bare. In particular, write access retaining a read denial and child grants below an opaque mode-000 directory are rejected; use approved native file tools for those specific files. New files require an existing parent subtree; no host placeholders simulate exact mounts onto missing files. Explicit denies and existing missing/glob detection limitations remain. See COMMON §5.1. The model checks partial effects before preparing remaining work; explicit whole-command escalation remains only as a compatibility route.
 
 ## 4. Platform differences and accepted gaps
 
@@ -500,7 +477,7 @@ accepted scope gaps are recorded per §4 — no fabricated "intercepted" PASS.
 | Priority | Work |
 |---|---|
 | P0 release evidence | latest Linux-only code compile/full smoke, large-repo default rules, RH/PKG/SEC matrix; old OR-01/OR-06 |
-| P1 | ordinary stderr heuristic false positives and replay side effects (OR-03); phase-two execution_grants; old-bwrap-version security re-check (OR-08) |
+| P1 | permission-diagnostic heuristic false positives; native scope validation for execution_grants; old-bwrap-version security re-check (OR-08) |
 | P2 | seccomp defense in depth: freeze the syscall policy, ptrace/process_vm/io_uring compatibility and failure semantics first, then implement; not enabled in phase one |
 | P2 | diagnostic package, scan budget and FD performance calibration, helper/cwd reachability hints; credential channel in COMMON |
 | P3 / accepted | path-chain hardening beyond root-owner (OR-07); missing Deny, complex reopen, missing allow stay as-is — no unauthorized scope expansion this cycle |

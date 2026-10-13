@@ -86,6 +86,7 @@ impl Decision {
 #[serde(rename_all = "snake_case")]
 pub enum RuleLayer {
     Override,
+    Execution,
     Guard,
     Session,
     Workspace,
@@ -95,6 +96,9 @@ pub enum RuleLayer {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuleMatcherSnapshot {
+    Literal {
+        path: PathBuf,
+    },
     Subtree {
         lexical: PathBuf,
         canonical: PathBuf,
@@ -131,6 +135,8 @@ pub struct RuleSetSnapshot {
 /// char).
 #[derive(Debug, Clone)]
 enum Matcher {
+    #[cfg_attr(windows, allow(dead_code))]
+    Literal(PathBuf),
     /// Lexical and canonical forms are both retained so native sandboxes can
     /// protect a symlink entry as well as its target.
     Subtree {
@@ -154,6 +160,7 @@ impl PathRule {
             return false;
         }
         match &self.matcher {
+            Matcher::Literal(target) => path == target,
             Matcher::Subtree { lexical, canonical } => {
                 paths::path_within(path, lexical) || paths::path_within(path, canonical)
             }
@@ -518,6 +525,7 @@ pub struct RuleSet {
     temp_roots: Vec<PathBuf>,
     overrides: Vec<PathRule>,
     guards: Vec<PathRule>,
+    execution: Vec<PathRule>,
     session: SessionRules,
     workspace_rules: Vec<PathRule>,
     user_rules: Vec<PathRule>,
@@ -618,12 +626,60 @@ impl RuleSet {
             temp_roots: temp_roots(),
             overrides: builtin_overrides(&workspace, home),
             guards: builtin_guards(&workspace, home),
+            execution: Vec::new(),
             session,
             workspace_rules,
             user_rules,
             resolution_errors,
             workspace,
         }
+    }
+
+    /// A single-command grant cannot erase any explicit deny, even one below an ask guard.
+    #[cfg(not(windows))]
+    pub(crate) fn explicitly_denied(&self, path: &Path, op: Op) -> bool {
+        self.profile_layers()
+            .iter()
+            .flatten()
+            .any(|rule| rule.decision == Decision::Deny && rule.matches(path, op))
+    }
+
+    /// Isolated per-execution rules. Never mutate the shared session allow list.
+    #[cfg(not(windows))]
+    pub(crate) fn with_execution_grants(
+        &self,
+        targets: &[super::file_request::FileTarget],
+    ) -> Self {
+        let mut rules = self.clone();
+        rules.session = Arc::new(Mutex::new(self.session.lock().clone()));
+        if targets.is_empty() {
+            return rules;
+        }
+        // Explicit deny rules remain above grants, including nested carveouts.
+        for layer in self.profile_layers() {
+            rules.overrides.extend(
+                layer
+                    .into_iter()
+                    .filter(|rule| rule.decision == Decision::Deny),
+            );
+        }
+        rules.execution = targets
+            .iter()
+            .map(|target| PathRule {
+                matcher: match target.scope {
+                    super::windows_request::WriteScope::File => {
+                        Matcher::Literal(target.path.clone())
+                    }
+                    super::windows_request::WriteScope::Subtree => Matcher::Subtree {
+                        lexical: target.path.clone(),
+                        canonical: target.path.clone(),
+                    },
+                },
+                access: target.access,
+                decision: Decision::Allow,
+            })
+            .collect();
+        rules
     }
 
     /// Add a runtime allow rule (same-run "allow in this workspace/chat").
@@ -648,6 +704,7 @@ impl RuleSet {
         let session_slice: &[PathRule] = session.as_slice();
         for layer in [
             self.overrides.as_slice(),
+            self.execution.as_slice(),
             self.guards.as_slice(),
             session_slice,
             self.workspace_rules.as_slice(),
@@ -680,6 +737,7 @@ impl RuleSet {
         let session = self.session.lock().clone();
         vec![
             self.overrides.clone(),
+            self.execution.clone(),
             self.guards.clone(),
             session,
             self.workspace_rules.clone(),
@@ -693,6 +751,7 @@ impl RuleSet {
     pub fn snapshot(&self) -> RuleSetSnapshot {
         let names = [
             RuleLayer::Override,
+            RuleLayer::Execution,
             RuleLayer::Guard,
             RuleLayer::Session,
             RuleLayer::Workspace,
@@ -719,6 +778,7 @@ impl RuleSet {
 impl PathRule {
     fn snapshot(&self) -> RuleSnapshot {
         let matcher = match &self.matcher {
+            Matcher::Literal(path) => RuleMatcherSnapshot::Literal { path: path.clone() },
             Matcher::Subtree { lexical, canonical } => RuleMatcherSnapshot::Subtree {
                 lexical: lexical.clone(),
                 canonical: canonical.clone(),
@@ -746,6 +806,7 @@ impl PathRule {
     /// subtree base, or the original glob's compiled regex source.
     pub fn matcher_sbpl(&self) -> MatcherSbpl<'_> {
         match &self.matcher {
+            Matcher::Literal(path) => MatcherSbpl::Literal(path),
             Matcher::Subtree { canonical, .. } => MatcherSbpl::Subtree(canonical),
             Matcher::Glob { regex, .. } => MatcherSbpl::Regex(regex.as_str()),
         }
@@ -753,6 +814,7 @@ impl PathRule {
 }
 
 pub enum MatcherSbpl<'a> {
+    Literal(&'a Path),
     Subtree(&'a Path),
     Regex(&'a str),
 }
@@ -1222,6 +1284,7 @@ mod tests {
         )
         .unwrap();
         let set = RuleSet {
+            execution: vec![],
             temp_roots: temp_roots(),
             overrides: vec![],
             guards: vec![],

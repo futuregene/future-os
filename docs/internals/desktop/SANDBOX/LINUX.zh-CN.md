@@ -10,7 +10,7 @@
 | L-D2 / D11 | 网络开放；一期没有 seccomp filter，后续单独做纵深防御 |
 | L-D3 | sandbox 开发分支直接接入产品，不另加隐藏开关；可用性与正式发布门槛分开 |
 | L-D5 | 启动前既有 glob 匹配硬保护，命令内新匹配仅事后检测 |
-| L-D6 | 一期整命令脱沙箱审批；二期 execution_grants 与 macOS 一起改造 |
+| L-D6 | on-request：失败返回模型；单命令精确 read/write execution_grants |
 | L-D7 / D10 | 安全 PATH、版本/参数、真实运行三层 probe；最低 bwrap **0.9.0** |
 | L-D8 / D9 | 仅原生 Linux；不支持/不专门检测 WSL，不扫描额外兼容安装目录，不做 argv0 兼容分支 |
 | 2026-09-04 补充 | 缺失 Ask/Deny（包括 approval_rule）、复杂 reopen、缺失 writable allow 不再作为本期必改项；详见 §4 |
@@ -126,11 +126,9 @@ mount source 以 O_PATH FD 固定，bwrap 通过 `/proc/self/fd/N` 挂载；内�
 
 命令自己打印 `__FUTURE_SANDBOX_VIOLATION__:` 被标成 `untrusted command text; not a sandbox report`；可信事件在命令输出截断后附加。直接 helper 调试仍可换行输出 marker，但不构成来源认证。存在 detection-only 事件、私有报告缺失/损坏/超限/不匹配时，禁止**被动**脱沙箱重试，保留原 exit 并提示检测未知；不阻止模型另行显式申请审批。
 
-有效空报告之后，普通失败仍使用 `Permission denied`/`Operation not permitted`/`Read-only file system` 文本启发式，排除 0、2、125、126、127。它不是 errno 认证：程序可以伪造普通错误文本；最终仍须用户批准。私有通道不防御已控制宿主同用户 Agent 的攻击者。
+有效空报告之后，普通失败仍可使用权限错误文本启发式生成诊断；它不是 errno 认证，不形成授权。所有失败直接返回主模型，不生成被动审批、不重跑。
 
-删除现存保护文件（如 `.env`）可能返回 `Device or resource busy`（EBUSY）：该对象是沙盒中的挂载点，不代表有程序占用。该文本与上述权限错误共用被动审批识别：必须有有效且无检测事件的私有完成报告和可分类的非零退出码，但不再要求路径精确匹配 launch request，也不要求命令是简单 `rm`/`rmdir`。
-
-相对路径、绝对路径、变量展开、切换 cwd、脚本和其他程序均走同一错误输出分类；路径提取仅用于审批展示，失败不阻止审批，也不凭初始 cwd 猜测脚本的绝对目标。不再合成“已确认保护挂载目标”的诊断。普通设备忙或伪造文本也可能触发审批；输出被吞掉、本地化、未识别格式或被排除的退出码可能漏判，不承诺所有程序的失败都能被动识别。模型仍可主动申请。批准后是整命令脱沙盒一次，拒绝不删除文件；检测不完整/新目标检测保持禁止被动重试。
+模型在执行前通过 `additional_permissions.read/write` 声明已有文件或目录范围。后端校验、审批并重新编译本次调用的窄 mount/reopen；无法表达的读写组合在审批前拒绝，不能裸跑：包括保留读拒绝的写授权，以及 mode-000 不可读目录内的子路径授权；这类具体文件使用已审批的原生文件工具。创建文件需已有父目录 subtree；不能通过宿主占位对象模拟不存在文件的精确 mount。显式 deny 和原有缺失/glob 检测限制保持，完整协议见 COMMON §5.1。模型必须先检查部分完成效果再准备剩余操作；显式整命令提权仅保留兼容。
 
 ## 4. 平台差异与已接受缺口
 
@@ -261,7 +259,7 @@ sign-off记录Reviewer/UTC/Candidate/Decision/Blocking issues/Follow-ups/Evidenc
 | 优先级 | 工作 |
 |---|---|
 | P0 发布证据 | 最新Linux-only代码编译/全smoke、大仓库默认规则、RH/PKG/SEC矩阵；旧OR-01/OR-06 |
-| P1 | 普通stderr启发式误报与重放副作用（OR-03）；二期execution_grants；bwrap旧版本安全复核（OR-08） |
+| P1 | 权限诊断启发式误报；execution_grants 原生范围验收；bwrap旧版本安全复核（OR-08） |
 | P2 | seccomp纵深防御：先冻结syscall policy、ptrace/process_vm/io_uring兼容与失败语义，再实现；不是一期已启用 |
 | P2 | 诊断包、扫描预算与FD性能校准、helper/cwd可达性提示；凭据通道见COMMON |
 | P3 / 已接受 | root owner之外路径链加固（OR-07）；缺失Deny、复杂reopen、缺失allow保持现状，不擅自升级本期范围 |

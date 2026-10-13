@@ -43,12 +43,15 @@ export function PendingApprovalCard({
   const [commandExpanded, setCommandExpanded] = useState(false);
   const action = parseAction(payload.action);
   const capabilityTargets =
-    action?.category === "windows_write_capability" ? action.targets : undefined;
+    (action?.category === "windows_write_capability" || action?.category === "file_permissions") ? action.targets : undefined;
   const capabilityTarget = capabilityTargets?.length === 1 ? capabilityTargets[0] : undefined;
-  const malformedCapability = payload.kind === "windows_write_capability" && !capabilityTargets;
+  const malformedCapability = (payload.kind === "windows_write_capability" || payload.kind === "file_permissions")
+    && (!capabilityTargets || action?.category !== payload.kind);
   const decisionDisabled = approvalDecisionDisabled(submitting, malformedCapability);
   const kindI18n = APPROVAL_KIND_I18N[payload.kind ?? ""];
-  const titleText = capabilityTargets
+  const titleText = action?.category === "file_permissions"
+    ? t("approval.filePermissionsTitle")
+    : capabilityTargets
     ? capabilityTarget
       ? t(
         capabilityTarget.scope === "file"
@@ -60,7 +63,9 @@ export function PendingApprovalCard({
     : kindI18n
       ? t(payload.kind === "sandbox_escalation" ? escalationTitleKey(action) : kindI18n.title)
       : payload.title || payload.tool_name || t("approval.title");
-  const summaryText = capabilityTargets
+  const summaryText = action?.category === "file_permissions"
+    ? t("approval.filePermissionsSummary")
+    : capabilityTargets
     ? null
     : kindI18n?.summary
       ? t(kindI18n.summary)
@@ -71,7 +76,9 @@ export function PendingApprovalCard({
   const isWrite =
     paths.length > 0 &&
     (payload.kind === "file_write" || payload.kind === "outside_workspace_write");
-  const detailLabel = capabilityTargets
+  const detailLabel = action?.category === "file_permissions"
+    ? t("approval.locations")
+    : capabilityTargets
     ? capabilityTargets.length > 1
       ? t("approval.locations")
       : null
@@ -98,6 +105,7 @@ export function PendingApprovalCard({
         </Text>
       </View>
       {!!summaryText && <Text style={styles.approvalSummary}>{summaryText}</Text>}
+      {action?.justification ? <Text style={styles.approvalSummary}>{action.justification}</Text> : null}
       {detailLabel ? (
         <>
           <Text style={styles.approvalDetailLabel}>{detailLabel}</Text>
@@ -105,7 +113,9 @@ export function PendingApprovalCard({
             {capabilityTargets ? (
               capabilityTargets.map((target, index) => (
                 <Text key={`${target.path}-${index}`} selectable style={styles.approvalPath}>
-                  {target.path}
+                  {action?.category === "file_permissions"
+                    ? `${t(target.access === "read" ? "approval.readAccess" : "approval.writeAccess")} · ${t(target.scope === "subtree" ? "approval.directoryScope" : "approval.fileScope")}\n${target.path}`
+                    : target.path}
                 </Text>
               ))
             ) : command && deletes.length === 0 ? (

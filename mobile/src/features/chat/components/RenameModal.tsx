@@ -13,6 +13,7 @@ export function RenameModal({
   onClose,
   onGenerate,
   generationKey,
+  titleKey = "chat.renameTitle",
   t,
 }: {
   renameOpen: boolean;
@@ -22,6 +23,8 @@ export function RenameModal({
   onClose: () => void;
   onGenerate?: () => Promise<string>;
   generationKey?: string;
+  /** Heading and input label, so a shared shell can name what it renames. */
+  titleKey?: string;
   t: TFunction;
 }) {
   const [generating, setGenerating] = useState(false);
@@ -84,14 +87,14 @@ export function RenameModal({
       visible={renameOpen}
     >
       <DialogSurface>
-          <Text style={styles.dialogTitle}>{t("chat.renameTitle")}</Text>
+          <Text style={styles.dialogTitle}>{t(titleKey)}</Text>
           {/* Keep borders off the native EditText so Android's underline tint
               applies to its original background, not a layered RN border. */}
           <View style={styles.inputBorder}>
             <TextInput
               autoFocus
               editable={!generating}
-              accessibilityLabel={t("chat.renameTitle")}
+              accessibilityLabel={t(titleKey)}
               onChangeText={setRenameValue}
               onSubmitEditing={save}
               placeholder={t("sessions.unnamed")}

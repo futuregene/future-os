@@ -1,7 +1,9 @@
 use super::ApprovalShape;
+#[cfg(any(windows, test))]
 use crate::sandbox::windows_request::PreparedWritePermissions;
 use crate::sandbox::{paths, rules::Op, ResolvedSandbox};
 use std::path::Path;
+#[cfg(any(windows, test))]
 pub(super) fn windows_capability_shape(
     command: &str,
     prepared: &PreparedWritePermissions,
@@ -65,6 +67,12 @@ pub(super) fn windows_capability_shape(
             // Existing clients already render this in a collapsed command
             // disclosure. It is never used to construct the trusted title.
             "command": command,
+            // Supplementary model explanation; title and scope remain
+            // generated from the validated targets above.
+            "justification": prepared.targets.iter()
+                .filter(|target| target.decision == crate::sandbox::rules::Decision::Ask)
+                .map(|target| target.untrusted_reason.as_str())
+                .collect::<Vec<_>>().join("; "),
             "scope": {
                 "cwd": sandbox.workspace.to_string_lossy(),
                 "inside_workspace": false,
@@ -73,6 +81,42 @@ pub(super) fn windows_capability_shape(
         }),
         sandbox_boundary: sandbox.boundary_json(Some("additional_write_capability"), false),
         save_suggestion,
+    }
+}
+
+#[cfg(not(windows))]
+pub(super) fn file_permissions_shape(
+    command: &str,
+    prepared: &crate::sandbox::file_request::PreparedPermissions,
+    arguments: &serde_json::Value,
+) -> ApprovalShape {
+    let reasons = arguments
+        .get("additional_permissions")
+        .or_else(|| arguments.get("additionalPermissions"));
+    let justification = reasons
+        .into_iter()
+        .flat_map(|permissions| {
+            ["read", "write"].into_iter().filter_map(move |access| {
+                permissions
+                    .get(access)
+                    .and_then(serde_json::Value::as_array)
+            })
+        })
+        .flatten()
+        .filter_map(|target| target.get("reason").and_then(serde_json::Value::as_str))
+        .collect::<Vec<_>>()
+        .join("; ");
+    ApprovalShape {
+        kind: "file_permissions", risk_level: "medium",
+        title: "Allow file access for this command".into(),
+        summary: "The requested file access applies only to this command, which will run inside the sandbox once.".into(),
+        action: serde_json::json!({
+            "tool": "shell", "category": "file_permissions", "behavior": "access_files",
+            "command": command, "justification": justification, "targets": prepared.targets,
+            "paths": prepared.targets.iter().map(|target| &target.path).collect::<Vec<_>>(),
+        }),
+        sandbox_boundary: prepared.sandbox().boundary_json(Some("additional_file_permissions"), true),
+        save_suggestion: None,
     }
 }
 
