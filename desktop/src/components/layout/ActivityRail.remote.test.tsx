@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { ComponentProps } from "react";
-import type { StoredThread } from "../../integrations/storage/threadStore";
+import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -65,6 +65,18 @@ const peer = {
   name: "Studio iMac",
   pairId: "pair_1",
 };
+
+function storedWorkspace(id: string, name: string): StoredWorkspace {
+  return {
+    id,
+    name,
+    kind: "user",
+    path: `/tmp/${id}`,
+    cleanupStatus: "active",
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
 
 function railProps(overrides: Partial<ComponentProps<typeof ActivityRail>> = {}) {
   return {
@@ -320,6 +332,66 @@ describe("the local tree in merged mode", () => {
     expect(view.text()).toContain("Remote conversation");
     view.unmount();
   });
+
+  /**
+   * A fork goes where its *conversation* went, not where its own fields point: the
+   * forks of a pinned conversation are pinned rows.
+   *
+   * The merged list draws the pinned section and the workspace groups apart, and
+   * a fork carries its own pin and workspace — so a fork of a pinned conversation
+   * was drawn under the workspace heading, hundreds of pixels from the `+` the
+   * user had just pressed, while the same list filtered to this machine alone
+   * showed it directly underneath. A fork is a conversation's, so it takes that
+   * conversation's section.
+   */
+  it("keeps a local fork beside its conversation when that one is pinned", async () => {
+    const view = await mountRail({
+      remoteCatalogs: [catalogRow("sess_a")],
+      remotePeers: [peer],
+      threads: [
+        thread("local_parent", {
+          agentSessionId: "sess_parent",
+          lastMessageAt: 5_000,
+          mode: "workspace",
+          pinned: true,
+          title: "Pinned parent",
+          workspaceId: "ws_1",
+        }),
+        thread("local_fork", {
+          agentSessionId: "sess_child",
+          lastMessageAt: 8_000,
+          mode: "workspace",
+          parentSessionId: "sess_parent",
+          title: "Fork of pinned",
+          workspaceId: "ws_1",
+        }),
+        // A newer conversation in the same workspace, so a fork ranked by its own
+        // time lands below *this* rather than under the row it came from.
+        thread("local_other", {
+          agentSessionId: "sess_other",
+          lastMessageAt: 9_000,
+          mode: "workspace",
+          title: "Other in the workspace",
+          workspaceId: "ws_1",
+        }),
+      ],
+      workspaces: [storedWorkspace("ws_1", "Charts")],
+    });
+
+    act(() => view.container
+      .querySelector<HTMLButtonElement>("button[aria-label='Expand child conversations of Pinned parent']")!
+      .click());
+
+    expect([...view.container.querySelectorAll<HTMLElement>("div[class*='group/thread']")]
+      .map(row => ({ indent: row.style.paddingLeft, title: (row.textContent ?? "").trim() })))
+      .toEqual([
+        { indent: "16px", title: "Pinned parent" },
+        { indent: "36px", title: "Fork of pinned" },
+        { indent: "28px", title: "Other in the workspace" },
+        { indent: "16px", title: "Remote conversation💻" },
+      ]);
+    view.unmount();
+  });
 });
 
 /**
@@ -374,6 +446,44 @@ describe("the remote tree in merged mode", () => {
     act(() => toggle.click());
 
     expect(view.text()).toContain("Host fork");
+    view.unmount();
+  });
+
+  /**
+   * The fork is drawn *under* the conversation it came from — the row that
+   * follows it in the list, not a place of its own by time.
+   *
+   * A fork's last message is newer than its parent's by construction, so ranking
+   * rows by recency put it *above* the conversation it came from: pressing the
+   * parent's `+` appeared to do nothing, because the row it revealed had been
+   * there all along, one line higher. The order is the assertion; the indent is
+   * how a reader sees that the two belong together.
+   */
+  it("draws a fork under its conversation, not where its own time puts it", async () => {
+    const view = await mountRail({
+      remoteCatalogs: [{
+        desktopId: "desktop_a",
+        sessions: [
+          { lastMessageAt: 9_000, parentSessionId: "sess_parent", sessionId: "sess_fork", threadId: "th_fork", title: "Host fork" },
+          { lastMessageAt: 1_000, sessionId: "sess_parent", threadId: "th_parent", title: "Host parent" },
+        ],
+      } as never],
+      remotePeers: [peer],
+    });
+
+    const order = () => [...view.container.querySelectorAll<HTMLElement>("div[class*='group/thread']")]
+      .map(row => ({ indent: row.style.paddingLeft, title: (row.textContent ?? "").trim() }));
+    // Folded: only the parent, with its toggle.
+    expect(order().map(row => row.title)).toEqual(["Host parent💻"]);
+
+    act(() => view.container
+      .querySelector<HTMLButtonElement>("button[aria-label='Expand child conversations of Host parent']")!
+      .click());
+
+    expect(order()).toEqual([
+      { indent: "16px", title: "Host parent💻" },
+      { indent: "36px", title: "Host fork💻" },
+    ]);
     view.unmount();
   });
 });

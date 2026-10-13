@@ -1,3 +1,4 @@
+import { remoteEntries } from "./data";
 import { emit } from "./event";
 
 /**
@@ -19,6 +20,9 @@ import { emit } from "./event";
 const SESSION_ID = "rs_forest";
 const DESKTOP_ID = "desktop_studio";
 const RUN_ID = "run_stream_1";
+
+/** How long one frame takes. Slow enough that a capture lands mid-reply. */
+const STREAM_STEP_MS = 220;
 
 /** Whether this page asked for the streaming fixture. */
 export function streamingEnabled(): boolean {
@@ -42,6 +46,101 @@ export function leanEnabled(): boolean {
 }
 
 /**
+ * The run the fixture's transcript is already part-way through.
+ *
+ * `rs_forest` ends with a turn whose run the fixture still reports as *running*:
+ * the state a reader sees when they open a conversation while the host is
+ * answering it. A capture of that conversation could show the copy the page
+ * carried, but nothing after it — the rest of the reply only exists on the push
+ * lane, and this is that continuation, under the run the page already names.
+ */
+const MID_FLIGHT_RUN_ID = "rrun_2";
+const MID_FLIGHT_ENTRY_ID = "re_4";
+
+/**
+ * The reply's tail, frame by frame: the rest of the sentence the page started,
+ * with the reasoning and the tool call that produced it in between.
+ */
+const MID_FLIGHT_FRAMES: Frame[] = [
+  { type: "agent_start" },
+  { type: "thinking_start" },
+  { type: "thinking_delta", data: { text: "结论得落在文件里，不能只停在回复里。" } },
+  { type: "thinking_end" },
+  { type: "tool_start", data: { tool_id: "call_note", tool_name: "write", tool_args: { path: "analysis/forest-ci-note.md", content: "ci_level: 0.95\n" } } },
+  { type: "tool_end", data: { tool_id: "call_note", tool_name: "write", result: "written", exit_code: 0 } },
+  { type: "text_chunk", data: { text: "我把结论写进 `analysis/forest-ci-note.md`：" } },
+  { type: "text_chunk", data: { text: "`ci_level` 是唯一要改的参数，" } },
+  { type: "text_chunk", data: { text: "改完重跑 `Rscript analysis/effect-size.R` 就行。" } },
+];
+
+/**
+ * The reply the run ends with: what the page already carried, plus the tail.
+ *
+ * One string, because the host's journal holds one entry — its mid-run snapshot
+ * and its finished form are the same record, which is what makes the settled
+ * transcript draw the reply once.
+ */
+const MID_FLIGHT_REPLY = "另外两张图（`fig2-forest.R`、`figS3.R`）各自硬编码了区间，不受影响；只有这一处。"
+  + "我把结论写进 `analysis/forest-ci-note.md`：`ci_level` 是唯一要改的参数，改完重跑 `Rscript analysis/effect-size.R` 就行。";
+
+/** The finished reply, or null while the run is still being written. */
+let midFlightReply: string | null = null;
+/** Whether the mid-flight run has been started: one run per page. */
+let midFlightStarted = false;
+
+/**
+ * Continue the run the transcript is already part-way through.
+ *
+ * Fired by a scenario step rather than a timer: what is being captured is what a
+ * reader sees *after* opening a running conversation, so the frames must start
+ * where the reader's own open put them.
+ */
+export function startMidFlightRun(sessionId: string): void {
+  if (sessionId !== SESSION_ID || midFlightStarted)
+    return;
+  midFlightStarted = true;
+  MID_FLIGHT_FRAMES.forEach((frame, index) => {
+    setTimeout(publishFrame, STREAM_STEP_MS * (index + 1), MID_FLIGHT_RUN_ID, frame, index);
+  });
+  // The run ends and its journal holds the whole reply: the client's catch-up
+  // read then serves it, under the entry the page already had.
+  setTimeout(() => {
+    midFlightReply = MID_FLIGHT_REPLY;
+    publishFrame(
+      MID_FLIGHT_RUN_ID,
+      { type: "agent_end", data: {} },
+      MID_FLIGHT_FRAMES.length,
+      `${SESSION_ID}:${MID_FLIGHT_RUN_ID}:end`,
+    );
+  }, STREAM_STEP_MS * (MID_FLIGHT_FRAMES.length + 6));
+}
+
+/**
+ * The fixture's in-flight turn, as the finished reply: the same entry — the host's
+ * journal holds one record per model call — carrying the whole reply, the
+ * reasoning, and the call that wrote the note.
+ */
+function settledReply(entry: unknown, reply: string): unknown | null {
+  const record = entry as { id?: string; blocks?: Array<{ kind?: string }> };
+  if (record.id !== MID_FLIGHT_ENTRY_ID || !Array.isArray(record.blocks))
+    return null;
+  return {
+    ...record,
+    run: { status: "completed", durationMs: 26_000 },
+    blocks: [
+      ...record.blocks.map(block => (block.kind === "text" ? { ...block, text: reply } : block)),
+      { kind: "reasoning", text: "结论得落在文件里，不能只停在回复里。" },
+      {
+        kind: "tool_call",
+        toolCallId: "call_note",
+        name: "write",
+        arguments: { path: "analysis/forest-ci-note.md" },
+      },
+    ],
+  };
+}
+
+/**
  * The reply the streamed run produced, as the host's journal would have it.
  *
  * Kept so the history read serves it after the run ends: the client re-reads the
@@ -53,6 +152,18 @@ let finished: unknown[] = [];
 
 export function streamedEntries(sessionId: string): unknown[] {
   return sessionId === SESSION_ID ? finished : [];
+}
+
+export function sessionEntries(sessionId: string): unknown[] {
+  const fixture = remoteEntries[sessionId] ?? [];
+  // The mid-flight run's own turn is the fixture's — the reply the agent had
+  // already written to its journal when the window opened. Once the run settles,
+  // the same entry carries the whole reply, as the host's journal does.
+  const reply = midFlightReply;
+  const transcript = sessionId === SESSION_ID && reply
+    ? fixture.map(entry => settledReply(entry, reply) ?? entry)
+    : fixture;
+  return [...transcript, ...streamedEntries(sessionId)];
 }
 
 /** One frame of the run: its type and the JSON payload `data` carries. */
@@ -90,8 +201,36 @@ const FRAMES: Frame[] = [
  * rather than in one tick.
  */
 
-/** How long one frame takes. Slow enough that a capture lands mid-reply. */
-const STREAM_STEP_MS = 220;
+/**
+ * One frame, published in the host's own body shape.
+ *
+ * The lean envelope is the same one the real host's trim produces: `eventId`,
+ * `timestamp`, `epoch`, `sessionIdx`, `runSequence` and `schemaVersion` are what
+ * it removes, and `sessionId` is what it deliberately keeps (the `state.events`
+ * mirror has no conversation in its subject).
+ */
+function publishFrame(runId: string, frame: Frame, index: number, eventId?: string): void {
+  const data = typeof frame.data === "string" ? frame.data : JSON.stringify(frame.data ?? {});
+  emit("remote-peer-event", {
+    desktopId: DESKTOP_ID,
+    kind: "event",
+    payload: leanEnabled()
+      ? { sessionId: SESSION_ID, type: frame.type, data, runId, idx: index }
+      : {
+          schemaVersion: 2,
+          sessionId: SESSION_ID,
+          type: frame.type,
+          data,
+          runId,
+          idx: index,
+          epoch: 1,
+          eventId: eventId ?? `${SESSION_ID}:${runId}:${index}`,
+          timestamp: new Date(Date.now()).toISOString(),
+          sessionIdx: index,
+          runSequence: index,
+        },
+  });
+}
 
 export function streamRemoteRun(sessionId: string, prompt: string): void {
   if (!streamingEnabled() || sessionId !== SESSION_ID)
@@ -101,41 +240,12 @@ export function streamRemoteRun(sessionId: string, prompt: string): void {
   // transcript then shows what was asked before the answer starts arriving.
   const frames: Frame[] = [{ type: "user_message", data: { text: prompt } }, ...FRAMES];
   frames.forEach((frame, index) => {
-    setTimeout(() => {
-      const full = {
-        schemaVersion: 2,
-        sessionId: SESSION_ID,
-        type: frame.type,
-        data: typeof frame.data === "string" ? frame.data : JSON.stringify(frame.data ?? {}),
-        runId: RUN_ID,
-        idx: index,
-        epoch: 1,
-        eventId: `${SESSION_ID}:${RUN_ID}:${index}`,
-        timestamp: new Date(Date.now()).toISOString(),
-        sessionIdx: index,
-        runSequence: index,
-      };
-      emit("remote-peer-event", {
-        desktopId: DESKTOP_ID,
-        kind: "event",
-        // The lean envelope, key for key: `eventId`/`timestamp`/`epoch`/
-        // `sessionIdx`/`runSequence`/`schemaVersion` are what the trim removes,
-        // and `sessionId` is what it deliberately keeps (the `state.events`
-        // mirror has no conversation in its subject).
-        payload: leanEnabled()
-          ? {
-              sessionId: SESSION_ID,
-              type: frame.type,
-              data: full.data,
-              runId: RUN_ID,
-              idx: index,
-            }
-          : full,
-      });
-    }, STREAM_STEP_MS * (index + 1));
+    setTimeout(publishFrame, STREAM_STEP_MS * (index + 1), RUN_ID, frame, index);
   });
   // The run settles, and the host's journal has the reply: the transcript's
-  // catch-up read then serves it (see `streamedEntries`).
+  // catch-up read then serves it (see `streamedEntries`). The settle signal is
+  // trimmed like the frames above: it has to keep working on the lean lane, or a
+  // lean client would watch a reply that never becomes a record.
   setTimeout(() => {
     const answered = buildAnswer();
     finished = [
@@ -143,34 +253,7 @@ export function streamRemoteRun(sessionId: string, prompt: string): void {
       ...answered,
       entry("re_stream_a", "assistant", "置信区间确实画成了 90%，我把区间改成 95% 后重画，并核对了每个效应的数值。", RUN_ID),
     ];
-    emit("remote-peer-event", {
-      desktopId: DESKTOP_ID,
-      kind: "event",
-      // Trimmed the same way as the frames above: the settle signal has to keep
-      // working on the lean lane, or a lean client would watch a reply that never
-      // becomes a record.
-      payload: leanEnabled()
-        ? {
-            sessionId: SESSION_ID,
-            type: "agent_end",
-            data: JSON.stringify({}),
-            runId: RUN_ID,
-            idx: frames.length,
-          }
-        : {
-            schemaVersion: 2,
-            sessionId: SESSION_ID,
-            type: "agent_end",
-            data: JSON.stringify({}),
-            runId: RUN_ID,
-            idx: frames.length,
-            epoch: 1,
-            eventId: `${SESSION_ID}:${RUN_ID}:end`,
-            timestamp: new Date(Date.now()).toISOString(),
-            sessionIdx: frames.length,
-            runSequence: frames.length,
-          },
-    });
+    publishFrame(RUN_ID, { type: "agent_end", data: {} }, frames.length, `${SESSION_ID}:${RUN_ID}:end`);
   }, STREAM_STEP_MS * (frames.length + 6));
 }
 

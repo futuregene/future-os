@@ -1265,10 +1265,16 @@ export const remoteSessions: Record<string, unknown[]> = {
       // A fork on that machine, as its catalogue reports it: the row is drawn
       // indented under the conversation it came from, folded by the same toggle
       // the local list uses.
+      //
+      // *Newer* than the conversation it was forked from, which is what a fork is:
+      // it was made later, and its last message later still. An older fork hid a
+      // real ordering bug — ranked by its own time it lands just below its parent
+      // anyway, so a list that drew forks above their parents looked right here
+      // and was wrong on every conversation somebody had actually continued.
       parentSessionId: "rs_forest",
       pinned: false,
       streaming: false,
-      lastMessageAt: Date.now() - 10 * 60_000,
+      lastMessageAt: Date.now() - 30_000,
     },
     {
       sessionId: "rs_prisma",
@@ -1411,6 +1417,10 @@ export const remoteToolArgs: Record<string, { name: string; arguments: Record<st
   rtc_2: { name: "shell", arguments: { command: "Rscript analysis/effect-size.R" } },
   rtc_3: { name: "read", arguments: { file_path: "analysis/fig2-forest.R" } },
   rtc_4: { name: "read", arguments: { file_path: "analysis/figS3.R" } },
+  // The call the mid-flight run makes while the reader is watching (`remoteStream.ts`):
+  // its row is drawn from the push lane, and fetched back by identity once the
+  // transcript's own page carries it.
+  call_note: { name: "write", arguments: { path: "analysis/forest-ci-note.md" } },
 };
 
 /** A remote conversation's model and thinking level (the host's settings). */

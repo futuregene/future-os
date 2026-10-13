@@ -1267,6 +1267,45 @@
           }
         ]
       },
+      "remote-mid-flight": {
+        "note": "A conversation opened while its newest run was already going: the reply reaches the client twice — the page's partial copy of it, and the frames the host pushes from the moment the window subscribed — and is drawn once, with the page's beginning folded together with the stream's tail. The run is `rs_forest`'s own newest turn, which the fixture reports as running, so the frames carry the id that turn already names.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "重画森林图并核对置信区间"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => { const rows = [...document.querySelectorAll('[data-message-id]')]; const copies = rows.filter(r => /只有这一处/.test(r.innerText || '')); if (copies.length !== 1) throw new Error('the page should carry the reply its journal has written so far, once: ' + copies.length); const last = rows[rows.length - 1]; if (last !== copies[0]) throw new Error('the turn the host is writing is not the last row'); return 'page copy: ' + (last.innerText || '').slice(0, 60); })()"
+          },
+          {
+            "eval": "window.__shot.remoteMidFlight()"
+          },
+          {
+            "eval": "(() => { const deadline = Date.now() + 6000; let widest = 0; return new Promise((resolve, reject) => { const check = () => { const rows = [...document.querySelectorAll('[data-message-id]')]; const copies = rows.filter(r => /只有这一处/.test(r.innerText || '')); const tails = rows.filter(r => /我把结论写进/.test(r.innerText || '')); const last = rows[rows.length - 1]; const header = document.querySelector('header'); const running = /运行中/.test((header && header.innerText) || ''); const carrying = rows.filter(r => /只有这一处|我把结论写进/.test(r.innerText || '')).length; if (carrying > widest) widest = carrying; if (copies.length === 1 && tails.length === 1 && copies[0] === last && running) { resolve('live reply: ' + (last.innerText || '').slice(0, 80)); return; } if (Date.now() > deadline) { reject(new Error('the running reply is not one row: copies=' + copies.length + ' tails=' + tails.length + ' and it was drawn across ' + widest + ' row(s) at its widest, running=' + running + ' lastIsCopy=' + (last === copies[0]))); return; } setTimeout(check, 120); }; check(); }); })()"
+          },
+          {
+            "shot": "d-remote-mid-flight.png"
+          },
+          {
+            "wait": 5000
+          },
+          {
+            "eval": "(() => { const rows = [...document.querySelectorAll('[data-message-id]')]; const copies = rows.filter(r => /只有这一处/.test(r.innerText || '')); if (copies.length !== 1) throw new Error('the settled reply is drawn ' + copies.length + ' times'); const text = copies[0].innerText || ''; if (!/改完重跑/.test(text)) throw new Error('the settled reply lost the tail the run wrote: ' + text.slice(0, 120)); const header = document.querySelector('header'); if (/运行中/.test((header && header.innerText) || '')) throw new Error('the host is still reported as running'); if (rows.some(r => (r.getAttribute('data-message-id') || '').indexOf('stream_') === 0)) throw new Error('the live reply outlived its run'); return 'settled rows: ' + rows.length; })()"
+          },
+          {
+            "shot": "d-remote-mid-flight-settled.png"
+          }
+        ]
+      },
       "remote-workspace-fold": {
         "note": "Clicking a workspace heading folds its rows — the heading and its rows are one decision.",
         "url": "http://localhost:5299/shot/?lang=zh",
@@ -1556,7 +1595,7 @@
         ]
       },
       "remote-tree": {
-        "note": "A conversation on another machine with a fork: the same indent and +/− toggle the local list draws, folded by default.",
+        "note": "A conversation on another machine with a fork: the same indent and +/− toggle the local list draws, folded by default — and the fork lands directly *under* the conversation it came from, which is where its own (newer) timestamp would not have put it.",
         "url": "http://localhost:5299/shot/?lang=zh",
         "steps": [
           {
@@ -1581,7 +1620,7 @@
             "wait": 1200
           },
           {
-            "eval": "(() => {\n  if (!document.body.innerText.includes('把森林图改成黑白版'))\n    throw new Error('unfolding did not reveal the fork');\n  const toggle = document.querySelector(\"button[aria-label='收起 重画森林图并核对置信区间 的子对话']\");\n  if (!toggle) throw new Error('the toggle does not offer to fold it again');\n  return 'unfolded';\n})()"
+            "eval": "(() => {\n  if (!document.body.innerText.includes('把森林图改成黑白版'))\n    throw new Error('unfolding did not reveal the fork');\n  const toggle = document.querySelector(\"button[aria-label='收起 重画森林图并核对置信区间 的子对话']\");\n  if (!toggle) throw new Error('the toggle does not offer to fold it again');\n  // Drawn *under* the conversation it came from: the row right after it, one\n  // level in. The fork's own last message is newer than its parent's, so a list\n  // that ranked rows by time put it above its parent — pressing `+` then looked\n  // like it revealed nothing, because the row had already been on screen.\n  const rows = [...document.querySelectorAll(\"div[class*='group/thread']\")];\n  const parent = toggle.closest(\"div[class*='group/thread']\");\n  const fork = rows.find(row => (row.innerText || '').includes('把森林图改成黑白版'));\n  if (!fork) throw new Error('the fork is not a row of the list');\n  if (rows.indexOf(fork) !== rows.indexOf(parent) + 1)\n    throw new Error('the fork is not directly under its conversation: row ' + rows.indexOf(fork) + ' against ' + rows.indexOf(parent));\n  const indent = el => Number.parseInt(getComputedStyle(el).paddingLeft, 10);\n  if (indent(fork) <= indent(parent))\n    throw new Error('the fork is not indented under it: ' + indent(fork) + ' against ' + indent(parent));\n  return 'unfolded, fork under its conversation';\n})()"
           },
           {
             "shot": "d-remote-tree-open.png"
