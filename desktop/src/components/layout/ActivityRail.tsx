@@ -37,6 +37,7 @@ import { IconButton } from "../ui/IconButton";
 import { ActivityRailAccountFooter } from "./ActivityRailAccountFooter";
 import { ChatSectionMenu, WorkspaceHeaderMenu } from "./ActivityRailMenus";
 import { ActivityRailSelectionToolbar } from "./ActivityRailSelectionToolbar";
+import { ConversationSearch } from "./ConversationSearch";
 import { DeviceSelector } from "./DeviceSelector";
 import { useCollapsedWorkspaces } from "./hooks/useCollapsedWorkspaces";
 import { usePendingApprovalCounts } from "./hooks/usePendingApprovalCounts";
@@ -192,6 +193,7 @@ export function ActivityRail({
   onDismissSkillIntro,
 }: ActivityRailProps) {
   const { t } = useTranslation("layout");
+  const noMatchesText = t("activityRail.noMatches");
   // Pending approvals across all threads — badged on rail items so a background
   // conversation's approval is visible without opening it.
   const pendingApprovalCounts = usePendingApprovalCounts();
@@ -258,6 +260,14 @@ export function ActivityRail({
   const [chatSectionCollapsed, setChatSectionCollapsed] = useState(false);
   // Chat section header menu.
   const [chatSectionMenuOpen, setChatSectionMenuOpen] = useState(false);
+  // Text search for the conversation list. Not persisted: the list is huge
+  // and a leftover query after restart would feel like a stale filter.
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery("");
+  }, []);
   // Attention state for the Skills nav entry: pulsed for a few seconds when
   // the skill-guide banner is dismissed (its notice says the tutorial can be
   // reopened from the Skills page).
@@ -346,6 +356,9 @@ export function ActivityRail({
     [workspaces],
   );
 
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const queryActive = normalizedQuery.length > 0;
+
   /**
    * Which thread each of this machine's threads was forked from.
    *
@@ -390,6 +403,18 @@ export function ActivityRail({
    * being meaningful when a group name can exist on two machines at once.
    */
   const mergedMode = hasRemoteRows || (deviceFilter.kind === "device" && deviceFilter.desktopId !== null);
+
+  // Filtering: include a row if its title or its workspace name matches.
+  const rowMatchesQuery = useCallback((row: MergedConversation): boolean => {
+    if (!queryActive)
+      return true;
+    if (row.title.toLowerCase().includes(normalizedQuery))
+      return true;
+    if (row.workspaceName && row.workspaceName.toLowerCase().includes(normalizedQuery))
+      return true;
+    return false;
+  }, [normalizedQuery, queryActive]);
+
   const visibleRemoteRows = useMemo(
     () => (mergedMode ? remoteRows : []),
     [mergedMode, remoteRows],
@@ -410,6 +435,11 @@ export function ActivityRail({
     [visibleRemoteRows],
   );
 
+  const filteredRemoteRows = useMemo(
+    () => (mergedMode ? remoteRows.filter(row => rowMatchesQuery(row)) : []),
+    [mergedMode, remoteRows, rowMatchesQuery],
+  );
+
   /**
    * The shared list's tree: where each row sits, what a fold hides, and the
    * conversation each row hangs under.
@@ -427,7 +457,7 @@ export function ActivityRail({
    * the rows are drawn from.
    */
   const mergedRowTree = useMemo(() => {
-    const nodes = buildTree(visibleRemoteRows, row => ({
+    const nodes = buildTree(filteredRemoteRows, row => ({
       key: row.key,
       parentKey: row.parentKey ?? null,
       pinned: row.pinned,
@@ -452,7 +482,23 @@ export function ActivityRail({
     };
     for (const node of nodes) tag([node], node.item);
     return { meta, roots, rows: visible.map(row => row.item) };
-  }, [expandedRemoteThreads, expandedThreads, visibleRemoteRows]);
+  }, [expandedRemoteThreads, expandedThreads, filteredRemoteRows]);
+
+  const threadMatchesQuery = useCallback((thread: StoredThread): boolean => {
+    if (!queryActive)
+      return true;
+    if (thread.title.toLowerCase().includes(normalizedQuery))
+      return true;
+    const workspace = workspaces.find(ws => ws.id === thread.workspaceId);
+    if (workspace && workspace.name.toLowerCase().includes(normalizedQuery))
+      return true;
+    return false;
+  }, [normalizedQuery, queryActive, workspaces]);
+
+  const filteredVisibleThreads = useMemo(
+    () => visibleThreads.filter(thread => threadMatchesQuery(thread)),
+    [visibleThreads, threadMatchesQuery],
+  );
 
   const {
     deleteSelected,
@@ -476,13 +522,13 @@ export function ActivityRail({
     onSelectThread,
     remoteScopes,
     threadScopes,
-    visibleRemoteRows,
-    visibleThreads,
+    visibleRemoteRows: mergedMode ? filteredRemoteRows : visibleRemoteRows,
+    visibleThreads: mergedMode ? filteredVisibleThreads : visibleThreads,
   });
 
   /** Whether this thread should show a selection checkbox. */
   function threadSelectionMode(thread: StoredThread): boolean {
-    return selectionMode && isThreadInScope(thread);
+    return selectionMode && isThreadInScope(thread) && (!searchOpen || threadMatchesQuery(thread));
   }
 
   // Pinned threads are hoisted into a single global section (regardless of
@@ -505,10 +551,41 @@ export function ActivityRail({
           rows: visibleThreadRows(roots, expandedThreads),
           threads: visibleThreadRows(roots, new Set(visibleThreads.map(thread => thread.id))).map(row => row.thread),
         };
-      });
-  }, [workspaceRoots, workspaces, expandedThreads, visibleThreads]);
+      })
+      .filter((group) => {
+        if (normalizedQuery.length === 0)
+          return true;
+        return group.workspace.name.toLowerCase().includes(normalizedQuery)
+          || group.rows.some(row => threadMatchesQuery(row.thread));
+      })
+      .map(group => ({
+        ...group,
+        rows: group.rows.filter(({ thread }) => threadMatchesQuery(thread)),
+        threads: group.threads.filter(thread => threadMatchesQuery(thread)),
+      }));
+  }, [workspaceRoots, workspaces, expandedThreads, visibleThreads, threadMatchesQuery, normalizedQuery]);
+
+  const filteredPinnedThreads = useMemo(
+    () => pinnedThreads.filter(({ thread }) => threadMatchesQuery(thread)),
+    [pinnedThreads, threadMatchesQuery],
+  );
+  const filteredChatThreads = useMemo(
+    () => chatThreads.filter(({ thread }) => threadMatchesQuery(thread)),
+    [chatThreads, threadMatchesQuery],
+  );
+
   const visibleWorkspaceGroups = workspaceSectionCollapsed ? [] : workspaceGroups;
-  const visibleChatThreads = chatSectionCollapsed ? [] : chatThreads;
+  const visiblePinnedThreads = searchOpen || queryActive ? filteredPinnedThreads : pinnedThreads;
+  const visibleChatThreads = chatSectionCollapsed ? [] : filteredChatThreads;
+  const hasAnyVisibleRow = useMemo(() => {
+    if (!queryActive)
+      return true;
+    if (mergedMode)
+      return filteredRemoteRows.length > 0;
+    return filteredPinnedThreads.length > 0
+      || filteredChatThreads.length > 0
+      || workspaceGroups.some(group => group.rows.length > 0);
+  }, [queryActive, mergedMode, filteredRemoteRows, filteredPinnedThreads, filteredChatThreads, workspaceGroups]);
 
   /**
    * Which row is "current". A local thread is current while the chat section is
@@ -746,18 +823,31 @@ export function ActivityRail({
                       </div>
                     )
                   : null}
-                {onChangeDeviceFilter && remotePeers.length > 0
-                  ? (
-                      <div className="mb-2 shrink-0">
-                        <DeviceSelector
-                          filter={deviceFilter}
-                          onChange={onChangeDeviceFilter}
-                          onManage={() => onManageDesktops?.()}
-                          peers={remotePeers}
+                <div className="mb-2 flex shrink-0 items-center gap-1">
+                  {onChangeDeviceFilter && remotePeers.length > 0
+                    ? (
+                        <div className="min-w-0 flex-1">
+                          <DeviceSelector
+                            filter={deviceFilter}
+                            onChange={onChangeDeviceFilter}
+                            onManage={() => onManageDesktops?.()}
+                            peers={remotePeers}
+                          />
+                        </div>
+                      )
+                    : null}
+                  {selectionMode
+                    ? null
+                    : (
+                        <ConversationSearch
+                          onClose={closeSearch}
+                          onQueryChange={setSearchQuery}
+                          onToggleOpen={() => setSearchOpen(current => !current)}
+                          open={searchOpen}
+                          query={searchQuery}
                         />
-                      </div>
-                    )
-                  : null}
+                      )}
+                </div>
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="group relative -mx-2 flex min-h-0 flex-1">
                     <div
@@ -767,6 +857,11 @@ export function ActivityRail({
                       onScroll={listScrollbar.handleScroll}
                     >
                       <div ref={listScrollbar.contentRef} className="flex min-h-full flex-col" data-activity-rail-content="true">
+                        {!hasAnyVisibleRow
+                          ? (
+                              <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches">{noMatchesText}</div>
+                            )
+                          : null}
                         {mergedMode
                           ? (
                               <MergedRows
@@ -814,13 +909,13 @@ export function ActivityRail({
                           ? null
                           : (
                               <>
-                                {pinnedThreads.length > 0
+                                {visiblePinnedThreads.length > 0
                                   ? (
                                       <div className="mb-3 space-y-0.5">
                                         <div className="sticky top-0 z-20 flex h-6 items-center bg-surface px-2 text-xs font-medium text-ink-muted">
                                           <span>{t("activityRail.pinnedHeader")}</span>
                                         </div>
-                                        {pinnedThreads.map(({ thread, depth, hasChildren }) => (
+                                        {visiblePinnedThreads.map(({ thread, depth, hasChildren }) => (
                                           <ThreadListItem
                                             active={thread.id === activeThreadId}
                                             archived={thread.status === "archived"}
@@ -871,9 +966,9 @@ export function ActivityRail({
                                       </button>
                                     </div>
                                   </div>
-                                  {!workspaceSectionCollapsed && workspaceGroups.length === 0
+                                  {!workspaceSectionCollapsed && workspaceGroups.length === 0 && (filteredChatThreads.length === 0 || chatSectionCollapsed)
                                     ? (
-                                        <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noWorkspaceThreads")}</div>
+                                        <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches-workspace">{noMatchesText}</div>
                                       )
                                     : null}
                                   {visibleWorkspaceGroups.map(({ workspace, threads: groupThreads, rows }) => {
@@ -949,8 +1044,10 @@ export function ActivityRail({
                                       </button>
                                     </div>
                                   </div>
-                                  {!chatSectionCollapsed && chatThreads.length === 0
-                                    ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noChats")}</div>
+                                  {!chatSectionCollapsed && filteredChatThreads.length === 0
+                                    ? (
+                                        <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches">{noMatchesText}</div>
+                                      )
                                     : null}
                                   <div className="shrink-0 space-y-0.5">
                                     {visibleChatThreads.map(({ thread, depth, hasChildren }) => renderLocalRow(thread, depth, hasChildren))}

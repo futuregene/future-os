@@ -158,6 +158,8 @@
   "workspacesRemoveConfirm": "从那台电脑移除工作区「{{workspace}}」？它在{{host}}上的会话也会一起删除。",
   "pasteUnreadable": "无法读取粘贴的文件：{{name}}",
   "pasteTooMany": "一次最多粘贴 {{max}} 个文件",
+  "promptQueued": "消息已排队，桌面端可连接后将自动发送。",
+  "promptPending": "有一条消息等待发送。",
   "settingsWindowTitle": "远程桌面设置",
   "settingsWindowMissing": "这台电脑的配对已不存在。",
   "close": "关闭",
