@@ -22,6 +22,7 @@ import type {
   HistoryEntry,
   InstalledSkill,
   MobileAttachment,
+  PairedDesktop,
   RemoteCredentials,
   RemoteModel,
   RemoteSessionUsage,
@@ -86,6 +87,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [draft, setDraft] = useState(false);
   const [desktopId, setDesktopId] = useState(demoDesktops[0]?.desktopId ?? "");
+  // The phone's own labels for its desktops (name and icon): stored state here
+  // so the device page and the list it sits on move together, as they do once
+  // the real store answers.
+  const [desktops, setDesktops] = useState<PairedDesktop[]>(demoDesktops);
   const [sessionPins, setSessionPins] = useState<Record<string, boolean>>({});
   const [workspacePins, setWorkspacePins] = useState<Record<string, boolean>>({});
   const [usageOverride, setUsageOverride] = useState<RemoteSessionUsage | null>(null);
@@ -151,7 +156,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // does: screens read `credentials.pairId` to tell which machine is current,
   // and the settings modal is keyed by it, so a switch remounts them the way
   // the app does after a real reconnect.
-  const pairedDesktop = demoDesktops.find(desktop => desktop.desktopId === desktopId);
+  const pairedDesktop = desktops.find(desktop => desktop.desktopId === desktopId);
   const credentials: RemoteCredentials = {
     ...demoCredentials,
     expectedDesktopId: desktopId,
@@ -163,7 +168,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     phase: "ready",
     error: null,
     credentials,
-    desktops: demoDesktops,
+    desktops,
     presence: {
       online: true,
       pairId: credentials.pairId,
@@ -268,6 +273,15 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     // the full-feed fixture with the shipping target derivation.
     resolveToolCallTarget: async (toolCallId: string) => leanTargetForToolCall(toolCallId),
     switchDesktop: async (id: string) => setDesktopId(id),
+    // Local-only labels, like the real store: a blank value clears the field.
+    renameDesktop: async (id: string, name: string) => setDesktops(current => current.map(item =>
+      item.desktopId === id ? { desktopId: item.desktopId, pairId: item.pairId, ...(name.trim() ? { name: name.trim() } : {}), ...(item.icon ? { icon: item.icon } : {}) } : item)),
+    labelDesktop: async (id: string, patch: { name?: string; icon?: string }) => setDesktops(current => current.map((item) => {
+      if (item.desktopId !== id) return item;
+      const name = patch.name === undefined ? item.name : patch.name.trim() || undefined;
+      const icon = patch.icon === undefined ? item.icon : patch.icon || undefined;
+      return { desktopId: item.desktopId, pairId: item.pairId, ...(name ? { name } : {}), ...(icon ? { icon } : {}) };
+    })),
     setSessionPinned: async (sessionId: string, _threadId: string, pinned: boolean) =>
       setSessionPins(current => ({ ...current, [sessionId]: pinned })),
     setWorkspacePinned: async (workspaceId: string, pinned: boolean) =>
