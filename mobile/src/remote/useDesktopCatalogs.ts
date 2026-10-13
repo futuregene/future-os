@@ -2,13 +2,16 @@ import type { ConnectionState } from "./connectionState";
 import type { MachineSummary, MachineStatus } from "./desktopStatus";
 import { peerMachineStatus } from "./desktopStatus";
 import type { CatalogEntry } from "./mergeSessions";
+import type { SessionCommands } from "./sessionCommands";
 import type {
+  CatalogRevisions,
   Presence,
   RemoteCredentials,
   RemoteSession,
   SnapshotVersion,
 } from "./types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AppState } from "react-native";
 import { CatalogVersionGate } from "./catalogVersion";
 import { RemoteClient } from "./client";
 import { ensureFreshCredentials } from "./pairing";
@@ -61,6 +64,8 @@ interface PeerRuntime {
   credentials: RemoteCredentials;
   client: RemoteClient;
   gate: CatalogVersionGate;
+  /** The epoch the handshake authenticated this connection at. */
+  epoch: string | undefined;
   presence: Presence | null;
   presenceState: PresenceState;
   /** When this phone last heard from the machine, on its own clock. */
@@ -86,6 +91,57 @@ export interface DesktopCatalogsState {
    * phone was looking at a different one.
    */
   reconnect: () => Promise<void>;
+  /**
+   * The session commands one machine answers, or null when it cannot answer any.
+   *
+   * A row merged in from another machine is that machine's conversation, so its
+   * rename, pin, delete and title commands go down *its* own connection — the
+   * one this hook already holds — instead of the active one, which has never
+   * heard of that session. Null says the machine cannot take a command right
+   * now (no connection, or one that gave up), which is what a caller needs to
+   * know before offering the action at all.
+   */
+  commandsFor: (desktopId: string) => SessionCommands | null;
+}
+
+/**
+ * Read a machine's catalogue and apply it through that machine's own version
+ * gate — the same gate its pushes go through, so a slow answer that lands after
+ * a newer push cannot roll the list back, and a machine too old to version its
+ * snapshots is read as it always was (the gate lets an unversioned answer
+ * through).
+ *
+ * The guard is the caller's: a read that outlives the connection it belongs to
+ * must not write into the next one.
+ */
+async function readCatalog(runtime: PeerRuntime, isCurrent: () => boolean): Promise<void> {
+  const page = await runtime.client.request<{
+    sessions?: RemoteSession[];
+    version?: SnapshotVersion;
+  }>({ type: "list_sessions" }, "list");
+  if (!isCurrent()) return;
+  const sessions = Array.isArray(page?.data?.sessions) ? page.data.sessions : [];
+  if (runtime.gate.accept("sessions", page?.data?.version)) {
+    runtime.sessions = sessions;
+    runtime.failed = false;
+  }
+}
+
+/**
+ * Whether a heartbeat says this connection is missing a catalogue revision.
+ *
+ * The desktop publishes a snapshot when its list *changes*, so a packet lost on
+ * the way (the lane is at-most-once) is invisible to the version gate: nothing
+ * arrives to reject. The heartbeat's own revision is the signal that heals it —
+ * one newer than what this connection has applied proves the push was missed,
+ * so the client pulls. A revision from another epoch describes a desktop
+ * generation this connection has not authenticated; the handshake owns that
+ * transition, and comparing across it would read as "behind" forever.
+ */
+function catalogBehind(runtime: PeerRuntime, advertised: CatalogRevisions | undefined): boolean {
+  if (!advertised || !runtime.epoch || advertised.epoch !== runtime.epoch) return false;
+  return typeof advertised.sessions === "number"
+    && advertised.sessions > runtime.gate.revision("sessions");
 }
 
 /**
@@ -103,6 +159,12 @@ export interface DesktopCatalogsState {
  * machine pushes its own catalogue changes here the moment they happen, and its
  * heartbeat arrives once a second. That is what makes the merged list and the
  * status rows real-time, and why nothing here re-reads on a fast timer.
+ *
+ * A connection that is *held* also has to repair itself, which is what the two
+ * reads below do: the heartbeat's revision catches a lost snapshot, and a
+ * transport that came back re-reads the catalogue it may have missed. Without
+ * them a machine could be connected and still show a list from before its
+ * connection dropped — the state a reader reads as "the phone has stale data".
  */
 async function openCatalogClient(
   credentials: RemoteCredentials,
@@ -111,6 +173,22 @@ async function openCatalogClient(
   isCurrent: () => boolean,
 ): Promise<RemoteClient> {
   const credentialsRef: { current: RemoteCredentials } = { current: credentials };
+  /**
+   * Read the catalogue again and publish what it left behind.
+   *
+   * A failure marks the machine offline: its rows stay as they last were, and
+   * the status row says why the list has stopped moving.
+   */
+  const reReadCatalog = (): void => {
+    void readCatalog(runtime, isCurrent).then(
+      () => { if (isCurrent()) onChanged(); },
+      () => {
+        if (!isCurrent()) return;
+        runtime.failed = true;
+        onChanged();
+      },
+    );
+  };
   const client = new RemoteClient(credentials, {
     // The rotated token is persisted: the catalog client for a given desktop is
     // the only writer of that desktop's credentials (the active desktop is
@@ -127,7 +205,9 @@ async function openCatalogClient(
       // An epoch is the handshake's answer, never a snapshot's claim: the same
       // fencing the active connection applies, so a machine that restarted
       // cannot have its old revisions read as current.
-      if (isCurrent()) runtime.gate.authenticate(epoch);
+      if (!isCurrent()) return;
+      runtime.epoch = epoch;
+      runtime.gate.authenticate(epoch);
     },
     onPresence: (presence) => {
       if (!isCurrent()) return;
@@ -135,6 +215,10 @@ async function openCatalogClient(
       runtime.presenceAt = Date.now();
       runtime.online = judgePresence(runtime);
       onChanged();
+      // The heartbeat carries the revision of the catalogue this machine has.
+      // One we have not applied means a snapshot was lost in flight, so pull it
+      // — the same self-heal the active connection runs on its own heartbeats.
+      if (catalogBehind(runtime, presence.catalogVersion)) reReadCatalog();
     },
     onSessions: (sessions, version) => {
       if (!isCurrent()) return;
@@ -154,6 +238,11 @@ async function openCatalogClient(
       if (!isCurrent()) return;
       runtime.failed = false;
       onChanged();
+      // A transport that came back has re-read nothing, and this machine only
+      // publishes when its list changes: whatever changed while the lane was
+      // down is still missing here. Read it, as the active connection does on
+      // the same event.
+      reReadCatalog();
     },
     onError: () => {
       // A catalog connection failing is not a user-visible error: the merged
@@ -241,10 +330,28 @@ export function useDesktopCatalogs(
     const paired = await loadPairedDesktops();
     const others = paired.filter(desktop => desktop.desktopId !== activeDesktopId);
 
-    // Close clients for desktops that are no longer paired (or became active).
+    // Close clients for desktops that are no longer paired (or became active),
+    // and start over for one whose connection has given up.
     let dropped = false;
     for (const [desktopId, runtime] of [...runtimesRef.current]) {
-      if (others.some(desktop => desktop.desktopId === desktopId)) continue;
+      if (others.some(desktop => desktop.desktopId === desktopId)) {
+        // A client that reached `failed` never tries again on its own — that is
+        // its own rule, so a connection does not restart in the background
+        // behind the user's back. Left alone, a machine that was asleep when
+        // the phone started would read offline until the app restarts, which is
+        // the one outcome "every paired desktop stays connected" cannot have.
+        // Dropping it here is what lets the pass below open a fresh one.
+        //
+        // `revoked` is deliberately not in that set: the desktop rejected this
+        // phone's credential for that pairing, and re-running a rejected
+        // handshake every minute is noise rather than recovery — re-pairing is
+        // the user's move, and the status row already says the machine is not
+        // answering.
+        if (runtime.connection !== "failed") continue;
+        runtimesRef.current.delete(desktopId);
+        void runtime.client.close().catch(() => undefined);
+        continue;
+      }
       runtimesRef.current.delete(desktopId);
       dropped = true;
       void runtime.client.close("Unpair").catch(() => undefined);
@@ -282,6 +389,7 @@ export function useDesktopCatalogs(
             credentials,
             client: null as unknown as RemoteClient,
             gate: new CatalogVersionGate(),
+            epoch: undefined,
             presence: null,
             presenceState: INITIAL_PRESENCE_STATE,
             presenceAt: 0,
@@ -300,23 +408,8 @@ export function useDesktopCatalogs(
           runtime = created;
           publish();
         }
-        const page = await runtime.client.request<{
-          sessions?: RemoteSession[];
-          version?: SnapshotVersion;
-        }>(
-          { type: "list_sessions" },
-          "list",
-        );
-        // The read is fenced by the same gate the pushes go through: a slow
-        // answer that arrives after a newer snapshot must not roll the list
-        // back, and a machine too old to version its snapshots is read as it
-        // always was (the gate lets an unversioned answer through).
-        const sessions = Array.isArray(page?.data?.sessions) ? page.data.sessions : [];
+        await readCatalog(runtime, isCurrent);
         if (!isCurrent()) return;
-        if (runtime.gate.accept("sessions", page?.data?.version)) {
-          runtime.sessions = sessions;
-          runtime.failed = false;
-        }
         publish();
       }
       catch {
@@ -339,6 +432,7 @@ export function useDesktopCatalogs(
     for (const runtime of runtimesRef.current.values()) {
       runtime.failed = false;
       runtime.connection = "connecting";
+      runtime.epoch = undefined;
       runtime.online = false;
       runtime.presence = null;
       runtime.presenceAt = 0;
@@ -350,6 +444,53 @@ export function useDesktopCatalogs(
     publish();
     await refresh();
   }, [publish, refresh]);
+
+  /**
+   * One machine's session commands, addressed to that machine.
+   *
+   * The client is looked up per call rather than captured, so a command issued
+   * across a reconnect goes down whichever connection is current — and a
+   * machine whose connection has given up answers null instead, which is what
+   * stops a menu from promising a rename the wire cannot carry.
+   *
+   * Each command re-reads that machine's catalogue once the host accepted it,
+   * the same way the desktop app does: the host pushes the change too, but that
+   * push can be lost, and the phone should not show a list that disagrees with
+   * the change it just made.
+   */
+  const commandsFor = useCallback((desktopId: string): SessionCommands | null => {
+    const runtime = runtimesRef.current.get(desktopId);
+    if (!runtime || runtime.failed || runtime.connection !== "ready") return null;
+    const current = () => runtimesRef.current.get(desktopId) === runtime;
+    const accepted = async (): Promise<void> => {
+      await readCatalog(runtime, current).catch(() => undefined);
+      if (current()) publish();
+    };
+    return {
+      rename: async (sessionId, name) => {
+        await runtime.client.request({ type: "set_session_name", sessionId, name: name.trim() }, sessionId);
+        await accepted();
+      },
+      generateTitle: async (sessionId, language) => {
+        const response = await runtime.client.request<{ title?: string }>(
+          { type: "generate_session_title", sessionId, mode: language },
+          sessionId,
+          65_000,
+        );
+        const title = response.data?.title?.trim();
+        if (!title) throw new Error("title_generation_failed");
+        return title;
+      },
+      setPinned: async (sessionId, threadId, pinned) => {
+        await runtime.client.request({ type: "set_session_pinned", sessionId, threadId, pinned }, sessionId);
+        await accepted();
+      },
+      delete: async (sessionId, threadId) => {
+        await runtime.client.request({ type: "delete_session", sessionId, threadId }, sessionId);
+        await accepted();
+      },
+    };
+  }, [publish]);
 
   useEffect(() => {
     let cancelled = false;
@@ -376,6 +517,12 @@ export function useDesktopCatalogs(
       }
       if (changed) publish();
     }, PRESENCE_TICK_MS);
+    // The phone was away: whatever the system did to these sockets while it
+    // was, and whatever changed on a machine that was asleep then, is worth one
+    // pass now — the same reason the active connection re-probes on foreground.
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active" && !cancelled) void refresh();
+    });
     return () => {
       cancelled = true;
       // Invalidate every in-flight callback and every open client: a closed
@@ -383,6 +530,7 @@ export function useDesktopCatalogs(
       epochRef.current += 1;
       clearInterval(backstop);
       clearInterval(tick);
+      subscription.remove();
       for (const client of clients.values()) {
         void client.client.close().catch(() => undefined);
       }
@@ -413,6 +561,6 @@ export function useDesktopCatalogs(
         sessions: activeSessions ?? [],
       }]
       : entries;
-    return { catalogs, machines, refresh, reconnect };
-  }, [activeDesktopId, activeSessions, peers, refresh, reconnect]);
+    return { catalogs, machines, refresh, reconnect, commandsFor };
+  }, [activeDesktopId, activeSessions, peers, refresh, reconnect, commandsFor]);
 }
