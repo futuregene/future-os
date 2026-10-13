@@ -130,3 +130,22 @@ fn digest_covers_exact_execution_but_audit_redacts_secrets() {
         .1
     );
 }
+
+#[test]
+fn precise_shell_targets_preserve_read_write_and_scope_for_review() {
+    let action = prepare_review_action(
+        "shell",
+        "precise-call",
+        &json!({"command":"copy remaining report"}),
+        &json!({"category":"file_permissions", "targets":[
+            {"path":"/project/config.env","access":"read","scope":"file"},
+            {"path":"/backup/reports","access":"write","scope":"subtree"}
+        ]}),
+        &json!({"inside_sandbox":true}),
+        "/project",
+    );
+    assert_eq!(action.facts["targets"][0]["access"], "read");
+    assert_eq!(action.facts["targets"][1]["access"], "write");
+    assert_eq!(action.facts["targets"][0]["scope"], "file");
+    assert_eq!(action.facts["targets"][1]["scope"], "subtree");
+}

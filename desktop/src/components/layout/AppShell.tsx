@@ -16,6 +16,7 @@ import { RemoteConversationSettings } from "../../features/remote-peer/RemoteCon
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
 import { compactRemoteConversation, deleteRemoteConversation, forkRemoteConversation, installRemoteSkill } from "../../features/remote-peer/remotePeerClient";
+import { sendRemoteContinuation } from "../../features/remote-peer/remotePromptOutbox";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { remoteSkillRecoSource } from "../../features/remote-peer/remoteSkillRecoSource";
 import { RemoteUsageDialog } from "../../features/remote-peer/RemoteUsageDialog";
@@ -68,6 +69,7 @@ import { useHasProviders } from "./hooks/useHasProviders";
 import { useLeftPanelWidth } from "./hooks/useLeftPanelWidth";
 import { useModelSelection } from "./hooks/useModelSelection";
 import { useNewConversation } from "./hooks/useNewConversation";
+import { useRemoteDoneBell } from "./hooks/useRemoteDoneBell";
 import { useRemotePeers } from "./hooks/useRemotePeers";
 import { useRemoteStatus } from "./hooks/useRemoteStatus";
 import { useRightPanelWidth } from "./hooks/useRightPanelWidth";
@@ -202,6 +204,7 @@ function ReadyAppShell({
   const { peers: remotePeers, catalogs: remoteCatalogs, refresh: refreshRemotePeers } = useRemotePeers(true);
   useAutoUpgradeSkills(appSettings.autoUpgradeSkills);
   useAgentDoneBell(appSettings.bellOnComplete);
+  useRemoteDoneBell(appSettings.bellOnComplete);
   const { showGate, byokMode, enableBYOK, finishInit, cancelLogin, hasAnyProvider, forceOnboarding, initPending } = useHasProviders(futureSessionStatus, initialProviders);
 
   const windowWidth = useWindowWidth();
@@ -870,7 +873,6 @@ function ReadyAppShell({
     try {
       // Queue the continuation through the outbox so an unreachable host does
       // not lose the user's request; it will be retried automatically.
-      const { sendRemoteContinuation } = await import("../../features/remote-peer/remotePromptOutbox");
       await sendRemoteContinuation(desktopId, sessionId, runId);
       await remoteTimeline.refresh();
       await refreshRemotePeers();

@@ -44,8 +44,13 @@ pub(crate) fn prepare_review_action(
                 .as_str()
                 .or_else(|| target.get("path").and_then(Value::as_str));
             if let Some(path) = path {
+                let access = target
+                    .get("access")
+                    .and_then(Value::as_str)
+                    .filter(|access| matches!(*access, "read" | "write"))
+                    .unwrap_or(target_access);
                 json!({
-                    "type":"path", "value":path, "access":target_access,
+                    "type":"path", "value":path, "access":access,
                     "inside_workspace":crate::sandbox::paths::path_within(
                         std::path::Path::new(path), std::path::Path::new(cwd)),
                     "scope":target.get("scope")
