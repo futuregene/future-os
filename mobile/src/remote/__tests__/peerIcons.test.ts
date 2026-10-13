@@ -76,7 +76,8 @@ describe("peerIcons", () => {
     // Default-emoji-presentation code points, from `emoji-test.txt`: their
     // fully-qualified sequence has no `U+FE0F`.
     const DEFAULT_EMOJI = new Set([
-      0x1F4BB /* 💻 */, 0x1F3E0 /* 🏠 */, 0x1F3E2 /* 🏢 */, 0x2615 /* ☕ */,
+      0x1F4BB /* 💻 */,
+      0x1F4F1 /* 📱 */, 0x1F3E0 /* 🏠 */, 0x1F3E2 /* 🏢 */, 0x2615 /* ☕ */,
       0x1F3EB /* 🏫 */, 0x1F3ED /* 🏭 */, 0x1F3EA /* 🏪 */, 0x1F680 /* 🚀 */,
       0x1F9EA /* 🧪 */, 0x1F916 /* 🤖 */, 0x1F4E6 /* 📦 */, 0x1F4CA /* 📊 */,
       0x1F52C /* 🔬 */, 0x1F512 /* 🔒 */, 0x26A1 /* ⚡ */, 0x2B50 /* ⭐ */,

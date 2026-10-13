@@ -60,6 +60,7 @@ describe("peerIcons", () => {
     // fully-qualified sequence has no `U+FE0F`.
     const DEFAULT_EMOJI = new Set([
       0x1F4BB /* 💻 */,
+      0x1F4F1 /* 📱 */,
       0x1F3E0 /* 🏠 */,
       0x1F3E2 /* 🏢 */,
       0x2615 /* ☕ */,

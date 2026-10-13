@@ -4,7 +4,8 @@ import { ScrollView, SectionList, StyleSheet, Switch, Text, TextInput } from "re
 import { Button } from "../../../components/Button";
 import { SettingsScreen, type SettingsScreenHandle } from "../SettingsScreen";
 import { SettingsLink, SettingsSwitch, settingsStyles } from "../SettingsPrimitives";
-import type { DesktopSettings, InstalledSkill, ProvidersView } from "../../../remote/types";
+import type { DesktopSettings, InstalledSkill, PairedDesktop, ProvidersView } from "../../../remote/types";
+import { PEER_ICONS } from "../../../remote/peerIcons";
 
 let stored: DesktopSettings;
 let installed: InstalledSkill[];
@@ -12,10 +13,13 @@ let installed: InstalledSkill[];
 let mockLanguage = "en";
 const mockRemote = {
   credentials: { pairId: "pair", expectedDesktopId: "desktop" },
+  // Typed as the real thing: a desktop row carries the label the user gave it
+  // (name, icon), and an untyped literal here silently loses the right to set
+  // them — which a test that writes an icon cannot do without.
   desktops: [
     { pairId: "other", desktopId: "other-desktop", name: "Other computer" },
     { pairId: "pair", desktopId: "desktop", name: "Work computer" },
-  ],
+  ] as PairedDesktop[],
   desktopOnline: true,
   capabilities: new Set(["desktop_settings_v1", "skill_management_v1", "tasks_v1"]),
   desktopSettingsRevision: 0,
@@ -247,6 +251,21 @@ test("settings identifies its paired desktop without device selection or unpair 
   expect(scope()).toBeDefined();
 });
 
+/**
+ * The banner names the machine these pages write to, so it wears that machine's
+ * own icon: the fixed monitor glyph here was the same gap the device list had,
+ * where picking an icon had no visible effect anywhere.
+ */
+test("the scoped banner wears the bound desktop's own icon", async () => {
+  expect(strings()).toContain(PEER_ICONS[0]!.glyph);
+  mockRemote.desktops = [
+    { pairId: "other", desktopId: "other-desktop", name: "Other computer" },
+    { pairId: "pair", desktopId: "desktop", name: "Work computer", icon: "rocket" },
+  ];
+  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  expect(strings()).toContain("🚀");
+});
+
 test("phone preferences stay separate and update checking remains available", async () => {
   act(() => link("update.check").props.onPress());
   expect(props.onCheckUpdate).toHaveBeenCalledTimes(1);
@@ -305,6 +324,8 @@ test("the official-account entry stays reachable while the desktop is offline", 
 });
 
 const texts = () => tree.root.findAllByType(Text).map(node => node.props.children);
+/** The string children only: a text node may hold an interpolated element. */
+const strings = () => texts().filter((child): child is string => typeof child === "string");
 const radio = (tier: string) => tree.root.findAll(node =>
   node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === tier)[0]!;
 /** Fresh mount: `useDesktopResource` only re-reads when its inputs change, so a
@@ -627,6 +648,23 @@ test("the settings home chooses which desktop this phone connects to", async () 
   // The connection has left this desktop, so the level closes: a real switch
   // remounts the whole settings screen on the new pairing.
   expect(tree.root.findAllByProps({ accessibilityRole: "radio" })).toHaveLength(0);
+});
+
+/**
+ * Every list of paired desktops draws the machine's own icon. Three screens
+ * show this list (the device list, this chooser, and the banner naming the
+ * bound desktop), and each one of them used to draw a fixed monitor glyph
+ * instead — so picking an icon had no visible effect in any of them.
+ */
+test("the desktop chooser draws each machine's own icon", async () => {
+  mockRemote.desktops = [
+    { pairId: "other", desktopId: "other-desktop", name: "Other computer", icon: "rocket" },
+    { pairId: "pair", desktopId: "desktop", name: "Work computer" },
+  ];
+  await act(async () => { tree.update(createElement(SettingsScreen, props)); });
+  await openDesktops();
+  expect(strings()).toContain("🚀");
+  expect(strings()).toContain(PEER_ICONS[0]!.glyph);
 });
 
 test("the desktop list switches while the bound desktop is offline", async () => {
