@@ -68,7 +68,7 @@ it("hides settled stats and assistant copy until hover", async () => {
   expect(copy.classList.contains("opacity-0")).toBe(true);
 });
 
-it("keeps the live dot visible and reveals the ticking timer on hover until completion", async () => {
+it("keeps the live dot and ticking stats visible without hover, then hides settled stats", async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-09-17T00:00:20Z"));
   await render(messageRow({ status: "streaming", runStartedAt: Date.now() - 20_000, outputTokens: null }));
@@ -79,17 +79,21 @@ it("keeps the live dot visible and reveals the ticking timer on hover until comp
   expect(footer.textContent).toBe("20s");
   expect(footer.querySelector("button")).toBeNull();
   const stats = footer.lastElementChild!;
-  expect(stats.classList.contains("opacity-0")).toBe(true);
-  await render(messageRow({ status: "streaming", runStartedAt: Date.now() - 20_000, outputTokens: null }, true));
   expect(stats.classList.contains("opacity-100")).toBe(true);
+  expect(stats.classList.contains("pointer-events-none")).toBe(false);
   await act(async () => {
     vi.advanceTimersByTime(1000);
   });
   expect(footer.textContent).toBe("21s");
+  await render(messageRow({ status: "streaming", runStartedAt: Date.now() - 21_000, outputTokens: 12 }));
+  expect(footer.textContent).toBe("21s · 12 tokens");
+  expect(stats.classList.contains("opacity-100")).toBe(true);
   await render(messageRow());
   expect(container.querySelector("[role=status]")).toBeNull();
   expect(footer.textContent).toContain("20s · 590 tokens");
   expect(stats.classList.contains("opacity-0")).toBe(true);
+  await render(messageRow({}, true));
+  expect(stats.classList.contains("opacity-100")).toBe(true);
 });
 
 it("preserves the user message's hover-only copy behavior", async () => {

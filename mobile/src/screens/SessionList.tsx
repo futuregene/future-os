@@ -139,10 +139,24 @@ export function SessionList({
   const deletingRef = useRef(false);
   const rows = useMemo(
     () => (merged && merged.length > 0
-      ? sessionTreeMergedRows(merged, query)
+      ? sessionTreeMergedRows(merged, query, activeDesktopId, collapsed)
       : catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query)),
-    [remote.sessions, remote.workspaces, merged, tab, collapsed, expanded, query],
+    [remote.sessions, remote.workspaces, merged, tab, collapsed, expanded, query, activeDesktopId],
   );
+  /**
+   * Whether a row's own machine has to be named on it.
+   *
+   * Only when the list really holds more than one machine's conversations: with
+   * a single desktop (the picker's filter, or one pairing) every glyph would
+   * repeat what the selector above the list already says, and take the width the
+   * title needs.
+   */
+  const showSource = useMemo(() => {
+    const sources = new Set(
+      rows.flatMap(row => (row.kind === "session" && row.desktopId ? [row.desktopId] : [])),
+    );
+    return sources.size > 1;
+  }, [rows]);
   const visibleSessions = rows.flatMap(row => (row.kind === "session" ? [row.session] : []));
   // Pinned sessions are shortcuts promoted above the groups (and, on the
   // workspace tab, out of their own workspace), so batch selection skips them:
@@ -330,6 +344,11 @@ export function SessionList({
     if (item.kind === "workspace") {
       const isCollapsed = collapsed.has(item.workspace.id) && !query.trim();
       const name = item.workspace.name || t("sessions.workspace");
+      // A group on another machine is that machine's: the glyph says which one
+      // (with several in one list the name alone does not), and the actions the
+      // heading would offer — rename, pin, delete — are commands to the desktop
+      // this phone is talking to, which has never heard of that workspace.
+      const foreign = !!item.desktopId && item.desktopId !== activeDesktopId;
       return (
         <View style={styles.workspace}>
           <Pressable
@@ -348,19 +367,26 @@ export function SessionList({
             <Text numberOfLines={1} style={styles.workspaceName}>
               {name}
             </Text>
+            {showSource && icons?.get(item.desktopId ?? "") ? (
+              <Text accessibilityLabel={item.desktopId} style={styles.sourceIcon}>
+                {icons.get(item.desktopId ?? "")}
+              </Text>
+            ) : null}
             {item.workspace.pinned && <Pin size={13} color={colors.accent} />}
             <Text style={styles.count}>{item.count}</Text>
           </Pressable>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t("sessions.workspaceActions", { title: name })}
-            accessibilityState={{ disabled: deleting || !remote.desktopOnline }}
-            disabled={deleting || !remote.desktopOnline}
-            onPress={() => openWorkspaceMenu(item)}
-            style={[styles.iconButton, (!remote.desktopOnline || deleting) && styles.disabled]}
-          >
-            <MoreHorizontal size={18} color={colors.inkMuted} />
-          </Pressable>
+          {!foreign && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("sessions.workspaceActions", { title: name })}
+              accessibilityState={{ disabled: deleting || !remote.desktopOnline }}
+              disabled={deleting || !remote.desktopOnline}
+              onPress={() => openWorkspaceMenu(item)}
+              style={[styles.iconButton, (!remote.desktopOnline || deleting) && styles.disabled]}
+            >
+              <MoreHorizontal size={18} color={colors.inkMuted} />
+            </Pressable>
+          )}
         </View>
       );
     }
@@ -458,11 +484,11 @@ export function SessionList({
           <Text numberOfLines={1} ellipsizeMode="tail" style={[styles.title, unread && styles.unreadTitle]}>
             {session.title || t("sessions.unnamed")}
           </Text>
-          {/* In the merged list the row carries its machine's glyph. It replaces
-              the desktop's name here for the same reason it does on the desktop
-              app: the row already holds a title and a status, and a full name
-              would push the title out of view. */}
-          {item.desktopId && icons?.get(item.desktopId) ? (
+          {/* In the merged list a row carries its machine's glyph — but only
+              when more than one machine is in the list: with a single desktop
+              the selector above already names it, and the glyph would repeat it
+              on every line. */}
+          {showSource && item.desktopId && icons?.get(item.desktopId) ? (
             <Text accessibilityLabel={item.desktopId} style={styles.sourceIcon}>
               {icons.get(item.desktopId)}
             </Text>

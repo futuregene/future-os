@@ -1154,3 +1154,122 @@ test("a merged row from another desktop is opened on that desktop", () => {
   expect(mockRemote.selectSession).toHaveBeenCalledWith("s1");
   expect(mockRemote.openSessionOnDesktop).toHaveBeenCalledTimes(1);
 });
+
+/**
+ * The merged list keeps the hierarchy the single-machine list has.
+ *
+ * A workspace group is keyed by `(machine, workspace id)`: a workspace called
+ * "Project" can exist on two machines at once, and one heading for both would
+ * file one machine's conversations under the other's. Every group fact rides on
+ * its rows, which is how a heading knows a peer's workspace name at all.
+ */
+function renderMerged(
+  merged: {
+    key: string;
+    desktopId: string;
+    lastMessageAt: number;
+    session: RemoteSession;
+  }[],
+  activeDesktopId = "desk-a",
+): void {
+  act(() => tree.update(createElement(SessionList, {
+    tab: "chat",
+    empty: null,
+    onMenu,
+    onTabChange,
+    merged,
+    activeDesktopId,
+    icons: new Map([["desk-a", "🖥️"], ["desk-b", "💻"]]),
+  })));
+}
+
+const mergedRow = (
+  desktopId: string,
+  sessionId: string,
+  title: string,
+  extra: Partial<RemoteSession> = {},
+) => ({
+  key: `${desktopId}::${sessionId}`,
+  desktopId,
+  lastMessageAt: 1,
+  session: {
+    sessionId,
+    threadId: `t-${sessionId}`,
+    title,
+    streaming: false,
+    mode: "workspace" as const,
+    workspaceId: "w1",
+    workspaceName: "Project",
+    ...extra,
+  } as RemoteSession,
+});
+
+const mergedTitles = (): string[] =>
+  tree.root.findByType(FlatList).props.data
+    .filter((row: { kind: string }) => row.kind === "session")
+    .map((row: { session: RemoteSession }) => row.session.title);
+
+const headingNames = (): string[] =>
+  tree.root.findByType(FlatList).props.data
+    .filter((row: { kind: string }) => row.kind === "workspace")
+    .map((row: { workspace: RemoteWorkspace }) => row.workspace.name);
+
+test("the merged list files each machine's conversations under their workspace headings", () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+    // A conversation in no workspace belongs to no heading: one section for
+    // every machine's chats, which is where a reader looks for them.
+    mergedRow("desk-b", "b2", "Remote chat", { mode: "chat", workspaceId: undefined, workspaceName: undefined }),
+  ]);
+
+  expect(headingNames()).toEqual(["Project", "Review"]);
+  expect(mergedTitles()).toEqual(["Local plan", "Remote review", "Remote chat"]);
+});
+
+test("a heading on another machine offers no actions of its own", () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+
+  // Rename, pin and delete are commands to the desktop this phone is talking to,
+  // which has never heard of that workspace.
+  expect(button("sessions.workspaceActions:Project")).toBeDefined();
+  expect(button("sessions.workspaceActions:Review")).toBeUndefined();
+});
+
+test("two machines' same-named workspace folds one at a time", () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote plan"),
+  ]);
+  // Both machines call the workspace "Project": one heading each, and the peer's
+  // key carries its machine so folding it leaves the local one open.
+  expect(headingNames()).toEqual(["Project", "Project"]);
+  const headings = tree.root.findAll(node =>
+    node.props.accessibilityRole === "button"
+    && typeof node.props.onPress === "function"
+    && node.findAllByType(Text).some(text => text.props.children === "Project"));
+  act(() => headings[headings.length - 1]!.props.onPress());
+
+  expect(mergedTitles()).toEqual(["Local plan"]);
+});
+
+test("a row's own machine is named only when several machines are in the list", () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+  const glyphs = () => tree.root.findAll(
+    node => typeof node.props.accessibilityLabel === "string"
+      && node.props.accessibilityLabel.startsWith("desk-")
+      && typeof node.props.children === "string",
+  ).map(node => node.props.children);
+  expect(glyphs()).toContain("💻");
+
+  // One machine: the selector above the list already names it, and every row
+  // repeating its glyph would take the width the title needs.
+  renderMerged([mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" })], "desk-b");
+  expect(glyphs()).toEqual([]);
+});
