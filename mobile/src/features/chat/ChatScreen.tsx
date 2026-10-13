@@ -8,6 +8,7 @@ import { TimelineCard } from "./messages/TimelineCard";
 import { PausedTimeline } from "../../components/PausedTimeline";
 import { ErrorBanner } from "../../components/ErrorBanner";
 import { useRemote, useRemoteControls } from "../../remote/RemoteContext";
+import { iconGlyph } from "../../remote/peerIcons";
 import { modelReference, type TimelineItem } from "../../remote/types";
 import { spacing } from "../../theme/tokens";
 import { useTransferProgress } from "./useTransferProgress";
@@ -90,6 +91,21 @@ export function ChatScreen() {
       : !remote.draft && !selectedSession
         ? t("chat.contextLoading")
         : t("sessions.conversations");
+  /**
+   * The desktop this conversation is on, as the top bar names it.
+   *
+   * Every conversation on this phone lives on a paired desktop — the phone has no
+   * agent of its own — and the bar said nothing about which one, so a user who
+   * paired two could not tell them apart from inside a conversation. The glyph and
+   * the user's own name for the machine are the session list's vocabulary, so the
+   * same desktop reads the same way in both places; the id is the fallback for a
+   * machine the user never renamed.
+   */
+  const desktopId = remote.credentials?.expectedDesktopId;
+  const pairedDesktop = remote.desktops.find(item => item.desktopId === desktopId);
+  const machine = desktopId
+    ? { glyph: iconGlyph(pairedDesktop?.icon), label: pairedDesktop?.name || desktopId }
+    : undefined;
   const activeModel = remote.models.find(
     (model) => modelReference(model) === remote.modelId,
   );
@@ -453,6 +469,7 @@ export function ChatScreen() {
             title={title}
             contextLabel={contextLabel}
             draft={remote.draft}
+            machine={machine}
             backLabel={t("common.back")}
             usageLabel={t("chat.usageOpen")}
             onBack={goBack}

@@ -31,12 +31,14 @@ import {
 } from "./buildContinuePrompt";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
+import { QuestionNavControl } from "./QuestionNavControl";
 import { useThreadCompaction } from "./runtime/useThreadCompaction";
 import { ThreadHeader } from "./ThreadHeader";
 import { ThreadSearch } from "./ThreadSearch";
 import { useAgentThreadState } from "./useAgentThreadState";
 import { useComposerInset } from "./useComposerInset";
 import { useMessagePaging } from "./useMessagePaging";
+import { useQuestionNav } from "./useQuestionNav";
 import { useSkillRecommendation } from "./useSkillRecommendation";
 
 /** How many user exchanges one loaded page renders. */
@@ -87,6 +89,14 @@ interface AgentThreadProps {
    * toggle). Kept as a node so this feature does not depend on the terminal.
    */
   headerAction?: ReactNode;
+  /**
+   * Which machine this conversation is on, when there is more than one to be on.
+   *
+   * The shell's answer, like `headerAction`: this view draws a conversation and
+   * knows nothing about pairing, and a local conversation is on this computer by
+   * definition — which is worth saying only once another computer is in the list.
+   */
+  headerMachine?: ReactNode;
 }
 
 export function AgentThread({
@@ -118,6 +128,7 @@ export function AgentThread({
   futureSessionStatus,
   futureBalance,
   headerAction,
+  headerMachine,
 }: AgentThreadProps) {
   const { t } = useTranslation("agent");
   const agentState = useCachedAgentState(thread?.id);
@@ -173,6 +184,7 @@ export function AgentThread({
   // the latest message.
   const {
     visibleMessages,
+    preserveViewport,
     scrollToLatest,
     showJumpToLatest,
     showLoadOlderHint,
@@ -191,6 +203,24 @@ export function AgentThread({
     onScroll: handleScrollbarVisibility,
     followEnabled: !loadingIndicator,
     onContentSettled: () => updateFloatingScrollbar(false),
+  });
+
+  // Question navigation: jump between user questions in the transcript.
+  // The take-over callback is read from a ref so it stays stable without
+  // triggering a render-time ref update lint warning.
+  const takeOverQuestionNavRef = useRef(() => {});
+  useEffect(() => {
+    takeOverQuestionNavRef.current = preserveViewport;
+  }, [preserveViewport]);
+  const {
+    hasPrevious: hasPreviousQuestion,
+    hasNext: hasNextQuestion,
+    goToPrevious: goToPreviousQuestion,
+    goToNext: goToNextQuestion,
+  } = useQuestionNav({
+    messages: visibleMessages,
+    scrollRef: scrollRef ?? { current: null },
+    onTakeOver: () => takeOverQuestionNavRef.current(),
   });
 
   // A run is in flight while its assistant bubble is still streaming; the agent
@@ -360,6 +390,7 @@ export function AgentThread({
       <ThreadHeader
         action={headerAction}
         leftPanelExpanded={leftPanelExpanded}
+        machine={headerMachine}
         thread={thread}
         usage={agentState?.usage}
         onToggleLeftPanel={onToggleLeftPanel}
@@ -476,20 +507,28 @@ export function AgentThread({
                   />
                 )
               : null}
-            {showJumpToLatest
-              ? (
-                  <button
-                    type="button"
-                    onClick={scrollToLatest}
-                    aria-label={t("thread.jumpToLatest")}
-                    title={t("thread.jumpToLatest")}
-                    className="pointer-events-auto mx-auto flex items-center gap-1 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
-                  >
-                    <ArrowDown className="size-3.5" />
-                    {t("thread.jumpToLatest")}
-                  </button>
-                )
-              : null}
+            <div className="pointer-events-auto mx-auto flex w-full max-w-3xl items-center justify-between gap-3">
+              {showJumpToLatest
+                ? (
+                    <button
+                      type="button"
+                      onClick={scrollToLatest}
+                      aria-label={t("thread.jumpToLatest")}
+                      title={t("thread.jumpToLatest")}
+                      className="mx-auto flex items-center gap-1 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
+                    >
+                      <ArrowDown className="size-3.5" />
+                      {t("thread.jumpToLatest")}
+                    </button>
+                  )
+                : <div />}
+              <QuestionNavControl
+                hasNext={hasNextQuestion}
+                hasPrevious={hasPreviousQuestion}
+                onNext={goToNextQuestion}
+                onPrevious={goToPreviousQuestion}
+              />
+            </div>
             <Composer
               className="pointer-events-auto mx-auto w-full max-w-3xl"
               disabled={!thread || loadingThread || loadingStore}

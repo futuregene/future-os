@@ -193,3 +193,37 @@ it("shows tokens only when the model has no prices configured", async () => {
   // The billed total is still shown — it is the provider's own figure.
   expect(document.querySelector("[data-testid=usage-total]")!.textContent).toBe("¥1.2345");
 });
+
+/**
+ * The header names the machine the conversation is on, when it is told to.
+ *
+ * A node rather than a value, like the header's other shell-owned slot: what a
+ * machine *is* belongs to the shell (this header does not know what pairing is),
+ * and where its badge goes — after the title it qualifies — belongs here.
+ */
+it("draws the shell's machine badge after the title, and nothing when it is absent", async () => {
+  const bare = render(
+    <ThreadHeader
+      leftPanelExpanded
+      onToggleLeftPanel={() => {}}
+      thread={thread}
+      usage={usage}
+    />,
+  );
+  expect(bare.querySelector("[data-testid=thread-machine]")).toBeNull();
+
+  const withMachine = render(
+    <ThreadHeader
+      leftPanelExpanded
+      machine={<span data-testid="thread-machine">🖥 本机</span>}
+      onToggleLeftPanel={() => {}}
+      thread={thread}
+      usage={usage}
+    />,
+  );
+  const badge = withMachine.querySelector("[data-testid=thread-machine]")!;
+  const title = [...withMachine.querySelectorAll("div")].find(node => node.textContent === "Priced conversation")!;
+  // After the title, not before it: the badge qualifies the conversation rather
+  // than labelling the header.
+  expect(title.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});

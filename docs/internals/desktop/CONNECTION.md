@@ -379,9 +379,15 @@ the bottom left, send at the bottom right). The `/` menu is the local menu's two
 groups, both read from the host: its commands (compacting) and the skills it has
 installed, each named with what it does. The placeholder says the same thing the
 local one does minus the `@` — `描述任务，按 / 使用工具或技能`, or `…按 / 使用技能`
-for a draft, where nothing can be compacted yet — and never names the machine:
-which computer a conversation is on is the rail's business, and the phone's own
-composer does not say either. The one thing missing is the terminal: a remote
+for a draft, where nothing can be compacted yet — and never names the machine: the
+*header* does that, in the host's own glyph and the user's label for it (the same
+pair the rail uses, so one machine reads the same way in both places). The local
+header carries the same badge — `本机`, the device selector's own word and glyph —
+but only once a host is paired: with one machine there is no "where am I" to
+answer. On the phone, whose conversations are always on a paired desktop, the
+top bar puts the machine on the line that already says where the conversation is
+(the workspace, or the chat section), so the bar keeps its two lines and the
+machine gets its width first. The one thing missing is the terminal: a remote
 conversation has no local shell to open. Aligning the right-hand panel (files
 only) is not done yet.
 

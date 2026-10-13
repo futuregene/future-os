@@ -74,6 +74,10 @@ interface UseMessagePagingResult {
   revealSearchMatch: (range: Range) => void;
   scrollToLatest: () => void;
   showJumpToLatest: boolean;
+  /** The same scroll container ref the hook uses, for consumers like question nav. */
+  scrollRef: RefObject<HTMLElement | null>;
+  /** Disable bottom-follow so programmatic scrolls are not dragged back down. */
+  preserveViewport: () => void;
 }
 
 /** Distance from the top that counts as "at the top" for the load hint. */
@@ -465,5 +469,7 @@ export function useMessagePaging({
     showJumpToLatest,
     prepareSearch,
     revealSearchMatch,
+    scrollRef,
+    preserveViewport,
   };
 }
