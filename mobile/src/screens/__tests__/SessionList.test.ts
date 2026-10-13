@@ -1142,7 +1142,7 @@ test("a merged row from another desktop is opened on that desktop", () => {
     onTabChange,
     merged,
     activeDesktopId: "desk-a",
-    icons: new Map([["desk-a", "🖥"], ["desk-b", "💻"]]),
+    icons: new Map([["desk-a", "🖥️"], ["desk-b", "💻"]]),
   })));
 
   act(() => sessionBody("Elsewhere").props.onPress());
