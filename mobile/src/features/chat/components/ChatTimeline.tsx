@@ -132,6 +132,7 @@ export function ChatTimeline({ remote, t, invertedTranscriptItems, scroll, quest
         }}
         onScrollBeginDrag={(event) => {
           scroll.onScrollBeginDrag();
+          questionNav.onScrollBeginDrag();
           onScrollBeginDrag(event);
         }}
         onMomentumScrollBegin={onMomentumScrollBegin}
