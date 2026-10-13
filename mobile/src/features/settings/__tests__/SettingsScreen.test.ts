@@ -29,6 +29,7 @@ const mockRemote = {
   getDesktopSettings: jest.fn(async () => ({ ...stored })),
   updateDesktopSettings: jest.fn(async (patch: Partial<DesktopSettings>) => { stored = { ...stored, ...patch }; return stored; }),
   setApprovalTier: jest.fn(async () => {}),
+  switchDesktop: jest.fn(async () => {}),
   listSettingsModels: jest.fn(async () => [{ id: "same", provider: "one" }, { id: "same", provider: "two" }]),
   listProviders: jest.fn(async () => providers),
   listInstalledSkills: jest.fn(async () => [...installed]),
@@ -39,7 +40,7 @@ const mockRemote = {
 jest.mock("../../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
 jest.mock("../../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
 jest.mock("../TasksSettingsPage", () => ({ TasksSettingsPage: (props: { desktopOnline: boolean; settings: unknown }) => { tasksPageProps = props as never; return null; } }));
-jest.mock("lucide-react-native", () => ({ ArrowLeft: "ArrowLeft", Monitor: "Monitor", ChevronDown: "ChevronDown", ChevronRight: "ChevronRight" }));
+jest.mock("lucide-react-native", () => ({ ArrowLeft: "ArrowLeft", Monitor: "Monitor", Check: "Check", ChevronDown: "ChevronDown", ChevronRight: "ChevronRight" }));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string, options?: { name?: string }) => options?.name ? `${key}: ${options.name}` : key, i18n: { get language() { return mockLanguage; } } }) }));
 
@@ -629,6 +630,71 @@ test("task management is unavailable while the desktop is offline", async () => 
   mockRemote.desktopOnline = false;
   await act(async () => tree.update(createElement(SettingsScreen, props)));
   expect(link("desktopSettings.tasks").props.disabled).toBe(true);
+});
+
+/** The settings home's desktop choosing entry. */
+const desktopRow = (label: string) => tree.root.findAll(node =>
+  node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === label)[0]!;
+async function openDesktops() { await act(async () => link("desktopSettings.desktops").props.onPress()); }
+
+test("the settings home chooses which desktop this phone connects to", async () => {
+  await openDesktops();
+  expect(texts()).toContain("desktopSettings.desktopsHint");
+  expect(desktopRow("Work computer").props.accessibilityState.checked).toBe(true);
+  expect(desktopRow("Other computer").props.accessibilityState.checked).toBe(false);
+  expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
+
+  await act(async () => desktopRow("Other computer").props.onPress());
+  expect(mockRemote.switchDesktop).toHaveBeenCalledWith("other-desktop");
+  // The connection has left this desktop, so the level closes: a real switch
+  // remounts the whole settings screen on the new pairing.
+  expect(tree.root.findAllByProps({ accessibilityRole: "radio" })).toHaveLength(0);
+});
+
+test("the desktop list switches while the bound desktop is offline", async () => {
+  // Choosing a desktop is what a user does when the bound one is offline, so
+  // this entry — unlike every other row on the screen — must not be gated on
+  // the connection. Inspect the Pressable the row renders, which is what
+  // decides whether a tap goes through.
+  const entry = tree.root.findAll(node =>
+    node.props.accessibilityLabel === "desktopSettings.desktops" && node.props.accessibilityRole === "button")[0]!;
+  mockRemote.desktopOnline = false;
+  await act(async () => { tree.update(createElement(SettingsScreen, props)); });
+  expect(entry.props.disabled).toBe(false);
+  expect(entry.props.accessibilityState.disabled).toBe(false);
+  await openDesktops();
+  await act(async () => desktopRow("Other computer").props.onPress());
+  expect(mockRemote.switchDesktop).toHaveBeenCalledWith("other-desktop");
+});
+
+test("a refused desktop switch stays on the list and can be retried", async () => {
+  mockRemote.switchDesktop.mockRejectedValueOnce(new Error("unreachable"));
+  await openDesktops();
+  await act(async () => desktopRow("Other computer").props.onPress());
+  expect(texts()).toContain("desktops.switchFailed");
+  expect(texts()).toContain("desktopSettings.desktopsHint");
+  expect(desktopRow("Other computer").props.disabled).toBe(false);
+});
+
+test("a second desktop tap while the first is connecting switches once", async () => {
+  const pending = deferred<void>();
+  mockRemote.switchDesktop.mockReturnValueOnce(pending.promise);
+  await openDesktops();
+  await act(async () => { void desktopRow("Other computer").props.onPress(); });
+  expect(mockRemote.switchDesktop).toHaveBeenCalledTimes(1);
+  // The rows are disabled while connecting, but the guard is what has to hold:
+  // a second tap must not start a second connection for the first to drop.
+  await act(async () => desktopRow("Work computer").props.onPress());
+  expect(mockRemote.switchDesktop).toHaveBeenCalledTimes(1);
+  await act(async () => { pending.resolve(); });
+});
+
+test("the desktop list hands the pairing list to the caller", async () => {
+  const onManageDesktops = jest.fn();
+  await act(async () => { tree.update(createElement(SettingsScreen, { ...props, onManageDesktops })); });
+  await openDesktops();
+  await act(async () => link("desktops.manage").props.onPress());
+  expect(onManageDesktops).toHaveBeenCalledTimes(1);
 });
 
 test("automatic review is offered only by capable desktops with a working sandbox", async () => {

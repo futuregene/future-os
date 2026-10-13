@@ -633,6 +633,9 @@ export const resources = {
         },
       },
       desktopSettings: {
+        desktops: "Remote desktop",
+        desktopsHint:
+          "Choose which desktop this phone connects to. Conversations, models and skills all come from that machine.",
         currentDesktop: "Current desktop",
         boundDesktop: "Paired desktop: {{name}}",
         sharedHint: "Desktop settings apply only to this paired device and sync across both clients.",
@@ -1494,6 +1497,8 @@ export const resources = {
         },
       },
       desktopSettings: {
+        desktops: "远程桌面",
+        desktopsHint: "选择这台手机连接的桌面端。会话、模型与技能都来自该设备。",
         currentDesktop: "当前桌面端",
         boundDesktop: "已绑定设备：{{name}}",
         sharedHint: "桌面端设置仅作用于此绑定设备，两端同步生效。",

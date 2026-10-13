@@ -10,6 +10,7 @@ import type { DesktopSettings, RemoteBuiltinProvider, RemoteCustomProvider } fro
 import { VERSION } from "../../version.generated";
 import { colors, layout, radius, spacing } from "../../theme/tokens";
 import { CustomProviderPage } from "./CustomProviderPage";
+import { DesktopsSettingsPage } from "./DesktopsSettingsPage";
 import { FollowAccountPage } from "./FollowAccountPage";
 import { ModelsSettingsPage } from "./ModelsSettingsPage";
 import { ProviderKeyPage } from "./ProviderKeyPage";
@@ -28,17 +29,24 @@ export type SettingsScreenHandle = { goBack(): void };
  * desktop dialog's single-level tabs cannot express.
  */
 type SettingsRoute =
-  | { name: "home" | "preferences" | "models" | "skills" | "tasks" | "language" | "providers" | "followAccount" }
+  | { name: "home" | "preferences" | "models" | "skills" | "tasks" | "language" | "providers" | "followAccount" | "desktops" }
   | { name: "providerKey"; provider: RemoteBuiltinProvider }
   | { name: "providerForm"; provider: RemoteCustomProvider | null };
 
-/** Levels that show the paired-desktop scope banner. */
+/**
+ * Levels that show the paired-desktop scope banner.
+ *
+ * Not the desktop list: that level is about *changing* which desktop is bound,
+ * so the banner naming the current one would contradict the page.
+ */
 const SCOPED_LEVELS = new Set(["home", "preferences", "models", "skills", "tasks", "providers"]);
 
-export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, onOpenConversation, ref }: {
+export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, onOpenConversation, onManageDesktops, ref }: {
   onClose(): void; onCheckUpdate(): void; checkingUpdate: boolean;
   /** Open a session in the chat (the caller closes settings first). */
   onOpenConversation?(sessionId: string): void;
+  /** Leave settings for the full pairing list, to add, rename or remove a desktop. */
+  onManageDesktops?(): void;
   ref?: Ref<SettingsScreenHandle>;
 }) {
   const { t } = useTranslation();
@@ -137,6 +145,8 @@ export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, onOpenC
               onOpenConversation={onOpenConversation}
             />
           : null;
+      case "desktops":
+        return <DesktopsSettingsPage onManage={onManageDesktops} onSwitched={goBack} />;
       case "language":
         return <ScrollView contentContainerStyle={settingsStyles.content}>
           <SettingsSection title={t("desktopSettings.thisPhone")}><View style={settingsStyles.card}><LanguageSettings /></View></SettingsSection>
@@ -176,6 +186,9 @@ export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, onOpenC
       default:
         return <ScrollView contentContainerStyle={settingsStyles.content} keyboardShouldPersistTaps="handled">
           <SettingsSection title={t("desktopSettings.currentDesktop")}>
+            {/* Never disabled: choosing a desktop is what you do when the bound
+                one is offline or the wrong one. */}
+            <SettingsLink label={t("desktopSettings.desktops")} onPress={() => push({ name: "desktops" })} />
             <SettingsLink label={t("desktopSettings.preferences")} onPress={() => push({ name: "preferences" })} />
             <SettingsLink label={t("desktopSettings.models")} disabled={!enabled} onPress={() => push({ name: "models" })} />
             <SettingsLink label={t("desktopSettings.providers")} disabled={!remote.desktopOnline || !providersSupported} onPress={() => push({ name: "providers" })} />
