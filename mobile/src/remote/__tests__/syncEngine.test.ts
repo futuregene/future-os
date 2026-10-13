@@ -1037,12 +1037,19 @@ describe("SyncEngine", () => {
     const h = new Harness(run);
     h.projectionCursor = -1;
     h.projection = [agentStart(run, 0), textChunk(run, 1, "folded"), agentEnd(run, 2)];
-    h.engine.reconcile("s1", "resend", run);
-    await h.settle();
-    // Nothing from that projection was applied, and the lane is retrying from
-    // durable state rather than carrying a cursor nobody can justify.
-    expect(h.textOf("s1")).not.toContain("folded");
-    expect(h.engine.cursorFor("s1").get(run)).toBeUndefined();
+    try {
+      h.engine.reconcile("s1", "resend", run);
+      await h.settle();
+      // Nothing from that projection was applied, and the lane is retrying from
+      // durable state rather than carrying a cursor nobody can justify.
+      expect(h.textOf("s1")).not.toContain("folded");
+      expect(h.engine.cursorFor("s1").get(run)).toBeUndefined();
+    }
+    finally {
+      // A refused reply arms the lane's retry timer, and this test is not running
+      // on fake timers: leaving it armed keeps the process alive after the run.
+      h.engine.clear();
+    }
   });
 
   test("restartAll rebuilds every real lane from durable state", async () => {
