@@ -16,8 +16,9 @@ import { ROW_HIT_SLOP } from "./messageUtils";
  *
  * The glyph matches the desktop's thinking activity glyph (Brain), so an
  * expanded reasoning row and a tool row are the same shape: icon, then words.
- * Like a tool row, its collapsed header starts at the reply's left edge;
- * the expanded body keeps its existing reading layout — see ToolRow.
+ * Like a tool row, its collapsed header starts at the reply's left edge and
+ * carries no rule; its revealed text indents under the label the same way a
+ * revealed target does — see ToolRow.
  */
 export function ThinkingRow({ text, streaming, opened }: {
   text: string;
@@ -50,7 +51,7 @@ export function ThinkingRow({ text, streaming, opened }: {
     </>
   );
   return (
-    <View style={[styles.inlineThinking, !open && styles.railThinking]}>
+    <View style={[styles.inlineThinking, !open && styles.railBlock]}>
       {hasBody ? (
         <Pressable
           accessibilityRole="button"
