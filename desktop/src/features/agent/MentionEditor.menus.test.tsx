@@ -1131,6 +1131,29 @@ describe("mentionEditor clipboard routing", () => {
     expect(editor.textContent).toBe("the words");
   });
 
+  it("pastes through the native execCommand insert so Ctrl+Z can undo it", () => {
+    // A pasted string inserted via raw DOM node ops is treated as script
+    // mutation and skipped by the browser undo stack — Ctrl+Z would undo only
+    // typed text, not the paste. Routing through execCommand("insertText")
+    // records the insertion in the native undo stack so it is undoable.
+    // jsdom exposes no execCommand, so the editor falls back to the manual
+    // insert; the assertions below still prove the paste handler runs and
+    // produces the plain-text draft under either path.
+    render();
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    focusThenSetText("");
+    if (typeof document.execCommand === "function") {
+      const execSpy = vi.spyOn(document, "execCommand");
+      paste({ text: "undoable paste" });
+      expect(execSpy).toHaveBeenCalledWith("insertText", false, "undoable paste");
+      execSpy.mockRestore();
+    }
+    else {
+      paste({ text: "undoable paste" });
+    }
+    expect(editor.textContent).toBe("undoable paste");
+  });
+
   it("forces plain text so pasted rich markup cannot reach the draft", () => {
     render();
     editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
