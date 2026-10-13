@@ -308,7 +308,14 @@ export function mergedRows(
     out.push({
       kind: "workspace",
       key: `merged:${group.key}`,
-      workspace: { id, name: group.label ?? workspaceId, path: "" },
+      // The group's pin is one of the facts its rows reported, and the heading
+      // is what draws it: the marker reads `workspace.pinned`, and so does the
+      // group menu, which offers "pin" or "unpin" off the same flag. A heading
+      // built without it read as an unpinned group everywhere the group fact is
+      // *shown* — no marker, and a menu that pinned an already-pinned workspace
+      // again, so a pin made on this machine could not be undone in the merged
+      // list — while the group was still placed as pinned.
+      workspace: { id, name: group.label ?? workspaceId, path: "", pinned: group.pinned },
       workspaceId,
       count: group.rows.reduce((total, row) => total + subtree(row), 0),
       ...(group.desktopId ? { desktopId: group.desktopId } : {}),
