@@ -593,3 +593,21 @@ it("disables both actions while a decision is pending", async () => {
   expect(view.allowButton()!.disabled).toBe(true);
   await view.unmount();
 });
+
+/**
+ * The header names the machine this conversation is on.
+ *
+ * Always, and unlike the local header's badge: a remote conversation is on a
+ * computer that is *not* this one, so the badge is never the redundant "本机" —
+ * and a reader who opened the conversation from a merged list has no other way to
+ * tell whose it is once the list is out of sight. The glyph and the name are the
+ * rail's own vocabulary, with the id as the fallback while the peer list is still
+ * loading (a conversation can be opened from a task run before then).
+ */
+it("names the host in the header, and falls back to the id without a peer", async () => {
+  const view = await mount({ entries: [entry("e1", "user", "hi"), entry("e2", "assistant", "hello")] });
+  const badge = view.container.querySelector("[data-testid='thread-machine']")!;
+  expect(badge.textContent).toBe("💻Studio iMac");
+  expect(badge.getAttribute("title")).toBe("Studio iMac");
+  await view.unmount();
+});

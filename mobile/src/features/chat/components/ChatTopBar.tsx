@@ -6,6 +6,7 @@ export function ChatTopBar({
   title,
   contextLabel,
   draft,
+  machine,
   backLabel,
   usageLabel,
   onBack,
@@ -17,6 +18,15 @@ export function ChatTopBar({
   title: string;
   contextLabel: string;
   draft: boolean;
+  /**
+   * The desktop this conversation is on: its glyph and the user's name for it.
+   *
+   * The phone has no conversations of its own — every one of these lives on a
+   * paired desktop — so the bar says which, on the line that already answers
+   * "where is this" (the workspace, or the chat section). One line, as that line
+   * is: the machine qualifies the conversation, it does not get a row of its own.
+   */
+  machine?: { glyph: string; label: string };
   backLabel: string;
   /**
    * Opens the conversation's token/amount breakdown. An icon rather than the
@@ -46,9 +56,29 @@ export function ChatTopBar({
         <Text numberOfLines={1} style={styles.title}>
           {title}
         </Text>
-        <Text numberOfLines={1} style={styles.context} accessibilityLabel={contextLabel}>
-          {contextLabel}
-        </Text>
+        <View style={styles.contextLine}>
+          {machine ? (
+            <>
+              {/* Named for the screen reader and for the tests: the glyph alone is
+                  not a name, and the element is the only place a reader can learn
+                  which computer the conversation they are in lives on. */}
+              <Text
+                accessibilityLabel={machine.label}
+                numberOfLines={1}
+                style={styles.machine}
+                testID="chat-machine"
+              >
+                {`${machine.glyph} ${machine.label}`}
+              </Text>
+              <Text accessibilityElementsHidden importantForAccessibility="no" style={styles.contextSeparator}>
+                ·
+              </Text>
+            </>
+          ) : null}
+          <Text numberOfLines={1} style={styles.context} accessibilityLabel={contextLabel}>
+            {contextLabel}
+          </Text>
+        </View>
       </View>
       {!draft && (
         <Pressable
@@ -99,6 +129,14 @@ const styles = StyleSheet.create({
   },
   pressed: { backgroundColor: colors.surfaceSubtle },
   titleWrap: { flex: 1, minWidth: 0, alignItems: "center" },
-  context: { color: colors.inkSoft, fontSize: 12, maxWidth: "100%", marginTop: 2 },
+  // One line for "where this conversation is": machine, then workspace or chat
+  // section. The machine keeps its width up to a cap and the rest truncates —
+  // whose conversation this is matters more than repeating the workspace the
+  // reader just came from, and a line truncating *both* halves reads as a row
+  // that did not fit.
+  contextLine: { flexDirection: "row", alignItems: "center", justifyContent: "center", maxWidth: "100%", marginTop: 2 },
+  machine: { color: colors.inkMuted, fontSize: 12, flexShrink: 0, maxWidth: "70%" },
+  contextSeparator: { color: colors.inkMuted, fontSize: 12, marginHorizontal: 4 },
+  context: { color: colors.inkSoft, fontSize: 12, flexShrink: 1 },
   title: { color: colors.inkStrong, fontSize: 16, fontWeight: "700", maxWidth: "90%" },
 });

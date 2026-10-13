@@ -25,6 +25,13 @@ interface ThreadHeaderProps {
    * A node rather than a callback keeps this header unaware of the feature.
    */
   action?: ReactNode;
+  /**
+   * Which machine this conversation is on, when that is a question worth
+   * answering — the shell decides, because it is the thing that knows whether
+   * there is more than one machine to be on. A node, as `action` is: this
+   * header draws where the badge goes, not what a machine is.
+   */
+  machine?: ReactNode;
 }
 
 export function ThreadHeader({
@@ -33,6 +40,7 @@ export function ThreadHeader({
   onToggleLeftPanel,
   usage,
   action,
+  machine,
 }: ThreadHeaderProps) {
   const { t } = useTranslation("agent");
   const [usageOpen, setUsageOpen] = useState(false);
@@ -49,8 +57,9 @@ export function ThreadHeader({
           expanded={leftPanelExpanded}
           onToggle={onToggleLeftPanel}
         />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold text-ink">{thread?.title ?? t("thread.defaultTitle")}</div>
+        <div className="flex min-w-0 flex-1 items-center">
+          <div className="min-w-0 truncate text-sm font-semibold text-ink">{thread?.title ?? t("thread.defaultTitle")}</div>
+          {machine}
         </div>
       </div>
       {/* The conversation's own account book. An icon rather than the amount:

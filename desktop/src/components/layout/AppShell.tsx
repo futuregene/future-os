@@ -4,6 +4,7 @@ import type { FutureAuthState, ProvidersView } from "../../integrations/agent/pr
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { ContextTab } from "./ContextPanel";
+import { Monitor } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
@@ -78,6 +79,7 @@ import { useUnreadThreads } from "./hooks/useUnreadThreads";
 import { useUpdateChecker } from "./hooks/useUpdateChecker";
 import { useWindowWidth } from "./hooks/useWindowWidth";
 import { useWorkspaceDialogs } from "./hooks/useWorkspaceDialogs";
+import { MachineBadge } from "./MachineBadge";
 import { OnboardingGate } from "./OnboardingGate";
 import { WorkspaceDialogs } from "./WorkspaceDialogs";
 
@@ -490,6 +492,23 @@ function ReadyAppShell({
           onToggle={terminalPanel.toggle}
           open={terminalPanel.open}
           shortcut={terminalPanel.shortcut}
+        />
+      )
+    : null;
+
+  /**
+   * Which machine a local conversation is on — this one.
+   *
+   * Said only when there is another machine in the list: the header's job is to
+   * answer "where am I", and with nothing paired there is one answer and no
+   * question. The word and the icon are the device selector's own (`本机`, the
+   * monitor glyph), so the same machine is named the same way in both places.
+   */
+  const localMachineBadge = remotePeers.length > 0
+    ? (
+        <MachineBadge
+          glyph={<Monitor aria-hidden className="size-3.5" />}
+          label={tRemotePeer("selector.local")}
         />
       )
     : null;
@@ -1222,6 +1241,7 @@ function ReadyAppShell({
                               futureSessionStatus={futureSessionStatus}
                               futureBalance={futureBalance}
                               headerAction={terminalHeaderAction}
+                              headerMachine={localMachineBadge}
                               onPromptConsumed={consumePendingPrompt}
                               onForked={(forkedThreadId: string) => {
                                 void refreshStore(forkedThreadId);

@@ -5,13 +5,14 @@ import { ArrowDown, Check, History, ReceiptText, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
+import { MachineBadge } from "../../components/layout/MachineBadge";
 import { Button } from "../../components/ui/Button";
 import { IconButton } from "../../components/ui/IconButton";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { MessageBlock } from "../agent/MessageBlock";
 import { useComposerInset } from "../agent/useComposerInset";
 import { useStickyAutoScroll } from "../agent/useStickyAutoScroll";
-import { peerBadgeText } from "./peerIcons";
+import { iconGlyph, peerBadgeText } from "./peerIcons";
 import { useRemoteActivityTargets, withRemoteTargets } from "./remoteActivityTargets";
 import { setRemotePeerVisibleSession } from "./remotePeerClient";
 
@@ -210,8 +211,19 @@ export function RemoteConversationView({
       >
         <div className="mr-3 flex min-w-0 flex-1 items-center" data-tauri-drag-region>
           <LeftPanelTitlebarToggle expanded={leftPanelExpanded} onToggle={onToggleLeftPanel} />
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold text-ink">{title}</div>
+          <div className="flex min-w-0 flex-1 items-center">
+            <div className="min-w-0 truncate text-sm font-semibold text-ink">{title}</div>
+            {/* Which computer this conversation is on. Always shown here — a
+                remote conversation is on one that is *not* this one, so the
+                badge is never the redundant "本机" — and named the way the
+                rail names it: the host's own glyph and the user's label for
+                it, with the id as the fallback while the peer list is still
+                loading. */}
+            <MachineBadge
+              glyph={iconGlyph(peer?.icon)}
+              label={peer ? peerBadgeText(peer, peer.desktopId) : desktopId}
+              title={peer?.name ?? peer?.desktopId ?? desktopId}
+            />
           </div>
         </div>
         {/* The conversation's own account book, in the same place and the same
