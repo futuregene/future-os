@@ -96,9 +96,7 @@ for the three sandbox tiers. See the [sandbox guide](docs/wiki/en/Sandbox.md).
   also expose it to arbitrary shell reads; it is not per-binary trust or a secure
   credential channel. Other write rules still apply; `models.json` remains denied
   by the built-in policy. Do not assume sandboxing isolates all agent credentials.
-- **Approvals have scope.** macOS/Linux escalation authorizes the whole command
-  outside the sandbox once. Review it for unrelated actions and repeat side
-  effects. Saved rules authorize future matching actions without another prompt.
+- **Approvals have scope.** Precise file permissions apply to one command inside the sandbox; Windows supports writes only. Failures return without automatic approval or replay, and partial effects are not rolled back. Explicit macOS/Linux escalation still authorizes a whole command outside the sandbox once. Saved rules authorize future matching actions without another prompt.
 - **Same-user trust boundary.** These controls do not defend against an attacker
   already controlling the agent process or the user's host account.
 

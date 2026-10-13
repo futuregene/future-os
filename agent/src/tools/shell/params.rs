@@ -9,6 +9,10 @@ pub(super) struct ShellParams {
     #[serde(default)]
     pub escalated: Option<bool>,
     pub justification: Option<String>,
+    #[cfg(not(windows))]
+    #[serde(alias = "additionalPermissions")]
+    pub additional_permissions: Option<crate::sandbox::file_request::AdditionalPermissions>,
+    #[cfg(windows)]
     #[serde(alias = "additionalPermissions")]
     pub additional_permissions: Option<crate::sandbox::windows_request::AdditionalPermissions>,
 }
@@ -47,7 +51,15 @@ impl ShellParams {
             .try_with(|scope| scope.sandbox.clone())
             .unwrap_or_default();
         if let Some(permissions) = &params.additional_permissions {
+            if params.escalated == Some(true) {
+                return Err(anyhow!(
+                    "additional_permissions cannot be combined with escalated"
+                ));
+            }
+            #[cfg(windows)]
             crate::sandbox::windows_request::prepare(&sandbox, &params.command, permissions)?;
+            #[cfg(not(windows))]
+            crate::sandbox::file_request::prepare(&sandbox, &params.command, permissions)?;
         }
         Ok(params)
     }

@@ -307,3 +307,39 @@ describe("the wait and the failure are visible on the card itself", () => {
     expect(onDecision).toHaveBeenCalledWith("approved");
   });
 });
+
+
+test("precise file permission card shows read/write scope and the remaining operation", () => {
+  render({
+    approval_request_id: "precise-1", kind: "file_permissions",
+    action: {
+      tool: "shell", category: "file_permissions", behavior: "access_files",
+      command: "copy remaining report", justification: "Save the already generated report",
+      targets: [
+        { path: "/data/config.env", scope: "file", access: "read" },
+        { path: "/backup/reports", scope: "subtree", access: "write" },
+      ],
+    },
+  });
+  expect(hasText("Allow file access")).toBe(true);
+  expect(hasText("Save the already generated report")).toBe(true);
+  expect(JSON.stringify(tree.toJSON())).toContain("Read · Single file");
+  expect(JSON.stringify(tree.toJSON())).toContain("Write · Directory and descendants");
+  expect(JSON.stringify(tree.toJSON())).toContain("/data/config.env");
+  expect(JSON.stringify(tree.toJSON())).toContain("/backup/reports");
+  press("View command");
+  expect(hasText("copy remaining report")).toBe(true);
+});
+
+test.each(["windows_write_capability", "sandbox_escalation"])("%s shows the model's reason alongside the validated operation", kind => {
+  render({
+    approval_request_id: "purpose-1", kind,
+    action: {
+      tool: "shell", category: kind, behavior: "manage_files",
+      command: "save remaining report", justification: "Save the report requested by the user",
+      targets: [{ path: "C:\\Reports", scope: "subtree" }],
+    },
+  });
+  expect(hasText("Save the report requested by the user")).toBe(true);
+  press("Allow once");
+});

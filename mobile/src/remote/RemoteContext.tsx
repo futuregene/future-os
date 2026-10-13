@@ -171,6 +171,12 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   createWorkspace(path: string, name: string): Promise<import("./types").RemoteWorkspace>;
   setSessionPinned(sessionId: string, threadId: string, pinned: boolean): Promise<void>;
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
+  /**
+   * Rename a workspace on the connected desktop. The host applies its own name
+   * rules and answers the fresh catalogue, so a resolved promise means the new
+   * name is the accepted one; a refused name rejects.
+   */
+  renameWorkspace(workspaceId: string, name: string): Promise<void>;
   /** Fork the open conversation at a persisted user entry and open the child. */
   forkConversation(sourceEntryId: string): Promise<void>;
   decideApproval(id: string, decision: "approved" | "rejected"): Promise<void>;
@@ -232,6 +238,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     createWorkspace,
     setSessionPinned,
     setWorkspacePinned,
+    renameWorkspace,
     reset: resetCatalog,
   } = useSessionCatalog(clientRef, selectedRef, onTaskFinished);
   // Changes whenever the user navigates between conversations. Long uploads
@@ -561,6 +568,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       createWorkspace,
       setSessionPinned,
       setWorkspacePinned,
+      renameWorkspace,
       decideApproval,
       forkConversation,
       clearError,
@@ -621,6 +629,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       sendMessage,
       setSessionPinned,
       setWorkspacePinned,
+      renameWorkspace,
       listSkills,
       listSessionFiles,
     resolveToolCallTarget,

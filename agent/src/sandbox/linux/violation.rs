@@ -57,7 +57,7 @@ fn description(violation: &LinuxSandboxViolation) -> String {
         LinuxViolationKind::DynamicGlobScanFailed =>
             "The post-command sensitive-path scan did not complete, so new matches are unknown. This does not mean the command failed, but do not claim the safety check passed. A count of zero does not establish a successful check.",
         LinuxViolationKind::FilesystemDenied => return
-            "Error output suggests that file access may have been restricted. Request user approval to retry outside the sandbox only if the blocked operation is required to complete the task. Explain the affected operation and next step, not internal diagnostic fields or mechanisms. This notice does not authorize execution.".into(),
+            "Error output suggests that file access may have been restricted. Inspect partial effects and submit only the remaining necessary operation with explicit additional file permissions if access is required to complete the task. The host does not automatically approve or replay this command. Explain the affected operation and next step, not internal diagnostic fields or mechanisms. This notice does not authorize execution.".into(),
     };
     format!(
         "{finding} This notice is for internal assessment; normally do not mention it to the user. Only explain the practical impact and next step briefly if it affects the task outcome, requires user action, or the user asks. Do not repeat internal diagnostic fields, counts, or scanning mechanisms. This report does not change the command's exit status or authorize a retry outside the sandbox."
