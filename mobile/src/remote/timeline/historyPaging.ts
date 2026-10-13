@@ -3,21 +3,16 @@ import { requestReadPage } from "../readPages";
 import { SyncEngine } from "../syncEngine";
 import { type TimelineState } from "../timeline";
 import type { EntriesData } from "../types";
+import { HISTORY_PAGE_USER_EXCHANGES, HISTORY_TAIL_CURSOR } from "@future-os/thread-projection";
 
 // One deadline covers transport retries AND waiting behind a replay. Expiry
 // cancels the transaction, so late responses/queued mutations cannot skip pages.
 export const HISTORY_PAGE_TIMEOUT_MS = 30_000;
-// An exchange can contain hundreds of tool steps. Bound both the first paint
-// and each older-history pull to the same small window.
-//
-// The desktop client's copy must stay equal to this one:
-// `desktop/src/features/remote-peer/useRemoteTimeline.ts`. They are two
-// implementations of separate clients (the desktop's has to survive a minimised
-// window), but the page size is a fact about the host's cursor — not a choice
-// either client makes alone — and they diverged once, at 100 against 3, because
-// neither could see the other.
-export const HISTORY_PAGE_USER_EXCHANGES = 3;
-export const HISTORY_TAIL_CURSOR = Number.MAX_SAFE_INTEGER;
+
+// The page size and the "newest page" cursor are facts about the host's cursor,
+// shared with the desktop client: see `packages/thread-projection/src/historyPage.ts`.
+// Re-exported here so this module stays the phone's one history-paging entry.
+export { HISTORY_PAGE_USER_EXCHANGES, HISTORY_TAIL_CURSOR };
 
 export async function readHistoryPage(
   client: RemoteClient,
