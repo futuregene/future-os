@@ -621,7 +621,17 @@ describe("tool activity", () => {
       event("tool_end", { tool_id: "t1" }),
     ]);
     expect(projection.activityItems).toEqual([
-      { detail: "a.md", id: "t1", kind: "read", status: "completed", target: "a.md" },
+      {
+        detail: "a.md",
+        id: "t1",
+        kind: "read",
+        status: "completed",
+        target: "a.md",
+        // A row's own identity and its run: what it fetches its arguments back
+        // by when a lean page omits them (`get_tool_call_args`).
+        toolCallId: "t1",
+        runId: "r1",
+      },
     ]);
   });
 });

@@ -413,13 +413,18 @@ through question by question, its list can be searched, and a preview image zoom
 and pans.
 
 Where the two clients reached the same end by different means, they now use the
-same mechanism. A link that comes back replays the missed range with
-`get_events_since`; one whole-page history read stays as the fallback, because a
-host that predates the command answers `Unsupported command`, and a replay window
-that cannot be validated — a gap or an overlap, on an at-most-once lane — is
-safer to re-read than to patch. A stored prompt or continuation is likewise
-checked against `get_prompt_receipt` before it is sent again, so a retry is not a
-second run. **One difference remains, and it is mechanism, not a gap**: when the
+same mechanism. Both read a run's own log with `get_events_since` — at an open
+(the state read names the run in flight before any frame happens to arrive), when
+a link comes back, and when a push declares a gap the feed can see — and a reply
+rebuilt from that log is what the transcript draws, with the record's partial copy
+of the same run hidden and the run's own start time on the reply. The page read
+stays, for the part the log cannot answer: a run that started *and* finished while
+the link was down is only in the record. A host that predates the command answers
+`Unsupported command`, and the client says so once and falls back for the rest of
+the connection to drawing the reply from the record's beginning plus the pushed
+tail — folded into one row, which is what it did before the log existed. A stored
+prompt or continuation is likewise checked against `get_prompt_receipt` before it
+is sent again, so a retry is not a second run. **One difference remains, and it is mechanism, not a gap**: when the
 phone suspects a socket has failed it probes that same socket with `get_presence`
 before it tears the connection down, while the desktop takes the answer from the
 `presence` subscription it already holds.

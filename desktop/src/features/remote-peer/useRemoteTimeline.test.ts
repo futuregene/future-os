@@ -13,8 +13,18 @@ import { flushAsync, renderHook } from "../../test/renderHook";
  */
 
 const requestMock = vi.fn();
+/**
+ * What the host says about the conversation when the hook asks (`get_state`).
+ *
+ * A separate seam from `requestMock` on purpose: the state read is part of the
+ * open* of every conversation while the page reads are what each test is about,
+ * and a single mock would have the state reply consume the page a test queued.
+ * `{}` — no run in flight, not compacting — is what a quiet conversation answers.
+ */
+let stateReply: unknown = {};
 vi.mock("./remotePeerClient", () => ({
-  requestRemotePeer: (...args: unknown[]) => requestMock(...args),
+  requestRemotePeer: async (desktopId: string, command: { type?: string }, lane: string) =>
+    (command?.type === "get_state" ? stateReply : requestMock(desktopId, command, lane)),
 }));
 
 let listeners: Array<(event: { payload: unknown }) => void> = [];
@@ -30,13 +40,19 @@ vi.mock("@tauri-apps/api/event", () => ({
 const { forgetRemoteTimeline, precedingUserEntryId, useRemoteTimeline } = await import("./useRemoteTimeline");
 const { fetchRemoteToolTarget, forgetRemoteToolTargets } = await import("./remoteToolTarget");
 
-function entry(id: string, role: "user" | "assistant", text: string): SessionEntry {
+function entry(
+  id: string,
+  role: "user" | "assistant",
+  text: string,
+  run?: { runId: string; status: string },
+): SessionEntry {
   return {
     id,
     kind: "message",
     role,
     createdAtMs: 1_000,
     blocks: [{ kind: "text", text }],
+    ...(run ? { runId: run.runId, run: { status: run.status } } : {}),
   };
 }
 
@@ -57,6 +73,7 @@ async function settle(): Promise<void> {
 
 beforeEach(() => {
   requestMock.mockReset();
+  stateReply = {};
   listeners = [];
   // What was read for a conversation is kept for the window, so one test's
   // transcript would otherwise seed the next one's.
@@ -273,83 +290,84 @@ describe("useRemoteTimeline", () => {
    * incremental replay first; if the host supports it and the replay is valid,
    * only the missed events are fetched.
    */
-  it("uses get_events_since on resumed when the cursor knows a high watermark", async () => {
-    requestMock.mockResolvedValue(page([]));
+  it("re-reads the record and the run in flight when a link comes back", async () => {
     const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
     await settle();
+    stateReply = { activeRun: { runId: "r1" } };
 
-    function pushResumed() {
-      act(() => {
-        listeners.forEach(listener => listener({ payload: { desktopId: "desktop_a", kind: "resumed", payload: {} } }));
-      });
-    }
-
+    // A run whose log this client has never read: the first frame arrives above
+    // zero, which is the shape of a run that started before this window did.
     push({
       sessionId: "sess_1",
-      type: "agent_start",
+      type: "text_chunk",
       runId: "r1",
-      idx: 0,
-      eventId: "r1:0",
+      idx: 7,
+      eventId: "r1:7",
       timestamp: "2026-01-01T00:00:00Z",
-      data: "{}",
+      data: JSON.stringify({ text: "mid-reply" }),
     });
+    await settle();
+    requestMock.mockClear();
+
+    requestMock.mockResolvedValue(page([entry("e1", "user", "hi")]));
+    act(() => {
+      listeners.forEach(listener => listener({ payload: { desktopId: "desktop_a", kind: "resumed", payload: {} } }));
+    });
+    await settle();
+
+    // The record is re-read (a run that started *and* finished while the link was
+    // down is only there) …
+    expect(requestMock).toHaveBeenCalledWith(
+      "desktop_a",
+      expect.objectContaining({ type: "get_session_entries" }),
+      "sess_1",
+    );
+    // … and so is the run in flight, from its beginning: its prefix was never
+    // proven, so there is nothing to fill in from.
+    expect(requestMock).toHaveBeenCalledWith(
+      "desktop_a",
+      expect.objectContaining({ type: "get_events_since", sinceIdx: -1, limit: 1000 }),
+      "sess_1",
+    );
+    hook.unmount();
+  });
+
+  /**
+   * An older host refuses the command, and is not asked again.
+   *
+   * The reply is then drawn the way it was before run logs could be read: the
+   * record's beginning plus the pushed tail, folded into one row. Asking on every
+   * frame would be a request per delta for an answer that will never come.
+   */
+  it("stops asking an older host, and keeps reading its record", async () => {
+    requestMock.mockResolvedValue(page([]));
+    stateReply = { activeRun: { runId: "r1" } };
+    requestMock.mockRejectedValue(new Error("Unsupported command: get_events_since"));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    expect(hook.current.replayUnavailable).toBe(true);
+
+    const attempts = requestMock.mock.calls.filter(([, command]) =>
+      (command as { type?: string }).type === "get_events_since").length;
+    expect(attempts).toBe(1);
+
+    // A frame of that run arrives, and the transcript is still re-read on a
+    // settle — but the log is not asked for again.
+    requestMock.mockResolvedValue(page([entry("e1", "user", "hi")]));
     push({
       sessionId: "sess_1",
       type: "text_chunk",
       runId: "r1",
       idx: 1,
       eventId: "r1:1",
-      timestamp: "2026-01-01T00:00:01Z",
+      timestamp: "2026-01-01T00:00:00Z",
       data: JSON.stringify({ text: "hi" }),
     });
+    push({ sessionId: "sess_1", type: "agent_end", runId: "r1", idx: 2, eventId: "r1:2", timestamp: "2026-01-01T00:00:01Z", data: "{}" });
     await settle();
 
-    const replayResponse = {
-      events: [
-        { id: "r1:2", runId: "r1", idx: 2, role: "assistant", blocks: [{ kind: "text", text: "there" }] },
-      ],
-      watermark: 2,
-      rawEvents: 2,
-      hasMore: false,
-    };
-    requestMock.mockResolvedValue(replayResponse);
-    pushResumed();
-    await settle();
-
-    expect(requestMock).toHaveBeenCalledWith(
-      "desktop_a",
-      expect.objectContaining({ type: "get_events_since", sinceIdx: 1, limit: 1000 }),
-      "sess_1",
-    );
-    hook.unmount();
-  });
-
-  it("falls back to full history when the host does not support get_events_since", async () => {
-    requestMock.mockResolvedValue(page([]));
-    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
-    await settle();
-
-    function pushResumed() {
-      act(() => {
-        listeners.forEach(listener => listener({ payload: { desktopId: "desktop_a", kind: "resumed", payload: {} } }));
-      });
-    }
-
-    push({
-      sessionId: "sess_1",
-      type: "agent_start",
-      runId: "r1",
-      idx: 0,
-      eventId: "r1:0",
-      timestamp: "2026-01-01T00:00:00Z",
-      data: "{}",
-    });
-    await settle();
-
-    requestMock.mockRejectedValue(new Error("Unsupported command: get_events_since"));
-    pushResumed();
-    await settle();
-
+    expect(requestMock.mock.calls.filter(([, command]) =>
+      (command as { type?: string }).type === "get_events_since")).toHaveLength(1);
     expect(requestMock).toHaveBeenCalledWith(
       "desktop_a",
       expect.objectContaining({ type: "get_session_entries" }),
@@ -778,12 +796,14 @@ describe("useRemoteTimeline resume", () => {
 });
 
 /**
- * A remote run's reply is drawn as it is written.
+ * A remote run's reply, and where the client gets it from.
  *
- * The host publishes its agent's events the moment they happen — the same
- * vocabulary a local run produces — and the transcript folds them into the reply
- * bubble. Without this a prompt sent from this window was followed by silence
- * until the run ended, and the answer appeared whole, seconds later.
+ * A host publishes its agent's events the moment they happen — the same
+ * vocabulary a local run produces — so a prompt sent from this window is followed
+ * by the answer as it is written rather than by silence. What the *pushes* cannot
+ * carry is everything that happened before this window subscribed: a reply it
+ * joined mid-flight. That is what the run's own log is read for, and the two are
+ * what these tests separate.
  */
 describe("useRemoteTimeline live reply", () => {
   const runId = "run_live";
@@ -797,6 +817,14 @@ describe("useRemoteTimeline live reply", () => {
     type,
     data: JSON.stringify(data),
   });
+  /** A read of the run's log, as the host answers `get_events_since`. */
+  function logResponse(events: Array<{ type: string; data?: unknown; idx: number }>, extra: Record<string, unknown> = {}) {
+    return {
+      events: events.map(item => ({ ...item, data: JSON.stringify(item.data ?? {}), runId })),
+      watermark: events.length > 0 ? events[events.length - 1]!.idx : -1,
+      ...extra,
+    };
+  }
 
   async function open(text: string) {
     requestMock.mockResolvedValue(page([entry("e1", "user", text)]));
@@ -805,53 +833,135 @@ describe("useRemoteTimeline live reply", () => {
     return hook;
   }
 
-  it("draws the reply as its text arrives, and clears it when the run ends", async () => {
+  it("draws the reply as its text arrives, and drops its own fragment when the run ends", async () => {
     const hook = await open("hello host");
-    expect(hook.current.live).toBeNull();
+    expect(hook.current.liveReplies).toEqual([]);
 
     event("agent_start", {}, 0);
     await settle();
     // Nothing to draw yet: an empty bubble with an author line reads as a broken
     // reply, so the transcript waits for the first word.
-    expect(hook.current.live).toBeNull();
+    expect(hook.current.liveReplies).toEqual([]);
 
     event("text_chunk", { text: "Wor" }, 1);
     event("text_chunk", { text: "king" }, 2);
     await settle();
-    expect(hook.current.live?.content).toBe("Working");
-    expect(hook.current.live?.status).toBe("streaming");
-    expect(hook.current.live?.runId).toBe(runId);
-    // The settled transcript is still the history it was: the live reply is drawn
+    expect(hook.current.liveReplies[0]!.message.content).toBe("Working");
+    expect(hook.current.liveReplies[0]!.message.status).toBe("streaming");
+    expect(hook.current.liveReplies[0]!.message.runId).toBe(runId);
+    // Nothing was read from the run's log, so this reply is only the pushes: the
+    // view folds it into the record's own copy of the turn.
+    expect(hook.current.liveReplies[0]!.fromReplay).toBe(false);
+    // The settled transcript is still the history it was: the reply is drawn
     // *after* it, not folded into it.
     expect(hook.current.messages.map(message => message.content)).toEqual(["hello host"]);
 
-    // The run settles: the live bubble steps aside for the record, which is read
-    // back from the host (the journal has the reply now).
+    // The run ends. This reply was built from pushes alone — its beginning is in
+    // the record, not in it — so the fragment is dropped as the record's copy
+    // takes over, rather than being drawn beside it.
     requestMock.mockResolvedValue(page([
       entry("e1", "user", "hello host"),
-      entry("e2", "assistant", "Working"),
+      entry("e2", "assistant", "Working", { runId, status: "completed" }),
     ]));
-    event("agent_end", {}, 3);
+    event("agent_end", { duration_ms: 1_500 }, 3);
     await settle();
-    expect(hook.current.live).toBeNull();
+    expect(hook.current.liveReplies).toEqual([]);
     expect(hook.current.messages.map(message => message.content)).toEqual(["hello host", "Working"]);
     hook.unmount();
   });
 
   /**
-   * A settled run's projection is dropped, so the next run's reply is only its own.
+   * A reply rebuilt from the run's log survives the run's end.
    *
-   * The projection accumulates deltas; keeping it would prefix the finished reply
-   * to the next one.
+   * The host's record of a run trails its terminal frame — the agent writes the
+   * last model call as the run ends — so a client that dropped its copy the moment
+   * the run settled would blink the answer out of the transcript. It is drawn
+   * until the record can be read back, and it is a *whole* reply, so drawing it
+   * beside that record is not a duplication either.
+   */
+  it("keeps drawing a rebuilt reply until the host's record can be read", async () => {
+    stateReply = { activeRun: { runId } };
+    requestMock.mockImplementation(async (_desktop: string, command: { type?: string }) => {
+      if (command?.type === "get_events_since") {
+        return logResponse([
+          { type: "agent_start", data: { started_at_ms: 1_700_000_000_000 }, idx: 0 },
+          { type: "text_chunk", data: { text: "the answer" }, idx: 1 },
+        ]);
+      }
+      // The record does not carry the run yet: the catch-up read finds the page
+      // unchanged.
+      return page([entry("e1", "user", "hello host")]);
+    });
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    expect(hook.current.liveReplies[0]!.fromReplay).toBe(true);
+
+    event("agent_end", { duration_ms: 1_500 }, 2);
+    await settle();
+
+    expect(hook.current.liveReplies).toHaveLength(1);
+    expect(hook.current.liveReplies[0]!.message.content).toBe("the answer");
+    expect(hook.current.liveReplies[0]!.message.status).toBe("complete");
+    hook.unmount();
+  });
+
+  /**
+   * A run this window joined in flight is rebuilt from its log.
+   *
+   * The pushes begin where the subscription did, so the reply's first half — and
+   * the run's own start time — exist only in the log. The state read on open is
+   * what tells the client there is a run to read before the next frame happens to
+   * arrive (a long tool call pushes nothing for minutes).
+   */
+  it("rebuilds a run already in flight when the conversation is opened", async () => {
+    const startedAt = Date.now() - 8 * 60_000;
+    stateReply = { activeRun: { runId } };
+    requestMock.mockImplementation(async (_desktop: string, command: { type?: string }) => {
+      if (command?.type === "get_events_since") {
+        return logResponse([
+          { type: "agent_start", data: { started_at_ms: startedAt }, idx: 0 },
+          { type: "text_chunk", data: { text: "half a reply" }, idx: 1 },
+        ]);
+      }
+      return page([
+        entry("e1", "user", "keep going"),
+        entry("e2", "assistant", "half a reply", { runId, status: "running" }),
+      ]);
+    });
+
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+
+    const [reply] = hook.current.liveReplies;
+    expect(reply!.fromReplay).toBe(true);
+    expect(reply!.message.content).toBe("half a reply");
+    // The run's own clock, not this window's arrival: the elapsed time a reader
+    // sees on a reply that was already running.
+    expect(reply!.message.runStartedAt).toBe(startedAt);
+    // The record's own partial copy of the same run is hidden, so the reply is
+    // drawn once rather than beside itself.
+    expect(reply!.message.runId).toBe(runId);
+    expect(requestMock.mock.calls.some(([, command]) =>
+      (command as { type?: string }).type === "get_events_since")).toBe(true);
+    hook.unmount();
+  });
+
+  /**
+   * A settled run's reply is only its own words.
+   *
+   * The projection accumulates deltas, so a run kept across the next one would
+   * prefix the finished answer to the new reply.
    */
   it("does not carry one run's text into the next", async () => {
     const hook = await open("first");
     event("text_chunk", { text: "answer one" }, 1);
     await settle();
-    expect(hook.current.live?.content).toBe("answer one");
+    expect(hook.current.liveReplies[0]!.message.content).toBe("answer one");
 
     event("agent_end", {}, 2);
     await settle();
+    // Its own fragment is gone — the record holds that reply now.
+    expect(hook.current.liveReplies).toEqual([]);
 
     push({
       sessionId: "sess_1",
@@ -863,47 +973,137 @@ describe("useRemoteTimeline live reply", () => {
       data: JSON.stringify({ text: "answer two" }),
     });
     await settle();
-    expect(hook.current.live?.content).toBe("answer two");
-    expect(hook.current.live?.id).toBe("stream_run_two");
+
+    expect(hook.current.liveReplies.map(reply => reply.message.content)).toEqual(["answer two"]);
+    expect(hook.current.liveReplies[0]!.message.id).toBe("stream_run_two");
     hook.unmount();
   });
 
   /**
-   * A tail read restarts the live lane.
+   * A link that comes back re-establishes the run from its log.
    *
-   * The reply being written is the transcript's *tail*: a page read while a run is
-   * live moves the boundary the two meet at, and what the stream had accumulated
-   * belongs to that page now (the view draws the record's part and then the
-   * stream's — `foldLiveReply`). Keeping it would draw those deltas twice, once
-   * from the record and once from the bubble.
+   * This is the one thing the pushes cannot repair: everything the host sent while
+   * the link was down is gone, and the reply on screen is exactly what is now
+   * stale. On this client's lane — the trimmed feed, which omits event families by
+   * design — "how much of the run do I hold" cannot be answered by counting what
+   * arrived, so the run is read from its beginning and the pushed copy is
+   * replaced rather than added to.
    */
-  it("restarts the live lane at a catch-up read, from that page", async () => {
+  it("rebuilds the reply in flight from the run's log after a link comes back", async () => {
     const hook = await open("hello host");
+    event("agent_start", {}, 0);
     event("text_chunk", { text: "Wor" }, 1);
     await settle();
-    expect(hook.current.live?.content).toBe("Wor");
-    const startedAt = hook.current.live?.runStartedAt;
+    expect(hook.current.liveReplies[0]!.message.content).toBe("Wor");
 
-    // The link came back: everything written so far is on the page the host just
-    // served, so the lane starts again there rather than beside it.
-    requestMock.mockResolvedValue(page([
-      entry("e1", "user", "hello host"),
-      entry("e2", "assistant", "Wor"),
-    ]));
+    stateReply = { activeRun: { runId } };
+    requestMock.mockImplementation(async (_desktop: string, command: { type?: string }) => {
+      if (command?.type === "get_events_since") {
+        return logResponse([
+          { type: "agent_start", data: { started_at_ms: 1_700_000_000_000 }, idx: 0 },
+          { type: "text_chunk", data: { text: "Wor" }, idx: 1 },
+          { type: "text_chunk", data: { text: "king" }, idx: 2 },
+        ]);
+      }
+      return page([entry("e1", "user", "hello host")]);
+    });
     act(() => {
       listeners.forEach(listener => listener({ payload: { desktopId: "desktop_a", kind: "resumed", payload: {} } }));
     });
     await settle();
 
-    expect(hook.current.live).toBeNull();
-    expect(hook.current.messages.map(message => message.content)).toEqual(["hello host", "Wor"]);
+    const read = requestMock.mock.calls
+      .map(([, command]) => command as { type?: string; sinceIdx?: number })
+      .find(command => command.type === "get_events_since");
+    expect(read?.sinceIdx).toBe(-1);
+    const [reply] = hook.current.liveReplies;
+    expect(reply!.fromReplay).toBe(true);
+    // The whole reply — the part the pushes built *and* the part they lost — once.
+    expect(reply!.message.content).toBe("Working");
+    hook.unmount();
+  });
 
-    // And the next frame of the same run rebuilds the bubble from that boundary —
-    // on the same run, whose clock did not go back to zero with the rebuild.
-    event("text_chunk", { text: "king" }, 2);
+  /**
+   * A jump in the indices, read two ways.
+   *
+   * A host that trims its feed omits whole event families, so a jump is expected
+   * — and nothing is missing. A host that does not trim sends one event per index,
+   * so the same jump is a frame this client never got, and the run's log is where
+   * it comes back from.
+   */
+  it("reads the run's log when the pushes declare a gap, and not when the feed is trimmed", async () => {
+    const hook = await open("hello");
+    requestMock.mockImplementation(async (_desktop: string, command: { type?: string }) => {
+      if (command?.type === "get_events_since") {
+        // The host states its pre-trim count: its pushes omit indices by design.
+        return logResponse([
+          { type: "agent_start", data: {}, idx: 0 },
+          { type: "text_chunk", data: { text: "one" }, idx: 1 },
+          { type: "text_chunk", data: { text: "two" }, idx: 5 },
+        ], { rawEvents: 6 });
+      }
+      return page([entry("e1", "user", "hello")]);
+    });
+
+    event("text_chunk", { text: "one" }, 1);
     await settle();
-    expect(hook.current.live?.content).toBe("king");
-    expect(hook.current.live?.runStartedAt).toBe(startedAt);
+    // The first frame lands above zero of a run this client has no beginning for,
+    // so the log is read once for it.
+    expect(requestMock.mock.calls.filter(([, command]) =>
+      (command as { type?: string }).type === "get_events_since")).toHaveLength(1);
+
+    // A hole *inside* a run the host has told us it trims is not loss: no second
+    // read.
+    event("text_chunk", { text: "two" }, 5);
+    await settle();
+    expect(requestMock.mock.calls.filter(([, command]) =>
+      (command as { type?: string }).type === "get_events_since")).toHaveLength(1);
+    expect(hook.current.liveReplies[0]!.message.content).toBe("onetwo");
+    hook.unmount();
+  });
+
+  /**
+   * A gap on a feed that numbers every event is filled from where it stopped.
+   *
+   * There is nothing to re-establish — the client knows exactly what it is missing
+   * — and the read says so by starting at the cursor, so a long run costs one page
+   * rather than a whole reply.
+   */
+  it("fills a declared gap from the cursor instead of re-reading the run", async () => {
+    stateReply = { activeRun: { runId } };
+    // The run as the host's journal holds it, growing as it runs.
+    const log = [
+      { type: "agent_start", data: {}, idx: 0 },
+      { type: "text_chunk", data: { text: "one" }, idx: 1 },
+      { type: "text_chunk", data: { text: "two" }, idx: 2 },
+      { type: "text_chunk", data: { text: "three" }, idx: 3 },
+    ];
+    let written = 2;
+    requestMock.mockImplementation(async (_desktop: string, command: { type?: string } & Record<string, unknown>) => {
+      if (command?.type === "get_events_since") {
+        // A host that trims nothing: one event per index, no pre-trim count.
+        const since = Number(command.sinceIdx);
+        return logResponse(log.slice(0, written).slice(since + 1));
+      }
+      return page([entry("e1", "user", "hello")]);
+    });
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    expect(hook.current.liveReplies[0]!.message.content).toBe("one");
+
+    // A frame arrives two indices ahead of what this client holds: one frame was
+    // lost, and the feed numbers every event, so the loss is visible.
+    written = 4;
+    event("text_chunk", { text: "three" }, 3);
+    await settle();
+
+    const reads = requestMock.mock.calls
+      .map(([, command]) => command as { type?: string; sinceIdx?: number })
+      .filter(command => command.type === "get_events_since");
+    expect(reads.map(read => read.sinceIdx)).toEqual([-1, 1]);
+    // The lost frame came back from the log, and the rest of the run was not
+    // re-read to get it.
+    expect(hook.current.liveReplies[0]!.message.content).toBe("onetwothree");
     hook.unmount();
   });
 
@@ -920,7 +1120,7 @@ describe("useRemoteTimeline live reply", () => {
       data: JSON.stringify({ text: "not mine" }),
     });
     await settle();
-    expect(hook.current.live).toBeNull();
+    expect(hook.current.liveReplies).toEqual([]);
     hook.unmount();
   });
 
@@ -930,7 +1130,7 @@ describe("useRemoteTimeline live reply", () => {
     push({ sessionId: "sess_1", type: "model_changed", data: JSON.stringify({ model: "m" }) });
     push({ sessionId: "sess_1", type: "user_message", eventId: "u", timestamp: "2026-01-01T00:00:00Z", data: JSON.stringify({ text: "hello" }) });
     await settle();
-    expect(hook.current.live).toBeNull();
+    expect(hook.current.liveReplies).toEqual([]);
     hook.unmount();
   });
 });
@@ -941,7 +1141,7 @@ describe("useRemoteTimeline live reply", () => {
  * The bubble is a projection of *that* run's deltas: drawn under another
  * conversation's title it would be a reply to a question the reader cannot see.
  */
-it("drops the live reply when another conversation is opened", async () => {
+it("drops the conversation's replies when another one is opened", async () => {
   requestMock.mockResolvedValue(page([entry("e1", "user", "first")]));
   let session = "sess_1";
   const hook = renderHook(() => useRemoteTimeline("desktop_a", session, true));
@@ -956,12 +1156,12 @@ it("drops the live reply when another conversation is opened", async () => {
     data: JSON.stringify({ text: "answering" }),
   });
   await settle();
-  expect(hook.current.live?.content).toBe("answering");
+  expect(hook.current.liveReplies[0]!.message.content).toBe("answering");
 
   session = "sess_2";
   hook.rerender();
   await settle();
-  expect(hook.current.live).toBeNull();
+  expect(hook.current.liveReplies).toEqual([]);
   hook.unmount();
 });
 

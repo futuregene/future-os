@@ -1,28 +1,58 @@
 import type { AgentMessage, MessageSegment } from "@future-os/thread-projection";
 
 /**
+ * One reply, drawn once — the two rules a remote transcript needs, and when each
+ * applies.
+ *
+ * A remote conversation is read from two lanes: the host's *record* (a page of
+ * its journal, projected into `messages`) and its *stream* (the events it pushes,
+ * folded into a reply bubble). They are two views of the same runs, and which one
+ * is authoritative depends on whether this client also read the run's **log**
+ * (`get_events_since`):
+ *
+ * - **Read the log** (`stripRunCopies`): the projection covers the run from its
+ *   beginning, so the transcript's own partial copy of that run is redundant —
+ *   and keeping it would draw the answer twice, because the page's copy and the
+ *   pushed frames overlap for a run the reader joined mid-flight. The copy is
+ *   hidden and the rebuilt reply is drawn in its place.
+ * - **Only saw pushes** (`foldLiveReply`): the page holds the reply's *beginning*
+ *   (the stream starts when this window subscribes) and the bubble holds its
+ *   end*, so neither can be dropped: drawn as one message they are the reply.
+ *
+ * The second rule is the fallback, not the design: it holds only while a host
+ * does not serve the read at all (an older paired desktop), or while the first
+ * read is still in flight. Text has no identity across the two lanes, so the fold
+ * relies on the boundary between them rather than on recognising the same words
+ * twice — which is exactly why the log read, where it exists, is preferred.
+ */
+
+/**
+ * Hide the transcript's copy of the runs this client rebuilt from their logs.
+ *
+ * Only a run's *reply* rows are hidden. The user's own prompt stays where it is:
+ * it is the turn the reply answers, it is what a fork branches at, and the
+ * rebuilt reply is drawn directly beneath it — the same place the record had it.
+ * A compaction divider or a notice is not a reply either, and a run id can appear
+ * on them.
+ */
+export function stripRunCopies(
+  transcript: readonly AgentMessage[],
+  runs: ReadonlySet<string>,
+): AgentMessage[] {
+  if (runs.size === 0)
+    return [...transcript];
+  return transcript.filter(message => !(message.role === "assistant" && message.runId && runs.has(message.runId)));
+}
+
+/**
  * The reply a host is writing, drawn once — folded into the transcript's copy of
  * it when the transcript already has one.
  *
- * A remote conversation is read from two lanes: the host's *record*, a history
- * page projected into `messages`, and its *stream*, the events it pushes, folded
- * into one reply bubble. They are two views of the same run, and on a run that
- * was already going they overlap: the agent persists each completed model call
- * mid-run, so opening a conversation whose newest exchange is still streaming
- * puts the same reply in both — the page's partial copy, and the bubble growing
- * under it. The reader saw the answer twice, the first one frozen and without the
- * streaming mark.
- *
- * Neither copy can simply be dropped. The page's copy is the reply's *beginning*:
- * the stream starts when this window subscribes, so everything the run wrote
- * before that is only in the record. The bubble is the reply's *end*: it is
- * written as the host writes it, which is why the reader opened the conversation.
- * Drawn as one message they are the reply — the record's segments, then the
- * stream's, in the order they were produced.
- *
- * The merged row keeps the record's identity (its entry id, its timestamp and the
- * user entry a fork branches at) and takes the stream's liveness, so the row the
- * reader is watching is the row that is still being written.
+ * Used for a run this client has *not* read the log of: what the pushes built is
+ * the reply's tail, and the page's partial copy is its beginning. The merged row
+ * keeps the record's identity (its entry id, its timestamp and the user entry a
+ * fork branches at) and takes the stream's liveness, so the row on screen is the
+ * one still being written.
  */
 export function foldLiveReply(
   transcript: AgentMessage[],

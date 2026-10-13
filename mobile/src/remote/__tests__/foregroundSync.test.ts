@@ -84,7 +84,7 @@ test("a live burst yields to navigation and stops projecting after the session i
 
 test("yielded live batches retain event order, duplicate filtering, terminal events, and mutations", async () => {
   const engine = new SyncEngine({
-    requestGetState: async () => ({}), requestHistory: async () => history("prompt"), fetchReplay: async () => ({ events: [] }),
+    requestGetState: async () => ({}), requestHistory: async () => history("prompt"), fetchReplay: async () => ({ events: [], completePrefix: false }),
   });
   try {
     await engine.open("s");
@@ -113,7 +113,7 @@ test("yielded live batches retain event order, duplicate filtering, terminal eve
 test("text commits are capped near 12.5Hz but terminal state bypasses the cadence", async () => {
   const engine = new SyncEngine({
     requestGetState: async () => ({}), requestHistory: async () => history("prompt"),
-    fetchReplay: async () => ({ events: [] }),
+    fetchReplay: async () => ({ events: [], completePrefix: false }),
   });
   const commits = jest.fn();
   engine.subscribe(commits);
@@ -177,7 +177,7 @@ test("live deltas during an open do not enqueue a duplicate opening read", async
   const engine = new SyncEngine({ requestGetState, requestHistory, fetchReplay: async () => ({ events: [
     { type: "agent_start", idx: 0, runId: "r", data: "{}" },
     { type: "text_chunk", idx: 1, runId: "r", data: '{"text":"hello"}' },
-  ] }) });
+  ], completePrefix: false }) });
   try {
     await engine.open("s");
     await jest.advanceTimersByTimeAsync(0);
@@ -292,7 +292,7 @@ test("opening a background session restores its pending approval from durable re
   const fetchReplay = jest.fn(async () => ({ events: [
     { type: "agent_start", runId: "r", idx: 0, data: "{}" },
     { type: "approval_request", runId: "r", idx: 1, data: JSON.stringify({ approval_request_id: "approval-1", tool_name: "shell" }) },
-  ] }));
+  ], completePrefix: false }));
   const engine = new SyncEngine({
     isSessionVisible: sid => sid === visible,
     requestGetState: async () => ({ activeRun: { runId: "r" } }),

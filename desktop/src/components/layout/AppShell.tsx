@@ -1181,7 +1181,7 @@ function ReadyAppShell({
                               />
                             )}
                             leftPanelExpanded={showLeftPanel}
-                            live={remoteTimeline.live}
+                            liveReplies={remoteTimeline.liveReplies}
                             messages={remoteTimeline.messages}
                             error={remoteTimeline.error}
                             hasMore={remoteTimeline.hasMore}

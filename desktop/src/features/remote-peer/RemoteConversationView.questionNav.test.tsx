@@ -45,7 +45,7 @@ async function mount(messages: AgentMessage[]) {
         error={null}
         hasMore={false}
         leftPanelExpanded
-        live={null}
+        liveReplies={[]}
         loading={false}
         loadingOlder={false}
         messages={messages}

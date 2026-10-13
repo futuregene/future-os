@@ -1,6 +1,6 @@
 import type { AgentMessage, MessageSegment } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
-import { foldLiveReply } from "./foldLiveReply";
+import { foldLiveReply, stripRunCopies } from "./remoteLiveReplies";
 
 /**
  * The reply a host is writing, drawn once.
@@ -39,7 +39,7 @@ function compaction(checkpointId: string, id = "seg_ck"): MessageSegment {
   return { id, kind: "compaction", checkpointId, status: "completed" };
 }
 
-describe("foldLiveReply", () => {
+describe("remoteLiveReplies", () => {
   it("looks like the transcript when nothing is streaming", () => {
     const transcript = [message()];
     expect(foldLiveReply(transcript, null)).toBe(transcript);
@@ -146,5 +146,55 @@ describe("foldLiveReply", () => {
     const transcript = [message({ id: "m_a1", segments: [text("half of it")] })];
     const live = message({ id: "stream_none", content: "being written", status: "streaming" });
     expect(foldLiveReply(transcript, live)).toEqual([transcript[0], live]);
+  });
+});
+
+/**
+ * The other half of "one row per reply": the runs this client rebuilt from their
+ * logs. Their copy in the record is hidden, and *only* theirs — a compaction
+ * divider or a notice carries a run id too, and hiding those would drop content
+ * the reply does not replace.
+ */
+describe("stripRunCopies", () => {
+  it("returns the transcript untouched when nothing was rebuilt", () => {
+    const transcript = [message({ id: "m_a1", runId: "run_1" })];
+    expect(stripRunCopies(transcript, new Set())).toEqual(transcript);
+  });
+
+  it("hides a rebuilt run's reply and keeps the prompt it answers", () => {
+    const transcript = [
+      message({ id: "m_u1", role: "user", content: "keep going", runId: "run_1" }),
+      message({ id: "m_a1", runId: "run_1" }),
+      message({ id: "m_u2", role: "user", content: "and now", runId: "run_2" }),
+      message({ id: "m_a2", runId: "run_2" }),
+    ];
+
+    const stripped = stripRunCopies(transcript, new Set(["run_1"]));
+
+    expect(stripped.map(item => item.id)).toEqual(["m_u1", "m_u2", "m_a2"]);
+  });
+
+  /**
+   * A compaction divider is not a reply, so it is not hidden.
+   *
+   * The projection draws a checkpoint as a row of its own with no run of its own
+   * (`dividerMessage`), which is what keeps it out of this: the replayed reply
+   * renders the same checkpoint from the run's journal, and hiding the record's
+   * divider would leave the summary with nothing to sit under.
+   */
+  it("keeps rows that are not replies", () => {
+    const transcript = [
+      message({
+        id: "m_ck",
+        content: "",
+        segments: [{ id: "seg_ck", kind: "compaction", checkpointId: "ck_1", status: "completed" }],
+      }),
+      message({ id: "m_a1", runId: "run_1" }),
+      // A reply the record itself does not attribute to a run is not this
+      // client's to hide either.
+      message({ id: "m_a0", content: "unattributed" }),
+    ];
+
+    expect(stripRunCopies(transcript, new Set(["run_1"])).map(item => item.id)).toEqual(["m_ck", "m_a0"]);
   });
 });
