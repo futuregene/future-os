@@ -141,6 +141,23 @@ test("the picker offers every paired desktop plus the merged option", () => {
     .toEqual({ kind: "desktop", desktopId: "desktop_2" });
 });
 
+test("the picker can be dismissed without choosing a desktop", () => {
+  const pickerModal = () => tree.root.findByType(DesktopPicker).findAllByType(Modal)[0]!;
+  // Nothing to dismiss while the list is shut, so the close button the user
+  // reaches for only exists once the picker is open.
+  expect(pickerModal().props.visible).toBe(false);
+  act(() => button("desktops.pickerLabel").props.onPress());
+  const open = pickerModal();
+  expect(open.props.visible).toBe(true);
+  const close = open.findAll(node =>
+    node.props.accessibilityLabel === "common.close" && typeof node.props.onPress === "function",
+  )[0]!;
+  act(() => close.props.onPress());
+  expect(pickerModal().props.visible).toBe(false);
+  // Backing out is not a choice: the list still shows every desktop.
+  expect(tree.root.findByType(DesktopPicker).props.filter).toEqual({ kind: "all" });
+});
+
 test("the status dot answers for every machine, and reconnect reaches them all", () => {
   // The merged list holds several machines, so the dot's own answer is whether
   // all of them are up — not the state of whichever one is active.
