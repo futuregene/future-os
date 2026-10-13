@@ -291,7 +291,18 @@ export async function promptRemoteConversation(
    * workspace, and the host ignores it.
    */
   workspaceId?: string | null,
+  /**
+   * The model and thinking level a *new* conversation should be created with.
+   *
+   * Sent for a draft so that what the picker showed is what runs: a conversation
+   * whose model was chosen before it existed has no other way to carry that
+   * choice, and leaving it out means the host picks, which may not be what the
+   * reader was looking at. An existing conversation carries neither — its model
+   * and level are its own, already set on the host by `set_model`.
+   */
+  fresh?: { modelId?: string | null; thinkingLevel?: string | null },
 ): Promise<RemoteConversationIds> {
+  const provider = !sessionId && fresh?.modelId ? remoteModelProvider(fresh.modelId) : null;
   const ack = await requestRemotePeer<Record<string, unknown>>(
     desktopId,
     {
@@ -299,6 +310,10 @@ export async function promptRemoteConversation(
       sessionId,
       message,
       ...(!sessionId && workspaceId ? { mode: "workspace", workspaceId } : {}),
+      ...(!sessionId && fresh?.modelId
+        ? { modelId: fresh.modelId, ...(provider ? { providerId: provider } : {}) }
+        : {}),
+      ...(!sessionId && fresh?.thinkingLevel ? { level: fresh.thinkingLevel } : {}),
       ...(attachments.length > 0
         ? { attachments: attachments.map(uploadId => ({ uploadId })) }
         : {}),

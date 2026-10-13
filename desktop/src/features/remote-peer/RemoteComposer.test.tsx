@@ -157,7 +157,7 @@ it("prompts the conversation it belongs to and clears only on success", async ()
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "hello host", [], null);
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "hello host", [], null, { modelId: null, thinkingLevel: null });
   expect(view.onSent).toHaveBeenCalledTimes(1);
   expect(view.input.value).toBe("");
   // An existing conversation was not created, so nothing adopts an id.
@@ -176,7 +176,7 @@ it("adopts the conversation the host created for a draft", async () => {
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "", "first message", [], null);
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "", "first message", [], null, { modelId: null, thinkingLevel: null });
   expect(view.onCreated).toHaveBeenCalledWith("sess_new");
   expect(view.onSent).toHaveBeenCalledTimes(1);
   await view.unmount();
@@ -376,7 +376,7 @@ it("sends the staged files as attachment references", async () => {
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please read this", ["upload_7"], null);
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please read this", ["upload_7"], null, { modelId: null, thinkingLevel: null });
   // And the chips are gone: they now belong to the message, not the composer.
   expect(view.text()).not.toContain("report.txt");
   await view.unmount();
@@ -393,7 +393,7 @@ it("sends an attachment with no words", async () => {
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "", ["upload_7"], null);
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "", ["upload_7"], null, { modelId: null, thinkingLevel: null });
   await view.unmount();
 });
 
@@ -411,7 +411,7 @@ it("drops a removed attachment from the prompt", async () => {
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "no file after all", [], null);
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "no file after all", [], null, { modelId: null, thinkingLevel: null });
   await view.unmount();
 });
 
@@ -749,7 +749,7 @@ it("sends normally when the host would not accept the command", async () => {
     view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
   });
   expect(onCompact).not.toHaveBeenCalled();
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "/comp", [], null);
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "/comp", [], null, { modelId: null, thinkingLevel: null });
   await view.unmount();
 });
 
@@ -869,6 +869,6 @@ it("names the workspace when the draft belongs in one", async () => {
   const view = await mount({ workspaceId: "ws_9" });
   await act(async () => view.type("hello"));
   await act(async () => view.button("Send")!.click());
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "hello", [], "ws_9");
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "hello", [], "ws_9", { modelId: null, thinkingLevel: null });
   await view.unmount();
 });

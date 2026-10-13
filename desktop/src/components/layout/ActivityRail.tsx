@@ -115,7 +115,7 @@ interface ActivityRailProps {
    * workspace is on that host, so the request has to name it there rather than
    * carry a path this machine cannot resolve.
    */
-  onNewChatOnRemote?: (desktopId: string, workspaceId: string) => void;
+  onNewChatOnRemote?: (desktopId: string, workspaceId: string | null) => void;
   /** Jump to the Remote Desktops screen. */
   onManageDesktops?: () => void;
   /** The remote conversation currently open (client role), if any. */

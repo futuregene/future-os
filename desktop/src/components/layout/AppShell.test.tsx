@@ -2267,6 +2267,24 @@ describe("app shell collapsed-panel affordances", () => {
       view.unmount();
     });
 
+    /**
+     * A draft's composer is told the model and level the picker is showing.
+     *
+     * The conversation does not exist on the host yet, so there is nothing there
+     * to set: the choice has to travel with the first prompt, or the picker would
+     * show one model and the host would run another.
+     */
+    it("hands a draft's model and level to its composer", () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onManageDesktops?.());
+      act(() => (children.remoteHub as { onStartConversation: (id: string) => void }).onStartConversation("desktop_a"));
+
+      const composer = children.remoteComposer as { freshModelId?: string | null; freshThinkingLevel?: string | null };
+      expect(composer).toHaveProperty("freshModelId");
+      expect(composer).toHaveProperty("freshThinkingLevel");
+      view.unmount();
+    });
+
     /** A draft has no conversation on the host, so it has no files to browse. */
     it("offers no files panel for a conversation that does not exist yet", () => {
       const view = mount(<AppShell />);
