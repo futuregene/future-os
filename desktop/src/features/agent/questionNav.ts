@@ -1,4 +1,8 @@
-import type { AgentMessage } from "@future-os/thread-projection";
+/** Minimal shape needed to identify a user message in the transcript. */
+export interface QuestionMessage {
+  id: string;
+  role: "assistant" | "system" | "tool" | "user";
+}
 
 /** A row index in the rendered message list, from 0 (oldest) to length - 1 (newest). */
 export type MessageIndex = number;
@@ -16,7 +20,7 @@ export interface QuestionTurn {
  * Only user messages count; assistant messages, compaction markers and tool
  * rows are ignored. This matches the semantics of mobile's `questionIndices`.
  */
-export function buildQuestionTurns(messages: readonly AgentMessage[]): QuestionTurn[] {
+export function buildQuestionTurns<T extends QuestionMessage>(messages: readonly T[]): QuestionTurn[] {
   const turns: QuestionTurn[] = [];
   messages.forEach((message, index) => {
     if (message.role === "user") {

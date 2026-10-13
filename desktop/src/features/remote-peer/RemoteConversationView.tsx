@@ -10,7 +10,9 @@ import { Button } from "../../components/ui/Button";
 import { IconButton } from "../../components/ui/IconButton";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { MessageBlock } from "../agent/MessageBlock";
+import { QuestionNavControl } from "../agent/QuestionNavControl";
 import { useComposerInset } from "../agent/useComposerInset";
+import { useQuestionNav } from "../agent/useQuestionNav";
 import { useStickyAutoScroll } from "../agent/useStickyAutoScroll";
 import { foldLiveReply } from "./foldLiveReply";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
@@ -198,6 +200,7 @@ export function RemoteConversationView({
     handleScroll,
     scrollToLatest,
     showJumpToLatest,
+    preserveViewport,
   } = useStickyAutoScroll({
     // The projected transcript, not the raw entries: this is what the view
     // renders, and a fetch that fills in a tool target re-settles the viewport
@@ -205,6 +208,24 @@ export function RemoteConversationView({
     contentKey: rendered,
     followEnabled: !loading,
     scrollRef,
+  });
+
+  // Question navigation: jump between user questions in the remote transcript.
+  // The take-over callback disables the sticky auto-scroll so a jump is not
+  // pulled back to the bottom by a streaming reply, matching local behaviour.
+  const takeOverQuestionNavRef = useRef(() => {});
+  useEffect(() => {
+    takeOverQuestionNavRef.current = preserveViewport;
+  }, [preserveViewport]);
+  const {
+    hasPrevious: hasPreviousQuestion,
+    hasNext: hasNextQuestion,
+    goToPrevious: goToPreviousQuestion,
+    goToNext: goToNextQuestion,
+  } = useQuestionNav({
+    messages,
+    scrollRef,
+    onTakeOver: () => takeOverQuestionNavRef.current(),
   });
 
   return (
@@ -239,18 +260,26 @@ export function RemoteConversationView({
             shape as this app's own header. An icon rather than the amount: the
             header is for the conversation, and a figure that changes every turn
             draws the eye away from it. */}
-        <IconButton
-          aria-haspopup="dialog"
-          // The local header's own size and spacing (`ThreadHeader`): the button
-          // is one of the frame's fixed measurements, and a reader who moves
-          // between the two conversations sees the same control in the same
-          // place, at the same size.
-          className="mr-2 size-8"
-          data-testid="remote-thread-usage"
-          icon={<ReceiptText className="size-4" />}
-          label={t("usageTitle")}
-          onClick={onOpenUsage}
-        />
+        <div className="flex items-center gap-2">
+          <QuestionNavControl
+            hasNext={hasNextQuestion}
+            hasPrevious={hasPreviousQuestion}
+            onNext={goToNextQuestion}
+            onPrevious={goToPreviousQuestion}
+          />
+          <IconButton
+            aria-haspopup="dialog"
+            // The local header's own size and spacing (`ThreadHeader`): the button
+            // is one of the frame's fixed measurements, and a reader who moves
+            // between the two conversations sees the same control in the same
+            // place, at the same size.
+            className="size-8"
+            data-testid="remote-thread-usage"
+            icon={<ReceiptText className="size-4" />}
+            label={t("usageTitle")}
+            onClick={onOpenUsage}
+          />
+        </div>
         {streaming
           ? <span className="shrink-0 px-1 text-xs text-accent">{t("statusRunning")}</span>
           : null}
