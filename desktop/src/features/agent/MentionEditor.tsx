@@ -651,12 +651,24 @@ export function MentionEditor({
     // last line. Without a pad WebKit can measure the preceding line instead
     // (Chromium can return no rect), delaying the scroll until typing resumes.
     const node = document.createTextNode(text.endsWith("\n") ? `${text}\u200B` : text);
-    range.insertNode(node);
-    range.setStart(node, text.length);
-    range.collapse(true);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    revealCaret(range);
+    // Insert through the browser's native editing command so the paste lands in
+    // the document undo stack and Ctrl+Z undoes it — a raw insertNode on a
+    // contentEditable is treated as script mutation and skipped by undo. The
+    // browser places the caret itself; re-read it below for the reveal.
+    // execCommand is absent in some environments (jsdom 30 / non-standards);
+    // fall back to the manual insert there.
+    const native = typeof document.execCommand === "function"
+      && document.execCommand("insertText", false, node.textContent ?? "");
+    if (!native) {
+      range.insertNode(node);
+      range.setStart(node, text.length);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    const live = window.getSelection();
+    const caret = native ? (live && live.rangeCount > 0 ? live.getRangeAt(0) : null) : null;
+    revealCaret(caret ?? range);
     updateTrigger();
     syncEmpty();
     onChange?.();
