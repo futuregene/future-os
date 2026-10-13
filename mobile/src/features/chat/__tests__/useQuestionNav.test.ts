@@ -163,21 +163,22 @@ describe("useQuestionNav", () => {
     });
   });
 
-  test("↑ lands the previous answer's last slice above the bottom edge", () => {
+  test("↑ lands the previous answer at its start, under the top edge", () => {
     act(() => {
       result.current.onScroll(scrollEvent(600));
     });
-    // The top edge is inside the answer to question-2, so answer-1's end is
-    // above it.
+    // The top edge is inside the answer to question-2, so answer-1 is above it.
     reportRows(1);
     expect(result.current.previous).toEqual({ kind: "replyTail", index: 2 });
 
     act(() => result.current.goToPrevious());
 
+    // A reply lands the way a question does: the reader coming back up to an
+    // answer wants to read it from its first line, not from its last.
     expect(list.scrollToIndex).toHaveBeenCalledWith({
       index: 2,
-      viewPosition: 0,
-      viewOffset: BOTTOM_INSET,
+      viewPosition: 1,
+      viewOffset: JUMP_VIEW_OFFSET,
       animated: false,
     });
   });
@@ -203,8 +204,8 @@ describe("useQuestionNav", () => {
     expect(list.scrollToIndex).toHaveBeenCalledTimes(2);
     expect(list.scrollToIndex).toHaveBeenLastCalledWith({
       index: 2,
-      viewPosition: 0,
-      viewOffset: BOTTOM_INSET,
+      viewPosition: 1,
+      viewOffset: JUMP_VIEW_OFFSET,
       animated: false,
     });
   });
