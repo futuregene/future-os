@@ -383,6 +383,39 @@ export function SessionList({
       && (target.desktopId ?? null) === (workspace.desktopId ?? null)
       && commandsFor(target.desktopId) !== null);
 
+  /**
+   * Start a conversation in a workspace, on the machine that owns it.
+   *
+   * A conversation runs on the machine it is created on, and the draft belongs
+   * to that machine's own connection — so a group merged in from another desktop
+   * switches to it first, exactly as tapping one of that machine's conversations
+   * does, and the draft then lands in the workspace the reader picked.
+   *
+   * The switch re-reads what building the draft needs, as the creation dialog's
+   * own move does (`adoptDevice` in SessionsScreen): a freshly connected machine's
+   * catalogue starts empty, and its models are what the new conversation defaults
+   * to.
+   *
+   * Offering the item for the connected machine only (as this did) made the same
+   * sheet gain and lose "new conversation" as the phone's connection followed the
+   * reader between desktops: the group they had just been reading had it, every
+   * other group in the same list did not.
+   */
+  const startConversationInWorkspace = async (workspace: WorkspaceRow) => {
+    if (workspace.desktopId && workspace.desktopId !== activeDesktopId) {
+      try {
+        await remote.switchDesktop(workspace.desktopId);
+        await Promise.all([remote.refreshWorkspaces(), remote.refreshModels()]);
+      }
+      catch {
+        Alert.alert(t("desktops.switchFailed"));
+        return;
+      }
+    }
+    await remote.newConversation("workspace", workspace.workspaceId)
+      .catch(() => Alert.alert(t("common.error")));
+  };
+
   const selectWorkspaceSessions = (workspace: WorkspaceRow) => {
     const keys = sessionsInWorkspace(workspace).map(row => row.key);
     if (keys.length === 0) return;
@@ -492,8 +525,11 @@ export function SessionList({
       const name = item.workspace.name || t("sessions.workspace");
       // A group on another machine belongs to that machine, and its actions —
       // rename, pin, delete — are that machine's commands, so the heading offers
-      // them there whenever it can answer. What it *cannot* offer is a new
-      // conversation: the phone has one outbox, on the desktop it is talking to.
+      // them there whenever it can answer. Starting a conversation in it is that
+      // machine's too, and the heading offers it there: the menu switches the
+      // phone to the machine that has to run it (see
+      // `startConversationInWorkspace`), rather than leaving the group without
+      // the item the group beside it has.
       return (
         <View style={styles.workspace}>
           <Pressable
@@ -702,20 +738,18 @@ export function SessionList({
               heading: true,
             }]
             : []),
-          // Starting a conversation *into* this workspace is the active
-          // connection's own command — the phone has one outbox, on the desktop
-          // it is talking to — so a peer's heading does not offer it.
-          ...(!menuWorkspace.desktopId || menuWorkspace.desktopId === activeDesktopId
-            ? [{
-              label: t("sessions.new"),
-              icon: <Plus size={18} color={colors.accent} />,
-              disabled: !menuWorkspaceCommands || deleting,
-              onPress: () => {
-                void remote.newConversation("workspace", menuWorkspace.workspaceId)
-                  .catch(() => Alert.alert(t("common.error")));
-              },
-            }]
-            : []),
+          // Every group offers it, wherever its workspace lives: the sheet the
+          // reader opened should hold the same items for a peer's group as for
+          // this machine's, and the workspace already says which machine the
+          // conversation will run on.
+          {
+            label: t("sessions.new"),
+            icon: <Plus size={18} color={colors.accent} />,
+            disabled: !menuWorkspaceCommands || deleting,
+            // The switch, the draft and both failure messages are the helper's:
+            // one place decides what moving the phone onto another machine takes.
+            onPress: () => void startConversationInWorkspace(menuWorkspace),
+          },
           ...(menuWorkspaceCommands?.capabilities.has("workspace_pinning_v1") ? [{
             // A workspace group is an ordering shortcut like a pinned
             // conversation: pinned groups sit under the pinned conversations
