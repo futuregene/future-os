@@ -112,6 +112,114 @@ describe("mergeConversations", () => {
     expect(compareConversations(rows[0]!, rows[0]!)).toBe(0);
   });
 
+  /**
+   * A tie is broken on the machine before the row id: this machine first, then a
+   * host by its desktop id.
+   *
+   * The same conversation can exist on two machines with the same timestamp (the
+   * same message, a copied store), and a row's key starts with its machine — so
+   * without this rule the order of a tie would be decided by how `"desktop_a"`
+   * and `"local"` happen to sort as text.
+   */
+  it("puts this machine first, then a host by its device id, when timestamps tie", () => {
+    const merged = mergeConversations(
+      [thread({ id: "shared", lastMessageAt: 7 })],
+      [
+        catalog("desktop_b", [{ sessionId: "shared", title: "on b", lastMessageAt: 7 }]),
+        catalog("desktop_a", [{ sessionId: "shared", title: "on a", lastMessageAt: 7 }]),
+      ],
+      ALL,
+    );
+
+    expect(merged.map(row => row.desktopId)).toEqual([null, "desktop_a", "desktop_b"]);
+  });
+
+  /**
+   * A remote fork names its parent, resolved to the row the list holds.
+   *
+   * The host reports the *session* id it was forked from; the list's tree is
+   * keyed by row, so the merge is where the two are related. A row that lost this
+   * is drawn as a root — no indent, no fold toggle — which is what a fork on
+   * another machine looked like beside the same fork on this one.
+   */
+  it("resolves a remote fork to its parent's row", () => {
+    const merged = mergeConversations(
+      [],
+      [catalog("desktop_a", [
+        { sessionId: "parent", title: "parent", lastMessageAt: 500 },
+        { sessionId: "child", title: "child", parentSessionId: "parent", lastMessageAt: 400 },
+        { sessionId: "grandchild", title: "grandchild", parentSessionId: "child", lastMessageAt: 300 },
+      ])],
+      ALL,
+    );
+
+    const byId = (id: string) => merged.find(row => row.id === id)!;
+    expect(byId("parent").parentKey).toBeNull();
+    expect(byId("child").parentKey).toBe(byId("parent").key);
+    expect(byId("grandchild").parentKey).toBe(byId("child").key);
+  });
+
+  /**
+   * A parent the list does not hold makes its child a root — including a parent
+   * that happens to share the session id on *another* machine, which is not the
+   * conversation it was forked from.
+   */
+  it("resolves a fork's parent on its own machine only", () => {
+    const merged = mergeConversations(
+      [],
+      [
+        catalog("desktop_a", [{ sessionId: "orphan", title: "orphan", parentSessionId: "gone", lastMessageAt: 300 }]),
+        // The same parent session id on another host: same id, different
+        // conversation, and not this row's parent.
+        catalog("desktop_b", [
+          { sessionId: "parent", title: "the other machine's", lastMessageAt: 200 },
+          { sessionId: "elsewhere", title: "elsewhere", parentSessionId: "parent", lastMessageAt: 100 },
+        ]),
+      ],
+      ALL,
+    );
+
+    const byId = (id: string) => merged.find(row => row.id === id)!;
+    expect(byId("orphan").parentKey).toBeNull();
+    expect(byId("elsewhere").parentKey).toBe(byId("parent").key);
+
+    // Filtered to the child's own machine, its parent is not a row here either.
+    const oneHost = mergeConversations(
+      [],
+      [catalog("desktop_b", [
+        { sessionId: "parent", title: "the other machine's", lastMessageAt: 200 },
+        { sessionId: "elsewhere", title: "elsewhere", parentSessionId: "parent", lastMessageAt: 100 },
+      ])],
+      { kind: "device", desktopId: "desktop_a" },
+    );
+    expect(oneHost).toEqual([]);
+  });
+
+  /**
+   * The workspace's own place rides on the row, like its name and its pin: it is
+   * what the group is ordered by, and only the owner knows it.
+   */
+  it("carries the workspace's own place from both sources", () => {
+    const merged = mergeConversations(
+      [thread({ id: "local", workspaceId: "ws_local", workspaceOrderedAt: 4_000 })],
+      [catalog("desktop_a", [{
+        sessionId: "remote",
+        title: "remote",
+        mode: "workspace",
+        workspaceId: "ws_a",
+        workspaceOrderedAt: 9_000,
+        lastMessageAt: 1,
+      }])],
+      ALL,
+    );
+
+    expect(merged.find(row => row.id === "local")!.workspaceOrderedAt).toBe(4_000);
+    expect(merged.find(row => row.id === "remote")!.workspaceOrderedAt).toBe(9_000);
+    // A source that does not report one says so, rather than reporting "now".
+    const undated = mergeConversations([], [catalog("desktop_a", [{ sessionId: "old", title: "old", lastMessageAt: 1 }])], ALL);
+    expect(undated[0]!.workspaceOrderedAt).toBeNull();
+  });
+
   it("drops deleted local threads but keeps archived ones listed", () => {
     const merged = mergeConversations(
       [
@@ -316,21 +424,76 @@ describe("mergeConversations", () => {
     });
 
     /**
-     * Headings move with activity: a list whose groups are fixed to an arbitrary
-     * machine order buries the workspace the user was just working in.
+     * A group is ordered by the workspace's *own* place, never by its rows'.
+     *
+     * Ordering groups by their newest conversation reads as reasonable — the
+     * list is ordered by time — and is wrong in the two ways that matter: the
+     * group jumps while the reader is working in it (a reply moves it to the top,
+     * and the next catalogue read moves it back), and the merged list then
+     * disagrees with the list of this machine alone, which orders workspaces by
+     * when *they* were last touched. So the rows' recency decides the order
+     * inside a group and nothing about the group's place.
      */
-    it("orders groups by their most recent row", () => {
+    it("orders groups by the workspace's own place, not by their conversations", () => {
       const grouped = groupMergedRows(rows(
         [
-          thread({ id: "old_ws", mode: "workspace", workspaceId: "ws_old", updatedAt: 10 }),
-          thread({ id: "new_ws", mode: "workspace", workspaceId: "ws_new", updatedAt: 900 }),
+          // The busier workspace, and the older one: a list that ordered groups
+          // by their rows would put it first.
+          thread({ id: "busy", mode: "workspace", workspaceId: "ws_busy", updatedAt: 900, workspaceOrderedAt: 10 }),
+          thread({ id: "quiet", mode: "workspace", workspaceId: "ws_quiet", updatedAt: 20, workspaceOrderedAt: 500 }),
         ],
         [],
       ));
 
       // Keyed by the workspace id alone for this machine, which is also the key
       // the local list folds by (see `groupMergedRows`).
-      expect(grouped.workspaces.map(group => group.key)).toEqual(["ws_new", "ws_old"]);
+      expect(grouped.workspaces.map(group => group.key)).toEqual(["ws_quiet", "ws_busy"]);
+      expect(grouped.workspaces.map(group => group.orderedAt)).toEqual([500, 10]);
+    });
+
+    /** A conversation arriving inside a workspace must not move the workspace. */
+    it("holds a group's place while a reply lands in it", () => {
+      const group = (updatedAt: number) => groupMergedRows(rows(
+        [thread({ id: "t", mode: "workspace", workspaceId: "ws_1", updatedAt, workspaceOrderedAt: 100 })],
+        [],
+      )).workspaces[0]!;
+
+      // The row's own time moves by hours; the group's place does not.
+      const before = group(10);
+      const after = group(9_000);
+      expect(after.orderedAt).toBe(before.orderedAt);
+      expect(after.rows[0]!.lastMessageAt).toBeGreaterThan(before.rows[0]!.lastMessageAt!);
+    });
+
+    /**
+     * Two workspaces equally placed: this machine's first, then a host by its
+     * device id — the same rule the rows of a chat section are ordered by.
+     */
+    it("breaks a tie on the machine, this machine first", () => {
+      const grouped = groupMergedRows(rows(
+        [thread({ id: "local_ws", mode: "workspace", workspaceId: "ws_x", workspaceOrderedAt: 7 })],
+        [
+          catalog("desktop_b", [{
+            sessionId: "b_ws",
+            title: "on b",
+            mode: "workspace",
+            workspaceId: "ws_x",
+            workspaceOrderedAt: 7,
+            lastMessageAt: 7,
+          }]),
+          catalog("desktop_a", [{
+            sessionId: "a_ws",
+            title: "on a",
+            mode: "workspace",
+            workspaceId: "ws_x",
+            workspaceOrderedAt: 7,
+            lastMessageAt: 7,
+          }]),
+        ],
+      ));
+
+      expect(grouped.workspaces.map(group => group.desktopId))
+        .toEqual([null, "desktop_a", "desktop_b"]);
     });
 
     /**
