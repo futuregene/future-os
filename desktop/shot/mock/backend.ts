@@ -23,7 +23,6 @@ import {
   providersView,
   refreshedSessionUsage,
   remoteConversationState,
-  remoteEntries,
   remoteFileListing,
   remotePeers,
   remoteSessions,
@@ -43,7 +42,7 @@ import {
   workspaceFiles,
   workspaces,
 } from "./data";
-import { streamedEntries, streamRemoteRun } from "./remoteStream";
+import { sessionEntries, streamRemoteRun } from "./remoteStream";
 
 // The console output doubles as the "what is missing" list while iterating on
 // the harness, which is why this one log call is intentional.
@@ -573,10 +572,7 @@ const handlers: Record<string, (args: any) => unknown> = {
     switch (command.type) {
       case "get_session_entries":
         return {
-          entries: [
-            ...(remoteEntries[String(command.sessionId)] ?? []),
-            ...streamedEntries(String(command.sessionId)),
-          ],
+          entries: sessionEntries(String(command.sessionId)),
           hasMore: false,
           nextOffset: 0,
         };

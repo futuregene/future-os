@@ -75,6 +75,22 @@ export class RemoteRunStreams {
     this.startedAt.delete(runId);
   }
 
+  /**
+   * The conversation's page moved the boundary: start the reply over from it.
+   *
+   * What the pushes built is the transcript's *tail* (`foldLiveReply` draws the
+   * page's part and then this one), so a page read while a run is live leaves the
+   * two overlapping — and a delta that arrived before the read is content the page
+   * now carries. Dropping the projectors is what keeps them disjoint.
+   *
+   * The run's own clock survives, unlike {@link clear}: the run did not start
+   * again, and a reader who reconnected mid-reply should not watch the elapsed
+   * time fall back to zero.
+   */
+  restart(): void {
+    this.projectors.clear();
+  }
+
   /** Another conversation is being opened: nothing here belongs to it. */
   clear(): void {
     this.projectors.clear();

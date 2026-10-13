@@ -1411,6 +1411,10 @@ export const remoteToolArgs: Record<string, { name: string; arguments: Record<st
   rtc_2: { name: "shell", arguments: { command: "Rscript analysis/effect-size.R" } },
   rtc_3: { name: "read", arguments: { file_path: "analysis/fig2-forest.R" } },
   rtc_4: { name: "read", arguments: { file_path: "analysis/figS3.R" } },
+  // The call the mid-flight run makes while the reader is watching (`remoteStream.ts`):
+  // its row is drawn from the push lane, and fetched back by identity once the
+  // transcript's own page carries it.
+  call_note: { name: "write", arguments: { path: "analysis/forest-ci-note.md" } },
 };
 
 /** A remote conversation's model and thinking level (the host's settings). */
