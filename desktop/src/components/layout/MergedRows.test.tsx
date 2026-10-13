@@ -82,7 +82,8 @@ async function render(props: {
   onToggleWorkspace?: (key: string) => void;
   onToggleWorkspaceSection?: () => void;
   peers?: RemotePeer[];
-  remoteRowMeta?: ReadonlyMap<string, { depth: number; hasChildren: boolean }>;
+  /** Where each listed row sits in the shared list's tree, by row key. */
+  rowMeta?: ReadonlyMap<string, { depth: number; hasChildren: boolean }>;
   remoteSelection?: {
     selected: (conversation: MergedConversation) => boolean;
     selectable: (conversation: MergedConversation) => boolean;
@@ -90,6 +91,8 @@ async function render(props: {
   };
   renderLocalGroupHeader?: (workspaceId: string) => React.ReactNode;
   renderLocalRow: (thread: StoredThread, depth?: number, hasChildren?: boolean) => React.ReactNode;
+  /** Which conversation each row hangs under, by row key (see `MergedRows`). */
+  rowRoots?: ReadonlyMap<string, MergedConversation>;
   rows: MergedConversation[];
   selectionMode?: boolean;
   threadById: Map<string, StoredThread>;
@@ -106,7 +109,6 @@ async function render(props: {
         collapsedWorkspaces={props.collapsedWorkspaces ?? new Set()}
         expandedRemoteRows={props.expandedRemoteRows ?? new Set()}
         filter={props.filter ?? { kind: "all" }}
-        localRowMeta={new Map()}
         onChangedRemote={vi.fn()}
         onDeletedRemote={vi.fn()}
         onNewChat={props.onNewChat}
@@ -121,10 +123,11 @@ async function render(props: {
         onToggleWorkspace={props.onToggleWorkspace ?? vi.fn()}
         onToggleWorkspaceSection={props.onToggleWorkspaceSection ?? vi.fn()}
         peers={props.peers ?? []}
-        remoteRowMeta={props.remoteRowMeta ?? new Map()}
+        rowMeta={props.rowMeta ?? new Map()}
         remoteSelection={props.remoteSelection}
         renderLocalGroupHeader={props.renderLocalGroupHeader ?? (() => null)}
         renderLocalRow={props.renderLocalRow}
+        rowRoots={props.rowRoots ?? new Map()}
         rows={props.rows}
         selectionMode={props.selectionMode ?? false}
         threadById={props.threadById}
@@ -287,6 +290,40 @@ it("merges every machine's chats into one section, in time order", async () => {
   // (rendered by the rail's own renderer, which this test stubs as "row"), then
   // the other host's older one.
   expect(section.textContent).toBe("newest💻rowolder💻");
+  await view.unmount();
+});
+
+/**
+ * A fork is drawn under the conversation it came from, whatever order the rows
+ * arrive in.
+ *
+ * The merged list ranks *blocks* rather than rows, because a fork's own timestamp
+ * is newer than its parent's — ranking rows put a fork above the conversation it
+ * was forked from, so the parent's `+` appeared to reveal nothing.
+ */
+it("draws a fork under the conversation it hangs under", async () => {
+  const parent = conversation({ desktopId: "desktop_a", id: "parent", key: "desktop_a::parent", lastMessageAt: 10, title: "Parent" });
+  const fork = conversation({
+    desktopId: "desktop_a",
+    id: "fork",
+    key: "desktop_a::fork",
+    lastMessageAt: 20,
+    parentKey: "desktop_a::parent",
+    title: "Fork",
+  });
+  const view = await render({
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    // The fork first, as the merge orders rows by time: the tree's answer is what
+    // puts it back under its parent.
+    rowRoots: new Map([[fork.key, parent]]),
+    rows: [fork, parent],
+    threadById: new Map(),
+  });
+
+  expect([...view.container.querySelectorAll("div[class*='group/thread']")]
+    .map(row => (row.textContent ?? "").trim()))
+    .toEqual(["Parent💻", "Fork💻"]);
   await view.unmount();
 });
 
