@@ -54,7 +54,7 @@ jest.mock("lucide-react-native", () => ({
   Search: "Search",
   X: "X",
 }));
-jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" }));
+jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView", useSafeAreaInsets: () => ({ top: 24, bottom: 34, left: 0, right: 0 }) }));
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) => (options?.name ? `${key}: ${options.name}` : key),
@@ -64,6 +64,11 @@ jest.mock("react-i18next", () => ({
 
 let tree: ReactTestRenderer;
 const props = { onClose: jest.fn(), onCheckUpdate: jest.fn(), checkingUpdate: false };
+/**
+ * The provider pages are desktop-scoped: they are reached through a paired
+ * desktop's own page, so the stack is opened for one here.
+ */
+const deviceProps = { ...props, deviceId: "desktop" };
 const link = (label: string) => tree.root.findAllByType(SettingsLink).find(node => node.props.label === label)!;
 const button = (label: string) => tree.root.findAllByType(Button).find(node => node.props.label === label)!;
 const input = (label: string) => tree.root.findAllByType(TextInput).find(node => node.props.accessibilityLabel === label)!;
@@ -102,7 +107,7 @@ beforeEach(async () => {
       models: [{ id: "acme-large", name: "Acme Large", supportsImages: true, reasoning: true, contextWindow: 128000, maxTokens: 16384, inputCost: 1.5, outputCost: 6, cacheReadCost: 0, cacheWriteCost: 0 }],
     }],
   };
-  await act(async () => { tree = create(createElement(SettingsScreen, props)); });
+  await act(async () => { tree = create(createElement(SettingsScreen, deviceProps)); });
 });
 afterEach(() => act(() => tree.unmount()));
 
@@ -464,12 +469,12 @@ test("a second save cannot overlap the write already in flight", async () => {
 
 test("an older desktop hides the provider pages and an offline one disables them", async () => {
   mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1"]);
-  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
   expect(link("desktopSettings.providers").props.disabled).toBe(true);
 
   mockRemote.desktopOnline = false;
   mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "provider_management_v1"]);
-  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
   expect(link("desktopSettings.providers").props.disabled).toBe(true);
   expect(mockRemote.listProviders).not.toHaveBeenCalled();
 });
