@@ -37,15 +37,22 @@ export type QuestionRung =
  *
  * The list is inverted, so `viewPosition: 1` puts a row's *start* just under
  * the viewport's top edge while `viewPosition: 0` puts its *end* just above the
- * bottom edge: the mirror swaps which edge `scrollToIndex` aligns. A question
- * lands by its **start** (the turn is read forward from there, the answer
- * filling the screen below it), and a reply's last slice lands by its **end**,
- * so the prose the reader came for is the last thing above the composer rather
- * than scrolled off the top.
+ * bottom edge: the mirror swaps which edge `scrollToIndex` aligns. A rung lands
+ * by its **start** — a question is read forward from there, and so is an
+ * answer: a press that reaches the previous answer is the reader going back to
+ * read it, and an answer taller than the screen arrived at by its end leaves
+ * the half they wanted to start from above the viewport, reachable only by
+ * dragging. (Landing a reply by the row *below* it — what this used to do,
+ * aligning that row to the top edge — put the answer above the viewport
+ * entirely: the reader saw the next question at the top and the answer they
+ * asked for was gone.)
  *
- * Landing a reply by the row *below* it — what this used to do, aligning that
- * row to the top edge — put the answer above the viewport instead: the reader
- * saw the next question at the top and the answer they asked for was gone.
+ * The transcript's own newest row is the one exception, and lands by its
+ * **end**, because that end *is* the tail: the place the list rests at, and the
+ * one a press has to be able to bring the reader back to. So ↓'s last step
+ * comes to rest at the bottom of the conversation instead of the top of the
+ * newest answer, and ↑ then ↓ from a freshly opened conversation returns to
+ * where the reader started.
  */
 export interface RungLanding {
   index: number;
@@ -53,9 +60,9 @@ export interface RungLanding {
 }
 
 export function rungLanding(rung: QuestionRung): RungLanding {
-  return rung.kind === "question"
-    ? { index: rung.question, edge: "top" }
-    : { index: rung.index, edge: "bottom" };
+  const index = rung.kind === "question" ? rung.question : rung.index;
+  // View index 0 is the newest row: the tail, whichever kind landed there.
+  return { index, edge: index === 0 ? "bottom" : "top" };
 }
 
 /** Whether two rungs are the same step of the ladder, across rebuilds. */

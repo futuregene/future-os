@@ -132,11 +132,30 @@ describe("buildLadder", () => {
 });
 
 describe("where a rung lands", () => {
-  test("a question lands by its start, a reply by its end", () => {
+  test("a question and an answer both land by their start", () => {
     // The inverted list aligns a start at `viewPosition: 1` and an end at 0;
-    // the hook is what turns these into a scroll (see useQuestionNav).
+    // the hook is what turns these into a scroll (see useQuestionNav). An
+    // answer included: coming back up to one, the reader reads it forward from
+    // its first line.
     expect(rungLanding(rungAt(1))).toEqual({ index: 1, edge: "top" });
+    expect(rungLanding(rungAt(2))).toEqual({ index: 3, edge: "top" });
+    expect(rungLanding(rungAt(4))).toEqual({ index: 5, edge: "top" });
+  });
+
+  test("the transcript's newest row lands by its end, which is the tail", () => {
+    // The rung the walk comes down to last must leave the reader at the bottom
+    // of the conversation rather than at the top of the newest answer: its end
+    // is where the list rests (see rungLanding).
     expect(rungLanding(rungAt(0))).toEqual({ index: 0, edge: "bottom" });
+  });
+
+  test("a question that is itself the newest row lands at the tail too", () => {
+    // An unanswered prompt: nothing newer than it exists, so its end is the
+    // tail the same way a reply's is.
+    expect(rungLanding({ kind: "question", question: 0 })).toEqual({
+      index: 0,
+      edge: "bottom",
+    });
   });
 
   test("a rung is found by what it is, not by where it sat", () => {
