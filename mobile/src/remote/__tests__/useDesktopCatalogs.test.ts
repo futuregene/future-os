@@ -22,6 +22,7 @@ interface MockCallbacks {
   onCatalogEpoch(epoch: string | undefined): void;
   onPresence(presence: Presence): void;
   onSessions(sessions: RemoteSession[], version?: { epoch: string; revision: number }): void;
+  onFeatures(features: string[]): void;
   onConnectionState(state: string): void;
   onReconnected(): void;
   onError(error: unknown): void;
@@ -387,7 +388,8 @@ describe("useDesktopCatalogs", () => {
     expect(catalogReads(client)).toBe(2);
   });
 
-  test("one machine's conversation is commanded through that machine's connection", async () => {    await render();
+  test("one machine's conversation is commanded through that machine's connection", async () => {
+    await render();
     const client = clientFor("desktop_2");
     act(() => {
       client.callbacks.onCatalogEpoch("epoch-1");
@@ -397,9 +399,9 @@ describe("useDesktopCatalogs", () => {
     const commands = result.current.commandsFor("desktop_2");
     expect(commands).not.toBeNull();
     await act(async () => {
-      await commands!.rename("s9", "  Renamed  ");
-      await commands!.setPinned("s9", "thread-s9", true);
-      await commands!.delete("s9", "thread-s9");
+      await commands!.renameSession("s9", "  Renamed  ");
+      await commands!.setSessionPinned("s9", "thread-s9", true);
+      await commands!.deleteSession("s9", "thread-s9");
     });
 
     // Addressed to the machine that owns the row, and on that row's own lane.
@@ -426,5 +428,79 @@ describe("useDesktopCatalogs", () => {
     });
     expect(result.current.commandsFor("desktop_2")).toBeNull();
     expect(result.current.commandsFor("desktop_3")).toBeNull();
+  });
+
+  /**
+   * A peer's workspaces answer to the same rule as its conversations: the
+   * command goes down the connection that machine's rows already travel on, and
+   * what the machine can do travels with it.
+   */
+  test("a peer's workspaces are commanded through its own connection", async () => {
+    await render();
+    const client = clientFor("desktop_2");
+    act(() => {
+      client.callbacks.onCatalogEpoch("epoch-1");
+      client.callbacks.onConnectionState("ready");
+      client.callbacks.onFeatures(["workspace_pinning_v1", "fork_v1"]);
+    });
+
+    const commands = result.current.commandsFor("desktop_2")!;
+    // What the machine said it supports, from the handshake: a heading must not
+    // offer a pin a host too old for it would refuse.
+    expect([...commands.capabilities]).toEqual(["workspace_pinning_v1", "fork_v1"]);
+
+    await act(async () => {
+      await commands.renameWorkspace("w9", "  Reviewed  ");
+      await commands.setWorkspacePinned("w9", true);
+      await commands.deleteWorkspace("w9");
+    });
+
+    expect(client.request).toHaveBeenCalledWith(
+      { type: "rename_workspace", workspaceId: "w9", name: "Reviewed" },
+      "list",
+    );
+    expect(client.request).toHaveBeenCalledWith(
+      { type: "set_workspace_pinned", workspaceId: "w9", pinned: true },
+      "list",
+    );
+    expect(client.request).toHaveBeenCalledWith(
+      { type: "delete_workspace", workspaceId: "w9" },
+      "list",
+    );
+  });
+
+  /**
+   * A delete drops the rows it removed before the (possibly slow, possibly lost)
+   * read that confirms it: the command is the user's statement of fact, and a
+   * conversation that is gone must not stay on screen because a read is late.
+   */
+  test("a delete takes its rows off the list at once", async () => {
+    await render();
+    const client = clientFor("desktop_2");
+    act(() => {
+      client.callbacks.onCatalogEpoch("epoch-1");
+      client.callbacks.onConnectionState("ready");
+      client.callbacks.onSessions(
+        [
+          { ...session("gone"), workspaceId: "w9" },
+          { ...session("kept"), workspaceId: "w9" },
+          { ...session("elsewhere"), workspaceId: "w1" },
+        ],
+        { epoch: "epoch-1", revision: 5 },
+      );
+    });
+    const ids = () => result.current.catalogs[0]!.sessions.map(item => item.sessionId);
+    expect(ids()).toEqual(["gone", "kept", "elsewhere"]);
+
+    await act(async () => {
+      await result.current.commandsFor("desktop_2")!.deleteSession("gone", "thread-gone");
+    });
+    expect(ids()).toEqual(["kept", "elsewhere"]);
+
+    // Removing the workspace removes its conversations, on this list too.
+    await act(async () => {
+      await result.current.commandsFor("desktop_2")!.deleteWorkspace("w9");
+    });
+    expect(ids()).toEqual(["elsewhere"]);
   });
 });

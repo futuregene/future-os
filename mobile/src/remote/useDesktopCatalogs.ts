@@ -2,7 +2,7 @@ import type { ConnectionState } from "./connectionState";
 import type { MachineSummary, MachineStatus } from "./desktopStatus";
 import { peerMachineStatus } from "./desktopStatus";
 import type { CatalogEntry } from "./mergeSessions";
-import type { SessionCommands } from "./sessionCommands";
+import type { DesktopCommands } from "./desktopCommands";
 import type {
   CatalogRevisions,
   Presence,
@@ -66,6 +66,8 @@ interface PeerRuntime {
   gate: CatalogVersionGate;
   /** The epoch the handshake authenticated this connection at. */
   epoch: string | undefined;
+  /** What the machine said it supports, from the same handshake. */
+  capabilities: ReadonlySet<string>;
   presence: Presence | null;
   presenceState: PresenceState;
   /** When this phone last heard from the machine, on its own clock. */
@@ -92,16 +94,16 @@ export interface DesktopCatalogsState {
    */
   reconnect: () => Promise<void>;
   /**
-   * The session commands one machine answers, or null when it cannot answer any.
+   * The commands one machine answers, or null when it cannot answer any.
    *
-   * A row merged in from another machine is that machine's conversation, so its
-   * rename, pin, delete and title commands go down *its* own connection — the
-   * one this hook already holds — instead of the active one, which has never
-   * heard of that session. Null says the machine cannot take a command right
-   * now (no connection, or one that gave up), which is what a caller needs to
-   * know before offering the action at all.
+   * A row merged in from another machine is that machine's conversation (or its
+   * workspace), so its rename, pin, delete and title commands go down *its* own
+   * connection — the one this hook already holds — instead of the active one,
+   * which has never heard of that session. Null says the machine cannot take a
+   * command right now (no connection, or one that gave up), which is what a
+   * caller needs to know before offering the action at all.
    */
-  commandsFor: (desktopId: string) => SessionCommands | null;
+  commandsFor: (desktopId: string) => DesktopCommands | null;
 }
 
 /**
@@ -227,7 +229,14 @@ async function openCatalogClient(
       onChanged();
     },
     onWorkspaces: (_workspaces) => {},
-    onFeatures: () => {},
+    onFeatures: (features) => {
+      if (!isCurrent()) return;
+      // What this machine offers, for the rows that may be offered on it: a
+      // host too old for workspace pinning answers without that feature, and its
+      // headings must not offer a pin it would refuse.
+      runtime.capabilities = new Set(features);
+      onChanged();
+    },
     onConnectionState: (state) => {
       if (!isCurrent()) return;
       runtime.connection = state;
@@ -390,6 +399,7 @@ export function useDesktopCatalogs(
             client: null as unknown as RemoteClient,
             gate: new CatalogVersionGate(),
             epoch: undefined,
+            capabilities: new Set<string>(),
             presence: null,
             presenceState: INITIAL_PRESENCE_STATE,
             presenceAt: 0,
@@ -446,7 +456,7 @@ export function useDesktopCatalogs(
   }, [publish, refresh]);
 
   /**
-   * One machine's session commands, addressed to that machine.
+   * One machine's commands, addressed to that machine.
    *
    * The client is looked up per call rather than captured, so a command issued
    * across a reconnect goes down whichever connection is current — and a
@@ -456,18 +466,22 @@ export function useDesktopCatalogs(
    * Each command re-reads that machine's catalogue once the host accepted it,
    * the same way the desktop app does: the host pushes the change too, but that
    * push can be lost, and the phone should not show a list that disagrees with
-   * the change it just made.
+   * the change it just made. A delete also drops its rows here first — the
+   * command is the user's statement of fact, and a conversation that is gone
+   * must not linger on screen because a read is slow.
    */
-  const commandsFor = useCallback((desktopId: string): SessionCommands | null => {
+  const commandsFor = useCallback((desktopId: string): DesktopCommands | null => {
     const runtime = runtimesRef.current.get(desktopId);
     if (!runtime || runtime.failed || runtime.connection !== "ready") return null;
     const current = () => runtimesRef.current.get(desktopId) === runtime;
+    /** Re-read the catalogue and publish, reporting a read that failed. */
     const accepted = async (): Promise<void> => {
       await readCatalog(runtime, current).catch(() => undefined);
       if (current()) publish();
     };
     return {
-      rename: async (sessionId, name) => {
+      capabilities: runtime.capabilities,
+      renameSession: async (sessionId, name) => {
         await runtime.client.request({ type: "set_session_name", sessionId, name: name.trim() }, sessionId);
         await accepted();
       },
@@ -481,12 +495,35 @@ export function useDesktopCatalogs(
         if (!title) throw new Error("title_generation_failed");
         return title;
       },
-      setPinned: async (sessionId, threadId, pinned) => {
+      setSessionPinned: async (sessionId, threadId, pinned) => {
         await runtime.client.request({ type: "set_session_pinned", sessionId, threadId, pinned }, sessionId);
         await accepted();
       },
-      delete: async (sessionId, threadId) => {
+      deleteSession: async (sessionId, threadId) => {
         await runtime.client.request({ type: "delete_session", sessionId, threadId }, sessionId);
+        runtime.sessions = runtime.sessions.filter(session => session.sessionId !== sessionId);
+        await accepted();
+      },
+      renameWorkspace: async (workspaceId, name) => {
+        // A workspace's name rides on its conversations' rows (that is how a
+        // merged list labels a group at all), so the read that follows the
+        // acknowledgement is what brings the new name to the heading.
+        await runtime.client.request(
+          { type: "rename_workspace", workspaceId, name: name.trim() },
+          "list",
+        );
+        await accepted();
+      },
+      setWorkspacePinned: async (workspaceId, pinned) => {
+        await runtime.client.request({ type: "set_workspace_pinned", workspaceId, pinned }, "list");
+        await accepted();
+      },
+      deleteWorkspace: async (workspaceId) => {
+        await runtime.client.request({ type: "delete_workspace", workspaceId }, "list");
+        // The host removes the workspace's conversations with it.
+        runtime.sessions = runtime.sessions.filter(
+          session => (session.workspaceId ?? "") !== workspaceId,
+        );
         await accepted();
       },
     };

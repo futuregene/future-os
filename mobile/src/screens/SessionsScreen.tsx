@@ -33,7 +33,7 @@ import { useRemoteControls as useRemote } from "../remote/RemoteContext";
 import { activeMachineStatus, type MachineSummary } from "../remote/desktopStatus";
 import { useDesktopCatalogs } from "../remote/useDesktopCatalogs";
 import { mergeSessions, type DesktopFilter } from "../remote/mergeSessions";
-import type { SessionCommands } from "../remote/sessionCommands";
+import type { DesktopCommands } from "../remote/desktopCommands";
 import { iconGlyph } from "../remote/peerIcons";
 import type { RemoteSession } from "../remote/types";
 import { SessionList } from "./SessionList";
@@ -100,6 +100,37 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     for (const desktop of remote.desktops) map.set(desktop.desktopId, iconGlyph(desktop.icon));
     return map;
   }, [remote.desktops]);
+  /**
+   * The commands a row's own machine answers.
+   *
+   * The row belongs to the machine it came from, so its rename, pin, delete and
+   * workspace actions go there: through this screen's own connection for the
+   * desktop the phone is talking to, and down that other machine's own
+   * connection for a row merged in from it. Both speak the same commands (a
+   * desktop answers a paired client with the same ones it answers its own
+   * window with), so everything that acts on a row holds one of these — and a
+   * machine that cannot take a command answers null, which is what keeps an
+   * action from being offered where it could only fail.
+   */
+  const activeCommands = useMemo<DesktopCommands>(() => ({
+    capabilities: remote.capabilities,
+    renameSession: remote.rename,
+    generateTitle: remote.generateTitle,
+    setSessionPinned: remote.setSessionPinned,
+    deleteSession: remote.deleteSession,
+    renameWorkspace: remote.renameWorkspace,
+    setWorkspacePinned: remote.setWorkspacePinned,
+    deleteWorkspace: remote.deleteWorkspace,
+  }), [
+    remote.capabilities,
+    remote.deleteSession,
+    remote.deleteWorkspace,
+    remote.generateTitle,
+    remote.rename,
+    remote.renameWorkspace,
+    remote.setSessionPinned,
+    remote.setWorkspacePinned,
+  ]);
   /** How every other paired machine stands, by desktop id. */
   const peerReady = useMemo(
     () => new Set(
@@ -109,42 +140,32 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     ),
     [catalogs.machines],
   );
-  /**
-   * The commands a row's own machine answers.
-   *
-   * The row belongs to the machine it came from, so its rename, pin, delete and
-   * title commands go there: through this screen's own connection for the
-   * desktop the phone is talking to, and down that other machine's own
-   * connection for a row merged in from it. Both speak the same commands (a
-   * desktop answers a paired client with the same ones it answers its own
-   * window with), so everything below is written once — and a machine that
-   * cannot take a command answers null, which is what keeps an action from
-   * being offered where it could only fail.
-   */
   const commandsFor = useCallback(
-    (desktopId: string | null): SessionCommands | null =>
-      !desktopId || desktopId === activeDesktopId
-        ? {
-          rename: remote.rename,
-          generateTitle: remote.generateTitle,
-          setPinned: remote.setSessionPinned,
-          delete: remote.deleteSession,
-        }
-        : catalogs.commandsFor(desktopId),
-    [activeDesktopId, catalogs, remote.deleteSession, remote.generateTitle, remote.rename, remote.setSessionPinned],
+    (desktopId: string | null): DesktopCommands | null => {
+      // A row with no source is the active desktop's (the ordinary list has one
+      // machine), and that machine answers only while its connection says so —
+      // the same judgement the badge makes, since `desktopOnline` is the
+      // presence heartbeat it renders from.
+      if (!desktopId || desktopId === activeDesktopId)
+        return remote.desktopOnline ? activeCommands : null;
+      // A peer answers while its own status says `connected` — the badge's green,
+      // the one state in which a host takes work at all: while its agent restarts
+      // it refuses, and after its heartbeat stops there may be nothing there. Its
+      // connection hands out commands only from that state, so the two cannot
+      // disagree about a row.
+      return peerReady.has(desktopId) ? catalogs.commandsFor(desktopId) : null;
+    },
+    [activeCommands, activeDesktopId, catalogs, peerReady, remote.desktopOnline],
   );
   /**
    * Whether a row's own machine can answer its commands right now.
    *
    * A peer counts only while it is `connected` — the badge's own green, the one
    * state in which a host answers at all (transport ready, heartbeat fresh,
-   * agent running). The active machine keeps the judgement this screen already
-   * made from its connection.
+   * agent running) — which is exactly when its connection hands out commands.
+   * The active machine is read from the connection this screen renders from.
    */
-  const canCommand = (desktopId: string | null): boolean =>
-    !desktopId || desktopId === activeDesktopId
-      ? remote.desktopOnline
-      : peerReady.has(desktopId);
+  const canCommand = (desktopId: string | null): boolean => commandsFor(desktopId) !== null;
   const setTab = (next: Tab) => {
     lastTab = next;
     setTabState(next);
@@ -310,7 +331,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
    */
   const runCommand = (
     row: SessionRow,
-    run: (commands: SessionCommands) => Promise<void>,
+    run: (commands: DesktopCommands) => Promise<void>,
   ): void => {
     const commands = commandsFor(row.desktopId);
     void (commands ? run(commands) : Promise.reject(new Error("machine_unavailable")))
@@ -323,7 +344,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     const commands = commandsFor(row.desktopId);
     try {
       if (!commands) throw new Error("machine_unavailable");
-      await commands.rename(row.session.sessionId, name);
+      await commands.renameSession(row.session.sessionId, name);
     } catch {
       Alert.alert(t("common.error"));
     }
@@ -344,7 +365,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
 
   const togglePin = (row: SessionRow) => {
     runCommand(row, commands =>
-      commands.setPinned(row.session.sessionId, row.session.threadId, !row.session.pinned));
+      commands.setSessionPinned(row.session.sessionId, row.session.threadId, !row.session.pinned));
   };
 
   const confirmDelete = (row: SessionRow) => {
@@ -360,7 +381,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           style: "destructive",
           onPress: () => {
             runCommand(row, commands =>
-              commands.delete(row.session.sessionId, row.session.threadId));
+              commands.deleteSession(row.session.sessionId, row.session.threadId));
           },
         },
       ],
@@ -555,7 +576,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           onTabChange={setTab}
           activeDesktopId={remote.credentials?.expectedDesktopId ?? null}
           icons={peerIcons}
-          peerReady={peerReady}
+          commandsFor={commandsFor}
           merged={showMerged ? mergedRows : undefined}
           empty={tab === "workspace" ? workspaceEmpty : !connected ? offlineEmpty : createChatEmpty}
           onMenu={openSessionMenu}
