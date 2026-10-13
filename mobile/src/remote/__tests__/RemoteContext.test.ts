@@ -516,6 +516,46 @@ describe("RemoteProvider over several desktops", () => {
     expect(remote.phase).not.toBe("unpaired");
   });
 
+  test("a machine nobody is reading is reached again after its connection gave up", async () => {
+    jest.useFakeTimers();
+    try {
+      await mount();
+      await settle();
+      const office = clientFor("desktop_2");
+      act(() => { clientFor("desktop_2").callbacks.onConnectionState?.("failed" as never); });
+      await settle();
+
+      // Nothing on screen offers a way back for a machine the user is not
+      // reading, so the phone keeps trying: a desktop that was asleep when the
+      // app started must not read offline until the app restarts.
+      await act(async () => { jest.advanceTimersByTime(60_000); });
+      await settle();
+      expect(office.close).toHaveBeenCalled();
+      expect(clientsFor("desktop_2")).toHaveLength(2);
+      // The machine being read is the user's to retry, and is left alone.
+      expect(clientsFor("desktop_1")).toHaveLength(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("a machine that is merely connecting is left to its own recovery", async () => {
+    jest.useFakeTimers();
+    try {
+      await mount();
+      await settle();
+      act(() => { clientFor("desktop_2").callbacks.onConnectionState?.("reconnecting" as never); });
+      await settle();
+      await act(async () => { jest.advanceTimersByTime(180_000); });
+      await settle();
+      // Rebuilding a machine that is already recovering would throw away a
+      // handshake in flight.
+      expect(clientsFor("desktop_2")).toHaveLength(1);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test("a desktop dropped from storage keeps the app on the picker rather than a phantom", async () => {
     jest.mocked(loadPairedDesktops).mockResolvedValue([]);
     await mount();

@@ -328,6 +328,17 @@ function DesktopRuntimeHost({
   return null;
 }
 
+/**
+ * How often a machine the user is not reading is reached again after giving up.
+ *
+ * The open machine is the user's to retry — that is what the on-screen retry is
+ * for, and a connection that has given up does not reopen itself. A machine
+ * nobody is looking at has no such affordance, and a desktop that was asleep
+ * when the phone started would read offline until the app restarted, which is
+ * the one outcome "every paired desktop stays connected" cannot have.
+ */
+const MACHINE_BACKSTOP_MS = 60_000;
+
 function machineStatusOf(entry: RuntimeEntry): MachineStatus {
   const { phase, desktopOnline, presence } = entry.connection;
   return peerMachineStatus({
@@ -474,6 +485,27 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   );
 
   const { reconnect: rebuildDesktop } = pairing;
+  /**
+   * Reach the machines nobody is looking at again.
+   *
+   * Rebuilding is per machine and only for a connection that gave up or a
+   * desktop that announced it was going away: a revoked pairing is the user's
+   * to re-establish, and re-running a rejected handshake every minute is noise.
+   * Stopped here means the same as failed — the runtime is terminal either way,
+   * and (unlike the open machine) nothing on screen offers the way back.
+   */
+  useEffect(() => {
+    if (!foreground) return;
+    const timer = setInterval(() => {
+      for (const entry of registryRef.current.values()) {
+        if (entry.desktopId === activeDesktopId) continue;
+        const phase = entry.connection.phase;
+        if (phase === "failed" || phase === "stopped") rebuildDesktop(entry.desktopId);
+      }
+    }, MACHINE_BACKSTOP_MS);
+    return () => clearInterval(timer);
+  }, [activeDesktopId, foreground, rebuildDesktop]);
+
   const disconnectDesktop = useCallback((desktopId: string) => {
     const entry = registryRef.current.get(desktopId);
     const phase = entry?.connection.phase;
