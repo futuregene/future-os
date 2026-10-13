@@ -72,5 +72,7 @@ export type {
   RunReplay,
 } from "./replay";
 
+export { HISTORY_PAGE_USER_EXCHANGES, HISTORY_TAIL_CURSOR } from "./historyPage";
+
 export { shellResult } from "./shellResult";
 export type { ShellResult, ShellAttempt, ShellStatus } from "./shellResult";
