@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import type { AgentMessage, SessionEntry } from "@future-os/thread-projection";
+import type { RemoteApproval } from "./useRemoteApprovals";
 import { entriesToMessages } from "@future-os/thread-projection";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -56,6 +57,19 @@ function failedEntry(id: string, runId: string | null): SessionEntry {
   };
 }
 
+/** A pending approval the host is waiting on, as `useRemoteApprovals` builds it. */
+function approval(overrides: Partial<RemoteApproval> = {}): RemoteApproval {
+  return {
+    id: "approval_1",
+    sessionId: "sess_1",
+    toolName: "Bash",
+    title: "Run npm install",
+    summary: "npm install left-pad",
+    riskLevel: null,
+    ...overrides,
+  };
+}
+
 const peer = {
   agentAvailable: true,
   bridgeInstanceId: "bridge_1",
@@ -70,9 +84,16 @@ const peer = {
 
 async function mount(props: {
   entries: SessionEntry[];
+  /** Pending approvals the host is waiting on, drawn above the composer. */
+  approvals?: RemoteApproval[];
+  /** A decision that failed to reach the host, keyed by approval id. */
+  approvalErrors?: Record<string, string>;
+  /** The approval currently being answered, if any. */
+  approvalPending?: string | null;
   /** The reply the host is writing, if the test is about streaming. */
   live?: AgentMessage | null;
   onContinueRun?: (runId: string) => void;
+  onDecideApproval?: (approval: RemoteApproval, decision: "allow" | "deny") => void;
   onFork?: (sourceEntryId: string, forkable: boolean) => void;
   onOpenUsage?: () => void;
   persistedEntryIds?: string[];
@@ -81,6 +102,7 @@ async function mount(props: {
   const onFork = props.onFork ?? vi.fn();
   const onContinueRun = props.onContinueRun ?? vi.fn();
   const onOpenUsage = props.onOpenUsage ?? vi.fn();
+  const onDecideApproval = props.onDecideApproval ?? vi.fn();
   // The transcript is the projector's output, which is what the view renders:
   // one message per turn, not one per entry.
   const messages = entriesToMessages(props.entries);
@@ -90,9 +112,9 @@ async function mount(props: {
   await act(async () => {
     root.render(
       <RemoteConversationView
-        approvals={[]}
-        approvalErrors={{}}
-        approvalPending={null}
+        approvals={props.approvals ?? []}
+        approvalErrors={props.approvalErrors ?? {}}
+        approvalPending={props.approvalPending ?? null}
         desktopId="desktop_a"
         composer={<div data-testid="composer" />}
         messages={messages}
@@ -103,7 +125,7 @@ async function mount(props: {
         loading={false}
         loadingOlder={false}
         onContinueRun={onContinueRun}
-        onDecideApproval={() => {}}
+        onDecideApproval={onDecideApproval}
         onFork={onFork}
         onLoadOlder={() => {}}
         onOpenUsage={onOpenUsage}
@@ -120,7 +142,19 @@ async function mount(props: {
   return {
     container,
     onContinueRun,
+    onDecideApproval,
     onOpenUsage,
+    /**
+     * The approval card's two actions, read off the rendered buttons.
+     *
+     * Found by their own labels rather than by position: deny and allow are the
+     * decision the card exists for, and the card is the only place on the screen
+     * those words appear.
+     */
+    denyButton: () => [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(node => (node.textContent ?? "").trim() === "Deny"),
+    allowButton: () => [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(node => (node.textContent ?? "").trim() === "Allow"),
     // Revealed on hover in the product, but always mounted so it is reachable
     // by keyboard — which is also what makes it addressable here.
     // The fork control is the local transcript's own button. Its label is a
@@ -483,5 +517,79 @@ it("follows the pointer over the message it belongs to", async () => {
   // Still mounted while hidden and while shown: a control removed on mouse-out
   // is invisible to a keyboard user.
   expect(view.forkButtons()).toHaveLength(1);
+  await view.unmount();
+});
+
+// ── remote approvals ────────────────────────────────────────────────────────
+
+/**
+ * A pending approval is a card the reader has to answer now, and it says which
+ * machine the tool will run on.
+ *
+ * "Allow" on a card that did not name the machine reads as a local action, and
+ * the whole point of a remote approval is that it is not — so the machine name
+ * is part of what the card has to show, not decoration.
+ */
+it("renders a pending approval with its actions and the machine it runs on", async () => {
+  const view = await mount({
+    entries: [entry("u1", "user", "do it")],
+    approvals: [approval()],
+  });
+
+  const card = view.denyButton()!.closest("section")!;
+  expect(card.textContent).toContain("Run npm install");
+  expect(card.textContent).toContain("npm install left-pad");
+  expect(card.textContent).toContain("Runs on Studio iMac");
+  expect(view.denyButton()!.disabled).toBe(false);
+  expect(view.allowButton()!.disabled).toBe(false);
+  await view.unmount();
+});
+
+/** Denying answers the host with `deny`, on the approval the card belongs to. */
+it("reports a denial to the host", async () => {
+  const onDecideApproval = vi.fn();
+  const pending = approval();
+  const view = await mount({
+    entries: [entry("u1", "user", "do it")],
+    approvals: [pending],
+    onDecideApproval,
+  });
+
+  await act(async () => view.denyButton()!.click());
+  expect(onDecideApproval).toHaveBeenCalledWith(pending, "deny");
+  await view.unmount();
+});
+
+/** Allowing answers the host with `allow`. */
+it("reports an allowance to the host", async () => {
+  const onDecideApproval = vi.fn();
+  const pending = approval();
+  const view = await mount({
+    entries: [entry("u1", "user", "do it")],
+    approvals: [pending],
+    onDecideApproval,
+  });
+
+  await act(async () => view.allowButton()!.click());
+  expect(onDecideApproval).toHaveBeenCalledWith(pending, "allow");
+  await view.unmount();
+});
+
+/**
+ * One decision at a time.
+ *
+ * While the host is answering the current decision the card cannot be answered
+ * again: a second click would send a duplicate the host would refuse, and the
+ * disabled state is the only thing that stops it.
+ */
+it("disables both actions while a decision is pending", async () => {
+  const view = await mount({
+    entries: [entry("u1", "user", "do it")],
+    approvals: [approval()],
+    approvalPending: "approval_1",
+  });
+
+  expect(view.denyButton()!.disabled).toBe(true);
+  expect(view.allowButton()!.disabled).toBe(true);
   await view.unmount();
 });
