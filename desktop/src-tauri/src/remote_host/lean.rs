@@ -87,11 +87,28 @@ const TARGET_ARG_KEYS: [&str; 3] = ["path", "file_path", "filePath"];
 /// `coalescedCount` is the merge marker. The desktop does not subscribe to this
 /// subject at all (it only publishes), and the TUI speaks gRPC instead.
 ///
+/// `sessionId` is kept for a reason the other five do not have: a subject can
+/// carry the conversation, and for `evt.{session}` it does — but the
+/// `state.events` mirror's subject is host-wide, and the *same* body is
+/// published to both (`remote::publisher::publish_batch`). So on that one lane
+/// the envelope is the only place the conversation can be named, and a client
+/// that reads the mirror to keep the rest of its list fresh would drop every
+/// push it could not file. It costs a few tens of bytes on a lane this function
+/// has already reduced by two orders of magnitude (see the module header), and
+/// it is what lets the mirror stay self-describing.
+///
 /// The dropped keys stay recoverable from the agent, whose `get_events_since`
 /// carries `event_id`/`timestamp`/`session_id`/`epoch`/`session_idx`/
 /// `run_sequence` on every event -- the lane is a projection of that stream, not
 /// the only copy of it.
-const EVENT_BODY_KEYS: [&str; 5] = ["type", "data", "runId", "idx", "coalescedCount"];
+const EVENT_BODY_KEYS: [&str; 6] = [
+    "type",
+    "data",
+    "runId",
+    "idx",
+    "coalescedCount",
+    "sessionId",
+];
 
 /// Token counters a client reads out of a `usage` event.
 ///
@@ -758,6 +775,11 @@ mod tests {
     /// The lean envelope keeps the keys a subscriber reads and nothing else.
     /// Every dropped key is recoverable from the agent's own event stream, so
     /// the lane stays a projection rather than the only copy.
+    ///
+    /// `sessionId` is the one kept key that is *not* about what the phone reads:
+    /// it is kept because the `state.events` mirror's subject names no
+    /// conversation while the body on it is the very same body, so on that lane
+    /// the envelope is the only place the conversation can be named.
     #[test]
     fn lean_event_body_keeps_only_the_keys_a_subscriber_reads() {
         let mut body = json!({
@@ -776,7 +798,13 @@ mod tests {
         lean_event_body(&mut body);
         assert_eq!(
             body,
-            json!({"type": "tool_end", "data": "{\"tool_id\":\"c1\"}", "runId": "r-1", "idx": 42})
+            json!({
+                "sessionId": "s-1",
+                "type": "tool_end",
+                "data": "{\"tool_id\":\"c1\"}",
+                "runId": "r-1",
+                "idx": 42,
+            })
         );
 
         // The coalescer's merge marker must survive: the client reads it to know

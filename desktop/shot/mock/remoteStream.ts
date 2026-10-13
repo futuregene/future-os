@@ -27,6 +27,21 @@ export function streamingEnabled(): boolean {
 }
 
 /**
+ * Whether the host should answer on the *lean* lane — the trimmed envelope the
+ * real host sends once a client declares `lean_events_v1`.
+ *
+ * The other fixtures emit the full body, so nothing in the harness exercised the
+ * trim: a client that had come to depend on a field the trim removes would look
+ * perfectly healthy in every capture. This mode drops exactly what
+ * `remote_host::lean` drops, so the screens a reader sees are the ones the lean
+ * lane actually produces.
+ */
+export function leanEnabled(): boolean {
+  return typeof window !== "undefined"
+    && new URLSearchParams(window.location.search).get("remoteLean") === "1";
+}
+
+/**
  * The reply the streamed run produced, as the host's journal would have it.
  *
  * Kept so the history read serves it after the run ends: the client re-reads the
@@ -87,22 +102,35 @@ export function streamRemoteRun(sessionId: string, prompt: string): void {
   const frames: Frame[] = [{ type: "user_message", data: { text: prompt } }, ...FRAMES];
   frames.forEach((frame, index) => {
     setTimeout(() => {
+      const full = {
+        schemaVersion: 2,
+        sessionId: SESSION_ID,
+        type: frame.type,
+        data: typeof frame.data === "string" ? frame.data : JSON.stringify(frame.data ?? {}),
+        runId: RUN_ID,
+        idx: index,
+        epoch: 1,
+        eventId: `${SESSION_ID}:${RUN_ID}:${index}`,
+        timestamp: new Date(Date.now()).toISOString(),
+        sessionIdx: index,
+        runSequence: index,
+      };
       emit("remote-peer-event", {
         desktopId: DESKTOP_ID,
         kind: "event",
-        payload: {
-          schemaVersion: 2,
-          sessionId: SESSION_ID,
-          type: frame.type,
-          data: typeof frame.data === "string" ? frame.data : JSON.stringify(frame.data ?? {}),
-          runId: RUN_ID,
-          idx: index,
-          epoch: 1,
-          eventId: `${SESSION_ID}:${RUN_ID}:${index}`,
-          timestamp: new Date(Date.now()).toISOString(),
-          sessionIdx: index,
-          runSequence: index,
-        },
+        // The lean envelope, key for key: `eventId`/`timestamp`/`epoch`/
+        // `sessionIdx`/`runSequence`/`schemaVersion` are what the trim removes,
+        // and `sessionId` is what it deliberately keeps (the `state.events`
+        // mirror has no conversation in its subject).
+        payload: leanEnabled()
+          ? {
+              sessionId: SESSION_ID,
+              type: frame.type,
+              data: full.data,
+              runId: RUN_ID,
+              idx: index,
+            }
+          : full,
       });
     }, STREAM_STEP_MS * (index + 1));
   });
@@ -118,19 +146,30 @@ export function streamRemoteRun(sessionId: string, prompt: string): void {
     emit("remote-peer-event", {
       desktopId: DESKTOP_ID,
       kind: "event",
-      payload: {
-        schemaVersion: 2,
-        sessionId: SESSION_ID,
-        type: "agent_end",
-        data: JSON.stringify({}),
-        runId: RUN_ID,
-        idx: frames.length,
-        epoch: 1,
-        eventId: `${SESSION_ID}:${RUN_ID}:end`,
-        timestamp: new Date(Date.now()).toISOString(),
-        sessionIdx: frames.length,
-        runSequence: frames.length,
-      },
+      // Trimmed the same way as the frames above: the settle signal has to keep
+      // working on the lean lane, or a lean client would watch a reply that never
+      // becomes a record.
+      payload: leanEnabled()
+        ? {
+            sessionId: SESSION_ID,
+            type: "agent_end",
+            data: JSON.stringify({}),
+            runId: RUN_ID,
+            idx: frames.length,
+          }
+        : {
+            schemaVersion: 2,
+            sessionId: SESSION_ID,
+            type: "agent_end",
+            data: JSON.stringify({}),
+            runId: RUN_ID,
+            idx: frames.length,
+            epoch: 1,
+            eventId: `${SESSION_ID}:${RUN_ID}:end`,
+            timestamp: new Date(Date.now()).toISOString(),
+            sessionIdx: frames.length,
+            runSequence: frames.length,
+          },
     });
   }, STREAM_STEP_MS * (frames.length + 6));
 }
