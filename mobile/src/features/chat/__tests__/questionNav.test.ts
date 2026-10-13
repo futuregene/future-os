@@ -1,15 +1,13 @@
 import type { TimelineItem } from "../../../remote/types";
 import {
-  EMPTY_ROWS,
   buildLadder,
   nextRung,
   previousRung,
   questionIndices,
-  viewportRows,
+  rungLanding,
+  rungPosition,
   type QuestionRung,
 } from "../questionNav";
-
-const rows = (top: number | null, topClipped = false) => ({ top, topClipped });
 
 const message = (
   id: string,
@@ -30,15 +28,16 @@ const compaction = (id: string) => ({ id, kind: "compaction" });
 /**
  * The fixture transcript, newest first:
  *
- *   A3 (text, thinking, text)              0
+ *   A3 (text, thinking, text)              0   ← the newest turn's reply tail
  *   Q3                                     1
  *   A2b (tool, thinking)                   2   ← thinking tail: skipped
- *   A2a (text)                             3   ← the turn's reply tail
+ *   A2a (text)                             3   ← that turn's reply tail
  *   Q2                                     4
  *   A1 (text, thinking, tool, text)        5
  *   Q1                                     6
  *   A0 (thinking, compaction)              7   ← divider tail: the answer was
- *   Q0                                        compacted into this marker
+ *                                               compacted into this marker
+ *   Q0                                     8
  *   N0 (a notice row)                      9
  */
 const ITEMS: TimelineItem[] = [
@@ -58,8 +57,10 @@ const ITEMS: TimelineItem[] = [
   { id: "n0", kind: "notice", tone: "neutral", text: "…" } as TimelineItem,
 ];
 
-const LADDER = buildLadder(ITEMS, questionIndices(ITEMS)).rungs;
+const LADDER = buildLadder(ITEMS, questionIndices(ITEMS));
 
+/** Rung positions in LADDER: 0 = A3 tail, 1 = Q3, 2 = A2a tail, 3 = Q2,
+ *  4 = A1 tail, 5 = Q1, 6 = A0 tail, 7 = Q0. */
 const rungAt = (position: number): QuestionRung => LADDER[position]!;
 
 describe("questionIndices", () => {
@@ -73,27 +74,23 @@ describe("questionIndices", () => {
 });
 
 describe("buildLadder", () => {
-  test("each turn is reply tail, question, question end, newest first", () => {
+  test("each turn is its reply's end then its question, newest first", () => {
     expect(LADDER).toEqual([
-      { kind: "replyTail", index: 0, nextQuestion: null },
-      { kind: "question", question: 1, tail: 0 },
-      { kind: "questionEnd", question: 1, tail: 0 },
-      { kind: "replyTail", index: 3, nextQuestion: 1 },
-      { kind: "question", question: 4, tail: 3 },
-      { kind: "questionEnd", question: 4, tail: 3 },
-      { kind: "replyTail", index: 5, nextQuestion: 4 },
-      { kind: "question", question: 6, tail: 5 },
-      { kind: "questionEnd", question: 6, tail: 5 },
-      { kind: "replyTail", index: 7, nextQuestion: 6 },
-      { kind: "question", question: 8, tail: 7 },
-      { kind: "questionEnd", question: 8, tail: 7 },
+      { kind: "replyTail", index: 0 },
+      { kind: "question", question: 1 },
+      { kind: "replyTail", index: 3 },
+      { kind: "question", question: 4 },
+      { kind: "replyTail", index: 5 },
+      { kind: "question", question: 6 },
+      { kind: "replyTail", index: 7 },
+      { kind: "question", question: 8 },
     ]);
   });
 
   test("a text slice after a tool still makes the message the reply tail", () => {
     // A1's stream ends in prose after the tool; the tail rung stands on the
     // message either way — the slice order is the renderer's business.
-    expect(rungAt(6)).toEqual({ kind: "replyTail", index: 5, nextQuestion: 4 });
+    expect(rungAt(4)).toEqual({ kind: "replyTail", index: 5 });
   });
 
   test("every turn with a reply gets exactly one tail rung", () => {
@@ -103,23 +100,19 @@ describe("buildLadder", () => {
 
   test("a reply that ends on folded thinking is a pause, not a tail", () => {
     // A2b ends on thinking: skipped. The turn's tail is A2a's prose.
-    expect(rungAt(3)).toEqual({ kind: "replyTail", index: 3, nextQuestion: 1 });
+    expect(rungAt(2)).toEqual({ kind: "replyTail", index: 3 });
   });
 
   test("a reply compacted down to a divider still gets a tail rung", () => {
     // A0's prose is gone, but the compaction marker is where the answer was:
     // the turn keeps a tail rung rather than collapsing into the question.
-    expect(rungAt(9)).toEqual({ kind: "replyTail", index: 7, nextQuestion: 6 });
+    expect(rungAt(6)).toEqual({ kind: "replyTail", index: 7 });
   });
 
   test("a turn with no reply at all has no tail rung", () => {
-    const items = [message("q1", "user")];
-    const { rungs, lastIndex } = buildLadder(items, [0]);
-    expect(rungs).toEqual([
-      { kind: "question", question: 0, tail: null },
-      { kind: "questionEnd", question: 0, tail: null },
+    expect(buildLadder([message("q1", "user")], [0])).toEqual([
+      { kind: "question", question: 0 },
     ]);
-    expect(lastIndex).toBe(0);
   });
 
   test("a legacy reply with plain text counts as output", () => {
@@ -127,118 +120,116 @@ describe("buildLadder", () => {
       message("a1", "assistant", { text: "the whole reply" }),
       message("q1", "user"),
     ];
-    const { rungs } = buildLadder(items, [1]);
-    expect(rungs[0]).toEqual({ kind: "replyTail", index: 0, nextQuestion: null });
+    expect(buildLadder(items, [1])[0]).toEqual({
+      kind: "replyTail",
+      index: 0,
+    });
   });
 
   test("an empty transcript is an empty ladder", () => {
-    expect(buildLadder([], []).rungs).toEqual([]);
+    expect(buildLadder([], [])).toEqual([]);
+  });
+});
+
+describe("where a rung lands", () => {
+  test("a question lands by its start, a reply by its end", () => {
+    // The inverted list aligns a start at `viewPosition: 1` and an end at 0;
+    // the hook is what turns these into a scroll (see useQuestionNav).
+    expect(rungLanding(rungAt(1))).toEqual({ index: 1, edge: "top" });
+    expect(rungLanding(rungAt(0))).toEqual({ index: 0, edge: "bottom" });
+  });
+
+  test("a rung is found by what it is, not by where it sat", () => {
+    // A rebuilt ladder (a new turn, a paged page) keeps its rungs but not their
+    // positions, so the walk re-anchors on the rung itself.
+    expect(rungPosition(LADDER, rungAt(4))).toBe(4);
+    expect(rungPosition(LADDER, { kind: "question", question: 99 })).toBeNull();
+    expect(rungPosition(LADDER, null)).toBeNull();
+    expect(
+      rungPosition(LADDER, { kind: "replyTail", index: 4 }),
+    ).toBeNull();
   });
 });
 
 describe("the ↑/↓ ladder over rungs", () => {
-  // Rung positions in LADDER: 0 = A3 tail, 1 = Q3, 2 = Q3 end, 3 = A2a tail,
-  // 4 = Q2, 5 = Q2 end, 6 = A1 tail, 7 = Q1, 8 = Q1 end, 9 = A0 tail, …
-  test("↑ at the very newest row goes to the newest reply tail first", () => {
-    // Reading at the tail itself: the tail is behind the reader, and the
-    // press goes straight to the question.
-    expect(previousRung(LADDER, rows(0))).toEqual(rungAt(1));
-    // The top edge cutting the newest row — the jump's own approximate
-    // landing included — means the answer's end is not necessarily seen: the
-    // press (re-)aligns the tail before anything above it.
-    expect(previousRung(LADDER, rows(0, true))).toEqual(rungAt(0));
+  test("↑ at the tail offers the question of the turn on screen", () => {
+    // The newest reply fills the screen: its own end is where the reader
+    // already is, so the first press climbs to what started that turn.
+    expect(previousRung(LADDER, 0)).toEqual(rungAt(1));
   });
 
-  test("↑ from a rung already on screen steps to the rung above", () => {
-    expect(previousRung(LADDER, rows(1))).toEqual(rungAt(3));
-    expect(previousRung(LADDER, rows(2, true))).toEqual(rungAt(3));
-    expect(previousRung(LADDER, rows(3))).toEqual(rungAt(4));
+  test("↑ offers the answer's end above the turn being read", () => {
+    expect(previousRung(LADDER, 1)).toEqual(rungAt(2));
+    expect(previousRung(LADDER, 2)).toEqual(rungAt(2));
+    expect(previousRung(LADDER, 3)).toEqual(rungAt(3));
+    expect(previousRung(LADDER, 4)).toEqual(rungAt(4));
+    expect(previousRung(LADDER, 5)).toEqual(rungAt(5));
+    expect(previousRung(LADDER, 6)).toEqual(rungAt(6));
   });
 
-  test("↑ skips a questionEnd whose question is the row at the top", () => {
-    // The topmost row IS Q3, cut or not: its own end is not a destination.
-    expect(previousRung(LADDER, rows(1))).toEqual(rungAt(3));
-    // Cut, it is already behind the reader too — the press climbs straight
-    // to the reply tail above.
-    expect(previousRung(LADDER, rows(1, true))).toEqual(rungAt(3));
+  test("the row at the top edge is the reader's, not a destination", () => {
+    // A question landed at the top edge (the press before this one put it
+    // there) is not re-selected: the press climbs to the answer above it.
+    expect(previousRung(LADDER, 1)).toEqual(rungAt(2));
+    expect(previousRung(LADDER, 3)).toEqual(rungAt(3));
+    // A reply taller than the viewport reports its own row as the topmost one
+    // wherever the reader is inside it — its end is below them, so the press
+    // climbs to the question that started the turn instead.
+    expect(previousRung(LADDER, 0)).toEqual(rungAt(1));
   });
 
-  test("↑ is unavailable at the oldest rung", () => {
+  test("↑ is unavailable at the oldest row", () => {
     // Top edge at the last row: every rung is on or below the reader.
-    expect(previousRung(LADDER, rows(9, true))).toBeNull();
-    expect(previousRung(LADDER, rows(9))).toBeNull();
+    expect(previousRung(LADDER, 8)).toBeNull();
+    expect(previousRung(LADDER, 9)).toBeNull();
   });
 
   test("↓ from inside a turn goes to the next rung below", () => {
-    // Inside A2b (top edge row 2, cut): the questionEnd below stands on Q3's
-    // own row, so it is still on the way — the press after it reaches A3's
-    // tail.
-    expect(nextRung(LADDER, rows(2, true))).toEqual(rungAt(2));
-    expect(nextRung(LADDER, rows(1, true))).toEqual(rungAt(0));
-    // Top edge at Q2: Q2's own end is satisfied by the visible question, so
-    // the press goes straight to the turn's reply tail.
-    expect(nextRung(LADDER, rows(4))).toEqual(rungAt(3));
+    expect(nextRung(LADDER, 8)).toEqual(rungAt(6));
+    expect(nextRung(LADDER, 7)).toEqual(rungAt(5));
+    expect(nextRung(LADDER, 6)).toEqual(rungAt(4));
+    expect(nextRung(LADDER, 5)).toEqual(rungAt(3));
+    expect(nextRung(LADDER, 4)).toEqual(rungAt(2));
+    expect(nextRung(LADDER, 3)).toEqual(rungAt(1));
+    expect(nextRung(LADDER, 2)).toEqual(rungAt(1));
   });
 
   test("↓ never selects the rung at the top edge", () => {
-    expect(nextRung(LADDER, rows(5))).toEqual(rungAt(5));
-    expect(nextRung(LADDER, rows(4, true))).toEqual(rungAt(3));
-    expect(nextRung(LADDER, rows(6))).toEqual(rungAt(6));
-  });
-
-  test("↓ is unavailable inside the newest turn", () => {
-    expect(nextRung(LADDER, rows(0, true))).toBeNull();
-    expect(previousRung(LADDER, rows(0, true))).not.toBeNull();
+    // The rung whose own row is at the top edge is where the reader is; ↓ is
+    // the inverse of ↑, so it steps to the newest rung strictly below.
+    expect(nextRung(LADDER, 1)).toEqual(rungAt(0));
+    expect(nextRung(LADDER, 0)).toBeNull();
   });
 
   test("nothing is offered without a visible row", () => {
-    expect(previousRung(LADDER, EMPTY_ROWS)).toBeNull();
-    expect(nextRung(LADDER, EMPTY_ROWS)).toBeNull();
+    expect(previousRung(LADDER, null)).toBeNull();
+    expect(nextRung(LADDER, null)).toBeNull();
   });
 
   test("the ladder's individual steps are all selectable", () => {
-    // The user-facing contract, pinned step by step: from the newest turn
-    // down to the oldest, ↑ offers reply tail, question, question end…
-    expect(previousRung(LADDER, rows(0, true))).toEqual(rungAt(0)); // A3 tail
-    expect(previousRung(LADDER, rows(0))).toEqual(rungAt(1)); // Q3
-    expect(previousRung(LADDER, rows(1, true))).toEqual(rungAt(3)); // cut: climbs
-    expect(previousRung(LADDER, rows(1))).toEqual(rungAt(3)); // A2a tail
-    expect(previousRung(LADDER, rows(3, true))).toEqual(rungAt(3)); // re-align
-    expect(previousRung(LADDER, rows(3))).toEqual(rungAt(4)); // Q2
-    expect(previousRung(LADDER, rows(4, true))).toEqual(rungAt(6)); // cut: climbs
-    expect(previousRung(LADDER, rows(4))).toEqual(rungAt(6)); // A1 tail
-    expect(previousRung(LADDER, rows(5, true))).toEqual(rungAt(6)); // re-align
-    expect(previousRung(LADDER, rows(6))).toEqual(rungAt(9)); // A0 tail
-    expect(previousRung(LADDER, rows(7, true))).toEqual(rungAt(9)); // re-align
-    expect(previousRung(LADDER, rows(7))).toEqual(rungAt(10)); // Q0
-    expect(previousRung(LADDER, rows(8, true))).toBeNull(); // cut at the oldest
+    // The user-facing contract, pinned step by step: from the tail of the
+    // newest turn down to the oldest question, ↑ offers the question that
+    // started the turn on screen, then the end of the answer before it, then
+    // the question before that…
+    expect(previousRung(LADDER, 0)).toEqual(rungAt(1)); // Q3
+    expect(previousRung(LADDER, 1)).toEqual(rungAt(2)); // A2a's end
+    expect(previousRung(LADDER, 2)).toEqual(rungAt(2)); // A2a's end, reached
+    expect(previousRung(LADDER, 3)).toEqual(rungAt(3)); // Q2
+    expect(previousRung(LADDER, 4)).toEqual(rungAt(4)); // A1's end
+    expect(previousRung(LADDER, 5)).toEqual(rungAt(5)); // Q1
+    expect(previousRung(LADDER, 6)).toEqual(rungAt(6)); // A0's end
+    expect(previousRung(LADDER, 7)).toEqual(rungAt(7)); // Q0
+    expect(previousRung(LADDER, 8)).toBeNull(); // the oldest question is the reader's
 
     // …and ↓ offers the mirror sequence back down.
-    expect(nextRung(LADDER, rows(9))).toEqual(rungAt(11)); // Q0's own end
-    expect(nextRung(LADDER, rows(8))).toEqual(rungAt(9)); // A0 tail
-    expect(nextRung(LADDER, rows(7))).toEqual(rungAt(8)); // Q1 — the question
-    //   itself is still below the reader parked on its tail's row
-    expect(nextRung(LADDER, rows(6))).toEqual(rungAt(6)); // A1 tail
-    expect(nextRung(LADDER, rows(5))).toEqual(rungAt(5)); // Q2's own end
-    expect(nextRung(LADDER, rows(4))).toEqual(rungAt(3)); // A2a tail
-    expect(nextRung(LADDER, rows(3))).toEqual(rungAt(2)); // Q3's own end
-    expect(nextRung(LADDER, rows(1))).toEqual(rungAt(0)); // A3 tail
-  });
-});
-
-describe("viewportRows", () => {
-  test("a topmost row that is not fully visible is cut by the top edge", () => {
-    expect(viewportRows({ partialTop: 4, fullTop: 3 }).topClipped).toBe(true);
-  });
-
-  test("a topmost row that is fully visible has its start on screen", () => {
-    expect(viewportRows({ partialTop: 4, fullTop: 4 })).toEqual({
-      top: 4,
-      topClipped: false,
-    });
-  });
-
-  test("no fully visible row means the only visible row is cut", () => {
-    expect(viewportRows({ partialTop: 7, fullTop: null }).topClipped).toBe(true);
+    expect(nextRung(LADDER, 8)).toEqual(rungAt(6));
+    expect(nextRung(LADDER, 7)).toEqual(rungAt(5));
+    expect(nextRung(LADDER, 6)).toEqual(rungAt(4));
+    expect(nextRung(LADDER, 5)).toEqual(rungAt(3));
+    expect(nextRung(LADDER, 4)).toEqual(rungAt(2));
+    expect(nextRung(LADDER, 3)).toEqual(rungAt(1));
+    expect(nextRung(LADDER, 2)).toEqual(rungAt(1));
+    expect(nextRung(LADDER, 1)).toEqual(rungAt(0));
+    expect(nextRung(LADDER, 0)).toBeNull();
   });
 });
