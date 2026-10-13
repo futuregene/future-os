@@ -417,7 +417,6 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
         />
         <View style={styles.deviceBar}>
           <DesktopPicker
-            activeDesktopId={remote.credentials?.expectedDesktopId ?? null}
             desktops={remote.desktops}
             filter={desktopFilter}
             onChange={setDesktopFilter}
