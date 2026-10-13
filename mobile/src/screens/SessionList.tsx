@@ -84,6 +84,7 @@ export function SessionList({
   merged,
   icons,
   activeDesktopId = null,
+  canAct,
   onMenu,
 }: {
   tab: Tab;
@@ -98,17 +99,41 @@ export function SessionList({
   /** Per-desktop glyph, so a merged row shows which machine it is on. */
   icons?: Map<string, string>;
   /**
-   * The desktop this screen is connected to. A merged row from *another*
-   * desktop gets no actions menu: rename, pin and delete are commands to the
-   * active desktop, and offering them on a row they would address to the wrong
-   * machine is worse than not offering them.
+   * The desktop this screen is connected to.
+   *
+   * A merged row from another desktop is that machine's, so its actions are
+   * issued there (see `canAct`). The machine the phone is talking to is what an
+   * unmerged row belongs to, and what the fold keys and the source glyph are
+   * read against.
    */
   activeDesktopId?: string | null;
-  onMenu: (session: RemoteSession) => void;
+  /**
+   * Whether this machine can be acted on right now: its conversations opened,
+   * its rows renamed, pinned or removed.
+   *
+   * Every row draws its `⋯` — a list that offered it on some rows and not
+   * others read as the affordance coming and going with whichever machine the
+   * phone last talked to — and this is what says whether the menu behind it can
+   * be used. The actions are commands to the machine that owns the row, and so
+   * is opening it, so a machine that is not answering can take neither.
+   *
+   * Absent means the machine the phone is talking to: the only machine a list
+   * of one desktop's rows has.
+   */
+  canAct?: (desktopId: string | null) => boolean;
+  /**
+   * The row's own actions, with the machine that owns it.
+   *
+   * A row from another desktop is addressed through its own machine's
+   * connection, so the caller needs to know whose row this was; `null` when the
+   * list is not merged and every row is the connected machine's.
+   */
+  onMenu: (session: RemoteSession, desktopId: string | null) => void;
 }) {
   const remote = useRemote();
   const Alert = useAppDialog(active);
   const { t } = useTranslation();
+  const canActOn = canAct ?? (() => remote.desktopOnline);
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const listKey = `${remote.credentials?.pairId ?? ""}:${tab}`;
@@ -139,7 +164,7 @@ export function SessionList({
   const deletingRef = useRef(false);
   const rows = useMemo(
     () => (merged && merged.length > 0
-      ? sessionTreeMergedRows(merged, query, activeDesktopId, collapsed)
+      ? sessionTreeMergedRows(merged, query, activeDesktopId, collapsed, expanded)
       : catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query)),
     [remote.sessions, remote.workspaces, merged, tab, collapsed, expanded, query, activeDesktopId],
   );
@@ -424,12 +449,12 @@ export function SessionList({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t(
-              expanded.has(session.sessionId)
+              expanded.has(item.foldId)
                 ? "sessions.collapseChildren"
                 : "sessions.expandChildren",
             )}
-            accessibilityState={{ expanded: expanded.has(session.sessionId) }}
-            onPress={() => toggleFold(session.sessionId, false)}
+            accessibilityState={{ expanded: expanded.has(item.foldId) }}
+            onPress={() => toggleFold(item.foldId, false)}
             // The toggle is laid out 16px wide (TOGGLE_WIDTH) so a child's row
             // start lands on its parent's title column, exactly as on desktop.
             // hitSlop then restores the 44x44 touch target: 16 into the list's
@@ -450,7 +475,11 @@ export function SessionList({
         ) : null}
         <Pressable
           accessibilityRole="button"
-          disabled={!remote.desktopOnline || deleting}
+          // The row's own machine decides, as it does for the `⋯` beside it:
+          // opening a peer's conversation switches the phone to that machine,
+          // and one that is not answering cannot be switched to — while the
+          // connection the phone happens to hold says nothing about it.
+          disabled={!canActOn(item.desktopId ?? null) || deleting}
           onPress={() => {
             if (selecting) {
               if (selectable) toggleSelection(session.sessionId);
@@ -473,7 +502,7 @@ export function SessionList({
             void remote.selectSession(session.sessionId);
           }}
           onLongPress={() => {
-            if (!selecting) onMenu(session);
+            if (!selecting) onMenu(session, item.desktopId ?? null);
           }}
           onPressIn={() => setPressedSessionId(session.sessionId)}
           onPressOut={() =>
@@ -507,15 +536,19 @@ export function SessionList({
             />
           ) : null}
         </Pressable>
-        {!selecting && (!item.desktopId || item.desktopId === activeDesktopId) && (
+        {!selecting && (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t("sessions.actions", {
               title: session.title || t("sessions.unnamed"),
             })}
-            disabled={!remote.desktopOnline || deleting}
-            onPress={() => onMenu(session)}
-            style={styles.iconButton}
+            accessibilityState={{ disabled: deleting || !canActOn(item.desktopId ?? null) }}
+            disabled={deleting || !canActOn(item.desktopId ?? null)}
+            onPress={() => onMenu(session, item.desktopId ?? null)}
+            style={[
+              styles.iconButton,
+              (deleting || !canActOn(item.desktopId ?? null)) && styles.disabled,
+            ]}
           >
             <MoreHorizontal size={18} color={colors.inkMuted} />
           </Pressable>

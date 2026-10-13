@@ -68,6 +68,7 @@ const mockCatalogs = {
   machines: [] as MachineSummary[],
   refresh: jest.fn(async () => {}),
   reconnect: jest.fn(async () => {}),
+  command: jest.fn(async () => ({ success: true as const, data: {} })),
 };
 jest.mock("../../remote/useDesktopCatalogs", () => ({
   useDesktopCatalogs: () => mockCatalogs,
@@ -353,6 +354,81 @@ const modalText = () =>
     .map(node => node.props.children)
     .filter((child): child is string => typeof child === "string");
 const session = { sessionId: "s", threadId: "t", title: "Reply", streaming: false };
+
+/**
+ * A merged row's actions run on the machine that owns it.
+ *
+ * The phone carries one conversation runtime, and making another machine the
+ * active one is what the row's own tap does when the reader wants to read that
+ * conversation — a re-handshake, dropping whatever was open. Renaming or
+ * removing a conversation is not reading it, and the row was fed by that
+ * machine's own connection in the first place, so the command is issued there
+ * and the phone's active desktop does not move.
+ */
+test("a merged row's actions are issued to the machine that owns it", async () => {
+  mockCatalogs.machines = [{ desktopId: "desktop_2", label: "Office", active: false, status: "connected" }];
+  try {
+    act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+    const elsewhere = { sessionId: "s9", threadId: "t9", title: "Elsewhere", streaming: false };
+    act(() => tree.root.findByType(SessionList).props.onMenu(elsewhere, "desktop_2"));
+
+    const menu = tree.root.findByType(ActionMenu);
+    expect(menu.props.visible).toBe(true);
+    expect(menu.props.actions.every((action: { disabled: boolean }) => !action.disabled)).toBe(true);
+
+    act(() => button("sessions.pin").props.onPress());
+    await act(async () => { menu.findByType(Modal).props.onDismiss(); });
+    expect(mockCatalogs.command).toHaveBeenCalledWith(
+      "desktop_2",
+      { type: "set_session_pinned", sessionId: "s9", threadId: "t9", pinned: true },
+      "s9",
+    );
+    expect(mockRemote.setSessionPinned).not.toHaveBeenCalled();
+    // The row follows from that machine's catalogue, re-read as the change lands.
+    expect(mockCatalogs.refresh).toHaveBeenCalled();
+
+    // The machine's own agent titles its conversation, too.
+    mockCatalogs.command.mockResolvedValueOnce({ success: true, data: { title: "Named there" } } as never);
+    act(() => tree.root.findByType(SessionList).props.onMenu(elsewhere, "desktop_2"));
+    act(() => button("chat.rename").props.onPress());
+    await act(async () => { tree.root.findByType(ActionMenu).findByType(Modal).props.onDismiss(); });
+    await act(async () => { await tree.root.findByType(RenameModal).props.onGenerate(); });
+    expect(mockCatalogs.command).toHaveBeenCalledWith(
+      "desktop_2",
+      { type: "generate_session_title", sessionId: "s9", mode: "en" },
+      "s9",
+      65_000,
+    );
+    expect(mockRemote.generateTitle).not.toHaveBeenCalled();
+  } finally {
+    mockCatalogs.machines = [];
+  }
+});
+
+/**
+ * The list asks the caller which machines can take a command.
+ *
+ * A machine whose row is on screen but which is not answering cannot: its
+ * actions are offered as unavailable rather than run against a machine that is
+ * not there — and the machine the phone is talking to is answered by the
+ * connection the whole screen renders from.
+ */
+test("actions are offered unavailable on a machine that is not answering", () => {
+  mockCatalogs.machines = [{ desktopId: "desktop_2", label: "Office", active: false, status: "offline" }];
+  try {
+    act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+    const reachable = tree.root.findByType(SessionList).props.canAct;
+    expect(reachable("desktop_1")).toBe(true);
+    expect(reachable(null)).toBe(true);
+    expect(reachable("desktop_2")).toBe(false);
+
+    // Tapping the row's own `⋯` on an unreachable machine opens nothing.
+    act(() => tree.root.findByType(SessionList).props.onMenu(session, "desktop_2"));
+    expect(tree.root.findByType(ActionMenu).props.visible).toBe(false);
+  } finally {
+    mockCatalogs.machines = [];
+  }
+});
 
 describe("screen-owned surfaces", () => {
   const platform = Platform.OS;

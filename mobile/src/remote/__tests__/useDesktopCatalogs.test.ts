@@ -219,6 +219,29 @@ describe("useDesktopCatalogs", () => {
     expect(client.request).toHaveBeenCalledTimes(2);
   });
 
+  test("a command runs on the machine's own connection, and needs one", async () => {
+    await render();
+
+    await act(async () => {
+      await result.current.command(
+        "desktop_2",
+        { type: "set_session_name", sessionId: "s1", name: "New name" },
+        "s1",
+      );
+    });
+    expect(clientFor("desktop_2").request).toHaveBeenCalledWith(
+      { type: "set_session_name", sessionId: "s1", name: "New name" },
+      "s1",
+      undefined,
+    );
+
+    // A machine the phone holds no live connection to cannot take one. It
+    // rejects rather than pretending the command went; the status row is where
+    // the reader is told, which is why this is not an error to swallow here.
+    await expect(result.current.command("desktop_3", { type: "list_sessions" }))
+      .rejects.toThrow("desktop_not_reachable");
+  });
+
   test("reconnect closes every machine's connection and opens it again", async () => {
     await render();
     const first = clientFor("desktop_2");

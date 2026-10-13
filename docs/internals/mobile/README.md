@@ -343,8 +343,11 @@ Tap the desktop badge at the top of the session list (or "Paired desktops" in
 Settings), choose "Scan to add desktop", and scan another Desktop's QR code.
 Existing pairings are not overwritten; afterwards tap a desktop in the list to
 switch — no re-scanning needed. The last selected Desktop is restored on app
-launch; only the selected Desktop is operated at a time, without aggregating
-other desktops' live sessions.
+launch, and the phone carries one conversation runtime: opening a conversation
+on another desktop switches which machine that is. The sessions themselves are
+listed together — every paired desktop keeps its own live connection, so all of
+their conversations are drawn in one merged list, and a row's own actions
+(rename, pin, delete) are issued to the machine that owns it.
 
 Each desktop in the list has a pencil button to rename it; the name is saved
 locally only and never synced to the Desktop or platform; clearing the name

@@ -4,8 +4,10 @@ import { peerMachineStatus } from "./desktopStatus";
 import type { CatalogEntry } from "./mergeSessions";
 import type {
   Presence,
+  RemoteCommand,
   RemoteCredentials,
   RemoteSession,
+  RpcResponse,
   SnapshotVersion,
 } from "./types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -86,6 +88,28 @@ export interface DesktopCatalogsState {
    * phone was looking at a different one.
    */
   reconnect: () => Promise<void>;
+  /**
+   * Run one command on one machine, over that machine's own connection.
+   *
+   * A machine the phone is only *observing* still answers a request — the same
+   * lane its `list_sessions` catalogue read travels on — which is what lets a
+   * merged row's own actions (rename, pin, delete) be issued to the machine that
+   * owns it. The alternative would be to make that machine the active one first,
+   * and a rename must not re-handshake a desktop the reader was only looking at:
+   * the phone carries one conversation runtime, and a catalogue command is not a
+   * conversation.
+   *
+   * The active machine is not in this map (its own connection is the app's), so
+   * a caller routes to it through the ordinary controls. Rejects when the
+   * machine has no live connection or its handshake is not ready yet — the
+   * caller's own status row is what says so on screen.
+   */
+  command: <T = unknown>(
+    desktopId: string,
+    command: RemoteCommand,
+    lane?: string,
+    timeoutMs?: number,
+  ) => Promise<RpcResponse<T>>;
 }
 
 /**
@@ -332,6 +356,31 @@ export function useDesktopCatalogs(
     }));
   }, [activeDesktopId, publish]);
 
+  /**
+   * Run one command on one machine's own connection.
+   *
+   * The lane is the caller's: a session-scoped command travels on that session's
+   * lane, a catalogue-shaped one on `list` — the same routing the host's own
+   * client uses, because it is the same client. `timeoutMs` is for the rare
+   * command that answers slowly on purpose (a generated title is the agent's).
+   */
+  const command = useCallback(
+    async <T = unknown>(
+      desktopId: string,
+      payload: RemoteCommand,
+      lane?: string,
+      timeoutMs?: number,
+    ): Promise<RpcResponse<T>> => {
+      const runtime = runtimesRef.current.get(desktopId);
+      // No connection at all is a machine that is not paired any more, or one
+      // whose credentials could not be read — both of which the status row
+      // already shows as offline.
+      if (!runtime) throw new Error("desktop_not_reachable");
+      return runtime.client.request<T>(payload, lane, timeoutMs);
+    },
+    [],
+  );
+
   const reconnect = useCallback(async () => {
     // A connection that has given up is not re-opened from the inside, so the
     // way back is a fresh one: close every peer client and let `refresh` build
@@ -413,6 +462,6 @@ export function useDesktopCatalogs(
         sessions: activeSessions ?? [],
       }]
       : entries;
-    return { catalogs, machines, refresh, reconnect };
-  }, [activeDesktopId, activeSessions, peers, refresh, reconnect]);
+    return { catalogs, machines, refresh, reconnect, command };
+  }, [activeDesktopId, activeSessions, peers, refresh, reconnect, command]);
 }
