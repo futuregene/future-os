@@ -1,5 +1,6 @@
 import { createElement } from "react";
-import { AppState, Linking, type AppStateStatus } from "react-native";
+import { AppState, Linking, StyleSheet, type AppStateStatus } from "react-native";
+import { layout } from "../../theme/tokens";
 import * as Clipboard from "expo-clipboard";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { PausedTimeline } from "../PausedTimeline";
@@ -231,6 +232,21 @@ describe("the settled footer", () => {
     act(() => tree.unmount());
     render(message({ id: "a", text: "an answer", streaming: true }), { onFork: jest.fn() });
     expect(glyphs("GitBranch")).toHaveLength(0);
+  });
+
+  // Copy and Fork are one group of small glyphs: each hugs its own icon instead
+  // of sitting at the left edge of a full-width box (which left them 43pt apart,
+  // wider than the gap to the stats text), and `hitSlop` keeps the tap area.
+  test("the footer's actions sit together and still take a 44pt tap", () => {
+    render(message({ id: "a-spacing", text: "an answer" }), { onFork: jest.fn() });
+    for (const label of ["Copy response", "Fork"]) {
+      const control = tree.root.findAll(node =>
+        node.props.accessibilityLabel === label && typeof node.props.onPress === "function")[0]!;
+      expect(StyleSheet.flatten(control.props.style))
+        .toMatchObject({ minWidth: 28, minHeight: layout.touchTarget, justifyContent: "center" });
+      // The box hugs the glyph; this much `hitSlop` per side restores 44pt.
+      expect(control.props.hitSlop).toBe((layout.touchTarget - 28) / 2);
+    }
   });
 });
 
