@@ -277,6 +277,9 @@ export const resources = {
         deletePartialFailure:
           "{{count}} conversations could not be deleted. They remain selected; reconnect and retry.",
         workspaceActions: "Actions for workspace {{title}}",
+        renameWorkspace: "Rename workspace",
+        renameWorkspaceFailed:
+          "Could not rename the workspace. Reconnect and retry.",
         selectWorkspaceSessions: "Select all conversations in this workspace",
         deleteWorkspace: "Delete workspace",
         deleteWorkspaceConfirm:
@@ -475,6 +478,12 @@ export const resources = {
           "Agent wants to modify a file outside the workspace.",
         shellTitle: "Approve shell command",
         shellSummary: "Agent wants to run a shell command.",
+        filePermissionsTitle: "Allow file access",
+        filePermissionsSummary: "Access applies only to this command. Other files remain protected.",
+        readAccess: "Read",
+        writeAccess: "Write",
+        directoryScope: "Directory and descendants",
+        fileScope: "Single file",
         capabilityFileTitle: "Allow FutureOS to modify {{path}}?",
         capabilitySubtreeTitle: "Allow FutureOS to manage files in {{path}}?",
         capabilityMultiTitle:
@@ -1140,6 +1149,8 @@ export const resources = {
         deletePartialFailure:
           "{{count}} 个会话删除失败，已保留选中状态，请恢复连接后重试。",
         workspaceActions: "管理工作区「{{title}}」",
+        renameWorkspace: "重命名工作区",
+        renameWorkspaceFailed: "工作区重命名失败，请恢复连接后重试。",
         selectWorkspaceSessions: "全选该工作区的会话",
         deleteWorkspace: "删除工作区",
         deleteWorkspaceConfirm:
@@ -1319,6 +1330,12 @@ export const resources = {
         outsideWriteSummary: "Agent 想修改工作区外的文件。",
         shellTitle: "允许执行命令",
         shellSummary: "Agent 想运行一条 shell 命令。",
+        filePermissionsTitle: "允许访问文件",
+        filePermissionsSummary: "权限仅用于本次命令，其他文件仍受保护。",
+        readAccess: "读取",
+        writeAccess: "写入",
+        directoryScope: "目录及其内容",
+        fileScope: "单个文件",
         capabilityFileTitle: "允许 FutureOS 修改 {{path}} 吗？",
         capabilitySubtreeTitle: "允许 FutureOS 在 {{path}} 中管理文件吗？",
         capabilityMultiTitle:

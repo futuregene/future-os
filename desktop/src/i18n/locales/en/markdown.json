@@ -36,7 +36,10 @@
     "loading": "Loading preview…",
     "close": "Close preview",
     "truncated": "Large file — showing only the beginning.",
-    "unavailable": "Can't preview {{name}} — opening it with the default app instead."
+    "unavailable": "Can't preview {{name}} — opening it with the default app instead.",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "resetZoom": "Reset zoom"
   },
   "jsonPreview": {
     "truncated": "Rich formatting is limited to JSON files smaller than 1 MB. Showing the available source text instead.",

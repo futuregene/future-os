@@ -37,6 +37,15 @@ test("tints the original Android input background and draws the border on a sepa
   expect(StyleSheet.flatten(input.parent!.props.style)).toMatchObject({ borderWidth: 1 });
 });
 
+test("a caller can name what it renames", () => {
+  const titles = () => tree.root.findAllByType(Text).map(node => node.props.children);
+  expect(titles()).toContain("chat.renameTitle");
+  act(() => tree.update(createElement(RenameModal, { ...props, titleKey: "sessions.renameWorkspace" })));
+  expect(titles()).toContain("sessions.renameWorkspace");
+  expect(titles()).not.toContain("chat.renameTitle");
+  expect(tree.root.findByType(TextInput).props.accessibilityLabel).toBe("sessions.renameWorkspace");
+});
+
 test("generation is a full-width action with its explanation always shown below it", () => {
   const generate = button("chat.generateTitle");
   expect(generate.props.variant).toBe("secondary");

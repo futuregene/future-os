@@ -23,7 +23,7 @@ pub(crate) async fn pre_execution_escalation(
         EscalationDecision::Approved => {
             record_approval(
                 true,
-                "Approved retry may repeat partial effects within this execution unit.",
+                "Approved explicit execution applies to this command once; partial effects from earlier calls are not rolled back.",
             );
             spawn_shell(command, timeout_secs, sandbox, true, None).await
         }
@@ -45,19 +45,14 @@ pub(crate) async fn pre_execution_escalation(
     })
 }
 
-/// Post-hoc escalation: the sandboxed run failed with a sandbox-denial
-/// signature. Returns the outcome to propagate (approved → unsandboxed
-/// re-run; denied → annotated original output), or None when the failure
-/// doesn't look like a sandbox denial / no escalation channel exists.
-pub(crate) async fn post_hoc_escalation(
-    escalation: &Option<crate::sandbox::EscalationRequester>,
+/// Annotate a suspected sandbox failure without approval or replay. The caller
+/// returns the original process facts to the model so it can inspect partial effects.
+pub(crate) async fn sandbox_failure_result(
     sandbox: &ResolvedSandbox,
-    command: &str,
     timeout_secs: u64,
     result: &str,
     retry: ShellRetry,
 ) -> Option<Result<String>> {
-    let requester = escalation.as_ref()?;
     let fact = latest_attempt();
     #[cfg(test)]
     let fact = fact.or_else(|| {
@@ -72,46 +67,22 @@ pub(crate) async fn post_hoc_escalation(
     });
     let fact = fact?;
     let exit_code = fact.exit_code?;
-    let tail = bounded(&fact.output, 2000);
     if cancelled()
         || duration(timeout_secs).is_zero()
         || fact.status != ShellStatus::Exited
         || retry == ShellRetry::Blocked
         || exit_code == 0
-        || !crate::sandbox::looks_like_sandbox_denial(sandbox, exit_code, &tail)
+        || !crate::sandbox::looks_like_sandbox_denial(
+            sandbox,
+            exit_code,
+            &bounded(&fact.output, 2000),
+        )
     {
         return None;
     }
-    let request = EscalationRequest {
-        trigger: crate::sandbox::EscalationTrigger::SandboxFailure,
-        command: command.to_string(),
-        justification: String::new(),
-        failure_summary: bounded(&tail, 2000),
-    };
-    Some(match requester(&request) {
-        EscalationDecision::Approved => {
-            record_approval(
-                true,
-                "Approved retry may repeat partial effects within this execution unit.",
-            );
-            spawn_shell(command, timeout_secs, sandbox, true, None).await
-        }
-        EscalationDecision::Cancelled(note) => {
-            record_approval_end("cancelled", &note);
-            Err(anyhow!("Shell approval cancelled: {note}"))
-        }
-        EscalationDecision::ContextInvalidated(note) => {
-            record_approval_end("context_invalidated", &note);
-            Err(anyhow!("Shell approval context invalidated: {note}"))
-        }
-        EscalationDecision::Denied(note) => {
-            record_approval(false, &note);
-            Ok(format!(
-            "{result}\n[sandbox] The command appears to have been blocked by the sandbox; running it without the sandbox was not approved{}.",
-            if note.is_empty() { String::new() } else { format!(": {note}") }
-        ))
-        }
-    })
+    let note = "The command may have been restricted by the sandbox. It was not replayed. Inspect partial effects, then submit only the remaining necessary operation with additional_permissions for the required paths. Approval does not establish safe replay.";
+    let _ = FACTS.try_with(|facts| facts.borrow_mut().note = Some(note.into()));
+    Some(Ok(format!("{result}\n[sandbox] {note}")))
 }
 
 #[cfg(test)]
@@ -124,7 +95,15 @@ pub(crate) async fn run_shell(
     FACTS
         .scope(
             RefCell::new(ExecutionFacts::default()),
-            run_shell_with_capability(command, timeout_secs, escalated, justification, None),
+            run_shell_with_capability(
+                command,
+                timeout_secs,
+                escalated,
+                justification,
+                None,
+                #[cfg(not(windows))]
+                None,
+            ),
         )
         .await
 }
@@ -135,6 +114,7 @@ pub(crate) async fn run_shell_with_capability(
     escalated: bool,
     justification: &str,
     approved_capability: Option<&crate::sandbox::windows_request::ApprovedWriteCapability>,
+    #[cfg(not(windows))] granted_sandbox: Option<&ResolvedSandbox>,
 ) -> Result<String> {
     // Defense-in-depth: reject obviously destructive commands before they
     // reach the OS.  The sandbox provides the primary enforcement boundary;
@@ -152,6 +132,10 @@ pub(crate) async fn run_shell_with_capability(
     let sandbox = TOOL_SCOPE
         .try_with(|scope| scope.sandbox.clone())
         .unwrap_or_default();
+    #[cfg(not(windows))]
+    let sandbox = granted_sandbox
+        .map(|sandbox| Arc::new(sandbox.clone()))
+        .unwrap_or(sandbox);
     let escalation = TOOL_SCOPE
         .try_with(|scope| scope.escalation.clone())
         .unwrap_or(None);
@@ -189,14 +173,11 @@ pub(crate) async fn run_shell_with_capability(
     )
     .await?;
 
-    // Post-hoc escalation: only when the failure narrowly looks like a sandbox
-    // denial (conservative heuristic — ordinary failures go back to the model).
+    // All failures return to the model. Diagnostics never approve or replay a process.
     if sandboxed && retry != ShellRetry::Blocked {
         #[allow(clippy::single_match)]
         // match keeps each edge's region on its arm line; an if-let whose body always diverges leaves a phantom zero-count region on its closing brace
-        match post_hoc_escalation(&escalation, &sandbox, command, timeout_secs, &result, retry)
-            .await
-        {
+        match sandbox_failure_result(&sandbox, timeout_secs, &result, retry).await {
             Some(outcome) => return outcome,
             None => {}
         }

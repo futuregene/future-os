@@ -56,11 +56,11 @@ export function ApprovalPrompt({
   // back to the agent strings for any unmapped kind.
   const kindI18n = KIND_I18N[approval.kind];
   const capabilityTargets
-    = action?.category === "windows_write_capability"
+    = (action?.category === "windows_write_capability" || action?.category === "file_permissions")
       ? action.targets
       : undefined;
   const titleText = capabilityTargets
-    ? t("approval.capabilityTitle")
+    ? t(action?.category === "file_permissions" ? "approval.filePermissionsTitle" : "approval.capabilityTitle")
     : kindI18n
       ? t(approval.kind === "sandbox_escalation" ? escalationTitleKey(action) : kindI18n.title)
       : approval.title;
@@ -70,13 +70,14 @@ export function ApprovalPrompt({
   );
   const fallbackAction = useMemo(
     () =>
-      action || approval.kind === "windows_write_capability"
+      action || approval.kind === "windows_write_capability" || approval.kind === "file_permissions"
         ? null
         : formatRequestedAction(approval.requestedAction),
     [action, approval.kind, approval.requestedAction],
   );
   const malformedCapability
-    = approval.kind === "windows_write_capability" && !action;
+    = (approval.kind === "windows_write_capability" || approval.kind === "file_permissions")
+      && (!capabilityTargets || action?.category !== approval.kind);
 
   // Inline "allow in this workspace" editor: the editable path glob to persist.
   const [editorOpen, setEditorOpen] = useState(false);
@@ -306,9 +307,11 @@ interface ActionDetailsProps {
 
 function ActionDetails({ action }: ActionDetailsProps) {
   const { t } = useTranslation("agent");
-  if (action.category === "windows_write_capability" && action.targets) {
+  if ((action.category === "windows_write_capability" || action.category === "file_permissions") && action.targets) {
     return (
       <div className="mt-3 space-y-2">
+        {action.category === "file_permissions" ? <p className="text-xs leading-5 text-ink-soft">{t("approval.filePermissionsSummary")}</p> : null}
+        {action.justification ? <p className="text-xs leading-5 text-ink-soft">{action.justification}</p> : null}
         {action.command
           ? (
               <div>
@@ -328,6 +331,9 @@ function ActionDetails({ action }: ActionDetailsProps) {
           <FileTargets
             paths={action.targets.map(target => target.path)}
             scopes={action.targets.map(target => target.scope)}
+            accesses={action.category === "file_permissions"
+              ? action.targets.map(target => (target as { access?: "read" | "write" }).access)
+              : undefined}
           />
         </div>
       </div>
@@ -434,9 +440,11 @@ function ActionDetails({ action }: ActionDetailsProps) {
 function FileTargets({
   paths,
   scopes,
+  accesses,
 }: {
   paths: string[];
   scopes?: Array<"file" | "subtree">;
+  accesses?: Array<"read" | "write" | undefined>;
 }) {
   const { t } = useTranslation("agent");
   return (
@@ -444,7 +452,18 @@ function FileTargets({
       {paths.map((path, index) => (
         <li className="flex items-start justify-between gap-3" key={`${path}-${String(index)}`}>
           <span className="break-all">{displayTargetPath(path)}</span>
-          {scopes?.[index] === "subtree"
+          {accesses?.[index]
+            ? (
+                <span className="shrink-0 text-ink-soft">
+                  {t(accesses[index] === "read" ? "approval.readAccess" : "approval.writeAccess")}
+                  {" "}
+                  ·
+                  {" "}
+                  {t(scopes?.[index] === "subtree" ? "approval.directoryScope" : "approval.fileScope")}
+                </span>
+              )
+            : null}
+          {scopes?.[index] === "subtree" && !accesses?.[index]
             ? (
                 <span
                   aria-label={t("approval.folderScopeWarning")}

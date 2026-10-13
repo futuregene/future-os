@@ -230,3 +230,32 @@ describe("approval payload accessors", () => {
     expect(approvalCommand({})).toBeNull();
   });
 });
+
+describe("precise shell file permissions", () => {
+  const action = {
+    behavior: "access_files",
+    category: "file_permissions",
+    command: "copy remaining report",
+    targets: [
+      { access: "read", path: "/data/config.env", scope: "file" },
+      { access: "write", path: "/backup/reports", scope: "subtree" },
+    ],
+    tool: "shell",
+  };
+
+  it("preserves complete access and scope for mixed read/write requests", () => {
+    expect(parseAction(action)?.targets).toEqual(action.targets);
+  });
+
+  it("rejects missing access, invalid scope, or missing command instead of rendering an approvable card", () => {
+    for (const invalid of [
+      { ...action, command: "" },
+      { ...action, tool: "edit" },
+      { ...action, targets: [{ path: "/data/config.env", scope: "file" }] },
+      { ...action, targets: [{ access: "both", path: "/data/config.env", scope: "file" }] },
+      { ...action, targets: [{ access: "read", path: "/data/config.env", scope: "unknown" }] },
+      { ...action, targets: [] },
+      { ...action, behavior: "model controlled behavior" },
+    ]) expect(parseAction(invalid)).toBeNull();
+  });
+});
