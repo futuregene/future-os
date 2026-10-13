@@ -154,8 +154,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   // Switching desktops moves the whole pairing, as the real `switchDesktop`
   // does: screens read `credentials.pairId` to tell which machine is current,
-  // and the settings modal is keyed by it, so a switch remounts them the way
-  // the app does after a real reconnect.
+  // and the settings modal is keyed by it. The real app reconnects nothing —
+  // every paired desktop keeps its own runtime — so a switch here is the
+  // pointer this state holds; the harness has one catalogue, not one per
+  // machine, which is what its `catalogs` below reflects.
   const pairedDesktop = desktops.find(desktop => desktop.desktopId === desktopId);
   const credentials: RemoteCredentials = {
     ...demoCredentials,
@@ -199,6 +201,26 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     ),
     unreadSessions: new Set<string>(["sess_dopamine_review"]),
     models: demoModels,
+    /**
+     * Every *other* machine's catalogue, as the merged list reads it.
+     *
+     * The real provider reads these from the runtime each paired desktop has;
+     * the harness has one machine's data, so this is the open machine's own
+     * entry and no peers — the list then renders its workspace tree exactly as
+     * it does on a phone paired to one desktop.
+     */
+    catalogs: {
+      catalogs: [{
+        desktopId,
+        label: pairedDesktop?.name ?? desktopId,
+        sessions,
+      }],
+      machines: [] as { desktopId: string; label: string; active: boolean; status: string }[],
+      refresh: async () => {},
+      reconnect: () => {},
+      commandsFor: () => null,
+      readWorkspaces: async () => demoWorkspaces,
+    },
     skillsRevision: 0,
     desktopSettingsRevision: 0,
 
