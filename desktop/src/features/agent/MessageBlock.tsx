@@ -97,6 +97,26 @@ function MessageBlockImpl({
   const copyableText = (segments
     ? segments.flatMap(segment => (segment.kind === "text" ? [segment.text] : [])).join("\n\n")
     : message.content ?? "").trim();
+  // Built once and placed by role: the assistant's sits in the reply's own
+  // footer, the user's goes to `MessageFrame`'s footer, outside their bubble.
+  const copyControl = copyableText
+    ? (
+        <CopyButton
+          // `will-change-[opacity]` keeps the button on its own compositor
+          // layer at all times: WKWebView (tauri#12800 family) drops repaints
+          // of in-flow content until a window resize, so hide/show — and the
+          // fade, which is only safe because the compositor animates a
+          // promoted layer's opacity — must never depend on a repaint. Do not
+          // remove the will-change without re-testing stale-paint ghosts.
+          className={cn(
+            "will-change-[opacity] transition-opacity duration-200 focus-visible:pointer-events-auto focus-visible:opacity-100",
+            hovered ? "opacity-100" : "pointer-events-none opacity-0",
+          )}
+          copied={copiedKey === "default"}
+          onCopy={() => void copy(copyableText)}
+        />
+      )
+    : null;
 
   // A reloaded compaction marker is a message carrying only a compaction
   // segment: render just the divider (no author header / bubble), matching the
@@ -123,6 +143,7 @@ function MessageBlockImpl({
       bodyClassName={streaming ? `**:data-[streamed-block]:${STREAMED_BLOCK_CONTAINMENT}` : undefined}
       createdAt={message.createdAt}
       dataMessageId={dataMessageId}
+      footer={isUser ? copyControl : undefined}
       onEnter={() => onHover(message.id)}
       onLeave={() => onLeave(message.id)}
       role={isUser ? "user" : "assistant"}
@@ -251,54 +272,41 @@ function MessageBlockImpl({
             </div>
           )
         : null}
-      <div className={cn("flex flex-wrap items-center gap-2", isUser ? "mt-1 justify-end" : "mt-3 justify-start")}>
-        {streaming
-          ? (
-              <StreamingIndicator
-                label={message.reconnecting
-                  ? t("message.reconnecting", { attempt: message.reconnecting.attempt, maxRetries: message.reconnecting.maxRetries })
-                  : t("message.generating")}
-                showLabel={Boolean(message.reconnecting)}
-              />
-            )
-          : copyableText
-            ? (
-                <CopyButton
-                  // `will-change-[opacity]` keeps the button on its own compositor
-                  // layer at all times: WKWebView (tauri#12800 family) drops repaints
-                  // of in-flow content until a window resize, so hide/show — and the
-                  // fade, which is only safe because the compositor animates a
-                  // promoted layer's opacity — must never depend on a repaint. Do not
-                  // remove the will-change without re-testing stale-paint ghosts.
-                  className={cn(
-                    "will-change-[opacity] transition-opacity duration-200 focus-visible:pointer-events-auto focus-visible:opacity-100",
-                    hovered ? "opacity-100" : "pointer-events-none opacity-0",
-                  )}
-                  copied={copiedKey === "default"}
-                  onCopy={() => void copy(copyableText)}
-                />
-              )
-            : null}
-        {!streaming && !isUser && onFork
-          ? (
-              <button
-                className={cn(
-                  "rounded p-1 text-ink-muted hover:text-ink will-change-[opacity] transition-opacity duration-200 focus-visible:pointer-events-auto focus-visible:opacity-100",
-                  hovered ? "opacity-100" : "pointer-events-none opacity-0",
-                )}
-                onClick={() => onFork(message)}
-                title={t("message.fork")}
-                type="button"
-              >
-                <GitBranch className="size-3.5" />
-              </button>
-            )
-          : null}
-        {!isUser ? <MessageMeta message={message} hovered={hovered} /> : null}
-        {streaming && !isUser && message.thinkingActive && !segments?.some(segment => segment.kind === "thinking")
-          ? <span className="select-none text-xs text-ink-muted">{t("message.thinking")}</span>
-          : null}
-      </div>
+      {!isUser
+        ? (
+            <div className="flex flex-wrap items-center gap-2 mt-3 justify-start">
+              {streaming
+                ? (
+                    <StreamingIndicator
+                      label={message.reconnecting
+                        ? t("message.reconnecting", { attempt: message.reconnecting.attempt, maxRetries: message.reconnecting.maxRetries })
+                        : t("message.generating")}
+                      showLabel={Boolean(message.reconnecting)}
+                    />
+                  )
+                : copyControl}
+              {!streaming && onFork
+                ? (
+                    <button
+                      className={cn(
+                        "rounded p-1 text-ink-muted hover:text-ink will-change-[opacity] transition-opacity duration-200 focus-visible:pointer-events-auto focus-visible:opacity-100",
+                        hovered ? "opacity-100" : "pointer-events-none opacity-0",
+                      )}
+                      onClick={() => onFork(message)}
+                      title={t("message.fork")}
+                      type="button"
+                    >
+                      <GitBranch className="size-3.5" />
+                    </button>
+                  )
+                : null}
+              <MessageMeta message={message} hovered={hovered} />
+              {streaming && message.thinkingActive && !segments?.some(segment => segment.kind === "thinking")
+                ? <span className="select-none text-xs text-ink-muted">{t("message.thinking")}</span>
+                : null}
+            </div>
+          )
+        : null}
     </MessageFrame>
   );
 }

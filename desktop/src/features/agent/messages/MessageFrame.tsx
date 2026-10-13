@@ -26,6 +26,7 @@ export function MessageFrame({
   children,
   createdAt,
   dataMessageId,
+  footer,
   onEnter,
   onLeave,
   role,
@@ -38,6 +39,14 @@ export function MessageFrame({
   /** ISO timestamp, as the projection's messages carry it. */
   createdAt: string;
   dataMessageId?: string;
+  /**
+   * Controls that belong to the message but not to its text, rendered below the
+   * body and *outside* it. The user's body is a filled bubble — their own words
+   * as one block — so a control drawn on that fill reads as something they
+   * typed. Below the bubble, right-aligned like the author line above it, it
+   * stays a control.
+   */
+  footer?: ReactNode;
   onEnter?: () => void;
   onLeave?: () => void;
   role: "assistant" | "user";
@@ -84,6 +93,13 @@ export function MessageFrame({
         >
           {children}
         </div>
+        {footer
+          ? (
+              <div className="flex flex-wrap items-center gap-2 mt-1 justify-end">
+                {footer}
+              </div>
+            )
+          : null}
       </div>
     </article>
   );
