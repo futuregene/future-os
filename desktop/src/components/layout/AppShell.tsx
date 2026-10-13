@@ -754,10 +754,15 @@ function ReadyAppShell({
     activeRemote?.sessionId ?? null,
   );
   // The conversation's model and thinking level, which the *host* owns.
+  // Enabled whenever a remote conversation is on screen — *including* a draft.
+  // A draft has no session to read, but it still needs the host's catalogue (the
+  // model picker was empty, and so disabled) and the level a new conversation
+  // will run with, and both travel with the first prompt. This used to require a
+  // session id, which is exactly why a draft offered neither.
   const remoteSettings = useRemoteConversationSettings(
     activeRemote?.desktopId ?? null,
     activeRemote?.sessionId ?? null,
-    activeRemote !== null && activeRemote.sessionId !== "",
+    activeRemote !== null,
   );
 
   /**
@@ -959,7 +964,7 @@ function ReadyAppShell({
     onOpenRemoteConversation: openRemoteConversation,
     onRenameRemoteConversation: setRemoteRename,
     onRenameRemoteWorkspace: setRemoteWorkspaceRename,
-    onNewChatOnRemote: (desktopId: string, workspaceId: string) => startRemoteConversation(desktopId, workspaceId),
+    onNewChatOnRemote: (desktopId: string, workspaceId: string | null) => startRemoteConversation(desktopId, workspaceId),
     onRemoteConversationsChanged: () => void refreshRemotePeers(),
     onManageDesktops: () => handleSectionChange("remote"),
     activeRemoteKey: activeRemote
@@ -1129,6 +1134,8 @@ function ReadyAppShell({
                                 // button they apply to — the same place this
                                 // app's own model and thinking controls are.
                                 controls={<RemoteConversationSettings settings={remoteSettings} />}
+                                freshModelId={remoteSettings.model}
+                                freshThinkingLevel={remoteSettings.thinkingLevel}
                                 onCompact={() => void compactRemoteConversationOn(activeRemote.desktopId, activeRemote.sessionId)}
                                 onCreated={(createdSessionId) => {
                                   // Adopt the conversation the host just made, so

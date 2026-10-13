@@ -131,7 +131,7 @@ it("sends as before when no recommendation is wired", async () => {
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "hello", [], null);
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "hello", [], null, { modelId: null, thinkingLevel: null });
   await view.unmount();
 });
 
@@ -173,7 +173,7 @@ it("sends with the skill once it is installed", async () => {
   await settle();
 
   expect(onInstall).toHaveBeenCalledWith(card);
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", expect.stringContaining("/pdf-tools"), [], null);
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", expect.stringContaining("/pdf-tools"), [], null, { modelId: null, thinkingLevel: null });
   await view.unmount();
 });
 
@@ -209,7 +209,7 @@ it("sends the message when the card is dismissed", async () => {
   await settle();
 
   expect(onDismiss).toHaveBeenCalled();
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please summarise this pdf", [], null);
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please summarise this pdf", [], null, { modelId: null, thinkingLevel: null });
   await view.unmount();
 });
 
@@ -233,7 +233,7 @@ it("treats a plain send on an open card as dismiss-and-send", async () => {
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please summarise this pdf", [], null);
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please summarise this pdf", [], null, { modelId: null, thinkingLevel: null });
   await view.unmount();
 });
 
@@ -271,7 +271,7 @@ it("sends normally when the host recommends nothing", async () => {
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please summarise this pdf", [], null);
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please summarise this pdf", [], null, { modelId: null, thinkingLevel: null });
   await view.unmount();
 });
 

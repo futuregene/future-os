@@ -156,6 +156,8 @@ export function RemoteComposer({
   className,
   controls,
   desktopId,
+  freshModelId = null,
+  freshThinkingLevel = null,
   onCompact,
   onCreated,
   onSent,
@@ -207,6 +209,16 @@ export function RemoteComposer({
    * workspace heading. Null for a conversation with no workspace of its own.
    */
   workspaceId?: string | null;
+  /**
+   * The model and thinking level the picker is showing for a *draft*.
+   *
+   * Sent with the first prompt so the conversation is created with what the
+   * reader saw: it does not exist on the host yet, so there is nothing there to
+   * set beforehand, and the values cannot be applied afterwards without a second
+   * round trip that races the run.
+   */
+  freshModelId?: string | null;
+  freshThinkingLevel?: string | null;
 }) {
   const { t } = useTranslation("remotePeer");
   const [text, setText] = useState("");
@@ -348,6 +360,11 @@ export function RemoteComposer({
         // from a workspace heading belongs in that workspace, and the host
         // resolves the id against its own store.
         workspaceId,
+        // And the model and thinking level the picker showed, for the same
+        // reason: a conversation that does not exist yet has no way to carry a
+        // choice made before it was created, and leaving them out would run
+        // something other than what the reader chose.
+        { modelId: freshModelId, thinkingLevel: freshThinkingLevel },
       );
       // Cleared only after the host accepted it: a prompt that failed on the
       // wire must not cost the user the paragraph they wrote or the file they

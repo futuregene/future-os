@@ -115,10 +115,85 @@ it("reads the conversation's settings and the host's catalogue", async () => {
   await hook.unmount();
 });
 
-/** A draft has no conversation on the host, so there is nothing to read or set. */
-it("reads nothing for a conversation that does not exist yet", async () => {
+/**
+ * A draft has no conversation on the host, but it still has a machine — and a
+ * machine has a catalogue.
+ *
+ * This test used to assert that nothing was read at all, which is exactly the
+ * defect: with no catalogue the model picker was empty and therefore disabled, so
+ * a conversation started from a workspace heading could not choose a model, and
+ * the thinking level fell back to `off` — which is not a default anyone chose.
+ * The values seeded here are sent with the first prompt, so what the picker shows
+ * is what the host is asked for.
+ */
+it("seeds a draft from the host's catalogue, and reads no conversation state", async () => {
+  requestMock.mockImplementation(async (name: string) => {
+    if (name === "list_models") {
+      return [
+        { id: "gpt-5", label: "GPT-5", provider: "openai" },
+        { id: "auto", isDefault: true, label: "Auto", provider: "openrouter" },
+      ];
+    }
+    if (name === "get_state")
+      throw new Error("a draft has no state on the host");
+    return undefined;
+  });
+
   const hook = await mountHook({ sessionId: "" });
-  expect(requestMock).not.toHaveBeenCalled();
+
+  // The catalogue arrives, so the picker has something to offer.
+  expect(hook.current.models.map(remoteModelReference)).toEqual(["openai/gpt-5", "openrouter/auto"]);
+  // The host's own designation decides the model, not the order it listed them.
+  expect(hook.current.model).toBe("openrouter/auto");
+  // And the level a new conversation on that host runs with — the agent's default,
+  // not `off`.
+  expect(hook.current.thinkingLevel).toBe("medium");
+  // No state read: there is no conversation on the host to read it from.
+  expect(requestMock.mock.calls.some(call => call[0] === "get_state")).toBe(false);
+  await hook.unmount();
+});
+
+/** With no default marked, the first model the host offers is what runs. */
+it("takes the first model when the host marks no default", async () => {
+  requestMock.mockImplementation(async (name: string) =>
+    (name === "list_models" ? [{ id: "gpt-5", provider: "openai" }] : undefined));
+  const hook = await mountHook({ sessionId: "" });
+  expect(hook.current.model).toBe("openai/gpt-5");
+  await hook.unmount();
+});
+
+/** A model that takes no thinking controls is offered `off`, because that is what it runs. */
+it("offers a non-reasoning model no thinking level", async () => {
+  requestMock.mockImplementation(async (name: string) =>
+    (name === "list_models"
+      ? [{ id: "plain", provider: "openai", reasoning: false }]
+      : undefined));
+  const hook = await mountHook({ sessionId: "" });
+  expect(hook.current.thinkingLevel).toBe("off");
+  await hook.unmount();
+});
+
+/** A model that declares its own level uses it. */
+it("uses the level a model declares", async () => {
+  requestMock.mockImplementation(async (name: string) =>
+    (name === "list_models"
+      ? [{ id: "thinker", provider: "openai", reasoning: true, thinkingLevel: "high" }]
+      : undefined));
+  const hook = await mountHook({ sessionId: "" });
+  expect(hook.current.thinkingLevel).toBe("high");
+  await hook.unmount();
+});
+
+/** A catalogue that will not load says so, rather than showing an empty picker. */
+it("surfaces a catalogue that could not be read for a draft", async () => {
+  requestMock.mockImplementation(async (name: string) => {
+    if (name === "list_models")
+      throw new Error("host is not connected");
+    return undefined;
+  });
+  const hook = await mountHook({ sessionId: "" });
+  expect(hook.current.error).toBe("host is not connected");
+  expect(hook.current.model).toBeNull();
   await hook.unmount();
 });
 
@@ -430,16 +505,43 @@ it("discards a read whose reply arrives after the user switched", async () => {
   container.remove();
 });
 
-it("has no settings to change when there is no conversation", async () => {
+/**
+ * On a draft, choosing a model or level moves the value the *prompt* will carry.
+ *
+ * Nothing is sent to the host — there is no conversation there to set — but the
+ * choice has to move in the picker, or the control is dead on a new conversation
+ * and the reader watches their choice snap back. `list_models` may have been read
+ * (the catalogue); no *writer* may have been called.
+ */
+it("keeps a draft's choices locally, and sends no setting to the host", async () => {
+  requestMock.mockImplementation(async (name: string) =>
+    (name === "list_models" ? [{ id: "gpt-5", provider: "openai" }] : undefined));
   const hook = await mountHook({ sessionId: "" });
+  requestMock.mockClear();
 
-  // Both writers are no-ops rather than sending a setting for a conversation
-  // that does not exist on the host.
   await act(async () => {
-    await hook.current.setModel("openai/gpt-5");
+    await hook.current.setModel("openrouter/auto");
     await hook.current.setThinkingLevel("high");
   });
+
+  expect(hook.current.model).toBe("openrouter/auto");
+  expect(hook.current.thinkingLevel).toBe("high");
   expect(requestMock).not.toHaveBeenCalled();
+  await hook.unmount();
+});
+
+/** And a model that takes no thinking controls turns the level off. */
+it("turns thinking off when a draft switches to a model without it", async () => {
+  requestMock.mockImplementation(async (name: string) =>
+    (name === "list_models"
+      ? [{ id: "plain", provider: "openai", reasoning: false }]
+      : undefined));
+  const hook = await mountHook({ sessionId: "" });
+
+  await act(async () => {
+    await hook.current.setModel("openai/plain");
+  });
+  expect(hook.current.thinkingLevel).toBe("off");
   await hook.unmount();
 });
 
@@ -546,4 +648,24 @@ it("says nothing when the last change succeeded", async () => {
 
   expect(view.container.querySelector("[role='alert']")).toBeNull();
   await view.unmount();
+});
+
+/**
+ * With no machine there is nothing to set — and nothing to read.
+ *
+ * The control is only ever drawn for a conversation that has a machine, so this
+ * is the hook's own contract rather than a state the UI reaches: a caller that
+ * asks without one gets no request, not a request addressed to nobody.
+ */
+it("does nothing without a machine", async () => {
+  const hook = await mountHook({ desktopId: null });
+  expect(requestMock).not.toHaveBeenCalled();
+
+  await act(async () => {
+    await hook.current.setModel("openai/gpt-5");
+    await hook.current.setThinkingLevel("high");
+  });
+  expect(requestMock).not.toHaveBeenCalled();
+  expect(hook.current.model).toBeNull();
+  await hook.unmount();
 });

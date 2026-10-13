@@ -1,12 +1,7 @@
 import type { RemoteModelInfo, RemotePeerEvent } from "./remotePeerClient";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  getRemoteConversationSettings,
-  listRemoteModels,
-  setRemoteConversationModel,
-  setRemoteConversationThinkingLevel,
-} from "./remotePeerClient";
+import { getRemoteConversationSettings, listRemoteModels, setRemoteConversationModel, setRemoteConversationThinkingLevel } from "./remotePeerClient";
 
 /**
  * The event kinds that mean a conversation's settings moved.
@@ -30,6 +25,52 @@ export interface RemoteConversationSettingsState {
   error: string | null;
   setModel: (reference: string) => Promise<void>;
   setThinkingLevel: (level: string) => Promise<void>;
+}
+
+/**
+ * The thinking level a new conversation on that host will run with.
+ *
+ * The agent's own default (`agent/src/rpc/session.rs`, `DEFAULT_THINKING_LEVEL`)
+ * and the value this app uses for its own new conversations. It used to be "off"
+ * here, which is not a default anybody chose: a new remote conversation would run
+ * with thinking disabled unless the reader noticed the picker and changed it.
+ */
+export const DEFAULT_REMOTE_THINKING_LEVEL = "medium";
+
+/**
+ * The model a new conversation on that host should start with.
+ *
+ * The host's own designation (`isDefault` on its catalogue), then the first model
+ * it offers. The phone resolves a draft the same way — last used, then the
+ * catalogue's default, then the first — and the *point* of resolving it here is
+ * that the choice is then sent with the first prompt, so what the picker shows is
+ * what runs.
+ */
+export function defaultRemoteModel(models: RemoteModelInfo[]): string | null {
+  const preferred = models.find(model => model.isDefault) ?? models[0];
+  if (!preferred)
+    return null;
+  return preferred.provider ? `${preferred.provider}/${preferred.id}` : preferred.id;
+}
+
+/**
+ * The thinking level a draft should offer for the model it resolved.
+ *
+ * A model that does not accept thinking controls gets `off`, because that is what
+ * it will run with; a model that declares its own level uses that; otherwise the
+ * agent's default. The level is sent explicitly with the first prompt either way,
+ * so this is not a guess about what the host will *choose* — it is the value the
+ * host will be *asked* for.
+ */
+export function defaultRemoteThinkingLevel(
+  models: RemoteModelInfo[],
+  reference: string | null,
+): string {
+  const chosen = models.find(model =>
+    (model.provider ? `${model.provider}/${model.id}` : model.id) === reference);
+  if (chosen && chosen.reasoning === false)
+    return "off";
+  return chosen?.thinkingLevel?.trim() || DEFAULT_REMOTE_THINKING_LEVEL;
 }
 
 /**
@@ -90,8 +131,27 @@ export function useRemoteConversationSettings(
     setThinkingLevel(null);
     setModels([]);
     setError(null);
-    if (!enabled || !desktopId || !sessionId)
+    if (!enabled || !desktopId)
       return;
+    if (!sessionId) {
+      // A draft: there is no conversation on the host yet, so there is nothing to
+      // *read* — but its catalogue is per machine and is exactly what the picker
+      // needs, and the values chosen here travel with the first prompt. Without
+      // this the model picker was empty (and so disabled) and the thinking level
+      // fell back to "off", which is not a default anyone chose.
+      const epoch = ++epochRef.current;
+      void listRemoteModels(desktopId).then((catalogue) => {
+        if (epoch !== epochRef.current)
+          return;
+        setModels(catalogue);
+        setModel(defaultRemoteModel(catalogue));
+        setThinkingLevel(defaultRemoteThinkingLevel(catalogue, defaultRemoteModel(catalogue)));
+      }).catch((err: unknown) => {
+        if (epoch === epochRef.current)
+          setError(err instanceof Error ? err.message : String(err));
+      });
+      return;
+    }
     void read(desktopId, sessionId);
   }, [enabled, desktopId, sessionId, read]);
 
@@ -157,8 +217,20 @@ export function useRemoteConversationSettings(
   }, [desktopId, sessionId, read]);
 
   const setModelChoice = useCallback(async (reference: string): Promise<void> => {
-    if (!desktopId || !sessionId)
+    if (!desktopId)
       return;
+    if (!sessionId) {
+      // A draft: the value is local until the first prompt carries it, so it
+      // moves here and the host is told nothing — there is no conversation on it
+      // to set. Returning without this left the picker dead on a new
+      // conversation, which is the state this whole path exists to fix.
+      setModel(reference);
+      setThinkingLevel(current =>
+        defaultRemoteThinkingLevel(models, reference) === "off"
+          ? "off"
+          : current ?? DEFAULT_REMOTE_THINKING_LEVEL);
+      return;
+    }
     const previous = model;
     setModel(reference);
     await change(async () => {
@@ -170,11 +242,16 @@ export function useRemoteConversationSettings(
         throw err;
       }
     });
-  }, [desktopId, sessionId, model, change]);
+  }, [desktopId, sessionId, model, models, change]);
 
   const setThinkingLevelChoice = useCallback(async (level: string): Promise<void> => {
-    if (!desktopId || !sessionId)
+    if (!desktopId)
       return;
+    if (!sessionId) {
+      // See `setModelChoice`: a draft's choice is carried by its first prompt.
+      setThinkingLevel(level);
+      return;
+    }
     const previous = thinkingLevel;
     setThinkingLevel(level);
     await change(async () => {
