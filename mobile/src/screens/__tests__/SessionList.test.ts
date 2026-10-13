@@ -115,13 +115,13 @@ const onTabChange = jest.fn();
 function machineCommands(capabilities: string[] = []) {
   return {
     capabilities: new Set(capabilities),
-    renameSession: jest.fn(async () => {}),
-    generateTitle: jest.fn(async () => "Generated"),
-    setSessionPinned: jest.fn(async () => {}),
-    deleteSession: jest.fn(async () => {}),
-    renameWorkspace: jest.fn(async () => {}),
-    setWorkspacePinned: jest.fn(async () => {}),
-    deleteWorkspace: jest.fn(async () => {}),
+    renameSession: jest.fn(async (_sessionId: string, _name: string) => {}),
+    generateTitle: jest.fn(async (_sessionId: string, _language: string) => "Generated"),
+    setSessionPinned: jest.fn(async (_sessionId: string, _threadId: string, _pinned: boolean) => {}),
+    deleteSession: jest.fn(async (_sessionId: string, _threadId: string) => {}),
+    renameWorkspace: jest.fn(async (_workspaceId: string, _name: string) => {}),
+    setWorkspacePinned: jest.fn(async (_workspaceId: string, _pinned: boolean) => {}),
+    deleteWorkspace: jest.fn(async (_workspaceId: string) => {}),
   } satisfies DesktopCommands;
 }
 const activeCommands = machineCommands(["workspace_pinning_v1"]);
@@ -399,7 +399,7 @@ test("a successful batch exits selection and duplicate confirmation cannot delet
 });
 
 test("batch deletion confirms exact visible selection, preserves hidden children, and retains failures for retry", async () => {
-  activeCommands.deleteSession.mockImplementation(async (id: string) => {
+  activeCommands.deleteSession.mockImplementation(async (id: string, _threadId: string) => {
     if (id === "s2") throw new Error("offline");
   });
   act(() => button("sessions.select").props.onPress());

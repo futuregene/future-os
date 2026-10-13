@@ -607,13 +607,13 @@ const moduleDisconnected = () => tree.root.findAllByType(DisconnectedScreen)[0];
 describe("conversations on other machines", () => {
   const session = { sessionId: "elsewhere", threadId: "t-elsewhere", title: "Elsewhere", streaming: false };
   const peerCommands = {
-    renameSession: jest.fn(async () => {}),
-    generateTitle: jest.fn(async () => "Generated"),
-    setSessionPinned: jest.fn(async () => {}),
-    deleteSession: jest.fn(async () => {}),
-    renameWorkspace: jest.fn(async () => {}),
-    setWorkspacePinned: jest.fn(async () => {}),
-    deleteWorkspace: jest.fn(async () => {}),
+    renameSession: jest.fn(async (_sessionId: string, _name: string) => {}),
+    generateTitle: jest.fn(async (_sessionId: string, _language: string) => "Generated"),
+    setSessionPinned: jest.fn(async (_sessionId: string, _threadId: string, _pinned: boolean) => {}),
+    deleteSession: jest.fn(async (_sessionId: string, _threadId: string) => {}),
+    renameWorkspace: jest.fn(async (_workspaceId: string, _name: string) => {}),
+    setWorkspacePinned: jest.fn(async (_workspaceId: string, _pinned: boolean) => {}),
+    deleteWorkspace: jest.fn(async (_workspaceId: string) => {}),
   };
 
   beforeEach(() => {

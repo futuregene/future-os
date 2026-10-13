@@ -44,12 +44,12 @@ const QUESTION_TOP_INSET = 12;
 const ROW_GAP = spacing.md;
 export const JUMP_VIEW_OFFSET = ROW_GAP - QUESTION_TOP_INSET;
 /**
- * How far above the viewport's bottom edge a landed *end* sits.
+ * How far above the viewport's bottom edge a landed *end* sits — which only the
+ * transcript's newest row asks for, since that end is the tail.
  *
  * The mirror of `QUESTION_TOP_INSET`: the inverted list aligns a row's end with
- * `viewPosition: 0`, and a positive offset lifts the content, so the answer's
- * last line comes to rest this far above the composer instead of butting
- * against it.
+ * `viewPosition: 0`, and a positive offset lifts the content, so the newest row
+ * comes to rest this far above the composer instead of butting against it.
  */
 const JUMP_BOTTOM_INSET = 12;
 /**
@@ -113,12 +113,11 @@ function topOf(viewableItems: ViewToken[]): number | null {
  * prompts.
  *
  * Every landing is a `scrollToIndex` against the list's own measured frames,
- * and which edge takes the reading position is the rung's own answer: a
- * question lands its *start* below the viewport's top edge (the turn is read
- * forward from there), an end — a reply's last slice, or a question taller
- * than the viewport — lands its *end* above the bottom edge, so the prose the
- * reader came for is the last thing on screen rather than scrolled off the
- * top.
+ * and which edge takes the reading position is the rung's own answer: a rung
+ * lands its *start* below the viewport's top edge — a question or an answer,
+ * both read forward from there — except the transcript's newest row, whose
+ * *end* is the tail and lands above the bottom edge instead (see
+ * `rungLanding`).
  *
  * The anchor comes from what the list reports as viewable — partly and fully
  * visible rows — rather than from row geometry: a row's `onLayout` `y` is
