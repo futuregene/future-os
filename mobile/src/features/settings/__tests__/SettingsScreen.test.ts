@@ -4,7 +4,8 @@ import { ScrollView, SectionList, StyleSheet, Switch, Text, TextInput } from "re
 import { Button } from "../../../components/Button";
 import { SettingsScreen, type SettingsScreenHandle } from "../SettingsScreen";
 import { SettingsLink, SettingsSwitch, settingsStyles } from "../SettingsPrimitives";
-import type { DesktopSettings, InstalledSkill, ProvidersView } from "../../../remote/types";
+import type { DesktopSettings, InstalledSkill, PairedDesktop, ProvidersView } from "../../../remote/types";
+import { PEER_ICONS } from "../../../remote/peerIcons";
 
 let stored: DesktopSettings;
 let installed: InstalledSkill[];
@@ -12,10 +13,13 @@ let installed: InstalledSkill[];
 let mockLanguage = "en";
 const mockRemote = {
   credentials: { pairId: "pair", expectedDesktopId: "desktop" },
+  // Typed as the real thing: a desktop row carries the label the user gave it
+  // (name, icon), and an untyped literal here silently loses the right to set
+  // them — which a test that writes an icon cannot do without.
   desktops: [
     { pairId: "other", desktopId: "other-desktop", name: "Other computer" },
     { pairId: "pair", desktopId: "desktop", name: "Work computer" },
-  ],
+  ] as PairedDesktop[],
   desktopOnline: true,
   capabilities: new Set(["desktop_settings_v1", "skill_management_v1", "tasks_v1"]),
   desktopSettingsRevision: 0,
@@ -244,6 +248,24 @@ test("settings identifies its paired desktop without device selection or unpair 
   expect(scope()!.props.numberOfLines).toBeUndefined();
   await openPreferences();
   expect(scope()).toBeDefined();
+});
+
+/**
+ * The banner names the machine these pages write to, so it wears that machine's
+ * own icon: the fixed monitor glyph here was the same gap the device list had,
+ * where picking an icon had no visible effect anywhere.
+ */
+test("the scoped banner wears the bound desktop's own icon", async () => {
+  const glyphs = () => tree.root.findAllByType(Text)
+    .map(node => node.props.children)
+    .filter((child): child is string => typeof child === "string");
+  expect(glyphs()).toContain(PEER_ICONS[0]!.glyph);
+  mockRemote.desktops = [
+    { pairId: "other", desktopId: "other-desktop", name: "Other computer" },
+    { pairId: "pair", desktopId: "desktop", name: "Work computer", icon: "rocket" },
+  ];
+  await act(async () => tree.update(createElement(SettingsScreen, props)));
+  expect(glyphs()).toContain("🚀");
 });
 
 test("phone preferences stay separate and update checking remains available", async () => {

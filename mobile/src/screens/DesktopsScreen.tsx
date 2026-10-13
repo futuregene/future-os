@@ -1,5 +1,5 @@
-import { PEER_ICONS } from "../remote/peerIcons";
-import { ArrowLeft, Check, Monitor, Pencil, Plus, Trash2 } from "lucide-react-native";
+import { iconGlyph, PEER_ICONS } from "../remote/peerIcons";
+import { ArrowLeft, Check, Pencil, Plus, Trash2 } from "lucide-react-native";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -137,7 +137,12 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack?(): void; onAdd(): vo
                   style={({ pressed }) => [styles.select, pressed && styles.pressed]}
                 >
                   <View style={[styles.desktopIcon, selected && styles.desktopIconSelected]}>
-                    <Monitor color={selected ? colors.accent : colors.inkSoft} size={22} />
+                    {/* The desktop's own mark, exactly as the session list and the
+                        rename dialog draw it: the icon the user picked *is* this
+                        machine's identity. The generic monitor that used to be here
+                        was the one place the choice had no effect — the picker wrote
+                        the id and nothing on this screen ever read it back. */}
+                    <Text style={styles.desktopGlyph}>{iconGlyph(desktop.icon)}</Text>
                   </View>
                   <View style={styles.identity}>
                     <Text
@@ -291,6 +296,7 @@ const styles = StyleSheet.create({
   select: { flex: 1, minWidth: 0, minHeight: 64, flexDirection: "row", alignItems: "center", gap: spacing.sm, borderRadius: radius.md },
   desktopIcon: { width: 36, height: 44, alignItems: "center", justifyContent: "center", borderRadius: radius.md, backgroundColor: colors.surfaceSubtle },
   desktopIconSelected: { backgroundColor: colors.surface },
+  desktopGlyph: { fontSize: 20 },
   iconButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.md },
   pressed: { backgroundColor: colors.surfaceSubtle },
   identity: { flex: 1, minWidth: 0, gap: spacing.xs },

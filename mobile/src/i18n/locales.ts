@@ -59,6 +59,7 @@ export const resources = {
         icons: {
           desktop: "Desktop",
           laptop: "Laptop",
+          phone: "Phone",
           server: "Server",
           cloud: "Cloud",
           home: "Home",
@@ -990,6 +991,7 @@ export const resources = {
         icons: {
           desktop: "台式机",
           laptop: "笔记本",
+          phone: "手机",
           server: "服务器",
           cloud: "云主机",
           home: "家里",
