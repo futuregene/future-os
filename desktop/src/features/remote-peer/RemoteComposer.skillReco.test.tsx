@@ -14,10 +14,20 @@ import { RemoteComposer } from "./RemoteComposer";
  * had not agreed to send or drops the message entirely.
  */
 
-const prompt = vi.fn<(desktopId: string, sessionId: string, message: string, uploads: string[]) => Promise<{ sessionId: string }>>();
+const prompt = vi.fn<(
+  desktopId: string,
+  sessionId: string,
+  message: string,
+  uploads: string[],
+  workspaceId?: string | null,
+  fresh?: { modelId?: string | null; thinkingLevel?: string | null } | null,
+  commandId?: string,
+) => Promise<{ sessionId: string }>>();
+const getPromptReceipt = vi.fn<(desktopId: string, commandId: string) => Promise<{ sessionId: string; threadId: string; runId: string } | null>>();
 vi.mock("./remotePeerClient", () => ({
   abortRemoteRun: vi.fn(),
   promptRemoteConversation: (...args: Parameters<typeof prompt>) => prompt(...args),
+  getRemotePromptReceipt: (...args: Parameters<typeof getPromptReceipt>) => getPromptReceipt(...args),
   uploadRemoteFile: vi.fn(),
   // The control row reads the host's approval mode on mount.
   getRemoteApprovalSettings: async () => ({ approvalTier: "manual", sandboxAvailable: false }),
@@ -122,6 +132,7 @@ async function settle(): Promise<void> {
 beforeEach(() => {
   document.body.innerHTML = "";
   prompt.mockReset().mockResolvedValue({ sessionId: "sess_1" });
+  getPromptReceipt.mockReset().mockResolvedValue(null);
 });
 
 /** Without a recommendation the composer sends as it always did. */
@@ -131,7 +142,7 @@ it("sends as before when no recommendation is wired", async () => {
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "hello", [], null, { modelId: null, thinkingLevel: null });
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "hello", [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
   await view.unmount();
 });
 
@@ -173,7 +184,7 @@ it("sends with the skill once it is installed", async () => {
   await settle();
 
   expect(onInstall).toHaveBeenCalledWith(card);
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", expect.stringContaining("/pdf-tools"), [], null, { modelId: null, thinkingLevel: null });
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", expect.stringContaining("/pdf-tools"), [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
   await view.unmount();
 });
 
@@ -209,7 +220,7 @@ it("sends the message when the card is dismissed", async () => {
   await settle();
 
   expect(onDismiss).toHaveBeenCalled();
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please summarise this pdf", [], null, { modelId: null, thinkingLevel: null });
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please summarise this pdf", [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
   await view.unmount();
 });
 
@@ -233,7 +244,7 @@ it("treats a plain send on an open card as dismiss-and-send", async () => {
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please summarise this pdf", [], null, { modelId: null, thinkingLevel: null });
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please summarise this pdf", [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
   await view.unmount();
 });
 
@@ -271,7 +282,7 @@ it("sends normally when the host recommends nothing", async () => {
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please summarise this pdf", [], null, { modelId: null, thinkingLevel: null });
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please summarise this pdf", [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
   await view.unmount();
 });
 
