@@ -12,6 +12,7 @@ import { startWindowDrag } from "../../lib/windowDrag";
 import { MessageBlock } from "../agent/MessageBlock";
 import { useComposerInset } from "../agent/useComposerInset";
 import { useStickyAutoScroll } from "../agent/useStickyAutoScroll";
+import { foldLiveReply } from "./foldLiveReply";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
 import { useRemoteActivityTargets, withRemoteTargets } from "./remoteActivityTargets";
 import { setRemotePeerVisibleSession } from "./remotePeerClient";
@@ -117,9 +118,17 @@ export function RemoteConversationView({
    * it in practice — but it is the same list the viewport keys on, and leaving the
    * live reply out of it would make the transcript's own rendered form differ
    * between a reply in flight and the same reply a second later.
+   *
+   * Drawn once, too: a conversation opened while its newest exchange is still
+   * running carries a partial copy of that reply in the transcript (the host's
+   * page, which the agent writes to mid-run) *and* the reply the host is writing,
+   * and the two are folded into one row (`foldLiveReply`).
    */
   const rendered = useMemo(
-    () => (live ? [...transcript, ...withRemoteTargets([live], targets)] : transcript),
+    () => foldLiveReply(
+      transcript,
+      live ? (withRemoteTargets([live], targets)[0] ?? null) : null,
+    ),
     [transcript, targets, live],
   );
 

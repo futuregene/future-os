@@ -778,6 +778,45 @@ describe("useRemoteTimeline live reply", () => {
     hook.unmount();
   });
 
+  /**
+   * A tail read restarts the live lane.
+   *
+   * The reply being written is the transcript's *tail*: a page read while a run is
+   * live moves the boundary the two meet at, and what the stream had accumulated
+   * belongs to that page now (the view draws the record's part and then the
+   * stream's — `foldLiveReply`). Keeping it would draw those deltas twice, once
+   * from the record and once from the bubble.
+   */
+  it("restarts the live lane at a catch-up read, from that page", async () => {
+    const hook = await open("hello host");
+    event("text_chunk", { text: "Wor" }, 1);
+    await settle();
+    expect(hook.current.live?.content).toBe("Wor");
+    const startedAt = hook.current.live?.runStartedAt;
+
+    // The link came back: everything written so far is on the page the host just
+    // served, so the lane starts again there rather than beside it.
+    requestMock.mockResolvedValue(page([
+      entry("e1", "user", "hello host"),
+      entry("e2", "assistant", "Wor"),
+    ]));
+    act(() => {
+      listeners.forEach(listener => listener({ payload: { desktopId: "desktop_a", kind: "resumed", payload: {} } }));
+    });
+    await settle();
+
+    expect(hook.current.live).toBeNull();
+    expect(hook.current.messages.map(message => message.content)).toEqual(["hello host", "Wor"]);
+
+    // And the next frame of the same run rebuilds the bubble from that boundary —
+    // on the same run, whose clock did not go back to zero with the rebuild.
+    event("text_chunk", { text: "king" }, 2);
+    await settle();
+    expect(hook.current.live?.content).toBe("king");
+    expect(hook.current.live?.runStartedAt).toBe(startedAt);
+    hook.unmount();
+  });
+
   /** Another conversation's reply is never drawn under this one's title. */
   it("ignores another session's reply", async () => {
     const hook = await open("hello");
