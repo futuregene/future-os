@@ -1,37 +1,62 @@
-import { iconGlyph, PEER_ICONS } from "../remote/peerIcons";
-import { ArrowLeft, Check, Pencil, Plus, Trash2 } from "lucide-react-native";
-import { useEffect, useState } from "react";
+import { iconGlyph } from "../remote/peerIcons";
+import { ArrowLeft, Check, Plus, Settings2, Trash2 } from "lucide-react-native";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   BackHandler,
-  Keyboard,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Button } from "../components/Button";
-import { DialogSurface } from "../components/DialogSurface";
 import { useAppDialog } from "../components/useAppDialog";
+import { SettingsScreen, type SettingsScreenHandle } from "../features/settings/SettingsScreen";
 import { useRemoteControls } from "../remote/RemoteContext";
 import type { PairedDesktop } from "../remote/types";
 import { colors, layout, radius, spacing } from "../theme/tokens";
 
-const MAX_NAME_LENGTH = 40;
-const renameDefault = (desktop: PairedDesktop) => desktop.name ?? desktop.desktopId;
+const label = (desktop: PairedDesktop) => desktop.name ?? desktop.desktopId;
 
-export function DesktopsScreen({ onBack, onAdd }: { onBack?(): void; onAdd(): void }) {
+/**
+ * The paired desktops: the phone's device management page, and the way in to
+ * each one's settings.
+ *
+ * A row is a description, not a control. Tapping it used to switch which
+ * machine the app is talking to and leave for the session list — a move nobody
+ * asked for on a page they opened to look at the machines, and one that also
+ * threw away the page they were reading. Switching has its own control where
+ * the sessions are (the device picker on the session list). What a row offers
+ * here is the two things that are about the machine: the configure action
+ * beside it — its name and icon, plus everything that is read from or written
+ * to it — and unpairing. Settings for a device are not reachable from anywhere
+ * else, and the phone's own settings deliberately do not list machines at all.
+ *
+ * The one list still serves as the startup picker, for a phone that has paired
+ * desktops but no usable active pair: App renders this screen with no back
+ * action there, and with nothing behind it the row itself is the choice (see
+ * `picking`, and the comment on the row).
+ */
+export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
+  onBack?(): void;
+  onAdd(): void;
+  /** Open a session in the chat, from a device page's task runs. */
+  onOpenConversation?(sessionId: string): void;
+}) {
   const { t } = useTranslation();
   const Alert = useAppDialog();
   const remote = useRemoteControls();
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
-  const [renameTarget, setRenameTarget] = useState<PairedDesktop | null>(null);
-  const [renameValue, setRenameValue] = useState("");
+  const [editing, setEditing] = useState<string | null>(null);
+  const settingsRef = useRef<SettingsScreenHandle>(null);
+  /** A phone with paired desktops but no active pair (see App) gets this list
+   * with nothing behind it, so there — and only there — a row picks the machine
+   * the app uses. Opened from the session list it is the device page instead. */
+  const picking = !onBack;
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -45,7 +70,7 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack?(): void; onAdd(): vo
   const remove = (desktop: PairedDesktop) => {
     Alert.alert(
       t("sessions.unpair"),
-      t("sessions.unpairConfirm", { name: renameDefault(desktop) }),
+      t("sessions.unpairConfirm", { name: label(desktop) }),
       [
         { text: t("chat.cancel"), style: "cancel" },
         {
@@ -76,33 +101,6 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack?(): void; onAdd(): vo
     }
   };
 
-  const submitIcon = async (icon: string) => {
-    const desktop = renameTarget;
-    if (!desktop) return;
-    // Toggle: picking the current icon clears it, so the user can go back to the
-    // default without a separate "none" affordance.
-    const next = desktop.icon === icon ? "" : icon;
-    setRenameTarget({ ...desktop, icon: next || undefined });
-    try {
-      await remote.labelDesktop(desktop.desktopId, { icon: next });
-    } catch {
-      setFailed("desktops.actionFailed");
-    }
-  };
-
-  const submitRename = async () => {
-    const desktop = renameTarget;
-    if (!desktop) return;
-    const name = renameValue.trim();
-    setRenameTarget(null);
-    if (name === (desktop.name ?? "")) return;
-    try {
-      await remote.renameDesktop(desktop.desktopId, name);
-    } catch {
-      setFailed("desktops.actionFailed");
-    }
-  };
-
   return (
     <SafeAreaView style={styles.safe}>
       {Alert.dialog}
@@ -127,47 +125,69 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack?(): void; onAdd(): vo
           </View>
           {remote.desktops.map((desktop) => {
             const selected = remote.credentials?.pairId === desktop.pairId;
+            const identity = (
+              <>
+                <View style={[styles.desktopIcon, selected && styles.desktopIconSelected]}>
+                  {/* The desktop's own mark, exactly as the session list and the
+                      device page draw it: the icon the user picked *is* this
+                      machine's identity. The generic monitor that used to be here
+                      was the one place the choice had no effect — the picker wrote
+                      the id and nothing on this screen ever read it back. */}
+                  <Text style={styles.desktopGlyph}>{iconGlyph(desktop.icon)}</Text>
+                </View>
+                <View style={styles.identity}>
+                  <Text
+                    numberOfLines={1}
+                    style={[styles.name, desktop.name ? null : styles.nameFallback]}
+                  >
+                    {label(desktop)}
+                  </Text>
+                  {desktop.name ? (
+                    <Text numberOfLines={1} style={styles.id}>{desktop.desktopId}</Text>
+                  ) : null}
+                </View>
+                {selected ? <Check color={colors.accent} size={18} /> : null}
+              </>
+            );
             return (
               <View key={desktop.desktopId} style={[styles.card, selected && styles.cardSelected]}>
+                {picking
+                  ? (
+                      <Pressable
+                        accessibilityLabel={label(desktop)}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected, disabled: busy }}
+                        disabled={busy}
+                        onPress={() => void select(desktop.desktopId)}
+                        style={({ pressed }) => [styles.select, pressed && styles.pressed]}
+                      >
+                        {identity}
+                      </Pressable>
+                    )
+                  : (
+                      /* The same drawing as the picker's row, and nothing to press:
+                         on this page the two actions beside it are what a tap can
+                         do, and the check mark still says which machine is in use. */
+                      <View
+                        accessibilityLabel={label(desktop)}
+                        accessibilityState={{ selected }}
+                        accessible
+                        style={styles.select}
+                      >
+                        {identity}
+                      </View>
+                    )}
+                {/* A settings glyph rather than a pencil: the page behind it is the
+                    machine's whole configuration, and the name and icon are two
+                    fields on it. */}
                 <Pressable
-                  accessibilityRole="button"
-                  accessibilityState={{ selected, disabled: busy }}
-                  disabled={busy}
-                  onPress={() => void select(desktop.desktopId)}
-                  style={({ pressed }) => [styles.select, pressed && styles.pressed]}
-                >
-                  <View style={[styles.desktopIcon, selected && styles.desktopIconSelected]}>
-                    {/* The desktop's own mark, exactly as the session list and the
-                        rename dialog draw it: the icon the user picked *is* this
-                        machine's identity. The generic monitor that used to be here
-                        was the one place the choice had no effect — the picker wrote
-                        the id and nothing on this screen ever read it back. */}
-                    <Text style={styles.desktopGlyph}>{iconGlyph(desktop.icon)}</Text>
-                  </View>
-                  <View style={styles.identity}>
-                    <Text
-                      numberOfLines={1}
-                      style={[styles.name, desktop.name ? null : styles.nameFallback]}
-                    >
-                      {renameDefault(desktop)}
-                    </Text>
-                    {desktop.name ? (
-                      <Text numberOfLines={1} style={styles.id}>{desktop.desktopId}</Text>
-                    ) : null}
-                  </View>
-                  {selected ? <Check color={colors.accent} size={18} /> : null}
-                </Pressable>
-                <Pressable
-                  accessibilityLabel={t("desktops.rename")}
+                  accessibilityLabel={t("desktops.settings")}
                   accessibilityRole="button"
                   disabled={busy}
                   style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
-                  onPress={() => {
-                    setRenameTarget(desktop);
-                    setRenameValue(desktop.name ?? "");
-                  }}
+                  onPress={() => setEditing(desktop.desktopId)}
                 >
-                  <Pencil color={colors.inkSoft} size={18} />
+                  <Settings2 color={colors.inkSoft} size={18} />
                 </Pressable>
                 <Pressable
                   accessibilityLabel={t("sessions.unpair")}
@@ -193,70 +213,25 @@ export function DesktopsScreen({ onBack, onAdd }: { onBack?(): void; onAdd(): vo
         </ScrollView>
       </View>
 
+      {/* A full screen rather than a floating card: a machine's settings are a
+          stack of pages (models, providers, skills, tasks), not a form that
+          fits in a dialog. The stack owns its own levels and back handling. */}
       <Modal
-        animationType="fade"
-        onRequestClose={() => setRenameTarget(null)}
-        transparent
-        visible={renameTarget !== null}
+        animationType="slide"
+        onDismiss={() => setEditing(null)}
+        onRequestClose={() => settingsRef.current?.goBack()}
+        presentationStyle="fullScreen"
+        visible={editing !== null}
       >
-        <DialogSurface>
-            <Text style={styles.dialogTitle}>{t("desktops.rename")}</Text>
-            <TextInput
-              accessibilityLabel={t("desktops.rename")}
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoFocus
-              maxLength={MAX_NAME_LENGTH}
-              onChangeText={setRenameValue}
-              onSubmitEditing={() => {
-                Keyboard.dismiss();
-                void submitRename();
-              }}
-              placeholder={renameTarget?.desktopId}
-              placeholderTextColor={colors.inkMuted}
-              returnKeyType="done"
-              selectTextOnFocus
-              style={styles.input}
-              value={renameValue}
+        {editing
+          ? <SettingsScreen
+              deviceId={editing}
+              key={editing}
+              onClose={() => setEditing(null)}
+              onOpenConversation={onOpenConversation}
+              ref={settingsRef}
             />
-            {/* The icon is a sibling of the name, not part of it: it replaces the
-                name in the session list, and the two are cleared separately. */}
-            <Text style={styles.iconLabel}>{t("desktops.iconLabel")}</Text>
-            <View accessibilityRole="radiogroup" style={styles.iconRow}>
-              {PEER_ICONS.map(icon => {
-                const selected = renameTarget?.icon === icon.id;
-                return (
-                  <Pressable
-                    accessibilityLabel={t(`desktops.icons.${icon.labelKey}`)}
-                    accessibilityRole="radio"
-                    accessibilityState={{ checked: selected }}
-                    key={icon.id}
-                    onPress={() => void submitIcon(icon.id)}
-                    style={({ pressed }) => [
-                      styles.iconOption,
-                      selected && styles.iconOptionSelected,
-                      pressed && styles.pressed,
-                    ]}
-                  >
-                    <Text style={styles.iconGlyph}>{icon.glyph}</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-            <View style={styles.dialogActions}>
-              <View style={styles.dialogAction}>
-                <Button
-                  compact
-                  label={t("chat.cancel")}
-                  onPress={() => setRenameTarget(null)}
-                  variant="secondary"
-                />
-              </View>
-              <View style={styles.dialogAction}>
-                <Button compact label={t("chat.save")} onPress={() => void submitRename()} />
-              </View>
-            </View>
-        </DialogSurface>
+          : null}
       </Modal>
     </SafeAreaView>
   );
@@ -306,29 +281,4 @@ const styles = StyleSheet.create({
   empty: { color: colors.inkSoft, fontSize: 15, textAlign: "center", paddingVertical: spacing.xl },
   footer: { marginTop: "auto", paddingTop: spacing.lg, gap: spacing.md },
   error: { color: colors.danger, fontSize: 14, textAlign: "center" },
-  dialogTitle: { color: colors.inkStrong, fontSize: 20, fontWeight: "700" },
-  input: {
-    minHeight: 48,
-    paddingHorizontal: spacing.md,
-    color: colors.ink,
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: radius.md,
-    fontSize: 15,
-  },
-  dialogActions: { flexDirection: "row", gap: spacing.md },
-  dialogAction: { flex: 1 },
-  iconLabel: { color: colors.inkMuted, fontSize: 13 },
-  iconRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  iconOption: {
-    width: 40,
-    height: 40,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: colors.line,
-    borderRadius: radius.md,
-  },
-  iconOptionSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
-  iconGlyph: { fontSize: 18 },
 });

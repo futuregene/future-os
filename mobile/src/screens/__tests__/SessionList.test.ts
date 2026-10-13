@@ -33,6 +33,9 @@ const mockRemote: {
   setWorkspacePinned: jest.Mock;
   renameWorkspace: jest.Mock;
   selectSession: jest.Mock;
+  switchDesktop: jest.Mock;
+  refreshWorkspaces: jest.Mock;
+  refreshModels: jest.Mock;
   openSessionOnDesktop: jest.Mock;
   newConversation: jest.Mock;
 } = {
@@ -51,6 +54,9 @@ const mockRemote: {
   setWorkspacePinned: jest.fn(),
   renameWorkspace: jest.fn(),
   selectSession: jest.fn(),
+  switchDesktop: jest.fn(),
+  refreshWorkspaces: jest.fn(),
+  refreshModels: jest.fn(),
   openSessionOnDesktop: jest.fn(),
   newConversation: jest.fn(),
 };
@@ -222,6 +228,9 @@ beforeEach(async () => {
   activeCommands.capabilities = new Set(["workspace_pinning_v1"]);
   peerCommands.capabilities = new Set(["workspace_pinning_v1"]);
   mockRemote.newConversation.mockResolvedValue(undefined);
+  mockRemote.switchDesktop.mockResolvedValue(undefined);
+  mockRemote.refreshWorkspaces.mockResolvedValue(undefined);
+  mockRemote.refreshModels.mockResolvedValue(undefined);
   mockRemote.openSessionOnDesktop.mockResolvedValue(undefined);
   await act(async () => {
     tree = create(createElement(SessionList, {
@@ -804,6 +813,10 @@ test("new conversation uses the selected workspace and waits for sheet dismissal
   expect(mockRemote.newConversation).not.toHaveBeenCalled();
   await act(async () => { modal.props.onDismiss(); });
   expect(mockRemote.newConversation).toHaveBeenCalledWith("workspace", "w1");
+  // This machine's own group has nothing to switch to: the draft opens on the
+  // connection the reader is already using, and nothing is re-read.
+  expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
+  expect(mockRemote.refreshModels).not.toHaveBeenCalled();
   act(() => modal.props.onDismiss());
   expect(mockRemote.newConversation).toHaveBeenCalledTimes(1);
 });
@@ -1403,6 +1416,11 @@ const rowGlyphs = (title: string, desktopId: string): number =>
 /** The glyphs drawn on a workspace heading, found by its name. */
 const headingGlyphs = (name: string, desktopId: string): number =>
   glyphsIn(button(name), desktopId);
+/** The pin markers drawn on a workspace heading, found by its name. */
+const headingPins = (name: string): number =>
+  // The icon module is mocked to its own name, so `Pin` is a host element here
+  // — the same lookup the other tests use for a mocked component.
+  button(name).findAllByType("Pin" as never).length;
 
 test("the merged list files each machine's conversations under their workspace headings", () => {
   renderMerged([
@@ -1504,7 +1522,9 @@ test("each page of the merged list holds its own kind of conversation", () => {
  * Rename, pin and delete are commands to the machine that owns the workspace —
  * the one this phone holds a connection to for that machine's rows — so the
  * sheet is willing to offer them, and says which machine they address before its
- * first destructive item.
+ * first destructive item. Starting a conversation is that machine's too: the
+ * queue is the active connection's, so the sheet switches the phone to the
+ * machine that will run it instead of leaving the item out.
  */
 test("a heading on another machine offers that machine's actions", async () => {
   renderMerged([
@@ -1512,12 +1532,15 @@ test("a heading on another machine offers that machine's actions", async () => {
     mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
   ]);
 
-  // A group whose workspace lives elsewhere has no "new conversation": the
-  // phone has one outbox, on the desktop it is talking to.
+  // The sheet is the same sheet wherever the group's workspace lives: one item
+  // set, not the active machine's with "new conversation" in it and a peer's
+  // without. Everything else about that action is below; the pin is here to
+  // prove the other items still address the peer's own connection.
   act(() => button("sessions.workspaceActions:Review").props.onPress());
   expect(tree.root.findByType(ActionMenu).props.actions.map((a: { label: string }) => a.label))
     .toEqual([
       "sessions.actionsOnDesktop",
+      "sessions.new",
       "sessions.pin",
       "sessions.renameWorkspace",
       "sessions.selectWorkspaceSessions",
@@ -1530,6 +1553,25 @@ test("a heading on another machine offers that machine's actions", async () => {
   expect(peerCommands.setWorkspacePinned).toHaveBeenCalledWith("w9", true);
   expect(activeCommands.setWorkspacePinned).not.toHaveBeenCalled();
 
+  // Starting one there reaches that machine first: the draft belongs to the
+  // connection that will carry the first prompt into the workspace.
+  act(() => button("sessions.workspaceActions:Review").props.onPress());
+  await act(async () => {
+    button("sessions.new").props.onPress();
+    await tree.root.findByType(ActionMenu).findByType(Modal).props.onDismiss();
+  });
+  expect(mockRemote.switchDesktop).toHaveBeenCalledWith("desk-b");
+  // The machine it moved onto is re-read before the draft: a freshly connected
+  // machine's catalogue starts empty, and its models are what the draft defaults
+  // to. Same as the creation dialog's own move onto another machine.
+  expect(mockRemote.refreshWorkspaces).toHaveBeenCalled();
+  expect(mockRemote.refreshModels).toHaveBeenCalled();
+  expect(mockRemote.newConversation).toHaveBeenCalledWith("workspace", "w9");
+  expect(mockRemote.switchDesktop.mock.invocationCallOrder[0]!)
+    .toBeLessThan(mockRemote.newConversation.mock.invocationCallOrder[0]!);
+  expect(mockRemote.refreshModels.mock.invocationCallOrder[0]!)
+    .toBeLessThan(mockRemote.newConversation.mock.invocationCallOrder[0]!);
+
   // A machine the phone cannot reach offers nothing: the heading's ⋯ is shown
   // unavailable, as the active machine's is when its connection is down.
   unreachableMachines.add("desk-b");
@@ -1540,6 +1582,77 @@ test("a heading on another machine offers that machine's actions", async () => {
   expect(button("sessions.workspaceActions:Review").props.disabled).toBe(true);
   expect(button("sessions.workspaceActions:Project").props.disabled).toBe(false);
   unreachableMachines.clear();
+});
+
+/**
+ * The item list a group's sheet holds, by its heading's name.
+ *
+ * Read as one string per item so a difference between two groups' sheets is
+ * visible as the two lists side by side.
+ */
+const sheetItems = (heading: string): string[] => {
+  act(() => button(`sessions.workspaceActions:${heading}`).props.onPress());
+  const items = tree.root
+    .findByType(ActionMenu)
+    .props.actions.map((action: { label: string }) => action.label);
+  act(() => tree.root.findByType(ActionMenu).findByType(Modal).props.onDismiss());
+  return items;
+};
+
+/**
+ * Every group offers "new conversation", whichever machine the phone is on.
+ *
+ * The sheet used to hold it only for the machine the connection was on, so the
+ * same list gave two answers: the group the reader had just come back from had
+ * the item, every other group did not — and opening a conversation on the other
+ * machine moved it across, because that is what switches the connection.
+ */
+test("both machines' groups offer a new conversation, whichever one is connected", () => {
+  const rows = [
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ];
+  const expectBoth = () => {
+    expect(sheetItems("Project")).toContain("sessions.new");
+    expect(sheetItems("Review")).toContain("sessions.new");
+  };
+
+  renderMerged(rows, "desk-a");
+  expectBoth();
+  // The same two groups after the reader opened one of the other machine's
+  // conversations, which is what moves the connection.
+  renderMerged(rows, "desk-b");
+  expectBoth();
+});
+
+/**
+ * A merged heading is drawn with the pin its rows report — the marker, and the
+ * item that can undo it.
+ *
+ * A group is *filed* by the pin its rows carry (`groupMergedRows`), and the
+ * heading is where the same fact is *shown*: the marker, and the "pin"/"unpin"
+ * item, are both chosen from `workspace.pinned`. A heading built without it read
+ * as an unpinned group in the one place the reader looks — no marker, and a menu
+ * that pinned an already-pinned workspace again, so a pin made in the
+ * single-machine list could not be undone in the merged one — while the group
+ * was still placed as pinned.
+ */
+test("a merged heading carries the pin its rows report, and offers to undo it", () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Pinned plan", { workspacePinned: true }),
+    mergedRow("desk-b", "b1", "Remote plan", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+
+  expect(headingPins("Project")).toBe(1);
+  expect(headingPins("Review")).toBe(0);
+  expect(sheetItems("Project")).toContain("sessions.unpin");
+  expect(sheetItems("Review")).toContain("sessions.pin");
+
+  // Undoing it from here addresses the machine that owns the workspace — this
+  // one's own connection for this machine's group.
+  pressWorkspaceAction("Project", "sessions.unpin");
+  expect(activeCommands.setWorkspacePinned).toHaveBeenCalledWith("w1", false);
+  expect(peerCommands.setWorkspacePinned).not.toHaveBeenCalled();
 });
 
 test("renaming and deleting a peer workspace name it on its own machine", async () => {

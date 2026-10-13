@@ -3100,6 +3100,7 @@
         ]
       },
       "desktops": {
+        "_comment": "The paired list and the way in to a machine's settings. Reached from the desktop picker above the session list — the settings screen no longer lists machines at all.",
         "steps": [
           {
             "wait": 900
@@ -3111,17 +3112,71 @@
             "wait": 1200
           },
           {
-            "tap": "已配对的桌面端"
+            "tap": "桌面选择"
           },
           {
-            "wait": 2200
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
           },
           {
             "shot": "m-desktops-list.png"
           }
         ]
       },
+      "desktop-settings": {
+        "_comment": "One paired desktop's page: what it is called here, and everything that is read from or written to it. The settings screen must not offer any of this, which is what this scenario opens with.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "桌面选择"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "桌面端设置"
+          },
+          {
+            "wait": 1800
+          },
+          {
+            "eval": "(() => {\n  const text = document.body.innerText;\n  // The machine's own page names it, offers its label fields, and lists the\n  // settings that live on it. Every one of these used to be on the phone's\n  // settings screen; none of them may come back there.\n  for (const wanted of ['实验室的 MacBook Pro', '设备标识', '名称', '图标', '该桌面端的设置', '自动化与审批', '模型可见性', '提供商与模型', '技能管理', '任务设置']) {\n    if (!text.includes(wanted)) throw new Error('the device page is missing ' + wanted + ': ' + text.slice(0, 300));\n  }\n  const grid = [...document.querySelectorAll('[role=radio]')];\n  if (grid.length < 20) throw new Error('the icon grid is not on the page: ' + grid.length);\n  return grid.length + ' icons';\n})()"
+          },
+          {
+            "shot": "m-device-settings.png"
+          },
+          {
+            "eval": "(() => {\n  // Picking an icon writes it through the phone's label store and the page\n  // reads it back: a picker that stores an id nothing reads looks identical.\n  const option = [...document.querySelectorAll('[role=radio]')].find(el => el.getAttribute('aria-label') === '发布机');\n  if (!option) throw new Error('the rocket icon is missing from the grid');\n  option.click();\n  return 'picked the rocket';\n})()"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  const option = [...document.querySelectorAll('[role=radio]')].find(el => el.getAttribute('aria-label') === '发布机');\n  const picked = getComputedStyle(option).backgroundColor;\n  if (picked !== 'rgb(232, 240, 255)') throw new Error('the picked icon is not marked: ' + picked);\n  return picked;\n})()"
+          }
+        ]
+      },
       "settings": {
+        "_comment": "The phone's own settings — and only that: a machine's settings (models, providers, skills, tasks) live on its own page in the paired list, so this screen must not carry a single device row.",
         "steps": [
           {
             "wait": 900
@@ -3137,14 +3192,17 @@
           },
           {
             "wait": 2200
+          },
+          {
+            "eval": "(() => {\n  const text = document.body.innerText;\n  for (const wanted of ['手机本机', '语言', '微信公众号', '检查更新']) {\n    if (!text.includes(wanted)) throw new Error('the phone settings are missing ' + wanted);\n  }\n  for (const gone of ['当前桌面端', '模型可见性', '任务设置', '技能管理']) {\n    if (text.includes(gone)) throw new Error('a device setting is still on the phone screen: ' + gone);\n  }\n  return 'phone-only settings';\n})()"
           },
           {
             "shot": "m-settings.png"
           }
         ]
       },
-      "settings-desktops": {
-        "_comment": "The desktop this phone connects to, chosen from settings. The current machine is marked by its own selection styling (accent-soft background and a check glyph) because React Native Web drops accessibilityState.checked for a radio.",
+      "desktops-switch": {
+        "_comment": "Connecting to another machine from the paired list: the row being bound is the marked one, and after the tap the phone lands back in the conversation list with the picker naming the machine it just bound. The list itself is the chooser now — the settings screen has no desktop rows at all.",
         "steps": [
           {
             "wait": 900
@@ -3156,63 +3214,38 @@
             "wait": 1200
           },
           {
-            "tap": "设置"
-          },
-          {
-            "wait": 2200
-          },
-          {
-            "eval": "document.querySelector('[role=button][aria-label=\"远程桌面\"]').click()"
+            "tap": "桌面选择"
           },
           {
             "wait": 1500
           },
           {
-            "eval": "(() => { const t = document.body.innerText; if (!t.includes('选择这台手机连接的桌面端')) throw new Error('the desktop list did not open'); const rows = [...document.querySelectorAll('[role=radio]')]; const labels = rows.map(r => r.getAttribute('aria-label')); if (rows.length !== 2) throw new Error('expected two paired desktops, got: ' + labels.join(' / ')); const marked = rows.filter(el => getComputedStyle(el).backgroundColor === 'rgb(232, 240, 255)' && el.querySelectorAll('svg').length === 2); if (marked.length !== 1) throw new Error('exactly one desktop must be marked as current: ' + labels.join(' / ')); if (marked[0].getAttribute('aria-label') !== '实验室的 MacBook Pro') throw new Error('the marked desktop is not the bound one: ' + marked[0].getAttribute('aria-label')); const other = rows.find(el => el !== marked[0]); if (getComputedStyle(other).backgroundColor !== 'rgb(255, 255, 255)') throw new Error('the other desktop looks selected too'); return labels.join(' / '); })()"
+            "tap": "管理已配对的桌面…"
           },
           {
-            "shot": "m-settings-desktops.png"
+            "wait": 2000
+          },
+          {
+            "eval": "(() => { const row = name => [...document.querySelectorAll('[role=button]')].find(el => el.getAttribute('aria-label') === name); const bound = row('实验室的 MacBook Pro'), other = row('办公室主机'); if (!bound || !other) throw new Error('the list does not carry both machines by name'); const bg = el => getComputedStyle(el.parentElement).backgroundColor; if (bg(bound) !== 'rgb(232, 240, 255)') throw new Error('the bound machine is not the marked row: ' + bg(bound)); if (bg(other) === 'rgb(232, 240, 255)') throw new Error('the other machine looks bound too'); return '实验室的 MacBook Pro is bound'; })()"
+          },
+          {
+            "shot": "m-desktops-before-switch.png"
+          },
+          {
+            "tap": "办公室主机"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => { const text = document.body.innerText; if (!text.includes('工作区')) throw new Error('the switch did not return to the conversation list: ' + text.slice(0, 200)); if (text.includes('已配对的桌面端')) throw new Error('the paired list is still on screen after switching'); return 'back at the conversation list'; })()"
+          },
+          {
+            "shot": "m-desktops-switched.png"
           }
         ]
       },
-      "settings-desktops-switch": {
-        "_comment": "Switching from the list reconnects the phone: the level closes and the settings home names the machine just bound (the settings modal is keyed by the pairing, so it remounts on the new desktop).",
-        "steps": [
-          {
-            "wait": 900
-          },
-          {
-            "tap": "稍后再说"
-          },
-          {
-            "wait": 1200
-          },
-          {
-            "tap": "设置"
-          },
-          {
-            "wait": 2200
-          },
-          {
-            "eval": "document.querySelector('[role=button][aria-label=\"远程桌面\"]').click()"
-          },
-          {
-            "wait": 1500
-          },
-          {
-            "eval": "document.querySelector('[role=radio][aria-label=\"办公室主机\"]').click()"
-          },
-          {
-            "wait": 1800
-          },
-          {
-            "eval": "(() => { const t = document.body.innerText; if (!t.includes('已绑定设备：办公室主机')) throw new Error('the bound desktop did not follow the switch: ' + t.slice(0, 240)); if (t.includes('选择这台手机连接的桌面端')) throw new Error('the desktop list is still open after switching'); return 'switched'; })()"
-          },
-          {
-            "shot": "m-settings-desktops-switched.png"
-          }
-        ]
-      },
+
       "connection-popover": {
         "_comment": "A badge that reads 已连接 must still offer a manual reconnect. Opened by a programmatic click on the trigger (an emulated tap lands ~58px lower in this harness), and the assertion reads the popover's button labels, so a missing action fails the capture instead of quietly shipping an empty bubble.",
         "steps": [
@@ -3403,10 +3436,22 @@
             "wait": 1200
           },
           {
-            "tap": "设置"
+            "tap": "桌面选择"
           },
           {
-            "wait": 1600
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "桌面端设置"
+          },
+          {
+            "wait": 1800
           },
           {
             "tap": "任务设置"
@@ -3434,10 +3479,22 @@
             "wait": 1200
           },
           {
-            "tap": "设置"
+            "tap": "桌面选择"
           },
           {
-            "wait": 1600
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "桌面端设置"
+          },
+          {
+            "wait": 1800
           },
           {
             "tap": "任务设置"
@@ -3477,10 +3534,22 @@
             "wait": 1200
           },
           {
-            "tap": "设置"
+            "tap": "桌面选择"
           },
           {
-            "wait": 1600
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "桌面端设置"
+          },
+          {
+            "wait": 1800
           },
           {
             "tap": "任务设置"
@@ -3524,10 +3593,22 @@
             "wait": 1200
           },
           {
-            "tap": "设置"
+            "tap": "桌面选择"
           },
           {
-            "wait": 1600
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "桌面端设置"
+          },
+          {
+            "wait": 1800
           },
           {
             "tap": "任务设置"
@@ -3568,10 +3649,22 @@
             "wait": 1200
           },
           {
-            "tap": "设置"
+            "tap": "桌面选择"
           },
           {
-            "wait": 1600
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "桌面端设置"
+          },
+          {
+            "wait": 1800
           },
           {
             "tap": "任务设置"
@@ -3606,10 +3699,22 @@
             "wait": 1200
           },
           {
-            "tap": "设置"
+            "tap": "桌面选择"
           },
           {
-            "wait": 1600
+            "wait": 1500
+          },
+          {
+            "tap": "管理已配对的桌面…"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "桌面端设置"
+          },
+          {
+            "wait": 1800
           },
           {
             "tap": "任务设置"
