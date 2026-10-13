@@ -1,12 +1,12 @@
 import type { DesktopFilter } from "../remote/mergeSessions";
 import type { PairedDesktop } from "../remote/types";
-import { Check, ChevronDown, Monitor } from "lucide-react-native";
+import { Check, ChevronDown, Monitor, X } from "lucide-react-native";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { DialogSurface } from "../components/DialogSurface";
 import { iconGlyph } from "../remote/peerIcons";
-import { colors, radius, spacing } from "../theme/tokens";
+import { colors, layout, radius, spacing } from "../theme/tokens";
 
 /**
  * The desktop picker above the session list.
@@ -68,7 +68,20 @@ export function DesktopPicker({
         visible={open}
       >
         <DialogSurface>
-          <Text style={styles.title}>{t("desktops.pickerLabel")}</Text>
+          <View style={styles.header}>
+            <Text accessibilityRole="header" style={styles.title}>{t("desktops.pickerLabel")}</Text>
+            {/* Every row in the list commits a choice, and the sheet has no
+                outside-tap dismissal, so without this the only way out is the
+                system back gesture — which iOS does not have. */}
+            <Pressable
+              accessibilityLabel={t("common.close")}
+              accessibilityRole="button"
+              onPress={() => setOpen(false)}
+              style={({ pressed }) => [styles.closeButton, pressed && styles.pressed]}
+            >
+              <X color={colors.inkSoft} size={20} />
+            </Pressable>
+          </View>
           <ScrollView style={styles.list}>
             <Pressable
               accessibilityRole="button"
@@ -133,7 +146,15 @@ const styles = StyleSheet.create({
   triggerIcon: { width: 24, alignItems: "center" },
   triggerLabel: { flex: 1, minWidth: 0, color: colors.inkStrong, fontSize: 15, fontWeight: "600" },
   pressed: { opacity: 0.7 },
-  title: { color: colors.inkStrong, fontSize: 18, fontWeight: "700" },
+  header: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  title: { flex: 1, minWidth: 0, color: colors.inkStrong, fontSize: 18, fontWeight: "700" },
+  closeButton: {
+    width: layout.touchTarget,
+    height: layout.touchTarget,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.pill,
+  },
   list: { maxHeight: 420 },
   option: {
     flexDirection: "row",

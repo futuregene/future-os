@@ -141,6 +141,23 @@ test("the picker offers every paired desktop plus the merged option", () => {
     .toEqual({ kind: "desktop", desktopId: "desktop_2" });
 });
 
+test("the picker can be dismissed without choosing a desktop", () => {
+  const pickerModal = () => tree.root.findByType(DesktopPicker).findAllByType(Modal)[0]!;
+  // Nothing to dismiss while the list is shut, so the close button the user
+  // reaches for only exists once the picker is open.
+  expect(pickerModal().props.visible).toBe(false);
+  act(() => button("desktops.pickerLabel").props.onPress());
+  const open = pickerModal();
+  expect(open.props.visible).toBe(true);
+  const close = open.findAll(node =>
+    node.props.accessibilityLabel === "common.close" && typeof node.props.onPress === "function",
+  )[0]!;
+  act(() => close.props.onPress());
+  expect(pickerModal().props.visible).toBe(false);
+  // Backing out is not a choice: the list still shows every desktop.
+  expect(tree.root.findByType(DesktopPicker).props.filter).toEqual({ kind: "all" });
+});
+
 test("a picker row is the desktop's name and nothing else", () => {
   act(() => button("desktops.pickerLabel").props.onPress());
   // Host nodes only: a composite and its host both carry the row's props.
