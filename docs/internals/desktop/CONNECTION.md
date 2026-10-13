@@ -783,7 +783,10 @@ receiving an explicit revocation result.
 | Recovery entries duplicated and inconsistent | First connection, onReconnected, foreground, and request-failure paths each trigger refresh; e.g. onReconnected does not refresh settings | Section 6: unified recovery coordination and per-data-domain recovery checklist |
 
 Source entries: [mobile connection](../../../mobile/src/remote/client.ts),
-[mobile lifecycle](../../../mobile/src/remote/useRemoteConnection.ts),
+[mobile lifecycle](../../../mobile/src/remote/useDesktopConnection.ts),
+[mobile lifecycles of the app](../../../mobile/src/remote/useAppLifecycle.ts),
+[one desktop's runtime](../../../mobile/src/remote/useDesktopRuntime.ts),
+[mobile pairing and selection](../../../mobile/src/remote/usePairedDesktops.ts),
 [mobile pairing HTTP](../../../mobile/src/remote/pairing.ts),
 [catalog state](../../../mobile/src/remote/useSessionCatalog.ts),
 [Desktop supervision](../../../desktop/src-tauri/src/remote/mod.rs),
@@ -823,8 +826,9 @@ conflated with the immediacy of the Desktop's local entry close.
 ### 3.3 Verification done and uncovered scope
 
 2026-09-11 ran four existing test groups on the above FutureOS baseline:
-`connectionState`, `useRemoteConnection`, `pairing`, `syncEngine` — 133 items
-passed. Additionally, loading the real client and state machine in memory and
+`connectionState`, the connection lifecycle (`useRemoteConnection` then, split
+into `useDesktopConnection`/`useAppLifecycle`/`usePairedDesktops` in
+2026-10-13), `pairing`, `syncEngine` — 133 items passed. Additionally, loading the real client and state machine in memory and
 simulating an unreturned credential request plus old-connection events
 confirmed the handoff window; no repo test script was added. These results only
 prove the covered behaviors and cannot offset the problems found in 3.1.
@@ -1423,7 +1427,8 @@ substitute for those results.
 ### 8.2 Mobile unified recovery coordination
 
 - The transport layer only reports connection recovery and orchestrates no
-  business data; `useRemoteConnection` owns the single recovery checklist, and
+  business data; `useDesktopConnection` owns the recovery checklist of *its*
+  desktop, `useAppLifecycle` decides when every runtime is asked to recover, and
   `RemoteContext` no longer maintains a second set of recovery functions.
 - An independent `RecoveryCoordinator` executes recovery serially per client
   instance: same-round sync notifications merge; a reconnect during an

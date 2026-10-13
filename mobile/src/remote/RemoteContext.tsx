@@ -415,6 +415,18 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
   const activeDesktopId = pairing.activeDesktopId;
   const activeRuntime = runtimeFor(registryRef.current, activeDesktopId);
+  /**
+   * The open desktop's credentials.
+   *
+   * From its runtime once it has them; before that, from the claim that just
+   * created them — a desktop the user has just paired is readable at once, and
+   * the screens must not fall back to "nothing selected" while its runtime is
+   * still booting.
+   */
+  const credentials = activeRuntime?.connection.credentials
+    ?? (pairing.claimedCredentials?.expectedDesktopId === activeDesktopId
+      ? pairing.claimedCredentials
+      : null);
 
   /**
    * Wait for a machine's runtime to have a live client.
@@ -430,7 +442,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     for (;;) {
       const entry = registryRef.current.get(desktopId);
       if (entry?.connection.clientRef.current) return entry;
-      if (Date.now() >= deadline) return entry ?? null;
+      if (Date.now() >= deadline) return null;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }, []);
@@ -448,6 +460,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       if (!target) return;
       if (target !== pairing.activeDesktopId) await pairing.selectDesktop(target);
       const entry = await waitForRuntime(target);
+      // A machine that cannot be reached must say so: the caller reports it,
+      // rather than the row appearing to open onto an empty conversation.
       if (!entry) throw new Error("desktop_unavailable");
       await entry.conversation.selectSession(sessionId);
     },
@@ -623,8 +637,15 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     const connection = runtime?.connection ?? null;
     const presence = connection?.presence ?? null;
     const agentAvailable = presence?.agentAvailable !== false;
+    // A selected desktop whose runtime has not reported yet is *starting*, not
+    // absent: the picker is for "which desktop", asked because there is none.
+    const fallbackPhase: ConnectionPhase = pairing.booting
+      ? "booting"
+      : activeDesktopId
+        ? "connecting"
+        : "unpaired";
     const connectionPresentation = buildConnectionPresentation({
-      phase: connection?.phase ?? (pairing.booting ? "booting" : "unpaired"),
+      phase: connection?.phase ?? fallbackPhase,
       desktopOnline: connection?.desktopOnline ?? false,
       agentAvailable,
       desktopDisconnected: presence?.disconnected,
@@ -665,9 +686,9 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       captureConversationOperation: runtime?.captureConversationOperation ?? (() => () => false),
       desktopSettingsRevision: runtime?.desktopSettingsRevision ?? 0,
       skillsRevision: runtime?.skillsRevision ?? 0,
-      phase: connection?.phase ?? (pairing.booting ? "booting" : "unpaired"),
+      phase: connection?.phase ?? fallbackPhase,
       error: connection?.error ?? pairing.error,
-      credentials: connection?.credentials ?? null,
+      credentials,
       desktops: pairing.desktops,
       switchDesktop,
       renameDesktop: pairing.renameDesktop,
@@ -765,6 +786,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   }, [
     activeDesktopId,
     activeRuntime?.busy,
+    credentials,
     activeRuntime?.catalog.approvalTier,
     activeRuntime?.catalog.catalogSync,
     activeRuntime?.catalog.createWorkspace,

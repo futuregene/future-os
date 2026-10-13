@@ -1439,7 +1439,7 @@ describe("broker status stream", () => {
     (callbacks.onReconnected as jest.Mock).mockClear();
     // The desktop unpairs while the broker is reconnecting. The app's own
     // `onPresence` handler closes the client synchronously (that is exactly
-    // what useRemoteConnection:278 does), and the client hands presence to that
+    // what `useDesktopConnection`'s presence sink does), and the client hands presence to that
     // handler *before* it announces readiness on the same code path.
     (callbacks.onPresence as jest.Mock).mockImplementationOnce(() => { void client.close(); });
     jest.spyOn(client as never, "performHandshake").mockResolvedValue({

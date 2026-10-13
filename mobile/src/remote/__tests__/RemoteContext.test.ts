@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { prepareTaskNotifications } from "../../notifications/taskNotifications";
 import { RemoteProvider, useRemote, useRemoteControls, type RemoteControls } from "../RemoteContext";
+import { claimPairingCode } from "../pairing";
 import { loadCredentials, loadPairedDesktops } from "../storage";
 import type { Presence, RemoteCredentials, RemoteSession } from "../types";
 
@@ -311,8 +312,7 @@ describe("RemoteProvider over several desktops", () => {
     expect(remote.credentials?.expectedDesktopId).toBe("desktop_1");
   });
 
-  test("a conversation on another desktop is read from that desktop", async () => {
-    await mount();
+  test("a conversation on another desktop is read from that desktop", async () => {    await mount();
     await settle();
     const studio = clientFor("desktop_1");
     const office = clientFor("desktop_2");
@@ -491,6 +491,29 @@ describe("RemoteProvider over several desktops", () => {
     await mount();
     await settle();
     expect(prepareTaskNotifications).toHaveBeenCalledTimes(1);
+  });
+
+  test("a freshly paired desktop is readable before its runtime finishes booting", async () => {
+    // Nothing paired yet, and the new desktop's runtime never finishes reading
+    // its credentials: the app must still know which desktop it is on.
+    jest.mocked(loadPairedDesktops).mockResolvedValue([]);
+    await mount();
+    await settle();
+    expect(remote.credentials).toBeNull();
+
+    jest.mocked(claimPairingCode).mockResolvedValue(credentialsFor("desktop_9"));
+    jest.mocked(loadCredentials).mockReturnValue(new Promise(() => {}));
+    jest.mocked(loadPairedDesktops).mockResolvedValue([
+      { desktopId: "desktop_9", pairId: "pair-desktop_9" },
+    ]);
+    await act(async () => { await remote.pair("code"); });
+    await settle();
+
+    // The claim is what the screens read until the runtime reports its own:
+    // without it the app would show the picker for a machine it has just been
+    // told it is connected to.
+    expect(remote.credentials?.expectedDesktopId).toBe("desktop_9");
+    expect(remote.phase).not.toBe("unpaired");
   });
 
   test("a desktop dropped from storage keeps the app on the picker rather than a phantom", async () => {

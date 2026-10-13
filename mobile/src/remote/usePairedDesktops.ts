@@ -37,6 +37,11 @@ export interface PairedDesktops {
   desktops: PairedDesktop[];
   activeDesktopId: string | null;
   /**
+   * Credentials a claim produced, for the desktop they name, until that
+   * desktop's runtime reports its own. Null once nothing has just been paired.
+   */
+  claimedCredentials: RemoteCredentials | null;
+  /**
    * Remount counter per desktop.
    *
    * A connection that has given up is not re-opened from the inside, so the way
@@ -71,6 +76,16 @@ export function usePairedDesktops({
   const [activeDesktopId, setActiveDesktopId] = useState<string | null>(null);
   const [generations, setGenerations] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The credentials a claim just produced.
+   *
+   * A successful pair has durable credentials before any runtime exists for
+   * them, and the screens should be able to read the new desktop immediately:
+   * without this the app would fall back to "no desktop selected" for as long
+   * as the runtime takes to boot — the picker, for a machine the user has just
+   * been told they are connected to. Only ever used for the desktop it names.
+   */
+  const [claimedCredentials, setClaimedCredentials] = useState<RemoteCredentials | null>(null);
   const revokesRunningRef = useRef(false);
   const revokeTerminalRef = useRef(new Set<string>());
 
@@ -153,6 +168,7 @@ export function usePairedDesktops({
     // mounts for it reads them from storage, so an unwritten bundle would look
     // like a desktop that paired and immediately vanished.
     await saveCredentials(claimed);
+    setClaimedCredentials(claimed);
     await refreshDesktops();
     setActiveDesktopId(claimed.expectedDesktopId);
   }, [refreshDesktops]);
@@ -214,6 +230,7 @@ export function usePairedDesktops({
     booting,
     desktops,
     activeDesktopId,
+    claimedCredentials,
     generations,
     error,
     pair,

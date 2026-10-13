@@ -271,7 +271,7 @@ NATS Core 是至多一次投递。已有实时事件必须由权威日志回放�
 | 连接健康没有覆盖业务健康 | 心跳在线、连接 ready 不证明 Agent 可用或当前时间线已同步 | 第 6 节：传输、对端、Agent 与数据同步分开建模 |
 | 恢复入口重复且内容不一致 | 初次连接、onReconnected、前台及请求失败路径各自触发刷新；例如 onReconnected 不刷新 settings | 第 6 节：统一恢复协调与数据域恢复清单 |
 
-源码入口：[手机连接](../../../mobile/src/remote/client.ts)、[手机生命周期](../../../mobile/src/remote/useRemoteConnection.ts)、[手机配对 HTTP](../../../mobile/src/remote/pairing.ts)、[目录状态](../../../mobile/src/remote/useSessionCatalog.ts)、[Desktop 监督](../../../desktop/src-tauri/src/remote/mod.rs)、[Desktop 命令及握手](../../../desktop/src-tauri/src/remote/commands.rs)。服务端跨仓库入口为 `future-server/platform/service/src/routes/remote.rs`。
+源码入口：[手机连接](../../../mobile/src/remote/client.ts)、[手机侧生命周期](../../../mobile/src/remote/useDesktopConnection.ts)、[应用级生命周期](../../../mobile/src/remote/useAppLifecycle.ts)、[单台 Desktop 的运行时](../../../mobile/src/remote/useDesktopRuntime.ts)、[配对与选择](../../../mobile/src/remote/usePairedDesktops.ts)、[手机配对 HTTP](../../../mobile/src/remote/pairing.ts)、[目录状态](../../../mobile/src/remote/useSessionCatalog.ts)、[Desktop 监督](../../../desktop/src-tauri/src/remote/mod.rs)、[Desktop 命令及握手](../../../desktop/src-tauri/src/remote/commands.rs)。服务端跨仓库入口为 `future-server/platform/service/src/routes/remote.rs`。
 
 **风险判断与本次优先级：** 现有证据不要求推翻扫码流程或改变业务授权。应优先修复主动停止后迟到结果可能重新安装连接的竞态，因为它直接关系到用户能否可靠关闭入口；该风险来自源码交错分析，尚未完成运行复现，不能表述为已证实可被利用的安全漏洞。旧连接提前失效已模拟复现，握手互相覆盖、请求无期限及旧状态回写需要一并按客户端契约修复，主要影响连接连续性和状态准确性。服务端事务与领取响应丢失主要是失败时的一致性和体验问题，本次接受重新扫码并暂缓改造。云端撤销窗口涉及授权失效时效，应单独记录和验证，不与 Desktop 本地关闭入口的即时性混为一谈。
 
@@ -292,7 +292,7 @@ NATS Core 是至多一次投递。已有实时事件必须由权威日志回放�
 
 ### 3.3 已做验证与未覆盖范围
 
-2026-09-11 在上述 FutureOS 基线上运行四组现有测试：`connectionState`、`useRemoteConnection`、`pairing`、`syncEngine`，共 133 项通过。另通过在内存中加载实际客户端和状态机、模拟未返回的凭证请求及旧连接事件，确认交接空窗；未新增仓库测试脚本。这些结果只证明被覆盖的行为，不能抵消第 3.1 节发现的问题。
+2026-09-11 在上述 FutureOS 基线上运行四组现有测试：`connectionState`、连接生命周期（当时为 `useRemoteConnection`，2026-10-13 拆为 `useDesktopConnection`/`useAppLifecycle`/`usePairedDesktops`）、`pairing`、`syncEngine`，共 133 项通过。另通过在内存中加载实际客户端和状态机、模拟未返回的凭证请求及旧连接事件，确认交接空窗；未新增仓库测试脚本。这些结果只证明被覆盖的行为，不能抵消第 3.1 节发现的问题。
 
 未运行：真实 Android/iOS 生命周期故障测试、真实 Desktop/Agent 退出故障注入、真实 NATS/平台中断与 JWT 过期联调、生产部署安全配置验证。后续每次实现必须记录对应提交及验证范围，不复用本次通过数作为新版本保证。
 
@@ -520,7 +520,7 @@ Desktop 新增的 `~/.future/remote_pending_revokes.json` 只记录配对 ID 与
 
 ### 8.2 手机统一恢复协调
 
-- 传输层只报告连接恢复，不编排业务数据；`useRemoteConnection` 拥有唯一恢复清单，`RemoteContext` 不再维护第二套恢复函数。
+- 传输层只报告连接恢复，不编排业务数据；`useDesktopConnection` 拥有*自己那台* Desktop 的恢复清单，`useAppLifecycle` 决定何时让每个运行时恢复，`RemoteContext` 不再维护第二套恢复函数。
 - 独立 `RecoveryCoordinator` 按客户端实例串行执行恢复：同一轮同步通知合并；正在拉取时又发生重连，安排一次后续恢复，避免将旧链路上的拉取误当作新链路恢复完成。
 - 前台/网络恢复记录协调器版本，再调用传输恢复。传输已经报告重连时等待该轮恢复；健康连接只完成探测时，由生命周期入口补充一次状态恢复。即使重连回调中的刷新已经完成，也不会重复拉取。
 - 每轮开始检查访问代次、当前客户端和 ready 状态；解绑或替换客户端后，旧任务不能开始后续一轮，新客户端也不必等待旧请求结束。已发出的目录请求仍由各数据域的客户端/代次/请求顺序校验阻止迟到回写。
