@@ -147,9 +147,15 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     [baseTimeline, selectedSessionId],
   );
 
+  // Switching desktops moves the whole pairing, as the real `switchDesktop`
+  // does: screens read `credentials.pairId` to tell which machine is current,
+  // and the settings modal is keyed by it, so a switch remounts them the way
+  // the app does after a real reconnect.
+  const pairedDesktop = demoDesktops.find(desktop => desktop.desktopId === desktopId);
   const credentials: RemoteCredentials = {
     ...demoCredentials,
     expectedDesktopId: desktopId,
+    pairId: pairedDesktop?.pairId ?? demoCredentials.pairId,
   };
 
   const value = withFallback({
