@@ -1,7 +1,7 @@
-import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { useEffect } from "react";
 import { playDoneBell } from "../../../lib/doneBell";
 import { onFutureEvent } from "../../../lib/futureEvents";
+import { requestUserAttention } from "../../../lib/windowAttention";
 
 /**
  * Global "agent done" alert: when any conversation's run finishes
@@ -19,7 +19,7 @@ export function useAgentDoneBell(enabled: boolean) {
       return;
     return onFutureEvent("agent_end", () => {
       playDoneBell();
-      void getCurrentWindow().requestUserAttention(UserAttentionType.Critical);
+      void requestUserAttention();
     });
   }, [enabled]);
 }
