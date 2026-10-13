@@ -6,7 +6,7 @@ import type { StoredThread, StoredWorkspace } from "../../integrations/storage/t
 import type { FutureSessionStatus } from "./hooks/useFutureAccount";
 import type { RemoteIndicator } from "./hooks/useRemoteStatus";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
-import type { ThreadTreeNode } from "./threadTree";
+import type { TreeNode } from "./threadTree";
 import {
   Blocks,
   ChevronDown,
@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { mergeConversations } from "../../features/remote-peer/mergeConversations";
+import { mergeConversations, rowKey } from "../../features/remote-peer/mergeConversations";
 import { SkillIntroBubble } from "../../features/skills/SkillIntroBubble";
 import { listInstalledSkills } from "../../integrations/skills/skillsClient";
 import { cn } from "../../lib/cn";
@@ -44,7 +44,7 @@ import { useRailSelection } from "./hooks/useRailSelection";
 import { MergedRows } from "./MergedRows";
 import { RailDisclosure, RailHeaderButton } from "./RailChrome";
 import { ThreadListItem } from "./ThreadListItem";
-import { buildThreadTree, buildTree, visibleThreadRows, visibleTreeRows } from "./threadTree";
+import { buildThreadTree, buildTree, threadParentIds, visibleThreadRows, visibleTreeRows } from "./threadTree";
 
 export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote" | "settings";
 
@@ -346,6 +346,16 @@ export function ActivityRail({
     [workspaces],
   );
 
+  /**
+   * Which thread each of this machine's threads was forked from.
+   *
+   * The rail's own tree resolves it (a fork names its parent by agent session id),
+   * and the merged list is handed the same answer so a local fork is hung under
+   * the row it came from — the local list's own tree, in the list that holds both
+   * machines' rows.
+   */
+  const threadParents = useMemo(() => threadParentIds(visibleThreads), [visibleThreads]);
+
   const remoteRows = useMemo(
     () => mergeConversations(
       visibleThreads.map(thread => ({
@@ -360,13 +370,14 @@ export function ActivityRail({
         lastMessageAt: thread.lastMessageAt,
         updatedAt: thread.updatedAt,
         createdAt: thread.createdAt,
+        parentThreadId: threadParents.get(thread.id) ?? null,
       })),
       remoteCatalogs,
       deviceFilter,
       // Group headings for the local half of the merged list.
       new Map(workspaces.map(workspace => [workspace.id, workspace.name])),
     ),
-    [visibleThreads, remoteCatalogs, deviceFilter, workspaces, workspaceOrder, pinnedWorkspaceIds],
+    [visibleThreads, remoteCatalogs, deviceFilter, workspaces, workspaceOrder, pinnedWorkspaceIds, threadParents],
   );
   const hasRemoteRows = remoteRows.some(row => row.desktopId !== null);
   /**
@@ -400,32 +411,48 @@ export function ActivityRail({
   );
 
   /**
-   * Where a remote conversation sits in its host's tree, and what a fold hides.
+   * The shared list's tree: where each row sits, what a fold hides, and the
+   * conversation each row hangs under.
    *
-   * The local half's own arrangement, in the merged list's vocabulary: the host
-   * reports each session's parent, the merge resolves it to the row the list
-   * actually holds, and the tree is the same one the local rows are placed by —
-   * so a fork on another machine is indented under its parent and folded by the
-   * same toggle, and a fork first seen on the phone is not a row with no parent.
+   * One tree over **both machines' rows**, not one per half. A fork's parent is a
+   * row of this list or it is not, and only the list can answer that: this
+   * machine's sessions name their parent by agent session id (resolved to a local
+   * row key in the merge) and a host's by its own session id, so the two halves
+   * are two branches of the same question, drawn with the same indent and folded
+   * by the same toggle.
    *
-   * `hidden` is what the local list gets for free and this one cannot: the local
-   * rail never builds a folded descendant's row, while the merged list
-   * interleaves them, so the rows a folded ancestor owns have to be filtered out
-   * by key.
+   * This replaces what the list used to do for a folded local parent — a second
+   * walk whose only job was to hide that parent's descendants — because the rows
+   * it now hides are the same ones, for either machine, and the answer is the tree
+   * the rows are drawn from.
    */
-  const remoteRowTree = useMemo(() => {
+  const mergedRowTree = useMemo(() => {
     const nodes = buildTree(visibleRemoteRows, row => ({
       key: row.key,
       parentKey: row.parentKey ?? null,
       pinned: row.pinned,
     }));
-    const visible = visibleTreeRows(nodes, row => row.key, expandedRemoteThreads);
+    // One fold state, in the list's vocabulary: a local row's own expansion is
+    // keyed by thread id and a host's by row key, so the local half is translated
+    // into the key its merged row carries.
+    const expanded = new Set(expandedRemoteThreads);
+    for (const threadId of expandedThreads) expanded.add(rowKey(null, threadId));
+    const visible = visibleTreeRows(nodes, row => row.key, expanded);
     const meta = new Map(visible.map(row => [row.item.key, row] as const));
-    return {
-      meta,
-      hidden: new Set(visibleRemoteRows.filter(row => !meta.has(row.key)).map(row => row.key)),
+    // Which conversation each row hangs under. Section and order are decided
+    // outside this component (`groupMergedRows`), so the rail's tree — the only
+    // place that knows a fork's parent is a row *of this list* — is handed over
+    // with them rather than rebuilt from the parent links.
+    const roots = new Map<string, MergedConversation>();
+    const tag = (branch: TreeNode<MergedConversation>[], root: MergedConversation) => {
+      for (const node of branch) {
+        roots.set(node.item.key, root);
+        tag(node.children, root);
+      }
     };
-  }, [expandedRemoteThreads, visibleRemoteRows]);
+    for (const node of nodes) tag([node], node.item);
+    return { meta, roots, rows: visible.map(row => row.item) };
+  }, [expandedRemoteThreads, expandedThreads, visibleRemoteRows]);
 
   const {
     deleteSelected,
@@ -484,20 +511,6 @@ export function ActivityRail({
   const visibleChatThreads = chatSectionCollapsed ? [] : chatThreads;
 
   /**
-   * Each local conversation's place in its tree, for the merged list.
-   *
-   * The merged list is flat — rows from every machine ordered by time — but a
-   * local conversation still *has* a parent, and rendering it as a root loses
-   * two things a reader relies on: the indent that says "this is a fork" and the
-   * toggle that folds a parent's forks away. Both were dropped when the merged
-   * list was introduced, so any user with a host connected lost their tree.
-   */
-  const localRowMeta = useMemo(
-    () => new Map(visibleThreadRows(threadTree, new Set()).map(row => [row.thread.id, row])),
-    [threadTree],
-  );
-
-  /**
    * Which row is "current". A local thread is current while the chat section is
    * open; a remote row is current once its conversation is the one on screen.
    */
@@ -512,8 +525,8 @@ export function ActivityRail({
    */
   function renderLocalRow(
     thread: StoredThread,
-    depth = localRowMeta.get(thread.id)?.depth ?? 0,
-    hasChildren = localRowMeta.get(thread.id)?.hasChildren ?? false,
+    depth = 0,
+    hasChildren = false,
     compact = false,
   ): React.ReactNode {
     return (
@@ -622,30 +635,6 @@ export function ActivityRail({
       </div>
     );
   }
-
-  /**
-   * Local conversations hidden because an ancestor is collapsed.
-   *
-   * In the local list the rail simply does not build the rows; the merged list
-   * interleaves them, so collapsed descendants have to be filtered out by id.
-   */
-  const collapsedLocalIds = useMemo(() => {
-    if (!mergedMode)
-      return new Set<string>();
-    const hidden = new Set<string>();
-    const walk = (nodes: ThreadTreeNode[]) => {
-      for (const node of nodes) {
-        if (!expandedThreads.has(node.item.id)) {
-          for (const descendant of descendantsOf(node))
-            hidden.add(descendant);
-          continue;
-        }
-        walk(node.children);
-      }
-    };
-    walk(threadTree);
-    return hidden;
-  }, [expandedThreads, mergedMode, threadTree]);
 
   const toggleLabel = floating
     ? t("activityRail.pinSidebar")
@@ -806,24 +795,15 @@ export function ActivityRail({
                                   selected: row => selectedRemoteKeys.has(row.key),
                                   toggle: toggleRemoteSelection,
                                 }}
-                                localRowMeta={localRowMeta}
                                 expandedRemoteRows={expandedRemoteThreads}
-                                remoteRowMeta={remoteRowTree.meta}
+                                rowMeta={mergedRowTree.meta}
+                                rowRoots={mergedRowTree.roots}
                                 renderLocalGroupHeader={(workspaceId) => {
                                   const found = visibleWorkspaceGroups.find(item => item.workspace.id === workspaceId);
                                   return found ? renderWorkspaceHeader(found.workspace, found.threads) : null;
                                 }}
                                 renderLocalRow={renderLocalRow}
-                                rows={visibleRemoteRows.filter((row) => {
-                                  if (row.desktopId === null) {
-                                    // A collapsed local parent takes its forks with
-                                    // it, exactly as it does in the local list.
-                                    return !collapsedLocalIds.has(row.id);
-                                  }
-                                  // The same rule for a conversation on another
-                                  // machine, by the key its tree is built from.
-                                  return !remoteRowTree.hidden.has(row.key);
-                                })}
+                                rows={mergedRowTree.rows}
                                 selectionMode={selectionMode}
                                 threadById={threadById}
                                 workspaceSectionCollapsed={workspaceSectionCollapsed}
@@ -1179,9 +1159,4 @@ function NavButton({
         : null}
     </button>
   );
-}
-
-/** Every conversation below this node, at any depth. */
-function descendantsOf(node: ThreadTreeNode): string[] {
-  return node.children.flatMap(child => [child.item.id, ...descendantsOf(child)]);
 }
