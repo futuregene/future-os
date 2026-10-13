@@ -206,8 +206,6 @@ test("session titles use a compact single line without reducing touch targets", 
 
 test("explicit row action opens rename/pin/delete menu; offline management is disabled", () => {
   act(() => button("sessions.actions:First").props.onPress());
-  // An unmerged row belongs to the machine the phone is talking to, so the
-  // list reports no other source for it.
   expect(onMenu).toHaveBeenCalledWith(mockRemote.sessions[0], null);
   mockRemote.desktopOnline = false;
   act(() => tree.update(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange })));
@@ -1173,14 +1171,17 @@ function renderMerged(
     session: RemoteSession;
   }[],
   activeDesktopId = "desk-a",
+  tab: "workspace" | "chat" = "workspace",
+  peerReady: ReadonlySet<string> = new Set(["desk-b"]),
 ): void {
   act(() => tree.update(createElement(SessionList, {
-    tab: "chat",
+    tab,
     empty: null,
     onMenu,
     onTabChange,
     merged,
     activeDesktopId,
+    peerReady,
     icons: new Map([["desk-a", "🖥️"], ["desk-b", "💻"]]),
   })));
 }
@@ -1221,13 +1222,33 @@ test("the merged list files each machine's conversations under their workspace h
   renderMerged([
     mergedRow("desk-a", "a1", "Local plan"),
     mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
-    // A conversation in no workspace belongs to no heading: one section for
-    // every machine's chats, which is where a reader looks for them.
-    mergedRow("desk-b", "b2", "Remote chat", { mode: "chat", workspaceId: undefined, workspaceName: undefined }),
   ]);
 
   expect(headingNames()).toEqual(["Project", "Review"]);
-  expect(mergedTitles()).toEqual(["Local plan", "Remote review", "Remote chat"]);
+  expect(mergedTitles()).toEqual(["Local plan", "Remote review"]);
+});
+
+/**
+ * A page holds its own kind of conversation, exactly as the single-machine list
+ * does: the workspaces page the ones that live in a workspace, the conversations
+ * page the ones that live in none. Filing both on both pages put a machine's
+ * chats under the workspace groups — where the list has no such section — and
+ * made the two pages the same list.
+ */
+test("each page of the merged list holds its own kind of conversation", () => {
+  const rows = [
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-a", "c1", "Local chat", { mode: "chat", workspaceId: undefined, workspaceName: undefined }),
+    // A host older than the field: no `mode` at all, which is a chat.
+    mergedRow("desk-b", "b2", "Remote chat", { mode: undefined, workspaceId: undefined, workspaceName: undefined }),
+  ];
+  renderMerged(rows, "desk-a", "workspace");
+  expect(headingNames()).toEqual(["Project"]);
+  expect(mergedTitles()).toEqual(["Local plan"]);
+
+  renderMerged(rows, "desk-a", "chat");
+  expect(headingNames()).toEqual([]);
+  expect(mergedTitles()).toEqual(["Local chat", "Remote chat"]);
 });
 
 test("a heading on another machine offers no actions of its own", () => {
@@ -1240,6 +1261,47 @@ test("a heading on another machine offers no actions of its own", () => {
   // which has never heard of that workspace.
   expect(button("sessions.workspaceActions:Project")).toBeDefined();
   expect(button("sessions.workspaceActions:Review")).toBeUndefined();
+});
+
+test("every conversation row offers its own machine's actions", () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+
+  // The row says which machine its actions address: the phone runs one
+  // connection, so a rename here is a command to the desktop that owns the
+  // conversation, and it is offered whenever that machine can take one.
+  act(() => button("sessions.actions:Remote review").props.onPress());
+  expect(onMenu).toHaveBeenCalledWith(
+    expect.objectContaining({ sessionId: "b1" }),
+    "desk-b",
+  );
+  expect(button("sessions.actions:Remote review").props.disabled).toBe(false);
+
+  // A machine the phone has not reached cannot answer: the row shows the action
+  // as unavailable rather than sending a command that would fail.
+  renderMerged(
+    [mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" })],
+    "desk-a",
+    "workspace",
+    new Set(),
+  );
+  expect(button("sessions.actions:Remote review").props.disabled).toBe(true);
+});
+
+test("another machine's conversation cannot join the batch", () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+  act(() => button("sessions.select").props.onPress());
+
+  // The batch is one command stream to the active desktop, so a foreign
+  // conversation keeps the checkbox column's width and nothing else: offering a
+  // box would promise a delete that lands on another machine's ids.
+  expect(button("Local plan").props.accessibilityRole).toBe("checkbox");
+  expect(button("Remote review")).toBeUndefined();
 });
 
 test("two machines' same-named workspace folds one at a time", () => {
@@ -1273,7 +1335,10 @@ test("a row's own machine is named only when several machines are in the list", 
 
   // One machine: the selector above the list already names it, and every row
   // repeating its glyph would take the width the title needs.
-  renderMerged([mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" })], "desk-b");
+  renderMerged(
+    [mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" })],
+    "desk-b",
+  );
   expect(glyphs()).toEqual([]);
 });
 
@@ -1291,7 +1356,9 @@ const foldToggles = () =>
  * Workspace folds are persisted (in storage and in a module-level cache), so a
  * fold another test performed would hide this test's rows; a workspace of its
  * own is what keeps a tree assertion about order and indent independent of
- * which tests ran before it.
+ * which tests ran before it. `lastMessageAt` is explicit because a fork is
+ * *newer* than the conversation it came from by construction — the fixture that
+ * hid the desktop's version of this bug had it older.
  */
 const forkRow = (
   desktopId: string,
@@ -1315,9 +1382,9 @@ const forkRow = (
  * a fork could not be told from a conversation of its own, and a conversation
  * with thirty forks could not be folded away. Asserted by order and indent
  * rather than by "the row is somewhere on screen": a fork's own last message is
- * *newer* than its conversation's by construction, so a list that ranked rows
- * by time put the fork above the row it came from, and pressing `+` looked like
- * it did nothing because the row had been on screen all along.
+ * newer than its conversation's, so a list that ranked rows by time put the
+ * fork above the row it came from, and pressing `+` looked like it did nothing
+ * because the row had been on screen all along.
  */
 test("the merged list draws each machine's forks under the conversation they came from", () => {
   renderMerged([
@@ -1398,43 +1465,4 @@ test("a fork stays beside a pinned conversation in the shortcut section", () => 
   act(() => button("sessions.expandChildren").props.onPress());
   expect(mergedTitles()).toEqual(["Pinned parent", "Fork of pinned", "Remote parent"]);
   expect(rowInset("Fork of pinned")).toBe(ROW_INSET + TOGGLE_WIDTH + TOGGLE_GAP);
-});
-
-/**
- * Every merged row draws its `⋯`, and says whose row it is.
- *
- * The control used to be drawn only for the machine the phone was *talking to*,
- * which made it come and go with whichever desktop the reader last opened: a
- * list where A's rows had actions and B's did not, then the reverse. It belongs
- * to the row — the row knows which machine owns it, and the actions run there —
- * so what varies is whether that machine can take a command now, which is what
- * the caller answers through `canCommand`.
- */
-test("a row on another machine keeps its actions, and names the machine they run on", () => {
-  const [local, remote] = [
-    mergedRow("desk-a", "a1", "Local plan", { mode: "chat" }),
-    mergedRow("desk-b", "b1", "Remote review", { mode: "chat" }),
-  ] as const;
-  act(() => tree.update(createElement(SessionList, {
-    tab: "chat",
-    empty: null,
-    onMenu,
-    onTabChange,
-    merged: [local, remote],
-    activeDesktopId: "desk-a",
-    canAct: (desktopId: string | null) => desktopId !== "desk-b",
-  })));
-
-  // Both rows offer it; the machine that cannot take a command now offers it
-  // unavailable rather than not at all.
-  expect(button("sessions.actions:Local plan").props.disabled).toBe(false);
-  expect(button("sessions.actions:Remote review").props.disabled).toBe(true);
-
-  act(() => button("sessions.actions:Local plan").props.onPress());
-  expect(onMenu).toHaveBeenCalledWith(local.session, "desk-a");
-
-  // The row's own actions, from a long press as well.
-  onMenu.mockClear();
-  act(() => sessionBody("Remote review").props.onLongPress());
-  expect(onMenu).toHaveBeenCalledWith(remote.session, "desk-b");
 });

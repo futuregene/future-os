@@ -187,6 +187,13 @@ export function groupMergedRows(
  * and the active machine keeps its plain id so that folding there behaves
  * exactly as it does in the single-machine list.
  *
+ * `tab` decides which conversations the list is about, exactly as it does in the
+ * single-machine list: the workspaces page holds the conversations that live in
+ * a workspace, the conversations page holds the ones that live in none. A merged
+ * list that showed both on both pages would put a machine's chats under the
+ * workspace groups on the page that has no such section, and make the two pages
+ * the same list.
+ *
  * The tree is the single-machine list's, per machine (see `mergedTree`): a fork
  * is drawn under the conversation it came from, one level in and folded by the
  * same `+`/`−`. A merged list is not a list of roots — the machines' rows carry
@@ -198,6 +205,7 @@ export function mergedRows(
   rows: readonly MergedSessionRow[],
   query: string,
   activeDesktopId: string | null,
+  tab: "chat" | "workspace",
   collapsed: ReadonlySet<string> = new Set(),
   /**
    * Which conversations have their forks on screen, by session id.
@@ -214,7 +222,13 @@ export function mergedRows(
     !search ||
     row.session.title.toLocaleLowerCase().includes(search) ||
     (row.session.workspaceName ?? "").toLocaleLowerCase().includes(search);
-  const listed = rows.filter(matches);
+  // A session with no `mode` is a chat, as it is in the single-machine list:
+  // the field was added after chat conversations existed.
+  const onThisPage = (row: (typeof rows)[number]): boolean =>
+    tab === "workspace"
+      ? row.session.mode === "workspace"
+      : row.session.mode !== "workspace";
+  const listed = rows.filter(row => matches(row) && onThisPage(row));
   const { children, rootOf } = mergedTree(listed);
   const sessionRow = (
     row: (typeof rows)[number],
@@ -232,10 +246,12 @@ export function mergedRows(
   /**
    * A conversation and the forks under it, parents before children.
    *
-   * The fold is the single-machine list's: a fork is hidden until the `+` in
-   * front of the conversation it came from is pressed, and a search ignores the
-   * fold — a hidden fork stays discoverable, at the top level, which is how the
-   * single-machine list answers the same question.
+   * A fork whose conversation this page does not hold — one filed on the other
+   * page, or hidden by the search — is a root, exactly as a conversation whose
+   * parent is gone is: `mergedTree` hangs nothing under a row that is not here.
+   * The fold is the single-machine list's, and a search ignores it, so a hidden
+   * fork stays discoverable at the top level — how that list answers the same
+   * question.
    */
   const block = (row: (typeof rows)[number], depth = 0): CatalogRow[] => {
     const forks = children.get(row.key) ?? [];
@@ -320,13 +336,13 @@ function mergedTree(listed: readonly MergedSessionRow[]): {
       for (const node of nodes) {
         const row = byKey.get(sessionKey(desktopId, node.session.sessionId));
         if (!row) continue;
-        const block = root ?? row;
-        rootOf.set(row.key, block);
+        const blockRoot = root ?? row;
+        rootOf.set(row.key, blockRoot);
         const forks = node.children
           .map(child => byKey.get(sessionKey(desktopId, child.session.sessionId)))
           .filter((fork): fork is MergedSessionRow => fork !== undefined);
         if (forks.length > 0) children.set(row.key, forks);
-        walk(node.children, block);
+        walk(node.children, blockRoot);
       }
     };
     walk(buildSessionTree(machineRows.map(row => row.session)), null);

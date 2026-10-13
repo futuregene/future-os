@@ -84,7 +84,7 @@ export function SessionList({
   merged,
   icons,
   activeDesktopId = null,
-  canAct,
+  peerReady,
   onMenu,
 }: {
   tab: Tab;
@@ -99,41 +99,27 @@ export function SessionList({
   /** Per-desktop glyph, so a merged row shows which machine it is on. */
   icons?: Map<string, string>;
   /**
-   * The desktop this screen is connected to.
-   *
-   * A merged row from another desktop is that machine's, so its actions are
-   * issued there (see `canAct`). The machine the phone is talking to is what an
-   * unmerged row belongs to, and what the fold keys and the source glyph are
-   * read against.
+   * The desktop this screen is connected to. It is what tells a row of the
+   * active machine from a row of another one — which decides where a tap and a
+   * menu action have to be addressed.
    */
   activeDesktopId?: string | null;
   /**
-   * Whether this machine can be acted on right now: its conversations opened,
-   * its rows renamed, pinned or removed.
+   * The other paired machines that can answer a command right now.
    *
-   * Every row draws its `⋯` — a list that offered it on some rows and not
-   * others read as the affordance coming and going with whichever machine the
-   * phone last talked to — and this is what says whether the menu behind it can
-   * be used. The actions are commands to the machine that owns the row, and so
-   * is opening it, so a machine that is not answering can take neither.
-   *
-   * Absent means the machine the phone is talking to: the only machine a list
-   * of one desktop's rows has.
+   * A row's actions go to the machine that owns it, so that machine's own state
+   * is what offers them: one the phone has not reached yet, or whose agent is
+   * restarting, must not offer a pin that would fail on the wire. The active
+   * machine is not in here — this list reads its state from the connection the
+   * screen renders from, which is the same judgement the badge makes.
    */
-  canAct?: (desktopId: string | null) => boolean;
-  /**
-   * The row's own actions, with the machine that owns it.
-   *
-   * A row from another desktop is addressed through its own machine's
-   * connection, so the caller needs to know whose row this was; `null` when the
-   * list is not merged and every row is the connected machine's.
-   */
+  peerReady?: ReadonlySet<string>;
+  /** The row's own machine accompanies it, so the action knows where to go. */
   onMenu: (session: RemoteSession, desktopId: string | null) => void;
 }) {
   const remote = useRemote();
   const Alert = useAppDialog(active);
   const { t } = useTranslation();
-  const canActOn = canAct ?? (() => remote.desktopOnline);
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const listKey = `${remote.credentials?.pairId ?? ""}:${tab}`;
@@ -162,9 +148,21 @@ export function SessionList({
   const [pressedSessionId, setPressedSessionId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
+  /**
+   * Whether the machine that owns a row can answer a command right now.
+   *
+   * The active machine keeps the judgement this list already made from the
+   * screen's connection; a peer is one this screen has already judged able to
+   * answer (`peerReady`, from the badge's own status vocabulary). Either way the
+   * row is only offered what the wire will carry.
+   */
+  const reachable = (desktopId: string | null | undefined): boolean =>
+    !desktopId || desktopId === activeDesktopId
+      ? remote.desktopOnline
+      : peerReady?.has(desktopId) === true;
   const rows = useMemo(
     () => (merged && merged.length > 0
-      ? sessionTreeMergedRows(merged, query, activeDesktopId, collapsed, expanded)
+      ? sessionTreeMergedRows(merged, query, activeDesktopId, tab, collapsed, expanded)
       : catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query)),
     [remote.sessions, remote.workspaces, merged, tab, collapsed, expanded, query, activeDesktopId],
   );
@@ -182,11 +180,19 @@ export function SessionList({
     );
     return sources.size > 1;
   }, [rows]);
-  const visibleSessions = rows.flatMap(row => (row.kind === "session" ? [row.session] : []));
-  // Pinned sessions are shortcuts promoted above the groups (and, on the
-  // workspace tab, out of their own workspace), so batch selection skips them:
-  // they carry no checkbox while selecting and select-all never sweeps them up.
-  const selectableSessions = visibleSessions.filter(session => !session.pinned);
+  // What a batch may hold: this machine's conversations that are not pinned
+  // shortcuts. Pinned sessions are promoted above the groups (and, on the
+  // workspace tab, out of their own workspace), so they carry no checkbox while
+  // selecting and select-all never sweeps them up. Another machine's rows are
+  // left out for the same reason they have no checkbox: the batch is one
+  // command stream to the active desktop, so a foreign id would either name a
+  // different conversation there or name none at all.
+  const selectableSessions = rows.flatMap(row =>
+    row.kind === "session"
+      && !row.session.pinned
+      && (!row.desktopId || row.desktopId === activeDesktopId)
+      ? [row.session]
+      : []);
   const targets = remote.sessions.filter(session => selected.has(session.sessionId));
   const allSelected =
     selectableSessions.length > 0
@@ -366,6 +372,13 @@ export function SessionList({
   };
 
   const renderRow = ({ item }: { item: CatalogRow }) => {
+    /**
+     * Whether this row belongs to a machine other than the connected one.
+     *
+     * A merged row carries its source; the ordinary list's rows do not (every
+     * row there is the active desktop's).
+     */
+    const foreign = !!item.desktopId && item.desktopId !== activeDesktopId;
     if (item.kind === "workspace") {
       const isCollapsed = collapsed.has(item.workspace.id) && !query.trim();
       const name = item.workspace.name || t("sessions.workspace");
@@ -373,7 +386,6 @@ export function SessionList({
       // (with several in one list the name alone does not), and the actions the
       // heading would offer — rename, pin, delete — are commands to the desktop
       // this phone is talking to, which has never heard of that workspace.
-      const foreign = !!item.desktopId && item.desktopId !== activeDesktopId;
       return (
         <View style={styles.workspace}>
           <Pressable
@@ -418,8 +430,12 @@ export function SessionList({
     const session = item.session;
     const checked = selected.has(session.sessionId);
     // A pinned session is a shortcut outside the tab's own groups: it keeps no
-    // checkbox and cannot join the batch, so select-all never includes it.
-    const selectable = !session.pinned;
+    // checkbox and cannot join the batch, so select-all never includes it. Nor
+    // can another machine's row: the batch is one command stream to the active
+    // desktop, and a peer's conversation id means nothing to it — a checkbox
+    // here would promise a delete that lands elsewhere or nowhere.
+    const selectable = !session.pinned && !foreign;
+    const canReach = reachable(item.desktopId);
     const status = effectiveRunStatus(session.status, session.streaming);
     const running = status === "running" || status === "queued";
     const unread = remote.unreadSessions.has(session.sessionId);
@@ -431,8 +447,8 @@ export function SessionList({
                 <Pressable
                   accessibilityRole="checkbox"
                   accessibilityLabel={session.title || t("sessions.unnamed")}
-                  accessibilityState={{ checked, disabled: deleting || !remote.desktopOnline }}
-                  disabled={deleting || !remote.desktopOnline}
+                  accessibilityState={{ checked, disabled: deleting || !canReach }}
+                  disabled={deleting || !canReach}
                   onPress={() => toggleSelection(session.sessionId)}
                   style={styles.iconButton}
                 >
@@ -466,7 +482,7 @@ export function SessionList({
             {/* A +/− tree toggle, never the chevron the workspace headers fold
                 with: on a phone both controls share the 8–24 column, so the
                 glyph is what tells them apart. */}
-            {expanded.has(session.sessionId) ? (
+            {expanded.has(item.foldId) ? (
               <Minus size={16} color={colors.inkSoft} />
             ) : (
               <Plus size={16} color={colors.inkSoft} />
@@ -475,11 +491,7 @@ export function SessionList({
         ) : null}
         <Pressable
           accessibilityRole="button"
-          // The row's own machine decides, as it does for the `⋯` beside it:
-          // opening a peer's conversation switches the phone to that machine,
-          // and one that is not answering cannot be switched to — while the
-          // connection the phone happens to hold says nothing about it.
-          disabled={!canActOn(item.desktopId ?? null) || deleting}
+          disabled={!canReach || deleting}
           onPress={() => {
             if (selecting) {
               if (selectable) toggleSelection(session.sessionId);
@@ -492,8 +504,8 @@ export function SessionList({
             // machine that owns it — the same switch the device picker makes.
             // A row of the active desktop (or an unmerged list, where no row
             // carries a source) is the plain selection it always was.
-            if (item.desktopId && item.desktopId !== activeDesktopId) {
-              void remote.openSessionOnDesktop(item.desktopId, session.sessionId)
+            if (foreign) {
+              void remote.openSessionOnDesktop(item.desktopId!, session.sessionId)
                 .catch(() => showToast(t("sessions.openOnDesktopFailed", {
                   name: hostName(item.desktopId),
                 })));
@@ -542,13 +554,10 @@ export function SessionList({
             accessibilityLabel={t("sessions.actions", {
               title: session.title || t("sessions.unnamed"),
             })}
-            accessibilityState={{ disabled: deleting || !canActOn(item.desktopId ?? null) }}
-            disabled={deleting || !canActOn(item.desktopId ?? null)}
+            accessibilityState={{ disabled: deleting || !canReach }}
+            disabled={deleting || !canReach}
             onPress={() => onMenu(session, item.desktopId ?? null)}
-            style={[
-              styles.iconButton,
-              (deleting || !canActOn(item.desktopId ?? null)) && styles.disabled,
-            ]}
+            style={[styles.iconButton, (deleting || !canReach) && styles.disabled]}
           >
             <MoreHorizontal size={18} color={colors.inkMuted} />
           </Pressable>
