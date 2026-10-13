@@ -43,6 +43,7 @@
     "label": "Icon",
     "desktop": "Desktop",
     "laptop": "Laptop",
+    "phone": "Phone",
     "server": "Server",
     "cloud": "Cloud",
     "home": "Home",

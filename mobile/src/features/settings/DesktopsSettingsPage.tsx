@@ -1,7 +1,8 @@
-import { Check, Monitor } from "lucide-react-native";
+import { Check } from "lucide-react-native";
 import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
+import { iconGlyph } from "../../remote/peerIcons";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import { colors, radius, spacing } from "../../theme/tokens";
 import { SettingsLink, settingsStyles } from "./SettingsPrimitives";
@@ -64,7 +65,10 @@ export function DesktopsSettingsPage({ onSwitched, onManage }: {
           style={({ pressed }) => [settingsStyles.card, styles.card, selected && styles.cardSelected, pressed && settingsStyles.pressed]}
         >
           <View style={[styles.icon, selected && styles.iconSelected]}>
-            <Monitor color={selected ? colors.accent : colors.inkSoft} size={22} />
+            {/* The machine's own mark, as the paired-desktop list draws it: the
+                fixed monitor here was the third place the user's icon for a
+                desktop had no effect. */}
+            <Text style={styles.iconGlyph}>{iconGlyph(desktop.icon)}</Text>
           </View>
           <View style={styles.identity}>
             <Text numberOfLines={1} style={styles.name}>{label}</Text>
@@ -87,6 +91,7 @@ const styles = StyleSheet.create({
   cardSelected: { borderColor: colors.accent, backgroundColor: colors.accentSoft },
   icon: { width: 36, height: 36, alignItems: "center", justifyContent: "center", borderRadius: radius.md, backgroundColor: colors.surfaceSubtle },
   iconSelected: { backgroundColor: colors.surface },
+  iconGlyph: { fontSize: 20 },
   identity: { flex: 1, minWidth: 0, gap: spacing.xs },
   name: { color: colors.inkStrong, fontSize: 15, fontWeight: "600" },
   id: { color: colors.inkMuted, fontSize: 12 },

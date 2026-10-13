@@ -264,11 +264,16 @@ kills, crashes, or tool subprocess termination all complete.
 
 Mobile can save pairings for multiple Desktops, entering the list from the
 desktop selector atop the session page or in Settings, scanning to add another
-Desktop, switching the current Desktop, or unpairing one individually. Only the
-currently selected Desktop is connected and operated at a time, without
-aggregating background Desktops' sessions. Switching sends no unbind command
-and does not revoke other Desktops' credentials; re-pairing the same Desktop
-replaces its own record.
+Desktop, switching the current Desktop, or unpairing one individually. Every
+paired Desktop holds its own live connection (2026-10-13): the phone's *active*
+connection is the one whose conversation, timeline, drafts and outbox the UI is
+wired to, and each other Desktop keeps a handshake of its own, takes that host's
+presence heartbeats and pushed catalogue snapshots, and answers the commands its
+rows offer — a rename, a pin, a delete or a workspace's own actions are
+addressed to the machine that owns them. Their conversations and workspaces are
+merged into one list with the active Desktop's. Switching sends no unbind
+command and does not revoke other Desktops' credentials; re-pairing the same
+Desktop replaces its own record.
 
 This is "one phone to many Desktops". The existing Desktop/platform-side single
 pending/active pairing, one-time invitation, signature handshake, and per-pairId
@@ -435,13 +440,15 @@ before it tears the connection down, while the desktop takes the answer from the
   per Desktop, so a desktop client claiming an invitation **replaces** that
   host's current phone pairing. The UI says "replaced" rather than "invalid",
   stopping locally first and compensating the cloud revoke after.
-- On mobile, Desktops other than the active one are still **read-only
-  connections** rather than full runtimes: each holds its own handshake, and
-  takes the host's presence heartbeats and pushed catalogue snapshots, so the
-  merged list and the status popover are live — but a conversation's timeline,
-  drafts and outbox belong to the single active connection. Opening one of their
-  rows switches the active connection. Promoting the observers to full runtimes
-  is its own project.
+- On mobile, Desktops other than the active one are **live observer
+  connections**, not full runtimes: each keeps its own handshake, repairs its own
+  catalogue (a read when its transport returns, or when a heartbeat advertises a
+  revision it never applied), and answers the commands its rows offer — but a
+  conversation's timeline, drafts and outbox belong to the single active
+  connection, and starting a conversation inside a peer's workspace is not
+  offered (the outbox is the active connection's). Opening one of their rows
+  switches the active connection. Promoting the observers to full runtimes is
+  its own project.
 - Device identification needs a host build that reports it; an older host shows
   "unknown device".
 

@@ -2,8 +2,9 @@ import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, Monitor } from "lucide-react-native";
+import { ArrowLeft } from "lucide-react-native";
 import { LanguageSettings } from "../../i18n/LanguageSettings";
+import { iconGlyph } from "../../remote/peerIcons";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { DesktopSettings, RemoteBuiltinProvider, RemoteCustomProvider } from "../../remote/types";
 import { VERSION } from "../../version.generated";
@@ -218,7 +219,10 @@ export function SettingsScreen({ onClose, onCheckUpdate, checkingUpdate, onOpenC
       <Text accessibilityRole="header" style={styles.title}>{page.name === "home" ? t("sessions.settings") : t(`desktopSettings.${page.name}`)}</Text>
     </View>
     {SCOPED_LEVELS.has(page.name) ? <View style={styles.deviceScope}>
-      <View style={styles.deviceIcon}><Monitor size={20} color={colors.accent} /></View>
+      {/* The bound desktop's own mark, as the device list and the remote
+          settings header draw it: these pages write to that machine, and it is
+          the one place the user's icon for it should be recognisable. */}
+      <View style={styles.deviceIcon}><Text style={styles.deviceGlyph}>{iconGlyph(desktop?.icon)}</Text></View>
       <View style={styles.heading}>
         <Text style={styles.deviceName}>{t("desktopSettings.boundDesktop", { name: desktopName })}</Text>
         <Text style={settingsStyles.description}>{t("desktopSettings.sharedHint")}</Text>
@@ -243,6 +247,7 @@ const styles = StyleSheet.create({
   pressed: { backgroundColor: colors.surfaceSubtle },
   deviceScope: { flexDirection: "row", alignItems: "flex-start", gap: spacing.md, marginHorizontal: layout.gutter, padding: spacing.md, borderRadius: radius.lg, backgroundColor: colors.accentSoft },
   deviceIcon: { width: 36, height: 36, borderRadius: radius.md, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface },
+  deviceGlyph: { fontSize: 20 },
   deviceName: { color: colors.inkStrong, fontSize: 14, fontWeight: "600", marginBottom: spacing.xs },
   version: { ...settingsStyles.description, textAlign: "center" },
   notice: { color: colors.inkMuted, padding: layout.gutter, fontSize: 13 },
