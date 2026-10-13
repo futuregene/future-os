@@ -14,6 +14,7 @@ import {
 } from "react-native";
 import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
+import { RenameModal } from "../../features/chat/components/RenameModal";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
 import { SessionList } from "../SessionList";
 import { ActionMenu } from "../../components/ActionMenu";
@@ -29,6 +30,7 @@ const mockRemote: {
   deleteSession: jest.Mock;
   deleteWorkspace: jest.Mock;
   setWorkspacePinned: jest.Mock;
+  renameWorkspace: jest.Mock;
   selectSession: jest.Mock;
   openSessionOnDesktop: jest.Mock;
   newConversation: jest.Mock;
@@ -46,6 +48,7 @@ const mockRemote: {
   deleteSession: jest.fn(),
   deleteWorkspace: jest.fn(),
   setWorkspacePinned: jest.fn(),
+  renameWorkspace: jest.fn(),
   selectSession: jest.fn(),
   openSessionOnDesktop: jest.fn(),
   newConversation: jest.fn(),
@@ -75,6 +78,7 @@ jest.mock("lucide-react-native", () =>
       "ListChecks",
       "Minus",
       "MoreHorizontal",
+      "Pencil",
       "Pin",
       "Plus",
       "Search",
@@ -177,6 +181,7 @@ beforeEach(async () => {
   mockRemote.capabilities = new Set(["workspace_pinning_v1"]);
   mockRemote.deleteSession.mockResolvedValue(undefined);
   mockRemote.setWorkspacePinned.mockResolvedValue(undefined);
+  mockRemote.renameWorkspace.mockResolvedValue(undefined);
   mockRemote.newConversation.mockResolvedValue(undefined);
   mockRemote.openSessionOnDesktop.mockResolvedValue(undefined);
   await act(async () => {
@@ -593,6 +598,7 @@ test("workspace menu offers the workspace actions and disables them offline", ()
   expect(tree.root.findByType(ActionMenu).props.actions.map((action: { label: string }) => action.label)).toEqual([
     "sessions.new",
     "sessions.pin",
+    "sessions.renameWorkspace",
     "sessions.selectWorkspaceSessions",
     "sessions.deleteWorkspace",
   ]);
@@ -602,6 +608,42 @@ test("workspace menu offers the workspace actions and disables them offline", ()
   expect(button("sessions.workspaceActions:Project").props.disabled).toBe(true);
 });
 
+test("the workspace menu renames the group through a filled dialog and reports a refusal", async () => {
+  renderWorkspaceTab();
+  act(() => button("sessions.workspaceActions:Project").props.onPress());
+  const sheet = tree.root.findByType(ActionMenu).findByType(Modal);
+  act(() => button("sessions.renameWorkspace").props.onPress());
+  act(() => sheet.props.onDismiss());
+  const dialog = tree.root.findByType(RenameModal);
+  // Named after what it renames, and prefilled with the name in force.
+  expect(dialog.props.titleKey).toBe("sessions.renameWorkspace");
+  expect(dialog.props.renameOpen).toBe(true);
+  expect(dialog.props.renameValue).toBe("Project");
+
+  act(() => dialog.props.setRenameValue("Renamed"));
+  // The box closes, then submits on dismissal — the same hedge the session
+  // rename uses, so UIKit is never presenting two surfaces at once.
+  act(() => button("chat.save").props.onPress());
+  expect(mockRemote.renameWorkspace).not.toHaveBeenCalled();
+  await act(async () => {
+    tree.root.findByType(RenameModal).findByType(Modal).props.onDismiss();
+    await Promise.resolve();
+  });
+  expect(mockRemote.renameWorkspace).toHaveBeenCalledWith("w1", "Renamed");
+  expect(tree.root.findByType(RenameModal).props.renameOpen).toBe(false);
+
+  // A refused rename says so, instead of leaving the draft looking saved.
+  mockRemote.renameWorkspace.mockRejectedValueOnce(new Error("offline"));
+  act(() => button("sessions.workspaceActions:Project").props.onPress());
+  const reopened = tree.root.findByType(ActionMenu).findByType(Modal);
+  act(() => button("sessions.renameWorkspace").props.onPress());
+  act(() => reopened.props.onDismiss());
+  await act(async () => { await tree.root.findByType(RenameModal).props.submitRename(); });
+  expect(dialogText()).toEqual(
+    expect.arrayContaining(["common.error", "sessions.renameWorkspaceFailed"]),
+  );
+});
+
 test("old desktops do not offer unsupported workspace pin commands", () => {
   mockRemote.capabilities.clear();
   renderWorkspaceTab();
@@ -609,6 +651,9 @@ test("old desktops do not offer unsupported workspace pin commands", () => {
   const actions = tree.root.findByType(ActionMenu).props.actions.map((action: { label: string }) => action.label);
   expect(actions).not.toContain("sessions.pin");
   expect(actions).not.toContain("sessions.unpin");
+  // Renaming is not behind a feature flag: the host routes `rename_workspace`
+  // unconditionally, so every desktop that answers this list supports it.
+  expect(actions).toContain("sessions.renameWorkspace");
   expect(actions).toContain("sessions.new");
   expect(mockRemote.setWorkspacePinned).not.toHaveBeenCalled();
 });

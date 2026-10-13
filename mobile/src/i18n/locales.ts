@@ -277,6 +277,9 @@ export const resources = {
         deletePartialFailure:
           "{{count}} conversations could not be deleted. They remain selected; reconnect and retry.",
         workspaceActions: "Actions for workspace {{title}}",
+        renameWorkspace: "Rename workspace",
+        renameWorkspaceFailed:
+          "Could not rename the workspace. Reconnect and retry.",
         selectWorkspaceSessions: "Select all conversations in this workspace",
         deleteWorkspace: "Delete workspace",
         deleteWorkspaceConfirm:
@@ -1146,6 +1149,8 @@ export const resources = {
         deletePartialFailure:
           "{{count}} 个会话删除失败，已保留选中状态，请恢复连接后重试。",
         workspaceActions: "管理工作区「{{title}}」",
+        renameWorkspace: "重命名工作区",
+        renameWorkspaceFailed: "工作区重命名失败，请恢复连接后重试。",
         selectWorkspaceSessions: "全选该工作区的会话",
         deleteWorkspace: "删除工作区",
         deleteWorkspaceConfirm:
