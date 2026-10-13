@@ -53,17 +53,23 @@ export type CatalogRow =
     kind: "workspace";
     key: string;
     workspace: RemoteWorkspace;
+    /**
+     * The id the machine that owns this workspace knows it by.
+     *
+     * `workspace.id` is the key the list *folds* by, and a peer's carries its
+     * machine so one fold cannot close two machines' same-named workspace. This
+     * is the id a command has to name on the machine that owns it, which is the
+     * plain workspace id in both lists — the fold key is a drawing concern.
+     */
+    workspaceId: string;
     count: number;
     /**
      * Which desktop the workspace lives on, in the merged list.
      *
      * Absent for the ordinary single-desktop list, where every heading is the
-     * active desktop's and its own group key is the workspace id alone — which
-     * is what makes a fold behave the same in both lists.
+     * active desktop's and every action on it is addressed to that desktop.
      */
     desktopId?: string;
-    /** The machine's own name, when the list shows more than one. */
-    desktopLabel?: string;
   }
   | {
     kind: "session";
@@ -226,6 +232,7 @@ export function mergedRows(
       kind: "workspace",
       key: `merged:${group.key}`,
       workspace: { id, name: group.label ?? workspaceId, path: "" },
+      workspaceId,
       count: group.rows.length,
       ...(group.desktopId ? { desktopId: group.desktopId } : {}),
     });
@@ -309,6 +316,7 @@ export function catalogRows(
       kind: "workspace",
       key: `workspace:${workspace.id}`,
       workspace,
+      workspaceId: workspace.id,
       count: countNodes(children),
     };
     const start = rows.length;

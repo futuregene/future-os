@@ -34,6 +34,7 @@ import { useAppDialog } from "../components/useAppDialog";
 import { RenameModal } from "../features/chat/components/RenameModal";
 import { showToast } from "../features/chat/utils";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
+import type { DesktopCommands } from "../remote/desktopCommands";
 import { effectiveRunStatus } from "../remote/sessionStatus";
 import type { RemoteSession } from "../remote/types";
 import { colors, layout, radius, spacing } from "../theme/tokens";
@@ -76,6 +77,32 @@ function depthInset(depth: number): number {
   return ROW_INSET + Math.min(depth, 3) * LEVEL_INDENT;
 }
 
+/** A conversation row, as the batch and the row menus handle it. */
+type SessionRow = Extract<CatalogRow, { kind: "session" }>;
+/** A workspace heading row. */
+type WorkspaceRow = Extract<CatalogRow, { kind: "workspace" }>;
+
+/**
+ * One conversation a batch can address: the key a tick refers to, what it is,
+ * and the machine that owns it.
+ */
+interface BatchTarget {
+  key: string;
+  session: RemoteSession;
+  desktopId: string | null;
+}
+
+/** A batch's rows, grouped by the machine that will delete them. */
+function groupByMachine(targets: BatchTarget[]): Map<string | null, BatchTarget[]> {
+  const byMachine = new Map<string | null, BatchTarget[]>();
+  for (const target of targets) {
+    const group = byMachine.get(target.desktopId);
+    if (group) group.push(target);
+    else byMachine.set(target.desktopId, [target]);
+  }
+  return byMachine;
+}
+
 export function SessionList({
   tab,
   active = true,
@@ -84,7 +111,7 @@ export function SessionList({
   merged,
   icons,
   activeDesktopId = null,
-  peerReady,
+  commandsFor,
   onMenu,
 }: {
   tab: Tab;
@@ -105,15 +132,16 @@ export function SessionList({
    */
   activeDesktopId?: string | null;
   /**
-   * The other paired machines that can answer a command right now.
+   * The commands one machine answers, or null when it cannot answer any.
    *
-   * A row's actions go to the machine that owns it, so that machine's own state
-   * is what offers them: one the phone has not reached yet, or whose agent is
-   * restarting, must not offer a pin that would fail on the wire. The active
-   * machine is not in here — this list reads its state from the connection the
-   * screen renders from, which is the same judgement the badge makes.
+   * Every action a row offers goes to the machine that owns it, and this is the
+   * single source of truth for both halves of that: the object is what a menu
+   * dispatches through, and null is why its items are shown unavailable. So a
+   * machine the phone has not reached, or whose agent is restarting, offers
+   * nothing that could only fail on the wire — and the list needs no second
+   * notion of "reachable" that could disagree with the dispatch.
    */
-  peerReady?: ReadonlySet<string>;
+  commandsFor: (desktopId: string | null) => DesktopCommands | null;
   /** The row's own machine accompanies it, so the action knows where to go. */
   onMenu: (session: RemoteSession, desktopId: string | null) => void;
 }) {
@@ -125,10 +153,9 @@ export function SessionList({
   const listKey = `${remote.credentials?.pairId ?? ""}:${tab}`;
   const { listRef, initialOffset, onLayout, onContentSizeChange, onScrollBeginDrag, onScroll } =
     useSessionListScroll<CatalogRow>(query.trim() ? null : listKey);
-  const [menuWorkspace, setMenuWorkspace] = useState<(CatalogRow & { kind: "workspace" }) | null>(null);
+  const [menuWorkspace, setMenuWorkspace] = useState<WorkspaceRow | null>(null);
   /** The group whose name the rename dialog is editing, and its draft. */
-  const [renamingWorkspace, setRenamingWorkspace] =
-    useState<(CatalogRow & { kind: "workspace" }) | null>(null);
+  const [renamingWorkspace, setRenamingWorkspace] = useState<WorkspaceRow | null>(null);
   const [workspaceName, setWorkspaceName] = useState("");
   const [wasActive, setWasActive] = useState(active);
   if (wasActive !== active) {
@@ -144,22 +171,24 @@ export function SessionList({
     savedExpanded = expanded;
   }, [expanded]);
   const [selecting, setSelecting] = useState(false);
+  /**
+   * The rows a batch holds, by row key.
+   *
+   * A key and not a session id: the merged list shows two machines at once, and
+   * the same session id exists on both — keying by id would tick a row on one
+   * machine when the user ticked the other's. In the ordinary single-machine
+   * list a session row's key *is* its id, so nothing changes there.
+   */
   const [selected, setSelected] = useState(new Set<string>());
   const [pressedSessionId, setPressedSessionId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
   /**
-   * Whether the machine that owns a row can answer a command right now.
-   *
-   * The active machine keeps the judgement this list already made from the
-   * screen's connection; a peer is one this screen has already judged able to
-   * answer (`peerReady`, from the badge's own status vocabulary). Either way the
-   * row is only offered what the wire will carry.
+   * The machine that owns a row: the one this phone is talking to for a row of
+   * its own, and the row's own source for a row merged in from elsewhere.
    */
-  const reachable = (desktopId: string | null | undefined): boolean =>
-    !desktopId || desktopId === activeDesktopId
-      ? remote.desktopOnline
-      : peerReady?.has(desktopId) === true;
+  const rowCommands = (row: CatalogRow): DesktopCommands | null =>
+    commandsFor(row.desktopId ?? null);
   const rows = useMemo(
     () => (merged && merged.length > 0
       ? sessionTreeMergedRows(merged, query, activeDesktopId, tab, collapsed)
@@ -180,23 +209,61 @@ export function SessionList({
     );
     return sources.size > 1;
   }, [rows]);
-  // What a batch may hold: this machine's conversations that are not pinned
-  // shortcuts. Pinned sessions are promoted above the groups (and, on the
-  // workspace tab, out of their own workspace), so they carry no checkbox while
-  // selecting and select-all never sweeps them up. Another machine's rows are
-  // left out for the same reason they have no checkbox: the batch is one
-  // command stream to the active desktop, so a foreign id would either name a
-  // different conversation there or name none at all.
-  const selectableSessions = rows.flatMap(row =>
-    row.kind === "session"
+  /**
+   * Every conversation the list holds, folded or not, under the key a batch
+   * uses for it.
+   *
+   * The batch cannot be resolved against the drawn rows: a folded group's rows
+   * leave the list while a selection made before the fold still has to be
+   * deleted, and a "select all in this workspace" is exactly the action that
+   * reaches conversations the reader cannot see. In the ordinary single-machine
+   * list a conversation's key is its own id, which is what the batch always
+   * used.
+   */
+  const allSessions = useMemo<BatchTarget[]>(() => {
+    if (merged && merged.length > 0)
+      return merged.map(row => ({
+        key: row.key,
+        session: row.session,
+        desktopId: row.desktopId,
+      }));
+    return remote.sessions.map(session => ({
+      key: session.sessionId,
+      session,
+      desktopId: null,
+    }));
+  }, [merged, remote.sessions]);
+  // What a batch may hold: conversations that are not pinned shortcuts, on a
+  // machine that can take the command. Pinned sessions are promoted above the
+  // groups (and, on the workspace tab, out of their own workspace), so they
+  // carry no checkbox while selecting and select-all never sweeps them up. A
+  // machine that cannot answer is left out for the same reason its menu items
+  // are: a checkbox would promise a delete it would refuse.
+  //
+  // Computed every render rather than memoized: it reads the machines through
+  // `commandsFor`, whose answer can change while that callback's identity stays
+  // put — a memo keyed on the callback would keep offering a checkbox after the
+  // machine behind it went away.
+  const selectableRows = rows.filter(
+    (row): row is SessionRow =>
+      row.kind === "session"
       && !row.session.pinned
-      && (!row.desktopId || row.desktopId === activeDesktopId)
-      ? [row.session]
-      : []);
-  const targets = remote.sessions.filter(session => selected.has(session.sessionId));
+      && commandsFor(row.desktopId ?? null) !== null,
+  );
+  /** The conversations the batch holds, folded away or not. */
+  const targets = allSessions.filter(target => selected.has(target.key));
   const allSelected =
-    selectableSessions.length > 0
-    && selectableSessions.every(session => selected.has(session.sessionId));
+    selectableRows.length > 0
+    && selectableRows.every(row => selected.has(row.key));
+  /**
+   * Whether any machine in the batch can carry the delete.
+   *
+   * A batch can hold several machines' conversations, so the action is offered
+   * while at least one of them answers — the rest stay selected and reported —
+   * and refused only when none does, which is a delete the sheet could not
+   * carry out at all.
+   */
+  const canDeleteSelected = targets.some(target => commandsFor(target.desktopId) !== null);
 
   useEffect(() => {
     if (!active || (!selecting && !searching)) return;
@@ -245,7 +312,7 @@ export function SessionList({
     setExpanded(next);
   };
   const deleteSelected = () => {
-    if (!targets.length || !remote.desktopOnline || deletingRef.current) return;
+    if (!targets.length || !canDeleteSelected || deletingRef.current) return;
     Alert.alert(
       t("sessions.deleteSelected"),
       t("sessions.deleteSelectedConfirm", { count: targets.length }),
@@ -260,12 +327,26 @@ export function SessionList({
             setDeleting(true);
             void (async () => {
               const failed = new Set<string>();
-              // Sequential requests avoid flooding the desktop; keep failures selected for retry.
-              for (const session of targets) {
-                try {
-                  await remote.deleteSession(session.sessionId, session.threadId);
-                } catch {
-                  failed.add(session.sessionId);
+              // One machine's conversations at a time, one conversation at a
+              // time: a selection can hold several machines' rows, and each
+              // machine answers only for its own. Sequential requests avoid
+              // flooding a desktop; failures stay selected for retry.
+              const byMachine = groupByMachine(targets);
+              for (const [desktopId, group] of byMachine) {
+                const commands = commandsFor(desktopId);
+                // A machine that went away between ticking the boxes and
+                // deleting: its rows stay selected, so the retry is one tap
+                // rather than a re-selection.
+                if (!commands) {
+                  for (const row of group) failed.add(row.key);
+                  continue;
+                }
+                for (const row of group) {
+                  try {
+                    await commands.deleteSession(row.session.sessionId, row.session.threadId);
+                  } catch {
+                    failed.add(row.key);
+                  }
                 }
               }
               setSelected(failed);
@@ -284,25 +365,32 @@ export function SessionList({
     );
   };
 
-  /** Every session in a workspace, flattened — folds must not hide rows from a
-   * "select all in this workspace", which is the point of the action. Pinned
-   * sessions are promoted out of the workspace into the shortcut rows above the
-   * groups, so they are left out of the batch. */
-  const sessionsInWorkspace = (workspaceId: string): RemoteSession[] =>
-    remote.sessions.filter(
-      session => session.mode === "workspace"
-        && !session.pinned
-        && (session.workspaceId ?? "") === workspaceId,
-    );
+  /**
+   * Every conversation under one heading.
+   *
+   * Read from the catalogue rather than from the drawn list, so a fold cannot
+   * hide rows from a "select all in this workspace" — the point of the action is
+   * the ones the reader cannot see. Pinned sessions belong to the shortcuts
+   * above the groups instead, and a machine that cannot delete a row does not
+   * get it: the batch is addressed to the group's own machine, so rows it would
+   * refuse are left out here rather than failing later.
+   */
+  const sessionsInWorkspace = (workspace: WorkspaceRow): BatchTarget[] =>
+    allSessions.filter(target =>
+      target.session.mode === "workspace"
+      && !target.session.pinned
+      && (target.session.workspaceId ?? "") === workspace.workspaceId
+      && (target.desktopId ?? null) === (workspace.desktopId ?? null)
+      && commandsFor(target.desktopId) !== null);
 
-  const selectWorkspaceSessions = (workspaceId: string) => {
-    const ids = sessionsInWorkspace(workspaceId).map(session => session.sessionId);
-    if (ids.length === 0) return;
+  const selectWorkspaceSessions = (workspace: WorkspaceRow) => {
+    const keys = sessionsInWorkspace(workspace).map(row => row.key);
+    if (keys.length === 0) return;
     setSelecting(true);
-    setSelected(current => new Set([...current, ...ids]));
+    setSelected(current => new Set([...current, ...keys]));
   };
 
-  const confirmDeleteWorkspace = (workspace: CatalogRow & { kind: "workspace" }) => {
+  const confirmDeleteWorkspace = (workspace: WorkspaceRow) => {
     if (deletingRef.current) return;
     Alert.alert(
       t("sessions.deleteWorkspace"),
@@ -316,16 +404,31 @@ export function SessionList({
           text: t("sessions.delete"),
           style: "destructive",
           onPress: () => {
-            if (deletingRef.current) return;
+            const commands = commandsFor(workspace.desktopId ?? null);
+            if (deletingRef.current || !commands) {
+              // The machine went away while the confirmation was up: the host
+              // still holds the workspace, and saying so is what keeps the
+              // heading from looking deleted until the next refresh.
+              if (!commands) Alert.alert(t("common.error"), t("sessions.deleteWorkspaceFailed"));
+              return;
+            }
             deletingRef.current = true;
             setDeleting(true);
-            const removed = new Set(sessionsInWorkspace(workspace.workspace.id).map(s => s.sessionId));
-            void remote
-              .deleteWorkspace(workspace.workspace.id)
+            // The workspace's conversations go with it, so a selection that held
+            // any of them must not keep rows the host no longer has.
+            const removed = new Set(
+              allSessions
+                .filter(target =>
+                  (target.session.workspaceId ?? "") === workspace.workspaceId
+                  && (target.desktopId ?? null) === (workspace.desktopId ?? null))
+                .map(target => target.key),
+            );
+            void commands
+              .deleteWorkspace(workspace.workspaceId)
               .then(() => {
                 setSelected(current => {
                   const next = new Set(current);
-                  for (const id of removed) next.delete(id);
+                  for (const key of removed) next.delete(key);
                   return next;
                 });
               })
@@ -340,19 +443,21 @@ export function SessionList({
     );
   };
 
-  const openWorkspaceMenu = (workspace: CatalogRow & { kind: "workspace" }) => {
-    if (!remote.desktopOnline || deleting) return;
+  const openWorkspaceMenu = (workspace: WorkspaceRow) => {
+    if (!commandsFor(workspace.desktopId ?? null) || deleting) return;
     setMenuWorkspace(workspace);
   };
 
-  /** Rename the workspace on the desktop. The draft is presented already
-   * filled with the current name; the host's accepted name comes back as the
-   * catalogue it answers with, so the group's heading follows it. */
-  const renameWorkspace = async (workspace: CatalogRow & { kind: "workspace" }, rawName: string) => {
+  /** Rename the workspace on the machine that owns it. The draft is presented
+   * already filled with the current name; the host's accepted name comes back
+   * through its catalogue, so the group's heading follows it. */
+  const renameWorkspace = async (workspace: WorkspaceRow, rawName: string) => {
     const name = rawName.trim();
     if (!name) return;
     try {
-      await remote.renameWorkspace(workspace.workspace.id, name);
+      const commands = commandsFor(workspace.desktopId ?? null);
+      if (!commands) throw new Error("machine_unavailable");
+      await commands.renameWorkspace(workspace.workspaceId, name);
     } catch {
       Alert.alert(t("common.error"), t("sessions.renameWorkspaceFailed"));
     }
@@ -370,6 +475,8 @@ export function SessionList({
     if (!desktopId) return "";
     return remote.desktops.find(desktop => desktop.desktopId === desktopId)?.name ?? desktopId;
   };
+  /** What the open workspace menu acts through — null when it cannot act. */
+  const menuWorkspaceCommands = menuWorkspace ? rowCommands(menuWorkspace) : null;
 
   const renderRow = ({ item }: { item: CatalogRow }) => {
     /**
@@ -379,13 +486,14 @@ export function SessionList({
      * row there is the active desktop's).
      */
     const foreign = !!item.desktopId && item.desktopId !== activeDesktopId;
+    const commands = rowCommands(item);
     if (item.kind === "workspace") {
       const isCollapsed = collapsed.has(item.workspace.id) && !query.trim();
       const name = item.workspace.name || t("sessions.workspace");
-      // A group on another machine is that machine's: the glyph says which one
-      // (with several in one list the name alone does not), and the actions the
-      // heading would offer — rename, pin, delete — are commands to the desktop
-      // this phone is talking to, which has never heard of that workspace.
+      // A group on another machine belongs to that machine, and its actions —
+      // rename, pin, delete — are that machine's commands, so the heading offers
+      // them there whenever it can answer. What it *cannot* offer is a new
+      // conversation: the phone has one outbox, on the desktop it is talking to.
       return (
         <View style={styles.workspace}>
           <Pressable
@@ -412,30 +520,26 @@ export function SessionList({
             {item.workspace.pinned && <Pin size={13} color={colors.accent} />}
             <Text style={styles.count}>{item.count}</Text>
           </Pressable>
-          {!foreign && (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={t("sessions.workspaceActions", { title: name })}
-              accessibilityState={{ disabled: deleting || !remote.desktopOnline }}
-              disabled={deleting || !remote.desktopOnline}
-              onPress={() => openWorkspaceMenu(item)}
-              style={[styles.iconButton, (!remote.desktopOnline || deleting) && styles.disabled]}
-            >
-              <MoreHorizontal size={18} color={colors.inkMuted} />
-            </Pressable>
-          )}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("sessions.workspaceActions", { title: name })}
+            accessibilityState={{ disabled: deleting || !commands }}
+            disabled={deleting || !commands}
+            onPress={() => openWorkspaceMenu(item)}
+            style={[styles.iconButton, (deleting || !commands) && styles.disabled]}
+          >
+            <MoreHorizontal size={18} color={colors.inkMuted} />
+          </Pressable>
         </View>
       );
     }
     const session = item.session;
-    const checked = selected.has(session.sessionId);
+    const checked = selected.has(item.key);
     // A pinned session is a shortcut outside the tab's own groups: it keeps no
     // checkbox and cannot join the batch, so select-all never includes it. Nor
-    // can another machine's row: the batch is one command stream to the active
-    // desktop, and a peer's conversation id means nothing to it — a checkbox
-    // here would promise a delete that lands elsewhere or nowhere.
-    const selectable = !session.pinned && !foreign;
-    const canReach = reachable(item.desktopId);
+    // can a conversation on a machine that cannot answer the delete: a checkbox
+    // would promise a removal that machine would refuse.
+    const selectable = !session.pinned && commands !== null;
     const status = effectiveRunStatus(session.status, session.streaming);
     const running = status === "running" || status === "queued";
     const unread = remote.unreadSessions.has(session.sessionId);
@@ -447,9 +551,9 @@ export function SessionList({
                 <Pressable
                   accessibilityRole="checkbox"
                   accessibilityLabel={session.title || t("sessions.unnamed")}
-                  accessibilityState={{ checked, disabled: deleting || !canReach }}
-                  disabled={deleting || !canReach}
-                  onPress={() => toggleSelection(session.sessionId)}
+                  accessibilityState={{ checked, disabled: deleting }}
+                  disabled={deleting}
+                  onPress={() => toggleSelection(item.key)}
                   style={styles.iconButton}
                 >
                   <View style={[styles.checkbox, checked && styles.checkboxChecked]}>
@@ -491,10 +595,10 @@ export function SessionList({
         ) : null}
         <Pressable
           accessibilityRole="button"
-          disabled={!canReach || deleting}
+          disabled={!commands || deleting}
           onPress={() => {
             if (selecting) {
-              if (selectable) toggleSelection(session.sessionId);
+              if (selectable) toggleSelection(item.key);
               return;
             }
             // A merged row from *another* desktop belongs to a machine this
@@ -554,10 +658,10 @@ export function SessionList({
             accessibilityLabel={t("sessions.actions", {
               title: session.title || t("sessions.unnamed"),
             })}
-            accessibilityState={{ disabled: deleting || !canReach }}
-            disabled={deleting || !canReach}
+            accessibilityState={{ disabled: deleting || !commands }}
+            disabled={deleting || !commands}
             onPress={() => onMenu(session, item.desktopId ?? null)}
-            style={[styles.iconButton, (deleting || !canReach) && styles.disabled]}
+            style={[styles.iconButton, (deleting || !commands) && styles.disabled]}
           >
             <MoreHorizontal size={18} color={colors.inkMuted} />
           </Pressable>
@@ -584,26 +688,43 @@ export function SessionList({
         visible={menuWorkspace !== null}
         onClose={() => setMenuWorkspace(null)}
         actions={menuWorkspace ? [
-          {
-            label: t("sessions.new"),
-            icon: <Plus size={18} color={colors.accent} />,
-            disabled: !remote.desktopOnline || deleting,
-            onPress: () => {
-              void remote.newConversation("workspace", menuWorkspace.workspace.id)
-                .catch(() => Alert.alert(t("common.error")));
-            },
-          },
-          ...(remote.capabilities.has("workspace_pinning_v1") ? [{
+          // A heading on another machine acts there, and the sheet says which
+          // machine before its first destructive item: these commands are not
+          // local, and a workspace delete that lands elsewhere without saying so
+          // is the one action a reader cannot undo.
+          ...(menuWorkspace.desktopId && menuWorkspace.desktopId !== activeDesktopId
+            ? [{
+              label: t("sessions.actionsOnDesktop", {
+                name: hostName(menuWorkspace.desktopId),
+              }),
+              heading: true,
+            }]
+            : []),
+          // Starting a conversation *into* this workspace is the active
+          // connection's own command — the phone has one outbox, on the desktop
+          // it is talking to — so a peer's heading does not offer it.
+          ...(!menuWorkspace.desktopId || menuWorkspace.desktopId === activeDesktopId
+            ? [{
+              label: t("sessions.new"),
+              icon: <Plus size={18} color={colors.accent} />,
+              disabled: !menuWorkspaceCommands || deleting,
+              onPress: () => {
+                void remote.newConversation("workspace", menuWorkspace.workspaceId)
+                  .catch(() => Alert.alert(t("common.error")));
+              },
+            }]
+            : []),
+          ...(menuWorkspaceCommands?.capabilities.has("workspace_pinning_v1") ? [{
             // A workspace group is an ordering shortcut like a pinned
             // conversation: pinned groups sit under the pinned conversations
             // and above the unpinned groups (see catalogRows).
             label: t(menuWorkspace.workspace.pinned ? "sessions.unpin" : "sessions.pin"),
             icon: <Pin size={18} color={colors.inkSoft} />,
-            disabled: !remote.desktopOnline || deleting,
+            disabled: !menuWorkspaceCommands || deleting,
             onPress: () => {
-              void remote
-                .setWorkspacePinned(
-                  menuWorkspace.workspace.id,
+              void menuWorkspaceCommands
+                ?.setWorkspacePinned(
+                  menuWorkspace.workspaceId,
                   !menuWorkspace.workspace.pinned,
                 )
                 .catch(() => Alert.alert(t("common.error")));
@@ -612,7 +733,7 @@ export function SessionList({
           {
             label: t("sessions.renameWorkspace"),
             icon: <Pencil size={18} color={colors.inkSoft} />,
-            disabled: !remote.desktopOnline || deleting,
+            disabled: !menuWorkspaceCommands || deleting,
             onPress: () => {
               // Prefill with the name in force, so a small correction is an
               // edit rather than a retype.
@@ -623,14 +744,14 @@ export function SessionList({
           {
             label: t("sessions.selectWorkspaceSessions"),
             icon: <ListChecks size={18} color={colors.inkSoft} />,
-            disabled: !remote.desktopOnline || deleting || menuWorkspace.count === 0,
-            onPress: () => selectWorkspaceSessions(menuWorkspace.workspace.id),
+            disabled: deleting || sessionsInWorkspace(menuWorkspace).length === 0,
+            onPress: () => selectWorkspaceSessions(menuWorkspace),
           },
           {
             label: t("sessions.deleteWorkspace"),
             icon: <Trash2 size={18} color={colors.danger} />,
             destructive: true,
-            disabled: !remote.desktopOnline || deleting,
+            disabled: !menuWorkspaceCommands || deleting,
             onPress: () => confirmDeleteWorkspace(menuWorkspace),
           },
         ] : []}
@@ -641,13 +762,13 @@ export function SessionList({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={t(allSelected ? "sessions.deselectVisible" : "sessions.selectVisible")}
-              disabled={deleting || !remote.desktopOnline}
+              disabled={deleting}
               onPress={() =>
                 setSelected(current => {
                   const next = new Set(current);
-                  for (const session of selectableSessions) {
-                    if (allSelected) next.delete(session.sessionId);
-                    else next.add(session.sessionId);
+                  for (const row of selectableRows) {
+                    if (allSelected) next.delete(row.key);
+                    else next.add(row.key);
                   }
                   return next;
                 })
@@ -662,11 +783,11 @@ export function SessionList({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={t("sessions.deleteSelected")}
-              disabled={deleting || !targets.length || !remote.desktopOnline}
+              disabled={deleting || !canDeleteSelected}
               onPress={deleteSelected}
               style={[
                 styles.iconButton,
-                (!targets.length || !remote.desktopOnline) && styles.disabled,
+                (deleting || !canDeleteSelected) && styles.disabled,
               ]}
             >
               {deleting ? (
@@ -762,13 +883,13 @@ export function SessionList({
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={t("sessions.select")}
-                accessibilityState={{ disabled: deleting || !remote.desktopOnline }}
-                disabled={deleting || !remote.desktopOnline}
+                accessibilityState={{ disabled: deleting || selectableRows.length === 0 }}
+                disabled={deleting || selectableRows.length === 0}
                 onPress={() => {
                   setSelecting(true);
                   setSelected(new Set());
                 }}
-                style={[styles.manage, (deleting || !remote.desktopOnline) && styles.disabled]}
+                style={[styles.manage, (deleting || selectableRows.length === 0) && styles.disabled]}
               >
                 <ListChecks size={19} color={colors.inkSoft} />
               </Pressable>

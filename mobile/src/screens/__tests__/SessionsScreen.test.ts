@@ -49,6 +49,9 @@ const mockRemote = {
   rename: jest.fn(async () => {}),
   generateTitle: jest.fn(async () => {}),
   deleteSession: jest.fn(async () => {}),
+  setWorkspacePinned: jest.fn(async () => {}),
+  renameWorkspace: jest.fn(async () => {}),
+  deleteWorkspace: jest.fn(async () => {}),
   createWorkspace: jest.fn(async (_path: string, _name: string) => ({ id: "w9", name: "New", path: "/host/new" })),
   clearError: jest.fn(),
   phase: "connected" as string,
@@ -604,10 +607,13 @@ const moduleDisconnected = () => tree.root.findAllByType(DisconnectedScreen)[0];
 describe("conversations on other machines", () => {
   const session = { sessionId: "elsewhere", threadId: "t-elsewhere", title: "Elsewhere", streaming: false };
   const peerCommands = {
-    rename: jest.fn(async () => {}),
+    renameSession: jest.fn(async () => {}),
     generateTitle: jest.fn(async () => "Generated"),
-    setPinned: jest.fn(async () => {}),
-    delete: jest.fn(async () => {}),
+    setSessionPinned: jest.fn(async () => {}),
+    deleteSession: jest.fn(async () => {}),
+    renameWorkspace: jest.fn(async () => {}),
+    setWorkspacePinned: jest.fn(async () => {}),
+    deleteWorkspace: jest.fn(async () => {}),
   };
 
   beforeEach(() => {
@@ -651,7 +657,7 @@ describe("conversations on other machines", () => {
 
     act(() => button("sessions.pin").props.onPress());
     await act(async () => { tree.root.findByType(ActionMenu).findByType(Modal).props.onDismiss(); });
-    expect(peerCommands.setPinned).toHaveBeenCalledWith("elsewhere", "t-elsewhere", true);
+    expect(peerCommands.setSessionPinned).toHaveBeenCalledWith("elsewhere", "t-elsewhere", true);
     expect(mockRemote.setSessionPinned).not.toHaveBeenCalled();
 
     openMenu();
@@ -664,7 +670,7 @@ describe("conversations on other machines", () => {
     expect(mockRemote.generateTitle).not.toHaveBeenCalled();
     act(() => tree.root.findByType(RenameModal).props.setRenameValue("New name"));
     await act(async () => { await tree.root.findByType(RenameModal).props.submitRename(); });
-    expect(peerCommands.rename).toHaveBeenCalledWith("elsewhere", "New name");
+    expect(peerCommands.renameSession).toHaveBeenCalledWith("elsewhere", "New name");
     expect(mockRemote.rename).not.toHaveBeenCalled();
   });
 
@@ -697,7 +703,7 @@ describe("conversations on other machines", () => {
       tree.root.findByType(ActionMenu).findByType(Modal).props.onDismiss();
     });
 
-    expect(peerCommands.setPinned).not.toHaveBeenCalled();
+    expect(peerCommands.setSessionPinned).not.toHaveBeenCalled();
     expect(modalText()).toContain("common.error");
   });
 });
