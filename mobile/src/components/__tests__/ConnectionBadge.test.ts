@@ -4,6 +4,8 @@ import { Modal, ScrollView, StyleSheet, Text, View } from "react-native";
 import { ConnectionBadge } from "../ConnectionBadge";
 import { Button } from "../Button";
 import { connectionPresentation } from "../../remote/connectionPresentation";
+import type { MachineSummary } from "../../remote/desktopStatus";
+import { colors } from "../../theme/tokens";
 
 let mockDimensions = { width: 320, height: 640, scale: 1, fontScale: 1 };
 jest.mock("react-native", () => {
@@ -31,8 +33,16 @@ const open = () => {
   act(() => trigger().props.onPress());
 };
 const text = () => tree.root.findAllByType(Text).map(node => node.props.children);
-const render = (presentation = ready, active = true) => {
-  const element = createElement(ConnectionBadge, { presentation, onReconnect, onUnpair, active });
+const dotColor = () => {
+  const dot = tree.root.findAll(node => node.props.testID === "connection-dot")[0]!;
+  return StyleSheet.flatten(dot.props.style).backgroundColor;
+};
+const render = (
+  presentation = ready,
+  active = true,
+  machines?: MachineSummary[],
+) => {
+  const element = createElement(ConnectionBadge, { presentation, onReconnect, onUnpair, active, machines });
   act(() => {
     tree.update(element);
   });
@@ -160,4 +170,52 @@ test("rotation and hiding the screen dismiss the bubble without reopening it lat
   render(ready, false);
   render(ready, true);
   expect(tree.root.findByType(Modal).props.visible).toBe(false);
+});
+
+const machines = (...statuses: [string, MachineSummary["status"]][]): MachineSummary[] =>
+  statuses.map(([desktopId, status], index) => ({
+    desktopId,
+    label: desktopId,
+    active: index === 0,
+    status,
+  }));
+
+test("the dot is green only when every machine is connected", () => {
+  render(ready, true, machines(["a", "connected"], ["b", "connected"]));
+  expect(dotColor()).toBe(colors.success);
+
+  render(ready, true, machines(["a", "connected"], ["b", "offline"]));
+  expect(dotColor()).toBe(colors.warning);
+
+  render(ready, true, machines(["a", "offline"], ["b", "connecting"]));
+  expect(dotColor()).toBe(colors.danger);
+
+  // With no pairing the dot goes back to answering for the one connection the
+  // app renders from.
+  render(ready, true, []);
+  expect(dotColor()).toBe(colors.success);
+});
+
+test("a merged list names every machine and its own state, and reconnects them all", () => {
+  render(ready, true, machines(["a", "connected"], ["b", "preparing"], ["c", "offline"]));
+  open();
+
+  expect(text()).toContain("connection.machine.connected");
+  expect(text()).toContain("connection.machine.preparing");
+  expect(text()).toContain("connection.machine.offline");
+  expect(text()).toContain("connection.machinesSummary");
+  const action = tree.root.findByType(Button);
+  expect(action.props.label).toBe("connection.reconnectAll");
+  act(() => action.props.onPress());
+  expect(onReconnect).toHaveBeenCalledTimes(1);
+});
+
+test("one machine needs no list of its own", () => {
+  // The picker above the list already names it, and the title below says how it
+  // is doing: a one-row list would repeat both.
+  render(ready, true, machines(["a", "connected"]));
+  open();
+
+  expect(text()).not.toContain("connection.machine.connected");
+  expect(tree.root.findByType(Button).props.label).toBe("connection.reconnect");
 });

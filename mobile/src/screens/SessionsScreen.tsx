@@ -30,6 +30,7 @@ import { DialogSurface } from "../components/DialogSurface";
 import { useAppDialog } from "../components/useAppDialog";
 import { RenameModal } from "../features/chat/components/RenameModal";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
+import { activeMachineStatus, type MachineSummary } from "../remote/desktopStatus";
 import { useDesktopCatalogs } from "../remote/useDesktopCatalogs";
 import { mergeSessions, type DesktopFilter } from "../remote/mergeSessions";
 import { iconGlyph } from "../remote/peerIcons";
@@ -300,6 +301,28 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const connection = remote.connectionPresentation;
   const connected = connection.level === "connected";
   const connecting = connection.level === "connecting";
+  /**
+   * Every paired machine, the active one first.
+   *
+   * The status dot answers for the whole set, so the list the popover shows has
+   * to hold the same machines the dot is judging: the one whose conversation is
+   * open (read from the connection the app renders from) and every other
+   * machine's own live connection.
+   */
+  const machines = useMemo<MachineSummary[]>(() => {
+    if (!activeDesktopId) return catalogs.machines;
+    const paired = remote.desktops.find(desktop => desktop.desktopId === activeDesktopId);
+    return [
+      {
+        desktopId: activeDesktopId,
+        label: paired?.name ?? activeDesktopId,
+        ...(paired?.icon ? { icon: paired.icon } : {}),
+        active: true,
+        status: activeMachineStatus(connection),
+      },
+      ...catalogs.machines,
+    ];
+  }, [activeDesktopId, catalogs.machines, connection, remote.desktops]);
   const [reconnectingFromDisconnected, setReconnectingFromDisconnected] = useState(false);
   const reconnectStartedRef = useRef(false);
 
@@ -325,6 +348,10 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
       setReconnectingFromDisconnected(true);
     }
     void remote.reconnect();
+    // "Reconnect" means every machine this phone holds, not just the one whose
+    // conversation is open: the point of the button is to get the whole merged
+    // list answering again.
+    void catalogs.reconnect();
   };
   const standaloneConnecting =
     reconnectingFromDisconnected || (!remote.hasConnectedContent && connecting);
@@ -399,6 +426,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           <View style={styles.topActions}>
             <ConnectionBadge
               active={active}
+              machines={machines}
               presentation={connection}
               disconnectReason={remote.presence?.reason}
               error={remote.error}
