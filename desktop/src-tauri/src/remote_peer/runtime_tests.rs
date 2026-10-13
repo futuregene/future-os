@@ -925,11 +925,13 @@ async fn the_host_wide_mirror_is_read_only_while_the_lane_is_narrow() {
     wait_for(
         "the host-wide mirror was not read on the narrow lane",
         || {
-            count
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|event| event.payload["eventId"] == json!("evt-narrow-start"))
+            // `runId` distinguishes this push from the wide-lane one above; and
+            // like it, matched on a field a lean body keeps (`eventId` is trimmed
+            // now that this session declares `lean_events_v1`).
+            count.lock().unwrap().iter().any(|event| {
+                event.payload["sessionId"] == json!("sess_watch")
+                    && event.payload["runId"] == json!("run-2")
+            })
         },
     )
     .await;
@@ -937,11 +939,15 @@ async fn the_host_wide_mirror_is_read_only_while_the_lane_is_narrow() {
         .lock()
         .unwrap()
         .iter()
-        .find(|event| event.payload["eventId"] == json!("evt-narrow-start"))
+        // By `runId`, which is what distinguishes this push from the wide-lane one
+        // above now that a lean body no longer carries `eventId`.
+        .find(|event| event.payload["runId"] == json!("run-2"))
         .cloned()
         .expect("the mirrored event");
     // The UI's listeners all address an event by conversation, so a mirror that
-    // arrived without one would be dropped by every one of them.
+    // arrived without one would be dropped by every one of them — which is why
+    // the trimmed body keeps `sessionId` even though the conversation's own lane
+    // does not need it (its subject names the session already).
     assert_eq!(mirrored.payload["sessionId"], json!("sess_watch"));
     assert_eq!(mirrored.kind, "event");
     assert_eq!(
@@ -989,11 +995,14 @@ async fn re_stating_the_same_conversation_keeps_the_lane_open() {
         1,
     );
     wait_for("a restated conversation lost its events", || {
-        count
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|event| event.payload["eventId"] == json!("evt-still"))
+        // Matched on what a *lean* body keeps (`sessionId`/`runId`): this session
+        // declares `lean_events_v1`, so the host trims `eventId` and `timestamp`
+        // out of the envelope before publishing, and asserting on either would be
+        // asserting the trim rather than the delivery.
+        count.lock().unwrap().iter().any(|event| {
+            event.payload["sessionId"] == json!("sess_open")
+                && event.payload["runId"] == json!("run-1")
+        })
     })
     .await;
 

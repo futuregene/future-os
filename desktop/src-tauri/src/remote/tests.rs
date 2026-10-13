@@ -824,7 +824,18 @@ mod runtime_tests {
         // the largest of the dropped ones (~96 B: `{session}:{run}:{epoch}:{idx}`).
         assert_eq!(body["runId"], json!("r"));
         assert_eq!(body["eventId"], json!(null), "eventId is dropped");
-        assert_eq!(body["sessionId"], json!(null), "sessionId is dropped");
+        // `sessionId` is the one kept key that is not about what a subscriber
+        // *reads*: the host publishes this same body to the `state.events` mirror
+        // (`publish_batch` sends one payload to both subjects), and that subject
+        // names the host rather than a conversation — so on that lane the envelope
+        // is the only place the conversation can be named at all. A client that
+        // reads the mirror to keep the rest of its list fresh files each push by
+        // this field; without it every one of them would be dropped.
+        assert_eq!(
+            body["sessionId"],
+            json!("sess-lean"),
+            "the conversation stays"
+        );
         assert_eq!(body["timestamp"], json!(null), "timestamp is dropped");
         assert_eq!(body["schemaVersion"], json!(null));
         assert_eq!(body["epoch"], json!(null));

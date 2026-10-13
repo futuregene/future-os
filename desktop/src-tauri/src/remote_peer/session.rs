@@ -88,11 +88,24 @@ pub(crate) const SELECTIVE_EVENTS_FEATURE: &str = "selective_events_v1";
 /// inflates bounded replies; `selective_events_v1` is only safe because the
 /// narrow lane is paired with the `state.events` subscription
 /// ([`PeerSession::state_subject`]), which is what keeps the host's cross-session
-/// notifications arriving. `lean_events_v1` is deliberately absent.
-pub(crate) const DECLARED_FEATURES: [&str; 3] = [
+/// notifications arriving; `lean_events_v1` is only safe because what it strips
+/// has somewhere else to come from, and because the read it unlocks is done:
+///
+/// * `sessionId` — kept in the trimmed body itself (`remote_host::lean`), because
+///   the `state.events` mirror's subject names no conversation; the subject is
+///   also recovered into the payload (`runtime::event_session_id`), which is what
+///   the phone does and what covers a host that trims the key.
+/// * `eventId` / `timestamp` — the timeline's live entry falls back to the record
+///   inside `data` and then to `{runId}:{idx}` (`useRemoteTimeline`).
+/// * a shell call's arguments — the host serves `get_tool_call_args` **only** to a
+///   client that declared this, and lean is what takes them off the page. The two
+///   are one mechanism: declaring one without consuming the other would leave
+///   every shell row showing its identity and no command.
+pub(crate) const DECLARED_FEATURES: [&str; 4] = [
     "event_coalescing_v1",
     "reply_gzip_v1",
     SELECTIVE_EVENTS_FEATURE,
+    crate::remote_host::lean::LEAN_EVENTS_FEATURE,
 ];
 
 /// The session token a narrow `evt.` subscription may be built from.
@@ -822,10 +835,14 @@ async fn handshake(
     // * `reply_gzip_v1` — safe only because the reply decode path sniffs the
     //   gzip magic and inflates under a bounded cap (`super::codec`); declaring
     //   it without that reader would make every reply ≥ 32 KiB undecodable.
-    //
-    // `lean_events_v1` is deliberately **not** declared: it strips
-    // `sessionId`/`eventId`/`timestamp` from the envelope, and this client's
-    // consumers still depend on all three.
+    // * `selective_events_v1` — negotiated, and only acted on when the host
+    //   confirms it (`session::Subscriptions`).
+    // * `lean_events_v1` — what it strips has a fallback now: `sessionId` stays
+    //   in the trimmed body (the `state.events` mirror's subject names no
+    //   conversation) and is recovered from the subject, and the live entry
+    //   falls back to `data` and then `{runId}:{idx}`. Paired with the
+    //   `get_tool_call_args` read the host serves only to a client that declared
+    //   it, which is what keeps a lean shell row's command on screen.
     //
     // It also carries this client's identity, which is not a capability: the host
     // shows the user what is connected, and it cannot say "a computer" about
@@ -921,33 +938,39 @@ mod tests {
         assert_eq!(command_subject("pair_1", "sess_9"), "p.pair_1.cmd.sess_9");
     }
 
-    /// The declaration is why the host sends gzip replies and coalesced events
-    /// at all, and why the narrow event lane may be used: dropping any entry
-    /// silently reverts this client to the legacy lanes. Asserted as a set
-    /// (order is free) and as the wire shape, because a declaration the host
+    /// The declaration is why the host sends gzip replies, coalesced events and
+    /// trimmed ones at all, and why the narrow event lane may be used: dropping
+    /// any entry silently reverts this client to the legacy lanes. Asserted as a
+    /// set (order is free) and as the wire shape, because a declaration the host
     /// cannot read is the same as none.
+    ///
+    /// `lean_events_v1` is asserted **present** now, and that assertion is the one
+    /// that has to be earned: everything it strips has a fallback (the trimmed
+    /// body keeps `sessionId`, the subject is recovered into the payload, and the
+    /// live entry falls back to `data` then `{runId}:{idx}`), and the
+    /// `get_tool_call_args` read it unlocks is what keeps a shell row's command on
+    /// screen. Removing a fallback without removing this entry is what this test
+    /// exists to stop.
     #[test]
     fn the_client_declares_the_lanes_its_decoders_expect() {
         for expected in [
             "event_coalescing_v1",
             "reply_gzip_v1",
             SELECTIVE_EVENTS_FEATURE,
+            crate::remote_host::lean::LEAN_EVENTS_FEATURE,
         ] {
             assert!(
                 DECLARED_FEATURES.contains(&expected),
                 "the handshake must declare {expected}: {DECLARED_FEATURES:?}"
             );
         }
-        assert!(
-            !DECLARED_FEATURES.contains(&"lean_events_v1"),
-            "lean must stay off until the envelope fields it strips are unused"
-        );
         assert_eq!(
             json!({ "features": DECLARED_FEATURES })["features"],
             json!([
                 "event_coalescing_v1",
                 "reply_gzip_v1",
-                "selective_events_v1"
+                "selective_events_v1",
+                "lean_events_v1"
             ])
         );
     }
