@@ -1,5 +1,5 @@
-import type { AgentMessage } from "@future-os/thread-projection";
 import type { RefObject } from "react";
+import type { QuestionMessage } from "./questionNav";
 import { useCallback, useMemo } from "react";
 import { useCommittedRef } from "../../lib/useCommittedRef";
 import { buildQuestionTurns, findQuestionTurns, targetRowForQuestion } from "./questionNav";
@@ -26,12 +26,12 @@ export interface QuestionNavApi {
  * container ref and a callback that disables sticky auto-follow so a jump is not
  * pulled back to the bottom by a streaming reply.
  */
-export function useQuestionNav({
+export function useQuestionNav<T extends QuestionMessage>({
   messages,
   scrollRef,
   onTakeOver,
 }: {
-  messages: AgentMessage[];
+  messages: T[];
   scrollRef: RefObject<HTMLElement | null>;
   onTakeOver: () => void;
 }): QuestionNavApi {
