@@ -987,7 +987,7 @@
             "wait": 2000
           },
           {
-            "eval": "(() => {\n  const msgs = [...document.querySelectorAll('[data-message-id]')];\n  if (msgs.length < 2) throw new Error('the transcript did not render: ' + msgs.length);\n\n  // The author line: one per turn, above the text. A transcript that rendered the\n  // host's raw entries had one above every *fragment* — a column of \"assistant\".\n  const authors = msgs.map(m => (m.innerText || '').split('\\n')[0].replace(/\\s+/g, ' ').trim().slice(0, 12));\n  if (authors.some(a => !a)) throw new Error('a turn has no author line: ' + JSON.stringify(authors));\n  const speaker = (label) => authors.filter(a => a.includes(label)).length;\n  if (speaker('你') < 1 || speaker('未来助手') < 1) throw new Error('the transcript is not a conversation: ' + JSON.stringify(authors));\n\n  // One reading column, at this app's width.\n  const boxes = msgs.map(m => { const r = m.getBoundingClientRect(); return Math.round(r.left) + ',' + Math.round(r.width); });\n  if (new Set(boxes).size !== 1) throw new Error('turns are not one column: ' + boxes.join(' | '));\n\n  // The header: this app's own, 48px, carrying the conversation's usage.\n  const header = document.querySelector('header');\n  const h = header.getBoundingClientRect();\n  if (Math.round(h.height) !== 48) throw new Error('header is not 48px: ' + h.height);\n  const headerLabels = [...header.querySelectorAll('button')].map(b => b.getAttribute('aria-label') || '');\n  if (header.querySelector(\"[data-testid='remote-thread-usage']\") === null)\n    throw new Error('no usage action in the header: ' + headerLabels.join('|'));\n  // Compacting is a request, and it lives behind `/` in the composer.\n  if (headerLabels.some(l => l.includes('压缩上下文')))\n    throw new Error('compact is still a header button: ' + headerLabels.join('|'));\n\n  // The right panel is this conversation's files: the collapsed affordance is a\n  // button over the header, and opening it lists that host's files.\n  const filesToggle = document.querySelector(\"button[aria-label='显示此对话的文件']\")\n    || document.querySelector(\"button[aria-label=\\\"Show this conversation's files\\\"]\");\n  if (!filesToggle) throw new Error('no files affordance for a remote conversation');\n\n  // The composer: this app's shell, the same width as the messages above it.\n  const form = document.querySelector('form');\n  if (!form) throw new Error('no composer');\n  const cls = form.className || '';\n  for (const part of ['rounded-lg', 'shadow-panel', 'border-line']) {\n    if (!cls.includes(part)) throw new Error('composer shell is not the local one: missing ' + part);\n  }\n  const f = form.getBoundingClientRect();\n  const firstMessage = msgs[0].getBoundingClientRect();\n  if (Math.abs(f.width - firstMessage.width) > 2)\n    throw new Error('the composer is not as wide as the messages: ' + Math.round(f.width) + ' vs ' + Math.round(firstMessage.width));\n  const attach = form.querySelector(\"button[aria-label='添加附件']\") || form.querySelector(\"button[aria-label='Attach']\");\n  // Found by its accessible name: this app's send control is an icon button.\n  const send = form.querySelector(\"button[aria-label='发送']\") || form.querySelector(\"button[aria-label='Send']\");\n  if ((send?.textContent || '').trim() !== '') throw new Error('send still carries a label: ' + send.textContent);\n  if (!attach || !send) throw new Error('composer controls missing: ' + (attach ? '' : 'attach ') + (send ? '' : 'send'));\n  const a = attach.getBoundingClientRect();\n  const s = send.getBoundingClientRect();\n  if (a.left > f.left + f.width / 2) throw new Error('attach is not at the left');\n  if (s.right < f.left + f.width / 2) throw new Error('send is not at the right');\n  // The field is the local composer's shape: a textarea the shell borders, rather than a bordered control nested inside the shell.\n  const field = form.querySelector('textarea');\n  if (!field) throw new Error('the field is not a textarea');\n  if ((field.className || '').includes('border')) throw new Error('the field draws its own border inside the shell');\n  for (const part of ['min-h-14', 'px-2', 'py-1', 'text-sm']) {\n    if (!(field.className || '').includes(part)) throw new Error('the field is not the local one: missing ' + part);\n  }\n  // The model and thinking controls are this app's own dropdowns, not native selects.\n  if (form.querySelector('select')) throw new Error('the control row still uses a native select');\n\n  // The transcript clears the composer. The composer rides *over* the transcript\n  // behind a fade rather than sitting under it, so the footer's own height is\n  // reserved at the end of the content; without it the last turn is drawn under\n  // the input box, which is what \"the bottom of the conversation is cut off\"\n  // looks like. Measured, because that is a distance and no class list says it.\n  const scroller = document.querySelector(\"[data-chat-scroll='true']\");\n  scroller.scrollTop = scroller.scrollHeight;\n  const lastTurn = [...document.querySelectorAll('[data-message-id]')].pop();\n  const covered = Math.round(lastTurn.getBoundingClientRect().bottom - form.getBoundingClientRect().top);\n  if (covered > 0)\n    throw new Error('the last turn is under the composer by ' + covered + 'px');\n})()"
+            "eval": "(() => {\n  const msgs = [...document.querySelectorAll('[data-message-id]')];\n  if (msgs.length < 2) throw new Error('the transcript did not render: ' + msgs.length);\n\n  // The author line: one per turn, above the text. A transcript that rendered the\n  // host's raw entries had one above every *fragment* — a column of \"assistant\".\n  const authors = msgs.map(m => (m.innerText || '').split('\\n')[0].replace(/\\s+/g, ' ').trim().slice(0, 12));\n  if (authors.some(a => !a)) throw new Error('a turn has no author line: ' + JSON.stringify(authors));\n  const speaker = (label) => authors.filter(a => a.includes(label)).length;\n  if (speaker('你') < 1 || speaker('未来助手') < 1) throw new Error('the transcript is not a conversation: ' + JSON.stringify(authors));\n\n  // One reading column, at this app's width.\n  const boxes = msgs.map(m => { const r = m.getBoundingClientRect(); return Math.round(r.left) + ',' + Math.round(r.width); });\n  if (new Set(boxes).size !== 1) throw new Error('turns are not one column: ' + boxes.join(' | '));\n\n  // The header: this app's own, 48px, carrying the conversation's usage.\n  const header = document.querySelector('header');\n  const h = header.getBoundingClientRect();\n  if (Math.round(h.height) !== 48) throw new Error('header is not 48px: ' + h.height);\n  const headerLabels = [...header.querySelectorAll('button')].map(b => b.getAttribute('aria-label') || '');\n  if (header.querySelector(\"[data-testid='remote-thread-usage']\") === null)\n    throw new Error('no usage action in the header: ' + headerLabels.join('|'));\n  // Compacting is a request, and it lives behind `/` in the composer.\n  if (headerLabels.some(l => l.includes('压缩上下文')))\n    throw new Error('compact is still a header button: ' + headerLabels.join('|'));\n\n  // The right panel is this conversation's files: the collapsed affordance is a\n  // button over the header, and opening it lists that host's files.\n  const filesToggle = document.querySelector(\"button[aria-label='显示此对话的文件']\")\n    || document.querySelector(\"button[aria-label=\\\"Show this conversation's files\\\"]\");\n  if (!filesToggle) throw new Error('no files affordance for a remote conversation');\n\n  // The composer: this app's shell, the same width as the messages above it.\n  const form = document.querySelector('form');\n  if (!form) throw new Error('no composer');\n  const cls = form.className || '';\n  for (const part of ['rounded-lg', 'shadow-panel', 'border-line']) {\n    if (!cls.includes(part)) throw new Error('composer shell is not the local one: missing ' + part);\n  }\n  const f = form.getBoundingClientRect();\n  const firstMessage = msgs[0].getBoundingClientRect();\n  if (Math.abs(f.width - firstMessage.width) > 2)\n    throw new Error('the composer is not as wide as the messages: ' + Math.round(f.width) + ' vs ' + Math.round(firstMessage.width));\n  const attach = form.querySelector(\"button[aria-label='添加附件']\") || form.querySelector(\"button[aria-label='Attach']\");\n  // Found by its accessible name: this app's send control is an icon button.\n  const send = form.querySelector(\"button[aria-label='发送']\") || form.querySelector(\"button[aria-label='Send']\");\n  if ((send?.textContent || '').trim() !== '') throw new Error('send still carries a label: ' + send.textContent);\n  if (!attach || !send) throw new Error('composer controls missing: ' + (attach ? '' : 'attach ') + (send ? '' : 'send'));\n  const a = attach.getBoundingClientRect();\n  const s = send.getBoundingClientRect();\n  if (a.left > f.left + f.width / 2) throw new Error('attach is not at the left');\n  if (s.right < f.left + f.width / 2) throw new Error('send is not at the right');\n  // The field is the local composer's shape: a textarea the shell borders, rather than a bordered control nested inside the shell.\n  const field = form.querySelector('textarea');\n  if (!field) throw new Error('the field is not a textarea');\n  if ((field.className || '').includes('border')) throw new Error('the field draws its own border inside the shell');\n  for (const part of ['min-h-14', 'px-2', 'py-1', 'text-sm']) {\n    if (!(field.className || '').includes(part)) throw new Error('the field is not the local one: missing ' + part);\n  }\n  // The placeholder is this app's own, minus the `@` (a remote prompt attaches files\n  // with the paperclip, by id) and never naming the machine: the box describes the\n  // task, exactly as the local composer does.\n  if (field.placeholder !== '描述任务，按 / 使用工具或技能')\n    throw new Error('the placeholder does not match the local composer: ' + field.placeholder);\n\n  // The model and thinking controls are this app's own dropdowns, not native selects.\n  if (form.querySelector('select')) throw new Error('the control row still uses a native select');\n\n  // The transcript clears the composer. The composer rides *over* the transcript\n  // behind a fade rather than sitting under it, so the footer's own height is\n  // reserved at the end of the content; without it the last turn is drawn under\n  // the input box, which is what \"the bottom of the conversation is cut off\"\n  // looks like. Measured, because that is a distance and no class list says it.\n  const scroller = document.querySelector(\"[data-chat-scroll='true']\");\n  scroller.scrollTop = scroller.scrollHeight;\n  const lastTurn = [...document.querySelectorAll('[data-message-id]')].pop();\n  const covered = Math.round(lastTurn.getBoundingClientRect().bottom - form.getBoundingClientRect().top);\n  if (covered > 0)\n    throw new Error('the last turn is under the composer by ' + covered + 'px');\n})()"
           },
           {
             "shot": "d-remote-conversation.png"
@@ -1471,6 +1471,48 @@
           }
         ]
       },
+      "remote-delete": {
+        "note": "Deleting a host's conversation from its own row menu closes it here too. The row's menu is one row's action, and the column it was filling must not go on drawing a conversation the host no longer has — which is what it did before: the row left the list while the history stayed on screen, with nothing saying it was gone.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "重画森林图并核对置信区间"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => { if (!document.querySelector(\"[data-testid='remote-thread-usage']\")) throw new Error('the remote conversation is not open'); return 'open'; })()"
+          },
+          {
+            "eval": "(() => { const rows = [...document.querySelectorAll(\"div[class*='group/thread']\")]; const row = rows.find(r => { const b = r.querySelector('button[aria-label]'); return b && (b.getAttribute('aria-label') || '').startsWith('重画森林图并核对置信区间'); }); if (!row) throw new Error('the host row is not in the shared list'); const menu = row.querySelector(\"button[aria-label='更多操作']\"); if (!menu) throw new Error('the row has no actions menu'); menu.click(); return 'menu opened';})()"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => { if (!document.querySelector(\"[role='menu']\")) throw new Error('the row menu did not open'); return 'menu open'; })()"
+          },
+          {
+            "tap": "删除"
+          },
+          {
+            "wait": 1800
+          },
+          {
+            "eval": "(() => { const text = document.body.innerText; if (document.querySelector(\"[data-testid='remote-thread-usage']\")) throw new Error('the deleted conversation is still on screen'); if (text.includes('重画森林图并核对置信区间')) throw new Error('the deleted conversation is still listed'); return 'gone from the list and the column'; })()"
+          },
+          {
+            "shot": "d-remote-delete.png"
+          }
+        ]
+      },
       "remote-attachment": {
         "note": "A file staged on the host: the chip names what will be sent, so the remote composer's attachment shell can be compared with the local one.",
         "url": "http://localhost:5299/shot/?lang=zh",
@@ -1543,6 +1585,45 @@
           },
           {
             "shot": "d-remote-tree-open.png"
+          }
+        ]
+      },
+      "remote-slash-menu": {
+        "note": "A remote conversation's `/` menu: the host's own compact request and the skills it has installed — the same two groups this app's own `/` offers, which is what the composer's placeholder points at.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "重画森林图并核对置信区间"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "消息"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "type": "/"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  const field = document.querySelector('textarea');\n  // The placeholder describes the task and points at `/`, as this app's own\n  // composer does. What it must not do is name the machine: that is the rail's\n  // business, and this app's composers never state it.\n  if (field.placeholder !== '描述任务，按 / 使用工具或技能')\n    throw new Error('the placeholder does not match the local composer: ' + field.placeholder);\n  const rows = [...document.querySelectorAll(\"[role='option']\")].map(r => (r.textContent || '').trim());\n  // The compact request leads, as this app's own context tool does.\n  if (!rows[0].startsWith('压缩上下文')) throw new Error('the compact command does not lead: ' + JSON.stringify(rows));\n  // Then the host's skills, by the name the host resolves, each with what it\n  // does — a list of bare names is not a menu anyone can choose from.\n  const skill = rows.find(r => r.startsWith('/Paper Search'));\n  if (!skill) throw new Error('the host skills are not in the menu: ' + JSON.stringify(rows));\n  if (!skill.includes('检索文献')) throw new Error('a skill row carries no description: ' + skill);\n  // Above the box, not over it: the box sits at the foot of the window.\n  const menu = document.querySelector(\"[role='listbox']\");\n  const box = document.querySelector('form');\n  if (!menu || !box) throw new Error('no menu over the box');\n  if (menu.getBoundingClientRect().bottom > box.getBoundingClientRect().top + 1)\n    throw new Error('the menu opens over the box instead of above it');\n  return rows.length + ' rows';\n})()"
+          },
+          {
+            "shot": "d-remote-slash-menu.png"
           }
         ]
       },

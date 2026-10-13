@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 import type { SkillCandidate } from "../../integrations/skills/skillsClient";
-import type { RemoteCommand } from "./remoteCommands";
-import type { RemotePeer, RemoteUpload } from "./remotePeerClient";
+import type { RemoteCommand, RemoteSkillChoice, RemoteSlashItem } from "./remoteCommands";
+import type { RemotePeer, RemoteSkillInfo, RemoteUpload } from "./remotePeerClient";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUp, Loader2, Paperclip, Square, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { readNativeClipboardFilePaths, savePastedFile, savePastedImage } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
@@ -12,8 +12,8 @@ import { errorMessage } from "../../lib/errors";
 import { imageExtensionFromMime, splitFileName } from "../agent/attachments";
 import { SkillRecommendCard } from "../agent/SkillRecommendCard";
 import { RemoteApprovalMenu } from "./RemoteApprovalMenu";
-import { buildRemoteSlashMenu, slashQuery, withoutSlashWord } from "./remoteCommands";
-import { abortRemoteRun, promptRemoteConversation, uploadRemoteFile } from "./remotePeerClient";
+import { buildRemoteSlashMenu, insertRemoteSkill, remoteSlashItems, slashQuery, withoutSlashWord } from "./remoteCommands";
+import { abortRemoteRun, listRemoteInstalledSkills, promptRemoteConversation, uploadRemoteFile } from "./remotePeerClient";
 import { RemoteSlashMenu } from "./RemoteSlashMenu";
 
 /** How many files one paste may stage. The rest are reported, not silently dropped. */
@@ -64,6 +64,65 @@ function useRemoteCommands({
 }
 
 /**
+ * The skills the host has installed, for the `/` menu.
+ *
+ * Read while the menu is open rather than once at mount, for the reason the
+ * phone reloads its picker on every open: the list belongs to the other machine,
+ * and a skill installed there a minute ago belongs in the menu now. What was
+ * read last stays on screen while the fresh read is in flight, so the menu does
+ * not flicker empty between keystrokes.
+ *
+ * `enabled` is the caller's answer to "could this host have skills to offer" —
+ * the capability it declared, and whether a menu is open at all — so a host that
+ * predates the feature is never asked and a closed menu never costs a request.
+ */
+function useRemoteSkills({
+  desktopId,
+  enabled,
+}: {
+  desktopId: string;
+  enabled: boolean;
+}): RemoteSkillChoice[] {
+  const { i18n } = useTranslation("remotePeer");
+  const [skills, setSkills] = useState<RemoteSkillInfo[]>([]);
+
+  useEffect(() => {
+    if (!enabled)
+      return;
+    let cancelled = false;
+    void listRemoteInstalledSkills(desktopId)
+      .then((rows) => {
+        if (!cancelled)
+          setSkills(rows);
+      })
+      .catch(() => {
+        // A host that will not answer has no skills to offer this time. The menu
+        // still shows what it has (the commands), which is better than an error
+        // about a list the user never asked to see.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [desktopId, enabled]);
+
+  // The name is the host's invocation name — the one `/` has to name — while the
+  // description follows this app's language, and the other language's is kept
+  // for the search. That is the phone's own rule (its row prints the English
+  // command with a localized description), and the local composer's.
+  const chinese = i18n.language.startsWith("zh");
+  return useMemo(
+    () => skills.map(skill => ({
+      name: skill.name,
+      description: chinese
+        ? skill.descriptionZh || skill.description
+        : skill.description || skill.descriptionZh || "",
+      descriptionZh: skill.descriptionZh ?? null,
+    })),
+    [chinese, skills],
+  );
+}
+
+/**
  * What a skill recommendation holds the message for.
  *
  * The same contract this app's own composer uses (`SkillRecommendationProp`),
@@ -81,11 +140,12 @@ export interface RemoteSkillRecommendation {
 /**
  * The composer for a remote conversation.
  *
- * Deliberately plainer than the local one: no attachments, no slash commands,
- * no model picker in the box. Each of those is a *host-side* operation with its
- * own command and its own failure modes, and offering them here before they are
- * wired would produce buttons that look like they work and silently do nothing
- * — the failure mode users blame on the app rather than on the missing feature.
+ * Deliberately plainer than the local one: no `@` file mentions (a file is
+ * attached with the paperclip, and the host receives it by id) and no `#`
+ * conversation references. What the two share is what a reader compares:
+ * the same shell, the same control row, the same `/` menu — the host's commands
+ * and its installed skills, which is what makes the placeholder read like this
+ * app's own.
  *
  * It does carry the two controls that a conversation cannot be used without:
  * sending (with an empty `sessionId` for a conversation that does not exist yet)
@@ -413,8 +473,20 @@ export function RemoteComposer({
     onCompact: () => onCompact?.(),
   });
   const query = slashQuery(text);
-  const slashGroups = query === null ? { commands: [] } : buildRemoteSlashMenu(query, commands);
-  const [activeCommand, setActiveCommand] = useState(0);
+  /**
+   * Whether this host could have skills to put in the menu.
+   *
+   * The capability it declared, not a guess: a host that never announced
+   * `skills_v1` is a host whose `/` menu is commands only, and one that never had
+   * the feature is never asked for a list it cannot send.
+   */
+  const supportsSkills = peer?.features.includes("skills_v1") === true;
+  const hostSkills = useRemoteSkills({ desktopId, enabled: query !== null && supportsSkills });
+  const slashGroups = query === null ? { commands: [], skills: [] } : buildRemoteSlashMenu(query, commands, hostSkills);
+  // The flat order the keyboard walks, from the same function the menu draws
+  // from: a highlight is only meaningful if it indexes the rows on screen.
+  const slashItems = remoteSlashItems(slashGroups);
+  const [activeItem, setActiveItem] = useState(0);
 
   // A draft that arrived from somewhere other than a keystroke — the skill card's
   // insert, a cleared field — has to be measured too, or the box keeps the height
@@ -424,11 +496,21 @@ export function RemoteComposer({
       growToContent(textareaRef.current);
   }, [text]);
 
-  /** Ask the host for one command, then take its word out of the draft. */
-  function chooseCommand(command: RemoteCommand) {
-    setText(withoutSlashWord(text));
-    setActiveCommand(0);
-    command.run();
+  /**
+   * Take the chosen item.
+   *
+   * A command runs and takes its word out of the draft; a skill leaves its own
+   * name behind for the host to resolve when the prompt arrives, which is the
+   * only thing `/name` means to the host.
+   */
+  function chooseSlashItem(item: RemoteSlashItem) {
+    setActiveItem(0);
+    if (item.kind === "command") {
+      setText(withoutSlashWord(text));
+      item.command.run();
+      return;
+    }
+    setText(insertRemoteSkill(text, item.skill.name));
   }
 
   /**
@@ -440,9 +522,9 @@ export function RemoteComposer({
    * (including the word that opened it) instead of running the command.
    */
   function submit() {
-    const highlighted = slashGroups.commands[activeCommand];
+    const highlighted = slashItems[activeItem];
     if (highlighted) {
-      chooseCommand(highlighted);
+      chooseSlashItem(highlighted);
       return;
     }
     void send();
@@ -466,9 +548,9 @@ export function RemoteComposer({
       {query !== null
         ? (
             <RemoteSlashMenu
-              activeIndex={activeCommand}
+              activeIndex={activeItem}
               groups={slashGroups}
-              onChoose={chooseCommand}
+              onChoose={chooseSlashItem}
             />
           )
         : null}
@@ -550,15 +632,15 @@ export function RemoteComposer({
         onKeyDown={(event) => {
           // The slash menu owns the arrows and Enter while it is open: the
           // word being typed is a command, not a sentence.
-          if (query !== null && slashGroups.commands.length > 0) {
+          if (query !== null && slashItems.length > 0) {
             if (event.key === "ArrowDown") {
               event.preventDefault();
-              setActiveCommand(index => (index + 1) % slashGroups.commands.length);
+              setActiveItem(index => (index + 1) % slashItems.length);
               return;
             }
             if (event.key === "ArrowUp") {
               event.preventDefault();
-              setActiveCommand(index => (index - 1 + slashGroups.commands.length) % slashGroups.commands.length);
+              setActiveItem(index => (index - 1 + slashItems.length) % slashItems.length);
               return;
             }
             if (event.key === "Escape") {
@@ -572,9 +654,7 @@ export function RemoteComposer({
             submit();
           }
         }}
-        placeholder={t("composerPlaceholder", {
-          name: peer?.name ?? peer?.desktopId ?? "",
-        })}
+        placeholder={t(canCompact ? "composerPlaceholder" : "composerPlaceholderSkills")}
         ref={textareaRef}
         rows={1}
         value={text}

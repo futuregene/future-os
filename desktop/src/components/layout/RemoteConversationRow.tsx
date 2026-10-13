@@ -32,6 +32,7 @@ export function RemoteConversationRow({
   expanded = false,
   hasChildren = false,
   onChanged,
+  onDeletedRemote,
   onOpen,
   onOpenRename,
   onToggleExpanded,
@@ -59,6 +60,8 @@ export function RemoteConversationRow({
   hasChildren?: boolean;
   /** Re-read the owning host's catalogue after a row action. */
   onChanged: () => void;
+  /** This conversation was deleted on the host. */
+  onDeletedRemote: (conversation: MergedConversation) => void;
   onOpen: (conversation: MergedConversation) => void;
   onOpenRename: (conversation: MergedConversation) => void;
   /** Fold or unfold this conversation's forks. */
@@ -164,6 +167,7 @@ export function RemoteConversationRow({
               conversation={conversation}
               onChanged={onChanged}
               onClose={() => setMenuOpen(false)}
+              onDeleted={() => onDeletedRemote(conversation)}
               onOpenRename={() => {
                 setMenuOpen(false);
                 onOpenRename(conversation);

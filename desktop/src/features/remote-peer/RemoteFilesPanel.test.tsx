@@ -294,6 +294,113 @@ it("shows only the toggle when collapsed, and reports the toggle", async () => {
   await view.unmount();
 });
 
+/**
+ * A second file stays clickable while the first is still coming down.
+ *
+ * The panel used to disable every row's controls whenever *any* transfer was in
+ * flight, so on a slow link choosing a second file did nothing at all — the
+ * panel read as broken while it was working. One file's transfer says nothing
+ * about whether the reader may open another, which the host serves one request at
+ * a time and answers when it answers.
+ */
+it("lets another file be opened while one is still being fetched", async () => {
+  list.mockResolvedValue(listing([
+    { isDir: false, name: "forest.png", path: "/home/studio/forest.png", size: 4_096 },
+    { isDir: false, name: "notes.md", path: "/home/studio/notes.md", size: 512 },
+  ]));
+  // Hold the first fetch open, so the second click happens during it.
+  let releaseFirst: (value: { name: string; path: string }) => void = () => {};
+  preview
+    .mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = resolve; }))
+    .mockResolvedValue({ name: "notes.md", path: "/cache/abc__notes.md" });
+
+  const view = await mount();
+  const nameButton = (label: string) => [...view.container.querySelectorAll<HTMLButtonElement>("button")]
+    .find(node => node.textContent === label)!;
+
+  await act(async () => nameButton("forest.png").click());
+  // The transfer is in flight: its own row says so, and the other row is still
+  // something the reader can act on.
+  expect(nameButton("forest.png").disabled).toBe(true);
+  expect(nameButton("notes.md").disabled).toBe(false);
+
+  await act(async () => nameButton("notes.md").click());
+  expect(preview).toHaveBeenCalledTimes(2);
+  // The file asked for last is the one on screen, even though the first answer
+  // has not arrived yet.
+  expect(previews[previews.length - 1]?.name).toBe("notes.md");
+
+  // And when the earlier one finally lands, it does not replace it.
+  await act(async () => {
+    releaseFirst({ name: "forest.png", path: "/cache/abc__forest.png" });
+  });
+  expect(previews[previews.length - 1]?.name).toBe("notes.md");
+  await view.unmount();
+});
+
+it("lets another file be downloaded while one is still downloading", async () => {
+  list.mockResolvedValue(listing([
+    { isDir: false, name: "report.txt", path: "/home/studio/report.txt", size: 10 },
+    { isDir: false, name: "second.txt", path: "/home/studio/second.txt", size: 20 },
+  ]));
+  let releaseFirst: (value: string) => void = () => {};
+  download
+    .mockImplementationOnce(() => new Promise((resolve) => { releaseFirst = resolve; }))
+    .mockResolvedValue("second.txt");
+
+  const view = await mount();
+  const downloadButton = (label: string) => view.container
+    .querySelector<HTMLButtonElement>(`button[aria-label='Download ${label}']`)!;
+
+  await act(async () => downloadButton("report.txt").click());
+  // The first transfer is still running, and the second row is still usable.
+  expect(downloadButton("report.txt").disabled).toBe(true);
+  expect(downloadButton("second.txt").disabled).toBe(false);
+
+  await act(async () => downloadButton("second.txt").click());
+  expect(download).toHaveBeenCalledTimes(2);
+  expect(download).toHaveBeenLastCalledWith(expect.objectContaining({ name: "second.txt" }));
+
+  await act(async () => releaseFirst("/Users/me/report.txt"));
+  await view.unmount();
+});
+
+/**
+ * Dismissing the overlay gives up on the fetch still coming for it.
+ *
+ * Otherwise a file the reader already dismissed lands a moment later and opens
+ * itself again over whatever they moved on to — the same stale-answer shape as
+ * the wrong-file case, with the reader's own dismissal as the thing it undoes.
+ */
+it("does not re-open the overlay from a fetch that was dismissed", async () => {
+  list.mockResolvedValue(listing([
+    { isDir: false, name: "forest.png", path: "/home/studio/forest.png", size: 4_096 },
+    { isDir: false, name: "notes.md", path: "/home/studio/notes.md", size: 512 },
+  ]));
+  let release: (value: { name: string; path: string }) => void = () => {};
+  preview
+    .mockResolvedValueOnce({ name: "forest.png", path: "/cache/abc__forest.png" })
+    .mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+
+  const view = await mount();
+  const nameButton = (label: string) => [...view.container.querySelectorAll<HTMLButtonElement>("button")]
+    .find(node => node.textContent === label)!;
+
+  await act(async () => nameButton("forest.png").click());
+  const overlay = () => view.container.querySelector("[data-preview]");
+  expect(overlay()).not.toBeNull();
+
+  // The second file is fetched while the first file's overlay is up...
+  await act(async () => nameButton("notes.md").click());
+  // ...and the reader dismisses it before that one lands.
+  await act(async () => view.container.querySelector<HTMLButtonElement>("[data-close-preview]")!.click());
+  expect(overlay()).toBeNull();
+
+  await act(async () => release({ name: "notes.md", path: "/cache/abc__notes.md" }));
+  expect(overlay()).toBeNull();
+  await view.unmount();
+});
+
 /** Opening a folder that cannot be read says so, and keeps the listing it had. */
 it("surfaces a folder that could not be opened", async () => {
   list.mockResolvedValue(listing([{ isDir: true, name: "analysis", path: "/home/studio/analysis", size: 0 }]));

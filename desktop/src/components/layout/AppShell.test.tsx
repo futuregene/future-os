@@ -1624,6 +1624,47 @@ describe("app shell collapsed-panel affordances", () => {
     });
 
     /**
+     * Deleting a host's conversation from its own row menu closes it.
+     *
+     * The batch path always did this and the single-row menu did not, so the same
+     * delete behaved differently depending on how it was asked for: from the menu
+     * the conversation was really gone on the host and its row left the list,
+     * while the column went on drawing its history — with nothing on screen
+     * saying it was gone, which is exactly how it was reported.
+     */
+    it("closes the conversation when its own row menu deletes it", async () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+      expect(document.querySelector("[data-child='remote-conversation-view']")).not.toBeNull();
+
+      await act(async () => {
+        await rail().onRemoteConversationDeleted(remoteConversation());
+      });
+      // Asserted on the rendered tree, as elsewhere: the stubs record their props
+      // when they render and are never cleared, so a stale record proves nothing.
+      expect(document.querySelector("[data-child='remote-conversation-view']")).toBeNull();
+      view.unmount();
+    });
+
+    /**
+     * A delete of some other conversation leaves the open one alone.
+     *
+     * The row's menu is one row's action: closing whatever the reader happens to
+     * be reading because something else was deleted would be its own bug, so the
+     * check is by machine and session id rather than by "a remote row went away".
+     */
+    it("keeps the open conversation when a different one is deleted", async () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+
+      await act(async () => {
+        await rail().onRemoteConversationDeleted(remoteConversation({ id: "sess_2", key: "desktop_a::sess_2" }));
+      });
+      expect(document.querySelector("[data-child='remote-conversation-view']")).not.toBeNull();
+      view.unmount();
+    });
+
+    /**
      * Skill recommendation for a remote conversation goes to *that* host.
      *
      * The card installs a skill somewhere, and the budget it spends is a budget

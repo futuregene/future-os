@@ -194,6 +194,19 @@ it("copies the raw content, trimmed, when the reply is not segmented", async () 
   expect(mocks.copyText).toHaveBeenCalledWith("a single block");
 });
 
+it("keeps the user's copy button off their own bubble", () => {
+  // The user's body is a filled bubble holding their words; a control drawn on
+  // that fill reads as part of what they wrote. It sits below it instead.
+  render(message({ content: "再来", id: "u1", role: "user", status: "complete" }));
+
+  const copy = byTitle("Copy")!;
+  const row = container.querySelector<HTMLElement>("[data-message-id='u1']")!;
+  const bubble = row.querySelector<HTMLElement>(".bg-surface-subtle")!;
+  expect(bubble.textContent).toContain("再来");
+  expect(bubble.contains(copy)).toBe(false);
+  expect(row.contains(copy)).toBe(true);
+});
+
 it("withholds the copy button while the reply is still streaming", () => {
   render(message({ status: "streaming" }));
   expect(byTitle("Copy")).toBeNull();

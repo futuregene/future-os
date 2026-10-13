@@ -28,12 +28,24 @@ export function RemoteConversationMenu({
   conversation,
   onChanged,
   onClose,
+  onDeleted,
   onOpenRename,
 }: {
   conversation: MergedConversation;
   /** Re-read the host's catalogue once the change has landed. */
   onChanged: () => void;
   onClose: () => void;
+  /**
+   * The conversation no longer exists on the host.
+   *
+   * A separate fact from `onChanged`: the catalogue is re-read either way, but
+   * only the caller knows whether the one that just went away is the one it is
+   * currently drawing. Without this, deleting a single conversation left its row
+   * gone from the list while the column kept showing its history, with nothing on
+   * screen saying it was gone — the batch path did clear it, so the same delete
+   * behaved differently depending on how it was asked for.
+   */
+  onDeleted: () => void;
   onOpenRename: () => void;
 }) {
   const { t } = useTranslation("layout");
@@ -94,7 +106,10 @@ export function RemoteConversationMenu({
       <Item
         danger
         icon={<Trash2 className="size-3.5" />}
-        onClick={() => void run(() => deleteRemoteConversation(desktopId, address))}
+        onClick={() => void run(async () => {
+          await deleteRemoteConversation(desktopId, address);
+          onDeleted();
+        })}
         disabled={busy || !pinnable}
       >
         {t("activityRail.delete")}
