@@ -160,6 +160,32 @@ describe("mergeConversations", () => {
   });
 
   /**
+   * This machine's forks name their parent the same way, in this list's keys.
+   *
+   * The rail resolves a local fork's parent from its own store (a fork records an
+   * agent session id, not a thread id) and hands it in; the merge is where that
+   * becomes a row key, so the merged list's tree holds both machines' forks with
+   * one rule. A local fork whose parent is not listed — archived, or another
+   * machine's filter — stays a root, as it does in the local tree.
+   */
+  it("resolves a local fork to its parent's row", () => {
+    const merged = mergeConversations(
+      [
+        thread({ id: "local_parent", parentThreadId: null }),
+        thread({ id: "local_child", parentThreadId: "local_parent" }),
+        thread({ id: "local_orphan", parentThreadId: "archived" }),
+      ],
+      [],
+      ALL,
+    );
+
+    const byId = (id: string) => merged.find(row => row.id === id)!;
+    expect(byId("local_parent").parentKey).toBeNull();
+    expect(byId("local_child").parentKey).toBe(rowKey(null, "local_parent"));
+    expect(byId("local_orphan").parentKey).toBeNull();
+  });
+
+  /**
    * A parent the list does not hold makes its child a root — including a parent
    * that happens to share the session id on *another* machine, which is not the
    * conversation it was forked from.
@@ -363,6 +389,64 @@ describe("mergeConversations", () => {
       expect(grouped.workspaces.flatMap(group => group.rows.map(row => row.id))).toEqual(["ws_1"]);
       expect(grouped.workspaces[0]!.label).toBe("This machine's workspace");
       expect(grouped.chats.map(row => row.id)).toEqual(["chat_1"]);
+    });
+
+    /**
+     * A fork is a conversation's, so it is ranked — and filed — by that
+     * conversation, not by its own time.
+     *
+     * A fork's last message is newer than the one it was forked from, by
+     * construction, so ranking the rows themselves put the fork *above* its own
+     * conversation: pressing the parent's `+` looked like it did nothing, because
+     * the row it revealed had already been on screen, one line higher. The forks
+     * of a pinned or workspace conversation landed under somebody else's heading
+     * for the same reason. `rowRoots` is the tree's answer to "which conversation
+     * is this row's", handed in by the rail.
+     */
+    it("ranks a fork by its conversation, next to it", () => {
+      const merged = rows(
+        [
+          thread({ id: "parent", mode: "workspace", workspaceId: "ws_1", updatedAt: 500 }),
+          thread({ id: "fork", mode: "workspace", workspaceId: "ws_1", parentThreadId: "parent", updatedAt: 900 }),
+          thread({ id: "other", mode: "workspace", workspaceId: "ws_1", updatedAt: 950 }),
+        ],
+        [],
+      );
+      const byId = (id: string) => merged.find(row => row.id === id)!;
+
+      // The newer conversation still leads; the fork follows its own conversation
+      // rather than jumping over it.
+      expect(
+        groupMergedRows(merged, new Map([[byId("fork").key, byId("parent")]]))
+          .workspaces[0]!.rows.map(row => row.id),
+      ).toEqual(["other", "parent", "fork"]);
+    });
+
+    /**
+     * …and it takes that conversation's *section*, not one its own fields pick: the
+     * forks of a pinned conversation are pinned rows.
+     *
+     * The sections are drawn apart — pinned at the top, workspaces below — so a
+     * fork that kept its own workspace filed itself under a heading far from the
+     * `+` the user had just pressed on its parent.
+     */
+    it("files a fork in its conversation's section", () => {
+      const merged = rows(
+        [
+          thread({ id: "parent", mode: "workspace", workspaceId: "ws_1", pinned: true, updatedAt: 500 }),
+          thread({ id: "fork", mode: "workspace", workspaceId: "ws_1", pinned: false, parentThreadId: "parent", updatedAt: 900 }),
+          thread({ id: "chat", updatedAt: 100 }),
+        ],
+        [],
+      );
+      const byId = (id: string) => merged.find(row => row.id === id)!;
+
+      const grouped = groupMergedRows(merged, new Map([[byId("fork").key, byId("parent")]]));
+      expect(grouped.pinned.map(row => row.id)).toEqual(["parent", "fork"]);
+      // No heading for a workspace whose only conversation went with its parent:
+      // an empty group is not a group.
+      expect(grouped.workspaces).toEqual([]);
+      expect(grouped.chats.map(row => row.id)).toEqual(["chat"]);
     });
 
     /**

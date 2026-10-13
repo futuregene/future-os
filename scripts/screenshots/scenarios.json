@@ -1556,7 +1556,7 @@
         ]
       },
       "remote-tree": {
-        "note": "A conversation on another machine with a fork: the same indent and +/− toggle the local list draws, folded by default.",
+        "note": "A conversation on another machine with a fork: the same indent and +/− toggle the local list draws, folded by default — and the fork lands directly *under* the conversation it came from, which is where its own (newer) timestamp would not have put it.",
         "url": "http://localhost:5299/shot/?lang=zh",
         "steps": [
           {
@@ -1581,7 +1581,7 @@
             "wait": 1200
           },
           {
-            "eval": "(() => {\n  if (!document.body.innerText.includes('把森林图改成黑白版'))\n    throw new Error('unfolding did not reveal the fork');\n  const toggle = document.querySelector(\"button[aria-label='收起 重画森林图并核对置信区间 的子对话']\");\n  if (!toggle) throw new Error('the toggle does not offer to fold it again');\n  return 'unfolded';\n})()"
+            "eval": "(() => {\n  if (!document.body.innerText.includes('把森林图改成黑白版'))\n    throw new Error('unfolding did not reveal the fork');\n  const toggle = document.querySelector(\"button[aria-label='收起 重画森林图并核对置信区间 的子对话']\");\n  if (!toggle) throw new Error('the toggle does not offer to fold it again');\n  // Drawn *under* the conversation it came from: the row right after it, one\n  // level in. The fork's own last message is newer than its parent's, so a list\n  // that ranked rows by time put it above its parent — pressing `+` then looked\n  // like it revealed nothing, because the row had already been on screen.\n  const rows = [...document.querySelectorAll(\"div[class*='group/thread']\")];\n  const parent = toggle.closest(\"div[class*='group/thread']\");\n  const fork = rows.find(row => (row.innerText || '').includes('把森林图改成黑白版'));\n  if (!fork) throw new Error('the fork is not a row of the list');\n  if (rows.indexOf(fork) !== rows.indexOf(parent) + 1)\n    throw new Error('the fork is not directly under its conversation: row ' + rows.indexOf(fork) + ' against ' + rows.indexOf(parent));\n  const indent = el => Number.parseInt(getComputedStyle(el).paddingLeft, 10);\n  if (indent(fork) <= indent(parent))\n    throw new Error('the fork is not indented under it: ' + indent(fork) + ' against ' + indent(parent));\n  return 'unfolded, fork under its conversation';\n})()"
           },
           {
             "shot": "d-remote-tree-open.png"
