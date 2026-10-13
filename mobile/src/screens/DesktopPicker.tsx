@@ -16,19 +16,21 @@ import { colors, radius, spacing } from "../theme/tokens";
  * either way. An offline desktop stays selectable: its rows are simply absent,
  * and disabling the entry would leave no way to see that it is offline rather
  * than removed.
+ *
+ * Which desktop the phone is actually connected to is deliberately not repeated
+ * on the row: the header's status dot already answers that, and a label on the
+ * one connected row made it look like a different kind of row than the rest.
  */
 export function DesktopPicker({
   filter,
   onChange,
   onManage,
   desktops,
-  activeDesktopId,
 }: {
   filter: DesktopFilter;
   onChange: (filter: DesktopFilter) => void;
   onManage: () => void;
   desktops: PairedDesktop[];
-  activeDesktopId: string | null;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -92,9 +94,6 @@ export function DesktopPicker({
                   <Text style={[styles.optionLabel, isSelected && styles.optionSelected]}>
                     {iconGlyph(desktop.icon)} {label(desktop)}
                   </Text>
-                  {desktop.desktopId === activeDesktopId
-                    ? <Text style={styles.badge}>{t("desktops.filterConnected")}</Text>
-                    : null}
                   {isSelected ? <Check color={colors.accent} size={16} /> : null}
                 </Pressable>
               );
@@ -144,6 +143,5 @@ const styles = StyleSheet.create({
   },
   optionLabel: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 15 },
   optionSelected: { color: colors.accent, fontWeight: "600" },
-  badge: { color: colors.inkMuted, fontSize: 12 },
   manage: { flex: 1, color: colors.accent, fontSize: 15 },
 });

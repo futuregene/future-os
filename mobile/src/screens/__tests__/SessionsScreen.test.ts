@@ -141,6 +141,21 @@ test("the picker offers every paired desktop plus the merged option", () => {
     .toEqual({ kind: "desktop", desktopId: "desktop_2" });
 });
 
+test("a picker row is the desktop's name and nothing else", () => {
+  act(() => button("desktops.pickerLabel").props.onPress());
+  // Host nodes only: a composite and its host both carry the row's props.
+  const rows = tree.root.findAll(node =>
+    typeof node.type === "string" &&
+    node.props.accessibilityRole === "button" &&
+    node.props.accessibilityState?.selected !== undefined);
+  const labels = rows.map(row =>
+    row.findAllByType(Text).flatMap(text => text.props.children as string[]).join(""));
+  // `desktop_1` is the one this phone is paired with, and the header's status dot
+  // already says whether the phone is connected to it — a "Connected" label on
+  // that one row repeats the dot and makes the spare row look second-class.
+  expect(labels).toEqual(["desktops.filterAll", "🖥️ A very long desktop name", "🖥️ desktop_2"]);
+});
+
 test("the status dot answers for every machine, and reconnect reaches them all", () => {
   // The merged list holds several machines, so the dot's own answer is whether
   // all of them are up — not the state of whichever one is active.
