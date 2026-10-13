@@ -54,7 +54,6 @@ export const resources = {
         iconLabel: "Icon",
         pickerLabel: "Desktops",
         filterAll: "All desktops",
-        filterConnected: "Connected",
         manage: "Manage paired desktops…",
         icons: {
           desktop: "Desktop",
@@ -985,7 +984,6 @@ export const resources = {
         iconLabel: "图标",
         pickerLabel: "桌面选择",
         filterAll: "全部桌面",
-        filterConnected: "已连接",
         manage: "管理已配对的桌面…",
         icons: {
           desktop: "台式机",
