@@ -1211,6 +1211,10 @@ export const remotePeers: MockPeer[] = [
       "provider_management_v1",
       "workspace_create_v1",
       "workspace_pinning_v1",
+      // The host's skills go in the client's `/` menu, which is the capability
+      // that decides whether they are asked for at all (the real host declares
+      // it; a host that did not would have a commands-only menu).
+      "skills_v1",
     ],
     agentAvailable: true,
   },

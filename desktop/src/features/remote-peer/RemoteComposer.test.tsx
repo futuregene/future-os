@@ -18,10 +18,13 @@ const prompt = vi.fn<(
 ) => Promise<{ sessionId: string; threadId: string }>>();
 const abort = vi.fn<(desktopId: string, sessionId: string) => Promise<unknown>>();
 const upload = vi.fn<(input: { desktopId: string; path: string }) => Promise<{ uploadId: string; name: string; contentHash: string }>>();
+const listSkills = vi.fn<(desktopId: string) => Promise<unknown[]>>();
 vi.mock("./remotePeerClient", () => ({
   promptRemoteConversation: (...args: Parameters<typeof prompt>) => prompt(...args),
   abortRemoteRun: (...args: Parameters<typeof abort>) => abort(...args),
   uploadRemoteFile: (...args: Parameters<typeof upload>) => upload(...args),
+  // The `/` menu's skills, which are the host's own list.
+  listRemoteInstalledSkills: (...args: Parameters<typeof listSkills>) => listSkills(...args),
   // The control row carries the host's own approval mode, which the composer
   // reads on mount: a host that reports a mode shows the menu, and one that
   // cannot is a host the composer draws the other controls without.
@@ -56,7 +59,9 @@ const peer = {
   connected: true,
   desktopId: "desktop_a",
   error: null,
-  features: [],
+  // The capability a current host declares, which is what puts its skills in the
+  // `/` menu; the tests that are about the menu without them pass their own.
+  features: ["skills_v1"],
   icon: "laptop",
   name: "Studio iMac",
   pairId: "pair_1",
@@ -67,6 +72,7 @@ async function mount(props: {
   onCompact?: () => void;
   onCreated?: (sessionId: string) => void;
   onSent?: () => void;
+  peer?: typeof peer;
   sessionId?: string;
   streaming?: boolean;
   workspaceId?: string | null;
@@ -84,7 +90,7 @@ async function mount(props: {
         onCompact={props.onCompact}
         onCreated={onCreated}
         onSent={onSent}
-        peer={peer}
+        peer={props.peer ?? peer}
         sessionId={props.sessionId ?? "sess_1"}
         streaming={props.streaming}
         workspaceId={props.workspaceId ?? null}
@@ -138,6 +144,7 @@ beforeEach(() => {
   nativePaths.mockReset().mockResolvedValue([]);
   saveFile.mockResolvedValue({ path: "/tmp/pasted" });
 
+  listSkills.mockReset().mockResolvedValue([]);
   prompt.mockReset().mockResolvedValue({ sessionId: "sess_1", threadId: "thread_1" });
   abort.mockReset().mockResolvedValue(undefined);
   upload.mockReset().mockResolvedValue({ uploadId: "upload_1", name: "notes.txt", contentHash: "abc" });
@@ -280,20 +287,6 @@ it("ignores a second stop while one is in flight", async () => {
     release?.();
   });
   await settle();
-  await view.unmount();
-});
-
-/** The composer states where the prompt runs, using the host's local name. */
-/**
- * The machine is named where the message is written, and only there.
- *
- * It used to be in two places — a line under the conversation title *and* the
- * control row — which reads as two machines. The placeholder is where this app
- * tells the reader what the box is for, so the host's name goes there.
- */
-it("names the machine the prompt runs on, in the box itself", async () => {
-  const view = await mount();
-  expect(view.input.placeholder).toContain("Studio iMac");
   await view.unmount();
 });
 
@@ -748,7 +741,7 @@ it("moves the highlight with the arrow keys", async () => {
 /** No command to offer means no menu, and Enter sends as usual. */
 it("sends normally when the host would not accept the command", async () => {
   const onCompact = vi.fn();
-  const view = await mount({ canCompact: false, onCompact });
+  const view = await mount({ canCompact: false, onCompact, peer: { ...peer, features: [] } });
 
   await act(async () => view.type("/comp"));
   expect([...view.container.querySelectorAll("[role='option']")]).toHaveLength(0);
@@ -758,6 +751,117 @@ it("sends normally when the host would not accept the command", async () => {
   expect(onCompact).not.toHaveBeenCalled();
   expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "/comp", [], null);
   await view.unmount();
+});
+
+// ── the `/` menu's skills ───────────────────────────────────────────────────
+
+const hostSkill = {
+  id: "future-peer-review",
+  name: "future-peer-review",
+  nameZh: "同行评审",
+  description: "Review manuscripts and proposals.",
+  descriptionZh: "评审稿件与基金申请书",
+  version: "1.1.0",
+};
+
+/**
+ * The host's skills are in the `/` menu, listed by the name the host resolves.
+ *
+ * This is the half the local composer and the phone both have: a skill is used by
+ * naming it, so a user who has to remember the name has no menu at all. Read from
+ * the host while the menu is open — the list belongs to that machine, and a skill
+ * installed there a minute ago belongs in it now.
+ */
+it("offers the host's skills, and leaves the chosen one in the draft", async () => {
+  listSkills.mockResolvedValue([hostSkill]);
+  const view = await mount({ canCompact: true });
+
+  await act(async () => view.type("/peer"));
+  await settle();
+
+  expect(listSkills).toHaveBeenCalledWith("desktop_a");
+  const row = [...view.container.querySelectorAll<HTMLButtonElement>("[role='option']")]
+    .find(node => node.textContent?.includes("/future-peer-review"));
+  expect(row).toBeDefined();
+  // The displayed description follows this app's language; the name does not,
+  // because the host resolves the name.
+  expect(row!.textContent).toContain("Review manuscripts and proposals.");
+
+  await act(async () => row!.click());
+  // The word the menu was opened by is replaced by the skill, ready for the
+  // message that follows it — and nothing is sent.
+  expect(view.input.value).toBe("/future-peer-review ");
+  expect(prompt).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+/** Enter chooses the highlighted skill rather than sending the draft. */
+it("chooses a skill with Enter while the menu is open", async () => {
+  listSkills.mockResolvedValue([hostSkill]);
+  const view = await mount({ canCompact: false });
+
+  await act(async () => view.type("/future-peer"));
+  await settle();
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+  });
+
+  expect(view.input.value).toBe("/future-peer-review ");
+  expect(prompt).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+/**
+ * A host that does not announce `skills_v1` is never asked for its skills, and
+ * its `/` menu stays what it was: the commands it can accept.
+ */
+it("does not ask a host that cannot report its skills", async () => {
+  const view = await mount({ canCompact: true, peer: { ...peer, features: [] } });
+
+  await act(async () => view.type("/"));
+  await settle();
+
+  expect(listSkills).not.toHaveBeenCalled();
+  expect(view.container.textContent).toContain("Compact context");
+  await view.unmount();
+});
+
+/**
+ * A host that refuses the read leaves the menu with the commands rather than
+ * failing the composer: the user never asked to see a list, so there is nothing
+ * to report to them.
+ */
+it("keeps the menu working when the host will not list its skills", async () => {
+  listSkills.mockRejectedValue(new Error("peer_not_connected"));
+  const view = await mount({ canCompact: true });
+
+  await act(async () => view.type("/"));
+  await settle();
+
+  expect(view.container.textContent).toContain("Compact context");
+  expect(view.text()).not.toContain("peer_not_connected");
+  await view.unmount();
+});
+
+/**
+ * The placeholder says what `/` offers, as this app's own two do.
+ *
+ * The local composer distinguishes a conversation ("@ to add files, / for tools
+ * and skills") from a new one ("/ to use skills"), and a remote conversation is
+ * the same distinction: with something to compact the menu holds a command and
+ * the skills, and a draft holds only the skills. What it must never do is name
+ * the machine — this app's own composers describe the task, and the machine a
+ * conversation is on is the rail's business.
+ */
+it("describes the task, naming the `/` menu and not the machine", async () => {
+  const conversation = await mount({ canCompact: true });
+  expect(conversation.input.placeholder).toBe("Describe the task, / for tools and skills");
+  expect(conversation.input.placeholder).not.toContain("Studio iMac");
+  await conversation.unmount();
+
+  const draft = await mount({ canCompact: false });
+  expect(draft.input.placeholder).toBe("Describe the task, / to use skills");
+  await draft.unmount();
 });
 
 /** A draft started from a workspace heading names it to the host. */

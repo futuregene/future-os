@@ -375,9 +375,15 @@ real bug, found by rendering the page (the phone's models page reads
 the local header (48px; panel toggle and title at the left; this conversation's own
 actions at the right — settings, files, compact), and the composer is the same
 floating panel this app's own composer is (bordered, rounded, shadowed; attach at
-the bottom left, send at the bottom right). The one thing missing is the terminal:
-a remote conversation has no local shell to open. Aligning the right-hand panel
-(files only) is not done yet.
+the bottom left, send at the bottom right). The `/` menu is the local menu's two
+groups, both read from the host: its commands (compacting) and the skills it has
+installed, each named with what it does. The placeholder says the same thing the
+local one does minus the `@` — `描述任务，按 / 使用工具或技能`, or `…按 / 使用技能`
+for a draft, where nothing can be compacted yet — and never names the machine:
+which computer a conversation is on is the rail's business, and the phone's own
+composer does not say either. The one thing missing is the terminal: a remote
+conversation has no local shell to open. Aligning the right-hand panel (files
+only) is not done yet.
 
 **Capability alignment with mobile.** Every command the phone can use on a
 remote conversation now has a desktop entry point (reading and writing
