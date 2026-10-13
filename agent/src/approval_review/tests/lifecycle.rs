@@ -1,5 +1,144 @@
 use super::*;
 
+#[cfg(target_os = "macos")]
+struct FilePermissionReviewer {
+    approved: bool,
+    inputs: Arc<Mutex<Vec<Value>>>,
+}
+
+#[cfg(target_os = "macos")]
+#[async_trait::async_trait]
+impl ApprovalReviewerClient for FilePermissionReviewer {
+    async fn assess(&self, state: Value, _: &str) -> Result<ProviderAssessment, &'static str> {
+        self.inputs.lock().push(state);
+        Ok(if self.approved {
+            assessment("low", "high", "routine_bounded_action")
+        } else {
+            assessment("high", "low", "authorization_scope_mismatch")
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(clippy::await_holding_lock)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn automatic_file_permissions_bind_receipts_and_never_create_human_requests() {
+    let _home_guard = crate::test_support::home_env_lock();
+    for approved in [true, false] {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        let target = directory.path().join("report.txt");
+        std::fs::create_dir_all(workspace.join(".future")).unwrap();
+        std::fs::write(&target, "old").unwrap();
+        std::fs::write(
+            workspace.join(".future/approval_rule.json"),
+            json!({
+                "rules":[{"path":target,"access":"write","action":"ask"}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let cwd = workspace.to_string_lossy().into_owned();
+        let sandbox = Arc::new(crate::sandbox::ResolvedSandbox::resolve(
+            &crate::sandbox::SandboxPolicy::from_mode("auto"),
+            &cwd,
+        ));
+        if !sandbox.wraps_shell() {
+            return;
+        }
+        let command = format!(
+            "printf new > '{}'; echo executed >> executions",
+            target.display()
+        );
+        let arguments = json!({"command":command, "additional_permissions":{"write":[{
+            "path":target, "scope":"file", "reason":"Save the remaining report requested by the user"
+        }]}});
+        let inputs = Arc::new(Mutex::new(Vec::new()));
+        let (mut context, _) = context(true, false);
+        context.provider = Arc::new(FilePermissionReviewer {
+            approved,
+            inputs: inputs.clone(),
+        });
+        let gate = crate::rpc::ApprovalGate::default().with_model_reviewer(context);
+        let broadcaster = crate::rpc::SseBroadcaster::new();
+        let mut events = broadcaster.subscribe();
+        crate::tools::with_tool_scope(
+            crate::tools::ScopeOptions {
+                workspace: cwd.clone(),
+                permission_level: "all".into(),
+                interrupt_flag: Arc::new(AtomicBool::new(false)),
+                sandbox: sandbox.clone(),
+                escalation: None,
+                on_sandboxed: None,
+            },
+            async {
+                let blocked = gate.request(
+                    &broadcaster,
+                    "s",
+                    &cwd,
+                    "shell",
+                    "remaining-call",
+                    &arguments,
+                    &sandbox,
+                );
+                if approved {
+                    assert!(blocked.is_none());
+                    let output = crate::tools::with_tool_call_id(
+                        "remaining-call".into(),
+                        crate::tools::shell::execute(arguments.clone()),
+                    )
+                    .await
+                    .unwrap();
+                    assert!(output.contains("[exit: 0]"), "{output}");
+                    // The same arguments cannot reuse the receipt for another call.
+                    let output = crate::tools::with_tool_call_id(
+                        "later-call".into(),
+                        crate::tools::shell::execute(arguments.clone()),
+                    )
+                    .await
+                    .unwrap_err();
+                    assert!(output
+                        .to_string()
+                        .contains("missing an exact approval receipt"));
+                } else {
+                    assert!(blocked.unwrap().is_error);
+                }
+            },
+        )
+        .await;
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            if approved { "new" } else { "old" }
+        );
+        if approved {
+            assert_eq!(
+                std::fs::read_to_string(workspace.join("executions"))
+                    .unwrap()
+                    .lines()
+                    .count(),
+                1
+            );
+        } else {
+            assert!(!workspace.join("executions").exists());
+        }
+        assert!(gate.pending_for_session("s").is_empty());
+        let inputs = inputs.lock();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0]["host_facts"]["targets"][0]["access"], "write");
+        assert_eq!(inputs[0]["host_facts"]["targets"][0]["scope"], "file");
+        assert_eq!(
+            inputs[0]["host_facts"]["sandbox_boundary"]["inside_sandbox"],
+            true
+        );
+        assert!(inputs[0]["untrusted_context"]
+            .to_string()
+            .contains("Save the remaining report"));
+        while let Ok(event) = events.try_recv() {
+            assert_eq!(event.event_type, "approval_assessment");
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn preparation_deadline_exhaustion_does_not_call_the_provider() {
     let (ctx, calls) = context(true, false);

@@ -19,7 +19,7 @@ export interface ApprovalSaveSuggestion {
 export interface ApprovalAction {
   tool: string;
   category: string;
-  behavior?: "manage_files";
+  behavior?: "manage_files" | "access_files";
   summary?: string;
   command?: string;
   paths?: string[];
@@ -30,7 +30,7 @@ export interface ApprovalAction {
   justification?: string;
   escalationTrigger?: "model_request" | "sandbox_failure";
   blockedPaths?: string[];
-  targets?: Array<{ path: string; scope: "file" | "subtree" }>;
+  targets?: Array<{ path: string; scope: "file" | "subtree"; access?: "read" | "write" }>;
   scope?: {
     cwd: string;
     insideWorkspace: boolean;
@@ -70,7 +70,8 @@ function isCapabilityTargetArray(
         isRecord(item) &&
         typeof item.path === "string" &&
         item.path.length > 0 &&
-        (item.scope === "file" || item.scope === "subtree"),
+        (item.scope === "file" || item.scope === "subtree") &&
+        (item.access === undefined || item.access === "read" || item.access === "write"),
     )
   );
 }
@@ -121,8 +122,16 @@ export function parseAction(payload: unknown): ApprovalAction | null {
   ) {
     return null;
   }
+  if (
+    parsed.category === "file_permissions" &&
+    (parsed.tool !== "shell" || parsed.behavior !== "access_files" || !capabilityTargets ||
+      typeof parsed.command !== "string" || parsed.command.trim().length === 0 ||
+      !capabilityTargets.every((target) => target.access === "read" || target.access === "write"))
+  ) {
+    return null;
+  }
   return {
-    behavior: parsed.behavior === "manage_files" ? parsed.behavior : undefined,
+    behavior: parsed.behavior === "manage_files" || parsed.behavior === "access_files" ? parsed.behavior : undefined,
     blockedPaths: isStringArray(parsed.blocked_paths)
       ? parsed.blocked_paths
       : undefined,

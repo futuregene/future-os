@@ -12,7 +12,7 @@
 | shell 读保护 | SBPL 路径规则 | 启动时已有目标的遮罩 | **不提供** |
 | shell 写保护 | SBPL 动态路径规则 | 只读 root + 可写/保护 mount | capability SID 写边界，受既有 ACL 与删除权限限制 |
 | 缺失保护目标 / 新 glob | 路径出现后仍按 profile 匹配 | 缺失目标省略；新目标仅结束检测 | 不存在对象无法附 ACE；glob 不强制 |
-| 额外授权 | 整命令出沙箱一次 | 整命令出沙箱一次 | 声明具体 write capability，批准后仍受限 |
+| 额外授权 | 单命令精确 read/write 授权，仍在沙箱 | 单命令精确 read/write 授权，仍在沙箱 | 声明具体 write capability，批准后仍受限 |
 | 网络 | 开放 | 开放，无 seccomp | 开放 |
 | 可用性检查 | `sandbox-exec` 存在检查 | PATH / 版本与参数 / 实际 namespace-mount probe | 实际 token/ACL/private desktop/shell/cleanup probe |
 | 进度 | v2 已实现，历史 smoke 通过 | L0–L4/L6 接入已实现；最新加固与 L5 发布矩阵待复验 | W1–W7 已接入，有原生及安装包历史 PASS；部分产品交互需逐项复验 |
@@ -106,23 +106,13 @@ Desktop 复用 `ApprovalPrompt`，手机使用原生卡片但共享可信语义�
 - 普通卡片不展示/编辑 raw glob、ACL、SID、backend、hash 或原始 JSON。可信 payload 无法解析或类型不匹配时不显示批准按钮。
 - 手机第一版仅拒绝/允许一次；不能把本地记忆决定冒充项目规则持久化。多目标整组决策，改变范围须新请求。
 
-### 4.1 主动与被动脱沙箱（macOS/Linux）
+### 4.1 单次文件授权与显式提权（macOS/Linux）
 
-| 触发 | payload trigger | 多语言 key | 中文标题 |
-|---|---|---|---|
-| 模型显式 `escalated: true` + justification | `model_request` | `approval.escalationRequestTitle` | 模型请求在沙箱外运行此命令 |
-| 沙箱命令失败、命中拒绝分类 | `sandbox_failure` | `approval.escalationRetryTitle` | 需要在沙箱外运行此命令 |
-| 历史请求缺失/未知 trigger | fallback | `approval.escalationTitle` | 在沙箱外运行此命令 |
+采用 on-request 流程：沙箱失败直接返回主模型，保留真实退出码、输出和已有副作用；不自动请求审批或重跑。模型先检查已完成效果，再提交剩余操作及所需 `additional_permissions`。
 
-批准的是**整条命令脱离 OS 沙箱执行一次**，不是只访问卡片路径；不改变全局 tier。拒绝则不执行该次脱沙箱命令。首次失败可能已有副作用，重跑前需核对结果。
+执行前声明 read/write 目标后，后端校验并冻结实际命令、规范化路径、文件/目录范围和规则快照。用户或既有审批审核器批准后，本次命令在带精确授权的沙箱内执行一次。卡片显示用途、命令、完整路径和每项读写/范围，仅允许一次或拒绝；不显示哈希、inode、规则摘要，也不提供持久规则按钮。
 
-模型提示默认先在沙箱内尝试，不凭猜测申请；仅在执行结果表明必要操作被沙箱阻止时请求批准，并尽量仅重试被阻止的操作。指导要求保留判断必要操作所需的错误，结合真实进程状态、输出及预期效果解释结果。预期错误允许容错，但不证明操作成功；命令组织和错误处理语法由模型选择。这是提示词约束，不是新的执行门禁：整体退出码为 0 仍不触发被动审批，也未新增成功退出后的权限错误提示。
-
-诊断路径仅为展示推断：提取 `Operation not permitted`、Linux `Permission denied`/`Read-only file system`/`Device or resource busy` 中的绝对路径，支持引号、空格、`program: line N: /path: error`；去重保序最多 5 项。不猜相对 cwd、不把 URL/helper 初始化错误当目标，不保证所有语言/程序报错可解析。主动申请没有失败输出时可以没有路径。展示解析不改变 escalation 判定或授权范围，也不扩展持久规则建议来源。
-
-Windows 不使用此整命令批准，详见 [路径 capability](WINDOWS.zh-CN.md#3-路径-capability-审批)。
-
-Linux 将 `Device or resource busy`（EBUSY）与其他权限错误一样作为被动审批的文本启发式，不以命令形式或成功解析路径为前提；私有完成报告仍须允许重试。这不是内核拒绝认证，普通设备忙也可能误触发审批，吞掉错误输出则可能漏判。见 [Linux 检测与重试](LINUX.zh-CN.md#34-检测报告与重试可信度)。
+显式 `escalated: true` + justification 仍保留兼容：批准的是整条命令在沙箱外执行一次，不与精确权限混用。失败诊断不生成授权；历史 `sandbox_failure` 卡片仍可回放，但执行器不再生成这种被动重试请求。任何批准都不证明旧脚本可安全重放。
 
 ### 4.2 协议与代码索引
 
@@ -147,11 +137,13 @@ v2 的文件规则、read 前置审批、Seatbelt 编译、敏感守卫、GUI �
 
 近期重点：平台当前版本原生复验、安全 review、文档承诺与执行器一致；Windows 与 Linux 各自验收清单见平台文档。明确暂不做命令前缀持久规则、网络审批/域名过滤、auto-review agent、通用 MCP/新工具沙盒规范、设置页完整 user 规则编辑器。手动只读白名单是免打扰机制，不是任意 shell 静态安全分析；批准后 `git push --force`、`npm publish` 等仍能执行。
 
-### 5.1 macOS/Linux 二期 execution_grants（未实现）
+### 5.1 macOS/Linux 单次 execution_grants
 
-将具体 read/write 路径、access、scope、command hash、request id 绑定到单次批准，重新编译**仍在 OS 沙箱中**的计划。不能简单复用 session allow：它低于 guards。候选优先级为 hard deny > 已批准 execution_grants > secret ask guards > session/workspace/user；只接收原判定 ask，任何 deny 和 layer 0 不可覆盖。
+`additional_permissions` 包含 read/write 数组，每项 `{path, scope, reason}`，合计最多 8 个 literal 目标。file 为已有普通文件，subtree 为已有目录及后代；创建文件声明已有父目录，若敏感 carveout 仍不能表达则使用已审批的 write/edit。禁止文件系统根和 home 根，无通配符。不支持的 OS 范围在审批前拒绝。
 
-Seatbelt 可添加临时 literal/subpath allow；Linux 需证明 mount/reopen 能表达同一范围。Windows 的 request capability 可提供协议经验，但不能照搬其不拒读/ACL deny-wins 限制。先冻结跨平台模型再修改 UI；整命令脱沙箱若保留应为显式高级选项。此项与 macOS 一起推进，不混入 Linux 一期。
+收据绑定工具调用 ID、命令哈希、cwd、规则摘要、规范化目标、access/scope 和目标 inode；执行前重新准备并匹配，一次消费。会话规则不被修改。只对原 ask 目标生成授权；已 allow 的父目录声明不能放开其敏感子项。所有显式 deny 保持高于 execution_grants，grants 高于 secret ask guards 和 session/workspace/user。
+
+macOS 使用 literal/subpath SBPL；Linux 复用窄路径 mount/reopen 编译和私有报告；保留读拒绝的写授权、mode-000 不可读目录内的子路径授权在审批前拒绝，改用已审批的原生文件工具。Windows 继续已有 write capability，不提供 shell read grant，也不承诺 ACL deny-wins 的 ask carveout 可重新开放。三平台失败都不自动重放，不提供任意脚本内部续跑或回滚保证。
 
 ## 6. 参考资料与历史检索
 
@@ -196,23 +188,16 @@ Node/Python 程序内部每个操作的状态，也没有“恰好执行一次�
 
 宿主先记录 `ShellResult` 再生成模型文本。结果包含命令、工作目录、总耗时、
 状态、可空退出码、已有正常查询语义、审批结果、说明和有序执行尝试。每次尝试
-记录真实状态、可空退出码、耗时、合并输出、截断及提权标志。获批重试后仍保留
-原始沙箱执行结果。`exited`、`launch_failed`、`execution_failed`、`timed_out`、
+记录真实状态、可空退出码、耗时、合并输出、截断及提权标志。新调用不覆盖原始结果；历史两次尝试仍可回放。`exited`、`launch_failed`、`execution_failed`、`timed_out`、
 `cancelled`、`not_started` 分别表示进程退出、启动失败、读取或等待异常、超时、
 取消及审批等原因导致进程未启动。无退出码不补造为 0，stdout 标记不能替代进程
 状态。裸 grep/test 等退出 1 保留现有正常查询语义，同时显示实际退出码。
 
 审批及平台限制保持现状：Jev 的三个数值 Choice 问题、审批矩阵、置信度阈值、
 四类有来源证据、调查预算、取消、上下文有效性及 Linux helper 校验不变。
-重试审批对应实际命令，失败尾部最多 2,000 字节。批准表示允许执行，不证明
-原命令可安全重放。自动重试可能重复该命令中已经完成的效果；无法安全重放时，
-模型应通过新调用只提交剩余必要操作。重试不会重放前面的独立调用，也不会批准
-尚未提交的调用。网络行为不变。
+新审批对应模型重新准备的实际操作。批准表示允许执行，不证明旧脚本可安全重放。模型需先检查部分完成情况，再只提交剩余必要操作。网络行为不变。
 
-输入限制为命令 65,536 字节、序列化参数 131,072 字节。执行预算 1–600 秒，
-默认 120 秒，从 shell handler 开始计时，执行后审批等待和重试共享剩余预算；
-执行前审批沿用原有生命周期，在预算开始前完成。剩余预算耗尽后不再启动重试
-进程。原始和重试尝试各预留最多 250,000 字节输出，使用有界缓冲读取管道。
+输入限制为命令 65,536 字节、序列化参数 131,072 字节。执行预算 1–600 秒，默认 120 秒，从 shell handler 开始计时；执行前审批沿用原有生命周期。每次调用只有一次进程尝试，最多保留 250,000 字节输出，不再共享被动审批和重试预算。
 结构化结果序列化上限为 1 MiB，JSON 转义超限时进一步缩减输出。模型摘要为
 输出预留最多 60,000 字节，状态不受输出截断影响，整体低于现有 100K 字节
 上下文上限。超时和取消保留已采集的部分输出。
@@ -264,6 +249,6 @@ RPC 提示词拼装层不再追加相冲突的 shell 文件写入全面禁令；
 保留在结构化审计记录。这些是模型指导规则，不是对生成回复的确定性过滤。
 
 回归测试覆盖独立操作与验证、复杂脚本原有语义、伪造 stdout 状态、可空退出码、
-超时、取消、输出预算、审批拒绝与上下文失效、重试部分效果重复，以及类型化、
+超时、取消、输出预算、审批拒绝与上下文失效、失败不重放、单次授权隔离，以及类型化、
 持久化、lean、实时和历史结果。本地只编译测试目标，测试运行及跨平台原生验证
 交给 CI。

@@ -225,7 +225,7 @@ async fn already_bounded_output_keeps_truncation_notice_without_inventing_total(
 #[cfg(target_os = "macos")]
 #[allow(clippy::await_holding_lock)] // Serialize process-global HOME during sandbox policy resolution.
 #[tokio::test]
-async fn approval_retains_attempts_and_partial_effects_without_replaying_prior_call() {
+async fn sandbox_failure_returns_partial_effects_without_approval_or_replay() {
     let _home_guard = crate::test_support::home_env_lock();
     let dir = tempfile::tempdir().unwrap();
     let target = dirs::home_dir().unwrap().join(format!(
@@ -270,12 +270,13 @@ async fn approval_retains_attempts_and_partial_effects_without_replaying_prior_c
         },
     )
     .await;
-    assert_eq!(seen.lock().len(), 1);
-    assert_eq!(facts.attempts.len(), 2);
+    assert!(seen.lock().is_empty());
+    assert_eq!(facts.attempts.len(), 1);
     assert_ne!(facts.attempts[0].exit_code, Some(0));
-    assert_eq!(facts.attempts[1].exit_code, Some(0));
-    assert!(facts.attempts[1].escalated);
-    assert!(!facts.is_error);
+    assert!(!facts.attempts[0].escalated);
+    assert!(facts.is_error);
+    assert!(facts.approval.is_none());
+    assert!(!target.exists());
     assert_eq!(
         std::fs::read_to_string(dir.path().join("prior"))
             .unwrap()
@@ -288,15 +289,14 @@ async fn approval_retains_attempts_and_partial_effects_without_replaying_prior_c
             .unwrap()
             .lines()
             .count(),
-        2
+        1
     );
-    std::fs::remove_file(target).unwrap();
 }
 
 #[cfg(target_os = "macos")]
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
-async fn post_hoc_denial_cancellation_and_context_end_preserve_original_attempt() {
+async fn failure_does_not_consult_any_approval_outcome() {
     let _home_guard = crate::test_support::home_env_lock();
     for (decision, approval) in [
         (EscalationDecision::Denied("no".into()), "denied"),
@@ -336,7 +336,10 @@ async fn post_hoc_denial_cancellation_and_context_end_preserve_original_attempt(
         )
         .await;
         let facts = facts.unwrap();
-        assert_eq!(facts.approval.as_deref(), Some(approval));
+        assert!(
+            facts.approval.is_none(),
+            "unused approval decision: {approval}"
+        );
         assert_eq!(facts.attempts.len(), 1);
         assert_ne!(facts.attempts[0].exit_code, Some(0));
         assert!(facts.is_error);
@@ -397,7 +400,7 @@ async fn normal_query_returns_keep_host_semantics_and_actual_exit_code() {
 #[cfg(target_os = "macos")]
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
-async fn approval_cannot_restart_process_after_execution_budget_expires() {
+async fn failure_does_not_enter_a_slow_approval_hook_or_restart() {
     let _home_guard = crate::test_support::home_env_lock();
     let dir = tempfile::tempdir().unwrap();
     let target = dirs::home_dir().unwrap().join(format!(
@@ -429,12 +432,10 @@ async fn approval_cannot_restart_process_after_execution_budget_expires() {
     )
     .await;
     let facts = facts.unwrap();
-    assert_eq!(facts.status, ShellStatus::TimedOut);
-    assert_eq!(facts.exit_code, None);
-    assert_eq!(facts.approval.as_deref(), Some("approved"));
-    assert_eq!(facts.attempts.len(), 2);
-    assert_ne!(facts.attempts[0].exit_code, Some(0));
-    assert_eq!(facts.attempts[1].exit_code, None);
+    assert_eq!(facts.status, ShellStatus::Exited);
+    assert_ne!(facts.exit_code, Some(0));
+    assert!(facts.approval.is_none());
+    assert_eq!(facts.attempts.len(), 1);
     assert!(!target.exists());
     assert_eq!(
         std::fs::read_to_string(dir.path().join("partial"))
@@ -443,4 +444,100 @@ async fn approval_cannot_restart_process_after_execution_budget_expires() {
             .count(),
         1
     );
+}
+
+#[cfg(not(windows))]
+#[tokio::test]
+async fn file_permission_receipts_are_bound_to_invocation_and_consumed_once() {
+    use crate::sandbox::file_request::{prepare, AdditionalPermissions};
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().join("workspace");
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::create_dir_all(home.join(".ssh")).unwrap();
+    let key = workspace.join(".env");
+    std::fs::write(&key, "secret").unwrap();
+    let rules = crate::sandbox::rules::RuleSet::resolve_isolated_with_home(&workspace, &home);
+    let sandbox = ResolvedSandbox::with_rules_for_test(rules);
+    let permissions: AdditionalPermissions = serde_json::from_value(
+        json!({"read": [{"path": key, "scope": "file", "reason": "Read task configuration"}]}),
+    )
+    .unwrap();
+    let prepared = prepare(&sandbox, "cat key", &permissions).unwrap();
+    let receipt = prepared.approved_receipt("request-1".into(), "tool-1".into());
+    with_tool_scope(
+        ScopeOptions {
+            workspace: workspace.to_string_lossy().into_owned(),
+            permission_level: "all".into(),
+            interrupt_flag: Arc::new(AtomicBool::new(false)),
+            sandbox: Arc::new(sandbox),
+            escalation: None,
+            on_sandboxed: None,
+        },
+        async {
+            approve_file_permissions(receipt);
+            with_tool_call_id("tool-2".into(), async {
+                assert!(!consume_file_permissions(&prepared));
+            })
+            .await;
+            with_tool_call_id("tool-1".into(), async {
+                assert!(consume_file_permissions(&prepared));
+                assert!(!consume_file_permissions(&prepared));
+            })
+            .await;
+        },
+    )
+    .await;
+}
+
+#[cfg(target_os = "macos")]
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn recovery_executes_only_remaining_work_inside_sandbox() {
+    use crate::sandbox::file_request::{prepare, AdditionalPermissions};
+    let _home_guard = crate::test_support::home_env_lock();
+    let dir = tempfile::tempdir().unwrap();
+    let protected = dir.path().join("protected");
+    std::fs::create_dir(&protected).unwrap();
+    let file = protected.join("report.txt");
+    std::fs::write(&file, "old").unwrap();
+    let workspace = dir.path().join("workspace");
+    std::fs::create_dir_all(workspace.join(".future")).unwrap();
+    std::fs::write(
+        workspace.join(".future/approval_rule.json"),
+        json!({"rules": [{"path": protected, "access": "write", "action": "ask"}]}).to_string(),
+    )
+    .unwrap();
+    let sandbox = ResolvedSandbox::resolve(
+        &crate::sandbox::SandboxPolicy {
+            tier: crate::sandbox::SandboxTier::Sandbox,
+            model_reviewer: false,
+        },
+        &workspace.to_string_lossy(),
+    );
+    if !sandbox.wraps_shell() {
+        return;
+    }
+    let first = format!("echo partial >> partial; printf new > '{}'", file.display());
+    let remaining = format!("printf new > '{}'", file.display());
+    let permissions: AdditionalPermissions = serde_json::from_value(json!({"write": [{"path": file, "scope": "file", "reason": "Save the already prepared report"}]})).unwrap();
+    with_tool_scope(ScopeOptions {
+        workspace: workspace.to_string_lossy().into_owned(), permission_level: "all".into(),
+        interrupt_flag: Arc::new(AtomicBool::new(false)), sandbox: Arc::new(sandbox.clone()),
+        escalation: Some(Arc::new(|_| panic!("failed script must not request replay approval"))), on_sandboxed: None,
+    }, async {
+        let (_, facts) = capture(execute(json!({"command": first}))).await;
+        let facts = facts.unwrap();
+        assert!(facts.is_error);
+        assert_eq!(facts.attempts.len(), 1);
+        let prepared = prepare(&sandbox, &remaining, &permissions).unwrap();
+        approve_file_permissions(prepared.approved_receipt("request-remaining".into(), "remaining".into()));
+        let (result, facts) = with_tool_call_id("remaining".into(), capture(execute(json!({"command": remaining, "additional_permissions": {"write": [{"path": file, "scope": "file", "reason": "Save the already prepared report"}]}})))).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(facts.unwrap().attempts.len(), 1);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(workspace.join("partial")).unwrap().lines().count(), 1);
+        let (_, later) = capture(execute(json!({"command": format!("printf later > '{}'", file.display())}))).await;
+        assert!(later.unwrap().is_error, "the grant must not persist into another call");
+    }).await;
 }

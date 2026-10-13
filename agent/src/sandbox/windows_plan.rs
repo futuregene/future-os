@@ -14,6 +14,8 @@
 //!     surfaced as structured unsupported entries and remain enforced only by
 //!     the in-process tool layer.
 
+#![cfg_attr(not(any(windows, test)), allow(dead_code))]
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -139,6 +141,9 @@ pub fn build_plan(sandbox: &ResolvedSandbox) -> WindowsSandboxPlan {
 
 fn matcher(matcher: MatcherSbpl<'_>) -> WindowsRuleMatcher {
     match matcher {
+        MatcherSbpl::Literal(path) => {
+            WindowsRuleMatcher::Regex(format!("^{}$", regex::escape(&path.to_string_lossy())))
+        }
         MatcherSbpl::Subtree(path) => WindowsRuleMatcher::Subtree(path.to_path_buf()),
         MatcherSbpl::Regex(regex) => WindowsRuleMatcher::Regex(regex.to_owned()),
     }

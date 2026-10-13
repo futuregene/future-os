@@ -694,3 +694,44 @@ it("keeps the caret's own Escape in a text field", () => {
   expect(decision).not.toHaveBeenCalled();
   textarea.remove();
 });
+
+it("shows precise file access with complete paths, purpose, scope and command", async () => {
+  const decision = render(approval({
+    actionPayload: JSON.stringify({
+      behavior: "access_files",
+      category: "file_permissions",
+      command: "copy already generated report",
+      justification: "Save the report without generating it again",
+      targets: [
+        { access: "read", path: "/data/config.env", scope: "file" },
+        { access: "write", path: "/backup/reports", scope: "subtree" },
+      ],
+      tool: "shell",
+    }),
+    kind: "file_permissions",
+    saveSuggestion: null,
+  }));
+  expect(container.querySelector("h2")?.textContent).toContain("Allow file access");
+  for (const text of ["/data/config.env", "/backup/reports", "Read", "Write", "Single file", "Directory and descendants", "Save the report without generating it again"]) {
+    expect(container.textContent).toContain(text);
+  }
+  expect(container.querySelector("pre")?.textContent).toContain("copy already generated report");
+  expect(button("Allow in this workspace")).toBeUndefined();
+  await click(button("Allow once"));
+  expect(decision).toHaveBeenCalledTimes(1);
+});
+
+it("does not approve a precise file request with an unspecified access type", () => {
+  render(approval({
+    actionPayload: JSON.stringify({
+      behavior: "access_files",
+      category: "file_permissions",
+      command: "copy report",
+      targets: [{ path: "/backup/reports", scope: "subtree" }],
+      tool: "shell",
+    }),
+    kind: "file_permissions",
+  }));
+  expect(button("Allow once")!.disabled).toBe(true);
+  expect(button("Deny")!.disabled).toBe(false);
+});

@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+fn file_permission_reasons_reach_review_as_redacted_model_claims() {
+    let (ctx, _) = context(true, false);
+    for key in ["additional_permissions", "additionalPermissions"] {
+        let mut args = json!({"command":"copy report"});
+        args[key] = json!({
+            "read":[{"path":"/inputs/config", "scope":"file", "reason":"Read report settings token=private-value"}],
+            "write":[{"path":"/reports", "scope":"subtree", "reason":"Save the report requested by the user"}]
+        });
+        let input = ctx
+            .evidence
+            .lock()
+            .prepare(
+                &ctx.user_request,
+                &json!({"tool_call_id":"remaining-call"}),
+                &args,
+            )
+            .unwrap();
+        let claims = input.state["untrusted_context"].as_array().unwrap();
+        assert_eq!(claims.len(), 2);
+        assert!(claims
+            .iter()
+            .all(|record| record["source_kind"] == "assistant_justification"
+                && record["tool_call_id"] == "remaining-call"));
+        let read: Value = serde_json::from_str(claims[0]["text"].as_str().unwrap()).unwrap();
+        let write: Value = serde_json::from_str(claims[1]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(read["access"], "read");
+        assert_eq!(write["path"], "/reports");
+        assert!(write["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Save the report"));
+        assert!(!input.state.to_string().contains("private-value"));
+        assert!(!input.state["trusted_context"]
+            .to_string()
+            .contains("Save the report"));
+        assert!(!input.state["host_facts"]
+            .to_string()
+            .contains("Save the report"));
+    }
+}
+
+#[test]
 fn node_permission_failure_summary_keeps_category_without_raw_output() {
     let (ctx, _) = context(true, false);
     let input = ctx.evidence.lock().prepare(

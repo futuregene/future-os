@@ -5,8 +5,11 @@ use escalation::{
 };
 use shape::{
     approval_shape, command_summary, normalize_requested_action, shell_auto_allow,
-    shell_command_shape, windows_capability_shape,
+    shell_command_shape,
 };
+
+#[cfg(windows)]
+use shape::windows_capability_shape;
 
 use parking_lot::Mutex;
 use std::{
@@ -17,6 +20,7 @@ use std::{
 
 use super::{SseBroadcaster, SseEvent};
 use crate::sandbox::rules::{Decision, Op};
+#[cfg(windows)]
 use crate::sandbox::windows_request::AdditionalPermissions;
 use crate::sandbox::{paths, EscalationDecision, EscalationRequest, ResolvedSandbox};
 
@@ -121,10 +125,26 @@ impl ApprovalGate {
             return None;
         }
         // shell. Sandbox tier wraps it in Seatbelt (no pre-approval; boundary
-        // hits surface via escalation). Manual tier gates it with a read-only
+        // failures return to the model). Manual tier gates it with a read-only
         // whitelist (Option B): known-safe commands auto-run, everything else
         // asks. shell approvals are allow-once only (no persisted command rule).
         if tool_name == "shell" {
+            #[cfg(not(windows))]
+            if let Some(raw_permissions) = arguments
+                .get("additional_permissions")
+                .or_else(|| arguments.get("additionalPermissions"))
+                .filter(|value| !value.is_null())
+            {
+                return self.request_file_permissions(
+                    broadcaster,
+                    session_id,
+                    tool_id,
+                    arguments,
+                    sandbox,
+                    raw_permissions,
+                );
+            }
+            #[cfg(windows)]
             if let Some(raw_permissions) = arguments
                 .get("additional_permissions")
                 .or_else(|| arguments.get("additionalPermissions"))
@@ -274,6 +294,90 @@ impl ApprovalGate {
         }
     }
 
+    #[cfg(not(windows))]
+    fn request_file_permissions(
+        &self,
+        broadcaster: &SseBroadcaster,
+        session_id: &str,
+        tool_id: &str,
+        arguments: &serde_json::Value,
+        sandbox: &ResolvedSandbox,
+        raw: &serde_json::Value,
+    ) -> Option<crate::types::ToolCallResult> {
+        let command = arguments
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let prepared =
+            serde_json::from_value::<crate::sandbox::file_request::AdditionalPermissions>(
+                raw.clone(),
+            )
+            .map_err(anyhow::Error::from)
+            .and_then(|permissions| {
+                crate::sandbox::file_request::prepare(sandbox, command, &permissions)
+            });
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return Some(crate::types::ToolCallResult {
+                    result: format!(
+                        "Tool call `shell` has invalid additional_permissions: {error}"
+                    ),
+                    is_error: true,
+                })
+            }
+        };
+        if arguments
+            .get("escalated")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            return Some(crate::types::ToolCallResult {
+                result: "additional_permissions cannot be combined with escalated".into(),
+                is_error: true,
+            });
+        }
+        if !prepared.needs_approval() {
+            return None;
+        }
+        let shape = shape::file_permissions_shape(command, &prepared, arguments);
+        let outcome = self.resolve_approval(
+            broadcaster,
+            session_id,
+            tool_id,
+            "shell",
+            &shape,
+            normalize_requested_action(arguments),
+        );
+        match outcome {
+            ApprovalOutcome::Approved(request_id) => {
+                crate::tools::shell::record_gate_outcome("approved");
+                crate::tools::approve_file_permissions(
+                    prepared.approved_receipt(request_id, tool_id.into()),
+                );
+                None
+            }
+            ApprovalOutcome::Rejected(note) => {
+                crate::tools::shell::record_gate_outcome("denied");
+                Some(crate::types::ToolCallResult {
+                    result: format!(
+                        "File permission request was rejected by {}: {note}",
+                        self.rejection_actor()
+                    ),
+                    is_error: true,
+                })
+            }
+            ApprovalOutcome::Cancelled(_) => {
+                crate::tools::shell::record_gate_outcome("cancelled");
+                Some(crate::types::ToolCallResult {
+                    result: "File permission approval ended; command was not started.".into(),
+                    is_error: true,
+                })
+            }
+        }
+    }
+
+    #[cfg(windows)]
     fn request_windows_capability(
         &self,
         broadcaster: &SseBroadcaster,
@@ -368,9 +472,8 @@ impl ApprovalGate {
         }
     }
 
-    /// Post-hoc approval for running a shell command outside the sandbox
-    /// (docs/internals/desktop/SANDBOX/COMMON.md). Approval means the single re-run happens
-    /// unsandboxed — "this exact command, once".
+    /// Pre-execution approval for an explicit model request to run outside the sandbox.
+    /// Failure diagnostics never invoke this channel; approval covers this command once.
     pub fn request_escalation(
         &self,
         broadcaster: &SseBroadcaster,

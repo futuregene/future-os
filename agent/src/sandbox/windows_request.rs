@@ -5,6 +5,8 @@
 //! produces trusted user semantics consumed by the approval flow and bound to
 //! the exact receipt passed into the Windows process driver.
 
+#![cfg_attr(not(any(windows, test)), allow(dead_code))]
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -20,12 +22,14 @@ pub const MAX_WRITE_TARGETS: usize = 8;
 const MAX_REASON_CHARS: usize = 240;
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct AdditionalPermissions {
     #[serde(default)]
     pub write: Vec<WritePermissionRequest>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct WritePermissionRequest {
     pub path: String,
     pub scope: WriteScope,
@@ -44,7 +48,7 @@ pub struct FrozenWriteTarget {
     /// Canonical, absolute path used by rules, request binding, and path audit.
     pub normalized_path: PathBuf,
     pub scope: WriteScope,
-    /// Model-provided explanation retained for diagnostics only. It must never
+    /// Model-provided explanation shown as supplementary purpose. It must never
     /// replace the trusted title or target list shown to the user.
     pub untrusted_reason: String,
     pub decision: Decision,
@@ -77,6 +81,7 @@ impl PreparedWritePermissions {
         self.approval.is_some()
     }
 
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn approved_receipt(&self, request_id: String) -> Option<ApprovedWriteCapability> {
         Some(ApprovedWriteCapability {
             request_id,

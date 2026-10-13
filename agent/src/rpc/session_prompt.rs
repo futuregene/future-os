@@ -891,6 +891,25 @@ impl ServerSession {
             Some(Arc::new(
                 move |tool_name, tool_id, arguments| match permission_level.as_str() {
                     "all" => {
+                        // Legacy tool access does not grant extra OS sandbox
+                        // permissions. Explicit file requests still need a
+                        // command-bound approval receipt on every platform.
+                        if tool_name == "shell"
+                            && arguments
+                                .get("additional_permissions")
+                                .or_else(|| arguments.get("additionalPermissions"))
+                                .is_some_and(|value| !value.is_null())
+                        {
+                            return approval_gate_hook.request(
+                                &approval_broadcaster,
+                                &approval_session_id,
+                                &approval_cwd,
+                                tool_name,
+                                tool_id,
+                                arguments,
+                                &approval_sandbox,
+                            );
+                        }
                         approve_tool_path_if_present(&approval_cwd, tool_name, arguments);
                         None
                     }
@@ -935,8 +954,8 @@ impl ServerSession {
         );
         debug_assert!(cancellation_installed);
 
-        // Post-hoc escalation channel (docs/internals/desktop/SANDBOX/COMMON.md): lets run_shell
-        // raise a `sandbox_escalation` approval after a sandbox denial without
+        // Explicit pre-execution escalation channel (docs/internals/desktop/SANDBOX/COMMON.md):
+        // lets run_shell raise a `sandbox_escalation` approval on model request without
         // the tools layer touching RPC internals. Blocks until the user decides.
         let escalation: crate::sandbox::EscalationRequester = {
             let gate = approval_gate.clone();

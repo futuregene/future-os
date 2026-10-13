@@ -21,7 +21,7 @@ semantics.
 | shell read protection | SBPL path rules | masking of targets existing at launch | **not provided** |
 | shell write protection | SBPL dynamic path rules | read-only root + writable/protected mounts | capability SID write boundary, limited by existing ACLs and delete permissions |
 | Missing protected target / new glob | matched by profile once the path appears | missing targets skipped; new targets only end-detection | no object to attach an ACE to; globs not enforced |
-| Extra authorization | whole command out of sandbox once | whole command out of sandbox once | declares concrete write capability, still restricted after approval |
+| Extra authorization | precise per-command read/write grant, still sandboxed | precise per-command read/write grant, still sandboxed | declares concrete write capability, still restricted after approval |
 | Network | open | open, no seccomp | open |
 | Availability check | `sandbox-exec` existence check | PATH / version & args / real namespace-mount probe | real token/ACL/private desktop/shell/cleanup probe |
 | Progress | v2 implemented, historical smoke pass | L0–L4/L6 integration implemented; latest hardening and L5 release matrix pending re-verification | W1–W7 integrated, native and installer historical PASS; some product interactions need item-by-item re-verification |
@@ -193,48 +193,13 @@ alone are not enough.
   passed off as a persisted project rule. Multi-target decisions apply to the
   whole group; changing scope requires a new request.
 
-### 4.1 Active and passive de-sandboxing (macOS/Linux)
+### 4.1 Single-command file permissions and explicit escalation (macOS/Linux)
 
-| Trigger | payload trigger | i18n key | English title |
-|---|---|---|---|
-| model explicit `escalated: true` + justification | `model_request` | `approval.escalationRequestTitle` | Model requests running this command outside the sandbox |
-| sandboxed command failed and matched the rejection classification | `sandbox_failure` | `approval.escalationRetryTitle` | Running this command outside the sandbox is needed |
-| historical request with missing/unknown trigger | fallback | `approval.escalationTitle` | Run this command outside the sandbox |
+The on-request flow returns sandbox failures directly to the main model with the actual exit, output and partial effects. It never requests approval or replays a command automatically. The model inspects completed effects and submits only remaining work with the required `additional_permissions`.
 
-What is approved is the **whole command executing outside the OS sandbox
-once** — not only access to the card's path; the global tier is unchanged.
-Rejection means that de-sandboxed execution does not run. A first failure may
-already have had side effects; re-check results before re-running.
+Before execution, the host validates and freezes the actual command, canonical paths, file/directory scope and rule snapshot. Following user or existing reviewer approval, that command runs once inside a sandbox with precise temporary grants. Cards show the purpose, command, complete paths and each access/scope; allow once or reject. Hashes, inode identities and policy digests remain internal. No persistent-rule button is offered.
 
-The model prompt defaults to trying inside the sandbox first, not requesting on
-guesses; approval is requested only when execution results show a necessary
-operation was blocked by the sandbox, retrying only the blocked operation where
-possible. Guidance requires preserving errors needed to assess necessary
-operations and interpreting the actual process status with output and intended
-effects. Expected errors may be tolerated but do not establish success; the
-model chooses command structure and error-handling syntax. This is a prompt
-constraint, not a new execution gate: an overall exit
-code of 0 still does not trigger passive approval, and no new permission-error
-hint after successful exits was added.
-
-The diagnostic path is display inference only: extract absolute paths from
-`Operation not permitted`, Linux `Permission denied`/`Read-only file system`/
-`Device or resource busy`, supporting quotes, spaces, and
-`program: line N: /path: error`; dedupe preserving order, at most 5 items. No
-guessing relative cwd, no treating URL/helper initialization errors as targets,
-no guarantee all languages/programs' errors parse. An active request without
-failure output may have no path. Display parsing does not change the escalation
-decision or grant scope, nor expand the sources of persistent-rule suggestions.
-
-Windows does not use this whole-command approval; see
-[path capabilities](WINDOWS.md#3-路径-capability-审批).
-
-Linux treats `Device or resource busy` (EBUSY) like other permission errors as a
-text heuristic for passive approval, without requiring a command form or a
-successfully parsed path; the private completion report must still allow
-retries. This is not kernel-rejection certification; ordinary device busy can
-also falsely trigger approval, and swallowing error output can miss cases. See
-[Linux detection and retry](LINUX.md#34-检测报告与重试可信度).
+Explicit `escalated: true` plus justification remains a compatibility route: approval covers the whole command outside the sandbox once and cannot be combined with precise permissions. Failure diagnostics grant nothing. Historical `sandbox_failure` cards remain replayable, but the executor no longer emits passive retry approvals. Approval never establishes that an earlier script can safely be replayed.
 
 ### 4.2 Protocol and code index
 
@@ -276,22 +241,13 @@ editor in settings. The manual read-only whitelist is a no-friction mechanism,
 not static analysis of arbitrary shells; after approval, `git push --force`,
 `npm publish`, etc. can still execute.
 
-### 5.1 macOS/Linux phase-two execution_grants (not implemented)
+### 5.1 macOS/Linux single-command execution_grants
 
-Bind concrete read/write paths, access, scope, command hash, and request id to
-a single approval, and recompile a plan that is **still inside the OS sandbox**.
-Cannot simply reuse session allows: they are lower than guards. Candidate
-priority: hard deny > approved execution_grants > secret ask guards >
-session/workspace/user; only accept grants for originally-ask decisions; any
-deny and layer 0 are not overridable.
+`additional_permissions` has read/write arrays of `{path, scope, reason}`, at most eight literal targets total. file means an existing regular file; subtree means an existing directory and descendants. Creating a file requires its existing parent directory; use approved write/edit when sensitive carveouts cannot be expressed. Filesystem/home roots and wildcards are rejected. Unsupported OS scopes fail before approval.
 
-Seatbelt can add temporary literal/subpath allows; Linux needs to prove
-mount/reopen can express the same scope. Windows's request capability provides
-protocol experience but cannot be copied wholesale with its non-read-deny /
-ACL-deny-wins limits. Freeze the cross-platform model before changing the UI;
-if whole-command de-sandboxing is kept, it should be an explicit advanced
-option. This proceeds together with macOS and is not mixed into Linux phase
-one.
+Receipts bind the tool-call ID, command hash, cwd, policy digest, canonical targets, access/scope and target inode. Preparation is repeated before execution, the receipt must match exactly and is consumed once. Session rules are not mutated. Only originally-ask targets receive grants; declaring an already-allowed parent cannot unguard its children. All explicit denies remain above execution_grants, which precede secret ask guards and session/workspace/user rules.
+
+macOS uses literal/subpath SBPL; Linux reuses narrow mount/reopen compilation and private reports. Write grants retaining a read denial, and child grants inside opaque mode-000 directories, are rejected before approval; use approved native file tools for those files. Windows retains its write capability, without shell read grants or a promise to reopen ask carveouts under ACL deny-wins. Failures never replay automatically on any platform. No arbitrary script-line continuation or rollback is promised.
 
 ## 6. References and historical retrieval
 
@@ -357,8 +313,7 @@ The host captures `ShellResult` before generating model text. It contains the
 command, cwd, total duration, status, nullable exit code, existing normal-query
 verdict, approval outcome, note and ordered execution attempts. Attempts retain
 actual status, nullable exit code, duration, merged output, truncation and
-escalation flags. The original sandboxed attempt remains available after an
-approved retry. `exited`, `launch_failed`, `execution_failed`, `timed_out`,
+escalation flags. New recovery calls do not replace original facts; historical two-attempt results remain readable. `exited`, `launch_failed`, `execution_failed`, `timed_out`,
 `cancelled` and `not_started` distinguish process outcomes and approval stops.
 No missing exit code is replaced with zero; stdout markers cannot replace
 process status. Bare grep/test-style exit 1 keeps the existing normal-query
@@ -367,20 +322,9 @@ semantics, while its actual code remains visible.
 Approval review and platform restrictions remain unchanged: Jev's three numeric
 Choice questions, matrix, confidence thresholds, four sourced evidence classes,
 investigation budgets, cancellation, context validity and Linux helper checks
-still apply. A retry approves the actual command, with a failure tail bounded
-to 2,000 bytes. Approval permits execution; it does not prove replay is safe.
-Automatic retry can repeat effects already completed within the command. If
-replay is unsafe, the model must submit only remaining necessary operations as
-a new call. Neither prior independent calls nor future calls are replayed or
-approved by that retry. Network behavior remains unchanged.
+still apply. New approval covers the actual operation prepared by the model. Approval permits execution; it does not establish safe replay. The model must inspect partial effects and submit only remaining work. Network behavior is unchanged.
 
-Inputs are bounded to 65,536 command bytes and 131,072 serialized bytes.
-The command execution budget is 1–600 seconds (default 120), starting at the
-shell handler and shared with post-execution approval waits and retries.
-Pre-execution approval uses the existing lifecycle before this budget begins.
-No retry process starts after the remaining budget is exhausted. Original and
-retry attempts each reserve up to 250,000 output bytes; streams drain through
-bounded buffers. Serialized facts are capped at 1 MiB, reducing retained output
+Inputs are bounded to 65,536 command bytes and 131,072 serialized bytes. The execution budget is 1–600 seconds (default 120), starting at the shell handler; pre-execution approval uses its existing lifecycle. Each invocation has one process attempt with up to 250,000 retained output bytes. No passive approval or retry budget remains. Serialized facts are capped at 1 MiB, reducing retained output
 when JSON escaping requires it. Model text reserves at most 60,000 bytes for
 output and retains status outside that budget, below the transcript's existing
 100K-byte cap. Timeout and cancellation preserve captured partial output.
@@ -454,6 +398,5 @@ These are model guidance rules, not a deterministic filter on generated replies.
 
 Regression tests cover independent action/verification calls, unchanged complex
 script semantics, stdout status spoofing, nullable exit codes, timeout,
-cancellation, bounded output, approval denial/context expiry, partial retry
-side effects and typed/persisted/lean/live/replay results. Tests are compiled
+cancellation, bounded output, approval denial/context expiry, failure without replay, isolated single-use grants and typed/persisted/lean/live/replay results. Tests are compiled
 locally, with execution and native cross-platform validation left to CI.

@@ -1,6 +1,6 @@
 # macOS：Seatbelt 沙箱
 
-更新：2026-09-04。v2 已实现；共享规则、审批 UI 与 Codex 参考见 [COMMON.zh-CN.md](COMMON.zh-CN.md)。本页以源码为准，历史 PASS 不代替当前版本实测。
+更新：2026-10-12。v2 已实现；共享规则、审批 UI 与 Codex 参考见 [COMMON.zh-CN.md](COMMON.zh-CN.md)。本页以源码为准，历史 PASS 不代替当前版本实测。
 
 ## 1. 技术方案与实现
 
@@ -10,7 +10,7 @@
 - 默认 `(allow file-read*)`；写开放 workspace、`temp_roots()` 与 `/dev/null`、`/dev/zero`、stdout/stderr、`/dev/fd/*`、tty、dtracehelper 等伪设备。
 - 网络使用 `(allow network*) (allow system-socket)`，没有断网或域名过滤。
 - RuleSet 层与层内顺序均反向发射：低优先级到高优先级，SBPL last-match 对应引擎 first-match；overrides 最后生效。read/write 分别发射，ask 和 deny 均为 OS deny。
-- 无通配符 matcher 统一为 `subpath`（**不是先判断文件存在再选择 literal**）；glob 用规则引擎生成的 regex。只保证实现支持的 `*`/`**`/`?` 语义，不把 SBPL regex 能力等同全部 shell glob。
+- 普通规则的无通配符 matcher 为 `subpath`，单次 file 授权为 `literal`（**不是先判断文件存在再选择 literal**）；glob 用规则引擎生成的 regex。只保证实现支持的 `*`/`**`/`?` 语义，不把 SBPL regex 能力等同全部 shell glob。
 - 路径规范化处理 `/tmp`、`/var` 的 `/private` 目标；SBPL 字符串转义双引号和反斜线，避免路径注入。
 
 规则作用于后续文件操作，而非启动时枚举文件。因此允许父目录内，缺失 `.env`、未来 `.pem` 以及 rename 到保护目标仍能命中 profile；这是与 Linux mount 快照和 Windows ACL 的核心差异。
@@ -19,16 +19,9 @@ Agent 的 Unix 进程组终止逻辑处理 timeout/abort。native read/write/edi
 
 ## 2. 审批与不可用行为
 
-主动 `escalated: true` + justification 或失败文本匹配后，经 `EscalationRequester` 回到 RPC 审批。批准后当前整命令不再包 Seatbelt，只有一次，不持久改档、不生成精确路径授权。完整标题、路径展示限制见 [COMMON §4](COMMON.zh-CN.md#4-审批协议与界面)。
+模型通过 `additional_permissions.read/write` 在执行前声明具体路径。批准后创建本次命令的 Seatbelt profile：file 使用 literal，subtree 使用 subpath；显式 deny 不可覆盖，会话规则不改变。完整请求格式与 UI 见 [COMMON §5.1](COMMON.zh-CN.md#51-macoslinux-单次-execution_grants)。
 
-失败检测对 `operation not permitted` / `sandbox-exec` 不区分 ASCII 大小写，
-并识别 Node 的结构化 `Error: EPERM:` 或 `code: 'EPERM'`；必须是非零退出。
-命中后在当前工具调用内请求审批，通过后重跑，无需主模型再次调用。网络错误和普通
-文件不存在错误不触发该路径。工具结果摘要复用相同权限诊断，路径提及仍是非可信背景，
-不当作已确认目标。macOS shell schema 不暴露 Windows 专用 `additional_permissions`，
-收到不支持的参数时仍由原有 backend 校验拒绝。
-
-无法可靠证明内核拒绝的确切路径或命令此前未产生副作用，因此不得承诺无误报/安全自动重放。规则文件 hard deny 也不覆盖用户批准后的裸命令。
+失败诊断只返回主模型，不请求被动审批、不重跑。模型检查部分完成效果后再提交剩余操作。显式 `escalated: true` + justification 保留兼容，一次批准后当前命令裸跑，不与精确权限混用；不能因此声称 hard deny 仍覆盖裸命令。
 
 源码 `sandbox/mod.rs` 当前 macOS availability 是 `/usr/bin/sandbox-exec` 的存在检查，**不是 Linux/Windows 那样的真实生产能力 probe**。不可用走公共 manual 行为。`sandbox-exec` deprecated 风险已接受；未来系统兼容性需持续原生复验。
 
@@ -52,11 +45,11 @@ macOS 没有与 Linux 对等的私有完成报告通道；不要把 Linux 的报
 
 | 优先级 | 工作 / 边界 |
 |---|---|
-| P1 | 二期 execution_grants：已批准 ask 路径临时放开、仍在 Seatbelt；不能用低于 guards 的 session allow 冒充。公共设计见 COMMON §5.1 |
+| P1 | execution_grants 已接入；原生验证需覆盖读写范围、deny carveout、一次消费和审批后路径变更。见 COMMON §5.1 |
 | P1 | auth.json 可信凭据通道完成前，暂移除 override 的读取风险仍在 |
 | P1 | 整个规则文件读取/解析失败在 macOS 不同于 Linux 的 compile fail-closed；评估统一诊断与处理，个别无效条目也需独立设计 |
 | P2 | 将可用性由存在检查提高为有界真实 probe，扩充 denial 负向语料和系统升级 smoke |
 | P2 | 按实际工具集审计新子进程接入，持续收窄 mach/IPC 等宽许可时做开发工具兼容矩阵 |
 | 已接受 | 网络开放、清单外敏感内容可外传、`.git` 可写、temp 按实际根开放、sandbox-exec deprecated；不属于已解决安全问题 |
 
-Seatbelt 本身能够按命令临时加路径 allow；当前精确授权缺口主要在 FutureOS 协议与层级，不是必须整命令脱沙箱的 OS 限制。Windows 独立用户候选方案与本平台无关，不应混入 macOS 改造。
+Seatbelt 本身能够按命令临时加路径 allow；当前已用独立 execution_grants 接入，不再依赖失败后整命令重跑。Windows 独立用户候选方案与本平台无关，不应混入 macOS 改造。
