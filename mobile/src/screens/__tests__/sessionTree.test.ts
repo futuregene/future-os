@@ -66,7 +66,11 @@ test("workspace collapse retains its count and search reveals hidden child match
     session("needle", "parent"),
   ];
   expect(catalogRows(sessions, [workspace], "workspace", new Set(["w"]), new Set(), "")).toEqual([
-    { kind: "workspace", key: "workspace:w", workspace, count: 2 },
+    // `workspaceId` is the id the machine knows the workspace by — the same id
+    // this list folds it under, since here every heading is the active
+    // machine's; a merged list's fold key is machine-qualified but the id a
+    // command names is not (see mergedRows).
+    { kind: "workspace", key: "workspace:w", workspace, workspaceId: "w", count: 2 },
   ]);
   expect(
     keys(catalogRows(sessions, [workspace], "workspace", new Set(["w"]), new Set(), "NEEDLE")),
