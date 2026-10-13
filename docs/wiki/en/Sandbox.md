@@ -79,11 +79,7 @@ Rules are stored in `~/.future/approval_rule.json` and the workspace's
 `.future/approval_rule.json`. Built-in protections precede user rules. Ordinary
 reads are not all intercepted; allowing a rule does not make its contents trusted.
 
-On macOS/Linux, escalation approves the **whole command outside the sandbox once**,
-not just one path. A retry can repeat earlier side effects. Windows instead asks
-for explicit write access to an existing file or directory subtree and keeps the
-command restricted; creating/replacing files may require approval of the parent
-directory subtree.
+Sandbox failures return to the model without automatic approval or replay. The model checks completed effects and prepares remaining work. macOS/Linux can declare precise read/write paths before execution; approval keeps the command sandboxed for one execution. Windows grants writes only and retains its ACL limitations. file means an existing file; subtree means an existing directory and descendants. Creating a file may require parent-directory access. Cards show the command, purpose, complete paths and access/scope with allow once/reject. Explicit macOS/Linux de-sandbox requests still authorize the whole command; approval does not establish safe replay.
 
 ## What this does not guarantee
 

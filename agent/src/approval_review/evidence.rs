@@ -460,6 +460,49 @@ impl EvidenceContext {
                 records.push(record);
             }
         }
+        // Per-path explanations are model claims, just like a top-level
+        // justification. Keep them in untrusted evidence, never host facts or
+        // the original user instructions.
+        if let Some(permissions) = requested_action
+            .get("additional_permissions")
+            .or_else(|| requested_action.get("additionalPermissions"))
+        {
+            for access in ["read", "write"] {
+                for (index, target) in permissions
+                    .get(access)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
+                    let Some(reason) = target
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .filter(|reason| !reason.trim().is_empty())
+                    else {
+                        continue;
+                    };
+                    count += 1;
+                    if reason.len() > EVIDENCE_BUFFER_BYTES_LIMIT {
+                        continue;
+                    }
+                    let text = json!({"path": target["path"], "access": access,
+                        "scope": target["scope"], "reason": reason})
+                    .to_string();
+                    if text.len() > EVIDENCE_BUFFER_BYTES_LIMIT {
+                        continue;
+                    }
+                    let mut record = Evidence::new(
+                        format!("{tool_id}:permissions:{access}:{index}"),
+                        "assistant_justification",
+                        self.next_sequence,
+                        text,
+                    );
+                    record.tool_call_id = Some(tool_id.to_owned());
+                    records.push(record);
+                }
+            }
+        }
         if let Some(paths) = action
             .get("diagnostic_paths")
             .filter(|paths| paths.as_array().is_some_and(|paths| !paths.is_empty()))

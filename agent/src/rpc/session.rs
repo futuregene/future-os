@@ -3662,7 +3662,7 @@ mod tests {
 
     #[test]
     fn add_session_rule_records_a_read_only_allow_and_reaches_the_live_rule_set() {
-        use crate::sandbox::rules::{Decision, RuleSet};
+        use crate::sandbox::rules::{Decision, RuleLayer, RuleSet};
 
         let session = make_test_session("s1");
         assert!(session.session_rules.lock().is_empty());
@@ -3674,13 +3674,19 @@ mod tests {
             assert!(rules[0].access().covers_read());
             assert!(!rules[0].access().covers_write());
         }
-        // The injected rule must reach the layer the sandbox compiler reads,
-        // not just the session vector (index 2 is the session layer).
+        // The injected rule must reach the named session layer the sandbox
+        // compiler reads, not just the session vector.
         let rule_set = RuleSet::resolve_with_session(
             std::path::Path::new(&session.cwd),
             session.session_rules.clone(),
         );
-        assert_eq!(rule_set.profile_layers()[2].len(), 1);
+        let session_layer = rule_set
+            .snapshot()
+            .layers
+            .into_iter()
+            .find(|layer| layer.layer == RuleLayer::Session)
+            .unwrap();
+        assert_eq!(session_layer.rules.len(), 1);
         // A second injection appends; it must not replace the first grant.
         session.add_session_rule("other/**", "write");
         assert_eq!(session.session_rules.lock().len(), 2);
@@ -3688,10 +3694,15 @@ mod tests {
             std::path::Path::new(&session.cwd),
             session.session_rules.clone(),
         );
-        let session_layer = &rule_set.profile_layers()[2];
-        assert_eq!(session_layer.len(), 2);
-        assert!(!session_layer[0].access().covers_write());
-        assert!(session_layer[1].access().covers_write());
+        let session_layer = rule_set
+            .snapshot()
+            .layers
+            .into_iter()
+            .find(|layer| layer.layer == RuleLayer::Session)
+            .unwrap();
+        assert_eq!(session_layer.rules.len(), 2);
+        assert!(!session_layer.rules[0].access.covers_write());
+        assert!(session_layer.rules[1].access.covers_write());
     }
 
     // ─── default_workspace ──────────────────────────────────────────────────

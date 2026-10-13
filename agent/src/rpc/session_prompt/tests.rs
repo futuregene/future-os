@@ -1510,25 +1510,26 @@ async fn prompt_derives_session_name_from_string_content_entry() {
 #[cfg(target_os = "macos")]
 #[allow(clippy::await_holding_lock)] // HOME must stay pinned across awaits
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn run_sandbox_denial_escalates_through_session_wiring() {
+async fn run_sandbox_failure_returns_to_model_without_approval_or_replay() {
     let _home_guard = crate::test_support::home_env_lock();
-    let outside = dirs::home_dir()
-        .unwrap()
-        .join(format!("futureos-run-escalate-{}.txt", std::process::id()));
+    let outside = dirs::home_dir().unwrap().join(format!(
+        "futureos-run-on-request-{}.txt",
+        crate::utils::generate_id()
+    ));
     let provider = ScriptedProvider::new(vec![
         Script::Events(vec![
             tool_start_event(
                 "call-1",
                 "shell",
-                serde_json::json!({"command": format!("touch {}", outside.display())}),
+                serde_json::json!({"command": format!("echo partial >> partial; touch '{}'", outside.display())}),
             ),
             tool_end_event(),
             finish_event(),
         ]),
-        text_turn("done"),
+        text_turn("blocked; inspect completed work"),
     ]);
-    let fixture = run_fixture(provider, "run-escalate");
-    let gate = fixture.session.approval_gate.clone();
+    let fixture = run_fixture(provider.clone(), "run-on-request");
+    let partial = fixture.workspace().join("partial");
     let mut session = fixture.session;
     session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
         tier: crate::sandbox::SandboxTier::Sandbox,
@@ -1537,34 +1538,130 @@ async fn run_sandbox_denial_escalates_through_session_wiring() {
     if !crate::sandbox::platform_sandbox_available() {
         return;
     }
-    // The escalation approval arrives from a decider thread.
+    let mut events = session.broadcaster.subscribe();
+    session
+        .prompt("prepare the report", &[], &[], None, None)
+        .unwrap();
+    wait_for_run_end(&session).await;
+    assert!(session.approval_gate.pending_for_session("s1").is_empty());
+    while let Ok(event) = events.try_recv() {
+        assert_ne!(
+            event.event_type, "approval_request",
+            "failure must return to the model directly"
+        );
+    }
+    assert!(!outside.exists());
+    assert_eq!(
+        std::fs::read_to_string(&partial).unwrap().lines().count(),
+        1
+    );
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1]
+        .messages
+        .iter()
+        .any(|message| message.role == "tool" && message.text().contains("was not replayed")));
+}
+
+#[cfg(target_os = "macos")]
+#[allow(clippy::await_holding_lock)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_sandbox_recovery_approves_only_the_models_remaining_operation() {
+    let _home_guard = crate::test_support::home_env_lock();
+    let target_dir = tempfile::tempdir().unwrap();
+    let target = target_dir.path().join("report.txt");
+    std::fs::write(&target, "old").unwrap();
+    let remaining = format!("printf new > '{}'", target.display());
+    let provider = ScriptedProvider::new(vec![
+        Script::Events(vec![
+            tool_start_event(
+                "first-call",
+                "shell",
+                serde_json::json!({"command": format!("echo partial >> partial; {remaining}")}),
+            ),
+            tool_end_event(),
+            finish_event(),
+        ]),
+        Script::Events(vec![
+            tool_start_event(
+                "remaining-call",
+                "shell",
+                serde_json::json!({
+                    "command": remaining, "additional_permissions": {"write": [{"path": target, "scope": "file", "reason": "Save the already prepared report"}]}
+                }),
+            ),
+            tool_end_event(),
+            finish_event(),
+        ]),
+        text_turn("done"),
+    ]);
+    let fixture = run_fixture(provider.clone(), "run-precise-recovery");
+    std::fs::create_dir_all(fixture.workspace().join(".future")).unwrap();
+    std::fs::write(fixture.workspace().join(".future/approval_rule.json"), serde_json::json!({"rules": [{"path": target_dir.path(), "access": "write", "action": "ask"}]}).to_string()).unwrap();
+    let partial = fixture.workspace().join("partial");
+    let mut session = fixture.session;
+    session.set_sandbox_policy(crate::sandbox::SandboxPolicy {
+        tier: crate::sandbox::SandboxTier::Sandbox,
+        model_reviewer: false,
+    });
+    if !crate::sandbox::platform_sandbox_available() {
+        return;
+    }
+    let gate = session.approval_gate.clone();
+    let command = remaining.clone();
     let decider = std::thread::spawn(move || {
         for _ in 0..2000 {
-            let pending = gate.pending_for_session("s1");
-            if let Some(first) = pending.first() {
-                let request_id = first["approval_request_id"].as_str().unwrap().to_string();
-                let _ = gate.decide(
-                    &request_id,
+            if let Some(request) = gate.pending_for_session("s1").first() {
+                assert_eq!(request["kind"], "file_permissions");
+                assert_eq!(request["tool_id"], "remaining-call");
+                assert_eq!(request["action"]["command"], command);
+                assert_eq!(request["action"]["targets"][0]["access"], "write");
+                assert_eq!(request["action"]["targets"][0]["scope"], "file");
+                assert_eq!(request["sandbox_boundary"]["inside_sandbox"], true);
+                assert!(request["save_suggestion"].is_null());
+                gate.decide(
+                    request["approval_request_id"].as_str().unwrap(),
                     "s1",
                     crate::rpc::ApprovalDecision {
                         approved: true,
                         note: String::new(),
                         status: crate::rpc::ApprovalDecisionStatus::Approved,
                     },
-                );
+                )
+                .unwrap();
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        panic!("escalation request never appeared");
+        panic!("precise file approval never appeared");
     });
     session
-        .prompt("touch outside", &[], &[], None, None)
+        .prompt("prepare and save the report", &[], &[], None, None)
         .unwrap();
     wait_for_run_end(&session).await;
-    decider.join().unwrap();
-    assert!(outside.exists(), "approved re-run created the file");
-    let _ = std::fs::remove_file(&outside);
+    assert!(
+        decider.join().is_ok(),
+        "tool results: {:?}",
+        session
+            .messages
+            .read()
+            .iter()
+            .filter(|message| message.role == "tool")
+            .map(AgentMessage::text)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+    assert_eq!(
+        std::fs::read_to_string(&partial).unwrap().lines().count(),
+        1
+    );
+    assert!(session.approval_gate.pending_for_session("s1").is_empty());
+    let requests = provider.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[1]
+        .messages
+        .iter()
+        .any(|message| message.role == "tool" && message.text().contains("was not replayed")));
 }
 
 // ─── batch 2: enqueue/persist/finalize edge arms ───────────────────────────

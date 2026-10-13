@@ -22,7 +22,7 @@ pub struct ShellAttempt {
     pub escalated: bool,
 }
 
-/// One command invocation. Attempts retain the original run and any approved retry.
+/// One command invocation. New calls run once; attempts also preserve historical retry records.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShellResult {
     pub command: String,

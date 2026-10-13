@@ -23,6 +23,9 @@ pub type SandboxedNotifier = Arc<dyn Fn(&str) + Send + Sync>;
 pub struct ToolExecutionScope {
     workspace: PathBuf,
     approved_outside_paths: Arc<Mutex<Vec<PathBuf>>>,
+    #[cfg(not(windows))]
+    approved_file_permissions: Arc<Mutex<Vec<crate::sandbox::file_request::ApprovedPermissions>>>,
+    #[cfg(any(windows, test))]
     approved_windows_capabilities:
         Arc<Mutex<Vec<crate::sandbox::windows_request::ApprovedWriteCapability>>>,
     /// "all" | "workspace" | "none" — controls workspace boundary enforcement
@@ -35,7 +38,7 @@ pub struct ToolExecutionScope {
     /// boundary for write/edit. Shared with the approval layer so both reach
     /// the same verdicts.
     sandbox: Arc<ResolvedSandbox>,
-    /// Post-hoc approval hook for escalated (out-of-sandbox) shell runs.
+    /// Pre-execution approval hook for explicit out-of-sandbox requests.
     /// Injected by the RPC layer; None means escalation is unavailable.
     escalation: Option<EscalationRequester>,
     /// Notifier for sandboxed shell executions (progress/event plumbing).
@@ -63,6 +66,9 @@ where
     let scope = ToolExecutionScope {
         workspace: crate::sandbox::paths::normalize_lexically(&PathBuf::from(options.workspace)),
         approved_outside_paths: Arc::new(Mutex::new(vec![])),
+        #[cfg(not(windows))]
+        approved_file_permissions: Arc::new(Mutex::new(vec![])),
+        #[cfg(any(windows, test))]
         approved_windows_capabilities: Arc::new(Mutex::new(vec![])),
         permission_level: options.permission_level,
         interrupt_flag: options.interrupt_flag,
@@ -126,6 +132,28 @@ pub fn approve_outside_path(path: &str) {
     });
 }
 
+#[cfg(not(windows))]
+pub(crate) fn approve_file_permissions(receipt: crate::sandbox::file_request::ApprovedPermissions) {
+    let _ = TOOL_SCOPE.try_with(|scope| scope.approved_file_permissions.lock().push(receipt));
+}
+
+#[cfg(not(windows))]
+fn consume_file_permissions(prepared: &crate::sandbox::file_request::PreparedPermissions) -> bool {
+    TOOL_SCOPE
+        .try_with(|scope| {
+            let mut receipts = scope.approved_file_permissions.lock();
+            let Some(index) = receipts.iter().position(|receipt| {
+                prepared.matches(receipt) && receipt.invocation_id == current_tool_call_id()
+            }) else {
+                return false;
+            };
+            receipts.remove(index);
+            true
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(any(windows, test))]
 pub(crate) fn approve_windows_capability(
     receipt: crate::sandbox::windows_request::ApprovedWriteCapability,
 ) {
@@ -134,6 +162,7 @@ pub(crate) fn approve_windows_capability(
     });
 }
 
+#[cfg(any(windows, test))]
 fn consume_windows_capability(
     prepared: &crate::sandbox::windows_request::PreparedWritePermissions,
 ) -> Option<crate::sandbox::windows_request::ApprovedWriteCapability> {
@@ -150,6 +179,7 @@ fn consume_windows_capability(
         .flatten()
 }
 
+#[cfg(any(windows, test))]
 fn windows_capability_receipt_matches(
     prepared: &crate::sandbox::windows_request::PreparedWritePermissions,
     expected_targets: &[crate::sandbox::windows_request::ApprovalTarget],
@@ -231,7 +261,7 @@ fn shell_schema() -> serde_json::Value {
                                 },
                                 "reason": {
                                     "type": "string",
-                                    "description": "A short diagnostic reason. The application generates the user-facing approval text itself."
+                                    "description": "In one short sentence, describe what this access is needed for and why the task requires it. Shown as the purpose of the approval request; the application generates its title and scope from the validated targets."
                                 }
                             },
                             "required": ["path", "scope", "reason"],
@@ -246,14 +276,12 @@ fn shell_schema() -> serde_json::Value {
         "additionalProperties": false,
         "required": ["command"]
     });
-    schema["properties"]["timeout"]["description"] = serde_json::json!("Execution budget in seconds, including retries; default 120, maximum 600. A retry uses only the remaining budget.");
-    // The schema belongs to the executing Agent's platform. Keep validation
-    // for unsupported input in the handler/gate, but do not invite its use.
+    schema["properties"]["timeout"]["description"] = serde_json::json!("Execution budget in seconds; default 120, maximum 600. This invocation is never automatically replayed after failure.");
     if !cfg!(windows) {
-        schema["properties"]
-            .as_object_mut()
-            .unwrap()
-            .remove("additional_permissions");
+        let read = schema["properties"]["additional_permissions"]["properties"]["write"].clone();
+        schema["properties"]["additional_permissions"]["properties"]["read"] = read;
+        schema["properties"]["additional_permissions"]["required"] = serde_json::json!([]);
+        schema["properties"]["additional_permissions"]["description"] = serde_json::json!("Request precise read/write access before executing this command. At most 8 literal targets total; file means one existing regular file, subtree means an existing directory and descendants. For a new file request its existing parent directory. The host validates and requests approval where needed, then runs once inside the OS sandbox. No session grant or automatic retry. Cannot combine with escalated; requires an active sandbox.");
     }
     schema
 }
@@ -1106,6 +1134,7 @@ mod tests {
         .await;
     }
 
+    #[cfg(windows)]
     #[tokio::test]
     async fn shell_handler_additional_permissions_without_approval() {
         // A target inside the workspace (disabled sandbox → Allow) needs no
@@ -1137,6 +1166,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&workspace);
     }
 
+    #[cfg(windows)]
     #[tokio::test]
     async fn shell_handler_additional_permissions_require_approval_receipt() {
         // An enabled (Manual) sandbox marks a write outside the workspace and
@@ -1184,6 +1214,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&workspace);
     }
 
+    #[cfg(windows)]
     #[tokio::test]
     async fn shell_handler_additional_permissions_consumes_approved_receipt() {
         let workspace = test_path("shell-additional-approved");
@@ -2385,9 +2416,12 @@ mod tests {
         let schema = shell_schema();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["command"].is_object());
+        assert!(schema["properties"]["additional_permissions"].is_object());
         assert_eq!(
-            schema["properties"].get("additional_permissions").is_some(),
-            cfg!(windows)
+            schema["properties"]["additional_permissions"]["properties"]
+                .get("read")
+                .is_some(),
+            !cfg!(windows)
         );
         assert!(schema["properties"]["escalated"].is_object());
         assert!(schema["properties"]["justification"].is_object());
@@ -2775,270 +2809,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_denial_requests_review_in_the_same_tool_call() {
-        let workspace = test_path("node-denial-review");
+    async fn suspected_denial_returns_original_failure_without_requesting_approval() {
+        let workspace = test_path("on-request-denial");
         let calls = Arc::new(Mutex::new(Vec::new()));
         let scope = escalation_scope(
             &workspace,
             true,
-            EscalationDecision::Denied("keep sandbox".into()),
+            EscalationDecision::Approved,
             calls.clone(),
         );
-        let output = "Error: EPERM: operation not permitted, open '/outside/2.txt'\n[exit: 1]";
-        let outcome = post_hoc_escalation(
-            &scope.escalation,
-            &scope.sandbox,
-            "node gen2.js",
-            10,
-            output,
-            ShellRetry::ClassifyOutput,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert!(outcome.contains("not approved: keep sandbox"));
-        {
-            let requests = calls.lock();
-            assert_eq!(requests.len(), 1);
-            assert_eq!(
-                requests[0].trigger,
-                crate::sandbox::EscalationTrigger::SandboxFailure
-            );
-            assert_eq!(requests[0].command, "node gen2.js");
-            assert!(requests[0].failure_summary.contains("EPERM"));
-        }
+        let output = "Error: EPERM: operation not permitted, open '/outside/report'\n[exit: 1]";
+        let result = sandbox_failure_result(&scope.sandbox, 10, output, ShellRetry::ClassifyOutput)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(result.contains(output));
+        assert!(result.contains("was not replayed"));
+        assert!(calls.lock().is_empty());
         for output in [
-            "Error: EPERM: operation not permitted\n[exit: 0]",
-            "Error: ENOENT: no such file or directory\n[exit: 1]",
-            "curl: (6) Could not resolve host\n[exit: 6]",
+            "Permission denied\n[exit: 0]",
+            "No such file\n[exit: 1]",
+            "network error\n[exit: 6]",
         ] {
-            assert!(post_hoc_escalation(
-                &scope.escalation,
-                &scope.sandbox,
-                "node gen2.js",
-                10,
-                output,
-                ShellRetry::ClassifyOutput
-            )
-            .await
-            .is_none());
+            assert!(
+                sandbox_failure_result(&scope.sandbox, 10, output, ShellRetry::ClassifyOutput)
+                    .await
+                    .is_none()
+            );
         }
-        assert_eq!(calls.lock().len(), 1);
     }
 
     #[tokio::test]
-    async fn linux_busy_requests_approval_without_command_or_path_constraints() {
-        let ws = test_path("linux-busy-approval");
+    async fn linux_denial_diagnostics_never_execute_or_approve_a_command() {
+        let ws = test_path("linux-on-request");
         std::fs::create_dir_all(&ws).unwrap();
         let mut sandbox = ResolvedSandbox::resolve(
             &crate::sandbox::SandboxPolicy {
                 tier: crate::sandbox::SandboxTier::Sandbox,
                 model_reviewer: false,
             },
-            ws.to_string_lossy().as_ref(),
+            &ws.to_string_lossy(),
         );
         sandbox.set_linux_backend_available_for_test();
-        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counter = calls.clone();
-        let requester: crate::sandbox::EscalationRequester = Arc::new(move |request| {
-            counter.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(
-                request.trigger,
-                crate::sandbox::EscalationTrigger::SandboxFailure
-            );
-            crate::sandbox::EscalationDecision::Denied("keep file".into())
-        });
-        let escalation = Some(requester);
-        let output = "rm: cannot remove '.env': Device or resource busy\n[exit: 1]";
-        for command in ["rm .env", "cd /work && rm .env", "python cleanup.py"] {
-            assert!(post_hoc_escalation(
-                &escalation,
-                &sandbox,
-                command,
-                10,
-                output,
-                ShellRetry::Blocked
-            )
-            .await
-            .is_none());
-        }
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        for command in [
-            "rm .env",
-            "cd /work && rm .env",
-            "rm \"$TARGET\"",
-            "python cleanup.py",
-        ] {
-            let result = post_hoc_escalation(
-                &escalation,
-                &sandbox,
-                command,
-                10,
-                output,
-                ShellRetry::ClassifyOutput,
-            )
+        let output = "touch: Permission denied\n[exit: 1]";
+        let result = sandbox_failure_result(&sandbox, 10, output, ShellRetry::ClassifyOutput)
             .await
             .unwrap()
             .unwrap();
-            assert!(result.contains("not approved: keep file"));
-        }
-        assert_eq!(calls.load(Ordering::SeqCst), 4);
-
-        #[cfg(unix)]
-        {
-            let secret = ws.join(".env");
-            std::fs::write(&secret, "test-only-secret").unwrap();
-            let approved: crate::sandbox::EscalationRequester =
-                Arc::new(|_| crate::sandbox::EscalationDecision::Approved);
-            let result = with_tool_scope(
-                ScopeOptions {
-                    workspace: ws.to_string_lossy().into_owned(),
-                    permission_level: "all".into(),
-                    interrupt_flag: Arc::new(AtomicBool::new(false)),
-                    sandbox: Arc::new(sandbox.clone()),
-                    escalation: None,
-                    on_sandboxed: None,
-                },
-                post_hoc_escalation(
-                    &Some(approved),
-                    &sandbox,
-                    "rm .env",
-                    10,
-                    output,
-                    ShellRetry::ClassifyOutput,
-                ),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-            assert_eq!(shell_result_exit_code(&result), Some(0));
-            assert!(!secret.exists());
-        }
-    }
-
-    #[tokio::test]
-    async fn linux_denial_uses_whole_command_escalation_and_infra_does_not() {
-        let ws = test_path("linux-post-hoc");
-        std::fs::create_dir_all(&ws).unwrap();
-        let mut sandbox = ResolvedSandbox::resolve(
-            &crate::sandbox::SandboxPolicy {
-                tier: crate::sandbox::SandboxTier::Sandbox,
-                model_reviewer: false,
-            },
-            ws.to_string_lossy().as_ref(),
+        assert!(result.contains(output));
+        assert!(
+            sandbox_failure_result(&sandbox, 10, output, ShellRetry::Blocked)
+                .await
+                .is_none()
         );
-        sandbox.set_linux_backend_available_for_test();
-        let deny: crate::sandbox::EscalationRequester = Arc::new(|request| {
-            assert_eq!(request.command, "touch /protected");
-            assert_eq!(
-                request.trigger,
-                crate::sandbox::EscalationTrigger::SandboxFailure
-            );
-            crate::sandbox::EscalationDecision::Denied("linux policy".into())
-        });
-        let denied = post_hoc_escalation(
-            &Some(deny),
-            &sandbox,
-            "touch /protected",
-            10,
-            "touch: Permission denied\n\n[exit: 1]",
-            ShellRetry::ClassifyOutput,
-        )
-        .await
-        .expect("Linux denial should request whole-command escalation")
-        .unwrap();
-        assert!(denied.contains("not approved: linux policy"));
-
-        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let call_counter = calls.clone();
-        let requester: crate::sandbox::EscalationRequester = Arc::new(move |_| {
-            call_counter.fetch_add(1, Ordering::SeqCst);
-            crate::sandbox::EscalationDecision::Approved
-        });
-        assert!(post_hoc_escalation(
-            &Some(requester),
-            &sandbox,
-            "bad-helper",
-            10,
-            "future-linux-sandbox-helper: identity changed\n\n[exit: 125]",
-            ShellRetry::ClassifyOutput,
-        )
-        .await
-        .is_none());
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-
-        let dynamic = crate::sandbox::linux::violation::marker(
-            &crate::sandbox::linux::violation::LinuxSandboxViolation {
-                kind: crate::sandbox::linux::violation::LinuxViolationKind::DynamicGlobCreated,
-                path_provenance: "glob_snapshot".into(),
-                policy_digest: "a".repeat(64),
-                detection_only: true,
-                affected_count: 1,
-            },
-        );
-        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let call_counter = calls.clone();
-        let requester: crate::sandbox::EscalationRequester = Arc::new(move |_| {
-            call_counter.fetch_add(1, Ordering::SeqCst);
-            crate::sandbox::EscalationDecision::Approved
-        });
-        assert!(post_hoc_escalation(
-            &Some(requester),
-            &sandbox,
-            "created-secret-but-failed",
-            10,
-            &format!("{dynamic}\n\n[exit: 1]"),
-            ShellRetry::Blocked,
-        )
-        .await
-        .is_none());
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
         let _ = std::fs::remove_dir_all(ws);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[allow(clippy::await_holding_lock)] // HOME must stay pinned across awaits
-    #[tokio::test(flavor = "current_thread")]
-    async fn shell_sandbox_denial_triggers_post_hoc_escalation() {
-        let _home_guard = crate::test_support::home_env_lock();
-        let ws =
-            std::env::temp_dir().join(format!("futureos-esc2-{}", crate::utils::generate_id()));
-        std::fs::create_dir_all(&ws).unwrap();
-        let sandbox = crate::sandbox::ResolvedSandbox::resolve(
-            &crate::sandbox::SandboxPolicy {
-                tier: crate::sandbox::SandboxTier::Sandbox,
-                model_reviewer: false,
-            },
-            ws.to_string_lossy().as_ref(),
-        );
-        // This test is cfg(macos): Seatbelt always exists there. Force the
-        // flag anyway so an early-return guard (a dead line) isn't needed.
-        let mut sandbox = sandbox;
-        sandbox.set_backend_available_for_test(true);
-        // A write outside every writable root is denied by Seatbelt; the
-        // escalation requester approves, so the command re-runs unsandboxed.
-        let target = dirs::home_dir()
-            .unwrap()
-            .join(format!("futureos-escalated-{}.txt", std::process::id()));
-        let approve: crate::sandbox::EscalationRequester =
-            Arc::new(|_request| crate::sandbox::EscalationDecision::Approved);
-        let command = format!("touch {}", target.display());
-        let result = with_tool_scope(
-            ScopeOptions {
-                workspace: ws.to_string_lossy().to_string(),
-                permission_level: "all".to_string(),
-                interrupt_flag: Arc::new(AtomicBool::new(false)),
-                sandbox: Arc::new(sandbox),
-                escalation: Some(approve),
-                on_sandboxed: None,
-            },
-            run_shell(&command, 15, false, ""),
-        )
-        .await;
-        assert!(result.is_ok(), "{result:?}");
-        assert!(target.exists(), "unsandboxed re-run created the file");
-        let _ = std::fs::remove_file(&target);
-        let _ = std::fs::remove_dir_all(&ws);
     }
 
     // ─── coverage batch 14: residual shell/sandbox arms ────────────────────
@@ -3088,7 +2912,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[allow(clippy::await_holding_lock)] // HOME must stay pinned across awaits
     #[tokio::test(flavor = "current_thread")]
-    async fn shell_sandbox_denial_post_hoc_denied_returns_annotated_output() {
+    async fn shell_sandbox_failure_returns_diagnostics_without_approval() {
         let _home_guard = crate::test_support::home_env_lock();
         let ws =
             std::env::temp_dir().join(format!("futureos-esc3-{}", crate::utils::generate_id()));
@@ -3104,15 +2928,14 @@ mod tests {
         // approved-path sibling test).
         let mut sandbox = sandbox;
         sandbox.set_backend_available_for_test(true);
-        // Seatbelt denies the write; the requester denies the escalation, so
-        // the caller gets the original output plus a "not approved" note.
+        // Seatbelt denies the write; return diagnostics without requesting
+        // approval or replaying the failed command.
         let target = dirs::home_dir().unwrap().join(format!(
             "futureos-escalated-deny-{}.txt",
             std::process::id()
         ));
-        let deny: crate::sandbox::EscalationRequester = Arc::new(|_request| {
-            crate::sandbox::EscalationDecision::Denied("stay sandboxed".to_string())
-        });
+        let deny: crate::sandbox::EscalationRequester =
+            Arc::new(|_| panic!("sandbox failure must not request approval"));
         let command = format!("touch {}", target.display());
         let result = with_tool_scope(
             ScopeOptions {
@@ -3127,8 +2950,8 @@ mod tests {
         )
         .await;
         let output = result.unwrap();
-        assert!(output.contains("not approved: stay sandboxed"), "{output}");
-        assert!(!target.exists(), "denied escalation never re-runs");
+        assert!(output.contains("was not replayed"), "{output}");
+        assert!(!target.exists(), "sandbox failure never re-runs");
         let _ = std::fs::remove_dir_all(&ws);
     }
 
