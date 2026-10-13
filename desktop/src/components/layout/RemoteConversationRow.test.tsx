@@ -63,6 +63,7 @@ async function mount(props: {
   unread?: boolean;
 } = {}) {
   const onChanged = vi.fn();
+  const onDeletedRemote = vi.fn();
   const onOpen = vi.fn();
   const onOpenRename = vi.fn();
   const container = document.createElement("div");
@@ -77,6 +78,7 @@ async function mount(props: {
         expanded={props.expanded}
         hasChildren={props.hasChildren}
         onChanged={onChanged}
+        onDeletedRemote={onDeletedRemote}
         onOpen={onOpen}
         onOpenRename={onOpenRename}
         onToggleExpanded={props.onToggleExpanded}
@@ -88,6 +90,7 @@ async function mount(props: {
   return {
     container,
     onChanged,
+    onDeletedRemote,
     onOpen,
     onOpenRename,
     action: () => container.querySelector<HTMLButtonElement>("button[aria-label='More actions']")!,

@@ -105,8 +105,14 @@ export function RemoteFilesPanel({
                 // which is what makes the two panels one behaviour. Anything else
                 // is downloaded through its own control rather than opened with a
                 // handler this machine does not have for another machine's file.
+                // Each row answers for itself. Gating every row on "anything in
+                // this panel is busy" made a second file unclickable while the
+                // first was still coming down — the transfer of one file has
+                // nothing to do with whether the reader may open another, and on
+                // a slow link it read as the panel being broken.
                 const previewable = !entry.isDir && previewKindForPath(entry.name) !== null;
-                const fetching = files.previewingPath === entry.path;
+                const fetching = files.previewingPaths.has(entry.path);
+                const downloading = files.busyPaths.has(entry.path);
                 return (
                   <div className="flex items-center gap-2 border-b border-line-soft/50 px-2 py-1.5 last:border-b-0" key={entry.path}>
                     {entry.isDir
@@ -116,7 +122,7 @@ export function RemoteFilesPanel({
                         : <File aria-hidden className="size-3.5 shrink-0 text-ink-muted" />}
                     <button
                       className="min-w-0 flex-1 truncate text-left text-sm text-ink hover:underline disabled:hover:no-underline"
-                      disabled={(!entry.isDir && !previewable) || files.loading || files.previewingPath !== null}
+                      disabled={(!entry.isDir && !previewable) || files.loading || fetching}
                       onClick={() => void (entry.isDir ? files.open(entry.path) : files.preview(entry))}
                       title={previewable ? t("filesPreview", { name: entry.name }) : entry.path}
                       type="button"
@@ -133,7 +139,7 @@ export function RemoteFilesPanel({
                                 not choose, on a machine whose conventions we are
                                 guessing at. */}
                             <IconButton
-                              disabled={files.busyPath !== null || files.previewingPath !== null}
+                              disabled={downloading || fetching}
                               icon={<Download className="size-3.5" />}
                               label={t("filesDownload", { name: entry.name })}
                               onClick={() => void files.download(entry)}

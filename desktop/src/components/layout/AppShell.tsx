@@ -668,12 +668,37 @@ function ReadyAppShell({
         tone: "error",
       });
     }
-    // A deleted conversation may be the one on screen, and nothing would say so:
-    // its row is gone from the list while the column keeps drawing it.
-    if (rows.some(row => row.desktopId === activeRemote?.desktopId && row.id === activeRemote.sessionId)) {
+    for (const row of rows) {
+      if (row.desktopId)
+        forgetRemoteConversation(row.desktopId, row.id);
+    }
+  }
+
+  /**
+   * Stop drawing a conversation that no longer exists.
+   *
+   * Both ways of deleting one land here. Only the batch did, which is why the
+   * same delete behaved differently depending on how it was asked for: from a
+   * row's own menu the conversation was really deleted on the host, its row went
+   * out of the list, and the column went on drawing its history — nothing on
+   * screen said it was gone.
+   *
+   * Decided here rather than inferred from the catalogue, because a host that
+   * does not answer drops out of the catalogue too (`useRemotePeers` keeps only
+   * the hosts that replied), and closing what the reader is reading because the
+   * network blinked would be worse than the bug.
+   */
+  function forgetRemoteConversation(desktopId: string, sessionId: string) {
+    if (activeRemote?.desktopId === desktopId && activeRemote.sessionId === sessionId) {
       setActiveRemote(null);
       setCenterMode("thread");
     }
+  }
+
+  async function handleRemoteConversationDeleted(conversation: MergedConversation) {
+    if (conversation.desktopId)
+      forgetRemoteConversation(conversation.desktopId, conversation.id);
+    await refreshRemotePeers();
   }
 
   async function handleTogglePinThread(thread: StoredThread) {
@@ -952,6 +977,7 @@ function ReadyAppShell({
     onNewWorkspace: handleOpenNewWorkspace,
     onBatchDeleteThreads: openBatchDelete,
     onDeleteRemoteConversations: handleDeleteRemoteConversations,
+    onRemoteConversationDeleted: handleRemoteConversationDeleted,
     onDeleteThread: openDelete,
     onRenameThread: openRename,
     onDeleteWorkspace: openWorkspaceDelete,
