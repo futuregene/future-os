@@ -1,5 +1,6 @@
 import type { RemoteSession, RemoteWorkspace } from "../remote/types";
 import type { MergedSessionRow } from "../remote/mergeSessions";
+import { sessionKey } from "../remote/mergeSessions";
 
 export interface SessionNode {
   session: RemoteSession;
@@ -77,6 +78,17 @@ export type CatalogRow =
     session: RemoteSession;
     depth: number;
     hasChildren: boolean;
+    /**
+     * What this row's fold is keyed by.
+     *
+     * A conversation on the machine the phone is talking to folds by its session
+     * id — the key the single-machine list already folds by, so one conversation
+     * folds the same in both lists. A peer's carries its machine, because a
+     * session id is that machine's, not global: two machines can each hold a
+     * conversation called `s1`, and one fold must not close both. The same rule
+     * the merged list's workspace headings follow, for the same reason.
+     */
+    foldId: string;
     /**
      * Which desktop the session lives on, when the list is merged.
      *
@@ -174,8 +186,7 @@ export function groupMergedRows(
 
 /**
  * The merged list as rows: a heading per workspace, with its conversations under
- * it, and the machine's own glyph on the heading when several machines are in
- * one list.
+ * it, and each conversation's forks under *that*.
  *
  * The heading carries the group key as its workspace id for a machine other than
  * the active one: a fold must not make two machines' "future-os" close together,
@@ -188,6 +199,13 @@ export function groupMergedRows(
  * list that showed both on both pages would put a machine's chats under the
  * workspace groups on the page that has no such section, and make the two pages
  * the same list.
+ *
+ * The tree is the single-machine list's, per machine (see `mergedTree`): a fork
+ * is drawn under the conversation it came from, one level in and folded by the
+ * same `+`/`−`. A merged list is not a list of roots — the machines' rows carry
+ * the same parents here as they do there — and drawing them flat left a fork
+ * indistinguishable from a conversation of its own, with no way to fold a
+ * conversation that had thirty of them.
  */
 export function mergedRows(
   rows: readonly MergedSessionRow[],
@@ -195,6 +213,15 @@ export function mergedRows(
   activeDesktopId: string | null,
   tab: "chat" | "workspace",
   collapsed: ReadonlySet<string> = new Set(),
+  /**
+   * Which conversations have their forks on screen, by session id.
+   *
+   * The same state the single-machine list folds by, and for the same reason:
+   * it is the same fork. One conversation therefore opens and closes together
+   * whichever list is drawing it, instead of a fold that depends on where the
+   * reader happens to be looking.
+   */
+  expanded: ReadonlySet<string> = new Set(),
 ): CatalogRow[] {
   const search = query.trim().toLocaleLowerCase();
   const matches = (row: (typeof rows)[number]): boolean =>
@@ -208,19 +235,53 @@ export function mergedRows(
       ? row.session.mode === "workspace"
       : row.session.mode !== "workspace";
   const listed = rows.filter(row => matches(row) && onThisPage(row));
-  const { pinned, workspaces, chats } = groupMergedRows(listed);
-  const sessionRow = (row: (typeof rows)[number]): CatalogRow => ({
+  const { children, rootOf } = mergedTree(listed);
+  const sessionRow = (
+    row: (typeof rows)[number],
+    depth: number,
+    hasChildren: boolean,
+  ): Extract<CatalogRow, { kind: "session" }> => ({
     kind: "session" as const,
     key: row.key,
     session: row.session,
-    depth: 0,
-    hasChildren: false,
+    depth,
+    hasChildren,
+    foldId: row.desktopId === activeDesktopId ? row.session.sessionId : row.key,
     desktopId: row.desktopId,
   });
+  /**
+   * A conversation and the forks under it, parents before children.
+   *
+   * A fork whose conversation this page does not hold — one filed on the other
+   * page, or hidden by the search — is a root, exactly as a conversation whose
+   * parent is gone is: `mergedTree` hangs nothing under a row that is not here.
+   * The fold is the single-machine list's, and a search ignores it, so a hidden
+   * fork stays discoverable at the top level — how that list answers the same
+   * question.
+   */
+  const block = (row: (typeof rows)[number], depth = 0): CatalogRow[] => {
+    const forks = children.get(row.key) ?? [];
+    const head = sessionRow(row, search ? 0 : depth, !search && forks.length > 0);
+    if (!search && !expanded.has(head.foldId)) return [head];
+    return [head, ...forks.flatMap(fork => block(fork, depth + 1))];
+  };
+  /** Everything under a conversation, folded ones included — a heading counts them. */
+  const subtree = (row: (typeof rows)[number]): number =>
+    1 + (children.get(row.key) ?? []).reduce((total, fork) => total + subtree(fork), 0);
+  // Sections and their order are decided by the *conversation* each row hangs
+  // under — its root — rather than by the fork's own fields, so a fork follows
+  // the conversation it came from: the forks of a pinned conversation are part
+  // of that shortcut, and one forked inside a workspace is under that heading.
+  // A fork is younger than its parent by construction, so filing it by its own
+  // fields or time would put it above the row the reader just unfolded.
+  const roots = listed.filter(
+    row => (rootOf.get(row.key) ?? row).key === row.key,
+  );
+  const { pinned, workspaces, chats } = groupMergedRows(roots);
   const out: CatalogRow[] = [];
   // Pinned conversations are shortcuts promoted above the groups, exactly as in
   // the single-machine list.
-  for (const row of pinned) out.push(sessionRow(row));
+  for (const row of pinned) out.push(...block(row));
   for (const group of workspaces) {
     const workspaceId = group.workspaceId ?? "";
     // This machine's heading folds by the workspace id alone — the key the
@@ -233,18 +294,67 @@ export function mergedRows(
       key: `merged:${group.key}`,
       workspace: { id, name: group.label ?? workspaceId, path: "" },
       workspaceId,
-      count: group.rows.length,
+      count: group.rows.reduce((total, row) => total + subtree(row), 0),
       ...(group.desktopId ? { desktopId: group.desktopId } : {}),
     });
     // A folded group keeps its heading and its count and hides its rows — and a
     // search ignores folds, so a hidden conversation stays discoverable (the
     // same rule the single-machine list follows).
     if (search || !collapsed.has(id)) {
-      for (const row of group.rows) out.push(sessionRow(row));
+      for (const row of group.rows) out.push(...block(row));
     }
   }
-  for (const row of chats) out.push(sessionRow(row));
+  for (const row of chats) out.push(...block(row));
   return out;
+}
+
+/**
+ * Where each listed row hangs, keyed by the row's own key.
+ *
+ * Built one machine at a time, because a parent is named by a session id that
+ * is only meaningful on the machine that issued it: two machines can each hold
+ * a conversation called `s1`, and one machine's row must not adopt the other's
+ * fork — the same reason a merged row is addressed by `(machine, id)` at all.
+ *
+ * `buildSessionTree` is the single-machine list's own tree, reused rather than
+ * restated: "pinned conversations are roots, a parent that is not listed makes
+ * its child a root, a cycle loses one edge" is one relation, and a second
+ * implementation of it would be a second answer to "whose fork is this". This
+ * is only the mapping from its session-shaped nodes back to the merged rows,
+ * which are what carry the machine.
+ */
+function mergedTree(listed: readonly MergedSessionRow[]): {
+  /** A conversation's forks, in the order the catalogue lists them. */
+  children: Map<string, MergedSessionRow[]>;
+  /** The conversation each row hangs under, itself when it hangs under none. */
+  rootOf: Map<string, MergedSessionRow>;
+} {
+  const byKey = new Map(listed.map(row => [row.key, row]));
+  const byDesktop = new Map<string, MergedSessionRow[]>();
+  for (const row of listed) {
+    const machine = byDesktop.get(row.desktopId);
+    if (machine) machine.push(row);
+    else byDesktop.set(row.desktopId, [row]);
+  }
+  const children = new Map<string, MergedSessionRow[]>();
+  const rootOf = new Map<string, MergedSessionRow>();
+  for (const [desktopId, machineRows] of byDesktop) {
+    const walk = (nodes: SessionNode[], root: MergedSessionRow | null): void => {
+      for (const node of nodes) {
+        const row = byKey.get(sessionKey(desktopId, node.session.sessionId));
+        if (!row) continue;
+        const blockRoot = root ?? row;
+        rootOf.set(row.key, blockRoot);
+        const forks = node.children
+          .map(child => byKey.get(sessionKey(desktopId, child.session.sessionId)))
+          .filter((fork): fork is MergedSessionRow => fork !== undefined);
+        if (forks.length > 0) children.set(row.key, forks);
+        walk(node.children, blockRoot);
+      }
+    };
+    walk(buildSessionTree(machineRows.map(row => row.session)), null);
+  }
+  return { children, rootOf };
 }
 
 export function catalogRows(
@@ -270,6 +380,8 @@ export function catalogRows(
           session: node.session,
           depth: search ? 0 : depth,
           hasChildren: !search && node.children.length > 0,
+          // One machine's list: the session id is the whole identity.
+          foldId: node.session.sessionId,
         });
       if (search || expanded.has(node.session.sessionId))
         append(node.children, depth + 1, workspaceMatches);

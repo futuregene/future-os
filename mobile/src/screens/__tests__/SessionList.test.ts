@@ -1359,10 +1359,11 @@ const mergedRow = (
   sessionId: string,
   title: string,
   extra: Partial<RemoteSession> = {},
+  lastMessageAt = 1,
 ) => ({
   key: `${desktopId}::${sessionId}`,
   desktopId,
-  lastMessageAt: 1,
+  lastMessageAt,
   session: {
     sessionId,
     threadId: `t-${sessionId}`,
@@ -1657,4 +1658,129 @@ test("a row's own machine is named only when several machines are in the list", 
     "desk-b",
   );
   expect(glyphs()).toEqual([]);
+});
+
+/** The `+`/`−` in front of a conversation, in list order. */
+const foldToggles = () =>
+  tree.root.findAll(node =>
+    typeof node.props.onPress === "function"
+    && (node.props.accessibilityLabel === "sessions.expandChildren"
+      || node.props.accessibilityLabel === "sessions.collapseChildren"),
+  );
+
+/**
+ * A row in these tests' own workspace.
+ *
+ * Workspace folds are persisted (in storage and in a module-level cache), so a
+ * fold another test performed would hide this test's rows; a workspace of its
+ * own is what keeps a tree assertion about order and indent independent of
+ * which tests ran before it. `lastMessageAt` is explicit because a fork is
+ * *newer* than the conversation it came from by construction — the fixture that
+ * hid the desktop's version of this bug had it older.
+ */
+const forkRow = (
+  desktopId: string,
+  sessionId: string,
+  title: string,
+  extra: Partial<RemoteSession> = {},
+  lastMessageAt = 1,
+) => mergedRow(
+  desktopId,
+  sessionId,
+  title,
+  { workspaceId: "w-forks", workspaceName: "Forks", ...extra },
+  lastMessageAt,
+);
+
+/**
+ * The merged list draws a conversation's forks under it — on either machine.
+ *
+ * A merged list is not a list of roots: these rows carry the same parent here
+ * as they do in the single-machine list, and drawing them flat lost the tree —
+ * a fork could not be told from a conversation of its own, and a conversation
+ * with thirty forks could not be folded away. Asserted by order and indent
+ * rather than by "the row is somewhere on screen": a fork's own last message is
+ * newer than its conversation's, so a list that ranked rows by time put the
+ * fork above the row it came from, and pressing `+` looked like it did nothing
+ * because the row had been on screen all along.
+ */
+test("the merged list draws each machine's forks under the conversation they came from", () => {
+  renderMerged([
+    forkRow("desk-a", "a1", "Local parent", {}, 5),
+    forkRow("desk-b", "b1", "Remote parent", {}, 4),
+    forkRow("desk-a", "a2", "Local fork", { parentSessionId: "a1" }, 9),
+    forkRow("desk-b", "b2", "Remote fork", { parentSessionId: "b1" }, 8),
+  ]);
+
+  // Folded by default, exactly as in the single-machine list: the two
+  // conversations, each with the `+` that unfolds its own forks.
+  expect(mergedTitles()).toEqual(["Local parent", "Remote parent"]);
+  expect(rowInset("Local parent")).toBe(ROW_INSET);
+  expect(foldToggles()).toHaveLength(2);
+
+  act(() => foldToggles()[0]!.props.onPress());
+  expect(mergedTitles()).toEqual(["Local parent", "Local fork", "Remote parent"]);
+
+  act(() => foldToggles()[1]!.props.onPress());
+  expect(mergedTitles()).toEqual(["Local parent", "Local fork", "Remote parent", "Remote fork"]);
+  // One level in, so a fork's title starts on the column the conversation's
+  // title does — the geometry both lists and the desktop app use.
+  expect(rowInset("Local fork")).toBe(ROW_INSET + TOGGLE_WIDTH + TOGGLE_GAP);
+  expect(rowInset("Remote fork")).toBe(ROW_INSET + TOGGLE_WIDTH + TOGGLE_GAP);
+});
+
+/**
+ * A fork belongs to the machine that issued its conversation's id.
+ *
+ * A session id is unique per machine, not globally: two machines can each hold
+ * a conversation called `m1`, and both can have a fork of it. The tree is built
+ * one machine at a time for the same reason a row is addressed by
+ * `(machine, id)` — building it over the merged rows as one list handed one
+ * machine's fork to the other's conversation, and the fold follows: unfolding
+ * the peer's conversation leaves this machine's shut, exactly as the merged
+ * list's workspace headings keep one machine's fold off another's.
+ */
+test("a fork is not adopted by another machine's conversation with the same id", () => {
+  renderMerged([
+    forkRow("desk-a", "m1", "Local one", {}, 5),
+    forkRow("desk-b", "m1", "Remote one", {}, 4),
+    forkRow("desk-a", "m2", "Local fork", { parentSessionId: "m1" }, 3),
+    forkRow("desk-b", "m2", "Remote fork", { parentSessionId: "m1" }, 2),
+  ]);
+
+  // Each machine's `m1` carries exactly its own fork.
+  const rowFolds = (title: string) =>
+    ["Plus", "Minus"].flatMap(name =>
+      sessionBody(title).parent!.findAll(node => node.type === name));
+  expect(rowFolds("Local one")).toHaveLength(1);
+  expect(rowFolds("Remote one")).toHaveLength(1);
+  expect(mergedTitles()).toEqual(["Local one", "Remote one"]);
+
+  act(() => foldToggles()[1]!.props.onPress());
+  expect(mergedTitles()).toEqual(["Local one", "Remote one", "Remote fork"]);
+  act(() => foldToggles()[0]!.props.onPress());
+  expect(mergedTitles()).toEqual(["Local one", "Local fork", "Remote one", "Remote fork"]);
+});
+
+/**
+ * A fork follows its conversation into the section it was filed in.
+ *
+ * A pinned conversation is a shortcut promoted above the groups, and its forks
+ * are part of it: filed by the fork's own fields they would sit under the
+ * workspace heading, away from the `+` the reader just pressed, while the same
+ * list on one machine shows them directly underneath. A fork is a
+ * conversation's, so it takes that conversation's section — here and on the
+ * desktop app alike.
+ */
+test("a fork stays beside a pinned conversation in the shortcut section", () => {
+  renderMerged([
+    forkRow("desk-a", "p1", "Pinned parent", { pinned: true }, 5),
+    forkRow("desk-a", "p2", "Fork of pinned", { parentSessionId: "p1" }, 9),
+    forkRow("desk-b", "q1", "Remote parent", {}, 4),
+  ]);
+
+  expect(mergedTitles()).toEqual(["Pinned parent", "Remote parent"]);
+  act(() => button("sessions.expandChildren").props.onPress());
+  expect(mergedTitles()).toEqual(["Pinned parent", "Fork of pinned", "Remote parent"]);
+  expect(rowInset("Fork of pinned")).toBe(ROW_INSET + TOGGLE_WIDTH + TOGGLE_GAP);
 });

@@ -191,7 +191,7 @@ export function SessionList({
     commandsFor(row.desktopId ?? null);
   const rows = useMemo(
     () => (merged && merged.length > 0
-      ? sessionTreeMergedRows(merged, query, activeDesktopId, tab, collapsed)
+      ? sessionTreeMergedRows(merged, query, activeDesktopId, tab, collapsed, expanded)
       : catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query)),
     [remote.sessions, remote.workspaces, merged, tab, collapsed, expanded, query, activeDesktopId],
   );
@@ -569,12 +569,12 @@ export function SessionList({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={t(
-              expanded.has(session.sessionId)
+              expanded.has(item.foldId)
                 ? "sessions.collapseChildren"
                 : "sessions.expandChildren",
             )}
-            accessibilityState={{ expanded: expanded.has(session.sessionId) }}
-            onPress={() => toggleFold(session.sessionId, false)}
+            accessibilityState={{ expanded: expanded.has(item.foldId) }}
+            onPress={() => toggleFold(item.foldId, false)}
             // The toggle is laid out 16px wide (TOGGLE_WIDTH) so a child's row
             // start lands on its parent's title column, exactly as on desktop.
             // hitSlop then restores the 44x44 touch target: 16 into the list's
@@ -586,7 +586,7 @@ export function SessionList({
             {/* A +/− tree toggle, never the chevron the workspace headers fold
                 with: on a phone both controls share the 8–24 column, so the
                 glyph is what tells them apart. */}
-            {expanded.has(session.sessionId) ? (
+            {expanded.has(item.foldId) ? (
               <Minus size={16} color={colors.inkSoft} />
             ) : (
               <Plus size={16} color={colors.inkSoft} />
