@@ -8,13 +8,15 @@
 //!     (Allow) / errors (Deny) before the in-process op runs.
 //!   - shell: the rules compile into a Seatbelt profile (macOS) or Bubblewrap
 //!     mount plan (Linux); Ask and Deny become OS-level read/write denials, and
-//!     a resulting failure surfaces via the escalation flow.
+//!     a resulting failure returns directly to the model without approval or replay.
 //!
 //! Network is unrestricted. The whole system is gated by `enabled`: only GUI
 //! sessions opt in; everything else runs fully open.
 
 pub mod backend;
 pub(crate) mod diagnostics;
+#[cfg(not(windows))]
+pub(crate) mod file_request;
 pub mod linux;
 pub mod paths;
 pub mod rules;
@@ -222,6 +224,17 @@ impl ResolvedSandbox {
         } else {
             SandboxBackendReceipt::Unavailable
         };
+    }
+
+    #[cfg(all(test, not(windows)))]
+    pub(crate) fn with_rules_for_test(rules: RuleSet) -> Self {
+        let mut sandbox = Self {
+            workspace: rules.workspace.clone(),
+            rules,
+            ..Self::default()
+        };
+        sandbox.set_backend_available_for_test(true);
+        sandbox
     }
 
     #[cfg(test)]
@@ -1202,7 +1215,7 @@ pub fn seatbelt_profile(sandbox: &ResolvedSandbox) -> String {
     seatbelt::build_profile(sandbox)
 }
 
-// ─── Escalation (explicit or post-hoc approval) ───────────────────────────
+// ─── Escalation (explicit model request only) ───────────────────────────
 
 /// Set by the execution branch, not inferred from model text or stderr.
 /// Presentation metadata only; both variants require the same approval.
@@ -1213,7 +1226,7 @@ pub enum EscalationTrigger {
     SandboxFailure,
 }
 
-/// A request to re-run a command outside the sandbox, raised from inside the
+/// A request to execute a command outside the sandbox, raised from inside the
 /// shell tool after a sandbox denial or when the model asks for it explicitly.
 #[derive(Debug, Clone)]
 pub struct EscalationRequest {
@@ -1231,7 +1244,7 @@ pub enum EscalationDecision {
     ContextInvalidated(String),
 }
 
-/// Callback the RPC layer injects so `run_shell` can raise a `sandbox_escalation`
+/// Callback the RPC layer injects so an explicit model request can raise a `sandbox_escalation`
 /// approval without touching RPC/UI internals. Blocks until the user decides.
 pub type EscalationRequester = Arc<dyn Fn(&EscalationRequest) -> EscalationDecision + Send + Sync>;
 

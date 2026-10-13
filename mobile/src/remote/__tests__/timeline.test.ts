@@ -1969,6 +1969,23 @@ describe("shared-projection semantic flags", () => {
 });
 
 describe("approval decisions", () => {
+  test("file permission events retain purpose and scope until the matching decision", () => {
+    const payload = {
+      approval_request_id: "precise-1", kind: "file_permissions", tool_name: "shell",
+      action: {
+        tool: "shell", category: "file_permissions", behavior: "access_files",
+        command: "save remaining report", justification: "Save the already generated report",
+        targets: [{ path: "/reports/output.txt", access: "write", scope: "file" }],
+      },
+    };
+    const state = applyStreamEvent(emptyTimeline(), {
+      type: "approval_request", data: JSON.stringify(payload), runId: "run-1", idx: 1,
+    });
+    expect(state.items[0]).toMatchObject({ kind: "approval", payload });
+    const decided = markApprovalDecision(state, "precise-1", "approved");
+    expect(decided.items[0]).toMatchObject({ kind: "approval", payload, decision: "approved" });
+  });
+
   test("a repeated approval_request with the same id does not duplicate the card", () => {
     let state = applyStreamEvent(emptyTimeline(), {
       type: "approval_request",

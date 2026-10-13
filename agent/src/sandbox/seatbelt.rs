@@ -7,7 +7,7 @@
 //! each layer) — the last SBPL match then equals the engine's first match.
 //!
 //! `ask` and `deny` both compile to an OS-level denial (the shell can’t prompt
-//! mid-syscall); a resulting failure surfaces via the escalation flow. Network
+//! mid-syscall); a resulting failure returns to the model without replay. Network
 //! is unrestricted in v2.
 
 #![cfg(target_os = "macos")]
@@ -34,6 +34,7 @@ fn sb_quote_str(raw: &str) -> String {
 /// An SBPL filter fragment for a rule's matcher.
 fn matcher_filter(rule: &PathRule) -> String {
     match rule.matcher_sbpl() {
+        MatcherSbpl::Literal(path) => format!("(literal {})", sb_quote(path)),
         MatcherSbpl::Subtree(base) => format!("(subpath {})", sb_quote(base)),
         // Pass an ordinary SBPL string to `regex`, not a #"..." literal:
         // only the string reader consumes sb_quote_str's escape layer.

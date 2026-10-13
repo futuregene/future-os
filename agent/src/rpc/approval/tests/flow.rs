@@ -594,7 +594,11 @@ fn additional_permissions_fail_closed_when_windows_backend_is_inactive() {
     );
     let result = result.expect("inactive backend must reject before execution");
     assert!(result.is_error);
-    assert!(result.result.contains("backend is not active"));
+    assert!(result.result.contains(if cfg!(windows) {
+        "backend is not active"
+    } else {
+        "requires an active OS sandbox"
+    }));
 }
 
 #[test]
@@ -617,8 +621,12 @@ fn additional_permissions_empty_write_falls_through_to_manual_shell() {
         }),
         &sandbox,
     );
-    // pwd is a literal builtin → auto-allowed without a prompt.
-    assert!(result.is_none());
+    // Windows retains its empty-write compatibility; Unix rejects grants without an OS sandbox.
+    if cfg!(windows) {
+        assert!(result.is_none());
+    } else {
+        assert!(result.unwrap().is_error);
+    }
     let result = gate.request(
         &broadcaster,
         "session",

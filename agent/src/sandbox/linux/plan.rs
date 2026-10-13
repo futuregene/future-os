@@ -121,6 +121,10 @@ impl LinuxSandboxPlan {
 
         for (priority, rule_index, _layer, rule) in &flattened {
             let paths = match &rule.matcher {
+                RuleMatcherSnapshot::Literal { path } => {
+                    validate_absolute(path)?;
+                    vec![path.clone()]
+                }
                 RuleMatcherSnapshot::Subtree { lexical, canonical } => {
                     validate_absolute(lexical)?;
                     validate_absolute(canonical)?;
@@ -387,6 +391,7 @@ fn rule_blocks(rule: &RuleSnapshot, path: &Path, access: Access) -> bool {
         return false;
     }
     match &rule.matcher {
+        RuleMatcherSnapshot::Literal { path: target } => path == target,
         RuleMatcherSnapshot::Subtree { lexical, canonical } => {
             paths::path_within(path, lexical) || paths::path_within(path, canonical)
         }
@@ -408,6 +413,7 @@ fn effective_blocked(
 fn rule_matches(rule: &RuleSnapshot, path: &Path, access: Access) -> bool {
     access_overlap(rule.access, access)
         && match &rule.matcher {
+            RuleMatcherSnapshot::Literal { path: target } => path == target,
             RuleMatcherSnapshot::Subtree { lexical, canonical } => {
                 paths::path_within(path, lexical) || paths::path_within(path, canonical)
             }
