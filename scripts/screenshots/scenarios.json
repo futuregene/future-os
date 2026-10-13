@@ -1545,6 +1545,85 @@
             "shot": "d-remote-tree-open.png"
           }
         ]
+      },
+      "remote-draft-pickers": {
+        "note": "A new conversation on a host offers that host's models and the thinking level it will run with.",
+        "url": "http://localhost:5299/shot/",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "hover": "在 图表脚本 中新建对话"
+          },
+          {
+            "tap": "在 图表脚本 中新建对话"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "(() => {\n  const byLabel = (needle) => [...document.querySelectorAll('button')]\n    .find(node => (node.getAttribute('aria-label') || '').includes(needle));\n  const model = byLabel('使用的模型');\n  const level = byLabel('思考等级');\n  if (!model || !level) throw new Error('the draft has no model/level pickers');\n  // Enabled means the host's catalogue arrived: an empty catalogue disables it.\n  if (model.disabled) throw new Error('the model picker is disabled — no catalogue for a draft');\n  const modelText = (model.textContent || '').trim();\n  if (!modelText) throw new Error('the model picker shows nothing');\n  const levelText = (level.textContent || '').trim();\n  // The level a new conversation on that host runs with. \"关闭\"/\"Off\" is the old\n  // fallback, which is not a default anybody chose.\n  if (!levelText || /^(关闭|Off)$/.test(levelText))\n    throw new Error('the thinking level is not the host default: ' + levelText);\n  return 'model=' + modelText + ' level=' + levelText;\n})()"
+          },
+          {
+            "shot": "d-remote-draft-pickers.png",
+            "eval": "(() => {\n  const byLabel = (needle) => [...document.querySelectorAll('button')]\n    .find(node => (node.getAttribute('aria-label') || '').includes(needle));\n  const model = byLabel('使用的模型');\n  const level = byLabel('思考等级');\n  if (!model || !level) throw new Error('the draft has no model/level pickers');\n  // Enabled means the host's catalogue arrived: an empty catalogue disables it.\n  if (model.disabled) throw new Error('the model picker is disabled — no catalogue for a draft');\n  const modelText = (model.textContent || '').trim();\n  // A model the catalogue knows is shown by its *label*. A reference the\n  // catalogue does not contain is shown raw — which is what a draft shows when it\n  // reads a conversation that does not exist instead of the host's catalogue.\n  if (modelText.includes('/'))\n    throw new Error('the draft shows an unresolved model reference: ' + modelText);\n  const levelText = (level.textContent || '').trim();\n  if (!levelText || /^(关闭|Off)$/.test(levelText))\n    throw new Error('the thinking level is not the host default: ' + levelText);\n  return 'model=' + modelText + ' level=' + levelText;\n})()"
+          }
+        ]
+      },
+      "remote-add-asks-machine": {
+        "note": "With every machine in one list, starting a conversation asks which machine it belongs to.",
+        "url": "http://localhost:5299/shot/",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const add = [...document.querySelectorAll(\"button[aria-label='新建对话'], button[aria-label='New chat']\")][0];\n  if (!add) throw new Error('the chat section offers no way to start a conversation');\n  add.click();\n  return new Promise((resolve) => {\n    setTimeout(() => {\n      const items = [...document.querySelectorAll(\"[role='menuitem']\")].map(node => (node.textContent || '').trim());\n      if (items.length < 2) throw new Error('the control did not ask which machine: ' + JSON.stringify(items));\n      if (!items.some(label => label.includes('本机') || label.includes('本电脑')))\n        throw new Error('this machine is not offered: ' + JSON.stringify(items));\n      if (!items.some(label => label.includes('iMac')))\n        throw new Error('the paired machine is not offered: ' + JSON.stringify(items));\n      resolve(items.join(' / '));\n    }, 250);\n  });\n})()"
+          },
+          {
+            "shot": "d-remote-add-asks-machine.png"
+          }
+        ]
+      },
+      "remote-add-one-machine": {
+        "note": "With one machine on screen, the chat section's + starts a conversation on that machine.",
+        "url": "http://localhost:5299/shot/",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "全部设备"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "tapText": "工作室 iMac"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  const add = [...document.querySelectorAll(\"button[aria-label='新建对话'], button[aria-label='New chat']\")];\n  if (add.length === 0) throw new Error('the chat section offers no way to start a conversation');\n  return 'controls=' + add.length;\n})()"
+          },
+          {
+            "shot": "d-remote-add-one-machine.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",

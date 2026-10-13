@@ -11,6 +11,7 @@ import { iconGlyph } from "../../features/remote-peer/peerIcons";
 import { RemoteWorkspaceMenu } from "../../features/remote-peer/RemoteWorkspaceMenu";
 import { ChatSectionMenu } from "./ActivityRailMenus";
 import { RailGroupHeader, RailHeaderButton, RailSectionHeader, RailSectionToggle } from "./RailChrome";
+import { RailNewChatButton } from "./RailNewChatButton";
 import { RemoteConversationRow } from "./RemoteConversationRow";
 
 /**
@@ -85,8 +86,13 @@ export function MergedRows({
   /** Re-read a host's catalogue after one of its rows was acted on. */
   onChangedRemote: () => void;
   onNewChat?: () => void;
-  /** Start a conversation in a workspace on another machine. */
-  onNewChatInWorkspace?: (desktopId: string, workspaceId: string) => void;
+  /**
+   * Start a conversation on another machine: in a workspace, or with none.
+   *
+   * `null` is a conversation with no workspace of its own — the same thing the
+   * chat section's own control asks for on this machine.
+   */
+  onNewChatInWorkspace?: (desktopId: string, workspaceId: string | null) => void;
   onNewWorkspace?: () => void;
   onOpenRemote: (conversation: MergedConversation) => void;
   onRenameRemote: (conversation: MergedConversation) => void;
@@ -381,15 +387,19 @@ export function MergedRows({
                     />
                   )
                 : null}
-              {showLocalActions && onNewChat
-                ? (
-                    <RailHeaderButton
-                      icon={<Plus className="size-3.5" />}
-                      label={t("activityRail.newChatShort")}
-                      onClick={onNewChat}
-                    />
-                  )
-                : null}
+              {/* A conversation lives on one machine, and the list can be
+                  showing one or all of them — so this asks only when there is
+                  something to ask. Filtering to a host used to leave the reader
+                  no way to start a conversation *on* the host they had just
+                  chosen to look at. */}
+              <RailNewChatButton
+                filter={filter}
+                onNewChatLocal={onNewChat}
+                onNewChatRemote={onNewChatInWorkspace
+                  ? (desktopId, workspaceId) => onNewChatInWorkspace(desktopId, workspaceId)
+                  : undefined}
+                peers={peers}
+              />
             </>
           )}
         >

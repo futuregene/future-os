@@ -73,7 +73,7 @@ async function render(props: {
   expandedRemoteRows?: ReadonlySet<string>;
   filter?: DeviceFilter;
   onNewChat?: () => void;
-  onNewChatInWorkspace?: (desktopId: string, workspaceId: string) => void;
+  onNewChatInWorkspace?: (desktopId: string, workspaceId: string | null) => void;
   onNewWorkspace?: () => void;
   onSelectChats?: () => void;
   onSelectWorkspaceChats?: (groupKey: string) => void;
@@ -904,4 +904,131 @@ it("offers the chat section menu in every mode, and the creation controls only w
   expect(remoteOnly.container.querySelector("button[aria-label='Chat section actions']")).not.toBeNull();
   expect(remoteOnly.container.querySelector("button[aria-label='New chat']")).toBeNull();
   await remoteOnly.unmount();
+});
+
+// ── starting a conversation ─────────────────────────────────────────────────
+
+/**
+ * With one machine on screen there is nothing to ask, so the control acts.
+ *
+ * It used to be offered only for *this* machine, so filtering the list to a host
+ * left the reader with no way to start a conversation on the host they had just
+ * chosen to look at — the one machine whose conversations they were reading.
+ */
+it("starts a conversation on the machine the list is filtered to", async () => {
+  const onNewChatInWorkspace = vi.fn();
+  const onNewChat = vi.fn();
+  const view = await render({
+    filter: { kind: "device", desktopId: "desktop_a" },
+    onNewChat,
+    onNewChatInWorkspace,
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a" })],
+    threadById: new Map(),
+  });
+
+  const add = view.container.querySelector<HTMLButtonElement>("button[aria-label='New chat']")!;
+  expect(add).not.toBeNull();
+  await act(async () => add.click());
+
+  // On that host, with no workspace of its own.
+  expect(onNewChatInWorkspace).toHaveBeenCalledWith("desktop_a", null);
+  expect(onNewChat).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+/** Filtered to this machine, the control still makes a conversation here. */
+it("starts a conversation on this machine when it is the one filtered to", async () => {
+  const onNewChat = vi.fn();
+  const view = await render({
+    filter: { kind: "device", desktopId: null },
+    onNewChat,
+    peers: [],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [conversation()],
+    threadById: new Map([["thread_1", thread("thread_1")]]),
+  });
+
+  await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='New chat']")!.click());
+  expect(onNewChat).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
+/**
+ * Showing every machine, the machine *is* the choice, so the control asks.
+ *
+ * A conversation lives on one machine, and the list can be showing all of them —
+ * so "+" cannot decide on its own which machine the reader meant.
+ */
+it("asks which machine when the list shows all of them", async () => {
+  const onNewChat = vi.fn();
+  const onNewChatInWorkspace = vi.fn();
+  const view = await render({
+    filter: { kind: "all" },
+    onNewChat,
+    onNewChatInWorkspace,
+    peers: [peer("desktop_a", "Studio iMac"), peer("desktop_b", "Mac mini")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a" })],
+    threadById: new Map(),
+  });
+
+  await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='New chat']")!.click());
+  // Every machine is named, this one first.
+  const choices = [...view.container.querySelectorAll("[role='menuitem']")].map(node => node.textContent);
+  // The rail's own name for each machine, so a conversation started here lands
+  // where the reader expects.
+  expect(choices).toEqual(["This computer", "Studio iMac", "Mac mini"]);
+
+  await act(async () => {
+    [...view.container.querySelectorAll<HTMLElement>("[role='menuitem']")]
+      .find(node => node.textContent === "Mac mini")!
+      .click();
+  });
+  expect(onNewChatInWorkspace).toHaveBeenCalledWith("desktop_b", null);
+  expect(onNewChat).not.toHaveBeenCalled();
+  // The menu closes behind the choice.
+  expect([...view.container.querySelectorAll("[role='menuitem']")]).toHaveLength(0);
+  await view.unmount();
+});
+
+/** And this machine is one of the choices, not an implicit default. */
+it("starts a conversation here when this machine is chosen", async () => {
+  const onNewChat = vi.fn();
+  const view = await render({
+    filter: { kind: "all" },
+    onNewChat,
+    onNewChatInWorkspace: vi.fn(),
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [conversation()],
+    threadById: new Map([["thread_1", thread("thread_1")]]),
+  });
+
+  await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='New chat']")!.click());
+  await act(async () => {
+    [...view.container.querySelectorAll<HTMLElement>("[role='menuitem']")]
+      .find(node => node.textContent === "This computer")!
+      .click();
+  });
+  expect(onNewChat).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
+/** With no machines paired there is nothing to choose between. */
+it("acts directly when no other machine is paired", async () => {
+  const onNewChat = vi.fn();
+  const view = await render({
+    filter: { kind: "all" },
+    onNewChat,
+    peers: [],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [conversation()],
+    threadById: new Map([["thread_1", thread("thread_1")]]),
+  });
+
+  await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='New chat']")!.click());
+  expect(onNewChat).toHaveBeenCalledTimes(1);
+  await view.unmount();
 });
