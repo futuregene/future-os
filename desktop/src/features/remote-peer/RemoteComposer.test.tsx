@@ -3,6 +3,8 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
 import { RemoteComposer } from "./RemoteComposer";
+import { clearRemoteComposerDraft } from "./remoteComposerDraft";
+import { resetRemoteOutbox } from "./remotePromptOutbox";
 
 /**
  * The composer's contract is about *which machine* a prompt or a stop goes to,
@@ -15,12 +17,17 @@ const prompt = vi.fn<(
   sessionId: string,
   message: string,
   attachments?: string[],
+  workspaceId?: string | null,
+  fresh?: { modelId?: string | null; thinkingLevel?: string | null } | null,
+  commandId?: string,
 ) => Promise<{ sessionId: string; threadId: string }>>();
 const abort = vi.fn<(desktopId: string, sessionId: string) => Promise<unknown>>();
 const upload = vi.fn<(input: { desktopId: string; path: string }) => Promise<{ uploadId: string; name: string; contentHash: string }>>();
 const listSkills = vi.fn<(desktopId: string) => Promise<unknown[]>>();
+const getPromptReceipt = vi.fn<(desktopId: string, commandId: string) => Promise<{ sessionId: string; threadId: string; runId: string } | null>>();
 vi.mock("./remotePeerClient", () => ({
   promptRemoteConversation: (...args: Parameters<typeof prompt>) => prompt(...args),
+  getRemotePromptReceipt: (...args: Parameters<typeof getPromptReceipt>) => getPromptReceipt(...args),
   abortRemoteRun: (...args: Parameters<typeof abort>) => abort(...args),
   uploadRemoteFile: (...args: Parameters<typeof upload>) => upload(...args),
   // The `/` menu's skills, which are the host's own list.
@@ -69,6 +76,7 @@ const peer = {
 
 async function mount(props: {
   canCompact?: boolean;
+  desktopId?: string;
   onCompact?: () => void;
   onCreated?: (sessionId: string) => void;
   onSent?: () => void;
@@ -86,7 +94,7 @@ async function mount(props: {
     root.render(
       <RemoteComposer
         canCompact={props.canCompact ?? false}
-        desktopId="desktop_a"
+        desktopId={props.desktopId ?? "desktop_a"}
         onCompact={props.onCompact}
         onCreated={onCreated}
         onSent={onSent}
@@ -139,6 +147,12 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
+  // The composer persists drafts and outbox in localStorage; without this
+  // tests leak queued prompts and staged uploads between cases.
+  localStorage.clear();
+  clearRemoteComposerDraft("desktop_a", "sess_1");
+  resetRemoteOutbox();
+
   saveFile.mockReset();
   saveImage.mockReset();
   nativePaths.mockReset().mockResolvedValue([]);
@@ -146,6 +160,7 @@ beforeEach(() => {
 
   listSkills.mockReset().mockResolvedValue([]);
   prompt.mockReset().mockResolvedValue({ sessionId: "sess_1", threadId: "thread_1" });
+  getPromptReceipt.mockReset().mockResolvedValue(null);
   abort.mockReset().mockResolvedValue(undefined);
   upload.mockReset().mockResolvedValue({ uploadId: "upload_1", name: "notes.txt", contentHash: "abc" });
   openDialog.mockReset().mockResolvedValue("/local/notes.txt");
@@ -157,7 +172,7 @@ it("prompts the conversation it belongs to and clears only on success", async ()
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "hello host", [], null, { modelId: null, thinkingLevel: null });
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "hello host", [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
   expect(view.onSent).toHaveBeenCalledTimes(1);
   expect(view.input.value).toBe("");
   // An existing conversation was not created, so nothing adopts an id.
@@ -176,7 +191,7 @@ it("adopts the conversation the host created for a draft", async () => {
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "", "first message", [], null, { modelId: null, thinkingLevel: null });
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "", "first message", [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
   expect(view.onCreated).toHaveBeenCalledWith("sess_new");
   expect(view.onSent).toHaveBeenCalledTimes(1);
   await view.unmount();
@@ -376,7 +391,7 @@ it("sends the staged files as attachment references", async () => {
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please read this", ["upload_7"], null, { modelId: null, thinkingLevel: null });
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "please read this", ["upload_7"], null, { modelId: null, thinkingLevel: null }, expect.any(String));
   // And the chips are gone: they now belong to the message, not the composer.
   expect(view.text()).not.toContain("report.txt");
   await view.unmount();
@@ -393,7 +408,7 @@ it("sends an attachment with no words", async () => {
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "", ["upload_7"], null, { modelId: null, thinkingLevel: null });
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "", ["upload_7"], null, { modelId: null, thinkingLevel: null }, expect.any(String));
   await view.unmount();
 });
 
@@ -411,7 +426,7 @@ it("drops a removed attachment from the prompt", async () => {
   await act(async () => view.button("Send")!.click());
   await settle();
 
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "no file after all", [], null, { modelId: null, thinkingLevel: null });
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "no file after all", [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
   await view.unmount();
 });
 
@@ -749,7 +764,7 @@ it("sends normally when the host would not accept the command", async () => {
     view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
   });
   expect(onCompact).not.toHaveBeenCalled();
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "/comp", [], null, { modelId: null, thinkingLevel: null });
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "/comp", [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
   await view.unmount();
 });
 
@@ -869,6 +884,41 @@ it("names the workspace when the draft belongs in one", async () => {
   const view = await mount({ workspaceId: "ws_9" });
   await act(async () => view.type("hello"));
   await act(async () => view.button("Send")!.click());
-  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "hello", [], "ws_9", { modelId: null, thinkingLevel: null });
+  expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "hello", [], "ws_9", { modelId: null, thinkingLevel: null }, expect.any(String));
   await view.unmount();
+});
+
+// ── draft persistence and isolation ─────────────────────────────────────────
+
+/**
+ * Drafts are scoped to a specific host and conversation, so switching sessions
+ * never leaks text between them, and the same session id on two hosts stays
+ * separate.
+ */
+it("isolates drafts per desktop+session and clears them after send", async () => {
+  // Session A on desktop_a gets its own draft.
+  const a1 = await mount({ desktopId: "desktop_a", sessionId: "sess_a" });
+  await a1.type("draft for A");
+  await a1.unmount();
+
+  // Session B on the same host starts empty.
+  const b = await mount({ desktopId: "desktop_a", sessionId: "sess_b" });
+  expect(b.input.value).toBe("");
+  await b.unmount();
+
+  // Session A on desktop_a still has its text.
+  const a2 = await mount({ desktopId: "desktop_a", sessionId: "sess_a" });
+  expect(a2.input.value).toBe("draft for A");
+
+  // The same session id on a different host is isolated.
+  const other = await mount({ desktopId: "desktop_b", sessionId: "sess_a" });
+  expect(other.input.value).toBe("");
+  await other.unmount();
+
+  // Sending clears the draft.
+  await act(async () => a2.button("Send")!.click());
+  await settle();
+  const a3 = await mount({ desktopId: "desktop_a", sessionId: "sess_a" });
+  expect(a3.input.value).toBe("");
+  await a3.unmount();
 });

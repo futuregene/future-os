@@ -301,12 +301,19 @@ export async function promptRemoteConversation(
    * and level are its own, already set on the host by `set_model`.
    */
   fresh?: { modelId?: string | null; thinkingLevel?: string | null },
+  /**
+   * Stable command id the host keys its durable receipt on. When a prompt is
+   * retried after a transport failure, reusing the same id lets the host return
+   * the cached ack instead of running the prompt twice.
+   */
+  commandId?: string,
 ): Promise<RemoteConversationIds> {
   const provider = !sessionId && fresh?.modelId ? remoteModelProvider(fresh.modelId) : null;
   const ack = await requestRemotePeer<Record<string, unknown>>(
     desktopId,
     {
       type: "prompt",
+      ...(commandId ? { id: commandId } : {}),
       sessionId,
       message,
       ...(!sessionId && workspaceId ? { mode: "workspace", workspaceId } : {}),
@@ -324,6 +331,38 @@ export async function promptRemoteConversation(
   if (typeof created !== "string" || !created)
     throw new Error("remote_prompt_without_session_id");
   return { sessionId: created, threadId: typeof ack.threadId === "string" ? ack.threadId : "" };
+}
+
+/**
+ * Ask the host whether a prompt or continuation it already accepted.
+ *
+ * The host keys its durable receipt on the command `id`; a retry of a delivery
+ * can check this before re-sending and avoid running the prompt twice.
+ */
+export async function getRemotePromptReceipt(
+  desktopId: string,
+  commandId: string,
+): Promise<{ sessionId: string; threadId: string; runId: string } | null> {
+  const ack = await requestRemotePeer<Record<string, unknown> | null>(
+    desktopId,
+    { type: "get_prompt_receipt", promptId: commandId },
+    "list",
+  );
+  if (
+    !ack
+    || typeof ack !== "object"
+    || typeof ack.sessionId !== "string"
+    || !ack.sessionId
+    || typeof ack.runId !== "string"
+    || !ack.runId
+  ) {
+    return null;
+  }
+  return {
+    sessionId: ack.sessionId,
+    threadId: typeof ack.threadId === "string" ? ack.threadId : "",
+    runId: ack.runId,
+  };
 }
 
 /**
@@ -715,8 +754,19 @@ export function continueRemoteRun(
   desktopId: string,
   sessionId: string,
   runId: string,
+  /**
+   * Stable command id the host keys its durable receipt on. When a continuation
+   * is retried after a transport failure, reusing the same id lets the host return
+   * the cached ack instead of running the continuation twice.
+   */
+  commandId?: string,
 ): Promise<unknown> {
-  return requestRemotePeer(desktopId, { type: "continue_run", sessionId, runId }, sessionId);
+  return requestRemotePeer(desktopId, {
+    type: "continue_run",
+    sessionId,
+    runId,
+    ...(commandId ? { id: commandId } : {}),
+  }, sessionId);
 }
 
 /**

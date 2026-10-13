@@ -148,6 +148,26 @@ describe("remoteRunStreams", () => {
   });
 
   /**
+   * A page read during a run restarts the reply at it, keeping the run's clock.
+   *
+   * The reader's transcript now carries everything the pushes had built up to
+   * that read, so the bubble starts over from the page — but the run did not
+   * start again, and the elapsed time of a reply they are watching must not fall
+   * back to zero because a link blipped.
+   */
+  it("restarts the projection at a page without restarting the run's clock", () => {
+    const streams = new RemoteRunStreams();
+    streams.apply(event("r1", "text_chunk", { text: "half " }));
+    const startedAt = streams.apply(event("r1", "text_chunk", { text: "of it" }))!.runStartedAt;
+
+    streams.restart();
+
+    const after = streams.apply(event("r1", "text_chunk", { text: "the rest" }))!;
+    expect(after.content).toBe("the rest");
+    expect(after.runStartedAt).toBe(startedAt);
+  });
+
+  /**
    * Projectors are bounded, because deltas are gone once applied.
    *
    * A conversation that has answered many prompts would otherwise keep one

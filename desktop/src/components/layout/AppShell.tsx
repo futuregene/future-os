@@ -15,7 +15,8 @@ import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
-import { compactRemoteConversation, continueRemoteRun, deleteRemoteConversation, forkRemoteConversation, installRemoteSkill } from "../../features/remote-peer/remotePeerClient";
+import { compactRemoteConversation, deleteRemoteConversation, forkRemoteConversation, installRemoteSkill } from "../../features/remote-peer/remotePeerClient";
+import { sendRemoteContinuation } from "../../features/remote-peer/remotePromptOutbox";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { remoteSkillRecoSource } from "../../features/remote-peer/remoteSkillRecoSource";
 import { RemoteUsageDialog } from "../../features/remote-peer/RemoteUsageDialog";
@@ -870,7 +871,9 @@ function ReadyAppShell({
    */
   async function continueRemoteRunOn(desktopId: string, sessionId: string, runId: string) {
     try {
-      await continueRemoteRun(desktopId, sessionId, runId);
+      // Queue the continuation through the outbox so an unreachable host does
+      // not lose the user's request; it will be retried automatically.
+      await sendRemoteContinuation(desktopId, sessionId, runId);
       await remoteTimeline.refresh();
       await refreshRemotePeers();
     }
@@ -1125,6 +1128,7 @@ function ReadyAppShell({
                             desktopId={activeRemote.desktopId}
                             composer={(
                               <RemoteComposer
+                                key={`remote-composer:${activeRemote.desktopId}:${activeRemote.sessionId}`}
                                 canCompact={remoteTimeline.canCompact}
                                 // The conversation frame places the composer: the
                                 // band over the transcript's foot, at the same

@@ -345,6 +345,17 @@ export function useRemoteTimeline(
         persistedIds: new Set(parsed.map(item => item.id)),
         runCursor: runCursorRef.current ? new Map(runCursorRef.current) : undefined,
       });
+      // A tail read restarts the live lane: the reply being written is the
+      // transcript's *tail*, and this page is now where the record ends. Keeping
+      // what the stream had accumulated across the read would draw the same
+      // deltas twice — once from the record, once from the bubble — because a
+      // delta that arrived before the read is content the page now carries
+      // (`foldLiveReply`). The bubble goes with the projection it was built from;
+      // the page it was read for is on screen now.
+      if (side === "history") {
+        streamsRef.current?.restart();
+        setLive(null);
+      }
       setError(null);
       return parsed;
     }
