@@ -11,8 +11,8 @@ interface MessageMetaProps {
 }
 
 /**
- * Hover-only reply stats: `time · N tokens`. The elapsed time ticks live while
- * streaming. Tokens are the real provider usage, which lands when the run ends.
+ * Reply stats: `time · N tokens`, always visible while streaming and shown on
+ * hover once settled. Tokens display whenever real provider usage is available.
  * Keep the stats mounted so hover changes never shift the footer layout.
  */
 export function MessageMeta({ message, hovered }: MessageMetaProps) {
@@ -44,7 +44,7 @@ export function MessageMeta({ message, hovered }: MessageMetaProps) {
   return (
     <div className={cn(
       "select-none text-xs text-ink-muted will-change-[opacity] transition-opacity duration-200",
-      hovered ? "opacity-100" : "pointer-events-none opacity-0",
+      streaming || hovered ? "opacity-100" : "pointer-events-none opacity-0",
     )}
     >
       {parts.join(" · ")}
