@@ -3143,6 +3143,76 @@
           }
         ]
       },
+      "settings-desktops": {
+        "_comment": "The desktop this phone connects to, chosen from settings. The current machine is marked by its own selection styling (accent-soft background and a check glyph) because React Native Web drops accessibilityState.checked for a radio.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 2200
+          },
+          {
+            "eval": "document.querySelector('[role=button][aria-label=\"远程桌面\"]').click()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('选择这台手机连接的桌面端')) throw new Error('the desktop list did not open'); const rows = [...document.querySelectorAll('[role=radio]')]; const labels = rows.map(r => r.getAttribute('aria-label')); if (rows.length !== 2) throw new Error('expected two paired desktops, got: ' + labels.join(' / ')); const marked = rows.filter(el => getComputedStyle(el).backgroundColor === 'rgb(232, 240, 255)' && el.querySelectorAll('svg').length === 2); if (marked.length !== 1) throw new Error('exactly one desktop must be marked as current: ' + labels.join(' / ')); if (marked[0].getAttribute('aria-label') !== '实验室的 MacBook Pro') throw new Error('the marked desktop is not the bound one: ' + marked[0].getAttribute('aria-label')); const other = rows.find(el => el !== marked[0]); if (getComputedStyle(other).backgroundColor !== 'rgb(255, 255, 255)') throw new Error('the other desktop looks selected too'); return labels.join(' / '); })()"
+          },
+          {
+            "shot": "m-settings-desktops.png"
+          }
+        ]
+      },
+      "settings-desktops-switch": {
+        "_comment": "Switching from the list reconnects the phone: the level closes and the settings home names the machine just bound (the settings modal is keyed by the pairing, so it remounts on the new desktop).",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "设置"
+          },
+          {
+            "wait": 2200
+          },
+          {
+            "eval": "document.querySelector('[role=button][aria-label=\"远程桌面\"]').click()"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "document.querySelector('[role=radio][aria-label=\"办公室主机\"]').click()"
+          },
+          {
+            "wait": 1800
+          },
+          {
+            "eval": "(() => { const t = document.body.innerText; if (!t.includes('已绑定设备：办公室主机')) throw new Error('the bound desktop did not follow the switch: ' + t.slice(0, 240)); if (t.includes('选择这台手机连接的桌面端')) throw new Error('the desktop list is still open after switching'); return 'switched'; })()"
+          },
+          {
+            "shot": "m-settings-desktops-switched.png"
+          }
+        ]
+      },
       "connection-popover": {
         "_comment": "A badge that reads 已连接 must still offer a manual reconnect. Opened by a programmatic click on the trigger (an emulated tap lands ~58px lower in this harness), and the assertion reads the popover's button labels, so a missing action fails the capture instead of quietly shipping an empty bubble.",
         "steps": [
