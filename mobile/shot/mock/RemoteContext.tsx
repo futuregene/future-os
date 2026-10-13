@@ -286,6 +286,13 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       setUsageOverride(demoRefreshedSessionUsage);
     },
     newConversation: async () => setDraft(true),
+    // Creating on a machine that was named outright. The harness holds one
+    // desktop's catalogue, so the machine is what moves and the draft opens there
+    // — the same two things the real provider does (see `newConversationOn`).
+    newConversationOn: async (desktopId: string) => {
+      if (desktopId) setDesktopId(desktopId);
+      setDraft(true);
+    },
     closeConversation: () => {
       setDraft(false);
       setSelectedSessionId("");

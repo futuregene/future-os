@@ -108,6 +108,25 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   refreshModels(): Promise<void>;
   selectSession(sessionId: string): Promise<void>;
   /**
+   * Open a new conversation on the machine that will run it.
+   *
+   * `newConversation` is the *open* machine's verb, and a screen's copy of it
+   * belongs to the render that drew that screen: a screen that awaited
+   * `switchDesktop(another)` and then called it would build the draft on the
+   * machine it had just left. This names the machine instead, reads that
+   * machine's runtime out of the registry — a ref, so it is whatever that
+   * machine is *now* — and points the screens at it afterwards, so the draft is
+   * what they then read.
+   *
+   * Rejects with `desktop_unavailable` when that machine has no live client: a
+   * conversation with nowhere to be sent is worse than a message saying so.
+   */
+  newConversationOn(
+    desktopId: string,
+    mode?: "chat" | "workspace",
+    workspaceId?: string,
+  ): Promise<void>;
+  /**
    * Open a conversation on the desktop that owns it.
    *
    * Every paired desktop holds a runtime, so this is not a reconnection: the
@@ -484,6 +503,31 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     [activeDesktopId, selectDesktop, waitForRuntime],
   );
 
+  /**
+   * Open a new conversation on the machine that will run it.
+   *
+   * The named machine is looked up in the registry on every call rather than
+   * taken from this render's active runtime: the screens call this through a
+   * value built from the render that drew them, so a screen that moved the phone
+   * first and then asked for the conversation would otherwise build its draft on
+   * the machine it left — the provider's own test measures both halves.
+   */
+  const newConversationOn = useCallback(
+    async (desktopId: string, mode: "chat" | "workspace" = "chat", workspaceId = "") => {
+      if (!registryRef.current.has(desktopId)) throw new Error("desktop_unavailable");
+      const entry = await waitForRuntime(desktopId);
+      if (!entry) throw new Error("desktop_unavailable");
+      // Built on the machine that will run it and *before* the phone moves, so a
+      // refused creation leaves the reader where they were rather than on a
+      // machine with nothing on it. Each runtime reads its own catalogue as it
+      // connects (models included), so the draft's own machine is the one whose
+      // models it defaults to.
+      await entry.conversation.newConversation(mode, workspaceId);
+      if (desktopId !== activeDesktopId) await selectDesktop(desktopId);
+    },
+    [activeDesktopId, registryRef, selectDesktop, waitForRuntime],
+  );
+
   const { reconnect: rebuildDesktop } = pairing;
   /**
    * Reach the machines nobody is looking at again.
@@ -771,6 +815,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
         ? runtime.conversation.selectSession
         : async () => undefined,
       openSessionOnDesktop,
+      newConversationOn,
       retryTimeline: runtime?.timeline.retryTimeline ?? noop,
       loadOlderTimeline: runtime?.timeline.loadOlderTimeline ?? (async () => false),
       reloadTimeline: runtime?.timeline.reloadTimeline ?? (() => undefined),
@@ -892,6 +937,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     activeRuntime?.timeline.retryTimeline,
     catalogs,
     openSessionOnDesktop,
+    newConversationOn,
     pairing.booting,
     pairing.clearError,
     pairing.desktops,

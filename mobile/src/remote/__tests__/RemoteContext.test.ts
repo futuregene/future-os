@@ -163,6 +163,10 @@ jest.mock("../client", () => {
         (mockCatalogsByDesktop[this.credentials.expectedDesktopId] ?? []) as never,
       );
       this.callbacks.onConnectionState?.("ready" as never);
+      // …and a successful connect is also what has the client read the rest of
+      // its own catalogue (see `RemoteClient.connectSocket`), so a machine
+      // nobody is reading has its workspaces, models and settings in hand too.
+      this.callbacks.onReconnected?.();
     });
     close = jest.fn(async () => {});
     setAppActive = jest.fn();
@@ -351,6 +355,94 @@ describe("RemoteProvider over several desktops", () => {
     expect(remote.credentials?.expectedDesktopId).toBe("desktop_1");
   });
 
+  /**
+   * A conversation asked for *by name* is created on the machine that was named.
+   *
+   * The screens hold the value they were rendered with, so the open machine's own
+   * verb acts on the machine the phone was on when that screen drew itself — the
+   * test below measures that. A name is what survives a move, which is exactly
+   * what a group on another machine, and the creation dialog, are doing.
+   */
+  test("a new conversation asked for by name is created on that machine", async () => {
+    await mount();
+    await settle();
+    const office = clientFor("desktop_2");
+    const readsBefore = office.requests.filter((record) =>
+      record.command.type === "list_models" || record.command.type === "list_workspaces").length;
+
+    const stale = remote;
+    await act(async () => { await stale.newConversationOn("desktop_2", "workspace", "w9"); });
+    await settle();
+
+    // Built on the named machine, and the phone is on it: the screens read the
+    // draft that was just created, in the workspace that was asked for.
+    expect(remote.credentials?.expectedDesktopId).toBe("desktop_2");
+    expect(remote.draft).toBe(true);
+    expect(remote.draftMode).toBe("workspace");
+    expect(remote.draftWorkspaceId).toBe("w9");
+    // The draft's model comes from the machine that will run it, and every paired
+    // machine reads its own catalogue — models included — as it connects, so
+    // choosing one reads nothing on its behalf.
+    expect(office.requests.filter((record) =>
+      record.command.type === "list_models" || record.command.type === "list_workspaces").length)
+      .toBe(readsBefore);
+    expect(readsBefore).toBeGreaterThanOrEqual(2);
+  });
+
+  /**
+   * The open machine's verb follows the screen that drew it, not the phone.
+   *
+   * Not a contract worth keeping — it is the measured reason the named verb
+   * exists. A screen that moved the phone and then asked the open machine's verb
+   * for a conversation built the draft on the machine the phone had just left;
+   * this is where that was found (the activity rail's workspace sheet, and the
+   * creation dialog's "which machine" step).
+   */
+  test("the open machine's verb follows the screen, not where the phone moved", async () => {
+    await mount();
+    await settle();
+    const stale = remote;
+
+    await act(async () => { await stale.switchDesktop("desktop_2"); });
+    await settle();
+    await act(async () => { await stale.newConversation("workspace", "w1"); });
+    await settle();
+    // The phone is on the machine it moved to, and there is no draft on it…
+    expect(remote.credentials?.expectedDesktopId).toBe("desktop_2");
+    expect(remote.draft).toBe(false);
+
+    await act(async () => { await stale.switchDesktop("desktop_1"); });
+    await settle();
+    // …because it was built on the machine the value was drawn with.
+    expect(remote.draft).toBe(true);
+    expect(remote.draftWorkspaceId).toBe("w1");
+  });
+
+  test("a machine that cannot take a conversation refuses it by name", async () => {
+    // Paired, but with no credentials on this device: its runtime never gets a
+    // client. The wait for one is bounded, so the tap fails instead of hanging.
+    jest.mocked(loadCredentials).mockImplementation(async (desktopId?: string) =>
+      desktopId === "desktop_2" ? null : credentialsFor(desktopId ?? "desktop_1"));
+    jest.useFakeTimers();
+    try {
+      await mount();
+      await settle();
+      const pending = remote.newConversationOn("desktop_2", "chat", "");
+      const refusal = expect(pending).rejects.toThrow("desktop_unavailable");
+      for (let elapsed = 0; elapsed < 20_000; elapsed += 250)
+        await act(async () => { jest.advanceTimersByTime(250); });
+      await refusal;
+
+      // A machine that is not paired at all has no runtime to wait for.
+      await expect(remote.newConversationOn("desktop_9", "chat", "")).rejects
+        .toThrow("desktop_unavailable");
+      // Nothing moved and nothing was created anywhere.
+      expect(remote.credentials?.expectedDesktopId).toBe("desktop_1");
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test("the merged list holds every machine's conversations, with each one's status", async () => {
     await mount();
     await settle();
@@ -426,7 +518,11 @@ describe("RemoteProvider over several desktops", () => {
     await mount();
     await settle();
     const office = clientFor("desktop_2");
+    const studio = clientFor("desktop_1");
+    // Both machines have read their own catalogue by now (connecting is what
+    // does it), so the read below is the one this test is about.
     office.requests.length = 0;
+    studio.requests.length = 0;
     await act(async () => {
       await remote.catalogs.readWorkspaces("desktop_2");
     });

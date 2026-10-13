@@ -386,15 +386,17 @@ export function SessionList({
   /**
    * Start a conversation in a workspace, on the machine that owns it.
    *
-   * A conversation runs on the machine it is created on, and the draft belongs
-   * to that machine's own connection — so a group merged in from another desktop
-   * switches to it first, exactly as tapping one of that machine's conversations
-   * does, and the draft then lands in the workspace the reader picked.
+   * The workspace says which machine runs it, so that machine is named rather
+   * than reached by moving the phone first: `newConversation` is the *open*
+   * machine's verb, and this screen's copy of it was built from the render that
+   * drew the screen, so awaiting a switch and then calling it would open the
+   * draft on the machine the phone had just left. The provider names the machine
+   * instead (it reads that machine's runtime out of its registry), builds the
+   * draft there, and moves the phone onto it — which is what the reader asked
+   * for, and leaves them looking at the draft they just created.
    *
-   * The switch re-reads what building the draft needs, as the creation dialog's
-   * own move does (`adoptDevice` in SessionsScreen): a freshly connected machine's
-   * catalogue starts empty, and its models are what the new conversation defaults
-   * to.
+   * This machine's own group needs no name: its own verb is the open machine's,
+   * and there is nothing to move.
    *
    * Offering the item for the connected machine only (as this did) made the same
    * sheet gain and lose "new conversation" as the phone's connection followed the
@@ -402,18 +404,21 @@ export function SessionList({
    * other group in the same list did not.
    */
   const startConversationInWorkspace = async (workspace: WorkspaceRow) => {
-    if (workspace.desktopId && workspace.desktopId !== activeDesktopId) {
-      try {
-        await remote.switchDesktop(workspace.desktopId);
-        await Promise.all([remote.refreshWorkspaces(), remote.refreshModels()]);
-      }
-      catch {
-        Alert.alert(t("desktops.switchFailed"));
-        return;
-      }
+    const machine = workspace.desktopId && workspace.desktopId !== activeDesktopId
+      ? workspace.desktopId
+      : null;
+    try {
+      if (machine) await remote.newConversationOn(machine, "workspace", workspace.workspaceId);
+      else await remote.newConversation("workspace", workspace.workspaceId);
     }
-    await remote.newConversation("workspace", workspace.workspaceId)
-      .catch(() => Alert.alert(t("common.error")));
+    catch (error) {
+      // A machine that cannot be reached is the one failure worth wording
+      // differently: nothing was created anywhere, and the reader was told the
+      // machine, not the creation, is what failed.
+      Alert.alert(t(error instanceof Error && error.message === "desktop_unavailable"
+        ? "desktops.switchFailed"
+        : "common.error"));
+    }
   };
 
   const selectWorkspaceSessions = (workspace: WorkspaceRow) => {
@@ -526,10 +531,9 @@ export function SessionList({
       // A group on another machine belongs to that machine, and its actions —
       // rename, pin, delete — are that machine's commands, so the heading offers
       // them there whenever it can answer. Starting a conversation in it is that
-      // machine's too, and the heading offers it there: the menu switches the
-      // phone to the machine that has to run it (see
-      // `startConversationInWorkspace`), rather than leaving the group without
-      // the item the group beside it has.
+      // machine's too, and the heading offers it there: the draft is built on the
+      // machine that runs it (see `startConversationInWorkspace`), rather than the
+      // group being left without the item the group beside it has.
       return (
         <View style={styles.workspace}>
           <Pressable
@@ -746,8 +750,8 @@ export function SessionList({
             label: t("sessions.new"),
             icon: <Plus size={18} color={colors.accent} />,
             disabled: !menuWorkspaceCommands || deleting,
-            // The switch, the draft and both failure messages are the helper's:
-            // one place decides what moving the phone onto another machine takes.
+            // The draft, the machine it is built on and both failure messages
+            // are the helper's: one place decides what creating here takes.
             onPress: () => void startConversationInWorkspace(menuWorkspace),
           },
           ...(menuWorkspaceCommands?.capabilities.has("workspace_pinning_v1") ? [{

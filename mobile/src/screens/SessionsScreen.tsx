@@ -207,7 +207,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   /**
    * The dialog's generation.
    *
-   * Moving the phone to another machine is asynchronous and the user can close
+   * Reading another machine's workspaces is asynchronous and the user can close
    * the dialog while it runs, so the step that started it acts only if the
    * dialog it belongs to is still the one on screen: an abandoned choice must
    * not create a conversation.
@@ -269,38 +269,13 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   };
 
   /**
-   * Move the phone onto `desktopId`, so the conversation about to be created
-   * belongs to that machine, and re-read what building it needs.
-   *
-   * Resolves false — after saying why — when the machine could not be reached,
-   * in which case nothing has been created and the dialog is still worth
-   * showing.
-   */
-  const adoptDevice = async (desktopId: string): Promise<boolean> => {
-    setBusyDevice(desktopId);
-    try {
-      await remote.switchDesktop(desktopId);
-      // The catalogue of a freshly connected machine starts empty — the switch
-      // drops the previous machine's — so read what the draft is built from
-      // before opening it: its models are what the new conversation defaults
-      // to, and its workspaces are what the picker offered.
-      await Promise.all([remote.refreshWorkspaces(), remote.refreshModels()]);
-      return true;
-    } catch {
-      setBusyDevice(null);
-      Alert.alert(t("desktops.switchFailed"));
-      return false;
-    }
-  };
-
-  /**
    * Take the machine the user picked.
    *
    * A machine the phone is not on is read down *its own* connection before the
    * next step, because that machine's workspaces are what the picker must
    * offer — the connected machine's list names workspaces that machine has
-   * never heard of. The switch itself waits for the creation to be confirmed:
-   * browsing the picker must not move the phone.
+   * never heard of. The creation itself waits until it is confirmed: browsing
+   * the picker must not move the phone.
    */
   const chooseDevice = async (desktopId: string) => {
     if (busyDevice) return;
@@ -308,9 +283,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     setNewDeviceId(desktopId);
     if (tab === "chat") {
       // Nothing else to pick for a chat, so the machine is the whole choice.
-      if (desktopId !== activeDesktopId && !(await adoptDevice(desktopId))) return;
-      if (newDialogEpochRef.current !== epoch) return;
-      startConversationOn("chat", "");
+      startConversationOn(desktopId, "chat", "");
       return;
     }
     if (desktopId === activeDesktopId) {
@@ -411,14 +384,31 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   /**
    * Open the new conversation on the machine the dialog named.
    *
-   * The draft is local, but the conversation is not: it becomes a session on
-   * whichever machine the phone is connected to when the first message is sent.
-   * So a draft the user asked to create on another machine is opened *there*,
-   * which is the switch a merged row already makes before it opens a
-   * conversation on the machine that owns it.
+   * The draft is local, but the conversation is not: it becomes a session on the
+   * machine that will run it, which is the machine the dialog named — so the
+   * draft is built *there* rather than on whichever machine the phone happens to
+   * be on. `newConversation` cannot say that: it is the open machine's verb, and
+   * this dialog's copy of it belongs to the render that drew the dialog, so
+   * awaiting a move and then calling it would build the draft on the machine the
+   * phone had just left. The provider's desktop-addressed verb names the machine,
+   * builds the draft on it, and moves the phone onto it.
+   *
+   * Deferred until the Modal has released UIKit, because creating the draft is
+   * what navigates to it.
    */
-  const startConversationOn = (mode: "chat" | "workspace", selectedWorkspaceId: string) => {
-    const start = () => void remote.newConversation(mode, selectedWorkspaceId);
+  const startConversationOn = (
+    desktopId: string,
+    mode: "chat" | "workspace",
+    selectedWorkspaceId: string,
+  ) => {
+    const start = () => {
+      void remote.newConversationOn(desktopId, mode, selectedWorkspaceId)
+        .catch((error: unknown) => Alert.alert(t(
+          error instanceof Error && error.message === "desktop_unavailable"
+            ? "desktops.switchFailed"
+            : "common.error",
+        )));
+    };
     setNewOpen(false);
     setBusyDevice(null);
     if (Platform.OS === "ios") {
@@ -431,21 +421,16 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     }
   };
 
-  const startConversation = async () => {
+  const startConversation = () => {
     if (newMode === "workspace" && !workspaceId) return;
-    const epoch = newDialogEpochRef.current;
-    const deviceId = newDeviceId;
-    const mode = newMode;
-    const selectedWorkspaceId = workspaceId;
-    // The switch happens at the moment the user commits to creating something
-    // on that machine — browsing the picker must not move the phone — and a
-    // machine that cannot be reached creates nothing rather than opening a
-    // draft that would be sent to the machine the phone is still on.
-    if (deviceId && deviceId !== activeDesktopId) {
-      if (!(await adoptDevice(deviceId))) return;
-      if (newDialogEpochRef.current !== epoch) return;
-    }
-    startConversationOn(mode, selectedWorkspaceId);
+    // The machine the dialog named, defaulting to the one the phone is on —
+    // which is also what it names when the machine step never appeared.
+    const desktopId = newDeviceId ?? activeDesktopId;
+    if (!desktopId) return;
+    // The creation happens at the moment the user commits to it — browsing the
+    // picker must not move the phone — and a machine that cannot be reached says
+    // so instead of opening a draft that would be sent somewhere else.
+    startConversationOn(desktopId, newMode, workspaceId);
   };
 
   const closeNew = () => {
