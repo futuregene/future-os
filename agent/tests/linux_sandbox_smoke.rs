@@ -517,3 +517,68 @@ fn invalid_helper_request_fails_before_agent_singleton() {
         .join(".future/agent/agent-instance.lock")
         .exists());
 }
+
+#[test]
+#[ignore = "requires a native Linux host with a working system bwrap"]
+fn precise_read_grant_preserves_write_and_sibling_protection() {
+    use future_agent::sandbox::linux::plan::LinuxSandboxPlan;
+    use future_agent::sandbox::rules::{
+        Access, Decision, RuleLayer, RuleLayerSnapshot, RuleMatcherSnapshot, RuleSnapshot,
+    };
+    use future_agent::sandbox::{ResolvedSandbox, SandboxPolicy, SandboxTier};
+    let probe = probe_linux_sandbox_host();
+    if !probe.available {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().canonicalize().unwrap();
+    let allowed = workspace.join(".env");
+    let sibling = workspace.join(".env.other");
+    std::fs::write(&allowed, "approved-read-secret").unwrap();
+    std::fs::write(&sibling, "unapproved-sibling-secret").unwrap();
+    let sandbox = ResolvedSandbox::resolve(
+        &SandboxPolicy {
+            tier: SandboxTier::Sandbox,
+            model_reviewer: false,
+        },
+        &workspace.to_string_lossy(),
+    );
+    let mut snapshot = sandbox.rule_set().snapshot();
+    snapshot.layers.insert(
+        1,
+        RuleLayerSnapshot {
+            layer: RuleLayer::Execution,
+            rules: vec![RuleSnapshot {
+                matcher: RuleMatcherSnapshot::Literal {
+                    path: allowed.clone(),
+                },
+                access: Access::Read,
+                decision: Decision::Allow,
+            }],
+        },
+    );
+    let plan = LinuxSandboxPlan::compile(&snapshot).unwrap();
+    let prepared = future_agent::sandbox::linux::runner::prepare(
+        &probe,
+        plan,
+        "cat .env && ! printf overwritten > .env && ! cat .env.other",
+        &workspace,
+    )
+    .unwrap();
+    // The integration test executable does not implement helper CLI flags; use the real agent binary.
+    let payload = LinuxSandboxRequest::from_json_bytes(&prepared.request_payload.unwrap())
+        .unwrap()
+        .encode()
+        .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_future-agent"))
+        .args(["--linux-sandbox-helper", &payload])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("approved-read-secret"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("unapproved-sibling-secret"));
+    assert_eq!(
+        std::fs::read_to_string(&allowed).unwrap(),
+        "approved-read-secret"
+    );
+}

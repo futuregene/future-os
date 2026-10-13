@@ -165,7 +165,7 @@ pub(crate) async fn execute(args: serde_json::Value) -> Result<String> {
         let facts = FACTS.with(|slot| std::mem::take(&mut *slot.borrow_mut()));
         (output, facts)
     };
-    // Reserve output for both the original process and its possible retry.
+    // Keep the existing per-attempt output budget; there is no implicit replay.
     let (output, facts) = DEADLINE
         .scope(
             start + Duration::from_secs(timeout),
@@ -216,6 +216,7 @@ fn approval_cancelled(result: &ShellResult) -> bool {
 }
 
 async fn run_command(params: &ShellParams, timeout: u64) -> Result<String> {
+    #[cfg(windows)]
     let capability = if let Some(permissions) = &params.additional_permissions {
         let sandbox = TOOL_SCOPE
             .try_with(|scope| scope.sandbox.clone())
@@ -232,12 +233,31 @@ async fn run_command(params: &ShellParams, timeout: u64) -> Result<String> {
     } else {
         None
     };
+    #[cfg(not(windows))]
+    let baseline = TOOL_SCOPE
+        .try_with(|scope| scope.sandbox.clone())
+        .unwrap_or_default();
+    #[cfg(not(windows))]
+    let granted = if let Some(permissions) = &params.additional_permissions {
+        let prepared =
+            crate::sandbox::file_request::prepare(&baseline, &params.command, permissions)?;
+        if prepared.needs_approval() && !consume_file_permissions(&prepared) {
+            return Err(anyhow!("additional file permissions are missing an exact approval receipt or the approved context changed"));
+        }
+        Some(prepared.sandbox())
+    } else {
+        None
+    };
+    #[cfg(not(windows))]
+    let capability = None;
     execution::run_shell_with_capability(
         &params.command,
         timeout,
         params.escalated.unwrap_or(false),
         params.justification.as_deref().unwrap_or(""),
         capability.as_ref(),
+        #[cfg(not(windows))]
+        granted.as_ref(),
     )
     .await
 }
