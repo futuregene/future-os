@@ -66,6 +66,16 @@ export interface RemoteSession {
   streaming: boolean;
   status?: string;
   /**
+   * The name of the workspace this conversation sits in, as its own machine
+   * calls it. Sent per session row (a client grouping a merged list needs the
+   * name for its heading), omitted by a desktop older than the field.
+   */
+  workspaceName?: string | null;
+  /** Whether that workspace is pinned *on its own machine*. */
+  workspacePinned?: boolean | null;
+  /** When that workspace itself was last touched on its own machine. */
+  workspaceOrderedAt?: number | null;
+  /**
    * Last activity (unix millis), from the desktop's own
    * `COALESCE(last_message_at, updated_at, created_at)`. Absent on a desktop
    * older than the field, in which case the session sorts below dated ones
@@ -94,6 +104,10 @@ export interface PresenceSession {
   pinned?: boolean;
   streaming: boolean;
   status?: string;
+  /** The workspace's own name, pin and place, as the host reports them per row. */
+  workspaceName?: string | null;
+  workspacePinned?: boolean | null;
+  workspaceOrderedAt?: number | null;
 }
 
 export interface SnapshotVersion {

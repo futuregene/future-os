@@ -1,4 +1,5 @@
 import type { RemoteSession, RemoteWorkspace } from "../remote/types";
+import type { MergedSessionRow } from "../remote/mergeSessions";
 
 export interface SessionNode {
   session: RemoteSession;
@@ -48,7 +49,22 @@ export function buildSessionTree(sessions: RemoteSession[]): SessionNode[] {
 }
 
 export type CatalogRow =
-  | { kind: "workspace"; key: string; workspace: RemoteWorkspace; count: number }
+  | {
+    kind: "workspace";
+    key: string;
+    workspace: RemoteWorkspace;
+    count: number;
+    /**
+     * Which desktop the workspace lives on, in the merged list.
+     *
+     * Absent for the ordinary single-desktop list, where every heading is the
+     * active desktop's and its own group key is the workspace id alone — which
+     * is what makes a fold behave the same in both lists.
+     */
+    desktopId?: string;
+    /** The machine's own name, when the list shows more than one. */
+    desktopLabel?: string;
+  }
   | {
     kind: "session";
     key: string;
@@ -65,29 +81,149 @@ export type CatalogRow =
     desktopId?: string;
   };
 
+/** One workspace's rows on one machine, as the merged list files them. */
+export interface MergedWorkspaceGroup {
+  /** Unique across machines: the same workspace id on two machines is two groups. */
+  key: string;
+  /** The machine the group belongs to, or null for the chat section. */
+  desktopId: string | null;
+  kind: "workspace" | "chat";
+  /** The workspace's name, from whichever row in the group carried it. */
+  label: string | null;
+  workspaceId: string | null;
+  /** Pinned *on its own machine*, which is what leads the merged list. */
+  pinned: boolean;
+  /** When the workspace itself was last touched at its source. */
+  orderedAt: number | null;
+  rows: MergedSessionRow[];
+}
+
 /**
- * The merged list as rows: pinned first, then recency, with the source kept on
- * every row.
+ * The merged list's sections: pinned shortcuts, then a group per workspace, then
+ * the conversations that live in no workspace.
  *
- * Flat rather than grouped by workspace because a workspace name can exist on
- * two desktops at once; the grouping stops meaning anything once rows come from
- * more than one machine.
+ * The shape is the desktop app's, on purpose — the same sessions are shown in
+ * both, and a phone that filed them differently would make one machine's
+ * conversation appear in two places depending on the device holding it. A group
+ * is keyed by `(machine, workspace)`: a workspace called "future-os" exists on
+ * two machines at once, and merging them would file one machine's rows under the
+ * other's heading.
+ *
+ * Every group fact (name, pin, place) rides on its rows — the host reports them
+ * per row — and one row reporting it is the group's answer: a host that predates
+ * a field must not blank what a newer row in the same group supplied.
+ */
+export function groupMergedRows(
+  rows: readonly MergedSessionRow[],
+): { pinned: MergedSessionRow[]; workspaces: MergedWorkspaceGroup[]; chats: MergedSessionRow[] } {
+  const pinned: MergedSessionRow[] = [];
+  const byKey = new Map<string, MergedWorkspaceGroup>();
+  for (const row of rows) {
+    if (row.session.pinned) {
+      pinned.push(row);
+      continue;
+    }
+    // A chat-mode conversation has no workspace of its own: the list shows one
+    // section for all of them, whatever machine they are on.
+    const grouped = row.session.mode === "workspace";
+    const workspaceId = row.session.workspaceId ?? "";
+    const key = grouped ? `${row.desktopId}::${workspaceId}` : "chat";
+    const existing = byKey.get(key);
+    const group: MergedWorkspaceGroup = existing ?? {
+      key,
+      desktopId: grouped ? row.desktopId : null,
+      kind: grouped ? "workspace" : "chat",
+      label: null,
+      workspaceId: grouped ? workspaceId : null,
+      pinned: false,
+      orderedAt: null,
+      rows: [],
+    };
+    group.label ??= row.session.workspaceName ?? null;
+    group.pinned ||= grouped && row.session.workspacePinned === true;
+    group.orderedAt ??= row.session.workspaceOrderedAt ?? null;
+    group.rows.push(row);
+    if (!existing) byKey.set(key, group);
+  }
+  const groups = [...byKey.values()];
+  groups.sort((a, b) => {
+    // Pinned groups first, as in the single-machine list; then the workspace's
+    // own place, newest first, so a group holds its rank while the reader works
+    // in it — a conversation arriving inside a workspace must not move it.
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    const at = a.orderedAt ?? Number.NEGATIVE_INFINITY;
+    const bt = b.orderedAt ?? Number.NEGATIVE_INFINITY;
+    if (at !== bt) return bt - at;
+    if (a.desktopId !== b.desktopId)
+      return (a.desktopId ?? "") < (b.desktopId ?? "") ? -1 : 1;
+    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+  });
+  const chats = groups.find(group => group.kind === "chat");
+  return {
+    pinned,
+    workspaces: groups.filter(group => group.kind === "workspace"),
+    chats: chats ? chats.rows : [],
+  };
+}
+
+/**
+ * The merged list as rows: a heading per workspace, with its conversations under
+ * it, and the machine's own glyph on the heading when several machines are in
+ * one list.
+ *
+ * The heading carries the group key as its workspace id for a machine other than
+ * the active one: a fold must not make two machines' "future-os" close together,
+ * and the active machine keeps its plain id so that folding there behaves
+ * exactly as it does in the single-machine list.
  */
 export function mergedRows(
-  rows: import("../remote/mergeSessions").MergedSessionRow[],
+  rows: readonly MergedSessionRow[],
   query: string,
+  activeDesktopId: string | null,
+  collapsed: ReadonlySet<string> = new Set(),
 ): CatalogRow[] {
   const search = query.trim().toLocaleLowerCase();
-  return rows
-    .filter(row => !search || row.session.title.toLocaleLowerCase().includes(search))
-    .map(row => ({
-      kind: "session" as const,
-      key: row.key,
-      session: row.session,
-      depth: 0,
-      hasChildren: false,
-      desktopId: row.desktopId,
-    }));
+  const matches = (row: (typeof rows)[number]): boolean =>
+    !search ||
+    row.session.title.toLocaleLowerCase().includes(search) ||
+    (row.session.workspaceName ?? "").toLocaleLowerCase().includes(search);
+  const listed = rows.filter(matches);
+  const { pinned, workspaces, chats } = groupMergedRows(listed);
+  const sessionRow = (row: (typeof rows)[number]): CatalogRow => ({
+    kind: "session" as const,
+    key: row.key,
+    session: row.session,
+    depth: 0,
+    hasChildren: false,
+    desktopId: row.desktopId,
+  });
+  const out: CatalogRow[] = [];
+  // Pinned conversations are shortcuts promoted above the groups, exactly as in
+  // the single-machine list.
+  for (const row of pinned) out.push(sessionRow(row));
+  for (const group of workspaces) {
+    const workspaceId = group.workspaceId ?? "";
+    // This machine's heading folds by the workspace id alone — the key the
+    // single-machine list already folds by, so one workspace folds the same in
+    // both lists. A peer's needs its machine in the key: two machines can hold
+    // the same workspace id, and one fold must not close both.
+    const id = group.desktopId === activeDesktopId ? workspaceId : group.key;
+    out.push({
+      kind: "workspace",
+      key: `merged:${group.key}`,
+      workspace: { id, name: group.label ?? workspaceId, path: "" },
+      count: group.rows.length,
+      ...(group.desktopId ? { desktopId: group.desktopId } : {}),
+    });
+    // A folded group keeps its heading and its count and hides its rows — and a
+    // search ignores folds, so a hidden conversation stays discoverable (the
+    // same rule the single-machine list follows).
+    if (search || !collapsed.has(id)) {
+      for (const row of group.rows) out.push(sessionRow(row));
+    }
+  }
+  for (const row of chats) out.push(sessionRow(row));
+  return out;
 }
 
 export function catalogRows(
