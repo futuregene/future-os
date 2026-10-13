@@ -22,13 +22,23 @@ import { colors, layout, radius, spacing } from "../theme/tokens";
 const label = (desktop: PairedDesktop) => desktop.name ?? desktop.desktopId;
 
 /**
- * The paired desktops, and the way in to each one's settings.
+ * The paired desktops: the phone's device management page, and the way in to
+ * each one's settings.
  *
- * One list serves both jobs: a row picks which machine this phone uses, and the
- * configure action beside it opens that machine's own page — its name and icon,
- * plus everything that is read from or written to it. Settings for a device are
- * not reachable from anywhere else, and the phone's own settings deliberately
- * do not list machines at all.
+ * A row is a description, not a control. Tapping it used to switch which
+ * machine the app is talking to and leave for the session list — a move nobody
+ * asked for on a page they opened to look at the machines, and one that also
+ * threw away the page they were reading. Switching has its own control where
+ * the sessions are (the device picker on the session list). What a row offers
+ * here is the two things that are about the machine: the configure action
+ * beside it — its name and icon, plus everything that is read from or written
+ * to it — and unpairing. Settings for a device are not reachable from anywhere
+ * else, and the phone's own settings deliberately do not list machines at all.
+ *
+ * The one list still serves as the startup picker, for a phone that has paired
+ * desktops but no usable active pair: App renders this screen with no back
+ * action there, and with nothing behind it the row itself is the choice (see
+ * `picking`, and the comment on the row).
  */
 export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
   onBack?(): void;
@@ -43,6 +53,10 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
   const [failed, setFailed] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const settingsRef = useRef<SettingsScreenHandle>(null);
+  /** A phone with paired desktops but no active pair (see App) gets this list
+   * with nothing behind it, so there — and only there — a row picks the machine
+   * the app uses. Opened from the session list it is the device page instead. */
+  const picking = !onBack;
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
@@ -111,37 +125,58 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
           </View>
           {remote.desktops.map((desktop) => {
             const selected = remote.credentials?.pairId === desktop.pairId;
+            const identity = (
+              <>
+                <View style={[styles.desktopIcon, selected && styles.desktopIconSelected]}>
+                  {/* The desktop's own mark, exactly as the session list and the
+                      device page draw it: the icon the user picked *is* this
+                      machine's identity. The generic monitor that used to be here
+                      was the one place the choice had no effect — the picker wrote
+                      the id and nothing on this screen ever read it back. */}
+                  <Text style={styles.desktopGlyph}>{iconGlyph(desktop.icon)}</Text>
+                </View>
+                <View style={styles.identity}>
+                  <Text
+                    numberOfLines={1}
+                    style={[styles.name, desktop.name ? null : styles.nameFallback]}
+                  >
+                    {label(desktop)}
+                  </Text>
+                  {desktop.name ? (
+                    <Text numberOfLines={1} style={styles.id}>{desktop.desktopId}</Text>
+                  ) : null}
+                </View>
+                {selected ? <Check color={colors.accent} size={18} /> : null}
+              </>
+            );
             return (
               <View key={desktop.desktopId} style={[styles.card, selected && styles.cardSelected]}>
-                <Pressable
-                  accessibilityLabel={label(desktop)}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected, disabled: busy }}
-                  disabled={busy}
-                  onPress={() => void select(desktop.desktopId)}
-                  style={({ pressed }) => [styles.select, pressed && styles.pressed]}
-                >
-                  <View style={[styles.desktopIcon, selected && styles.desktopIconSelected]}>
-                    {/* The desktop's own mark, exactly as the session list and the
-                        device page draw it: the icon the user picked *is* this
-                        machine's identity. The generic monitor that used to be here
-                        was the one place the choice had no effect — the picker wrote
-                        the id and nothing on this screen ever read it back. */}
-                    <Text style={styles.desktopGlyph}>{iconGlyph(desktop.icon)}</Text>
-                  </View>
-                  <View style={styles.identity}>
-                    <Text
-                      numberOfLines={1}
-                      style={[styles.name, desktop.name ? null : styles.nameFallback]}
-                    >
-                      {label(desktop)}
-                    </Text>
-                    {desktop.name ? (
-                      <Text numberOfLines={1} style={styles.id}>{desktop.desktopId}</Text>
-                    ) : null}
-                  </View>
-                  {selected ? <Check color={colors.accent} size={18} /> : null}
-                </Pressable>
+                {picking
+                  ? (
+                      <Pressable
+                        accessibilityLabel={label(desktop)}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected, disabled: busy }}
+                        disabled={busy}
+                        onPress={() => void select(desktop.desktopId)}
+                        style={({ pressed }) => [styles.select, pressed && styles.pressed]}
+                      >
+                        {identity}
+                      </Pressable>
+                    )
+                  : (
+                      /* The same drawing as the picker's row, and nothing to press:
+                         on this page the two actions beside it are what a tap can
+                         do, and the check mark still says which machine is in use. */
+                      <View
+                        accessibilityLabel={label(desktop)}
+                        accessibilityState={{ selected }}
+                        accessible
+                        style={styles.select}
+                      >
+                        {identity}
+                      </View>
+                    )}
                 {/* A settings glyph rather than a pencil: the page behind it is the
                     machine's whole configuration, and the name and icon are two
                     fields on it. */}
