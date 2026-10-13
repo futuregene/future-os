@@ -53,7 +53,7 @@ export const styles = StyleSheet.create({
     flexWrap: "wrap",
     alignItems: "center",
     justifyContent: "flex-start",
-    gap: spacing.md,
+    gap: spacing.sm,
     marginTop: spacing.sm,
   },
   segmentList: { gap: spacing.sm, marginTop: spacing.xs },
@@ -143,12 +143,16 @@ export const styles = StyleSheet.create({
     gap: spacing.sm,
     marginTop: spacing.sm,
   },
+  // The copy/fork glyphs are 15pt. Left-aligned in a full 44pt box they sat 43pt
+  // apart — wider than the gap to the stats text — so the two actions stopped
+  // reading as one group. Hug the glyph instead and let the 8pt `hitSlop` on each
+  // pressable keep the 44pt (`layout.touchTarget`) tap area.
   copyButton: {
-    minWidth: layout.touchTarget,
+    minWidth: 28,
     minHeight: layout.touchTarget,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "flex-start",
+    justifyContent: "center",
     paddingVertical: spacing.xs,
   },
   // Keep the live timer aligned with the settled footer.
