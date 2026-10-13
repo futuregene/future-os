@@ -2312,7 +2312,7 @@
         ]
       },
       "qn-jump-states": {
-        "_comment": "一个场景跑三遍，只有注入不同：不动 / 按 ↑ / 按 ↓。'how it is aligned' 的数值断言在 qn-align-check，这里只出画面。",
+        "_comment": "一个场景跑三遍，只有注入不同：不动 / 按 ↑ / 按 ↓。提问的落点数值断言在 qn-align-check，这里只出画面。",
         "variantsTitle": "提问导航：滚动后出现 · 按 ↑ 之后 · 按 ↓ 之后（内容对齐方式相同）",
         "url": "http://localhost:8099/?multiTurn=1",
         "variants": [
@@ -2378,7 +2378,7 @@
         ]
       },
       "qn-reply-tail": {
-        "_comment": "按 ↑ 的第一落点从「提问顶部」改成「正在读的回答的最后一段」：滚动离开最新后按 ↑，视口里仍然只有当前轮的提问（没有跳到上一轮），且回答收尾的正文（关键设计）在视口内。像素落点在 RNW inverted 下不可靠，只断言语义。",
+        "_comment": "按 ↑ 的落点：提问「开头」贴列表顶边下方 12px，回答「结尾」贴底边上方 12px。滚动离开最新后按 ↑ 落到正在读的这一轮的提问（回答的收尾在它下面，没有跳到上一轮）。像素落点在 RNW inverted 下不可靠，只断言语义。",
         "url": "http://localhost:8099/?multiTurn=1",
         "steps": [
           {

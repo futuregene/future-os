@@ -17,14 +17,14 @@ import type {
 import type { TimelineItem } from "../../remote/types";
 import { spacing } from "../../theme/tokens";
 import {
-  EMPTY_ROWS,
   buildLadder,
   nextRung,
   previousRung,
   questionIndices,
-  viewportRows,
+  rungLanding,
+  rungPosition,
   type QuestionRung,
-  type ViewportRows,
+  type RungLanding,
 } from "./questionNav";
 
 /** The offset `useChatScroll` already treats as "at the latest". */
@@ -44,6 +44,15 @@ const QUESTION_TOP_INSET = 12;
 const ROW_GAP = spacing.md;
 export const JUMP_VIEW_OFFSET = ROW_GAP - QUESTION_TOP_INSET;
 /**
+ * How far above the viewport's bottom edge a landed *end* sits.
+ *
+ * The mirror of `QUESTION_TOP_INSET`: the inverted list aligns a row's end with
+ * `viewPosition: 0`, and a positive offset lifts the content, so the answer's
+ * last line comes to rest this far above the composer instead of butting
+ * against it.
+ */
+const JUMP_BOTTOM_INSET = 12;
+/**
  * A jump is only as exact as VirtualizedList's knowledge of the target row. A
  * row outside the rendered window is estimated from the average row height, so
  * the jump lands approximately, renders the target, and is re-issued against the
@@ -54,7 +63,6 @@ const REALIGN_MS = 320;
 const MAX_JUMP_ATTEMPTS = 4;
 
 const PARTLY_VISIBLE: ViewabilityConfig = { itemVisiblePercentThreshold: 1 };
-const FULLY_VISIBLE: ViewabilityConfig = { itemVisiblePercentThreshold: 100 };
 
 export interface QuestionNavApi {
   /**
@@ -74,6 +82,11 @@ export interface QuestionNavApi {
   goToPrevious: () => void;
   goToNext: () => void;
   onScroll: (event: NativeSyntheticEvent<NativeScrollEvent>) => void;
+  /**
+   * The reader took the viewport by hand: the ladder walk restarts from where
+   * they left it rather than continuing the last jump's sequence.
+   */
+  onScrollBeginDrag: () => void;
   onScrollToIndexFailed: (info: {
     index: number;
     averageItemLength: number;
@@ -99,25 +112,35 @@ function topOf(viewableItems: ViewToken[]): number | null {
  * stop on the prose at the end of an answer instead of only ever landing on
  * prompts.
  *
- * Every landing is a `scrollToIndex` against the list's own measured frames:
- * a question aligns its *start* below the viewport's top edge, and a tail
- * (a reply's last slice, or a question's own end) aligns the start of the row
- * *below* it the same way. Because the list is a scaleY-1 mirror, that second
- * alignment leaves the tail's bottom edge flush with the viewport's bottom
- * edge — the question geometry delivers the tail without any inverted-math
- * or pixel measuring of its own.
+ * Every landing is a `scrollToIndex` against the list's own measured frames,
+ * and which edge takes the reading position is the rung's own answer: a
+ * question lands its *start* below the viewport's top edge (the turn is read
+ * forward from there), an end — a reply's last slice, or a question taller
+ * than the viewport — lands its *end* above the bottom edge, so the prose the
+ * reader came for is the last thing on screen rather than scrolled off the
+ * top.
  *
  * The anchor comes from what the list reports as viewable — partly and fully
  * visible rows — rather than from row geometry: a row's `onLayout` `y` is
  * relative to its own parent, the virtualized cell, so it says nothing about
  * where the row sits in the transcript. ↑ is offered whether or not the reader
- * has scrolled: a conversation opens at its tail, where the tail of the turn
- * on screen is still one press away. ↓ is the direction that needs the tail
- * off screen — with the tail on screen every newer rung is already visible,
- * so there is nothing below to go to. That reading state is the union of the
+ * has scrolled: a conversation opens at its tail, where the question of the
+ * turn on screen is one press away. ↓ is the direction that needs the tail off
+ * screen — with the tail on screen every newer rung is already visible, so
+ * there is nothing below to go to. That reading state is the union of the
  * native "a drag took the viewport off the tail" signal owned by
  * `useChatScroll` and the measured offset, because a web build never reports a
  * drag: `onScrollBeginDrag` has no equivalent there.
+ *
+ * **A landed rung is remembered, and the next press steps off it.** The
+ * viewport alone cannot say which way a press should go once a row is taller
+ * than the screen: an answer (or a question) that fills the viewport reports
+ * the same topmost row whether the reader is at its first line or its last, so
+ * a ladder derived from the viewport alone would re-select the rung it just
+ * landed and the button would look dead. Keeping the landed rung makes every
+ * press move exactly one step — ↑ then ↓ returns to where the reader was — and
+ * a manual drag drops it, so the next press is derived from the viewport again
+ * (a pointer at the rung above where the finger left off).
  */
 export function useQuestionNav({
   sessionId,
@@ -165,19 +188,28 @@ export function useQuestionNav({
   const loadingOlderRef = useRef(loadingOlder);
   const loadOlderRef = useRef(loadOlder);
   const onTakeOverRef = useRef(onTakeOver);
-  const rowsRef = useRef<ViewportRows>(EMPTY_ROWS);
-  const partialTopRef = useRef<number | null>(null);
-  const fullTopRef = useRef<number | null>(null);
+  /** The topmost row with any part on screen, in view space. */
+  const topRef = useRef<number | null>(null);
   const offsetRef = useRef(0);
-  const jumpRef = useRef<{ index: number; attempts: number } | null>(null);
+  const jumpRef = useRef<{ landing: RungLanding; attempts: number } | null>(null);
+  /** The rung the last press landed on, or null while the reader is free. */
+  const cursorRef = useRef<QuestionRung | null>(null);
   const pendingPageRef = useRef(false);
   const realignTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const refreshRows = useCallback(() => {
-    rowsRef.current = viewportRows({
-      partialTop: partialTopRef.current,
-      fullTop: fullTopRef.current,
-    });
+  /**
+   * One step of the ladder: the landed rung's own neighbour if the last press
+   * left one, otherwise the rung the viewport points at. `direction` is a step
+   * in the ladder's own order — the rungs are newest first, so ↑ (older) walks
+   * forward through the array and ↓ back down it.
+   */
+  const step = useCallback((direction: 1 | -1): QuestionRung | null => {
+    const rungs = ladderRef.current;
+    const at = rungPosition(rungs, cursorRef.current);
+    if (at !== null) return rungs[at + direction] ?? null;
+    return direction === 1
+      ? previousRung(rungs, topRef.current)
+      : nextRung(rungs, topRef.current);
   }, []);
 
   /** Resolve what ↑/↓ would do right now and publish it if it changed. */
@@ -185,13 +217,11 @@ export function useQuestionNav({
     const session = sessionIdRef.current;
     const reading =
       !atLatestRef.current || offsetRef.current > AT_LATEST_THRESHOLD_PX;
-    // ↑ reads the viewport rows alone: the rung above the top edge is one the
-    // reader can reach, from the tail as much as from anywhere else. ↓ is the
-    // tail-dependent half of the ladder.
-    const previous = previousRung(ladderRef.current.rungs, rowsRef.current);
-    const next = reading
-      ? nextRung(ladderRef.current.rungs, rowsRef.current)
-      : null;
+    // ↑ reads the ladder and the visible rows alone: the rung above the reader
+    // is one they can reach, from the tail as much as from anywhere else. ↓ is
+    // the tail-dependent half of the ladder.
+    const previous = step(1);
+    const next = reading ? step(-1) : null;
     setNav(current =>
       current.sessionId === session &&
       current.previous === previous &&
@@ -199,7 +229,7 @@ export function useQuestionNav({
         ? current
         : { sessionId: session, previous, next },
     );
-  }, []);
+  }, [step]);
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -216,12 +246,19 @@ export function useQuestionNav({
   // scrolled to says nothing about this one.
   useEffect(() => {
     offsetRef.current = 0;
-    partialTopRef.current = null;
-    fullTopRef.current = null;
-    rowsRef.current = EMPTY_ROWS;
+    topRef.current = null;
     pendingPageRef.current = false;
+    cursorRef.current = null;
     sync();
   }, [sessionId, sync]);
+
+  // Back at the tail (a fresh open, or "back to latest"): the walk starts over
+  // from there rather than resuming a jump sequence the reader has left.
+  useEffect(() => {
+    if (!atLatest) return;
+    cursorRef.current = null;
+    sync();
+  }, [atLatest, sync]);
 
   // A new turn, a page of history or a session switch all change the answer
   // without any scroll or viewability event.
@@ -236,118 +273,60 @@ export function useQuestionNav({
     [],
   );
 
-  const onPartlyVisible = useCallback(
+  const onViewable = useCallback(
     (info: { viewableItems: ViewToken[] }) => {
-      partialTopRef.current = topOf(info.viewableItems);
-      refreshRows();
+      topRef.current = topOf(info.viewableItems);
       sync();
     },
-    [refreshRows, sync],
+    [sync],
   );
-  const onFullyVisible = useCallback(
-    (info: { viewableItems: ViewToken[] }) => {
-      fullTopRef.current = topOf(info.viewableItems);
-      refreshRows();
-      sync();
-    },
-    [refreshRows, sync],
-  );
-  // FlatList forbids replacing this prop on the fly and the callbacks above are
-  // stable, so one array owns the two configurations for the list's lifetime.
-  // (A ref would be the obvious home, but refs may not be read during render,
-  // which is where the list needs this prop.)
+  // FlatList forbids replacing this prop on the fly and the callback above is
+  // stable, so one array owns the configuration for the list's lifetime. (A ref
+  // would be the obvious home, but refs may not be read during render, which is
+  // where the list needs this prop.)
   const [viewabilityConfigCallbackPairs] = useState<
     ViewabilityConfigCallbackPair[]
   >(() => [
-    {
-      viewabilityConfig: PARTLY_VISIBLE,
-      onViewableItemsChanged: onPartlyVisible,
-    },
-    { viewabilityConfig: FULLY_VISIBLE, onViewableItemsChanged: onFullyVisible },
+    { viewabilityConfig: PARTLY_VISIBLE, onViewableItemsChanged: onViewable },
   ]);
 
-  /** Scroll `index` into the question position: start just below the top edge. */
-  const align = useCallback(
-    (index: number) => {
-      listRef.current?.scrollToIndex({
-        index,
-        viewPosition: 1,
-        viewOffset: JUMP_VIEW_OFFSET,
-        animated: false,
-      });
-    },
-    [listRef],
-  );
-
   /**
-   * Land on a tail: align the row *below* it as if it were a question. The
-   * scaleY-1 mirror then puts the tail's bottom edge at the viewport's own
-   * bottom edge. The row below is by construction closer to the reader than
-   * the tail — the question below for a reply tail, the reply's own start for
-   * a question end — so it is always measured and the jump never needs
-   * `onScrollToIndexFailed`; and the aligned row plus everything between it
-   * and the tail is already on screen, so no re-issue is needed either.
+   * Scroll a rung's landing into place. A start goes just under the viewport's
+   * top edge; an end just above its bottom edge — both by `JUMP_*_INSET`, and
+   * both because the inverted list's `viewPosition` counts from the far edge.
    */
-  const alignTail = useCallback(
-    (below: number) => {
+  const align = useCallback(
+    (landing: RungLanding) => {
       listRef.current?.scrollToIndex({
-        index: below,
-        viewPosition: 1,
-        viewOffset: JUMP_VIEW_OFFSET,
+        index: landing.index,
+        viewPosition: landing.edge === "top" ? 1 : 0,
+        viewOffset:
+          landing.edge === "top" ? JUMP_VIEW_OFFSET : JUMP_BOTTOM_INSET,
         animated: false,
       });
     },
     [listRef],
-  );
-
-  /** Where a rung lands, as the row whose start takes the question position. */
-  const rungTarget = useCallback(
-    (rung: QuestionRung): { target: number; tail: boolean } => {
-      const lastIndex = ladderRef.current.lastIndex;
-      switch (rung.kind) {
-        case "question":
-          return { target: rung.question, tail: false };
-        case "replyTail": {
-          // The row below the tail: the question that ends this turn, or —
-          // at the newest turn — the transcript's own last row.
-          const below = rung.nextQuestion ?? lastIndex;
-          return below >= 0
-            ? { target: below, tail: true }
-            : // No row sits below the tail: the question position is the
-              // best the list can offer.
-              { target: rung.index, tail: false };
-        }
-        case "questionEnd": {
-          // The row below the question's tail is the reply's start — or, at
-          // the loaded slice's top, the last row there is.
-          const reply = rung.question - 1;
-          const below = rung.tail !== null && rung.tail < rung.question ? rung.tail : reply;
-          return below >= 0
-            ? { target: below, tail: true }
-            : { target: rung.question, tail: false };
-        }
-      }
-    },
-    [],
   );
 
   const jumpTo = useCallback(
     (rung: QuestionRung | null) => {
       if (rung === null || listRef.current === null) return;
-      const { target, tail } = rungTarget(rung);
+      const landing = rungLanding(rung);
       if (realignTimerRef.current !== null) clearTimeout(realignTimerRef.current);
       onTakeOverRef.current();
-      if (tail) {
-        // A tail lands through a measured neighbour: exact in one issue.
-        alignTail(target);
-        jumpRef.current = null;
-        return;
-      }
-      jumpRef.current = { index: target, attempts: 0 };
-      align(target);
-      realignTimerRef.current = setTimeout(() => align(target), REALIGN_MS);
+      // The press is remembered: the next one steps off this rung even when the
+      // row it landed on fills the screen and the viewport cannot say which end
+      // of it the reader is at.
+      cursorRef.current = rung;
+      jumpRef.current = { landing, attempts: 0 };
+      align(landing);
+      realignTimerRef.current = setTimeout(() => align(landing), REALIGN_MS);
+      // What the two buttons offer next follows the walk, not the viewport the
+      // jump has just left: the rung behind the reader is the one they came
+      // from.
+      sync();
     },
-    [align, alignTail, listRef, rungTarget],
+    [align, listRef, sync],
   );
 
   /**
@@ -374,10 +353,11 @@ export function useQuestionNav({
         const itemsNow = itemsRef.current;
         const index = itemsNow.findIndex(item => item.id === oldest);
         if (index < 0) return;
-        jumpRef.current = { index, attempts: 0 };
-        align(index);
+        const landing: RungLanding = { index, edge: "top" };
+        jumpRef.current = { landing, attempts: 0 };
+        align(landing);
         if (realignTimerRef.current !== null) clearTimeout(realignTimerRef.current);
-        realignTimerRef.current = setTimeout(() => align(index), REALIGN_MS);
+        realignTimerRef.current = setTimeout(() => align(landing), REALIGN_MS);
       })
       .catch(() => {
         pendingPageRef.current = false;
@@ -386,17 +366,22 @@ export function useQuestionNav({
 
   const goToPrevious = useCallback(() => {
     if (nav.sessionId !== sessionId) return;
-    if (nav.previous !== null) {
-      jumpTo(nav.previous);
+    // Resolved at the press, not read from the render: the offer published by
+    // the last sync is the rung the reader has just landed on, and walking off
+    // that one is exactly what this press is for.
+    const rung = step(1);
+    if (rung !== null) {
+      jumpTo(rung);
       return;
     }
     // The ladder ran out at the loaded slice's top: the next rung lives in
     // history, and the button's contract is to fetch it rather than stall.
     if (hasOlderRef.current) pageUp();
-  }, [jumpTo, nav, pageUp, sessionId]);
+  }, [jumpTo, nav.sessionId, pageUp, sessionId, step]);
   const goToNext = useCallback(() => {
-    jumpTo(nav.sessionId === sessionId ? nav.next : null);
-  }, [jumpTo, nav, sessionId]);
+    if (nav.sessionId !== sessionId) return;
+    jumpTo(step(-1));
+  }, [jumpTo, nav.sessionId, sessionId, step]);
 
   /**
    * The target is outside the measured window: move to where the average row
@@ -407,7 +392,11 @@ export function useQuestionNav({
   const onScrollToIndexFailed = useCallback(
     ({ index, averageItemLength }: { index: number; averageItemLength: number }) => {
       const jump = jumpRef.current;
-      if (jump === null || jump.index !== index || jump.attempts >= MAX_JUMP_ATTEMPTS)
+      if (
+        jump === null ||
+        jump.landing.index !== index ||
+        jump.attempts >= MAX_JUMP_ATTEMPTS
+      )
         return;
       jump.attempts += 1;
       listRef.current?.scrollToOffset({
@@ -415,7 +404,10 @@ export function useQuestionNav({
         animated: false,
       });
       if (realignTimerRef.current !== null) clearTimeout(realignTimerRef.current);
-      realignTimerRef.current = setTimeout(() => align(index), REALIGN_MS);
+      realignTimerRef.current = setTimeout(
+        () => align(jump.landing),
+        REALIGN_MS,
+      );
     },
     [align, listRef],
   );
@@ -432,6 +424,13 @@ export function useQuestionNav({
     [sync],
   );
 
+  // The reader's own drag: the walk restarts from where their finger left the
+  // transcript instead of continuing a jump sequence they have departed from.
+  const onScrollBeginDrag = useCallback(() => {
+    cursorRef.current = null;
+    sync();
+  }, [sync]);
+
   const inSession = nav.sessionId === sessionId;
   const current = inSession ? nav : { previous: null, next: null };
   // ↑ stays alive one step past the loaded ladder when history is known to
@@ -446,6 +445,7 @@ export function useQuestionNav({
     goToPrevious,
     goToNext,
     onScroll,
+    onScrollBeginDrag,
     onScrollToIndexFailed,
     viewabilityConfigCallbackPairs,
   };
