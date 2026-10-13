@@ -30,10 +30,11 @@ export interface PairedDesktop {
   /** Absent until the user renames the desktop; the id is shown instead. */
   name?: string;
   /**
-   * A glyph id from the fixed set (mobile `config/peerIcons.ts`), chosen by the
-   * user. Stored as the id rather than the glyph so the set can be restyled or
-   * translated later without rewriting saved labels — and so an unknown value
-   * renders the default instead of arbitrary stored text.
+   * A glyph id from the fixed set (`src/remote/peerIcons.ts` here,
+   * `desktop/src/features/remote-peer/peerIcons.ts` there — the same ids),
+   * chosen by the user. Stored as the id rather than the glyph so the set can
+   * be restyled or translated later without rewriting saved labels — and so an
+   * unknown value renders the default instead of arbitrary stored text.
    */
   icon?: string;
 }
