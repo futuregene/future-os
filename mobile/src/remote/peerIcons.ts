@@ -34,6 +34,7 @@ export const PEER_ICONS: PeerIcon[] = [
   // What kind of machine it is.
   { id: "desktop", glyph: "🖥️", labelKey: "desktop" },
   { id: "laptop", glyph: "💻", labelKey: "laptop" },
+  { id: "phone", glyph: "📱", labelKey: "phone" },
   { id: "server", glyph: "🗄️", labelKey: "server" },
   { id: "cloud", glyph: "☁️", labelKey: "cloud" },
   // Where it stands.

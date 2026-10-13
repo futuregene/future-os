@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { Alert, BackHandler, Modal, Text, TextInput } from "react-native";
 import { Button } from "../../components/Button";
+import { PEER_ICONS } from "../../remote/peerIcons";
 import type { PairedDesktop } from "../../remote/types";
 import { DesktopsScreen } from "../DesktopsScreen";
 
@@ -9,6 +10,7 @@ const mockRemote: {
   credentials: { pairId: string };
   desktops: PairedDesktop[];
   switchDesktop: jest.Mock;
+  labelDesktop: jest.Mock;
   renameDesktop: jest.Mock;
   removeDesktop: jest.Mock;
 } = {
@@ -18,6 +20,7 @@ const mockRemote: {
     { desktopId: "desktop-2", pairId: "pair-2" },
   ],
   switchDesktop: jest.fn(),
+  labelDesktop: jest.fn(),
   renameDesktop: jest.fn(),
   removeDesktop: jest.fn(),
 };
@@ -26,7 +29,6 @@ jest.mock("lucide-react-native", () => ({
   ArrowLeft: "ArrowLeft",
   Plus: "Plus",
   Check: "Check",
-  Monitor: "Monitor",
   Pencil: "Pencil",
   Trash2: "Trash2",
 }));
@@ -139,6 +141,32 @@ test("keeps the picker open and displays a failed switch", async () => {
 
 test("falls back to the desktop id until the user names it", async () => {
   expect(texts()).toEqual(expect.arrayContaining(["desktop-1", "desktop-2"]));
+});
+
+/**
+ * The icon is picked in the rename dialog and drawn on this list, and those are
+ * two different files: storing an id that nothing reads back looks exactly like
+ * a picker that works. Every card used to draw the same fixed monitor glyph, so
+ * this screen was the one place the choice had no visible effect.
+ */
+test("draws each desktop with the icon the user gave it, and the default without one", async () => {
+  act(() => tree.unmount());
+  mockRemote.desktops = [
+    { desktopId: "desktop-1", pairId: "pair-1", icon: "rocket" },
+    { desktopId: "desktop-2", pairId: "pair-2" },
+  ];
+  await render();
+  expect(texts()).toEqual(expect.arrayContaining(["🚀", PEER_ICONS[0]!.glyph]));
+});
+
+test("writes the picked icon through the label store, and picking it again clears it", async () => {
+  act(() => pressables("desktops.rename")[1]!.props.onPress());
+  await act(async () => pressables("desktops.icons.rocket")[0]!.props.onPress());
+  expect(mockRemote.labelDesktop).toHaveBeenCalledWith("desktop-2", { icon: "rocket" });
+  // Toggle: there is no "none" entry in the row, so the way back to the default
+  // is picking the icon the desktop is already wearing.
+  await act(async () => pressables("desktops.icons.rocket")[0]!.props.onPress());
+  expect(mockRemote.labelDesktop).toHaveBeenLastCalledWith("desktop-2", { icon: "" });
 });
 
 test("shows the chosen name above the id", async () => {
