@@ -12,7 +12,7 @@ import { AppState } from "react-native";
  * "the desktop may be sleeping" on the way back and spends a whole handshake
  * to restore a link that was never actually lost. So while a picker is on
  * screen the app is still treated as active; the caller in
- * `useRemoteConnection` bounds how long that can last, so a picker the user
+ * `useAppLifecycle` bounds how long that can last, so a picker the user
  * never returns from still releases the socket.
  */
 let presentations = 0;
