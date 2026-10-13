@@ -54,7 +54,12 @@
     "chatSectionActions": "Chat section actions",
     "threadsSelected": "{{count}} selected",
     "deleteSelected": "Delete",
-    "tasks": "Tasks"
+    "tasks": "Tasks",
+    "openSearch": "Search conversations",
+    "searchConversations": "Search conversations",
+    "clearSearch": "Clear search",
+    "closeSearch": "Close search",
+    "noMatches": "No matching conversations"
   },
   "appShell": {
     "storeInitFailed": "FutureOS local storage failed to initialize: ",
