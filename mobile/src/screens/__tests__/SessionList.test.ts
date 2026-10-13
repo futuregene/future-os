@@ -206,7 +206,7 @@ test("session titles use a compact single line without reducing touch targets", 
 
 test("explicit row action opens rename/pin/delete menu; offline management is disabled", () => {
   act(() => button("sessions.actions:First").props.onPress());
-  expect(onMenu).toHaveBeenCalledWith(mockRemote.sessions[0]);
+  expect(onMenu).toHaveBeenCalledWith(mockRemote.sessions[0], null);
   mockRemote.desktopOnline = false;
   act(() => tree.update(createElement(SessionList, { tab: "chat", empty: null, onMenu, onTabChange })));
   expect(button("sessions.actions:First").props.disabled).toBe(true);
@@ -1089,7 +1089,7 @@ test("a refused workspace conversation reports the failure instead of a stale sc
 test("a long press on a row opens the menu only outside selection mode", () => {
   renderChatTab();
   act(() => sessionBody("First").props.onLongPress());
-  expect(onMenu).toHaveBeenCalledWith(mockRemote.sessions[0]);
+  expect(onMenu).toHaveBeenCalledWith(mockRemote.sessions[0], null);
   onMenu.mockClear();
   act(() => button("sessions.select").props.onPress());
   // Inside the batch a long press is a no-op: the row already has a checkbox.
@@ -1171,14 +1171,17 @@ function renderMerged(
     session: RemoteSession;
   }[],
   activeDesktopId = "desk-a",
+  tab: "workspace" | "chat" = "workspace",
+  peerReady: ReadonlySet<string> = new Set(["desk-b"]),
 ): void {
   act(() => tree.update(createElement(SessionList, {
-    tab: "chat",
+    tab,
     empty: null,
     onMenu,
     onTabChange,
     merged,
     activeDesktopId,
+    peerReady,
     icons: new Map([["desk-a", "🖥️"], ["desk-b", "💻"]]),
   })));
 }
@@ -1218,13 +1221,33 @@ test("the merged list files each machine's conversations under their workspace h
   renderMerged([
     mergedRow("desk-a", "a1", "Local plan"),
     mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
-    // A conversation in no workspace belongs to no heading: one section for
-    // every machine's chats, which is where a reader looks for them.
-    mergedRow("desk-b", "b2", "Remote chat", { mode: "chat", workspaceId: undefined, workspaceName: undefined }),
   ]);
 
   expect(headingNames()).toEqual(["Project", "Review"]);
-  expect(mergedTitles()).toEqual(["Local plan", "Remote review", "Remote chat"]);
+  expect(mergedTitles()).toEqual(["Local plan", "Remote review"]);
+});
+
+/**
+ * A page holds its own kind of conversation, exactly as the single-machine list
+ * does: the workspaces page the ones that live in a workspace, the conversations
+ * page the ones that live in none. Filing both on both pages put a machine's
+ * chats under the workspace groups — where the list has no such section — and
+ * made the two pages the same list.
+ */
+test("each page of the merged list holds its own kind of conversation", () => {
+  const rows = [
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-a", "c1", "Local chat", { mode: "chat", workspaceId: undefined, workspaceName: undefined }),
+    // A host older than the field: no `mode` at all, which is a chat.
+    mergedRow("desk-b", "b2", "Remote chat", { mode: undefined, workspaceId: undefined, workspaceName: undefined }),
+  ];
+  renderMerged(rows, "desk-a", "workspace");
+  expect(headingNames()).toEqual(["Project"]);
+  expect(mergedTitles()).toEqual(["Local plan"]);
+
+  renderMerged(rows, "desk-a", "chat");
+  expect(headingNames()).toEqual([]);
+  expect(mergedTitles()).toEqual(["Local chat", "Remote chat"]);
 });
 
 test("a heading on another machine offers no actions of its own", () => {
@@ -1237,6 +1260,47 @@ test("a heading on another machine offers no actions of its own", () => {
   // which has never heard of that workspace.
   expect(button("sessions.workspaceActions:Project")).toBeDefined();
   expect(button("sessions.workspaceActions:Review")).toBeUndefined();
+});
+
+test("every conversation row offers its own machine's actions", () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+
+  // The row says which machine its actions address: the phone runs one
+  // connection, so a rename here is a command to the desktop that owns the
+  // conversation, and it is offered whenever that machine can take one.
+  act(() => button("sessions.actions:Remote review").props.onPress());
+  expect(onMenu).toHaveBeenCalledWith(
+    expect.objectContaining({ sessionId: "b1" }),
+    "desk-b",
+  );
+  expect(button("sessions.actions:Remote review").props.disabled).toBe(false);
+
+  // A machine the phone has not reached cannot answer: the row shows the action
+  // as unavailable rather than sending a command that would fail.
+  renderMerged(
+    [mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" })],
+    "desk-a",
+    "workspace",
+    new Set(),
+  );
+  expect(button("sessions.actions:Remote review").props.disabled).toBe(true);
+});
+
+test("another machine's conversation cannot join the batch", () => {
+  renderMerged([
+    mergedRow("desk-a", "a1", "Local plan"),
+    mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
+  ]);
+  act(() => button("sessions.select").props.onPress());
+
+  // The batch is one command stream to the active desktop, so a foreign
+  // conversation keeps the checkbox column's width and nothing else: offering a
+  // box would promise a delete that lands on another machine's ids.
+  expect(button("Local plan").props.accessibilityRole).toBe("checkbox");
+  expect(button("Remote review")).toBeUndefined();
 });
 
 test("two machines' same-named workspace folds one at a time", () => {
@@ -1270,6 +1334,9 @@ test("a row's own machine is named only when several machines are in the list", 
 
   // One machine: the selector above the list already names it, and every row
   // repeating its glyph would take the width the title needs.
-  renderMerged([mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" })], "desk-b");
+  renderMerged(
+    [mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" })],
+    "desk-b",
+  );
   expect(glyphs()).toEqual([]);
 });

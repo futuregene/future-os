@@ -175,11 +175,19 @@ export function groupMergedRows(
  * the active one: a fold must not make two machines' "future-os" close together,
  * and the active machine keeps its plain id so that folding there behaves
  * exactly as it does in the single-machine list.
+ *
+ * `tab` decides which conversations the list is about, exactly as it does in the
+ * single-machine list: the workspaces page holds the conversations that live in
+ * a workspace, the conversations page holds the ones that live in none. A merged
+ * list that showed both on both pages would put a machine's chats under the
+ * workspace groups on the page that has no such section, and make the two pages
+ * the same list.
  */
 export function mergedRows(
   rows: readonly MergedSessionRow[],
   query: string,
   activeDesktopId: string | null,
+  tab: "chat" | "workspace",
   collapsed: ReadonlySet<string> = new Set(),
 ): CatalogRow[] {
   const search = query.trim().toLocaleLowerCase();
@@ -187,7 +195,13 @@ export function mergedRows(
     !search ||
     row.session.title.toLocaleLowerCase().includes(search) ||
     (row.session.workspaceName ?? "").toLocaleLowerCase().includes(search);
-  const listed = rows.filter(matches);
+  // A session with no `mode` is a chat, as it is in the single-machine list:
+  // the field was added after chat conversations existed.
+  const onThisPage = (row: (typeof rows)[number]): boolean =>
+    tab === "workspace"
+      ? row.session.mode === "workspace"
+      : row.session.mode !== "workspace";
+  const listed = rows.filter(row => matches(row) && onThisPage(row));
   const { pinned, workspaces, chats } = groupMergedRows(listed);
   const sessionRow = (row: (typeof rows)[number]): CatalogRow => ({
     kind: "session" as const,
