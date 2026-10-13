@@ -42,9 +42,17 @@ const onBack = jest.fn();
 const onAdd = jest.fn();
 const onOpenConversation = jest.fn();
 
+/** The device page, as the session list opens it. */
 async function render(): Promise<void> {
   await act(async () => {
     tree = create(createElement(DesktopsScreen, { onBack, onAdd, onOpenConversation }));
+  });
+}
+
+/** The startup picker: the same list with no back action and nothing behind it. */
+async function renderPicker(): Promise<void> {
+  await act(async () => {
+    tree = create(createElement(DesktopsScreen, { onAdd }));
   });
 }
 
@@ -54,9 +62,16 @@ function pressables(accessibilityLabel: string) {
   );
 }
 
-const selectors = () =>
+/** A machine's row, by the name drawn on it. A plain `View` draws its props
+ * through to a host view, so a row can match twice — the outer match, first in
+ * the tree, is the one carrying the state. */
+const row = (name: string) =>
+  tree.root.findAll((node) => node.props.accessibilityLabel === name)[0]!;
+
+/** The rows that are a control: the startup picker's, and only those. */
+const rowControls = (name: string) =>
   tree.root.findAll((node) =>
-    typeof node.props.onPress === "function" && node.props.accessibilityState?.selected !== undefined,
+    typeof node.props.onPress === "function" && node.props.accessibilityLabel === name,
   );
 
 const button = (label: string) =>
@@ -83,16 +98,23 @@ beforeEach(async () => {
 });
 afterEach(() => act(() => tree.unmount()));
 
-test("lists both desktops and marks the current one", () => {
-  expect(selectors()).toHaveLength(2);
-  expect(selectors()[0]!.props.accessibilityState.selected).toBe(true);
-  expect(selectors()[1]!.props.accessibilityState.selected).toBe(false);
+test("marks the desktop in use as the current one", () => {
+  expect(row("desktop-1").props.accessibilityState.selected).toBe(true);
+  expect(row("desktop-2").props.accessibilityState.selected).toBe(false);
 });
 
-test("selects a saved desktop without scanning again", async () => {
-  await act(async () => selectors()[1]!.props.onPress());
-  expect(mockRemote.switchDesktop).toHaveBeenCalledWith("desktop-2");
-  expect(onBack).toHaveBeenCalled();
+/**
+ * The page is about the machines, not a way to switch between them. A tap on a
+ * row used to switch the active desktop and leave for the session list: a move
+ * nobody asked for on a page opened to look at the machines, and one that threw
+ * the page away with it. Switching is the session list's device picker.
+ */
+test("a machine's row is not a control on the device page", () => {
+  expect(rowControls("desktop-1")).toHaveLength(0);
+  expect(rowControls("desktop-2")).toHaveLength(0);
+  expect(row("desktop-2").props.onPress).toBeUndefined();
+  expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
+  expect(onBack).not.toHaveBeenCalled();
 });
 
 /**
@@ -112,12 +134,13 @@ test("the configure action opens that desktop's own page, and only when asked", 
   expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
 });
 
-test("a whole card tap still connects, even with the device page shut", async () => {
-  // Two controls per row, one choice: opening the page must not have made the
-  // row's own action (connect this machine) ambiguous or unreachable.
-  await act(async () => selectors()[1]!.props.onPress());
-  expect(mockRemote.switchDesktop).toHaveBeenCalledWith("desktop-2");
-  expect(devicePage()).toBeUndefined();
+test("the configure action is the row's only tap, and it stays reachable", async () => {
+  // The gear sits on the same row as a control that no longer exists: what is
+  // left has to still be findable and still be the only thing that opens it.
+  expect(pressables("desktops.settings")).toHaveLength(2);
+  act(() => pressables("desktops.settings")[0]!.props.onPress());
+  expect(devicePage()!.props.deviceId).toBe("desktop-1");
+  expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
 });
 
 test("system back returns from device management", async () => {
@@ -131,13 +154,16 @@ test("system back returns from device management", async () => {
   } finally { subscribe.mockRestore(); }
 });
 
-test("supports a startup picker without a back action", async () => {
+/**
+ * The startup picker is the same list with nothing behind it, and there the row
+ * *is* the choice: with no session list to go back to, a device page that only
+ * described the machines would leave the phone with no way to pick one.
+ */
+test("a startup picker still lets the row choose the machine", async () => {
   act(() => tree.unmount());
-  await act(async () => {
-    tree = create(createElement(DesktopsScreen, { onAdd }));
-  });
+  await renderPicker();
   expect(pressables("common.back")).toHaveLength(0);
-  await act(async () => selectors()[1]!.props.onPress());
+  await act(async () => rowControls("desktop-2")[0]!.props.onPress());
   expect(mockRemote.switchDesktop).toHaveBeenCalledWith("desktop-2");
   expect(onBack).not.toHaveBeenCalled();
 });
@@ -155,9 +181,11 @@ test("opens the add-by-QR flow", () => {
   expect(onAdd).toHaveBeenCalled();
 });
 
-test("keeps the picker open and displays a failed switch", async () => {
+test("keeps the startup picker open and displays a failed switch", async () => {
+  act(() => tree.unmount());
+  await renderPicker();
   mockRemote.switchDesktop.mockRejectedValueOnce(new Error("storage unavailable"));
-  await act(async () => selectors()[1]!.props.onPress());
+  await act(async () => rowControls("desktop-2")[0]!.props.onPress());
   expect(onBack).not.toHaveBeenCalled();
   expect(tree.root.findAll((node) => node.props.accessibilityRole === "alert").length).toBeGreaterThan(0);
 });
@@ -195,9 +223,7 @@ test("a startup picker lets the system own the back gesture", async () => {
   act(() => tree.unmount());
   const subscribe = jest.spyOn(BackHandler, "addEventListener").mockReturnValue({ remove: jest.fn() });
   try {
-    await act(async () => {
-      tree = create(createElement(DesktopsScreen, { onAdd }));
-    });
+    await renderPicker();
     const handler = subscribe.mock.calls.at(-1)![1];
     // Nothing to go back to: reporting "handled" would swallow the OS back
     // gesture and leave the user stuck on the picker.
