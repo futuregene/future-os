@@ -136,11 +136,13 @@ export interface MergedConversation {
   /**
    * The conversation this one was forked from, as a row key in this list.
    *
-   * Resolved by the merge rather than carried over: a parent that is not a row
-   * here (another machine's filter, a deleted conversation) leaves its child a
-   * root, which is what the tree needs to know. Local rows are not resolved
-   * here — the rail builds this machine's tree from its own store and passes
-   * each row's place in.
+   * Resolved by the merge rather than carried over, for both machines: a parent
+   * that is not a row here (another machine's filter, a deleted conversation, a
+   * parent that never loaded) leaves its fork a root, which is what the tree needs
+   * to know. A host names its parent by its own session id and this machine's
+   * threads by *agent session* id — the rail resolves that one and passes it in as
+   * `parentThreadId` — and both become keys here because the list's rows are what
+   * a tree hangs them under.
    */
   parentKey?: string | null;
 }
@@ -158,6 +160,16 @@ export interface LocalThreadLike {
   lastMessageAt?: number | null;
   updatedAt: number;
   createdAt: number;
+  /**
+   * The thread of this machine this one was forked from, as the rail resolved it
+   * from the fork's agent session id (`threadParentIds`).
+   *
+   * The merged list draws a fork under the row it came from, for the host's
+   * sessions and this machine's alike; this is what lets a local fork be placed
+   * without this module holding a second opinion on what a fork's parent is.
+   * Absent for a root, and for a parent that is not a thread of this machine's.
+   */
+  parentThreadId?: string | null;
 }
 
 /** Which machines the list shows. `null` desktopId means this machine. */
@@ -192,13 +204,13 @@ export function mergeConversations(
 ): MergedConversation[] {
   const rows: MergedConversation[] = [];
   /**
-   * Each remote row's parent, held until every row is known.
+   * Each row's parent, held until every row is known.
    *
    * A fork is drawn under the turn it came from, and that is a question about
    * the list rather than about one host's rows: the parent is only addressable
    * if it is a row here, which can only be answered once the merge is complete.
    */
-  const forks: Array<{ parentSessionId: string; row: MergedConversation }> = [];
+  const forks: Array<{ parentKey: string; row: MergedConversation }> = [];
 
   const wantsLocal = filter.kind === "all" || filter.desktopId === null;
   const wantsHost = (desktopId: string) =>
@@ -211,7 +223,7 @@ export function mergeConversations(
       // are still listed (the rail has a restore action for them).
       if (thread.status === "deleted")
         continue;
-      rows.push({
+      const row: MergedConversation = {
         key: rowKey(null, thread.id),
         desktopId: null,
         id: thread.id,
@@ -229,10 +241,14 @@ export function mergeConversations(
         // reads it from this machine's store); nothing is looked up here.
         workspacePinned: thread.workspacePinned === true,
         workspaceOrderedAt: thread.workspaceOrderedAt ?? null,
-        // This machine's tree is the rail's (its rows arrive as built nodes), so
-        // the merged list only carries a *remote* row's parent.
+        // This machine's tree is the rail's: it resolves a local fork's parent
+        // from its own store and passes it in, so what is recorded here is the
+        // same *relation* a host reports for its sessions, in this list's keys.
         parentKey: null,
-      });
+      };
+      if (thread.parentThreadId)
+        forks.push({ parentKey: rowKey(null, thread.parentThreadId), row });
+      rows.push(row);
     }
   }
 
@@ -268,17 +284,19 @@ export function mergeConversations(
         parentKey: null,
       };
       if (session.parentSessionId)
-        forks.push({ parentSessionId: session.parentSessionId, row });
+        forks.push({ parentKey: rowKey(catalog.desktopId, session.parentSessionId), row });
       rows.push(row);
     }
   }
 
-  for (const { parentSessionId, row } of forks) {
-    // A session id is only meaningful on the host that issued it, so the parent
-    // is looked for on this row's own machine — the same id exists on another.
-    const parent = rowKey(row.desktopId, parentSessionId);
-    if (parent !== row.key && seen.has(parent))
-      row.parentKey = parent;
+  for (const { parentKey, row } of forks) {
+    // A fork's parent is named by an id that is only meaningful on the machine
+    // that issued it, so the key was formed on that machine — the same id exists
+    // on another — and must be a row *here*: a parent the filter dropped, or one
+    // that is gone, leaves its fork a root rather than a row that cannot be
+    // drawn. A conversation is never its own parent.
+    if (parentKey !== row.key && seen.has(parentKey))
+      row.parentKey = parentKey;
   }
 
   return rows.sort(compareConversations);
@@ -369,32 +387,75 @@ export interface MergedGroup {
  * the list of this machine alone, which orders its workspaces by when *they* were
  * last touched (`COALESCE(last_opened_at, updated_at)`, the same coalesce the
  * host reports per row). So the key is the workspace's, from whichever machine
- * owns it, and the rows' recency only orders rows inside a group.
+ * owns it, and the rows' recency only orders the conversations inside a group.
+ *
+ * **A fork is a conversation's, not a section's.** The rows are ranked by their
+ * **roots** — the conversation a row's tree hangs under, `rowRoots` — so a fork
+ * follows the conversation it came from rather than taking a place of its own by
+ * time, and sits in *that* conversation's section: the forks of a pinned
+ * conversation are pinned rows, and one forked from a workspace conversation is
+ * under that workspace's heading, which is what the local list's own tree does.
+ * A fork is younger than its parent by construction, so ranking it by its own
+ * time would put it *above* the conversation it came from — which is what it did.
  */
 export function groupMergedRows(
   rows: MergedConversation[],
+  /**
+   * Which conversation each listed row hangs under, by row key — its root.
+   *
+   * Built by the caller's tree, because that is where the answer lives: a row's
+   * parent is a row of the list, and whether it is one of this list's rows is a
+   * question only the tree that filters and folds them can answer. A caller with
+   * no tree (a unit test, a list of roots) omits it, and every row is its own.
+   */
+  rowRoots: ReadonlyMap<string, MergedConversation> = new Map(),
 ): {
   chats: MergedConversation[];
   pinned: MergedConversation[];
   workspaces: MergedGroup[];
 } {
-  const pinned = rows.filter(row => row.pinned);
-  const rest = rows.filter(row => !row.pinned);
+  const rootOf = (row: MergedConversation) => rowRoots.get(row.key) ?? row;
+  // Each root with the rows that hang under it, kept together — ranked blocks
+  // rather than ranked rows, so where a conversation is placed is where its forks
+  // are placed too. The root travels with its block: it is what the block is
+  // ranked and filed by, and it is not necessarily the first row to arrive.
+  const blocks = new Map<string, { root: MergedConversation; rows: MergedConversation[] }>();
+  for (const row of rows) {
+    const root = rootOf(row);
+    const block = blocks.get(root.key);
+    if (!block)
+      blocks.set(root.key, { root, rows: [row] });
+    else if (row.key === root.key)
+      // A fork is drawn *under* the conversation it came from, whatever order the
+      // rows arrive in.
+      block.rows.unshift(row);
+    else block.rows.push(row);
+  }
+  const ranked = [...blocks.values()].sort((a, b) => compareConversations(a.root, b.root));
+
+  const pinned: MergedConversation[] = [];
+  const rest: Array<{ root: MergedConversation; rows: MergedConversation[] }> = [];
+  for (const block of ranked) {
+    if (block.root.pinned)
+      pinned.push(...block.rows);
+    else rest.push(block);
+  }
 
   const byKey = new Map<string, MergedGroup>();
-  for (const row of rest) {
-    const machine = row.desktopId ?? "local";
+  for (const block of rest) {
+    const root = block.root;
+    const machine = root.desktopId ?? "local";
     // A chat-mode conversation has no workspace of its own in this list's shape:
     // the local rail shows one chat section for all of them, and a heading per
     // workspace would be a heading for something the row is not in.
-    const grouped = row.mode === "workspace";
+    const grouped = root.mode === "workspace";
     // This machine's groups are keyed by the workspace id *alone*, which is the
     // key the local list already folds by: the same workspace then folds and
     // unfolds together in both lists, instead of two fold states disagreeing
     // about one workspace depending on which list is drawn. A remote workspace
     // needs the machine in the key — two machines can hold the same workspace id.
     const key = grouped
-      ? (row.desktopId === null ? (row.workspaceId ?? "") : `${machine}::${row.workspaceId ?? ""}`)
+      ? (root.desktopId === null ? (root.workspaceId ?? "") : `${machine}::${root.workspaceId ?? ""}`)
       : "chat";
     const existing = byKey.get(key);
     const group: MergedGroup = existing ?? {
@@ -402,12 +463,12 @@ export function groupMergedRows(
       // A chat section has no machine: it holds every machine's chats, which is
       // the point of it — the section is where a reader looks for conversations
       // rather than for a place on a disk.
-      desktopId: grouped ? row.desktopId : null,
+      desktopId: grouped ? root.desktopId : null,
       kind: grouped ? "workspace" : "chat",
-      label: row.workspaceName ?? null,
-      workspaceId: grouped ? row.workspaceId : null,
-      pinned: grouped && row.workspacePinned === true,
-      orderedAt: grouped ? (row.workspaceOrderedAt ?? null) : null,
+      label: root.workspaceName ?? null,
+      workspaceId: grouped ? root.workspaceId : null,
+      pinned: grouped && root.workspacePinned === true,
+      orderedAt: grouped ? (root.workspaceOrderedAt ?? null) : null,
       rows: [],
     };
     if (!existing)
@@ -415,10 +476,10 @@ export function groupMergedRows(
     // A host that predates the workspace *name* must not blank a heading a newer
     // row in the same group supplied — and the same holds for its pin and its
     // place: one row reporting it is the group's answer.
-    group.label ??= row.workspaceName ?? null;
-    group.pinned ||= grouped && row.workspacePinned === true;
-    group.orderedAt ??= row.workspaceOrderedAt ?? null;
-    group.rows.push(row);
+    group.label ??= root.workspaceName ?? null;
+    group.pinned ||= grouped && root.workspacePinned === true;
+    group.orderedAt ??= root.workspaceOrderedAt ?? null;
+    group.rows.push(...block.rows);
   }
 
   const groups = [...byKey.values()];
@@ -438,10 +499,11 @@ export function groupMergedRows(
   return {
     pinned,
     workspaces: groups.filter(group => group.kind === "workspace"),
-    // One section, every machine's conversations in it, in the same order the
-    // rows were merged in. Grouping these by machine put a heading between two
-    // conversations that belong to the same hour, and made the one list a user
-    // scans for "what is current" into one list per machine to scan separately.
-    chats: chats ? chats.rows.slice().sort(compareConversations) : [],
+    // One section, every machine's conversations in it. Grouping these by machine
+    // put a heading between two conversations that belong to the same hour, and
+    // made the one list a user scans for "what is current" into one list per
+    // machine to scan separately. Its order is the one the blocks were ranked in,
+    // so a conversation's forks are under it rather than ranked among it.
+    chats: chats ? chats.rows : [],
   };
 }
