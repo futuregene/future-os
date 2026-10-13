@@ -1,6 +1,6 @@
 import type { StoredThread } from "../../integrations/storage/threadStore";
 import { describe, expect, it } from "vitest";
-import { buildThreadTree, visibleThreadRows } from "./threadTree";
+import { buildThreadTree, buildTree, visibleThreadRows, visibleTreeRows } from "./threadTree";
 
 function thread(id: string, parentSessionId?: string, pinned = false): StoredThread {
   return { id, agentSessionId: id, parentSessionId, pinned, mode: "chat", workspaceId: id, title: id, status: "active", readonly: false, createdAt: 0, updatedAt: 0 };
@@ -24,8 +24,8 @@ describe("conversation tree", () => {
 
   it("promotes pinned children without duplicating their descendants", () => {
     const tree = buildThreadTree([thread("a"), thread("b", "a", true), thread("c", "b")]);
-    expect(tree.map(n => n.thread.id)).toEqual(["a", "b"]);
-    expect(tree[1]!.children.map(n => n.thread.id)).toEqual(["c"]);
+    expect(tree.map(n => n.item.id)).toEqual(["a", "b"]);
+    expect(tree[1]!.children.map(n => n.item.id)).toEqual(["c"]);
     expect(visibleThreadRows(tree, expanded)).toHaveLength(3);
   });
 
@@ -40,6 +40,21 @@ describe("conversation tree", () => {
   it("resolves Agent ids, not Desktop ids, across workspace boundaries", () => {
     const parent = { ...thread("a"), agentSessionId: "session-a", mode: "workspace" as const, workspaceId: "project" };
     const child = thread("b", "session-a");
-    expect(buildThreadTree([child, parent])[0]!.children[0]!.thread).toBe(child);
+    expect(buildThreadTree([child, parent])[0]!.children[0]!.item).toBe(child);
+  });
+
+  it("builds the same tree from any list whose rows name their parent", () => {
+    // The merged list's remote rows, which know their parent by row key rather
+    // than by session id: one algorithm, so a fork is one shape in both lists.
+    const rows = [
+      { key: "h::a", parentKey: null, pinned: false },
+      { key: "h::b", parentKey: "h::a", pinned: false },
+      { key: "h::c", parentKey: "h::b", pinned: false },
+    ];
+    const tree = buildTree(rows, row => row);
+    expect(visibleTreeRows(tree, row => row.key, new Set()).map(r => [r.item.key, r.depth]))
+      .toEqual([["h::a", 0]]);
+    expect(visibleTreeRows(tree, row => row.key, new Set(["h::a", "h::b"])).map(r => [r.item.key, r.depth, r.hasChildren]))
+      .toEqual([["h::a", 0, true], ["h::b", 1, true], ["h::c", 2, false]]);
   });
 });

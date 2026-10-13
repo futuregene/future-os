@@ -9,6 +9,7 @@ import { Button } from "../../components/ui/Button";
 import { IconButton } from "../../components/ui/IconButton";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { MessageBlock } from "../agent/MessageBlock";
+import { useComposerInset } from "../agent/useComposerInset";
 import { useStickyAutoScroll } from "../agent/useStickyAutoScroll";
 import { peerBadgeText } from "./peerIcons";
 import { useRemoteActivityTargets, withRemoteTargets } from "./remoteActivityTargets";
@@ -182,6 +183,7 @@ export function RemoteConversationView({
       onLoadOlder();
   }, [hasMore, loadingOlder, loading, onLoadOlder]);
 
+  const { composerRef, composerHeight } = useComposerInset();
   const {
     handleScroll,
     scrollToLatest,
@@ -337,10 +339,21 @@ The same two layers this app's own conversation uses (`AgentThread`):
                 );
               })}
             </div>
+            {/* The footer's own height, reserved at the end of the transcript.
+                The composer rides *over* the transcript behind a fade rather
+                than sitting under it, so without this the last turn is drawn
+                below the visible area and covered by the panel: the same inset
+                this app's own conversation reserves for the same footer. It is
+                inside the observed content, so the sticky viewport and the
+                floating scrollbar settle when the composer grows. */}
+            <div aria-hidden="true" style={{ height: composerHeight }} />
           </div>
         </div>
 
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-linear-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10">
+        <div
+          ref={composerRef}
+          className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-linear-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10"
+        >
           <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
             {/* Approvals sit above the composer, not inside the transcript: they
                 are a decision the user has to make now, and a card that scrolls

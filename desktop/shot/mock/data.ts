@@ -1241,9 +1241,30 @@ export const remoteSessions: Record<string, unknown[]> = {
       // its conversations' rows), and the same state the mock's workspace list
       // reports: the group leads the merged list, with its marker.
       workspacePinned: true,
+      // When that *workspace* was last opened there — the key the merged list
+      // places the group by, so the host's group holds its rank while its
+      // conversations (the newest on either machine, 90s ago) come and go.
+      workspaceOrderedAt: Date.now() - 30 * 60_000,
       pinned: false,
       streaming: true,
       lastMessageAt: Date.now() - 90_000,
+    },
+    {
+      sessionId: "rs_forest_mono",
+      threadId: "th_forest_mono",
+      title: "把森林图改成黑白版",
+      mode: "workspace",
+      workspaceId: "ws_figures",
+      workspaceName: "图表脚本",
+      workspacePinned: true,
+      workspaceOrderedAt: Date.now() - 30 * 60_000,
+      // A fork on that machine, as its catalogue reports it: the row is drawn
+      // indented under the conversation it came from, folded by the same toggle
+      // the local list uses.
+      parentSessionId: "rs_forest",
+      pinned: false,
+      streaming: false,
+      lastMessageAt: Date.now() - 10 * 60_000,
     },
     {
       sessionId: "rs_prisma",
@@ -1253,6 +1274,7 @@ export const remoteSessions: Record<string, unknown[]> = {
       workspaceId: "ws_figures",
       workspaceName: "图表脚本",
       workspacePinned: true,
+      workspaceOrderedAt: Date.now() - 30 * 60_000,
       pinned: true,
       streaming: false,
       lastMessageAt: Date.now() - 40 * 60_000,

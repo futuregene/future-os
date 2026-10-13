@@ -1,29 +1,61 @@
 import type { StoredThread } from "../../integrations/storage/threadStore";
 
-export interface ThreadTreeNode {
-  thread: StoredThread;
-  children: ThreadTreeNode[];
+/** What a tree needs to know about one row of a list. */
+export interface TreeItem {
+  /** Unique within the list: a local thread id, or a merged row's key. */
+  key: string;
+  /**
+   * The row this one was forked from, or `null`.
+   *
+   * In the list's own vocabulary — a key, not a parent id — because addressing a
+   * parent is the caller's knowledge: a local thread points at a session id, a
+   * merged row at the parent's row key.
+   */
+  parentKey: string | null;
+  /** A pinned row is listed in the pinned section, so it leads instead of nesting. */
+  pinned: boolean;
+}
+
+export interface TreeNode<T> {
+  item: T;
+  children: TreeNode<T>[];
 }
 
 /**
- * Build once before section grouping: descendants follow their root's section.
- * Pinned children become roots in the pinned section. Missing/archived parents
- * become roots too. Break malformed cycles and flatten depth > 3 to level 3,
- * without losing a conversation or changing the Agent's authoritative lineage.
+ * Build a tree from a flat list whose rows name their parent.
+ *
+ * One algorithm for both lists in the rail — this machine's conversations and
+ * the merged list's remote ones — because they draw the same thing: a fork as an
+ * indented row under the turn it came from, folded by the same `+`/`−` toggle.
+ * Only how a row is identified and how it names its parent differ, and both are
+ * the caller's arguments.
+ *
+ * The three rules are the local list's, and are here rather than in either caller
+ * so the two cannot drift:
+ *
+ * - **A pinned row is a root.** It is listed in the pinned section, so hanging it
+ *   under its parent would put it in two places or neither.
+ * - **A missing parent, or one that is not a row here, makes its child a root** —
+ *   never a row that cannot be drawn. A malformed cycle loses one edge instead of
+ *   losing every row in it.
+ * - **A chain deeper than three levels flattens into the third**, which is as much
+ *   indentation as a rail has room for, and loses no conversation.
+ *
+ * Siblings keep the order they arrive in, which is the order the list is sorted
+ * in: the tree decides indentation, never ranking.
  */
-export function buildThreadTree(threads: StoredThread[]): ThreadTreeNode[] {
-  const bySession = new Map(threads.filter(t => t.agentSessionId).map(t => [t.agentSessionId, t]));
+export function buildTree<T>(items: T[], shape: (item: T) => TreeItem): TreeNode<T>[] {
+  const shapes = new Map(items.map(item => [shape(item).key, shape(item)]));
   const parents = new Map<string, string>();
-  for (const thread of threads) {
-    const parent = thread.parentSessionId ? bySession.get(thread.parentSessionId) : undefined;
-    if (!thread.pinned && parent && parent.id !== thread.id)
-      parents.set(thread.id, parent.id);
+  for (const { key, parentKey, pinned } of shapes.values()) {
+    if (!pinned && parentKey && parentKey !== key && shapes.has(parentKey))
+      parents.set(key, parentKey);
   }
   // Break one edge per cycle, including cycles disconnected from every root.
   const resolved = new Set<string>();
-  for (const thread of threads) {
+  for (const key of shapes.keys()) {
     const path = new Set<string>();
-    let id: string | undefined = thread.id;
+    let id: string | undefined = key;
     while (id && !resolved.has(id)) {
       path.add(id);
       const parent = parents.get(id);
@@ -35,12 +67,12 @@ export function buildThreadTree(threads: StoredThread[]): ThreadTreeNode[] {
     }
     for (const visited of path) resolved.add(visited);
   }
-  const nodes = new Map(threads.map(thread => [thread.id, { thread, children: [] } as ThreadTreeNode]));
-  const roots: ThreadTreeNode[] = [];
-  for (const thread of threads) {
-    const node = nodes.get(thread.id)!;
+  const nodes = new Map(items.map(item => [shape(item).key, { item, children: [] } as TreeNode<T>]));
+  const roots: TreeNode<T>[] = [];
+  for (const item of items) {
+    const node = nodes.get(shape(item).key)!;
     const ancestors: string[] = [];
-    let parent = parents.get(thread.id);
+    let parent = parents.get(shape(item).key);
     while (parent) {
       ancestors.push(parent);
       parent = parents.get(parent);
@@ -55,15 +87,53 @@ export function buildThreadTree(threads: StoredThread[]): ThreadTreeNode[] {
   return roots;
 }
 
+export interface TreeRow<T> {
+  item: T;
+  depth: number;
+  hasChildren: boolean;
+}
+
+/** The rows of a tree that a reader can currently see, parents before children. */
+export function visibleTreeRows<T>(
+  nodes: TreeNode<T>[],
+  key: (item: T) => string,
+  expanded: ReadonlySet<string>,
+  depth = 0,
+): TreeRow<T>[] {
+  return nodes.flatMap(node => [
+    { item: node.item, depth, hasChildren: node.children.length > 0 },
+    ...(expanded.has(key(node.item)) ? visibleTreeRows(node.children, key, expanded, depth + 1) : []),
+  ]);
+}
+
+/** A conversation of this machine's, as the rail's list draws it. */
+export type ThreadTreeNode = TreeNode<StoredThread>;
+
 export interface ThreadTreeRow {
   thread: StoredThread;
   depth: number;
   hasChildren: boolean;
 }
 
+/**
+ * This machine's conversation tree.
+ *
+ * Descendants follow their root's section. Pinned children become roots. A
+ * missing/archived parent becomes a root too, and a fork is resolved by *agent
+ * session* id: a parent in another workspace is still its parent.
+ */
+export function buildThreadTree(threads: StoredThread[]): ThreadTreeNode[] {
+  const bySession = new Map(
+    threads.filter(thread => thread.agentSessionId).map(thread => [thread.agentSessionId, thread]),
+  );
+  return buildTree(threads, thread => ({
+    key: thread.id,
+    parentKey: thread.parentSessionId ? (bySession.get(thread.parentSessionId)?.id ?? null) : null,
+    pinned: thread.pinned,
+  }));
+}
+
 export function visibleThreadRows(nodes: ThreadTreeNode[], expanded: Set<string>, depth = 0): ThreadTreeRow[] {
-  return nodes.flatMap(node => [
-    { thread: node.thread, depth, hasChildren: node.children.length > 0 },
-    ...(expanded.has(node.thread.id) ? visibleThreadRows(node.children, expanded, depth + 1) : []),
-  ]);
+  return visibleTreeRows(nodes, thread => thread.id, expanded, depth)
+    .map(row => ({ thread: row.item, depth: row.depth, hasChildren: row.hasChildren }));
 }

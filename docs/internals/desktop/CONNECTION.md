@@ -329,11 +329,21 @@ that machine, and no second journal is created here.
 **Merging the conversation list.** The shared list (left panel) interleaves this
 machine's conversations with every connected host's by time, each row carrying
 its source icon; the device selector narrows it to one machine. The ordering key
-is the one the local list already used —
+for **rows** is the one the local list already used —
 `pinned DESC, COALESCE(last_message_at, updated_at, created_at) DESC` — which is
 why the `state.sessions` snapshot gained an optional `lastMessageAt` (older
-clients ignore it). Ties break on a stable key, or the list would reorder on
-every refresh.
+clients ignore it). Ties put this machine first and then a host by its device id,
+or the list would reorder on every refresh.
+
+A **workspace group** is ordered by the workspace's own place, never by its most
+recent conversation: the key is `COALESCE(last_opened_at, updated_at)` — what the
+local list orders its own workspaces by — and a host reports it per row as the
+optional `workspaceOrderedAt` (again with the local-first tie-break). Ranking
+groups by their rows made a group jump to the top while the user was working in
+it, and made the merged list disagree with the list of one machine alone. A
+conversation's `parentSessionId` is what the client draws its fork from: a
+session forked from another is an indented row under it with the same `+`/`−`
+fold toggle the local rows have.
 
 **What a remote conversation cannot do is hidden**, not shown as a dead button:
 this machine's embedded terminal, Review/diff, workspace file tree, and
