@@ -10,7 +10,7 @@ import {
   Unplug,
   X,
 } from "lucide-react-native";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Modal,
@@ -33,6 +33,7 @@ import { useRemoteControls as useRemote } from "../remote/RemoteContext";
 import { activeMachineStatus, type MachineSummary } from "../remote/desktopStatus";
 import { useDesktopCatalogs } from "../remote/useDesktopCatalogs";
 import { mergeSessions, type DesktopFilter } from "../remote/mergeSessions";
+import type { SessionCommands } from "../remote/sessionCommands";
 import { iconGlyph } from "../remote/peerIcons";
 import type { RemoteSession } from "../remote/types";
 import { SessionList } from "./SessionList";
@@ -44,6 +45,13 @@ import { checkForUpdate } from "../update/update";
 import { SettingsScreen, type SettingsScreenHandle } from "../features/settings/SettingsScreen";
 
 type Tab = "workspace" | "chat";
+
+/** A conversation row, with the machine that owns it. */
+interface SessionRow {
+  session: RemoteSession;
+  /** The desktop the row came from; null for the ordinary single-machine list. */
+  desktopId: string | null;
+}
 
 // Persist the selected tab across screen transitions (SessionsScreen is
 // unmounted when entering a chat and remounted when returning).
@@ -92,6 +100,51 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     for (const desktop of remote.desktops) map.set(desktop.desktopId, iconGlyph(desktop.icon));
     return map;
   }, [remote.desktops]);
+  /** How every other paired machine stands, by desktop id. */
+  const peerReady = useMemo(
+    () => new Set(
+      catalogs.machines
+        .filter(machine => machine.status === "connected")
+        .map(machine => machine.desktopId),
+    ),
+    [catalogs.machines],
+  );
+  /**
+   * The commands a row's own machine answers.
+   *
+   * The row belongs to the machine it came from, so its rename, pin, delete and
+   * title commands go there: through this screen's own connection for the
+   * desktop the phone is talking to, and down that other machine's own
+   * connection for a row merged in from it. Both speak the same commands (a
+   * desktop answers a paired client with the same ones it answers its own
+   * window with), so everything below is written once — and a machine that
+   * cannot take a command answers null, which is what keeps an action from
+   * being offered where it could only fail.
+   */
+  const commandsFor = useCallback(
+    (desktopId: string | null): SessionCommands | null =>
+      !desktopId || desktopId === activeDesktopId
+        ? {
+          rename: remote.rename,
+          generateTitle: remote.generateTitle,
+          setPinned: remote.setSessionPinned,
+          delete: remote.deleteSession,
+        }
+        : catalogs.commandsFor(desktopId),
+    [activeDesktopId, catalogs, remote.deleteSession, remote.generateTitle, remote.rename, remote.setSessionPinned],
+  );
+  /**
+   * Whether a row's own machine can answer its commands right now.
+   *
+   * A peer counts only while it is `connected` — the badge's own green, the one
+   * state in which a host answers at all (transport ready, heartbeat fresh,
+   * agent running). The active machine keeps the judgement this screen already
+   * made from its connection.
+   */
+  const canCommand = (desktopId: string | null): boolean =>
+    !desktopId || desktopId === activeDesktopId
+      ? remote.desktopOnline
+      : peerReady.has(desktopId);
   const setTab = (next: Tab) => {
     lastTab = next;
     setTabState(next);
@@ -110,8 +163,10 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<SettingsScreenHandle>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
-  const [menuSession, setMenuSession] = useState<RemoteSession | null>(null);
-  const [renameTarget, setRenameTarget] = useState<RemoteSession | null>(null);
+  const [menuSession, setMenuSession] = useState<SessionRow | null>(null);
+  // Which conversation a dialog is editing, and which machine owns it: every
+  // action below is addressed to that machine, not to the phone.
+  const [renameTarget, setRenameTarget] = useState<SessionRow | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const pendingNewConversationRef = useRef<(() => void) | null>(null);
   const pendingSettingsActionRef = useRef<(() => void) | null>(null);
@@ -244,40 +299,59 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     start?.();
   };
 
-  const renameSession = async (session: RemoteSession, rawName: string) => {
+  /**
+   * Run one row's command on the machine that owns it, reporting a command that
+   * cannot run at all.
+   *
+   * A machine can go away between the sheet opening and an item being tapped —
+   * the trigger disables itself when that happens, but the sheet is already up —
+   * and an action that silently does nothing is worse than an error the reader
+   * can act on.
+   */
+  const runCommand = (
+    row: SessionRow,
+    run: (commands: SessionCommands) => Promise<void>,
+  ): void => {
+    const commands = commandsFor(row.desktopId);
+    void (commands ? run(commands) : Promise.reject(new Error("machine_unavailable")))
+      .catch(() => Alert.alert(t("common.error")));
+  };
+
+  const renameSession = async (row: SessionRow, rawName: string) => {
     const name = rawName.trim();
     if (!name) return;
+    const commands = commandsFor(row.desktopId);
     try {
-      await remote.rename(session.sessionId, name);
+      if (!commands) throw new Error("machine_unavailable");
+      await commands.rename(row.session.sessionId, name);
     } catch {
       Alert.alert(t("common.error"));
     }
   };
 
-  const openRename = (session: RemoteSession) => {
-    setRenameTarget(session);
-    setRenameValue(session.title || "");
+  const openRename = (row: SessionRow) => {
+    setRenameTarget(row);
+    setRenameValue(row.session.title || "");
   };
 
   const submitRename = async () => {
-    const session = renameTarget;
+    const row = renameTarget;
     const name = renameValue.trim();
-    if (!session || !name) return;
+    if (!row || !name) return;
     setRenameTarget(null);
-    await renameSession(session, name);
+    await renameSession(row, name);
   };
 
-  const togglePin = (session: RemoteSession) => {
-    void remote
-      .setSessionPinned(session.sessionId, session.threadId, !session.pinned)
-      .catch(() => Alert.alert(t("common.error")));
+  const togglePin = (row: SessionRow) => {
+    runCommand(row, commands =>
+      commands.setPinned(row.session.sessionId, row.session.threadId, !row.session.pinned));
   };
 
-  const confirmDelete = (session: RemoteSession) => {
+  const confirmDelete = (row: SessionRow) => {
     Alert.alert(
       t("sessions.delete"),
       t("sessions.deleteConfirm", {
-        title: session.title || t("sessions.unnamed"),
+        title: row.session.title || t("sessions.unnamed"),
       }),
       [
         { text: t("chat.cancel"), style: "cancel" },
@@ -285,22 +359,26 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           text: t("sessions.delete"),
           style: "destructive",
           onPress: () => {
-            void remote
-              .deleteSession(session.sessionId, session.threadId)
-              .catch(() => Alert.alert(t("common.error")));
+            runCommand(row, commands =>
+              commands.delete(row.session.sessionId, row.session.threadId));
           },
         },
       ],
     );
   };
 
-  const openSessionMenu = (session: RemoteSession) => {
-    if (remote.desktopOnline) setMenuSession(session);
+  const openSessionMenu = (session: RemoteSession, desktopId: string | null) => {
+    if (canCommand(desktopId)) setMenuSession({ session, desktopId });
   };
 
   const connection = remote.connectionPresentation;
   const connected = connection.level === "connected";
   const connecting = connection.level === "connecting";
+  /**
+   * Whether the conversation menu's actions can run: they are addressed to the
+   * machine that owns the row, so that machine is what speaks for it.
+   */
+  const canManage = menuSession !== null && canCommand(menuSession.desktopId);
   /**
    * Every paired machine, the active one first.
    *
@@ -323,6 +401,9 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
       ...catalogs.machines,
     ];
   }, [activeDesktopId, catalogs.machines, connection, remote.desktops]);
+  /** What the user calls a paired machine; its id when they have not named it. */
+  const desktopLabel = (desktopId: string): string =>
+    machines.find(machine => machine.desktopId === desktopId)?.label ?? desktopId;
   const [reconnectingFromDisconnected, setReconnectingFromDisconnected] = useState(false);
   const reconnectStartedRef = useRef(false);
 
@@ -406,13 +487,25 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
       <View style={styles.page}>
         {Alert.dialog}
         <ActionMenu
-          title={menuSession?.title || t("sessions.unnamed")}
+          title={menuSession?.session.title || t("sessions.unnamed")}
           visible={menuSession !== null}
           onClose={() => setMenuSession(null)}
           actions={menuSession ? [
-            { label: t(menuSession.pinned ? "sessions.unpin" : "sessions.pin"), icon: <Pin size={18} color={colors.inkSoft} />, disabled: !remote.desktopOnline, onPress: () => togglePin(menuSession) },
-            { label: t("chat.rename"), icon: <Pencil size={18} color={colors.inkSoft} />, disabled: !remote.desktopOnline, onPress: () => openRename(menuSession) },
-            { label: t("sessions.delete"), icon: <Trash2 size={18} color={colors.danger} />, destructive: true, disabled: !remote.desktopOnline, onPress: () => confirmDelete(menuSession) },
+            // A row on another machine acts there, and the sheet says so before
+            // the first destructive item: the point of these commands is that
+            // they are not local, and a delete that lands elsewhere without
+            // saying so is the one action a reader cannot undo.
+            ...(menuSession.desktopId && menuSession.desktopId !== activeDesktopId
+              ? [{
+                label: t("sessions.actionsOnDesktop", {
+                  name: desktopLabel(menuSession.desktopId),
+                }),
+                heading: true,
+              }]
+              : []),
+            { label: t(menuSession.session.pinned ? "sessions.unpin" : "sessions.pin"), icon: <Pin size={18} color={colors.inkSoft} />, disabled: !canManage, onPress: () => togglePin(menuSession) },
+            { label: t("chat.rename"), icon: <Pencil size={18} color={colors.inkSoft} />, disabled: !canManage, onPress: () => openRename(menuSession) },
+            { label: t("sessions.delete"), icon: <Trash2 size={18} color={colors.danger} />, destructive: true, disabled: !canManage, onPress: () => confirmDelete(menuSession) },
           ] : []}
         />
         <View style={styles.deviceBar}>
@@ -462,6 +555,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           onTabChange={setTab}
           activeDesktopId={remote.credentials?.expectedDesktopId ?? null}
           icons={peerIcons}
+          peerReady={peerReady}
           merged={showMerged ? mergedRows : undefined}
           empty={tab === "workspace" ? workspaceEmpty : !connected ? offlineEmpty : createChatEmpty}
           onMenu={openSessionMenu}
@@ -637,9 +731,12 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
 
         <RenameModal
           renameOpen={renameTarget !== null}
-          generationKey={renameTarget?.sessionId}
-          onGenerate={renameTarget && remote.desktopOnline
-            ? () => remote.generateTitle(renameTarget.sessionId, i18n.language.startsWith("zh") ? "zh" : "en")
+          generationKey={renameTarget?.session.sessionId}
+          onGenerate={renameTarget && canCommand(renameTarget.desktopId)
+            ? () => commandsFor(renameTarget.desktopId)!.generateTitle(
+              renameTarget.session.sessionId,
+              i18n.language.startsWith("zh") ? "zh" : "en",
+            )
             : undefined}
           renameValue={renameValue}
           setRenameValue={setRenameValue}
