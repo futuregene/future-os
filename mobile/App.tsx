@@ -45,6 +45,12 @@ function AppContent() {
   const remote = useRemote();
   const [screen, setScreen] = useState<"main" | "desktops" | "pair">("main");
   const showDesktops = () => setScreen("desktops");
+  // A device page's task runs can link to the conversation they ran in: the chat
+  // belongs to this app, so leave the list and open the session there.
+  const openFromDevices = (sessionId: string) => {
+    setScreen("main");
+    void remote.selectSession(sessionId);
+  };
   useUpdateReminder();
   useEffect(() => subscribeShareLanded(() => setScreen("main")), []);
   // A share stages its payload in the composer draft; when the app is already
@@ -59,7 +65,7 @@ function AppContent() {
       </View>
     );
   }
-  if (screen === "desktops") return <DesktopsScreen onBack={() => setScreen("main")} onAdd={() => setScreen("pair")} />;
+  if (screen === "desktops") return <DesktopsScreen onAdd={() => setScreen("pair")} onBack={() => setScreen("main")} onOpenConversation={openFromDevices} />;
   if (screen === "pair") return <PairingScreen onBack={showDesktops} onPaired={() => setScreen("main")} />;
   // No saved pair starts pairing. Saved pairs without a usable active choice
   // start in the picker; only a restored credential enters its session list.

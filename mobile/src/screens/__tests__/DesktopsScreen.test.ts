@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Alert, BackHandler, Modal, Text, TextInput } from "react-native";
+import { Alert, BackHandler, Modal, Text } from "react-native";
 import { Button } from "../../components/Button";
 import { PEER_ICONS } from "../../remote/peerIcons";
 import type { PairedDesktop } from "../../remote/types";
@@ -10,8 +10,6 @@ const mockRemote: {
   credentials: { pairId: string };
   desktops: PairedDesktop[];
   switchDesktop: jest.Mock;
-  labelDesktop: jest.Mock;
-  renameDesktop: jest.Mock;
   removeDesktop: jest.Mock;
 } = {
   credentials: { pairId: "pair-1" },
@@ -20,16 +18,17 @@ const mockRemote: {
     { desktopId: "desktop-2", pairId: "pair-2" },
   ],
   switchDesktop: jest.fn(),
-  labelDesktop: jest.fn(),
-  renameDesktop: jest.fn(),
   removeDesktop: jest.fn(),
 };
 jest.mock("../../remote/RemoteContext", () => ({ useRemoteControls: () => mockRemote }));
+// The device page is a stack of its own with its own tests; here it only has to
+// be reachable, for the right machine, and closable.
+jest.mock("../../features/settings/SettingsScreen", () => ({ SettingsScreen: "SettingsScreen" }));
 jest.mock("lucide-react-native", () => ({
   ArrowLeft: "ArrowLeft",
   Plus: "Plus",
   Check: "Check",
-  Pencil: "Pencil",
+  Settings2: "Settings2",
   Trash2: "Trash2",
 }));
 jest.mock("react-native-safe-area-context", () => ({
@@ -41,10 +40,11 @@ jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string) =>
 let tree: ReactTestRenderer;
 const onBack = jest.fn();
 const onAdd = jest.fn();
+const onOpenConversation = jest.fn();
 
 async function render(): Promise<void> {
   await act(async () => {
-    tree = create(createElement(DesktopsScreen, { onBack, onAdd }));
+    tree = create(createElement(DesktopsScreen, { onBack, onAdd, onOpenConversation }));
   });
 }
 
@@ -66,14 +66,17 @@ const texts = () => tree.root.findAllByType(Text).map((node) => node.props.child
   (child): child is string => typeof child === "string",
 );
 
+/** The device page the list opened, if any. */
+const devicePage = () => tree.root.findAllByType("SettingsScreen" as never)[0];
+
 beforeEach(async () => {
   jest.clearAllMocks();
+  mockRemote.credentials = { pairId: "pair-1" };
   mockRemote.desktops = [
     { desktopId: "desktop-1", pairId: "pair-1" },
     { desktopId: "desktop-2", pairId: "pair-2" },
   ];
   mockRemote.switchDesktop.mockResolvedValue(undefined);
-  mockRemote.renameDesktop.mockResolvedValue(undefined);
   mockRemote.removeDesktop.mockResolvedValue(undefined);
   jest.spyOn(Alert, "alert").mockImplementation(() => {});
   await render();
@@ -92,16 +95,36 @@ test("selects a saved desktop without scanning again", async () => {
   expect(onBack).toHaveBeenCalled();
 });
 
-test("system back closes rename first, then returns from device management", async () => {
+/**
+ * The list has one action per machine that opens everything about it — what to
+ * call it here, and every setting that is read from or written to it. It is the
+ * only way in: the phone's own settings screen has no device rows at all.
+ */
+test("the configure action opens that desktop's own page, and only when asked", async () => {
+  expect(devicePage()).toBeUndefined();
+  act(() => pressables("desktops.settings")[1]!.props.onPress());
+  const page = devicePage()!;
+  expect(page.props.deviceId).toBe("desktop-2");
+  expect(page.props.onOpenConversation).toBe(onOpenConversation);
+  // Nothing was written just by opening it: the name and icon live in the page.
+  act(() => page.props.onClose());
+  expect(devicePage()).toBeUndefined();
+  expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
+});
+
+test("a whole card tap still connects, even with the device page shut", async () => {
+  // Two controls per row, one choice: opening the page must not have made the
+  // row's own action (connect this machine) ambiguous or unreachable.
+  await act(async () => selectors()[1]!.props.onPress());
+  expect(mockRemote.switchDesktop).toHaveBeenCalledWith("desktop-2");
+  expect(devicePage()).toBeUndefined();
+});
+
+test("system back returns from device management", async () => {
   act(() => tree.unmount());
   const subscribe = jest.spyOn(BackHandler, "addEventListener").mockReturnValue({ remove: jest.fn() });
   try {
     await render();
-    act(() => pressables("desktops.rename")[0]!.props.onPress());
-    const modal = tree.root.findAllByType(Modal).find(node => node.props.visible)!;
-    act(() => modal.props.onRequestClose());
-    expect(tree.root.findAllByType(Modal).some(node => node.props.visible)).toBe(false);
-    expect(onBack).not.toHaveBeenCalled();
     const handler = subscribe.mock.calls.at(-1)![1];
     act(() => { expect(handler({ type: "hardwareBackPress", timeStamp: 1 })).toBe(true); });
     expect(onBack).toHaveBeenCalledTimes(1);
@@ -144,7 +167,7 @@ test("falls back to the desktop id until the user names it", async () => {
 });
 
 /**
- * The icon is picked in the rename dialog and drawn on this list, and those are
+ * The icon is picked on the device page and drawn on this list, and those are
  * two different files: storing an id that nothing reads back looks exactly like
  * a picker that works. Every card used to draw the same fixed monitor glyph, so
  * this screen was the one place the choice had no visible effect.
@@ -159,16 +182,6 @@ test("draws each desktop with the icon the user gave it, and the default without
   expect(texts()).toEqual(expect.arrayContaining(["🚀", PEER_ICONS[0]!.glyph]));
 });
 
-test("writes the picked icon through the label store, and picking it again clears it", async () => {
-  act(() => pressables("desktops.rename")[1]!.props.onPress());
-  await act(async () => pressables("desktops.icons.rocket")[0]!.props.onPress());
-  expect(mockRemote.labelDesktop).toHaveBeenCalledWith("desktop-2", { icon: "rocket" });
-  // Toggle: there is no "none" entry in the row, so the way back to the default
-  // is picking the icon the desktop is already wearing.
-  await act(async () => pressables("desktops.icons.rocket")[0]!.props.onPress());
-  expect(mockRemote.labelDesktop).toHaveBeenLastCalledWith("desktop-2", { icon: "" });
-});
-
 test("shows the chosen name above the id", async () => {
   mockRemote.desktops = [
     { desktopId: "desktop-1", pairId: "pair-1", name: "Studio Mac" },
@@ -176,36 +189,6 @@ test("shows the chosen name above the id", async () => {
   ];
   await render();
   expect(texts()).toEqual(expect.arrayContaining(["Studio Mac", "desktop-1", "desktop-2"]));
-});
-
-test("renames only the chosen desktop", async () => {
-  act(() => pressables("desktops.rename")[1]!.props.onPress());
-  act(() => tree.root.findByType(TextInput).props.onChangeText("Office PC"));
-  await act(async () => button("chat.save").props.onPress());
-  expect(mockRemote.renameDesktop).toHaveBeenCalledWith("desktop-2", "Office PC");
-});
-
-test("a blank name clears the custom name", async () => {
-  mockRemote.desktops = [
-    { desktopId: "desktop-1", pairId: "pair-1", name: "Studio Mac" },
-    { desktopId: "desktop-2", pairId: "pair-2" },
-  ];
-  await render();
-  act(() => pressables("desktops.rename")[0]!.props.onPress());
-  act(() => tree.root.findByType(TextInput).props.onChangeText("   "));
-  await act(async () => button("chat.save").props.onPress());
-  expect(mockRemote.renameDesktop).toHaveBeenCalledWith("desktop-1", "");
-});
-
-test("saving an unchanged name does not rewrite storage", async () => {
-  mockRemote.desktops = [
-    { desktopId: "desktop-1", pairId: "pair-1", name: "Studio Mac" },
-    { desktopId: "desktop-2", pairId: "pair-2" },
-  ];
-  await render();
-  act(() => pressables("desktops.rename")[0]!.props.onPress());
-  await act(async () => button("chat.save").props.onPress());
-  expect(mockRemote.renameDesktop).not.toHaveBeenCalled();
 });
 
 test("a startup picker lets the system own the back gesture", async () => {
@@ -221,14 +204,6 @@ test("a startup picker lets the system own the back gesture", async () => {
     expect(handler({ type: "hardwareBackPress", timeStamp: 1 })).toBe(false);
     expect(onBack).not.toHaveBeenCalled();
   } finally { subscribe.mockRestore(); }
-});
-
-test("reports a failed rename", async () => {
-  mockRemote.renameDesktop.mockRejectedValueOnce(new Error("storage full"));
-  act(() => pressables("desktops.rename")[1]!.props.onPress());
-  act(() => tree.root.findByType(TextInput).props.onChangeText("Office PC"));
-  await act(async () => button("chat.save").props.onPress());
-  expect(tree.root.findAll((node) => node.props.accessibilityRole === "alert").length).toBeGreaterThan(0);
 });
 
 test("confirms removal of only the chosen desktop", async () => {
@@ -249,22 +224,4 @@ test("a refused removal is reported instead of silently leaving the desktop pair
   expect(mockRemote.removeDesktop).toHaveBeenCalledWith("desktop-2");
   expect(tree.root.findAll(node => node.props.accessibilityRole === "alert").length).toBeGreaterThan(0);
   expect(texts()).toContain("desktops.actionFailed");
-});
-
-test("the keyboard's done key saves the rename, and cancelling abandons it", async () => {
-  act(() => pressables("desktops.rename")[1]!.props.onPress());
-  const input = () => tree.root.findByType(TextInput);
-  act(() => input().props.onChangeText("From keyboard"));
-  await act(async () => { input().props.onSubmitEditing(); });
-  expect(mockRemote.renameDesktop).toHaveBeenCalledWith("desktop-2", "From keyboard");
-  expect(tree.root.findAllByType(Modal).some(node => node.props.visible)).toBe(false);
-});
-
-test("cancelling a rename abandons the typed name", async () => {
-  act(() => pressables("desktops.rename")[1]!.props.onPress());
-  act(() => tree.root.findByType(TextInput).props.onChangeText("Never saved"));
-  act(() => button("chat.cancel").props.onPress());
-  expect(tree.root.findAllByType(Modal).some(node => node.props.visible)).toBe(false);
-  // The abandoned text never reaches storage.
-  expect(mockRemote.renameDesktop).not.toHaveBeenCalled();
 });

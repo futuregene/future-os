@@ -235,7 +235,7 @@ test("settings uses a full-screen scrollable page and can be dismissed", () => {
   expect(tree.root.findAllByType(Modal).some(node => node.props.visible)).toBe(false);
 });
 
-test.each(["desktopSettings.preferences", "desktopSettings.models", "desktopSettings.skills", "language.title"])(
+test.each(["desktopSettings.followAccount", "language.title"])(
   "system back from %s returns to settings before closing the modal", async label => {
     await act(async () => button("sessions.settings").props.onPress());
     const modal = () => tree.root.findAllByType(Modal).find(node => node.props.visible)!;
