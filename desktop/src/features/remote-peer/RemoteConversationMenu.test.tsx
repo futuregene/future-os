@@ -42,10 +42,12 @@ function conversation(overrides: Partial<MergedConversation> = {}): MergedConver
 async function mount(row: MergedConversation, handlers: {
   onChanged?: () => void;
   onClose?: () => void;
+  onDeleted?: () => void;
   onOpenRename?: () => void;
 } = {}) {
   const changed = handlers.onChanged ?? vi.fn();
   const closed = handlers.onClose ?? vi.fn();
+  const deleted = handlers.onDeleted ?? vi.fn();
   const openRename = handlers.onOpenRename ?? vi.fn();
   const container = document.createElement("div");
   document.body.append(container);
@@ -56,6 +58,7 @@ async function mount(row: MergedConversation, handlers: {
         conversation={row}
         onChanged={changed}
         onClose={closed}
+        onDeleted={deleted}
         onOpenRename={openRename}
       />,
     );
