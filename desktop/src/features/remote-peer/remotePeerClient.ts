@@ -31,15 +31,16 @@ export interface RemotePeer {
 export interface RemotePeerEvent {
   desktopId: string;
   /**
-   * `event` for a session event, `presence` for a liveness tick, `resumed` for a
-   * link that came back after a drop.
+   * `event` for a session event, `presence` for a liveness tick, `resumed` for
+   * a link that came back after a drop, `catalog` for a sessions or workspaces
+   * snapshot.
    *
    * `resumed` is separate because neither of the others can express it: a
    * presence tick arrives on a healthy link as well, and a session event says
    * nothing about the link. It is the only signal that what the host sent while
    * the link was down is *missing* rather than merely absent.
    */
-  kind: "event" | "presence" | "resumed";
+  kind: "event" | "presence" | "resumed" | "catalog";
   payload: unknown;
 }
 

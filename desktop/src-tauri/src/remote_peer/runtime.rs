@@ -65,9 +65,10 @@ pub struct PeerEvent {
     /// `event` for a session event — one pushed on a conversation's `evt.`
     /// subject, or the same event read off the host-wide `state.events` mirror
     /// while the lane is narrowed to one conversation — `presence` for a
-    /// liveness tick, `resumed` for a link that came back.
+    /// liveness tick, `resumed` for a link that came back, `catalog` for a
+    /// sessions or workspaces snapshot.
     ///
-    /// `resumed` exists because the other two cannot express it: a presence tick
+    /// `resumed` exists because the other kinds cannot express it: a presence tick
     /// arrives on a healthy link as well, and a session event says nothing about
     /// the link. Without a distinct signal, a client cannot tell "the host is
     /// fine" from "the host is back, and everything sent while it was gone is
@@ -670,12 +671,14 @@ const EVENT_BACKLOG_CAPACITY: usize = 4096;
 ///
 /// `evt.*` is the only lane that carries a conversation; `presence` is the
 /// host's liveness tick; `state.*` is the host's host-wide lane, of which only
-/// `state.events` is read (as an event — see [`state_event_subject`]). Chunks are
-/// not a `PeerEvent` kind at all — they go to the pull waiting for them
+/// `state.events` is read as an event and `state.sessions`/`state.workspaces`
+/// are forwarded as catalog updates; `catalog` is a decrypted snapshot. Chunks
+/// are not a `PeerEvent` kind at all — they go to the pull waiting for them
 /// ([`deliver_chunk`]).
 const EVENT_LANE: &str = "event";
 const PRESENCE_LANE: &str = "presence";
 const STATE_LANE: &str = "state";
+const CATALOG_LANE: &str = "catalog";
 const TRANSFER_LANE: &str = "chunk";
 
 /// One push taken off a subscription, before anything has been made of it.
@@ -985,18 +988,21 @@ fn spawn_event_stream_capped(
                 deliver_chunk(desktop_id, transfer_id, index, bytes).await;
                 return;
             }
-            // The host-wide lane, read only while the narrow event lane is in
-            // use. On the wide lane every one of these events also arrives on
-            // its conversation's `evt.` subject, so handling both would deliver
-            // each approval card twice; while narrowed, this is the only lane a
-            // non-visible conversation's approval or activity can arrive on.
-            let kind = if kind == STATE_LANE {
-                if !narrow || !state_event_subject(&message.subject, pair_id) {
-                    return;
+            // The host-wide lane. On the wide lane every host-wide event also
+            // arrives on its conversation's `evt.` subject, so reading both
+            // would deliver each approval card twice; while narrowed, this is
+            // the only lane a non-visible conversation's approval or activity
+            // can arrive on. The snapshots (`state.sessions`/`state.workspaces`)
+            // are forwarded as catalog updates, not events.
+            let (kind, domain) = if kind == STATE_LANE {
+                match state_event_kind(&message.subject, pair_id) {
+                    StateEventKind::Events if narrow => (EVENT_LANE, None),
+                    StateEventKind::Sessions => (CATALOG_LANE, Some("sessions")),
+                    StateEventKind::Workspaces => (CATALOG_LANE, Some("workspaces")),
+                    _ => return,
                 }
-                EVENT_LANE
             } else {
-                kind
+                (kind, None)
             };
             let Some(mut payload) = open(channel, &message.subject, &message.payload) else {
                 // Unparsable or unauthenticated; same reasoning as above.
@@ -1018,6 +1024,11 @@ fn spawn_event_stream_capped(
                 ) {
                     object.insert("sessionId".to_string(), Value::String(session.to_string()));
                 }
+            }
+            // Tag catalog snapshots with their domain so the UI does not have to
+            // infer it from which top-level keys are present.
+            if let (Some(domain), Some(object)) = (domain, payload.as_object_mut()) {
+                object.insert("domain".to_string(), Value::String(domain.to_string()));
             }
             emitter(PeerEvent {
                 desktop_id: desktop_id.to_string(),
@@ -1204,19 +1215,29 @@ pub(crate) fn event_session_id<'a>(subject: &'a str, pair_id: &str) -> Option<&'
     (!session.is_empty()).then_some(session)
 }
 
-/// Whether a `state.>` subject is the host-wide *event* mirror rather than one
-/// of the snapshots (`state.sessions`, `state.workspaces`, `state.version`).
+/// Which kind of host-wide lane a `state.>` subject names.
 ///
-/// Only `state.events` is read here. The snapshots are a second copy of what
-/// this client already gets from `list_sessions`/`list_workspaces` calls, and
-/// they are large; the peer list has its own catalogue poll
-/// (`useRemotePeers`'s 15 s refresh), so reading them would buy a duplicate
-/// delivery path rather than freshness.
-///
-/// Answered from the subject, before decrypting, for the same reason the chunk
-/// lane parses first: an unread snapshot must not cost an AEAD open.
-fn state_event_subject(subject: &str, pair_id: &str) -> bool {
-    subject == format!("p.{pair_id}.state.events")
+/// The host publishes three things under `state.>`: the event mirror, the
+/// sessions snapshot, and the workspaces snapshot. Only `state.events` is read
+/// as an event (and only while the event lane is narrowed); the snapshots are
+/// forwarded as catalog updates.
+enum StateEventKind {
+    Events,
+    Sessions,
+    Workspaces,
+    Other,
+}
+
+fn state_event_kind(subject: &str, pair_id: &str) -> StateEventKind {
+    if subject == format!("p.{pair_id}.state.events") {
+        StateEventKind::Events
+    } else if subject == format!("p.{pair_id}.state.sessions") {
+        StateEventKind::Sessions
+    } else if subject == format!("p.{pair_id}.state.workspaces") {
+        StateEventKind::Workspaces
+    } else {
+        StateEventKind::Other
+    }
 }
 
 /// `transfer_id` and chunk index from a `xfer.down` subject.
@@ -2071,16 +2092,24 @@ mod tests {
         }
     }
 
-    /// Only the `state.events` mirror of the host-wide lane is read, and read as
-    /// an event. The snapshots on the same wildcard are a second copy of what the
-    /// catalogue calls already answer, so decrypting them would be work spent to
-    /// throw the result away.
+    /// Only the `state.events` mirror of the host-wide lane is read as an event;
+    /// the snapshots on the same wildcard are forwarded as catalog updates, and
+    /// everything else is ignored.
     #[test]
     fn only_the_state_events_mirror_is_read_from_the_host_wide_lane() {
-        assert!(state_event_subject("p.pair_1.state.events", "pair_1"));
+        assert!(matches!(
+            state_event_kind("p.pair_1.state.events", "pair_1"),
+            StateEventKind::Events
+        ));
+        assert!(matches!(
+            state_event_kind("p.pair_1.state.sessions", "pair_1"),
+            StateEventKind::Sessions
+        ));
+        assert!(matches!(
+            state_event_kind("p.pair_1.state.workspaces", "pair_1"),
+            StateEventKind::Workspaces
+        ));
         for subject in [
-            "p.pair_1.state.sessions",
-            "p.pair_1.state.workspaces",
             "p.pair_1.state.version",
             // Another pairing's host-wide lane.
             "p.pair_10.state.events",
@@ -2088,7 +2117,10 @@ mod tests {
             "p.pair_1.evt.sess_a",
             "",
         ] {
-            assert!(!state_event_subject(subject, "pair_1"), "subject {subject}");
+            assert!(
+                matches!(state_event_kind(subject, "pair_1"), StateEventKind::Other),
+                "subject {subject}"
+            );
         }
     }
 
