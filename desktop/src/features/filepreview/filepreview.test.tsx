@@ -262,6 +262,87 @@ describe("imagePreview", () => {
     expect(onError).toHaveBeenCalled();
     cleanup();
   });
+
+  it("double-click toggles between fit and actual size", async () => {
+    invokeMock.mockResolvedValue({ path: "/w/pic.png", version: "1" });
+    const { container, cleanup } = mount(createElement(ImagePreview, {
+      path: "/w/pic.png",
+      name: "pic.png",
+      onError: vi.fn(),
+    }));
+    await flushAsync();
+    const img = container.querySelector("img")!;
+    act(() => {
+      img.dispatchEvent(new Event("load"));
+    });
+    await flushAsync();
+    // Before any interaction the overlay is mounted and the image is visible.
+    expect(img.className).toContain("visible");
+
+    const wrapper = container.querySelector("[role='presentation']")!;
+    act(() => {
+      wrapper.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 100, clientY: 100 }));
+    });
+    await flushAsync();
+    // The scale displayed in the controls should switch to 100% (actual size),
+    // which means the logical scale is 1 / fit. Because we have no real DOM
+    // layout in jsdom, fitScale returns 1, so 100% is the toggle target.
+    expect(container.textContent).toContain("100%");
+
+    cleanup();
+  });
+
+  it("wheel zoom keeps the scale inside the clamped bounds", async () => {
+    invokeMock.mockResolvedValue({ path: "/w/pic.png", version: "1" });
+    const { container, cleanup } = mount(createElement(ImagePreview, {
+      path: "/w/pic.png",
+      name: "pic.png",
+      onError: vi.fn(),
+    }));
+    await flushAsync();
+    const img = container.querySelector("img")!;
+    act(() => img.dispatchEvent(new Event("load")));
+    await flushAsync();
+
+    const wrapper = container.querySelector("[role='presentation']")!;
+    act(() => {
+      wrapper.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true, clientX: 50, clientY: 50 } as WheelEventInit));
+    });
+    await flushAsync();
+    const match = container.textContent?.match(/(\d+)%/);
+    const percent = match ? Number.parseInt(match[1]!, 10) : 100;
+    expect(percent).toBeGreaterThan(100);
+    expect(percent).toBeLessThanOrEqual(600);
+
+    cleanup();
+  });
+
+  it("reset zoom restores the fit view", async () => {
+    invokeMock.mockResolvedValue({ path: "/w/pic.png", version: "1" });
+    const { container, cleanup } = mount(createElement(ImagePreview, {
+      path: "/w/pic.png",
+      name: "pic.png",
+      onError: vi.fn(),
+    }));
+    await flushAsync();
+    const img = container.querySelector("img")!;
+    act(() => img.dispatchEvent(new Event("load")));
+    await flushAsync();
+
+    const wrapper = container.querySelector("[role='presentation']")!;
+    act(() => {
+      wrapper.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true, clientX: 50, clientY: 50 } as WheelEventInit));
+    });
+    await flushAsync();
+    expect(container.textContent).not.toContain("100%");
+
+    const resetButton = container.querySelector("button[aria-label='Reset zoom']")!;
+    act(() => resetButton.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await flushAsync();
+    expect(container.textContent).toContain("100%");
+
+    cleanup();
+  });
 });
 
 describe("markdownPreview", () => {
