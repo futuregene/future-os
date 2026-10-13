@@ -23,6 +23,7 @@
 //! Nothing about the protocol is desktop-specific, so a desktop pairs with any
 //! host the phone can pair with.
 
+pub(crate) mod codec;
 pub(crate) mod creds;
 pub(crate) mod link;
 pub(crate) mod platform;

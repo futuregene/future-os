@@ -270,6 +270,109 @@ describe("useRemoteTimeline", () => {
 });
 
 /**
+ * The lean feed, as the peer actually receives it.
+ *
+ * A host that was told `lean_events_v1` trims the event envelope to
+ * `type`/`data`/`runId`/`idx`, so a live entry has to be built from what is
+ * left: the record inside `data` (a `user_message` always carries its entry id
+ * and the host's wall clock) and, when even that is absent, the run-scoped
+ * frame id and the moment the push arrived. These payloads are the lean shape
+ * exactly — `sessionId` is present because the peer restores it from the
+ * subject before it reaches this hook.
+ */
+describe("useRemoteTimeline on a lean feed", () => {
+  async function openTimeline() {
+    requestMock.mockResolvedValue(page([]));
+    const hook = renderHook(() => useRemoteTimeline("desktop_a", "sess_1", true));
+    await settle();
+    return hook;
+  }
+
+  it("builds a live entry from the event's own record", async () => {
+    const hook = await openTimeline();
+
+    push({
+      sessionId: "sess_1",
+      type: "user_message",
+      runId: "r_1",
+      idx: 3,
+      data: JSON.stringify({
+        text: "hello",
+        entry_id: "entry_1",
+        run_id: "r_1",
+        created_at_ms: 1_700_000_000_123,
+      }),
+    });
+    await settle();
+
+    expect(hook.current.entries).toHaveLength(1);
+    const entry = hook.current.entries[0]!;
+    // The host's own entry id, not a wire id: this is what a fork and the
+    // history read both address the turn by.
+    expect(entry.id).toBe("entry_1");
+    expect(entry.createdAtMs).toBe(1_700_000_000_123);
+    expect(entry.role).toBe("user");
+    expect(entry.blocks).toEqual([{ kind: "text", text: "hello" }]);
+    hook.unmount();
+  });
+
+  it("falls back to the run-scoped frame id and the arrival time", async () => {
+    const hook = await openTimeline();
+
+    const before = Date.now();
+    push({
+      sessionId: "sess_1",
+      type: "user_message",
+      runId: "r_2",
+      idx: 7,
+      data: JSON.stringify({ text: "no record" }),
+    });
+    await settle();
+
+    expect(hook.current.entries).toHaveLength(1);
+    const entry = hook.current.entries[0]!;
+    expect(entry.id).toBe("r_2:7");
+    // "Now" is the only honest time when the host sent none: arrival order is
+    // the order it sent, and a missing timestamp must not drop the line.
+    expect(entry.createdAtMs).toBeGreaterThanOrEqual(before);
+    expect(entry.createdAtMs).toBeLessThanOrEqual(Date.now());
+    hook.unmount();
+  });
+
+  /** A frame with neither identity is not something to draw under an invented id. */
+  it("drops a frame with no identity at all", async () => {
+    const hook = await openTimeline();
+
+    push({ sessionId: "sess_1", type: "user_message", data: JSON.stringify({ text: "nameless" }) });
+    await settle();
+
+    expect(hook.current.entries).toEqual([]);
+    hook.unmount();
+  });
+
+  /** The envelope still wins when a full-feed host sent it. */
+  it("prefers the envelope's id and time when they are present", async () => {
+    const hook = await openTimeline();
+
+    push({
+      sessionId: "sess_1",
+      type: "user_message",
+      eventId: "wire_1",
+      timestamp: "2026-01-01T00:00:00Z",
+      runId: "r_3",
+      idx: 1,
+      data: JSON.stringify({ text: "full feed", entry_id: "entry_3", created_at_ms: 1 }),
+    });
+    await settle();
+
+    const entry = hook.current.entries[0]!;
+    expect(entry.id).toBe("wire_1");
+    expect(entry.createdAtMs).toBe(Date.parse("2026-01-01T00:00:00Z"));
+    hook.unmount();
+  });
+});
+
+/**
  * `streaming` drives the composer's Stop-vs-Send, so a wrong value puts a wrong
  * affordance in front of the user: "Stop" that stops nothing, or a Send that the
  * host refuses because it is already answering.

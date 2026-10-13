@@ -23,6 +23,17 @@ vi.mock("@tauri-apps/api/window", () => ({
   }),
 }));
 
+// The command surface this view calls. `requestRemotePeer` stays in because the
+// shared item-target path asks through it, and a mock that dropped it would make
+// the transcript's own fetch fail rather than go unexercised. The visible-session
+// reporter takes the view's own two arguments: it is called from an effect, so a
+// mock whose arity did not match would spread them into a zero-argument stub.
+const setVisibleSession = vi.fn(async (_desktopId: string, _sessionId: string | null) => {});
+vi.mock("./remotePeerClient", () => ({
+  requestRemotePeer: vi.fn(async () => ({})),
+  setRemotePeerVisibleSession: (desktopId: string, sessionId: string | null) => setVisibleSession(desktopId, sessionId),
+}));
+
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 function entry(id: string, role: "assistant" | "user", text: string, runId?: string): SessionEntry {
@@ -139,6 +150,26 @@ async function mount(props: {
 
 afterEach(() => {
   document.body.innerHTML = "";
+});
+
+/**
+ * Which conversation the backend should be reading.
+ *
+ * This view is the answer to that question — it is mounted exactly while a
+ * conversation is open and it knows both the machine and the session — and the
+ * answer is what lets the backend drop the host's whole event lane for this one
+ * (`selective_events_v1`). The cleanup is the other half: a reader who leaves for
+ * the list must put the wide lane back, or the peer list and every other
+ * conversation's approvals stop updating.
+ */
+it("announces the open conversation, and clears it on leaving", async () => {
+  setVisibleSession.mockClear();
+  const view = await mount({ entries: [entry("a1", "assistant", "hi")] });
+  expect(setVisibleSession).toHaveBeenCalledWith("desktop_a", "sess_1");
+
+  setVisibleSession.mockClear();
+  await view.unmount();
+  expect(setVisibleSession).toHaveBeenCalledWith("desktop_a", null);
 });
 
 it("offers fork on a reply, branching at the turn's user entry", async () => {

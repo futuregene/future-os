@@ -12,10 +12,14 @@
 //!   onto another request;
 //! * the handshake pins the host's Noise key **before** any traffic: the key
 //!   arrives in the invitation, so the first handshake is authenticated by the
-//!   QR itself rather than by trust-on-first-use.
+//!   QR itself rather than by trust-on-first-use;
+//! * a command whose reply is lost is re-sent — up to three attempts, 250·2ⁿ ms
+//!   apart, always under the same command `id` — so the host's own reply cache
+//!   answers the retry instead of running the command a second time.
 //!
-//! Nothing here decides *policy* (when to connect, when to give up, what to do
-//! with an event). It performs one connection attempt and exposes it.
+//! Beyond that command bound, nothing here decides *policy* (when to connect,
+//! when to give up, what to do with an event). It performs one connection
+//! attempt and exposes it.
 
 use super::creds::PeerCreds;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -27,6 +31,177 @@ use std::time::Duration;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Ordinary commands default, matching the phone's request timeout.
 pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How many attempts a retryable command gets in total, and the base of the
+/// `250·2ⁿ ms` backoff between them. The phone's numbers
+/// (`mobile/src/remote/client.ts::requestRetry`), kept identical so the two
+/// clients fail, and recover, at the same pace.
+pub(crate) const COMMAND_ATTEMPTS: usize = 3;
+pub(crate) const RETRY_BACKOFF_BASE: Duration = Duration::from_millis(250);
+
+/// Whether a command may be re-sent after a transport failure.
+///
+/// The phone's whitelist, adopted as-is: reads (`get_*`, `list_`) and the two
+/// commands that extend a conversation (`prompt`, `continue_run`). A read has no
+/// side effect to duplicate; `prompt`/`continue_run` do, and are safe here only
+/// because the host deduplicates on the command `id` (`remote::commands`'
+/// `ReplySlots`, single-flight, 600 s TTL) — a re-send gets the cached reply
+/// rather than a second message. Everything else — the writes
+/// (`create_workspace`, `set_task_enabled`, …) — is left to the user to retry
+/// knowingly, because a re-send that the host cannot recognise as one would
+/// apply the write twice.
+pub(crate) fn retryable_command(payload: &Value) -> bool {
+    let Some(kind) = payload.get("type").and_then(Value::as_str) else {
+        return false;
+    };
+    kind.starts_with("get_")
+        || kind.starts_with("list_")
+        || kind == "upload_complete"
+        || matches!(kind, "prompt" | "continue_run")
+}
+
+/// A failure worth another attempt: the transport (a reply that never arrived,
+/// a socket that went away). A business failure is the host's *answer* — it
+/// would compute the same one again — so it is returned at once, exactly as
+/// `remote_peer::runtime` reads it.
+fn transient(error: &crate::AppError) -> bool {
+    matches!(error, crate::AppError::RemoteTransport(_))
+}
+
+/// Capability a client declares on `secure_ready` to narrow its event lane from
+/// "every conversation on the host" to the one the user is looking at.
+///
+/// Unlike the two content flags this one is *negotiated*: the host answers with
+/// the capability list it supports, and the narrowing is only applied when
+/// `selective_events_v1` comes back in it. A host that does not know the flag
+/// keeps sending the wide lane, and a client that narrowed anyway would show a
+/// blank conversation.
+pub(crate) const SELECTIVE_EVENTS_FEATURE: &str = "selective_events_v1";
+
+/// Capabilities this client declares on `secure_ready`, in the order they are
+/// advertised. Kept as a named constant so the declaration is testable without
+/// a live host: without one, a future edit could quietly drop a capability the
+/// decode path depends on.
+///
+/// `event_coalescing_v1` needs no consumer change (see `super::codec` and the
+/// handshake comment); `reply_gzip_v1` is only safe because `super::codec`
+/// inflates bounded replies; `selective_events_v1` is only safe because the
+/// narrow lane is paired with the `state.events` subscription
+/// ([`PeerSession::state_subject`]), which is what keeps the host's cross-session
+/// notifications arriving. `lean_events_v1` is deliberately absent.
+pub(crate) const DECLARED_FEATURES: [&str; 3] = [
+    "event_coalescing_v1",
+    "reply_gzip_v1",
+    SELECTIVE_EVENTS_FEATURE,
+];
+
+/// The session token a narrow `evt.` subscription may be built from.
+///
+/// The id is interpolated into a NATS subject, so a token that is not a plain
+/// identifier would not narrow anything: `*` or `>` would *widen* the
+/// subscription back to the whole host, and a `.` would address a different
+/// subject than the host publishes on. The phone's own predicate
+/// (`mobile/src/remote/client.ts::setVisibleSession`) is the same charset, and
+/// a rejected id means "no conversation is being viewed" — the wide lane —
+/// rather than a subscription nobody can explain.
+pub(crate) fn narrowable_session(session_id: &str) -> Option<&str> {
+    (!session_id.is_empty()
+        && session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+    .then_some(session_id)
+}
+
+/// Where the host publishes its cross-conversation notifications, alongside the
+/// conversation's own `evt.` subject (`remote::publisher::is_catalog_event`).
+pub(crate) fn state_subject(pair_id: &str) -> String {
+    format!("p.{pair_id}.state.>")
+}
+
+/// The events subscription `visible` calls for.
+///
+/// A free function rather than a method so the decision can be tested without a
+/// socket: it is the whole of "which lane", and every path into it — the initial
+/// `SUB` and the move when the user opens another conversation — goes through
+/// this one construction, so a reader of `state.events` and the subscription it
+/// belongs to can never disagree about which lane is installed.
+pub(crate) fn events_lane(
+    pair_id: &str,
+    narrow_confirmed: bool,
+    visible: Option<&str>,
+) -> EventsSubscription {
+    match visible
+        .filter(|_| narrow_confirmed)
+        .and_then(narrowable_session)
+    {
+        Some(session) => EventsSubscription {
+            subject: format!("p.{pair_id}.evt.{session}"),
+            narrow: true,
+        },
+        None => EventsSubscription {
+            subject: format!("p.{pair_id}.evt.>"),
+            narrow: false,
+        },
+    }
+}
+
+/// The read lanes one connection drains, taken together at connect time.
+///
+/// One struct rather than a tuple: `spawn_event_stream` takes all four and the
+/// call site has to keep them straight (an `events`/`presence` swap would compile
+/// and deliver presence ticks to the transcript).
+pub(crate) struct Subscriptions {
+    pub(crate) events: async_nats::Subscriber,
+    pub(crate) presence: async_nats::Subscriber,
+    pub(crate) state: async_nats::Subscriber,
+    pub(crate) transfers: async_nats::Subscriber,
+}
+
+/// Everything needed to point the events lane at a conversation and to move it
+/// when the user opens another one: the pair it belongs to, the socket, and
+/// whether the host confirmed the capability.
+///
+/// The session is *not* part of it. Holding it here would make the lane a
+/// snapshot of one moment, and the whole point of the type is that the lane
+/// moves while the connection stays up.
+pub(crate) struct EventLane {
+    pair_id: String,
+    client: async_nats::Client,
+    narrow_confirmed: bool,
+}
+
+/// One installed events subscription: where it listens, and whether that is the
+/// narrowed lane.
+///
+/// Both facts travel together because they are one decision. Whether the
+/// reader of `state.events` double-reads a host-wide event depends on which lane
+/// is installed, and a caller that recomputed the predicate itself could answer
+/// differently from the subscription it just opened.
+pub(crate) struct EventsSubscription {
+    pub(crate) subject: String,
+    pub(crate) narrow: bool,
+}
+
+impl EventLane {
+    /// The lane `visible` calls for: the narrowed one when the host confirmed
+    /// the capability and the session is a plain token, else the wide lane.
+    pub(crate) fn for_visible(&self, visible: Option<&str>) -> EventsSubscription {
+        events_lane(&self.pair_id, self.narrow_confirmed, visible)
+    }
+
+    /// Open (or re-open) the events lane for `visible`.
+    ///
+    /// A fresh `SUB` rather than a filter change: NATS Core has no "change the
+    /// subject back", and the previous subscriber is dropped when it is
+    /// replaced, which is also what stops the old conversation's pushes from
+    /// arriving after the user has moved on.
+    pub(crate) async fn subscribe(
+        &self,
+        visible: Option<&str>,
+    ) -> Result<async_nats::Subscriber, crate::AppError> {
+        subscribe(&self.client, self.for_visible(visible).subject).await
+    }
+}
 
 pub(crate) struct PeerSession {
     pair_id: String,
@@ -59,6 +234,48 @@ impl PeerSession {
         &self.features
     }
 
+    /// Whether the host confirmed the narrowed event lane. Read from the
+    /// confirmation rather than from what this client asked for: a host that
+    /// does not implement the flag would never send the cross-session events the
+    /// narrow lane has to give up, and a client that narrowed anyway would go
+    /// quiet without saying so.
+    pub(crate) fn selective_events(&self) -> bool {
+        self.features
+            .iter()
+            .any(|feature| feature == SELECTIVE_EVENTS_FEATURE)
+    }
+
+    /// Where this connection reads session events.
+    ///
+    /// Wide (`p.{pair}.evt.>`) unless every one of three things holds: the host
+    /// confirmed the capability, the user is looking at a conversation, and that
+    /// conversation's id is a plain token ([`narrowable_session`]). Otherwise
+    /// the subscription is the one this client has always used, so the fallback
+    /// is the *existing* behaviour rather than a second lane to reason about.
+    pub(crate) fn event_lane(&self) -> EventLane {
+        EventLane {
+            pair_id: self.pair_id.clone(),
+            client: self.client.clone(),
+            narrow_confirmed: self.selective_events(),
+        }
+    }
+
+    /// Where the host mirrors the handful of low-rate events that concern a
+    /// host as a whole rather than one conversation: `approval_request`,
+    /// `approval_decision`, `agent_start`/`agent_end` and the settings changes
+    /// (`remote::publisher::is_catalog_event`).
+    ///
+    /// Subscribed to for exactly as long as the narrow lane is in use. The host
+    /// publishes each of those events twice — once on its conversation's `evt.`
+    /// subject and once here — so a client on the wide lane already has them and
+    /// reading this too would deliver every approval card twice. On the narrow
+    /// lane this is the *only* place a non-visible conversation's approval or
+    /// activity can still arrive, which is why narrowing without it silently
+    /// stops the peer list and the approval card from updating.
+    pub(crate) fn state_subject(&self) -> String {
+        state_subject(&self.pair_id)
+    }
+
     /// Whether the host said, at handshake time, that its agent was reachable.
     /// A reachable bridge with an unavailable agent is `LC003` in the support
     /// table: the link is up and every command fails.
@@ -82,6 +299,30 @@ impl PeerSession {
         &self.client
     }
 
+    /// A session wired to a broker and a channel the *test* owns, with no
+    /// handshake in front of it.
+    ///
+    /// The retry is about re-sending, so a test of it wants to be the host: to
+    /// see each request and to choose whether to answer. `connect` cannot offer
+    /// that — its host always replies — and a broker that is up cannot lose one
+    /// reply on demand.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        pair_id: &str,
+        client: async_nats::Client,
+        channel: std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
+        bridge_instance_id: &str,
+    ) -> Self {
+        Self {
+            pair_id: pair_id.to_string(),
+            client,
+            channel,
+            bridge_instance_id: bridge_instance_id.to_string(),
+            features: Vec::new(),
+            presence: Value::Null,
+        }
+    }
+
     /// Drain the connection: every subscription this session holds ends.
     ///
     /// `drain` rather than a bare drop, because draining is what actually
@@ -97,12 +338,15 @@ impl PeerSession {
             .map_err(|error| crate::AppError::RemoteTransport(error.to_string()))
     }
 
-    /// Subscribe to the host's event, presence and file-transfer streams.
+    /// Subscribe to the host's event, presence, host-wide and file-transfer
+    /// streams, on the lane `visible` calls for.
     ///
-    /// `p.{pair}.evt.>` carries session events, `p.{pair}.presence` the host's
-    /// liveness, and `p.{pair}.xfer.down.>` the file bytes a `pull` produces.
-    /// All three are decrypted with the same channel as commands, so pushed
-    /// bytes are authenticated exactly as strongly as a reply.
+    /// `p.{pair}.evt.{session}` (or `.evt.>` when nothing is being viewed)
+    /// carries session events, `p.{pair}.presence` the host's liveness,
+    /// `p.{pair}.state.>` the host-wide mirror and `p.{pair}.xfer.down.>`
+    /// the file bytes a `pull` produces. All of them are decrypted with the same
+    /// channel as commands, so a push is authenticated exactly as strongly as a
+    /// reply.
     ///
     /// The transfer subscription is taken at connect time rather than around a
     /// download because of the order the host uses: it publishes the chunk
@@ -111,16 +355,12 @@ impl PeerSession {
     /// race the very publish it is waiting for, and NATS Core does not replay.
     pub(crate) async fn subscribe(
         &self,
-    ) -> Result<
-        (
-            async_nats::Subscriber,
-            async_nats::Subscriber,
-            async_nats::Subscriber,
-        ),
-        crate::AppError,
-    > {
-        let events = subscribe(&self.client, format!("p.{}.evt.>", self.pair_id)).await?;
-        let presence = subscribe(&self.client, format!("p.{}.presence", self.pair_id)).await?;
+        visible: Option<&str>,
+    ) -> Result<Subscriptions, crate::AppError> {
+        let events =
+            subscribe(&self.client, self.event_lane().for_visible(visible).subject).await?;
+        let presence = subscribe(&self.client, self.presence_subject()).await?;
+        let state = subscribe(&self.client, self.state_subject()).await?;
         // Chunks only, by shape: `xfer.down.*.chunk.*` is exactly the subject the
         // host publishes a pulled chunk on. The wildcard is what makes the
         // receive path's parse total — a delivery that is not a chunk cannot
@@ -130,7 +370,16 @@ impl PeerSession {
             format!("p.{}.xfer.down.*.chunk.*", self.pair_id),
         )
         .await?;
-        Ok((events, presence, transfers))
+        Ok(Subscriptions {
+            events,
+            presence,
+            state,
+            transfers,
+        })
+    }
+
+    pub(crate) fn presence_subject(&self) -> String {
+        format!("p.{}.presence", self.pair_id)
     }
 
     /// Where a chunk pull is requested: the host's upload lane, since the client
@@ -156,12 +405,19 @@ impl PeerSession {
     /// `bridge_instance_id` is attached when the caller is addressing an
     /// already-established conversation: a host that has since restarted
     /// refuses it instead of applying it to a session it never saw.
+    ///
+    /// A command on [`retryable_command`]'s whitelist is re-sent after a
+    /// transport failure (see [`Self::exchange_retrying`]); every other command
+    /// makes exactly one attempt.
     pub(crate) async fn request(
         &mut self,
         subject: &str,
         mut payload: Value,
         timeout: Duration,
     ) -> Result<Value, crate::AppError> {
+        // Read before the envelope fields are added: the whitelist is a property
+        // of the command, not of the lane it is sent on.
+        let retryable = retryable_command(&payload);
         if let Some(object) = payload.as_object_mut() {
             object
                 .entry("bridgeInstanceId")
@@ -169,7 +425,12 @@ impl PeerSession {
         }
         let plaintext = serde_json::to_vec(&payload)
             .map_err(|error| crate::AppError::Message(format!("encode command: {error}")))?;
-        self.exchange(subject, &plaintext, timeout).await
+        if retryable {
+            self.exchange_retrying(subject, &plaintext, timeout, COMMAND_ATTEMPTS)
+                .await
+        } else {
+            self.exchange(subject, &plaintext, timeout).await
+        }
     }
 
     /// Send arbitrary bytes and decode the JSON reply.
@@ -177,6 +438,9 @@ impl PeerSession {
     /// Split out because not every request body is a command document: an
     /// upload chunk *is* its payload, and wrapping it in JSON would both inflate
     /// it and lose the exact bytes the host hashes.
+    ///
+    /// Never retried here: a body with no `type` is not on the whitelist, and
+    /// the chunk lane has its own retry (`transfer::retrying`).
     pub(crate) async fn request_bytes(
         &mut self,
         subject: &str,
@@ -184,6 +448,37 @@ impl PeerSession {
         timeout: Duration,
     ) -> Result<Value, crate::AppError> {
         self.exchange(subject, plaintext, timeout).await
+    }
+
+    /// Re-send the same sealed plaintext while the failure is a transport one.
+    ///
+    /// The plaintext — not the `Value` — is what is re-sent, so the command `id`
+    /// and every other byte of the request are identical between attempts. That
+    /// is what makes the retry idempotent: the host keys its reply cache on the
+    /// `id` and refuses a reused id whose body differs (`command_id_conflict`),
+    /// so its second look-up replays the first answer instead of executing the
+    /// command again.
+    ///
+    /// The *last* error is the one returned, so a caller sees the failure that
+    /// exhausted the budget rather than the first one.
+    async fn exchange_retrying(
+        &mut self,
+        subject: &str,
+        plaintext: &[u8],
+        timeout: Duration,
+        attempts: usize,
+    ) -> Result<Value, crate::AppError> {
+        let mut attempt = 1;
+        loop {
+            match self.exchange(subject, plaintext, timeout).await {
+                Err(error) if attempt < attempts && transient(&error) => {
+                    // Between attempt n and n+1: 250 ms, then 500 ms.
+                    tokio::time::sleep(RETRY_BACKOFF_BASE * 2u32.pow(attempt as u32 - 1)).await;
+                    attempt += 1;
+                }
+                outcome => return outcome,
+            }
+        }
     }
 
     /// Seal a request, await its reply, and unwrap the host's envelope.
@@ -217,7 +512,7 @@ impl PeerSession {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .open(&context, &response.payload)
             .map_err(|_| crate::AppError::Message("remote_secure_channel_invalid".into()))?;
-        let reply: Value = serde_json::from_slice(&opened)
+        let reply: Value = super::codec::decode_reply(&opened)
             .map_err(|error| crate::AppError::Message(format!("decode reply: {error}")))?;
         if reply.get("success").and_then(Value::as_bool) != Some(true) {
             let detail = reply
@@ -516,14 +811,23 @@ async fn handshake(
         features: confirmed.features,
         presence: confirmed.presence,
     };
-    // Note the *absence* of declared capabilities: this client deliberately
-    // asks for the conservative lanes (no coalescing, no reply gzip, no lean
-    // events). `secure_ready` is what commits the host's candidate channel, so
-    // it must still be sent — declaring nothing keeps the protocol readable
-    // from the wire and leaves the optimisation flags for a later, measured
-    // change.
+    // What this client can consume. `secure_ready` is what commits the host's
+    // candidate channel, so it must still be sent; the declared set now asks
+    // for the lanes the host already implements and this client is audited for:
     //
-    // It does carry this client's identity, which is not a capability: the host
+    // * `event_coalescing_v1` — the merged event's `data.text` is the full
+    //   concatenation of its fragment range, so a consumer with no index cursor
+    //   (this one, and the TS timeline that dedups on `eventId`) renders it
+    //   identically to the per-token lane. No consumer change is required.
+    // * `reply_gzip_v1` — safe only because the reply decode path sniffs the
+    //   gzip magic and inflates under a bounded cap (`super::codec`); declaring
+    //   it without that reader would make every reply ≥ 32 KiB undecodable.
+    //
+    // `lean_events_v1` is deliberately **not** declared: it strips
+    // `sessionId`/`eventId`/`timestamp` from the envelope, and this client's
+    // consumers still depend on all three.
+    //
+    // It also carries this client's identity, which is not a capability: the host
     // shows the user what is connected, and it cannot say "a computer" about
     // something that never told it so. An older host ignores both fields.
     session
@@ -531,7 +835,7 @@ async fn handshake(
             &session.command_subject("handshake"),
             json!({
                 "type": "secure_ready",
-                "features": [],
+                "features": DECLARED_FEATURES,
                 "deviceName": super::runtime::device_name(),
                 "deviceKind": "desktop",
             }),
@@ -615,6 +919,99 @@ mod tests {
         assert_eq!(command_subject("pair_1", ""), "p.pair_1.cmd.new");
         assert_eq!(command_subject("pair_1", "list"), "p.pair_1.cmd.list");
         assert_eq!(command_subject("pair_1", "sess_9"), "p.pair_1.cmd.sess_9");
+    }
+
+    /// The declaration is why the host sends gzip replies and coalesced events
+    /// at all, and why the narrow event lane may be used: dropping any entry
+    /// silently reverts this client to the legacy lanes. Asserted as a set
+    /// (order is free) and as the wire shape, because a declaration the host
+    /// cannot read is the same as none.
+    #[test]
+    fn the_client_declares_the_lanes_its_decoders_expect() {
+        for expected in [
+            "event_coalescing_v1",
+            "reply_gzip_v1",
+            SELECTIVE_EVENTS_FEATURE,
+        ] {
+            assert!(
+                DECLARED_FEATURES.contains(&expected),
+                "the handshake must declare {expected}: {DECLARED_FEATURES:?}"
+            );
+        }
+        assert!(
+            !DECLARED_FEATURES.contains(&"lean_events_v1"),
+            "lean must stay off until the envelope fields it strips are unused"
+        );
+        assert_eq!(
+            json!({ "features": DECLARED_FEATURES })["features"],
+            json!([
+                "event_coalescing_v1",
+                "reply_gzip_v1",
+                "selective_events_v1"
+            ])
+        );
+    }
+
+    /// Which lane an installed events subscription is on.
+    ///
+    /// This is the decision the whole capability turns on, and both halves of it
+    /// are silent failures when wrong: narrowing for a host that never confirmed
+    /// the flag leaves the transcript empty, and narrowing for an id that is not
+    /// a plain token widens the subscription back to the whole host (`*`) or
+    /// addresses a subject the host never publishes on (`.`).
+    #[test]
+    fn the_event_lane_narrows_only_for_a_confirmed_plain_session() {
+        let narrow = events_lane("pair_1", true, Some("sess_a"));
+        assert_eq!(narrow.subject, "p.pair_1.evt.sess_a");
+        assert!(narrow.narrow);
+
+        // Nothing is being viewed: the lane this client has always used.
+        for (confirmed, visible) in [
+            (true, None),
+            // A host that did not confirm the capability keeps the wide lane,
+            // whatever the UI is looking at.
+            (false, Some("sess_a")),
+            (false, None),
+            // An empty id is "no conversation", not a subject.
+            (true, Some("")),
+        ] {
+            let lane = events_lane("pair_1", confirmed, visible);
+            assert_eq!(lane.subject, "p.pair_1.evt.>", "{confirmed:?} {visible:?}");
+            assert!(!lane.narrow, "{confirmed:?} {visible:?}");
+        }
+    }
+
+    /// An id that is not a plain token cannot narrow anything, and must not be
+    /// interpolated into a subject: `*` and `>` are wildcards, so a session id
+    /// carrying one would subscribe to *more* than the wide lane, and a `.`
+    /// would address a subject the host never publishes on.
+    #[test]
+    fn a_wildcard_session_id_cannot_widen_the_subscription() {
+        for hostile in ["*", ">", "sess.*", "a.b", "sess >", "sess_a;"] {
+            assert_eq!(narrowable_session(hostile), None, "{hostile}");
+            let lane = events_lane("pair_1", true, Some(hostile));
+            assert_eq!(lane.subject, "p.pair_1.evt.>", "{hostile}");
+            assert!(!lane.narrow, "{hostile}");
+        }
+        // The ids the host actually mints are accepted.
+        for id in ["sess_a", "session-1_2", "0f6c4a1b"] {
+            assert_eq!(narrowable_session(id), Some(id));
+            assert_eq!(
+                events_lane("pair_1", true, Some(id)).subject,
+                format!("p.pair_1.evt.{id}")
+            );
+        }
+    }
+
+    /// The host-wide lane is a wildcard subscription, and it is the mirror the
+    /// narrow lane depends on: the host publishes every cross-conversation
+    /// notification there as well (`remote::publisher::is_catalog_event`).
+    #[test]
+    fn the_host_wide_state_lane_is_subscribed_by_wildcard() {
+        // `state.>` rather than `state.events`, even though only `state.events`
+        // is read: the wildcard is what the phone subscribes to, so it is the
+        // shape the platform's subject permissions are known to allow.
+        assert_eq!(state_subject("pair_1"), "p.pair_1.state.>");
     }
 
     /// Asserted here rather than through a live connection: whether an agent

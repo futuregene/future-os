@@ -2,7 +2,7 @@ import type { AgentMessage } from "@future-os/thread-projection";
 import type { RemotePeer } from "./remotePeerClient";
 import type { RemoteApproval } from "./useRemoteApprovals";
 import { ArrowDown, Check, History, ReceiptText, X } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { Button } from "../../components/ui/Button";
@@ -12,6 +12,7 @@ import { MessageBlock } from "../agent/MessageBlock";
 import { useStickyAutoScroll } from "../agent/useStickyAutoScroll";
 import { peerBadgeText } from "./peerIcons";
 import { useRemoteActivityTargets, withRemoteTargets } from "./remoteActivityTargets";
+import { setRemotePeerVisibleSession } from "./remotePeerClient";
 
 /**
  * A remote conversation: the session's transcript plus a composer that sends to
@@ -119,6 +120,25 @@ export function RemoteConversationView({
     () => (live ? [...transcript, ...withRemoteTargets([live], targets)] : transcript),
     [transcript, targets, live],
   );
+
+  /**
+   * Say which conversation is on screen, so the backend can subscribe to that
+   * one instead of to every conversation on the host (`selective_events_v1`).
+   *
+   * This view is the answer to the question — it is rendered exactly while a
+   * conversation is being read, and it knows both the machine and the session —
+   * and the cleanup is what puts the wide lane back when the reader leaves for
+   * the list or another machine. The events it misses in the moment between two
+   * subscriptions are the host's, not the transport's: `useRemoteTimeline`
+   * re-reads the page whenever the conversation changes, which is what makes a
+   * narrow lane safe to move.
+   */
+  useEffect(() => {
+    void setRemotePeerVisibleSession(desktopId, sessionId);
+    return () => {
+      void setRemotePeerVisibleSession(desktopId, null);
+    };
+  }, [desktopId, sessionId]);
 
   /**
    * The transcript's viewport: this app's own sticky auto-scroll.

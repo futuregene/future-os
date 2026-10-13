@@ -1141,6 +1141,7 @@ mod gui {
                 remote_peer_disconnect,
                 remote_peer_unpair,
                 remote_peer_set_label,
+                remote_peer_set_visible_session,
                 remote_peer_sessions,
                 remote_peer_workspaces,
                 remote_peer_list_files,

@@ -96,6 +96,23 @@ pub async fn remote_peer_set_label(
     runtime::set_label(&desktop_id, name.as_deref(), icon.as_deref())
 }
 
+/// Tell the backend which conversation the user is looking at, so the live lane
+/// can be narrowed to it (`selective_events_v1`).
+///
+/// The view that opens a conversation is the only thing that knows this, and it
+/// is the difference between reading one conversation's events and reading every
+/// conversation on the host. Always `Ok`: it records an intent, and the wide
+/// lane is the fallback whenever the host cannot narrow — so there is nothing
+/// for a caller to handle and nothing it could do about a failure.
+#[tauri::command]
+pub async fn remote_peer_set_visible_session(
+    desktop_id: String,
+    session_id: Option<String>,
+) -> Result<(), crate::AppError> {
+    runtime::set_visible_session(&desktop_id, session_id.as_deref()).await;
+    Ok(())
+}
+
 /// The host's session snapshot, stamped with `desktopId`.
 #[tauri::command]
 pub async fn remote_peer_sessions(desktop_id: String) -> Result<Value, crate::AppError> {

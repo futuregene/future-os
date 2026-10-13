@@ -599,20 +599,35 @@ function normaliseEntries(raw: unknown): RemoteEntry[] {
  * summarized, so appending them here would double every message; the live
  * state* they carry is surfaced by `streaming` and by the catalogue's own
  * refresh instead.
+ *
+ * The envelope's `eventId`/`timestamp` are preferred when they are there, and
+ * the event's own record is the fallback: a lean host trims the envelope to
+ * `type`/`data`/`runId`/`idx` (`remote_host/lean.rs`), and a `user_message`
+ * always carries its entry id and the host's wall clock in `data`
+ * (`agent/src/rpc/session_prompt.rs`). Without the fallback a lean feed's live
+ * lane produces no entry at all, because this used to return `null` the moment
+ * the envelope was missing either field.
  */
 function entryFromEvent(payload: unknown, type: string): RemoteEntry | null {
-  const id = readString(payload, "eventId");
-  const at = readString(payload, "timestamp");
-  if (!id || !at)
-    return null;
   const data = readJson(payload, "data");
-  const createdAtMs = Date.parse(at);
+  const runId = readString(payload, "runId");
+  const idx = readNumber(payload, "idx");
+  const id = readString(payload, "eventId")
+    ?? readString(data, "entry_id")
+    // Last resort, and only for the frames that have one: a run-scoped frame
+    // id is unique within its run, so dedup still holds — it just names a frame
+    // on the wire rather than an entry in the host's store.
+    ?? (runId !== null && idx !== null ? `${runId}:${idx}` : null);
+  if (!id)
+    return null;
+  const at = readString(payload, "timestamp");
+  const createdAtMs = at !== null ? Date.parse(at) : readNumber(data, "created_at_ms") ?? Date.now();
   if (Number.isNaN(createdAtMs))
     return null;
   const base = {
     id,
     createdAtMs,
-    runId: readString(payload, "runId"),
+    runId,
     blocks: [] as RemoteEntry["blocks"],
   };
   if (type === "agent_text" || type === "assistant_message") {
