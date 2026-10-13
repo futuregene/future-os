@@ -333,7 +333,14 @@ for **rows** is the one the local list already used —
 `pinned DESC, COALESCE(last_message_at, updated_at, created_at) DESC` — which is
 why the `state.sessions` snapshot gained an optional `lastMessageAt` (older
 clients ignore it). Ties put this machine first and then a host by its device id,
-or the list would reorder on every refresh.
+or the list would reorder on every refresh. A host's snapshot arrives when it
+changes rather than on a timer: each push names its domain and carries the
+`{epoch, revision}` the host gave it, and the client applies it only when the
+epoch matches the handshake's and the revision is newer. The `presence` heartbeat
+is what makes a lost push visible — the heartbeat advertises the same revisions,
+and one ahead of what was applied heals in a single authoritative read instead of
+waiting out a timer. A slow per-host read remains for hosts that predate the push
+and as the backstop that notices a dropped link.
 
 A **workspace group** is ordered by the workspace's own place, never by its most
 recent conversation: the key is `COALESCE(last_opened_at, updated_at)` — what the
@@ -379,9 +386,15 @@ the bottom left, send at the bottom right). The `/` menu is the local menu's two
 groups, both read from the host: its commands (compacting) and the skills it has
 installed, each named with what it does. The placeholder says the same thing the
 local one does minus the `@` — `描述任务，按 / 使用工具或技能`, or `…按 / 使用技能`
-for a draft, where nothing can be compacted yet — and never names the machine:
-which computer a conversation is on is the rail's business, and the phone's own
-composer does not say either. The one thing missing is the terminal: a remote
+for a draft, where nothing can be compacted yet — and never names the machine: the
+*header* does that, in the host's own glyph and the user's label for it (the same
+pair the rail uses, so one machine reads the same way in both places). The local
+header carries the same badge — `本机`, the device selector's own word and glyph —
+but only once a host is paired: with one machine there is no "where am I" to
+answer. On the phone, whose conversations are always on a paired desktop, the
+top bar puts the machine on the line that already says where the conversation is
+(the workspace, or the chat section), so the bar keeps its two lines and the
+machine gets its width first. The one thing missing is the terminal: a remote
 conversation has no local shell to open. Aligning the right-hand panel (files
 only) is not done yet.
 
@@ -389,13 +402,27 @@ only) is not done yet.
 remote conversation now has a desktop entry point (reading and writing
 conversations; prompt/stop/approval; rename/pin/delete; fork/compact/continue;
 model and thinking level; generated titles; file browsing and upload/download;
-skills; tasks; providers and their keys; workspaces; approval mode; skill
-recommendation). Two differences are **mechanism, not gaps**:
+skills; tasks; providers and their keys; workspaces — including renaming one;
+approval mode; skill recommendation), and the behaviours that were still the
+phone's alone have followed it: a draft belongs to the host *and* conversation it
+was typed in (not to whichever conversation happened to be open last), a
+prompt or continuation that cannot reach the host is persisted and checked
+against `get_prompt_receipt` before it is sent again, a run that finishes or
+fails rings the same done bell as a local one, the conversation can be stepped
+through question by question, its list can be searched, and a preview image zooms
+and pans.
 
-| Mobile | Desktop | Why |
-| --- | --- | --- |
-| `get_events_since` incremental replay | re-reads history when a link returns | both converge on the same complete record; the difference is re-reading rather than replaying, and the desktop hands post-reconnect repair to one history read |
-| `get_prompt_receipt` polling | waits for the send acknowledgement | the desktop's send request itself returns the receipt, so a second poll has nothing to ask |
+Where the two clients reached the same end by different means, they now use the
+same mechanism. A link that comes back replays the missed range with
+`get_events_since`; one whole-page history read stays as the fallback, because a
+host that predates the command answers `Unsupported command`, and a replay window
+that cannot be validated — a gap or an overlap, on an at-most-once lane — is
+safer to re-read than to patch. A stored prompt or continuation is likewise
+checked against `get_prompt_receipt` before it is sent again, so a retry is not a
+second run. **One difference remains, and it is mechanism, not a gap**: when the
+phone suspects a socket has failed it probes that same socket with `get_presence`
+before it tears the connection down, while the desktop takes the answer from the
+`presence` subscription it already holds.
 
 **Known limitations (current implementation, not design goals).**
 

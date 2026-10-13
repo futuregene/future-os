@@ -1408,6 +1408,27 @@ describe("app shell account + remote coordination", () => {
     expect(mocks.startRemote).not.toHaveBeenCalled();
     view.unmount();
   });
+
+  /**
+   * A local conversation's header names this computer only once there is another
+   * computer to be on.
+   *
+   * The header's job is to answer "where am I"; with nothing paired there is one
+   * answer and so no question, and a badge reading "本机" on every conversation
+   * would be a word that never varies. The word and the glyph are the device
+   * selector's own, so the same machine is named the same way in both places.
+   */
+  it("names this computer in the header only when a host is paired", () => {
+    const bare = mount(<AppShell />);
+    expect((children.agentThread as { headerMachine?: unknown }).headerMachine).toBeNull();
+    bare.unmount();
+
+    mocks.remotePeers = { catalogs: [], peers: [{ desktopId: "desktop_a", name: "Studio iMac" }] };
+    const paired = mount(<AppShell />);
+    const badge = (children.agentThread as { headerMachine?: { props: { label: string } } }).headerMachine;
+    expect(badge?.props.label).toBe("This computer");
+    paired.unmount();
+  });
 });
 
 describe("app shell dialogs wiring", () => {

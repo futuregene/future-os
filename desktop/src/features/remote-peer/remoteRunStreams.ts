@@ -197,7 +197,7 @@ export class RemoteRunStreams {
    *   client that dropped its copy here would blink the reply out of the
    *   transcript. It is drawn until the record can be read back (`markRecorded`).
    * - **Built from pushes alone**: dropped, with its projection. That copy is a
-   *   *fragment* — the reply's beginning is in the record, not in it — so keeping
+   *   fragment* — the reply's beginning is in the record, not in it — so keeping
    *   it past the end draws the words twice, once from each lane.
    */
   settle(runId: string): void {

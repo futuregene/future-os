@@ -1,20 +1,22 @@
+import type { SnapshotVersion } from "../../../features/remote-peer/catalogVersion";
 import type { RemoteCatalog, RemoteSessionRow } from "../../../features/remote-peer/mergeConversations";
 import type { RemotePeer, RemotePeerEvent } from "../../../features/remote-peer/remotePeerClient";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CatalogVersionGate } from "../../../features/remote-peer/catalogVersion";
 import { fetchRemoteSessions, listRemotePeers } from "../../../features/remote-peer/remotePeerClient";
 
 /** How often the peer list is refreshed. */
 const PEER_POLL_MS = 5_000;
 /**
- * How often each connected host's catalogue is re-read.
+ * Slow safety poll for hosts that do not push catalog snapshots.
  *
- * Slower than the peer poll on purpose: the live event stream keeps a session's
- * activity* current, and the catalogue only decides membership and titles. A
- * slower catalogue read costs nothing the user notices and keeps N hosts from
- * issuing N request storms on every tick.
+ * Push-capable hosts send `state.sessions` / `state.workspaces` on change, so
+ * the per-host catalogue read can be rare. This poll is what detects an old
+ * host and continues to work as a drop-detection backstop; it is not the
+ * primary source of freshness.
  */
-const CATALOG_POLL_MS = 15_000;
+const CATALOG_POLL_MS = 60_000;
 
 export interface RemotePeersState {
   peers: RemotePeer[];
@@ -31,11 +33,10 @@ export interface RemotePeersState {
  * connected host's session catalogue, and the live event stream that keeps both
  * fresh.
  *
- * Polling rather than a push-only design, for one honest reason: a host moving
- * from reachable to unreachable is not something the *host* can tell us — it is
- * still alive, just not to us. The backend's reconnect supervisor notices and
- * retries, and now reports a link that came back, but nothing announces the
- * drop itself, so a poll is what notices that.
+ * Polling is still used for hosts that do not publish `catalogVersion`, and as
+ * a slow safety net for drop detection; the primary source of catalogue
+ * freshness is now the host-pushed `state.sessions` / `state.workspaces`
+ * snapshots, filtered through a per-host version gate.
  */
 export function useRemotePeers(enabled: boolean): RemotePeersState {
   const [peers, setPeers] = useState<RemotePeer[]>([]);
@@ -44,6 +45,8 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
   const [error, setError] = useState<string | null>(null);
   // Read inside callbacks that must not be recreated on every poll.
   const peersRef = useRef<RemotePeer[]>([]);
+  // One version gate per connected host; a host's epoch resets on reconnect.
+  const gatesRef = useRef(new Map<string, CatalogVersionGate>());
 
   const refresh = useCallback(async () => {
     try {
@@ -139,7 +142,17 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
     void listen<RemotePeerEvent>("remote-peer-event", (event) => {
       const { desktopId, kind, payload } = event.payload;
       if (kind === "resumed") {
+        // Connection healed: drop the stale gate and re-read everything.
+        gatesRef.current.delete(desktopId);
         void refresh();
+        return;
+      }
+      if (kind === "presence") {
+        handlePresence(desktopId, payload, refresh);
+        return;
+      }
+      if (kind === "catalog") {
+        handleCatalog(desktopId, payload, gatesRef.current, setCatalogs);
         return;
       }
       if (kind !== "event")
@@ -192,6 +205,176 @@ function readString(value: unknown, key: string): string | null {
     return null;
   const field = (value as Record<string, unknown>)[key];
   return typeof field === "string" && field ? field : null;
+}
+
+function readNumber(value: unknown, key: string): number | null {
+  if (typeof value !== "object" || value === null)
+    return null;
+  const field = (value as Record<string, unknown>)[key];
+  return typeof field === "number" ? field : null;
+}
+
+function readVersion(value: unknown): SnapshotVersion | undefined {
+  if (typeof value !== "object" || value === null)
+    return undefined;
+  const obj = value as Record<string, unknown>;
+  const epoch = obj.epoch;
+  const revision = obj.revision;
+  if (typeof epoch !== "string" || typeof revision !== "number")
+    return undefined;
+  return { epoch, revision };
+}
+
+/**
+ * React to a host presence tick.
+ *
+ * The presence payload carries `catalogVersion` for both domains. If the
+ * reported revision is newer than the one we have applied, a snapshot was
+ * lost on the at-most-once event lane and we re-read to heal.
+ */
+function handlePresence(
+  desktopId: string,
+  payload: unknown,
+  refresh: () => Promise<void>,
+) {
+  if (typeof payload !== "object" || payload === null)
+    return;
+  const obj = payload as Record<string, unknown>;
+  const catalogVersion = obj.catalogVersion;
+  if (typeof catalogVersion !== "object" || catalogVersion === null)
+    return;
+  const version = catalogVersion as Record<string, unknown>;
+  const epoch = version.epoch;
+  if (typeof epoch !== "string")
+    return;
+
+  // Authenticate/refresh the gate from the handshake epoch carried in presence.
+  const gate = ensureGate(desktopId, epoch);
+
+  const checkDomain = (domain: string, key: string) => {
+    const value = readNumber(catalogVersion, key);
+    if (value === null)
+      return false;
+    const gateRevision = gate.revision(domain);
+    if (value > gateRevision) {
+      // Snapshot lost on the push lane: re-read to catch up. We do not try to
+      // guess which domain is behind; a single list read refreshes sessions.
+      void refresh();
+      return true;
+    }
+    return false;
+  };
+
+  const didHeal = checkDomain("sessions", "sessions") || checkDomain("workspaces", "workspaces");
+  if (!didHeal)
+    return;
+
+  // Apply the presence-reported revision to the gate so a stale heartbeat does
+  // not keep re-triggering heals.
+  const sessionsRevision = readNumber(catalogVersion, "sessions");
+  if (sessionsRevision !== null)
+    gate.accept("sessions", { epoch, revision: sessionsRevision }, true);
+
+  const workspacesRevision = readNumber(catalogVersion, "workspaces");
+  if (workspacesRevision !== null)
+    gate.accept("workspaces", { epoch, revision: workspacesRevision }, true);
+}
+
+/**
+ * Apply a pushed catalog snapshot if the version gate accepts it.
+ *
+ * Workspaces snapshots are tracked by the gate but not stored by this hook yet
+ * (desktop currently only renders session catalogues); sessions snapshots are
+ * applied to the merged list state.
+ */
+function handleCatalog(
+  desktopId: string,
+  payload: unknown,
+  gates: Map<string, CatalogVersionGate>,
+  setCatalogs: React.Dispatch<React.SetStateAction<RemoteCatalog[]>>,
+) {
+  if (typeof payload !== "object" || payload === null)
+    return;
+  const obj = payload as Record<string, unknown>;
+  const domain = obj.domain;
+  if (domain !== "sessions" && domain !== "workspaces")
+    return;
+  const version = readVersion(obj.version);
+
+  // Without an epoch we cannot authenticate the gate yet. Drop the snapshot
+  // conservatively; the first presence will set the epoch and heal if needed.
+  if (version === undefined)
+    return;
+
+  let gate = gates.get(desktopId);
+  if (!gate) {
+    gate = new CatalogVersionGate();
+    gate.authenticate(version.epoch);
+    gates.set(desktopId, gate);
+  }
+
+  // Domain must match the authenticated epoch.
+  if (!gate.accept(domain, version))
+    return;
+
+  if (domain === "sessions") {
+    const raw = obj.sessions;
+    if (!Array.isArray(raw))
+      return;
+    const next: RemoteCatalog = {
+      desktopId,
+      // Reuse the existing parser by going through the backend-shaped payload.
+      // We normalise here to the same shape `fetchRemoteSessions` would return,
+      // so the merged list sees no difference between push and poll.
+      sessions: raw.flatMap((entry): RemoteSessionRow[] => {
+        if (typeof entry !== "object" || entry === null)
+          return [];
+        const row = entry as Record<string, unknown>;
+        const sessionId = row.sessionId;
+        if (typeof sessionId !== "string" || !sessionId)
+          return [];
+        return [{
+          sessionId,
+          ...(typeof row.threadId === "string" && row.threadId ? { threadId: row.threadId } : {}),
+          title: typeof row.title === "string" && row.title ? row.title : sessionId,
+          mode: row.mode === "workspace" ? "workspace" : "chat",
+          ...(typeof row.workspaceId === "string" ? { workspaceId: row.workspaceId } : {}),
+          ...(typeof row.workspaceName === "string" && row.workspaceName
+            ? { workspaceName: row.workspaceName }
+            : {}),
+          ...(typeof row.workspacePinned === "boolean" ? { workspacePinned: row.workspacePinned } : {}),
+          ...(typeof row.workspaceOrderedAt === "number" ? { workspaceOrderedAt: row.workspaceOrderedAt } : {}),
+          ...(typeof row.parentSessionId === "string" && row.parentSessionId
+            ? { parentSessionId: row.parentSessionId }
+            : {}),
+          pinned: row.pinned === true,
+          streaming: row.streaming === true,
+          ...(typeof row.status === "string" ? { status: row.status } : {}),
+          lastMessageAt: typeof row.lastMessageAt === "number" ? row.lastMessageAt : null,
+        }];
+      }),
+    };
+    setCatalogs(current => current.map(catalog => (catalog.desktopId === desktopId ? next : catalog)));
+  }
+}
+
+function ensureGate(desktopId: string, epoch: string): CatalogVersionGate {
+  const gates = ensureGates();
+  let gate = gates.get(desktopId);
+  if (!gate) {
+    gate = new CatalogVersionGate();
+    gates.set(desktopId, gate);
+  }
+  gate.authenticate(epoch);
+  return gate;
+}
+
+let globalGates: Map<string, CatalogVersionGate> | undefined;
+
+function ensureGates(): Map<string, CatalogVersionGate> {
+  if (!globalGates)
+    globalGates = new Map();
+  return globalGates;
 }
 
 /**

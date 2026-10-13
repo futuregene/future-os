@@ -6,13 +6,16 @@ import { ArrowDown, Check, History, ReceiptText, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
+import { MachineBadge } from "../../components/layout/MachineBadge";
 import { Button } from "../../components/ui/Button";
 import { IconButton } from "../../components/ui/IconButton";
 import { startWindowDrag } from "../../lib/windowDrag";
 import { MessageBlock } from "../agent/MessageBlock";
+import { QuestionNavControl } from "../agent/QuestionNavControl";
 import { useComposerInset } from "../agent/useComposerInset";
+import { useQuestionNav } from "../agent/useQuestionNav";
 import { useStickyAutoScroll } from "../agent/useStickyAutoScroll";
-import { peerBadgeText } from "./peerIcons";
+import { iconGlyph, peerBadgeText } from "./peerIcons";
 import { useRemoteActivityTargets, withRemoteTargets } from "./remoteActivityTargets";
 import { foldLiveReply, stripRunCopies } from "./remoteLiveReplies";
 import { setRemotePeerVisibleSession } from "./remotePeerClient";
@@ -224,6 +227,7 @@ export function RemoteConversationView({
     handleScroll,
     scrollToLatest,
     showJumpToLatest,
+    preserveViewport,
   } = useStickyAutoScroll({
     // The projected transcript, not the raw entries: this is what the view
     // renders, and a fetch that fills in a tool target re-settles the viewport
@@ -231,6 +235,24 @@ export function RemoteConversationView({
     contentKey: rendered,
     followEnabled: !loading,
     scrollRef,
+  });
+
+  // Question navigation: jump between user questions in the remote transcript.
+  // The take-over callback disables the sticky auto-scroll so a jump is not
+  // pulled back to the bottom by a streaming reply, matching local behaviour.
+  const takeOverQuestionNavRef = useRef(() => {});
+  useEffect(() => {
+    takeOverQuestionNavRef.current = preserveViewport;
+  }, [preserveViewport]);
+  const {
+    hasPrevious: hasPreviousQuestion,
+    hasNext: hasNextQuestion,
+    goToPrevious: goToPreviousQuestion,
+    goToNext: goToNextQuestion,
+  } = useQuestionNav({
+    messages,
+    scrollRef,
+    onTakeOver: () => takeOverQuestionNavRef.current(),
   });
 
   return (
@@ -246,26 +268,45 @@ export function RemoteConversationView({
       >
         <div className="mr-3 flex min-w-0 flex-1 items-center" data-tauri-drag-region>
           <LeftPanelTitlebarToggle expanded={leftPanelExpanded} onToggle={onToggleLeftPanel} />
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold text-ink">{title}</div>
+          <div className="flex min-w-0 flex-1 items-center">
+            <div className="min-w-0 truncate text-sm font-semibold text-ink">{title}</div>
+            {/* Which computer this conversation is on. Always shown here — a
+                remote conversation is on one that is *not* this one, so the
+                badge is never the redundant "本机" — and named the way the
+                rail names it: the host's own glyph and the user's label for
+                it, with the id as the fallback while the peer list is still
+                loading. */}
+            <MachineBadge
+              glyph={iconGlyph(peer?.icon)}
+              label={peer ? peerBadgeText(peer, peer.desktopId) : desktopId}
+              title={peer?.name ?? peer?.desktopId ?? desktopId}
+            />
           </div>
         </div>
         {/* The conversation's own account book, in the same place and the same
             shape as this app's own header. An icon rather than the amount: the
             header is for the conversation, and a figure that changes every turn
             draws the eye away from it. */}
-        <IconButton
-          aria-haspopup="dialog"
-          // The local header's own size and spacing (`ThreadHeader`): the button
-          // is one of the frame's fixed measurements, and a reader who moves
-          // between the two conversations sees the same control in the same
-          // place, at the same size.
-          className="mr-2 size-8"
-          data-testid="remote-thread-usage"
-          icon={<ReceiptText className="size-4" />}
-          label={t("usageTitle")}
-          onClick={onOpenUsage}
-        />
+        <div className="flex items-center gap-2">
+          <QuestionNavControl
+            hasNext={hasNextQuestion}
+            hasPrevious={hasPreviousQuestion}
+            onNext={goToNextQuestion}
+            onPrevious={goToPreviousQuestion}
+          />
+          <IconButton
+            aria-haspopup="dialog"
+            // The local header's own size and spacing (`ThreadHeader`): the button
+            // is one of the frame's fixed measurements, and a reader who moves
+            // between the two conversations sees the same control in the same
+            // place, at the same size.
+            className="size-8"
+            data-testid="remote-thread-usage"
+            icon={<ReceiptText className="size-4" />}
+            label={t("usageTitle")}
+            onClick={onOpenUsage}
+          />
+        </div>
         {streaming
           ? <span className="shrink-0 px-1 text-xs text-accent">{t("statusRunning")}</span>
           : null}

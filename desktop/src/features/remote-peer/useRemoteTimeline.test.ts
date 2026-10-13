@@ -882,11 +882,12 @@ describe("useRemoteTimeline live reply", () => {
   it("keeps drawing a rebuilt reply until the host's record can be read", async () => {
     stateReply = { activeRun: { runId } };
     requestMock.mockImplementation(async (_desktop: string, command: { type?: string }) => {
-      if (command?.type === "get_events_since")
+      if (command?.type === "get_events_since") {
         return logResponse([
           { type: "agent_start", data: { started_at_ms: 1_700_000_000_000 }, idx: 0 },
           { type: "text_chunk", data: { text: "the answer" }, idx: 1 },
         ]);
+      }
       // The record does not carry the run yet: the catch-up read finds the page
       // unchanged.
       return page([entry("e1", "user", "hello host")]);

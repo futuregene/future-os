@@ -24,8 +24,8 @@ export const demoCredentials = {
 };
 
 export const demoDesktops = [
-  { desktopId: "desktop_C76HV2R4TKPGCC55", pairId: "pair_1", name: "实验室的 MacBook Pro" },
-  { desktopId: "desktop_9KQ2ZP7LXM4HTR31", pairId: "pair_2", name: "办公室主机" },
+  { desktopId: "desktop_C76HV2R4TKPGCC55", pairId: "pair_1", name: "实验室的 MacBook Pro", icon: "laptop" },
+  { desktopId: "desktop_9KQ2ZP7LXM4HTR31", pairId: "pair_2", name: "办公室主机", icon: "desktop" },
 ];
 
 export const demoModels = [
