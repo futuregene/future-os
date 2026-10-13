@@ -182,6 +182,26 @@ describe("useThreadStore", () => {
     h.unmount();
   });
 
+  /**
+   * A re-list brings the workspace list with it, pin included.
+   *
+   * The rail orders its workspace groups by `pinned` and draws the marker from
+   * the same flag, and a pin written on *another* machine — a phone pinning one
+   * of this desktop's workspaces — reaches this window through the backend's
+   * invalidation and this read. One that refreshed only the threads would leave
+   * the group in its old place, unmarked, on the machine that owns it.
+   */
+  it("re-reads the workspace list, pin and all", async () => {
+    const h = await mountStore();
+    expect(h.current.workspaces).toEqual([workspace]);
+    listWorkspaces.mockResolvedValue([{ ...workspace, pinned: true }]);
+    await act(async () => {
+      await h.current.refreshStore();
+    });
+    expect(h.current.workspaces).toEqual([{ ...workspace, pinned: true }]);
+    h.unmount();
+  });
+
   it("reduces a thread-runtime-updated batch into run statuses", async () => {
     const h = await mountStore();
     act(() => {
