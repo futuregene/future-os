@@ -34,6 +34,8 @@ const mockRemote: {
   renameWorkspace: jest.Mock;
   selectSession: jest.Mock;
   switchDesktop: jest.Mock;
+  refreshWorkspaces: jest.Mock;
+  refreshModels: jest.Mock;
   openSessionOnDesktop: jest.Mock;
   newConversation: jest.Mock;
 } = {
@@ -53,6 +55,8 @@ const mockRemote: {
   renameWorkspace: jest.fn(),
   selectSession: jest.fn(),
   switchDesktop: jest.fn(),
+  refreshWorkspaces: jest.fn(),
+  refreshModels: jest.fn(),
   openSessionOnDesktop: jest.fn(),
   newConversation: jest.fn(),
 };
@@ -225,6 +229,8 @@ beforeEach(async () => {
   peerCommands.capabilities = new Set(["workspace_pinning_v1"]);
   mockRemote.newConversation.mockResolvedValue(undefined);
   mockRemote.switchDesktop.mockResolvedValue(undefined);
+  mockRemote.refreshWorkspaces.mockResolvedValue(undefined);
+  mockRemote.refreshModels.mockResolvedValue(undefined);
   mockRemote.openSessionOnDesktop.mockResolvedValue(undefined);
   await act(async () => {
     tree = create(createElement(SessionList, {
@@ -808,8 +814,9 @@ test("new conversation uses the selected workspace and waits for sheet dismissal
   await act(async () => { modal.props.onDismiss(); });
   expect(mockRemote.newConversation).toHaveBeenCalledWith("workspace", "w1");
   // This machine's own group has nothing to switch to: the draft opens on the
-  // connection the reader is already using.
+  // connection the reader is already using, and nothing is re-read.
   expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
+  expect(mockRemote.refreshModels).not.toHaveBeenCalled();
   act(() => modal.props.onDismiss());
   expect(mockRemote.newConversation).toHaveBeenCalledTimes(1);
 });
@@ -1549,8 +1556,15 @@ test("a heading on another machine offers that machine's actions", async () => {
     await tree.root.findByType(ActionMenu).findByType(Modal).props.onDismiss();
   });
   expect(mockRemote.switchDesktop).toHaveBeenCalledWith("desk-b");
+  // The machine it moved onto is re-read before the draft: a freshly connected
+  // machine's catalogue starts empty, and its models are what the draft defaults
+  // to. Same as the creation dialog's own move onto another machine.
+  expect(mockRemote.refreshWorkspaces).toHaveBeenCalled();
+  expect(mockRemote.refreshModels).toHaveBeenCalled();
   expect(mockRemote.newConversation).toHaveBeenCalledWith("workspace", "w9");
   expect(mockRemote.switchDesktop.mock.invocationCallOrder[0]!)
+    .toBeLessThan(mockRemote.newConversation.mock.invocationCallOrder[0]!);
+  expect(mockRemote.refreshModels.mock.invocationCallOrder[0]!)
     .toBeLessThan(mockRemote.newConversation.mock.invocationCallOrder[0]!);
 
   // A machine the phone cannot reach offers nothing: the heading's ⋯ is shown

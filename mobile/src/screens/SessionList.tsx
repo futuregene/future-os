@@ -391,15 +391,29 @@ export function SessionList({
    * switches to it first, exactly as tapping one of that machine's conversations
    * does, and the draft then lands in the workspace the reader picked.
    *
+   * The switch re-reads what building the draft needs, as the creation dialog's
+   * own move does (`adoptDevice` in SessionsScreen): a freshly connected machine's
+   * catalogue starts empty, and its models are what the new conversation defaults
+   * to.
+   *
    * Offering the item for the connected machine only (as this did) made the same
    * sheet gain and lose "new conversation" as the phone's connection followed the
    * reader between desktops: the group they had just been reading had it, every
    * other group in the same list did not.
    */
   const startConversationInWorkspace = async (workspace: WorkspaceRow) => {
-    if (workspace.desktopId && workspace.desktopId !== activeDesktopId)
-      await remote.switchDesktop(workspace.desktopId);
-    await remote.newConversation("workspace", workspace.workspaceId);
+    if (workspace.desktopId && workspace.desktopId !== activeDesktopId) {
+      try {
+        await remote.switchDesktop(workspace.desktopId);
+        await Promise.all([remote.refreshWorkspaces(), remote.refreshModels()]);
+      }
+      catch {
+        Alert.alert(t("desktops.switchFailed"));
+        return;
+      }
+    }
+    await remote.newConversation("workspace", workspace.workspaceId)
+      .catch(() => Alert.alert(t("common.error")));
   };
 
   const selectWorkspaceSessions = (workspace: WorkspaceRow) => {
@@ -732,10 +746,9 @@ export function SessionList({
             label: t("sessions.new"),
             icon: <Plus size={18} color={colors.accent} />,
             disabled: !menuWorkspaceCommands || deleting,
-            onPress: () => {
-              void startConversationInWorkspace(menuWorkspace)
-                .catch(() => Alert.alert(t("common.error")));
-            },
+            // The switch, the draft and both failure messages are the helper's:
+            // one place decides what moving the phone onto another machine takes.
+            onPress: () => void startConversationInWorkspace(menuWorkspace),
           },
           ...(menuWorkspaceCommands?.capabilities.has("workspace_pinning_v1") ? [{
             // A workspace group is an ordering shortcut like a pinned

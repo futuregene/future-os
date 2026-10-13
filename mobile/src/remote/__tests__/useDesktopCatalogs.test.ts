@@ -470,6 +470,37 @@ describe("useDesktopCatalogs", () => {
   });
 
   /**
+   * Reading a machine's workspaces before creating a conversation on it: the
+   * answer comes from that machine, and a machine that cannot answer says so
+   * rather than being read as one with no workspaces.
+   */
+  test("another machine's workspaces are read from that machine", async () => {
+    await render();
+    const client = clientFor("desktop_2");
+    act(() => {
+      client.callbacks.onCatalogEpoch("epoch-1");
+      client.callbacks.onConnectionState("ready");
+    });
+    client.request.mockResolvedValueOnce({
+      success: true,
+      data: { workspaces: [{ id: "w9", name: "Office project", path: "/host/office" }] },
+    });
+
+    await expect(result.current.readWorkspaces("desktop_2")).resolves.toEqual([
+      { id: "w9", name: "Office project", path: "/host/office" },
+    ]);
+    expect(client.request).toHaveBeenCalledWith({ type: "list_workspaces" }, "list");
+
+    // A machine whose connection has given up — or one this phone has never
+    // paired with — rejects instead of answering with an empty list.
+    act(() => {
+      client.callbacks.onConnectionState("failed");
+    });
+    await expect(result.current.readWorkspaces("desktop_2")).rejects.toThrow("machine_unavailable");
+    await expect(result.current.readWorkspaces("desktop_3")).rejects.toThrow("machine_unavailable");
+  });
+
+  /**
    * A delete drops the rows it removed before the (possibly slow, possibly lost)
    * read that confirms it: the command is the user's statement of fact, and a
    * conversation that is gone must not stay on screen because a read is late.
