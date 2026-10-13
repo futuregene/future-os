@@ -7,25 +7,11 @@ import type { TimelineItem } from "../../remote/types";
  * indices `FlatList.scrollToIndex` takes.
  *
  * The two directions are a ladder over question turns: ↑ walks the ladder one
- * step older, ↓ one step newer. Each turn has up to three rungs — its reply
- * tail, the question itself, and the question's own tail — so consecutive
- * presses of one direction cover, in order: the previous answer's last slice,
- * the previous question, the end of that question, the next answer's last
- * slice…
+ * step older, ↓ one step newer, and each turn contributes two rungs — the end of
+ * its reply, and the question that started it. So consecutive presses cover, in
+ * order: the previous answer's last slice, the previous question, the answer
+ * before that, its question…
  */
-export interface ViewportRows {
-  /** Visually topmost row that is at least partly visible, or null. */
-  top: number | null;
-  /**
-   * That row is cut off by the viewport's top edge, so its own start is *above*
-   * the reader rather than at it. This is what separates "the row I am
-   * reading" from "the row just above me" — and it is why a jump never
-   * re-aligns the row already on screen instead of moving.
-   */
-  topClipped: boolean;
-}
-
-export const EMPTY_ROWS: ViewportRows = { top: null, topClipped: false };
 
 /** View-space indices of the user messages, ascending (oldest last). */
 export function questionIndices(items: readonly TimelineItem[]): number[] {
@@ -38,19 +24,63 @@ export function questionIndices(items: readonly TimelineItem[]): number[] {
 
 /**
  * A rung on the question ladder — everything a jump can land on, in reading
- * order (newest first). `questionEnd` needs no index of its own: it lands
- * through the row below the question's tail, so it is a jump and a release
- * rather than an alignment. `replyTail` gets no rung in a turn that ends with
- * a plain question (the reply missing, still to come, or folded entirely into
- * thinking).
+ * order (newest first). A turn whose reply never arrives (or whose prose folded
+ * entirely into thinking) contributes only its question.
  */
 export type QuestionRung =
-  | { kind: "question"; question: number; tail: number | null }
-  | { kind: "questionEnd"; question: number; tail: number | null }
-  | { kind: "replyTail"; index: number; nextQuestion: number | null };
+  | { kind: "question"; question: number }
+  | { kind: "replyTail"; index: number };
 
-/** A ladder with neither a question nor a reply tail has nothing to jump to. */
-export const EMPTY_LADDER: QuestionRung[] = [];
+/**
+ * Where a rung lands: the row that takes the reading position, and which of its
+ * edges takes it.
+ *
+ * The list is inverted, so `viewPosition: 1` puts a row's *start* just under
+ * the viewport's top edge while `viewPosition: 0` puts its *end* just above the
+ * bottom edge: the mirror swaps which edge `scrollToIndex` aligns. A question
+ * lands by its **start** (the turn is read forward from there, the answer
+ * filling the screen below it), and a reply's last slice lands by its **end**,
+ * so the prose the reader came for is the last thing above the composer rather
+ * than scrolled off the top.
+ *
+ * Landing a reply by the row *below* it — what this used to do, aligning that
+ * row to the top edge — put the answer above the viewport instead: the reader
+ * saw the next question at the top and the answer they asked for was gone.
+ */
+export interface RungLanding {
+  index: number;
+  edge: "top" | "bottom";
+}
+
+export function rungLanding(rung: QuestionRung): RungLanding {
+  return rung.kind === "question"
+    ? { index: rung.question, edge: "top" }
+    : { index: rung.index, edge: "bottom" };
+}
+
+/** Whether two rungs are the same step of the ladder, across rebuilds. */
+export function sameRung(left: QuestionRung, right: QuestionRung): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "question" && right.kind === "question")
+    return left.question === right.question;
+  if (left.kind === "replyTail" && right.kind === "replyTail")
+    return left.index === right.index;
+  return false;
+}
+
+/**
+ * The rung's own position in the ladder, or null once it is not one of its
+ * steps any more (a rebuilt ladder — a new turn, a page of history, a
+ * compaction that moved the divider).
+ */
+export function rungPosition(
+  rungs: readonly QuestionRung[],
+  rung: QuestionRung | null,
+): number | null {
+  if (rung === null) return null;
+  const position = rungs.findIndex(candidate => sameRung(candidate, rung));
+  return position < 0 ? null : position;
+}
 
 /**
  * A slice of AI output the reply tail rung stands for — prose, or the last
@@ -71,22 +101,18 @@ function endsOnDivider(segments: readonly { kind: string }[]): boolean {
 }
 
 /**
- * Build the ladder for a transcript. The list is one question per turn plus
- * one (possibly streaming) assistant message, so the turn above a question is
- * the slice of items between it and the next question down: its reply tail is
- * the oldest assistant message in that slice that still has output on screen
- * (prose, or a tool call the reply ends on), or — when the reply's prose was
- * compacted away — the oldest one that still ends on the divider.
- * `lastIndex` is the list's own row count, the rung the oldest questionEnd
- * bounces against when the tail is a question.
+ * Build the ladder for a transcript. The list is one question per turn plus its
+ * (possibly streaming) reply, so the turn above a question is the slice of
+ * items between it and the next question down: its reply tail is the oldest
+ * assistant message in that slice that still has output on screen (prose, or a
+ * tool call the reply ends on), or — when the reply's prose was compacted away
+ * — the oldest one that still ends on the divider.
  */
 export function buildLadder(
   items: readonly TimelineItem[],
   questions: readonly number[],
-): { rungs: QuestionRung[]; lastIndex: number } {
-  const lastIndex = Math.max(0, items.length - 1);
+): QuestionRung[] {
   const rungs: QuestionRung[] = [];
-  let nextQuestion: number | null = null;
   questions.forEach((question, position) => {
     let replyTail: number | null = null;
     let fallback: number | null = null;
@@ -109,84 +135,45 @@ export function buildLadder(
       }
     }
     if (replyTail === null) replyTail = fallback;
-    if (replyTail !== null) {
-      rungs.push({ kind: "replyTail", index: replyTail, nextQuestion });
-    }
-    rungs.push({ kind: "question", question, tail: replyTail });
-    rungs.push({ kind: "questionEnd", question, tail: replyTail });
-    nextQuestion = question;
+    if (replyTail !== null) rungs.push({ kind: "replyTail", index: replyTail });
+    rungs.push({ kind: "question", question });
   });
-  return { rungs, lastIndex };
-}
-
-/** The rung ↑ lands on: the closest rung above the reader. When the topmost
- *  visible row is a rung that is already fully on screen, its start is *below*
- *  the reader, and ↑ steps to the rung above instead of re-aligning it. A
- *  questionEnd needs no target row — it lands through the row below its
- *  question's tail, which the reader can already see — so the question's own
- *  row at the top edge satisfies it, and it is never the selection.
- *  A reply tail is the one rung a cut topmost row does *not* satisfy: its
- *  landing is a bottom-edge alignment, and a top edge parked anywhere above
- *  the tail's end — the jump's own approximate landing included — means the
- *  reader has not necessarily seen the answer out. ↑ then re-issues the same
- *  rung, which the re-align pass lands exactly; the press after it climbs on
- *  to the question. */
-export function previousRung(
-  rungs: readonly QuestionRung[],
-  rows: ViewportRows,
-): QuestionRung | null {
-  if (rows.top === null) return null;
-  const limit = rows.topClipped ? rows.top : rows.top + 1;
-  for (const rung of rungs) {
-    const index = rung.kind === "replyTail" ? rung.index : rung.question;
-    if (index === null || index < limit) continue;
-    if (rung.kind === "questionEnd" && rung.question === rows.top) continue;
-    // A question whose row is cut by the top edge has its start above the
-    // reader — the tail landing that brought them here already showed it, so
-    // the press climbs on instead of re-aligning the same row.
-    if (rung.kind === "question" && rung.question === rows.top && rows.topClipped) continue;
-    return rung;
-  }
-  return null;
-}
-
-/** The rung ↓ lands on: the closest rung below the reader. The rung at the
- *  top edge is excluded (its start is not below), which is what makes ↓ the
- *  inverse of ↑ after a jump instead of re-selecting the landed rung. A
- *  questionEnd stands on its question like a replyTail stands on its tail:
- *  both still belong to the reader until the top edge walks past that row. */
-export function nextRung(
-  rungs: readonly QuestionRung[],
-  rows: ViewportRows,
-): QuestionRung | null {
-  if (rows.top === null) return null;
-  const limit = rows.top - 1;
-  for (let position = rungs.length - 1; position >= 0; position -= 1) {
-    const rung = rungs[position]!;
-    const index = rung.kind === "replyTail" ? rung.index : rung.question;
-    if (index <= limit) return rung;
-  }
-  return null;
+  return rungs;
 }
 
 /**
- * The topmost visible row and whether its start is above the viewport's top
- * edge. Two viewability configurations supply it: "at least partly visible"
- * gives the row, "fully visible" tells whether it is cut. Deriving the cut flag
- * from the list's own accounting keeps the anchor independent of any coordinate
- * space a platform might measure rows in.
+ * The rung ↑ lands on: the first stop whose row is entirely above the reader.
+ *
+ * `top` is the topmost row with any part on screen, so every row above it is
+ * off screen — a destination whichever edge it lands by. The row *at* the top
+ * edge is not one: its start is at the reader (or just above, once a drag has
+ * moved a few pixels into it), which is "where I am", not "the previous one".
+ * Skipping it is what makes the second press after landing on an answer reach
+ * that answer's question instead of re-aligning what is already on screen, and
+ * it is why a press never looks dead.
  */
-export function viewportRows({
-  partialTop,
-  fullTop,
-}: {
-  partialTop: number | null;
-  fullTop: number | null;
-}): ViewportRows {
-  if (partialTop === null) return EMPTY_ROWS;
-  return {
-    top: partialTop,
-    // The topmost visible row can only stick out at the top edge.
-    topClipped: fullTop === null || partialTop > fullTop,
-  };
+export function previousRung(
+  rungs: readonly QuestionRung[],
+  top: number | null,
+): QuestionRung | null {
+  if (top === null) return null;
+  for (const rung of rungs) {
+    if (rungLanding(rung).index > top) return rung;
+  }
+  return null;
+}
+
+/** The rung ↓ lands on: the closest stop below the reader. The stop at the top
+ *  edge is excluded (it is not below), which is what makes ↓ the inverse of ↑
+ *  after a jump instead of re-selecting the landed rung. */
+export function nextRung(
+  rungs: readonly QuestionRung[],
+  top: number | null,
+): QuestionRung | null {
+  if (top === null) return null;
+  for (let position = rungs.length - 1; position >= 0; position -= 1) {
+    const rung = rungs[position]!;
+    if (rungLanding(rung).index <= top - 1) return rung;
+  }
+  return null;
 }

@@ -9,6 +9,9 @@ import type {
 import type { TimelineItem } from "../../../remote/types";
 import { JUMP_VIEW_OFFSET, useQuestionNav } from "../useQuestionNav";
 
+/** The inset a landed *end* keeps above the viewport's bottom edge. */
+const BOTTOM_INSET = 12;
+
 const scrollEvent = (y: number): NativeSyntheticEvent<NativeScrollEvent> =>
   ({
     nativeEvent: {
@@ -66,22 +69,18 @@ describe("useQuestionNav", () => {
     return null;
   }
 
-  /** Report rows as viewable: `top` partly visible, `fullTop` fully visible. */
-  function reportRows(top: number, fullTop: number | null) {
+  /** Report the topmost row with any part on screen. */
+  function reportRows(top: number) {
     const token = (index: number): ViewToken => ({
       item: ITEMS[index],
       key: String(index),
       index,
       isViewable: true,
     });
-    const [partial, full] = result.current.viewabilityConfigCallbackPairs;
+    const [partial] = result.current.viewabilityConfigCallbackPairs;
     act(() => {
       partial?.onViewableItemsChanged?.({
         viewableItems: [token(top)],
-        changed: [],
-      });
-      full?.onViewableItemsChanged?.({
-        viewableItems: fullTop === null ? [] : [token(fullTop)],
         changed: [],
       });
     });
@@ -104,57 +103,42 @@ describe("useQuestionNav", () => {
 
   test("offers ↑ from the tail, before the reader has scrolled at all", () => {
     // The viewability report is all a freshly opened conversation gets: the
-    // list is pinned to the tail and no scroll event has been delivered. ↑
-    // is the reply tail of the turn on screen.
-    reportRows(0, null);
+    // list is pinned to the tail and no scroll event has been delivered. ↑ is
+    // the question that started the turn on screen — the answer's own end is
+    // where the reader already is.
+    reportRows(0);
     expect(result.current.visible).toBe(true);
-    expect(result.current.previous).toEqual({
-      kind: "replyTail",
-      index: 0,
-      nextQuestion: null,
-    });
+    expect(result.current.previous).toEqual({ kind: "question", question: 1 });
     // Every newer rung is already on screen, so ↓ has nothing to offer.
     expect(result.current.next).toBeNull();
   });
 
   test("offers both directions once the reader is inside a turn", () => {
     act(() => result.current.onScroll(scrollEvent(600)));
-    // The top edge is inside the newest answer, which is not fully visible:
-    // ↑ offers the newest reply's tail first.
-    reportRows(0, null);
+    // The top edge is inside the newest answer: ↑ still offers the question
+    // that started the turn, and ↓ has nothing newer below.
+    reportRows(0);
     expect(result.current.visible).toBe(true);
-    expect(result.current.previous).toEqual({
-      kind: "replyTail",
-      index: 0,
-      nextQuestion: null,
-    });
+    expect(result.current.previous).toEqual({ kind: "question", question: 1 });
     expect(result.current.next).toBeNull();
 
-    // Further up: the top edge cuts the first answer, so ↑ offers its tail
-    // and ↓ the newest turn's own question end.
-    reportRows(2, null);
-    expect(result.current.previous).toEqual({
-      kind: "replyTail",
-      index: 2,
-      nextQuestion: 1,
-    });
-    expect(result.current.next).toEqual({
-      kind: "questionEnd",
-      question: 1,
-      tail: 0,
-    });
+    // Further up, the top edge inside the answer to question-1: ↑ offers the
+    // previous answer's end and ↓ the question of the turn on screen.
+    reportRows(2);
+    expect(result.current.previous).toEqual({ kind: "question", question: 3 });
+    expect(result.current.next).toEqual({ kind: "question", question: 1 });
   });
 
   test("a drag as well as an offset marks the reading position", () => {
     // Native reports the drag; the offset never moves (a short list on screen).
     act(() => renderer!.update(createElement(Harness, { atLatest: false })));
-    reportRows(2, null);
+    reportRows(2);
     expect(result.current.visible).toBe(true);
   });
 
   test("↓ retracts when the reader returns to the tail, ↑ does not", () => {
     act(() => result.current.onScroll(scrollEvent(600)));
-    reportRows(2, null);
+    reportRows(2);
     expect(result.current.next).not.toBeNull();
 
     act(() => result.current.onScroll(scrollEvent(0)));
@@ -162,13 +146,11 @@ describe("useQuestionNav", () => {
     expect(result.current.previous).not.toBeNull();
   });
 
-  test("↑ aligns the reply tail's end by landing on the row below it", () => {
+  test("↑ lands the question that started the turn on screen", () => {
     act(() => {
       result.current.onScroll(scrollEvent(600));
     });
-    // Reading at question-2's start, whole: ↑ offers answer-1's tail, which
-    // lands through question-2 — the row below the tail.
-    reportRows(1, 1);
+    reportRows(0);
 
     act(() => result.current.goToPrevious());
 
@@ -181,31 +163,89 @@ describe("useQuestionNav", () => {
     });
   });
 
-  test("↑ lands a reply tail by aligning the row below it", () => {
+  test("↑ lands the previous answer's last slice above the bottom edge", () => {
     act(() => {
       result.current.onScroll(scrollEvent(600));
     });
-    // Inside answer-2, cut at the top: the press offers its own tail, which
-    // lands through the transcript's last row.
-    reportRows(0, null);
+    // The top edge is inside the answer to question-2, so answer-1's end is
+    // above it.
+    reportRows(1);
+    expect(result.current.previous).toEqual({ kind: "replyTail", index: 2 });
 
     act(() => result.current.goToPrevious());
 
     expect(list.scrollToIndex).toHaveBeenCalledWith({
-      index: 3,
-      viewPosition: 1,
-      viewOffset: JUMP_VIEW_OFFSET,
+      index: 2,
+      viewPosition: 0,
+      viewOffset: BOTTOM_INSET,
       animated: false,
     });
   });
 
-  test("a reply tail in a later turn aligns the question below it", () => {
+  test("the press after a landed rung steps on instead of re-aligning it", () => {
     act(() => {
       result.current.onScroll(scrollEvent(600));
     });
-    // Top edge at question-1, whole: ↓ offers question-1's own end, which
-    // aligns answer-1 — the row below the question's tail.
-    reportRows(3, 3);
+    // A reply that fills the screen reports the same topmost row at its start
+    // and at its end, so the walk itself is what has to move: the rung just
+    // landed on is left behind, not offered again.
+    reportRows(0);
+    act(() => result.current.goToPrevious());
+    expect(list.scrollToIndex).toHaveBeenLastCalledWith({
+      index: 1,
+      viewPosition: 1,
+      viewOffset: JUMP_VIEW_OFFSET,
+      animated: false,
+    });
+
+    act(() => result.current.goToPrevious());
+
+    expect(list.scrollToIndex).toHaveBeenCalledTimes(2);
+    expect(list.scrollToIndex).toHaveBeenLastCalledWith({
+      index: 2,
+      viewPosition: 0,
+      viewOffset: BOTTOM_INSET,
+      animated: false,
+    });
+  });
+
+  test("↓ walks back down the rungs the walk came up", () => {
+    act(() => result.current.onScroll(scrollEvent(600)));
+    reportRows(0);
+    act(() => result.current.goToPrevious());
+
+    act(() => result.current.goToNext());
+
+    // The turn on screen again, by its end: exactly the rung the walk left.
+    expect(list.scrollToIndex).toHaveBeenLastCalledWith({
+      index: 0,
+      viewPosition: 0,
+      viewOffset: BOTTOM_INSET,
+      animated: false,
+    });
+  });
+
+  test("a drag re-anchors the walk to what the viewport reports", () => {
+    act(() => result.current.onScroll(scrollEvent(600)));
+    reportRows(0);
+    act(() => result.current.goToPrevious());
+    act(() => result.current.goToPrevious());
+    expect(list.scrollToIndex).toHaveBeenCalledTimes(2);
+
+    // The reader takes the viewport by hand up to the oldest question: the
+    // ladder is exhausted there, whatever the landed rung was.
+    reportRows(3);
+    act(() => result.current.onScrollBeginDrag());
+    act(() => result.current.goToPrevious());
+
+    expect(list.scrollToIndex).toHaveBeenCalledTimes(2);
+  });
+
+  test("↓ lands the question of the turn on screen", () => {
+    act(() => {
+      result.current.onScroll(scrollEvent(600));
+    });
+    reportRows(2);
 
     act(() => result.current.goToNext());
 
@@ -217,32 +257,9 @@ describe("useQuestionNav", () => {
     });
   });
 
-  test("a question end lands through its reply's start", () => {
-    act(() => {
-      result.current.onScroll(scrollEvent(600));
-    });
-    // Top edge inside answer-1, cut: ↓ walks to question-2's own end, which
-    // aligns answer-2 — the row below the question's tail.
-    reportRows(2, null);
-    expect(result.current.next).toEqual({
-      kind: "questionEnd",
-      question: 1,
-      tail: 0,
-    });
-
-    act(() => result.current.goToNext());
-
-    expect(list.scrollToIndex).toHaveBeenCalledWith({
-      index: 0,
-      viewPosition: 1,
-      viewOffset: JUMP_VIEW_OFFSET,
-      animated: false,
-    });
-  });
-
   test("entering another session drops the offer", () => {
     act(() => result.current.onScroll(scrollEvent(600)));
-    reportRows(2, null);
+    reportRows(2);
     expect(result.current.visible).toBe(true);
 
     act(() => renderer!.update(createElement(Harness, { sessionId: "s2" })));
@@ -258,7 +275,7 @@ describe("useQuestionNav", () => {
       result.current.onScroll(scrollEvent(600));
     });
     // The top edge is at the oldest loaded row: the ladder is exhausted.
-    reportRows(3, null);
+    reportRows(3);
     expect(result.current.previous).toBeNull();
     expect(result.current.hasPrevious).toBe(true);
 
@@ -282,7 +299,7 @@ describe("useQuestionNav", () => {
       );
       result.current.onScroll(scrollEvent(600));
     });
-    reportRows(3, null);
+    reportRows(3);
     expect(result.current.hasPrevious).toBe(false);
 
     act(() => result.current.goToPrevious());
@@ -300,7 +317,7 @@ describe("useQuestionNav", () => {
       renderer!.update(createElement(Harness, { hasOlderHistory: true, loadOlder }));
       result.current.onScroll(scrollEvent(600));
     });
-    reportRows(3, null);
+    reportRows(3);
 
     act(() => result.current.goToPrevious());
     // The page commits: the hook sees the new items and lands on the oldest
