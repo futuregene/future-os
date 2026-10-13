@@ -1,6 +1,7 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import {
+  ActivityIndicator,
   Modal,
   Platform,
   ScrollView,
@@ -9,6 +10,7 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { Check } from "lucide-react-native";
 import { ConnectionBadge } from "../../components/ConnectionBadge";
 import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
@@ -53,6 +55,9 @@ const mockRemote = {
   renameWorkspace: jest.fn(async () => {}),
   deleteWorkspace: jest.fn(async () => {}),
   createWorkspace: jest.fn(async (_path: string, _name: string) => ({ id: "w9", name: "New", path: "/host/new" })),
+  switchDesktop: jest.fn(async (_desktopId: string) => {}),
+  refreshWorkspaces: jest.fn(async () => {}),
+  refreshModels: jest.fn(async () => {}),
   clearError: jest.fn(),
   phase: "connected" as string,
   hasConnectedContent: true,
@@ -72,6 +77,7 @@ const mockCatalogs = {
   refresh: jest.fn(async () => {}),
   reconnect: jest.fn(async () => {}),
   commandsFor: jest.fn(() => null) as jest.Mock,
+  readWorkspaces: jest.fn(async (_desktopId: string) => [] as { id: string; name: string; path: string }[]),
 };
 jest.mock("../../remote/useDesktopCatalogs", () => ({
   useDesktopCatalogs: () => mockCatalogs,
@@ -705,5 +711,192 @@ describe("conversations on other machines", () => {
 
     expect(peerCommands.setSessionPinned).not.toHaveBeenCalled();
     expect(modalText()).toContain("common.error");
+  });
+});
+
+/**
+ * Creating a conversation when more than one machine could take it.
+ *
+ * The phone holds several pairings and renders one merged list, so "New
+ * conversation" used to create the conversation on whichever machine happened
+ * to be *connected* — not the one the list may have been filtered to, and not
+ * necessarily the one the user meant. The machine is now the first thing the
+ * dialog asks, and the conversation is created on the machine it names.
+ */
+describe("creating on the machine the user picks", () => {
+  const platform = Platform.OS;
+  const peerWorkspaces = [{ id: "pw1", name: "Peer project", path: "/host/peer" }];
+  const creatablePeer = {
+    desktopId: "desktop_2",
+    label: "Office",
+    active: false,
+    status: "connected" as const,
+  };
+
+  beforeEach(() => {
+    Platform.OS = "ios";
+    mockRemote.desktopOnline = true;
+    mockRemote.connectionPresentation = {
+      level: "connected",
+      titleKey: "connection.connected",
+      hintKey: "connection.offlineHint",
+    };
+    mockCatalogs.machines = [creatablePeer];
+    mockCatalogs.commandsFor = jest.fn(() => ({ capabilities: new Set<string>() }));
+    jest.mocked(mockCatalogs.readWorkspaces).mockResolvedValue(peerWorkspaces);
+    // The machine list is read while rendering, so it has to be in place before
+    // the tree is told to render it.
+    act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+  });
+
+  afterEach(() => {
+    Platform.OS = platform;
+    mockCatalogs.machines = [];
+    mockCatalogs.commandsFor = jest.fn(() => null);
+    mockCatalogs.readWorkspaces = jest.fn(async (_desktopId: string) => []);
+  });
+
+  const openDialog = (tab: "chat" | "workspace") => {
+    act(() => tree.root.findByType(SessionList).props.onTabChange(tab));
+    act(() => button("sessions.new").props.onPress());
+  };
+  /** A machine's row in the picker, addressed by the name the user sees. */
+  const deviceRow = (label: string) =>
+    tree.root.findAll(node =>
+      node.props.accessibilityLabel === label
+      && node.props.accessibilityRole === "button"
+      && typeof node.props.onPress === "function",
+    )[0]!;
+  const footer = (label: string) =>
+    visibleModal()!.findAllByType(Button).find(node => node.props.label === label)!;
+
+  test("a chat asks which machine, and is created on the one it names", async () => {
+    openDialog("chat");
+    expect(modalText()).toContain("sessions.chooseDevice");
+    // Nothing has been created yet: the machine is the user's to name.
+    expect(mockRemote.newConversation).not.toHaveBeenCalled();
+    // The machine the phone is on is the one marked — it is the row that needs
+    // no switch, so the reader can tell it from the machines to move to.
+    const current = deviceRow("A very long desktop name");
+    expect(current.props.accessibilityState).toMatchObject({ selected: true, disabled: false });
+    expect(current.findAllByType(Check)).toHaveLength(1);
+
+    const dialog = visibleModal()!;
+    await act(async () => { deviceRow("Office").props.onPress(); });
+    // The chat has no workspace to choose, so the machine was the whole
+    // question: it is created on that machine, which means moving the phone
+    // there first — a draft is sent to whatever machine is connected when its
+    // first message goes out.
+    expect(mockRemote.switchDesktop).toHaveBeenCalledWith("desktop_2");
+    expect(mockRemote.refreshWorkspaces).toHaveBeenCalledTimes(1);
+    expect(mockRemote.refreshModels).toHaveBeenCalledTimes(1);
+    expect(mockRemote.newConversation).not.toHaveBeenCalled();
+    await act(async () => { dialog.props.onDismiss(); });
+    expect(mockRemote.newConversation).toHaveBeenCalledWith("chat", "");
+    expect(jest.mocked(mockRemote.switchDesktop).mock.invocationCallOrder[0]!)
+      .toBeLessThan(jest.mocked(mockRemote.newConversation).mock.invocationCallOrder[0]!);
+  });
+
+  test("a chat on the machine the phone is already on moves nothing", async () => {
+    openDialog("chat");
+    const dialog = visibleModal()!;
+    await act(async () => { deviceRow("A very long desktop name").props.onPress(); });
+    expect(mockRemote.switchDesktop).not.toHaveBeenCalled();
+    await act(async () => { dialog.props.onDismiss(); });
+    expect(mockRemote.newConversation).toHaveBeenCalledWith("chat", "");
+  });
+
+  test("a workspace list on another machine is that machine's, read from it", async () => {
+    mockRemote.workspaces = [{ id: "w1", name: "Connected project" }];
+    openDialog("workspace");
+    await act(async () => { deviceRow("Office").props.onPress(); });
+    // The list is read down the other machine's own connection: the connected
+    // machine's workspaces name workspaces the other machine has never heard of.
+    expect(mockCatalogs.readWorkspaces).toHaveBeenCalledWith("desktop_2");
+    expect(modalText()).toContain("sessions.newOnDevice");
+    expect(modalText()).toContain("Peer project");
+    expect(modalText()).not.toContain("Connected project");
+    // Registering a folder writes through the *active* connection, so a machine
+    // the phone is not on does not offer it here.
+    expect(createWorkspaceRow()).toBeUndefined();
+    // ...and creating reads that machine's catalogue first, because it is what
+    // the draft is built from.
+    const dialog = visibleModal()!;
+    act(() => footer("sessions.new").props.onPress());
+    await act(async () => { await Promise.resolve(); });
+    expect(mockRemote.switchDesktop).toHaveBeenCalledWith("desktop_2");
+    expect(mockRemote.newConversation).not.toHaveBeenCalled();
+    await act(async () => { dialog.props.onDismiss(); });
+    // The selection moved with the machine: the workspace on screen is the
+    // other machine's own, not the one the connected machine had selected.
+    expect(mockRemote.newConversation).toHaveBeenCalledWith("workspace", "pw1");
+  });
+
+  test("a machine that cannot take the conversation is listed, with why", () => {
+    mockCatalogs.machines = [
+      creatablePeer,
+      { desktopId: "desktop_3", label: "Studio", active: false, status: "offline" },
+    ];
+    act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+    openDialog("workspace");
+    // Paired but silent is still a machine the reader is looking for, so it is
+    // shown and says which state it is in rather than being quietly absent.
+    const offline = deviceRow("Studio");
+    expect(offline.props.accessibilityState).toMatchObject({ disabled: true });
+    expect(offline.findAllByType(Text).some(node => node.props.children === "connection.machine.offline"))
+      .toBe(true);
+    expect(offline.findAllByType(Check)).toHaveLength(0);
+    expect(offline.findAllByType(ActivityIndicator)).toHaveLength(0);
+  });
+
+  test("the machine list is reachable again from the machine it named", async () => {
+    openDialog("workspace");
+    await act(async () => { deviceRow("Office").props.onPress(); });
+    expect(modalText()).toContain("sessions.newOnDevice");
+    act(() => visibleModal()!.findAll(node =>
+      node.props.accessibilityLabel === "common.back" && typeof node.props.onPress === "function",
+    )[0]!.props.onPress());
+    expect(modalText()).toContain("sessions.chooseDevice");
+    expect(mockRemote.newConversation).not.toHaveBeenCalled();
+  });
+
+  test("a machine that cannot be reached creates nothing", async () => {
+    jest.mocked(mockRemote.switchDesktop).mockRejectedValueOnce(new Error("unreachable"));
+    openDialog("chat");
+    await act(async () => { deviceRow("Office").props.onPress(); });
+    // The draft would be sent to the machine the phone is still on, so a
+    // machine that cannot be moved to creates no conversation at all.
+    expect(modalText()).toContain("desktops.switchFailed");
+    expect(mockRemote.newConversation).not.toHaveBeenCalled();
+  });
+
+  test("backing out while the phone is moving creates nothing", async () => {
+    // Android's deferred start lands on a timer, so a start left behind by an
+    // abandoned dialog is observable: it must not fire.
+    Platform.OS = "android";
+    let finishSwitch: () => void = () => {};
+    jest.mocked(mockRemote.switchDesktop).mockImplementationOnce(
+      () => new Promise<void>(resolve => { finishSwitch = resolve; }),
+    );
+    openDialog("chat");
+    const dialog = visibleModal()!;
+    act(() => { deviceRow("Office").props.onPress(); });
+    // The switch is still running and the user closes the dialog: an abandoned
+    // choice must not open a conversation somewhere they no longer asked for.
+    act(() => dialog.findAll(node =>
+      node.props.accessibilityLabel === "common.close" && typeof node.props.onPress === "function",
+    )[0]!.props.onPress());
+    await act(async () => { finishSwitch(); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); });
+    expect(mockRemote.newConversation).not.toHaveBeenCalled();
+  });
+
+  test("one machine keeps the dialog it always had", () => {
+    mockCatalogs.machines = [];
+    act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+    openDialog("workspace");
+    // Nothing to choose between, so the machine step never appears.
+    expect(modalText()).not.toContain("sessions.chooseDevice");
+    expect(modalText()).toContain("sessions.new");
   });
 });

@@ -97,6 +97,16 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   unpair(): Promise<void>;
   refreshSessions(): Promise<void>;
   refreshWorkspaces(): Promise<void>;
+  /**
+   * Re-read the connected desktop's model list.
+   *
+   * The list is what a new draft defaults its model to, so a caller that has
+   * just moved the phone onto another machine reads it before building a draft
+   * there — an empty list would leave the conversation on the model the machine
+   * before it had. Resolves once the first probe settles; a failure leaves the
+   * catalogue empty rather than throwing.
+   */
+  refreshModels(): Promise<void>;
   selectSession(sessionId: string): Promise<void>;
   /**
    * Open a conversation on the desktop that owns it, switching the active
@@ -541,6 +551,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       unpair,
       refreshSessions,
       refreshWorkspaces,
+      refreshModels,
       selectSession,
       openSessionOnDesktop,
       retryTimeline,
@@ -620,6 +631,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       reconnect,
       refreshSessions,
       refreshWorkspaces,
+      refreshModels,
       rename,
       generateTitle,
       selectSession,
