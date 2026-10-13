@@ -33,7 +33,6 @@ import { useAppDialog } from "../components/useAppDialog";
 import { RenameModal } from "../features/chat/components/RenameModal";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
 import { activeMachineStatus, machineStatusKey, type MachineSummary } from "../remote/desktopStatus";
-import { useDesktopCatalogs } from "../remote/useDesktopCatalogs";
 import { mergeSessions, type DesktopFilter } from "../remote/mergeSessions";
 import type { DesktopCommands } from "../remote/desktopCommands";
 import { iconGlyph } from "../remote/peerIcons";
@@ -80,9 +79,17 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
    */
   const [desktopFilter, setDesktopFilter] = useState<DesktopFilter>({ kind: "all" });
   const activeDesktopId = remote.credentials?.expectedDesktopId ?? null;
-  // Catalogues for the *other* paired desktops, so the merged list can show
-  // their sessions without disturbing the active connection.
-  const catalogs = useDesktopCatalogs(activeDesktopId, remote.sessions);
+  /**
+   * Every *other* paired machine's catalogue, read from that machine's own
+   * runtime.
+   *
+   * Each of those machines keeps its connection open for as long as it is
+   * paired, so this is a view of state that already exists rather than a second
+   * set of connections owned by this screen. The merged list can therefore show
+   * their conversations without disturbing the one being read — and reading a
+   * row that belongs to another machine no longer costs a reconnection.
+   */
+  const catalogs = remote.catalogs;
   const mergedRows = useMemo(
     () => mergeSessions(catalogs.catalogs, desktopFilter),
     [catalogs.catalogs, desktopFilter],

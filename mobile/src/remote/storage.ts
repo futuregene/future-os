@@ -292,6 +292,33 @@ export async function clearCredentials(expectedPairId?: string): Promise<void> {
   });
 }
 
+/**
+ * Which paired desktop the phone is *focused* on.
+ *
+ * A selection, not a connection: every paired desktop holds its own connection
+ * (see `useDesktopRuntime`), and this only says which one's conversation the
+ * screens render. Reading it separately from `loadCredentials` keeps the two
+ * questions apart — "which desktops are paired" and "which one is open" — so a
+ * focus change costs a pointer write rather than a credential reload.
+ */
+export async function loadActiveDesktopId(): Promise<string | null> {
+  return enqueueCredentialOperation(async () => (await readRegistry()).activeDesktopId);
+}
+
+/**
+ * Focus a paired desktop. A desktop that is not paired is refused rather than
+ * stored: the pointer must not outlive the pairing it names, or the next launch
+ * would restore a focus with nothing behind it.
+ */
+export async function setActiveDesktop(desktopId: string): Promise<void> {
+  return enqueueCredentialOperation(async () => {
+    const registry = await readRegistry();
+    if (!registry.desktops.some((item) => item.desktopId === desktopId)) return;
+    if (registry.activeDesktopId === desktopId) return;
+    await commitRegistry({ ...registry, activeDesktopId: desktopId });
+  });
+}
+
 export async function loadDeviceId(): Promise<string | null> {
   return SecureStore.getItemAsync(DEVICE_ID_KEY, secureOptions);
 }

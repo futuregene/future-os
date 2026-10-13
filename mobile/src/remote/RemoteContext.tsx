@@ -1,5 +1,4 @@
 import type { PropsWithChildren } from "react";
-import { AppState } from "react-native";
 import {
   createContext,
   useCallback,
@@ -9,18 +8,20 @@ import {
   useRef,
   useState,
 } from "react";
-import type { TimelineState } from "./timeline";
-import { notifyTaskFinished, prepareTaskNotifications } from "../notifications/taskNotifications";
-import { RemoteClient } from "./client";
+import type { RemoteClient, RecoveryReason } from "./client";
+import { peerMachineStatus } from "./desktopStatus";
+import type { MachineSummary, MachineStatus } from "./desktopStatus";
+import type { DesktopCommands } from "./desktopCommands";
+import { prepareTaskNotifications } from "../notifications/taskNotifications";
 import { connectionPresentation as buildConnectionPresentation } from "./connectionPresentation";
 import type { ConnectionPresentation } from "./connectionPresentation";
-import { useConversationController } from "./useConversationController";
+import type { CatalogSyncState } from "./useSessionCatalog";
+import { useAppLifecycle } from "./useAppLifecycle";
 import { useDesktopManagement } from "./useDesktopManagement";
-import { useSessionCatalog } from "./useSessionCatalog";
-import { usePromptOutbox } from "./usePromptOutbox";
-import { useRemoteConnection } from "./useRemoteConnection";
-import { useTimelineController } from "./useTimelineController";
-import type { File } from "expo-file-system";
+import { useDesktopRuntime, type DesktopRuntime } from "./useDesktopRuntime";
+import { usePairedDesktops } from "./usePairedDesktops";
+import type { TimelineState } from "./timeline";
+import type { CatalogEntry } from "./mergeSessions";
 import type {
   ConnectionPhase,
   DownloadInfo,
@@ -31,15 +32,12 @@ import type {
   RemoteCredentials,
   RemoteModel,
   RemoteSession,
-  RemoteSessionState,
   RemoteSessionUsage,
   RemoteSkill,
   RemoteWorkspace,
   SessionFileListing,
   ThinkingLevel,
 } from "./types";
-
-import { captureConversationLifetime } from "./conversationLifetime";
 
 interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   desktopSettingsRevision: number;
@@ -50,6 +48,7 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   error: string | null;
   credentials: RemoteCredentials | null;
   desktops: PairedDesktop[];
+  /** Read another paired desktop. Instant: its runtime is already connected. */
   switchDesktop(desktopId: string): Promise<void>;
   renameDesktop(desktopId: string, name: string): Promise<void>;
   /** Set a desktop's local name/icon. Local-only; never leaves this phone. */
@@ -60,7 +59,7 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   hasConnectedContent: boolean;
   agentAvailable: boolean;
   connectionPresentation: ConnectionPresentation;
-  catalogSync: import("./useSessionCatalog").CatalogSyncState;
+  catalogSync: CatalogSyncState;
   sessions: RemoteSession[];
   workspaces: RemoteWorkspace[];
   unreadSessions: Set<string>;
@@ -109,15 +108,13 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   refreshModels(): Promise<void>;
   selectSession(sessionId: string): Promise<void>;
   /**
-   * Open a conversation on the desktop that owns it, switching the active
-   * connection when the row came from another machine.
+   * Open a conversation on the desktop that owns it.
    *
-   * The phone runs one active connection, so a row merged in from a second
-   * desktop cannot be read where it lives: selecting it through the current
-   * connection would address a machine that has never heard of it. The merged
-   * list would be a list of rows that only work on whichever machine you
-   * happen to be connected to, so the switch is what makes the row mean what it
-   * says.
+   * Every paired desktop holds a runtime, so this is not a reconnection: the
+   * machine named is already connected and its own conversation state is
+   * already there. What the call does is point the screens at that runtime and
+   * open the conversation in it, which is why the row appears as fast as a row
+   * on the desktop already being read.
    */
   openSessionOnDesktop(desktopId: string, sessionId: string): Promise<void>;
   retryTimeline(): Promise<void>;
@@ -158,13 +155,13 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   cachedAttachment(
     attachment: HistoryAttachment,
     variant?: "preview" | "original",
-  ): { info: DownloadInfo; file: File } | null;
+  ): { info: DownloadInfo; file: import("expo-file-system").File } | null;
   downloadAttachment(
     info: DownloadInfo,
     onProgress?: (completedBytes: number, totalBytes: number) => void,
     signal?: AbortSignal,
     onWaiting?: () => void,
-  ): Promise<File>;
+  ): Promise<import("expo-file-system").File>;
   abort(): Promise<void>;
   setModel(modelId: string): Promise<void>;
   setThinkingLevel(level: ThinkingLevel): Promise<void>;
@@ -192,7 +189,28 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   decideApproval(id: string, decision: "approved" | "rejected"): Promise<void>;
   clearError(): void;
   continueRun(sessionId: string, runId: string): Promise<void>;
+  /**
+   * Every paired machine, in the shape the merged list and the status popover
+   * read: the conversation catalogues of the machines other than the open one,
+   * their own commands, and each one's status.
+   *
+   * A machine other than the open one used to be a catalogue-only observer;
+   * it is now a full runtime, so this is a *view* of runtimes that already
+   * exist rather than a pool this surface owns. Nothing here opens or closes a
+   * connection: a machine's runtime belongs to the machine.
+   */
+  catalogs: {
+    catalogs: CatalogEntry[];
+    machines: MachineSummary[];
+    refresh(): Promise<void>;
+    reconnect(): void;
+    commandsFor(desktopId: string): DesktopCommands | null;
+    readWorkspaces(desktopId: string): Promise<RemoteWorkspace[]>;
+  };
 }
+
+/** Commands a machine other than the open one answers, on its own runtime. */
+export type { DesktopCommands } from "./desktopCommands";
 
 type TimelineContextValue = Pick<RemoteContextValue,
   "timeline" | "timelinePending" | "timelineSyncStatus" | "timelineError" | "canLoadOlderTimeline" | "loadingOlderTimeline"
@@ -201,475 +219,687 @@ export type RemoteControls = Omit<RemoteContextValue, keyof TimelineContextValue
 const RemoteContext = createContext<RemoteControls | null>(null);
 const RemoteTimelineContext = createContext<TimelineContextValue | null>(null);
 
-/** Composes the remote domain controllers and preserves the public useRemote API. */
+/**
+ * One paired desktop's runtime, as the provider keeps it.
+ *
+ * The runtime is owned by a host component (one per paired desktop); this is
+ * the handle the provider holds so the screens, the machine list and the
+ * lifecycle can reach a machine that is not the open one.
+ */
+export interface RuntimeEntry extends DesktopRuntime {
+  icon?: string;
+}
+
+/**
+ * Whether anything the *provider* reads from a runtime changed.
+ *
+ * Function fields are deliberately not compared: they are rebuilt on every
+ * render (they close over the current catalogue), so comparing them would
+ * publish on every render and re-render the whole app in a loop. They are still
+ * stored fresh on every render — only the re-render is skipped.
+ *
+ * The transcript's own contents are not here either: they change on every
+ * streamed delta, and the controls must not be handed a new value for that.
+ * They travel on their own signal (`sameTimelineData`) and reach only the
+ * timeline context.
+ */
+function samePublishedData(previous: RuntimeEntry | undefined, next: RuntimeEntry): boolean {
+  if (!previous) return false;
+  const a = previous.connection;
+  const b = next.connection;
+  return previous.label === next.label
+    && previous.icon === next.icon
+    && previous.selectedSessionId === next.selectedSessionId
+    && previous.selectedTitle === next.selectedTitle
+    && previous.draft === next.draft
+    && previous.draftMode === next.draftMode
+    && previous.draftWorkspaceId === next.draftWorkspaceId
+    && previous.streaming === next.streaming
+    && previous.compacting === next.compacting
+    && previous.busy === next.busy
+    && previous.desktopSettingsRevision === next.desktopSettingsRevision
+    && previous.skillsRevision === next.skillsRevision
+    && a.phase === b.phase
+    && a.error === b.error
+    && a.credentials === b.credentials
+    && a.desktopOnline === b.desktopOnline
+    && a.hasConnectedContent === b.hasConnectedContent
+    && a.presence === b.presence
+    && a.capabilities === b.capabilities
+    && previous.catalog.sessions === next.catalog.sessions
+    && previous.catalog.workspaces === next.catalog.workspaces
+    && previous.catalog.models === next.catalog.models
+    && previous.catalog.unreadSessions === next.catalog.unreadSessions
+    && previous.catalog.catalogSync === next.catalog.catalogSync
+    && previous.catalog.approvalTier === next.catalog.approvalTier
+    && previous.catalog.sandboxAvailable === next.catalog.sandboxAvailable
+    && previous.conversation.modelId === next.conversation.modelId
+    && previous.conversation.thinkingLevel === next.conversation.thinkingLevel
+    && previous.conversation.sessionUsage === next.conversation.sessionUsage;
+}
+
+/** Whether the open conversation's transcript changed. */
+function sameTimelineData(previous: RuntimeEntry | undefined, next: RuntimeEntry): boolean {
+  if (!previous) return false;
+  // The leaves of the timeline controller, not the controller object: it is
+  // rebuilt on every render, so comparing it would fire this signal on every
+  // one of them — and fire it for reasons that have nothing to do with the
+  // transcript.
+  const a = previous.timeline;
+  const b = next.timeline;
+  return a.timeline === b.timeline
+    && a.timelinePending === b.timelinePending
+    && a.timelineSyncStatus === b.timelineSyncStatus
+    && a.timelineError === b.timelineError
+    && a.canLoadOlderTimeline === b.canLoadOlderTimeline
+    && a.loadingOlderTimeline === b.loadingOlderTimeline;
+}
+
+/**
+ * One paired desktop's runtime host.
+ *
+ * It renders nothing: it *is* the runtime — the hook that owns that machine's
+ * connection, catalogue, conversations and outbox — and its only output is the
+ * entry it publishes so the provider (and through it the screens) can read it.
+ */
+function DesktopRuntimeHost({
+  desktopId,
+  label,
+  icon,
+  active,
+  foreground,
+  publish,
+}: {
+  desktopId: string;
+  label: string;
+  icon?: string;
+  active: boolean;
+  foreground: boolean;
+  publish(entry: RuntimeEntry): void;
+}): null {
+  const runtime = useDesktopRuntime({ desktopId, active, foreground, label });
+  const entry = useMemo<RuntimeEntry>(
+    () => (icon ? { ...runtime, icon } : { ...runtime }),
+    [icon, runtime],
+  );
+  // After every render, so the stored functions are always this render's; a
+  // publish that changed nothing the provider reads does not re-render it.
+  useEffect(() => { publish(entry); });
+  return null;
+}
+
+function machineStatusOf(entry: RuntimeEntry): MachineStatus {
+  const { phase, desktopOnline, presence } = entry.connection;
+  return peerMachineStatus({
+    failed: phase === "failed" || phase === "revoked" || phase === "stopped",
+    ready: phase === "ready",
+    online: desktopOnline,
+    agentAvailable: presence?.agentAvailable !== false,
+  });
+}
+
+/** The runtime a machine has, or nothing while its host has not published. */
+function runtimeFor(registry: Map<string, RuntimeEntry>, desktopId: string | null | undefined) {
+  return desktopId ? registry.get(desktopId) ?? null : null;
+}
+
+/**
+ * The app's remote surface over *every* paired desktop.
+ *
+ * The phone runs one runtime per paired desktop (see `useDesktopRuntime`), and
+ * exactly one of them is the one the screens read — the *active* desktop, a
+ * selection rather than a connection. Selecting another desktop is therefore a
+ * re-render, not a reconnection: that machine's runtime has been connected,
+ * catalogued and (if it had a conversation open) reading it the whole time.
+ *
+ * The provider owns what belongs to the *app*: which desktops are paired, which
+ * one is being read, and the process-wide lifecycle (foreground, network) that
+ * drives every runtime at once.
+ */
 export function RemoteProvider({ children }: PropsWithChildren) {
-  const [selectedSessionId, setSelectedSessionId] = useState("");
-  const [draft, setDraft] = useState(false);
-  const [draftMode, setDraftMode] = useState<"chat" | "workspace">("chat");
-  const [draftWorkspaceId, setDraftWorkspaceId] = useState("");
-  const clientRef = useRef<RemoteClient | null>(null);
-  const credentialsRef = useRef<RemoteCredentials | null>(null);
-  const desktopManagement = useDesktopManagement(clientRef);
-  const [desktopSettingsRevision, setDesktopSettingsRevision] = useState(0);
-  const [skillsRevision, setSkillsRevision] = useState(0);
-  const selectedRef = useRef("");
-  const onTaskFinished = useCallback((session: RemoteSession) => {
-    const pairId = credentialsRef.current?.pairId;
-    if (!pairId) return;
-    void notifyTaskFinished(session, () => credentialsRef.current?.pairId === pairId);
-  }, []);
-  // The control-plane catalogue (sessions/workspaces/models/settings) lives in
-  // its own hook; the provider keeps connection lifecycle + per-session
-  // timeline and forwards the catalogue's state/setters into the context value.
-  const {
-    sessions,
-    unreadSessions,
-    setUnreadSessions,
-    workspaces,
-    setWorkspaces,
-    models,
-    approvalTier,
-    setApprovalTier: setApprovalTierState,
-    sandboxAvailable,
-    setTitleOverrides,
-    catalogSync,
-    setCatalogEpoch,
-    applySessionSnapshot,
-    observeRunEvent,
-    refreshSessions,
-    noteCatalogRevisions,
-    refreshModels,
-    refreshSettings,
-    refreshWorkspaces,
-    rename,
-    generateTitle,
-    deleteSession: removeSession,
-    deleteWorkspace: removeWorkspace,
-    createWorkspace,
-    setSessionPinned,
-    setWorkspacePinned,
-    renameWorkspace,
-    reset: resetCatalog,
-  } = useSessionCatalog(clientRef, selectedRef, onTaskFinished);
-  // Changes whenever the user navigates between conversations. Long uploads
-  // capture the epoch so their eventual ack cannot pull the UI back to a
-  // conversation the user has already left.
-  const conversationEpochRef = useRef(0);
-  const captureConversationOperation = useCallback(() => captureConversationLifetime({
-    conversationEpochRef, clientRef, credentialsRef,
-  }), []);
+  const networkAvailableRef = useRef<boolean | null>(null);
+  const pairing = usePairedDesktops({ networkAvailableRef });
+  /**
+   * The runtimes, by desktop id. A ref because they hold sockets and callbacks;
+   * `registryVersion` is what makes a change in them reach a render.
+   */
+  const registryRef = useRef(new Map<string, RuntimeEntry>());
+  const [registryVersion, setRegistryVersion] = useState(0);
+  /**
+   * The transcript's own signal, kept apart from the machines'.
+   *
+   * A streamed delta changes what the transcript draws and nothing else, so it
+   * must not re-render the machine list — nor, through it, every control on the
+   * screen. Two signals are what make "the transcript follows the stream" and
+   * "the composer does not re-render 100 times a second" both true.
+   */
+  const [timelineVersion, setTimelineVersion] = useState(0);
 
-  // Connection callbacks are created before the conversation controller. Keep
-  // their settings sink current without rebuilding the connection/sync engine.
-  const settingsSink = useRef<Pick<ReturnType<typeof useConversationController>,
-    "applySessionSettings" | "handleSessionSettingsEvent"> | null>(null);
-  const onSessionState = useCallback((sessionId: string, state: RemoteSessionState) => {
-    settingsSink.current?.applySessionSettings(sessionId, {
-      model: state.model ?? "",
-      thinkingLevel: state.thinkingLevel ?? "off",
-      usage: state.usage,
-    });
+  const publish = useCallback((entry: RuntimeEntry) => {
+    const previous = registryRef.current.get(entry.desktopId);
+    // Stored whether or not the data changed: the functions in it are this
+    // render's, and the screens should call the current ones.
+    registryRef.current.set(entry.desktopId, entry);
+    if (!samePublishedData(previous, entry)) setRegistryVersion((value) => value + 1);
+    if (!sameTimelineData(previous, entry)) setTimelineVersion((value) => value + 1);
   }, []);
+
+  // A machine that is no longer paired has no runtime: its entry is dropped
+  // here so nothing can reach a removed desktop. The list the screens read is
+  // filtered by the pairing set as well (below), so the removal needs no
+  // re-render of its own — the pairing change already causes one.
+  const pairedIds = useMemo(
+    () => new Set(pairing.desktops.map((desktop) => desktop.desktopId)),
+    [pairing.desktops],
+  );
   useEffect(() => {
-    selectedRef.current = selectedSessionId;
-    clientRef.current?.setVisibleSession?.(AppState.currentState === "background" ? "" : selectedSessionId);
-  }, [selectedSessionId]);
-  const {
-    timeline,
-    timelinePending,
-    timelineSyncStatus,
-    timelineError,
-    canLoadOlderTimeline,
-    loadingOlderTimeline,
-    loadOlderTimeline,
-    reloadTimeline,
-    prepareTimelineOpen,
-    syncEngineRef,
-    streamingRef,
-    compactingRef,
-    reconcileSession,
-    handleEvent,
-    applySessionStreaming,
-    awaitCompactionOutcome,
-    resetTimeline,
-    ensureDraftTimeline,
-    retryTimeline,
-  } = useTimelineController({
-    clientRef,
-    selectedRef,
-    selectedSessionId,
-    draft,
-    refreshModels,
-    refreshSessions,
-    setTitleOverrides,
-    onSessionState,
-  });
-
-  const handleLiveEvent = useCallback((event: Parameters<typeof handleEvent>[0], sessionId: string) => {
-    if (event.type === "app_settings_changed") {
-      setDesktopSettingsRevision(revision => revision + 1);
-      void refreshSettings();
-      return;
+    for (const desktopId of [...registryRef.current.keys()]) {
+      if (!pairedIds.has(desktopId)) registryRef.current.delete(desktopId);
     }
-    if (event.type === "skills_changed") {
-      setSkillsRevision(revision => revision + 1);
-      return;
-    }
-    if (event.type === "provider_config_changed" || event.type === "model_visibility_changed")
-      setDesktopSettingsRevision(revision => revision + 1);
-    settingsSink.current?.handleSessionSettingsEvent(event, sessionId);
-    observeRunEvent(event, sessionId);
-    handleEvent(event, sessionId);
-  }, [handleEvent, observeRunEvent, refreshSettings]);
+  }, [pairedIds]);
 
-  const closeConversation = useCallback(() => {
-    conversationEpochRef.current += 1;
-    setSelectedSessionId("");
-    selectedRef.current = "";
-    setDraft(false);
-    setDraftMode("chat");
-    setDraftWorkspaceId("");
-    // Keep per-session timeline caches so reopening renders live state.
-    void refreshSessions();
-    void refreshWorkspaces();
-  }, [refreshSessions, refreshWorkspaces]);
-  const resetConversation = useCallback(() => {
-    conversationEpochRef.current += 1;
-    selectedRef.current = "";
-    setSelectedSessionId("");
-    setDraft(false);
-    setDraftMode("chat");
-    setDraftWorkspaceId("");
+  const recoverAll = useCallback((reason: RecoveryReason) => {
+    void pairing.drainRevokes();
+    for (const entry of registryRef.current.values()) void entry.connection.recover(reason);
+  }, [pairing]);
+
+  const setRuntimesActive = useCallback((active: boolean) => {
+    for (const entry of registryRef.current.values()) entry.setAppActive(active);
   }, []);
 
-  const {
-    phase,
-    error,
-    credentials,
-    desktops,
-    switchDesktop,
-    renameDesktop,
-    labelDesktop,
-    removeDesktop,
-    presence,
-    desktopOnline,
-    hasConnectedContent,
-    capabilities,
-    fileTransferSupported,
-    promptReceiptSupported,
-    recordError,
-    pair,
-    reconnect,
-    unpair,
-    clearError,
-  } = useRemoteConnection({
-    clientRef,
-    credentialsRef,
-    selectedRef,
-    syncEngineRef,
-    handleEvent: handleLiveEvent,
-    reconcileSession,
-    setCatalogEpoch,
-    applySessionSnapshot,
-    applySessionStreaming,
-    setWorkspaces,
-    refreshModels,
-    refreshSessions,
-    refreshSettings,
-    refreshWorkspaces,
-    noteCatalogRevisions,
-    closeConversation,
-    resetConversation,
-    resetCatalog,
-    resetTimeline,
-  });
-  const {
-    modelId,
-    thinkingLevel,
-    sessionUsage,
-    refreshSessionUsage,
-    applySessionSettings,
-    handleSessionSettingsEvent,
-    openingSession,
-    selectSession,
-    newConversation,
-    listSessionFiles,
-    resolveToolCallTarget,
-    listSkills,
-    prepareAttachment,
-    cachedAttachment,
-    downloadAttachment,
-    abort,
-    compactContext,
-    setModel,
-    setThinkingLevel,
-    setApprovalTier,
-    deleteSession,
-    deleteWorkspace,
-    decideApproval,
-    forkConversation,
-  } = useConversationController({
-    clientRef,
-    selectedRef,
-    syncEngineRef,
-    conversationEpochRef,
-    models,
-    setSelectedSessionId,
-    setDraft,
-    setDraftMode,
-    setDraftWorkspaceId,
-    setUnreadSessions,
-    setApprovalTierState,
-    ensureDraftTimeline,
-    prepareTimelineOpen,
-    recordError,
-    removeSession,
-    removeWorkspace,
-    refreshSessions,
-    closeConversation,
+  const { foreground } = useAppLifecycle({
+    networkAvailableRef,
+    setRuntimesActive,
+    recoverAll,
   });
 
-  useEffect(() => {
-    settingsSink.current = { applySessionSettings, handleSessionSettingsEvent };
-    return () => { settingsSink.current = null; };
-  }, [applySessionSettings, handleSessionSettingsEvent]);
+  const activeDesktopId = pairing.activeDesktopId;
+  const activeRuntime = runtimeFor(registryRef.current, activeDesktopId);
 
   /**
-   * Open a conversation on the desktop that owns it.
+   * Wait for a machine's runtime to have a live client.
    *
-   * A row merged in from a second desktop belongs to a machine this connection
-   * is not talking to; selecting it here would address the active desktop with
-   * an id it does not have. So the switch comes first — the same switch the
-   * device picker performs — and the conversation opens on its own machine.
-   * A row on the active desktop (or one with no recorded source) is the plain
-   * selection it always was.
+   * Normally there is nothing to wait for — the machine is connected because it
+   * always is — but a desktop that was asleep when the user tapped its row is
+   * still handshaking, and opening a conversation against no client would
+   * silently do nothing. Bounded, so a machine that never answers fails the tap
+   * rather than hanging it.
    */
+  const waitForRuntime = useCallback(async (desktopId: string): Promise<RuntimeEntry | null> => {
+    const deadline = Date.now() + 15_000;
+    for (;;) {
+      const entry = registryRef.current.get(desktopId);
+      if (entry?.connection.clientRef.current) return entry;
+      if (Date.now() >= deadline) return entry ?? null;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }, []);
+
+  const switchDesktop = useCallback(
+    async (desktopId: string) => {
+      await pairing.selectDesktop(desktopId);
+    },
+    [pairing],
+  );
+
   const openSessionOnDesktop = useCallback(
     async (desktopId: string, sessionId: string) => {
-      if (!desktopId || desktopId === credentialsRef.current?.expectedDesktopId) {
-        await selectSession(sessionId);
-        return;
-      }
-      await switchDesktop(desktopId);
-      await selectSession(sessionId);
+      const target = desktopId || pairing.activeDesktopId;
+      if (!target) return;
+      if (target !== pairing.activeDesktopId) await pairing.selectDesktop(target);
+      const entry = await waitForRuntime(target);
+      if (!entry) throw new Error("desktop_unavailable");
+      await entry.conversation.selectSession(sessionId);
     },
-    [selectSession, switchDesktop],
+    [pairing, waitForRuntime],
   );
 
-  const { sending, sendMessage, continueRun } = usePromptOutbox({
-    clientRef,
-    credentialsRef,
-    selectedRef,
-    streamingRef,
-    compactingRef,
-    conversationEpochRef,
-    syncEngineRef,
-    phase,
-    businessReady: desktopOnline && presence?.agentAvailable !== false && !presence?.disconnected,
-    draft,
-    draftMode,
-    draftWorkspaceId,
-    modelId,
-    thinkingLevel,
-    fileTransferSupported,
-    promptReceiptSupported,
-    setSelectedSessionId,
-    setDraft,
-    setDraftMode,
-    setDraftWorkspaceId,
-    refreshSessions,
-    reconcileSession,
-    recordError,
-  });
+  const disconnectDesktop = useCallback((desktopId: string) => {
+    const entry = registryRef.current.get(desktopId);
+    const phase = entry?.connection.phase;
+    // A connection that gave up is not re-opened from the inside; a live one is
+    // probed. The two failures need different answers, so the button picks.
+    if (phase === "failed" || phase === "stopped" || phase === "revoked") pairing.reconnect(desktopId);
+    else void entry?.connection.recover("request-failure");
+  }, [pairing]);
+
+  const reconnect = useCallback(async () => {
+    if (!pairing.activeDesktopId) return;
+    disconnectDesktop(pairing.activeDesktopId);
+  }, [disconnectDesktop, pairing.activeDesktopId]);
+
+  /**
+   * Remove the open pairing.
+   *
+   * The machine is told first, best effort and bounded: the local removal is
+   * what the user asked for, and it must not wait on a desktop that may be
+   * gone. Its runtime unmounts with the pairing, which closes the socket.
+   */
+  const unpair = useCallback(async () => {
+    const entry = registryRef.current.get(pairing.activeDesktopId ?? "");
+    await entry?.notifyUnpair();
+    await pairing.unpair();
+  }, [pairing]);
+
+  const removeDesktop = useCallback(
+    async (desktopId: string) => {
+      if (desktopId === pairing.activeDesktopId) return unpair();
+      await registryRef.current.get(desktopId)?.notifyUnpair();
+      await pairing.removeDesktop(desktopId);
+    },
+    [pairing, unpair],
+  );
+
+  /**
+   * The machines other than the open one, in the shape the merged list reads:
+   * their catalogues, their own commands, and their status.
+   *
+   * Every one of them is a live runtime, so a command here goes down that
+   * machine's own connection — the same path the desktop app uses — and the
+   * status is that runtime's own judged presence rather than a poll.
+   */
+  const catalogs = useMemo(() => {
+    const others = [...registryRef.current.values()].filter(
+      (entry) => entry.desktopId !== activeDesktopId && pairedIds.has(entry.desktopId),
+    );
+    const catalogEntries: CatalogEntry[] = others.map((entry) => ({
+      desktopId: entry.desktopId,
+      label: entry.label,
+      sessions: entry.catalog.sessions,
+    }));
+    // The open machine contributes through its own runtime rather than a second
+    // fetch: its catalogue is the same state the screens are reading.
+    if (activeRuntime)
+      catalogEntries.push({
+        desktopId: activeRuntime.desktopId,
+        label: activeRuntime.label,
+        sessions: activeRuntime.catalog.sessions,
+      });
+    const machines: MachineSummary[] = others.map((entry) => ({
+      desktopId: entry.desktopId,
+      label: entry.label,
+      ...(entry.icon ? { icon: entry.icon } : {}),
+      active: false,
+      status: machineStatusOf(entry),
+    }));
+    return {
+      catalogs: catalogEntries,
+      machines,
+      refresh: async () => {
+        await Promise.allSettled(
+          [...registryRef.current.values()].map((entry) => entry.catalog.refreshSessions()),
+        );
+      },
+      reconnect: () => {
+        for (const entry of registryRef.current.values()) {
+          const phase = entry.connection.phase;
+          if (phase === "failed" || phase === "stopped" || phase === "revoked")
+            pairing.reconnect(entry.desktopId);
+          else void entry.connection.recover("request-failure");
+        }
+      },
+      commandsFor: (desktopId: string): DesktopCommands | null => {
+        const entry = registryRef.current.get(desktopId);
+        // Only from `ready`: while the machine's agent restarts it refuses, and
+        // offering an action it will not take is what makes a menu lie.
+        if (!entry || entry.connection.phase !== "ready") return null;
+        const client = (): RemoteClient | null => entry.connection.clientRef.current;
+        const accepted = async (): Promise<void> => {
+          await entry.catalog.refreshSessions().catch(() => undefined);
+        };
+        return {
+          capabilities: entry.connection.capabilities,
+          renameSession: async (sessionId, name) => {
+            await client()?.request(
+              { type: "set_session_name", sessionId, name: name.trim() }, sessionId);
+            await accepted();
+          },
+          generateTitle: async (sessionId, language) => {
+            const response = await client()?.request<{ title?: string }>(
+              { type: "generate_session_title", sessionId, mode: language },
+              sessionId,
+              65_000,
+            );
+            const title = response?.data?.title?.trim();
+            if (!title) throw new Error("title_generation_failed");
+            return title;
+          },
+          setSessionPinned: async (sessionId, threadId, pinned) => {
+            await client()?.request(
+              { type: "set_session_pinned", sessionId, threadId, pinned }, sessionId);
+            await accepted();
+          },
+          deleteSession: async (sessionId, threadId) => {
+            await client()?.request({ type: "delete_session", sessionId, threadId }, sessionId);
+            await accepted();
+          },
+          renameWorkspace: async (workspaceId, name) => {
+            await client()?.request(
+              { type: "rename_workspace", workspaceId, name: name.trim() }, "list");
+            await accepted();
+          },
+          setWorkspacePinned: async (workspaceId, pinned) => {
+            await client()?.request({ type: "set_workspace_pinned", workspaceId, pinned }, "list");
+            await accepted();
+          },
+          deleteWorkspace: async (workspaceId) => {
+            await client()?.request({ type: "delete_workspace", workspaceId }, "list");
+            await accepted();
+          },
+        };
+      },
+      readWorkspaces: async (desktopId: string): Promise<RemoteWorkspace[]> => {
+        const client = registryRef.current.get(desktopId)?.connection.clientRef.current;
+        if (!client) throw new Error("machine_unavailable");
+        const response = await client.request<{ workspaces?: RemoteWorkspace[] }>(
+          { type: "list_workspaces" },
+          "list",
+        );
+        return Array.isArray(response.data?.workspaces) ? response.data.workspaces : [];
+      },
+    };
+    // The dependency list is deliberately field-by-field: the pairing surface
+    // and the runtime object are rebuilt on every render, so depending on
+    // either would rebuild this on every streamed delta — which, through the
+    // controls that read it, is a whole screen of re-renders per token.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the fields, not the objects they hang off
+  }, [
+    activeDesktopId,
+    activeRuntime?.catalog.sessions,
+    activeRuntime?.desktopId,
+    activeRuntime?.label,
+    pairedIds,
+    pairing.reconnect,
+    registryVersion,
+  ]);
+
   useEffect(() => {
-    if (phase === "ready" && credentials) void prepareTaskNotifications();
-  }, [phase, credentials]);
+    if (activeRuntime?.connection.phase === "ready" && activeRuntime.connection.credentials)
+      void prepareTaskNotifications();
+  }, [activeRuntime?.connection.credentials, activeRuntime?.connection.phase]);
 
-  const selectedTitle =
-    sessions.find(session => session.sessionId === selectedSessionId)?.title ?? "";
-  const agentAvailable = presence?.agentAvailable !== false;
-  const connectionPresentation = useMemo(
-    () =>
-      buildConnectionPresentation({
-        phase,
-        desktopOnline,
-        agentAvailable,
-        desktopDisconnected: presence?.disconnected,
-        desktopDisconnectReason: presence?.reason,
-        error,
+  const value = useMemo<RemoteControls>(() => {
+    const runtime = activeRuntime;
+    const connection = runtime?.connection ?? null;
+    const presence = connection?.presence ?? null;
+    const agentAvailable = presence?.agentAvailable !== false;
+    const connectionPresentation = buildConnectionPresentation({
+      phase: connection?.phase ?? (pairing.booting ? "booting" : "unpaired"),
+      desktopOnline: connection?.desktopOnline ?? false,
+      agentAvailable,
+      desktopDisconnected: presence?.disconnected,
+      desktopDisconnectReason: presence?.reason,
+      error: connection?.error ?? pairing.error,
+    });
+    const noop = async () => undefined;
+    return {
+      ...(runtime?.management ?? {
+        getDesktopSettings: noop as never,
+        updateDesktopSettings: noop as never,
+        listSettingsModels: noop as never,
+        listInstalledSkills: noop as never,
+        listAvailableSkills: noop as never,
+        installSkill: noop as never,
+        uninstallSkill: noop as never,
+        suggestSkill: noop as never,
+        skillRecoToday: noop as never,
+        recordSkillReco: noop as never,
+        listProviders: noop as never,
+        updateBuiltinProvider: noop as never,
+        upsertCustomProvider: noop as never,
+        deleteCustomProvider: noop as never,
+        listTasks: noop as never,
+        getTask: noop as never,
+        createTask: noop as never,
+        updateTask: noop as never,
+        deleteTask: noop as never,
+        setTaskEnabled: noop as never,
+        runTask: noop as never,
+        listTaskRuns: noop as never,
+        listTaskDeps: noop as never,
+        setTaskDep: noop as never,
+        removeTaskDep: noop as never,
+        listTaskRevisions: noop as never,
+        applyTaskRevision: noop as never,
       }),
-    [agentAvailable, desktopOnline, error, phase, presence?.disconnected, presence?.reason],
-  );
-
-  const streaming = timeline.streaming;
-  const compacting = timeline.compacting === true;
-  const timelineValue = useMemo<TimelineContextValue>(() => ({
-    timeline, timelinePending, timelineSyncStatus, timelineError, canLoadOlderTimeline, loadingOlderTimeline,
-  }), [timeline, timelinePending, timelineSyncStatus, timelineError, canLoadOlderTimeline, loadingOlderTimeline]);
-  const value = useMemo<RemoteControls>(
-    () => ({
-      ...desktopManagement,
-      captureConversationOperation,
-      desktopSettingsRevision,
-      skillsRevision,
-      phase,
-      error,
-      credentials,
-      desktops,
+      captureConversationOperation: runtime?.captureConversationOperation ?? (() => () => false),
+      desktopSettingsRevision: runtime?.desktopSettingsRevision ?? 0,
+      skillsRevision: runtime?.skillsRevision ?? 0,
+      phase: connection?.phase ?? (pairing.booting ? "booting" : "unpaired"),
+      error: connection?.error ?? pairing.error,
+      credentials: connection?.credentials ?? null,
+      desktops: pairing.desktops,
       switchDesktop,
-      renameDesktop,
-      labelDesktop,
+      renameDesktop: pairing.renameDesktop,
+      labelDesktop: pairing.labelDesktop,
       removeDesktop,
       presence,
-      desktopOnline,
-      hasConnectedContent,
-      catalogSync,
+      desktopOnline: connection?.desktopOnline ?? false,
+      hasConnectedContent: connection?.hasConnectedContent ?? false,
+      catalogSync: runtime?.catalog.catalogSync ?? {
+        sessions: "idle", workspaces: "idle", models: "idle", settings: "idle",
+      },
       agentAvailable,
       connectionPresentation,
-      sessions,
-      workspaces,
-      unreadSessions,
-      models,
-      selectedSessionId,
-      selectedTitle,
-      draft,
-      draftMode,
-      draftWorkspaceId,
-      streaming,
-      compacting,
-      modelId,
-      thinkingLevel,
-      sessionUsage,
-      refreshSessionUsage,
-      approvalTier,
-      sandboxAvailable,
-      busy: sending || openingSession,
-      fileTransferSupported,
-      capabilities,
-      pair,
+      sessions: runtime?.catalog.sessions ?? [],
+      workspaces: runtime?.catalog.workspaces ?? [],
+      unreadSessions: runtime?.catalog.unreadSessions ?? new Set<string>(),
+      models: runtime?.catalog.models ?? [],
+      selectedSessionId: runtime?.selectedSessionId ?? "",
+      selectedTitle: runtime?.selectedTitle ?? "",
+      draft: runtime?.draft ?? false,
+      draftMode: runtime?.draftMode ?? "chat",
+      draftWorkspaceId: runtime?.draftWorkspaceId ?? "",
+      streaming: runtime?.streaming ?? false,
+      compacting: runtime?.compacting ?? false,
+      modelId: runtime?.conversation.modelId ?? "",
+      thinkingLevel: runtime?.conversation.thinkingLevel ?? "off",
+      sessionUsage: runtime?.conversation.sessionUsage ?? null,
+      refreshSessionUsage: runtime?.conversation.refreshSessionUsage ?? noop,
+      approvalTier: runtime?.catalog.approvalTier ?? "off",
+      sandboxAvailable: runtime?.catalog.sandboxAvailable ?? false,
+      busy: runtime?.busy ?? false,
+      fileTransferSupported: connection?.fileTransferSupported ?? false,
+      capabilities: connection?.capabilities ?? new Set<string>(),
+      pair: pairing.pair,
       reconnect,
       unpair,
-      refreshSessions,
-      refreshWorkspaces,
-      refreshModels,
-      selectSession,
+      refreshSessions: runtime?.catalog.refreshSessions ?? noop,
+      refreshWorkspaces: runtime?.catalog.refreshWorkspaces ?? noop,
+      refreshModels: runtime?.catalog.refreshModels ?? noop,
+      selectSession: runtime
+        ? runtime.conversation.selectSession
+        : async () => undefined,
       openSessionOnDesktop,
-      retryTimeline,
-      loadOlderTimeline,
-      reloadTimeline,
-      newConversation,
-      closeConversation,
-      sendMessage,
-      compactContext,
-      awaitCompactionOutcome,
-      listSkills,
-      listSessionFiles,
-    resolveToolCallTarget,
-      prepareAttachment,
-      cachedAttachment,
-      downloadAttachment,
-      abort,
-      setModel,
-      setThinkingLevel,
-      setApprovalTier,
-      rename,
-      generateTitle,
-      deleteSession,
-      deleteWorkspace,
-      createWorkspace,
-      setSessionPinned,
-      setWorkspacePinned,
-      renameWorkspace,
-      decideApproval,
-      forkConversation,
-      clearError,
-      continueRun,
-    }),
-    [
-      desktopManagement,
-      captureConversationOperation,
-      desktopSettingsRevision,
-      skillsRevision,
-      abort,
-      compactContext,
-      awaitCompactionOutcome,
-      openingSession,
-      sending,
-      capabilities,
-      fileTransferSupported,
-      credentials,
-      desktops,
-      switchDesktop,
-      renameDesktop,
-      labelDesktop,
-      removeDesktop,
-      closeConversation,
-      clearError,
-      connectionPresentation,
-      continueRun,
-      createWorkspace,
-      decideApproval,
-      forkConversation,
-      desktopOnline,
-      hasConnectedContent,
-      catalogSync,
-      deleteSession,
-      deleteWorkspace,
-      draft,
-      draftMode,
-      draftWorkspaceId,
-      error,
-      agentAvailable,
-      modelId,
-      sessionUsage,
-      refreshSessionUsage,
-      models,
-      newConversation,
-      pair,
-      phase,
-      presence,
-      reconnect,
-      refreshSessions,
-      refreshWorkspaces,
-      refreshModels,
-      rename,
-      generateTitle,
-      selectSession,
-      openSessionOnDesktop,
-      selectedSessionId,
-      selectedTitle,
-      sendMessage,
-      setSessionPinned,
-      setWorkspacePinned,
-      renameWorkspace,
-      listSkills,
-      listSessionFiles,
-    resolveToolCallTarget,
-      prepareAttachment,
-      cachedAttachment,
-      downloadAttachment,
-      sessions,
-      streaming,
-      compacting,
-      unreadSessions,
-      workspaces,
-      setModel,
-      setThinkingLevel,
-      setApprovalTier,
-      thinkingLevel,
-      approvalTier,
-      sandboxAvailable,
-      unpair,
-      retryTimeline,
-      loadOlderTimeline,
-      reloadTimeline,
-    ],
-  );
+      retryTimeline: runtime?.timeline.retryTimeline ?? noop,
+      loadOlderTimeline: runtime?.timeline.loadOlderTimeline ?? (async () => false),
+      reloadTimeline: runtime?.timeline.reloadTimeline ?? (() => undefined),
+      newConversation: runtime?.conversation.newConversation ?? noop,
+      closeConversation: runtime?.closeConversation ?? (() => undefined),
+      sendMessage: runtime?.outbox.sendMessage ?? noop,
+      compactContext: runtime?.conversation.compactContext ?? (async () => {
+        throw new Error("not_connected");
+      }),
+      awaitCompactionOutcome: runtime?.timeline.awaitCompactionOutcome
+        ?? (async (_sessionId: string, _operationId: string): Promise<import("./types").CompactionOutcome> => ({ status: "timeout" })),
+      listSkills: runtime?.conversation.listSkills ?? (async () => []),
+      listSessionFiles: runtime?.conversation.listSessionFiles ?? (async () => {
+        throw new Error("not_connected");
+      }),
+      resolveToolCallTarget: runtime?.conversation.resolveToolCallTarget ?? (async () => null),
+      prepareAttachment: runtime?.conversation.prepareAttachment ?? (async () => {
+        throw new Error("not_connected");
+      }),
+      cachedAttachment: runtime?.conversation.cachedAttachment ?? (() => null),
+      downloadAttachment: runtime?.conversation.downloadAttachment ?? (async () => {
+        throw new Error("not_connected");
+      }),
+      abort: runtime?.conversation.abort ?? noop,
+      setModel: runtime?.conversation.setModel ?? noop,
+      setThinkingLevel: runtime?.conversation.setThinkingLevel ?? noop,
+      setApprovalTier: runtime?.conversation.setApprovalTier ?? noop,
+      rename: runtime?.catalog.rename ?? noop,
+      generateTitle: runtime?.catalog.generateTitle ?? (async () => {
+        throw new Error("not_connected");
+      }),
+      deleteSession: runtime?.conversation.deleteSession ?? noop,
+      deleteWorkspace: runtime?.conversation.deleteWorkspace ?? noop,
+      createWorkspace: runtime?.catalog.createWorkspace ?? (async () => {
+        throw new Error("not_connected");
+      }),
+      setSessionPinned: runtime?.catalog.setSessionPinned ?? noop,
+      setWorkspacePinned: runtime?.catalog.setWorkspacePinned ?? noop,
+      renameWorkspace: runtime?.catalog.renameWorkspace ?? noop,
+      forkConversation: runtime?.conversation.forkConversation ?? noop,
+      decideApproval: runtime?.conversation.decideApproval ?? noop,
+      clearError: connection?.clearError ?? pairing.clearError,
+      continueRun: runtime?.outbox.continueRun ?? noop,
+      catalogs,
+    };
+    // Field by field rather than "the runtime object": the runtime is rebuilt on
+    // every render, so depending on it would hand every control a new value on
+    // every streamed text delta — which is exactly the re-render storm the two
+    // contexts exist to avoid. The timeline's own contents are deliberately not
+    // here; they travel through the transcript context instead.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the leaves, not the objects they hang off
+  }, [
+    activeDesktopId,
+    activeRuntime?.busy,
+    activeRuntime?.catalog.approvalTier,
+    activeRuntime?.catalog.catalogSync,
+    activeRuntime?.catalog.createWorkspace,
+    activeRuntime?.catalog.generateTitle,
+    activeRuntime?.catalog.models,
+    activeRuntime?.catalog.refreshModels,
+    activeRuntime?.catalog.refreshSessions,
+    activeRuntime?.catalog.refreshWorkspaces,
+    activeRuntime?.catalog.rename,
+    activeRuntime?.catalog.renameWorkspace,
+    activeRuntime?.catalog.sandboxAvailable,
+    activeRuntime?.catalog.sessions,
+    activeRuntime?.catalog.setSessionPinned,
+    activeRuntime?.catalog.setWorkspacePinned,
+    activeRuntime?.catalog.unreadSessions,
+    activeRuntime?.catalog.workspaces,
+    activeRuntime?.captureConversationOperation,
+    activeRuntime?.closeConversation,
+    activeRuntime?.compacting,
+    activeRuntime?.connection.capabilities,
+    activeRuntime?.connection.clearError,
+    activeRuntime?.connection.credentials,
+    activeRuntime?.connection.desktopOnline,
+    activeRuntime?.connection.error,
+    activeRuntime?.connection.fileTransferSupported,
+    activeRuntime?.connection.hasConnectedContent,
+    activeRuntime?.connection.phase,
+    activeRuntime?.connection.presence,
+    activeRuntime?.conversation.abort,
+    activeRuntime?.conversation.cachedAttachment,
+    activeRuntime?.conversation.compactContext,
+    activeRuntime?.conversation.decideApproval,
+    activeRuntime?.conversation.deleteSession,
+    activeRuntime?.conversation.deleteWorkspace,
+    activeRuntime?.conversation.downloadAttachment,
+    activeRuntime?.conversation.forkConversation,
+    activeRuntime?.conversation.listSessionFiles,
+    activeRuntime?.conversation.listSkills,
+    activeRuntime?.conversation.modelId,
+    activeRuntime?.conversation.newConversation,
+    activeRuntime?.conversation.prepareAttachment,
+    activeRuntime?.conversation.refreshSessionUsage,
+    activeRuntime?.conversation.resolveToolCallTarget,
+    activeRuntime?.conversation.selectSession,
+    activeRuntime?.conversation.sessionUsage,
+    activeRuntime?.conversation.setApprovalTier,
+    activeRuntime?.conversation.setModel,
+    activeRuntime?.conversation.setThinkingLevel,
+    activeRuntime?.conversation.thinkingLevel,
+    activeRuntime?.desktopSettingsRevision,
+    activeRuntime?.draft,
+    activeRuntime?.draftMode,
+    activeRuntime?.draftWorkspaceId,
+    activeRuntime?.management,
+    activeRuntime?.outbox.continueRun,
+    activeRuntime?.outbox.sendMessage,
+    activeRuntime?.selectedSessionId,
+    activeRuntime?.selectedTitle,
+    activeRuntime?.skillsRevision,
+    activeRuntime?.streaming,
+    activeRuntime?.timeline.awaitCompactionOutcome,
+    activeRuntime?.timeline.loadOlderTimeline,
+    activeRuntime?.timeline.reloadTimeline,
+    activeRuntime?.timeline.retryTimeline,
+    catalogs,
+    openSessionOnDesktop,
+    pairing.booting,
+    pairing.clearError,
+    pairing.desktops,
+    pairing.error,
+    pairing.labelDesktop,
+    pairing.pair,
+    pairing.renameDesktop,
+    reconnect,
+    removeDesktop,
+    switchDesktop,
+    unpair,
+  ]);
 
-  return <RemoteContext.Provider value={value}>
-    <RemoteTimelineContext.Provider value={timelineValue}>{children}</RemoteTimelineContext.Provider>
-  </RemoteContext.Provider>;
+  const timelineValue = useMemo<TimelineContextValue>(() => (
+    activeRuntime
+      ? {
+        timeline: activeRuntime.timeline.timeline,
+        timelinePending: activeRuntime.timeline.timelinePending,
+        timelineSyncStatus: activeRuntime.timeline.timelineSyncStatus,
+        timelineError: activeRuntime.timeline.timelineError,
+        canLoadOlderTimeline: activeRuntime.timeline.canLoadOlderTimeline,
+        loadingOlderTimeline: activeRuntime.timeline.loadingOlderTimeline,
+      }
+      : {
+        timeline: EMPTY_TIMELINE,
+        timelinePending: false,
+        timelineSyncStatus: "idle" as const,
+        timelineError: null,
+        canLoadOlderTimeline: false,
+        loadingOlderTimeline: false,
+      }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the leaves, not the controller object
+  ), [
+    activeRuntime?.timeline.timeline,
+    activeRuntime?.timeline.timelinePending,
+    activeRuntime?.timeline.timelineSyncStatus,
+    activeRuntime?.timeline.timelineError,
+    activeRuntime?.timeline.canLoadOlderTimeline,
+    activeRuntime?.timeline.loadingOlderTimeline,
+    timelineVersion,
+  ]);
+
+  return (
+    <RemoteContext.Provider value={value}>
+      <RemoteTimelineContext.Provider value={timelineValue}>
+        {pairing.desktops.map((desktop) => (
+          <DesktopRuntimeHost
+            key={`${desktop.desktopId}:${pairing.generations[desktop.desktopId] ?? 0}`}
+            desktopId={desktop.desktopId}
+            label={desktop.name ?? desktop.desktopId}
+            icon={desktop.icon}
+            active={desktop.desktopId === activeDesktopId}
+            foreground={foreground}
+            publish={publish}
+          />
+        ))}
+        {children}
+      </RemoteTimelineContext.Provider>
+    </RemoteContext.Provider>
+  );
 }
+
+const EMPTY_TIMELINE: TimelineState = {
+  items: [],
+  seenEvents: new Set(),
+  currentRunId: null,
+  streaming: false,
+  liveRuns: new Map(),
+};
 
 /** Navigation and controls should not subscribe to every streamed text delta. */
 export function useRemoteControls(): RemoteControls {

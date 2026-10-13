@@ -63,6 +63,7 @@ const mockRemote = {
   hasConnectedContent: true,
   error: null as string | null,
   presence: null as { reason?: string } | null,
+  catalogs: null as unknown,
 };
 jest.mock("react-native", () => {
   const actual = jest.requireActual("react-native");
@@ -79,9 +80,9 @@ const mockCatalogs = {
   commandsFor: jest.fn(() => null) as jest.Mock,
   readWorkspaces: jest.fn(async (_desktopId: string) => [] as { id: string; name: string; path: string }[]),
 };
-jest.mock("../../remote/useDesktopCatalogs", () => ({
-  useDesktopCatalogs: () => mockCatalogs,
-}));
+// The reader of every other machine's catalogue now comes from the provider,
+// where each machine's runtime lives, rather than from a hook of this screen.
+mockRemote.catalogs = mockCatalogs;
 jest.mock("../SessionList", () => ({ SessionList: () => null }));
 jest.mock("../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
 jest.mock("../../update/prompt", () => ({ promptUpgrade: jest.fn() }));
